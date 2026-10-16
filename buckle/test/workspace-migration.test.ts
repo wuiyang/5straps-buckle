@@ -668,8 +668,11 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const on = { on: true, changedAt: '2026-10-01T00:00:00.000Z' }
       const grant = (input: Scene, id: string) => ({ id, workspace: input.folder, rule: 'network_egress', subject: `${id}.example.test`, scope: 'always', sessionId: null, createdAt: '2026-10-01T00:00:00.000Z', expiresAt: null })
 
-      /** 0.1's node, moved once; then the owner's way back: the *.v1.json copies over their originals, the records left in place. */
-      async function movedAndBack(input: Scene) {
+      /**
+       * 0.1's node, moved once; then the owner's way back: the *.v1.json copies over their originals, the records left in
+       * place. `way` 'move' moves each copy over its original instead, so no copy is left.
+       */
+      async function movedAndBack(input: Scene, way: 'copy' | 'move' = 'copy') {
         const { config } = withFile(input)
         version1(input)
         writeFileSync(join(input.state, 'grants.json'), JSON.stringify({ version: 1, grants: [grant(input, 'before-the-first-move')] }))
@@ -681,7 +684,10 @@ describe('moving a 0.1 node onto the workspace model', () => {
         const home = join(input.state, 'workspaces', ownId(input))
         writeFileSync(join(home, 'grants.json'), JSON.stringify({ version: 1, grants: [{ ...grant(input, 'before-the-first-move'), workspace: ownId(input) }, { ...grant(input, 'after-the-first-move'), workspace: ownId(input) }] }))
         writeFileSync(join(home, 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [ownId(input)]: on } }))
-        for (const [copy, original] of [['workspaces.v1.json', 'workspaces.json'], ['policy.v1.json', 'policy.json'], ['grants.v1.json', 'grants.json']]) writeFileSync(join(input.state, original!), readFileSync(join(input.state, copy!), 'utf8'))
+        for (const [copy, original] of [['workspaces.v1.json', 'workspaces.json'], ['policy.v1.json', 'policy.json'], ['grants.v1.json', 'grants.json']]) {
+          if (way === 'move') renameSync(join(input.state, copy!), join(input.state, original!))
+          else writeFileSync(join(input.state, original!), readFileSync(join(input.state, copy!), 'utf8'))
+        }
         // What 0.1 wrote since going back.
         writeFileSync(join(input.state, 'policy.json'), JSON.stringify({ version: 1, workspaces: { [input.folder]: policy(value => { value.commands.deny = ['later *'] }) } }))
         writeFileSync(join(input.state, 'plugins.json'), '["later"]')
@@ -725,6 +731,71 @@ describe('moving a 0.1 node onto the workspace model', () => {
         expect(grants.grants.map(item => [item.id, item.workspace])).toEqual([['before-the-first-move', ownId(input)]])
         expect(existsSync(join(home, 'dangerously-allow.json'))).toBe(false)
         expect(existsSync(join(home, 'dangerously-allow.json.earlier-move'))).toBe(true)
+      })
+
+      // Finding 15 of the third re-check: two ways the move after going back went unseen, and the earlier move's switch
+      // and grants came back.
+      const keptOff = (input: Scene, home: string) => {
+        const grants = JSON.parse(readFileSync(join(home, 'grants.json'), 'utf8')) as { grants: { id: string; workspace: string }[] }
+        expect(grants.grants.filter(item => item.workspace === ownId(input)).map(item => item.id)).toEqual(['before-the-first-move'])
+        const switches = existsSync(join(home, 'dangerously-allow.json')) ? Object.keys((JSON.parse(readFileSync(join(home, 'dangerously-allow.json'), 'utf8')) as { workspaces: Record<string, unknown> }).workspaces) : []
+        expect(switches).not.toContain(ownId(input))
+      }
+
+      it('tells a node that went back by moving the copies over their files, which leaves none, from a first move', async () => {
+        const input = scene()
+        const { config, home } = await movedAndBack(input, 'move')
+        expect(existsSync(join(input.state, 'workspaces.v1.json'))).toBe(false)
+        await openWorkspaceManager({ config })
+        keptOff(input, home)
+        expect(existsSync(join(home, 'dangerously-allow.json.earlier-move'))).toBe(true)
+      })
+
+      it('finishes a move after going back that stopped after its marker as one, keeping the earlier move\'s records aside', async () => {
+        const input = scene()
+        const { config, home } = await movedAndBack(input)
+        // The copies are made again after the marker: one that cannot be written stops the move there.
+        rmSync(join(input.state, 'policy.v1.json'))
+        mkdirSync(join(input.state, 'policy.v1.json'))
+        await expect(openWorkspaceManager({ config })).rejects.toThrow()
+        expect(readFileSync(join(input.state, 'moving-onto-workspaces'), 'utf8')).toBe('rolled-back\n')
+        rmSync(join(input.state, 'policy.v1.json'), { recursive: true })
+        await openWorkspaceManager({ config })
+        keptOff(input, home)
+        expect(existsSync(join(input.state, 'moving-onto-workspaces'))).toBe(false)
+      })
+
+      it('keeps aside the switch and grants the earlier move keyed by the id, where the owner moved them back by hand', async () => {
+        const input = scene()
+        const { config, home } = await movedAndBack(input)
+        // The way back taken literally: the records the earlier move made, moved back where 0.1 keeps them.
+        renameSync(join(home, 'dangerously-allow.json'), join(input.state, 'dangerously-allow.json'))
+        renameSync(join(home, 'grants.json'), join(input.state, 'grants.json'))
+        const notices = vi.spyOn(logger, 'warn')
+        await openWorkspaceManager({ config })
+        // Every entry under the id came from the earlier move, so none is the workspace's now.
+        const grants = JSON.parse(readFileSync(join(home, 'grants.json'), 'utf8')) as { grants: { id: string; workspace: string }[] }
+        expect(grants.grants.map(item => [item.id, item.workspace])).toEqual([['before-the-first-move', `${ownId(input)}.earlier-move`], ['after-the-first-move', `${ownId(input)}.earlier-move`]])
+        const switches = (JSON.parse(readFileSync(join(home, 'dangerously-allow.json'), 'utf8')) as { workspaces: Record<string, unknown> }).workspaces
+        expect(Object.keys(switches)).toEqual([`${ownId(input)}.earlier-move`])
+        expect(notices.mock.calls.map(([message]) => String(message)).join('\n')).toContain(`workspaces/${ownId(input)}/dangerously-allow.json (its entries under ${ownId(input)}.earlier-move)`)
+      })
+
+      it('keeps what 0.1 holds through a run again of a move after going back that stopped once its records moved', async () => {
+        const input = scene()
+        const { config, home } = await movedAndBack(input)
+        writeFileSync(join(input.state, 'grants.json'), JSON.stringify({ version: 1, grants: [grant(input, 'zero-one')] }))
+        // workspace.json written last for the node's folder: one that cannot be written stops the move after its records moved.
+        const file = join(home, 'workspace.json')
+        rmSync(file)
+        mkdirSync(file)
+        await expect(openWorkspaceManager({ config })).rejects.toThrow()
+        expect(readFileSync(join(input.state, 'moving-onto-workspaces'), 'utf8')).toBe(`rolled-back\n${ownId(input)}\n`)
+        rmSync(file, { recursive: true })
+        await openWorkspaceManager({ config })
+        const grants = JSON.parse(readFileSync(join(home, 'grants.json'), 'utf8')) as { grants: { id: string; workspace: string }[] }
+        expect(grants.grants.map(item => [item.id, item.workspace])).toEqual([['zero-one', ownId(input)]])
+        expect(readdirSync(home).filter(name => name.startsWith('grants.json.earlier-move'))).toEqual(['grants.json.earlier-move'])
       })
 
       it('still finishes a move a crash stopped, whose records are moved already, as before', async () => {

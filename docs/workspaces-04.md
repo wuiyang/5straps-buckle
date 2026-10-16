@@ -59,7 +59,8 @@ shell copies awaiting review; the calls from before the move stay in `actions.js
 Moving again later starts from what 0.1 holds then. The copies are made again from those files,
 the move says so, and records the first move left in `workspaces/<id>/` are kept beside the new
 ones with `.earlier-move` ending their names, never read. Grants and the switch from after the
-first move do not come back.
+first move do not come back: moved back by hand, an entry under the workspace's id is kept under
+`<id>.earlier-move`, and a move again that stops partway is finished as one.
 
 `workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
 text. Once the node works, delete every `*.v1.json` file in the state directory and in each

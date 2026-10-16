@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -23,7 +23,7 @@ import { openSettingsFile, settingsPath, withMount, withPolicy, WORKSPACE_MOUNT_
 export const NODE_TOKEN_ID = 'node'
 
 /**
- * The copies migration keeps of what it changes, owner-only, so an owner going back to 0.1 moves each over its file
+ * The copies migration keeps of what it changes, owner-only, so an owner going back to 0.1 copies each over its file
  * (fix brief 1, A3): the registry and policy.json in the state directory, and every grants and switch file it rekeys,
  * beside where 0.1 kept it. Made once: a move run again after a crash keeps the copies made before anything changed.
  */
@@ -34,10 +34,13 @@ const SWITCH_BACKUP = 'dangerously-allow.v1.json'
 const CLIENT_KEYS_BACKUP = 'client-keys.v1.json'
 /**
  * Written before the move changes anything and taken away once the registry is version 2: a move run again that finds
- * it is finishing one a crash stopped, and one that does not and finds the workspaces' directories is a node that went
- * back to 0.1 and is moving again (fix brief 4, finding 6).
+ * it is finishing one a stop left, and takes from its first line whether that move is one after going back to 0.1
+ * (ROLLED_BACK) or a first one; each later line names a workspace whose records the earlier move left were set aside
+ * already, so a run again never sets aside what 0.1 holds and the move moved in their place (fix brief 4, finding 6;
+ * finding 15 of the third re-check).
  */
 const MOVING_MARKER = 'moving-onto-workspaces'
+const ROLLED_BACK = 'rolled-back'
 /** What the node's own folder was in 0.1, which a key enrolled for it names as its scope. */
 const V1_NODE_WORKSPACE = 'default'
 /** What 0.1 reads as no registry and no stored policy, kept where the node had neither file, so going back is one step for every node. */
@@ -94,7 +97,14 @@ interface Planned {
  * What the move writes, and what the owner is told beside the notices: a name it had to change. `keyScopes` maps each
  * handle 0.1 named a workspace by in a device key's scope to its id now, and `movesKeys` says an enrolled key names one.
  */
-interface Plan { plans: Planned[]; notes: string[]; keyScopes: ReadonlyMap<string, string>; movesKeys: boolean; rolledBack: boolean }
+interface Plan { plans: Planned[]; notes: string[]; keyScopes: ReadonlyMap<string, string>; movesKeys: boolean; rolledBack: boolean; staleSetAside: ReadonlySet<string> }
+
+/** What a move's marker says, or null where none is under way: its verdict, and the workspaces whose stale records it set aside. */
+function readMarker(path: string): { rolledBack: boolean; staleSetAside: Set<string> } | null {
+  if (!existsSync(path)) return null
+  const [verdict = '', ...ids] = readFileSync(path, 'utf8').split('\n')
+  return { rolledBack: verdict === ROLLED_BACK, staleSetAside: new Set(ids.filter(Boolean)) }
+}
 
 /** What a 0.1 node's files kept for one workspace, read whole before anything is written. */
 interface Kept { policies: Record<string, WorkspacePolicy>; grants: string[]; switches: string[] }
@@ -145,12 +155,14 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       const hadRegistry = raw.version === 1
       const registered = hadRegistry ? version1Workspaces(filePath, raw) : []
       const plan = await beforeWriting(() => planMove({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry }))
-      if (plan.plans.length > 0) writeFileSync(join(node.stateDirectory, MOVING_MARKER), '', { mode: 0o600 })
+      // The verdict is written with the marker, so a move after going back that stops is finished as one.
+      const marker = join(node.stateDirectory, MOVING_MARKER)
+      if (plan.plans.length > 0 && !existsSync(marker)) writeFileSync(marker, plan.rolledBack ? `${ROLLED_BACK}\n` : '', { mode: 0o600 })
       const refreshed = plan.plans.length > 0 ? keepRollbackCopies({ node, plans: plan.plans, registryFile: filePath, hadRegistry, movesKeys: plan.movesKeys }) : []
       const setAside: string[] = []
       let movedLog = false
       for (const planned of plan.plans) {
-        const done = await partway(() => apply(node, planned, plan.rolledBack))
+        const done = await partway(() => apply(node, planned, { rolledBack: plan.rolledBack, staleSetAside: plan.staleSetAside.has(planned.record.id), marker }))
         setAside.push(...done.setAside)
         movedLog ||= done.movedLog
       }
@@ -228,7 +240,7 @@ function servedBefore(node: NodeConfig, hadRegistry: boolean): boolean {
 
 async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; registered: z.infer<typeof V1WorkspaceSchema>[]; hadRegistry: boolean; askName?: AskName }): Promise<Plan> {
   const { node, platform } = input
-  if (!servedBefore(node, input.hadRegistry)) return { plans: [], notes: [], keyScopes: new Map(), movesKeys: false, rolledBack: false }
+  if (!servedBefore(node, input.hadRegistry)) return { plans: [], notes: [], keyScopes: new Map(), movesKeys: false, rolledBack: false, staleSetAside: new Set() }
   refuseCallerSettings(node.migration)
   const now = new Date().toISOString()
   const notes: string[] = []
@@ -243,13 +255,20 @@ async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; re
   // The node's own folder: what `buckle policy` stored for it is its own; the environment's lists stay the node's (D85, Q3).
   const ownId = workspaceIdFor(dir)
   const ownState = join(node.stateDirectory, 'workspaces', ownId)
-  // A node that went back to 0.1 and moves again: an earlier move kept its copy of the registry and left the workspaces'
-  // directories, and none is under way (no marker). What 0.1 holds now is the node's, so the grants and switches the
-  // earlier move left are not read (fix brief 4, finding 6).
-  const rolledBack = !existsSync(join(node.stateDirectory, MOVING_MARKER)) && existsSync(join(node.stateDirectory, REGISTRY_BACKUP))
-    && [ownId, ...roots.map(({ root }) => workspaceIdFor(root))].some(id => existsSync(join(node.stateDirectory, 'workspaces', id)))
-  const own = kept({ policyFile: ownPolicyFile(node), stateDirectories: [node.stateDirectory, ownState], rolledBack })
-  const ownSpellings = [dir, ...node.migration.workspaceRoot === undefined ? [] : [node.migration.workspaceRoot], ownId]
+  // A node that went back to 0.1 and moves again (fix brief 4, finding 6): a move under way says so in its marker;
+  // otherwise the evidence is a workspace.json the earlier move wrote for a workspace this move plans, which 0.1 never
+  // writes and going back by any way leaves (the copies moved over their files, or deleted after, included). What 0.1
+  // holds now is the node's, so the grants and switches the earlier move left are not read, and 0.1's places are not
+  // read for the id's spelling, which 0.1 never keys by: an entry there under it came back from the earlier move.
+  const marker = readMarker(join(node.stateDirectory, MOVING_MARKER))
+  const rolledBack = marker !== null ? marker.rolledBack
+    : [ownId, ...roots.map(({ root }) => workspaceIdFor(root))].some(id => existsSync(settingsPath(node.stateDirectory, id)))
+  // Once a stopped move set aside a workspace's stale records, what its directory holds came from 0.1, so a run again
+  // reads it beside 0.1's place, as a first move's run again does.
+  const staleSetAside = marker?.staleSetAside ?? new Set<string>()
+  const onlyZeroOne = (id: string) => rolledBack && !staleSetAside.has(id)
+  const own = kept({ policyFile: ownPolicyFile(node), stateDirectories: [node.stateDirectory, ownState], rolledBack: onlyZeroOne(ownId) })
+  const ownSpellings = [dir, ...node.migration.workspaceRoot === undefined ? [] : [node.migration.workspaceRoot], ...rolledBack ? [] : [ownId]]
   const ownPolicy = keyOf({ keys: Object.keys(own.policies), spellings: ownSpellings, platform, file: policyPath(node) })
   const stored = ownPolicy === null ? null : own.policies[ownPolicy]!
   const ownSwitch = keyOf({ keys: own.switches, spellings: ownSpellings, platform, file: dangerouslyAllowPath(node) })
@@ -274,9 +293,9 @@ async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; re
     const id = workspaceIdFor(root)
     const oldStateDirectory = join(node.stateDirectory, 'workspaces', workspace.id)
     const stateDirectory = join(node.stateDirectory, 'workspaces', id)
-    const records = kept({ policyFile: policyPath({ stateDirectory: oldStateDirectory }), stateDirectories: [oldStateDirectory, stateDirectory], rolledBack })
+    const records = kept({ policyFile: policyPath({ stateDirectory: oldStateDirectory }), stateDirectories: [oldStateDirectory, stateDirectory], rolledBack: onlyZeroOne(id) })
     // 0.1 keyed a registered workspace's records by its folder as the disk names it (finding 18); a move run again finds them under the id.
-    const spellings = [root, workspace.root, id]
+    const spellings = [root, workspace.root, ...rolledBack ? [] : [id]]
     const policyKey = keyOf({ keys: Object.keys(records.policies), spellings, platform, file: policyPath({ stateDirectory: oldStateDirectory }) })
     const ownLists = policyKey === null ? workspace.policy : records.policies[policyKey]!
     notes.push(...standsAlone(`Workspace ${workspace.id}`, ownLists, node))
@@ -301,7 +320,7 @@ async function planMove(input: { node: NodeConfig; platform: NodeJS.Platform; re
   const keyScopes = new Map<string, string>([...roots.map(({ workspace }, index): [string, string] => [workspace.id, registered[index]!.record.id]), [V1_NODE_WORKSPACE, ownId]])
   keyScopes.delete(NODE_SCOPE)
   const movesKeys = clientKeyScopes(clientKeysPath(node)).some(scope => keyScopes.has(scope))
-  return { plans, notes, keyScopes, movesKeys, rolledBack }
+  return { plans, notes, keyScopes, movesKeys, rolledBack, staleSetAside }
 }
 
 /** A workspace's settings with nothing of its own set: every setting the node's, else Buckle's (D85, Q3). */
@@ -525,11 +544,20 @@ function refuseDroppedFloor(keys: readonly string[], file: string | null): void 
  * rekeyed from the folder to the id. Each step finds its work done on a move run again, so a crash partway is finished
  * at the next start.
  */
-async function apply(node: NodeConfig, planned: Planned, rolledBack: boolean): Promise<{ setAside: string[]; movedLog: boolean }> {
+async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: boolean; staleSetAside: boolean; marker: string }): Promise<{ setAside: string[]; movedLog: boolean }> {
   const { record, stateDirectory } = planned
   const lockDeadlineMs = node.stateLockDeadlineMs
   mkdirSync(stateDirectory, { recursive: true, mode: 0o700 })
-  const setAside = moveRecords(planned, rolledBack)
+  const setAside: string[] = []
+  if (run.rolledBack) {
+    // Once per workspace, said in the marker: a run again finds 0.1's records moved in their place, which are the node's.
+    if (!run.staleSetAside) {
+      setAside.push(...setAsideStale(planned))
+      appendFileSync(run.marker, `${record.id}\n`)
+    }
+    setAside.push(...await setAsideEarlierEntries(planned, lockDeadlineMs))
+  }
+  setAside.push(...moveRecords(planned))
   const movedLog = planned.nodeFolder && await moveAuditLog(node, planned)
   await openSettingsFile({ filePath: settingsPath(node.stateDirectory, record.id), lockDeadlineMs }).migrate(planned.settings)
   if (planned.grantsKey !== null) await rekeyGrants({ filePath: grantsPath({ stateDirectory }), from: planned.grantsKey, to: record.id, lockDeadlineMs })
@@ -545,29 +573,57 @@ async function apply(node: NodeConfig, planned: Planned, rolledBack: boolean): P
  * holds now, which takes its place, and the grants and the switch an earlier move left are set aside even where 0.1 has
  * none (an audit log is neither: it stays where it is). Answers what was set aside, as a path inside the state directory.
  */
-function moveRecords(planned: Planned, rolledBack: boolean): string[] {
+function moveRecords(planned: Planned): string[] {
   const entries = planned.nodeFolder ? NODE_FOLDER_RECORDS : listed(planned.oldStateDirectory).filter(entry => !STAYS_BEHIND.test(entry))
   const aside: string[] = []
-  const setAside = (path: string) => {
-    let target = `${path}.earlier-move`
-    for (let count = 2; existsSync(target); count++) target = `${path}.earlier-move-${count}`
-    renameSync(path, target)
-    aside.push(relative(dirname(dirname(planned.stateDirectory)), target))
-  }
-  if (rolledBack) {
-    for (const stale of [grantsPath({ stateDirectory: planned.stateDirectory }), dangerouslyAllowPath({ stateDirectory: planned.stateDirectory })]) if (existsSync(stale)) setAside(stale)
-  }
   for (const entry of entries) {
     const from = join(planned.oldStateDirectory, entry)
     const to = join(planned.stateDirectory, entry)
     if (!existsSync(from)) continue
     if (existsSync(to)) {
       if (AUDIT_LOG.test(entry)) continue
-      setAside(to)
+      aside.push(setAsideFile(planned, to))
     }
     renameSync(from, to)
   }
   return aside
+}
+
+/** A file moved out of the way as `<name>.earlier-move`, a number added where one is there; answers where, from the state directory. */
+function setAsideFile(planned: Planned, path: string): string {
+  let target = `${path}.earlier-move`
+  for (let count = 2; existsSync(target); count++) target = `${path}.earlier-move-${count}`
+  renameSync(path, target)
+  return relative(dirname(dirname(planned.stateDirectory)), target)
+}
+
+/** A move after going back: the grants and switch the earlier move left in the workspace's directory are not the node's. */
+function setAsideStale(planned: Planned): string[] {
+  return [grantsPath({ stateDirectory: planned.stateDirectory }), dangerouslyAllowPath({ stateDirectory: planned.stateDirectory })].filter(path => existsSync(path)).map(path => setAsideFile(planned, path))
+}
+
+/**
+ * A move after going back: an entry 0.1's own grants or switch file holds under the workspace's id came back from the
+ * earlier move (its records moved back by hand, as workspaces-04 tells), as 0.1 never keys by an id. Set aside in
+ * place, under a key no workspace has, so it does not come back; the folder's own entries move as ever.
+ */
+async function setAsideEarlierEntries(planned: Planned, lockDeadlineMs: number | undefined): Promise<string[]> {
+  const id = planned.record.id
+  const aside = `${id}.earlier-move`
+  const grants = grantsPath({ stateDirectory: planned.oldStateDirectory })
+  const switches = dangerouslyAllowPath({ stateDirectory: planned.oldStateDirectory })
+  // Named where the file is moved next, the workspace's own directory.
+  const shown = (path: string) => `${relative(dirname(dirname(planned.stateDirectory)), join(planned.stateDirectory, basename(path)))} (its entries under ${aside})`
+  const done: string[] = []
+  if (existsSync(grants) && grantKeys(grants).includes(id)) {
+    await rekeyGrants({ filePath: grants, from: id, to: aside, ...(lockDeadlineMs === undefined ? {} : { lockDeadlineMs }) })
+    done.push(shown(grants))
+  }
+  if (existsSync(switches) && switchKeys(switches).includes(id)) {
+    await rekeySwitch({ filePath: switches, from: id, to: aside, ...(lockDeadlineMs === undefined ? {} : { lockDeadlineMs }) })
+    done.push(shown(switches))
+  }
+  return done
 }
 
 const PendingAuditSchema = z.object({ version: z.literal(1), pending: z.record(z.string(), z.object({ processId: z.number() }).passthrough()) })
