@@ -27,7 +27,9 @@ lists the other limits.
   says when the versions differ.
 - `buckle service` acts on the unit or task Buckle wrote. An agent allowed to run `systemctl` or
   `schtasks.exe` itself, as under `BUCKLE_SANDBOX=none`, could stop the node or change a unit other
-  than Buckle's; the file tools refuse to write Buckle's own unit and its link.
+  than Buckle's. The file tools refuse Buckle's own unit, its link, its drop-ins, and a copy in
+  `user.control`; what the user manager gives every service, such as `environment.d`, asks like
+  any other file.
 - The unit captures `PATH` once, at install. A program installed later in a folder that `PATH` did
   not name then is not found until `buckle service install` runs again.
 - A node started before login, with lingering on, has no desktop: a visible browser window or your

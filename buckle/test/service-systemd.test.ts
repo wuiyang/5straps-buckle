@@ -8,7 +8,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { serviceCommand } from '../cli/service.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { createSystemdManager } from '../common/adapters/service-manager/systemd.js'
-import { readUnit, renderUnit, systemdUnitDirectory, systemdUnitPaths } from '../common/domain/systemd-unit.js'
+import { readUnit, renderUnit, systemdGuardedPaths, systemdUnitDirectory, systemdUnitPaths } from '../common/domain/systemd-unit.js'
 import { ServiceManagerError } from '../common/types/ports/service-manager.js'
 
 // Phase 3, item 2 of the workspace-model slice (Q4): on Linux, a systemd user unit. No systemd user session runs here
@@ -73,6 +73,36 @@ describe.skipIf(process.platform === 'win32')('the unit that starts Buckle at lo
     const roots = protectedStateRoots({ stateDirectory: '/srv/state' }, 'linux', { XDG_CONFIG_HOME: '/home/owner/cfg' })
     expect(roots).toEqual(expect.arrayContaining(['/home/owner/cfg/systemd/user/buckle.service', '/home/owner/cfg/systemd/user/default.target.wants/buckle.service']))
     expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'darwin', { XDG_CONFIG_HOME: '/home/owner/cfg' }).join()).not.toContain('systemd')
+  })
+
+  // Fix brief 6, item 4 (findings 17 and 29 of recheck 4): systemd also reads the unit's drop-ins, and a unit of the same
+  // name in user.control, which it reads first; either changes what runs at the next login, so each joins the unit.
+  it('takes in its drop-in folder and the user.control copy and its drop-ins, and the installer still writes the unit alone', () => {
+    expect(systemdGuardedPaths({}, '/home/owner')).toEqual([
+      '/home/owner/.config/systemd/user/buckle.service', '/home/owner/.config/systemd/user/default.target.wants/buckle.service',
+      '/home/owner/.config/systemd/user/buckle.service.d', '/home/owner/.config/systemd/user.control/buckle.service', '/home/owner/.config/systemd/user.control/buckle.service.d',
+    ])
+    expect(systemdUnitPaths({}, '/home/owner')).toHaveLength(2)
+    expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'linux', { XDG_CONFIG_HOME: '/home/owner/cfg' })).toEqual(expect.arrayContaining(systemdGuardedPaths({ XDG_CONFIG_HOME: '/home/owner/cfg' }, '/home/owner')))
+  })
+
+  it('refuses a drop-in, or a user.control unit, to the file tools, even past an always grant over the folder holding them', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-unit-dropin-')))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    vi.stubEnv('XDG_CONFIG_HOME', join(root, 'config'))
+    try {
+      const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_AUTH_TOKEN: 'unit-agent', BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }) })
+      await runtime.grants.grant({ sessionId: 'unit', rule: 'write_scope', subject: root, scope: 'always' })
+      const write = (path: string) => runtime.invoke({ request: { requestId: crypto.randomUUID(), tool: 'fs_write', args: { path, content: '[Service]\nExecStart=\nExecStart=/bin/sh -c evil\nEnvironment=BUCKLE_HOST=0.0.0.0\n', createParents: true }, approvalTokens: [] }, sessionId: 'unit' })
+      // The grant opens an ordinary file beside them, so the refusals below are the unit's own.
+      expect(await write(join(root, 'config', 'systemd', 'user', 'other.service'))).toMatchObject({ outcome: 'ok' })
+      for (const path of [join(root, 'config', 'systemd', 'user', 'buckle.service.d', 'override.conf'), join(root, 'config', 'systemd', 'user.control', 'buckle.service'), join(root, 'config', 'systemd', 'user.control', 'buckle.service.d', 'override.conf')]) {
+        expect(await write(path)).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Buckle\'s own state') } })
+      }
+      expect(existsSync(join(root, 'config', 'systemd', 'user', 'buckle.service.d'))).toBe(false)
+      expect(existsSync(join(root, 'config', 'systemd', 'user.control'))).toBe(false)
+    } finally { vi.unstubAllEnvs() }
   })
 
   it('is refused to the file tools, read or written, as Buckle\'s own state', async () => {

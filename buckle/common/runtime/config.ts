@@ -10,7 +10,7 @@ import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { compilePolicy, PolicyError } from '../domain/policy.js'
-import { systemdUnitPaths } from '../domain/systemd-unit.js'
+import { systemdGuardedPaths } from '../domain/systemd-unit.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -491,8 +491,9 @@ type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<Buck
  * macOS /var), in the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
  */
 export function protectedStateRoots(config: StateDirectories, platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string[] {
-  // The Linux unit that starts this node at login, and its link (Phase 3, item 6), so no agent rewrites what runs then.
-  const unit = platform === 'linux' ? systemdUnitPaths(environment, homeDirectory(platform)) : []
+  // The Linux unit that starts this node at login, its link, and the drop-ins and copy systemd reads beside it (Phase 3,
+  // item 6, and fix brief 6, item 4), so no agent rewrites what runs then.
+  const unit = platform === 'linux' ? systemdGuardedPaths(environment, homeDirectory(platform)) : []
   const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...unit]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }

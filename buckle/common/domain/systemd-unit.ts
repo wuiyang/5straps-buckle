@@ -4,19 +4,32 @@ import { SERVE_REFUSED_EXIT, ServiceManagerError, type ServiceDefinition } from 
 /** The one Buckle unit a machine has (Phase 3, Q4): a systemd user unit, so it runs as the owner, at login. */
 export const SYSTEMD_UNIT = 'buckle.service'
 
-/** Where the user manager reads the owner's units: $XDG_CONFIG_HOME/systemd/user, or ~/.config/systemd/user. */
-export function systemdUnitDirectory(environment: NodeJS.ProcessEnv, home: string): string {
+/** Where the user manager reads the owner's configuration: $XDG_CONFIG_HOME/systemd, or ~/.config/systemd. */
+function systemdConfigDirectory(environment: NodeJS.ProcessEnv, home: string): string {
   const config = environment.XDG_CONFIG_HOME
-  return join(config && isAbsolute(config) ? config : join(home, '.config'), 'systemd', 'user')
+  return join(config && isAbsolute(config) ? config : join(home, '.config'), 'systemd')
 }
 
-/**
- * The paths that start Buckle at login: the unit, and the link `enable` makes to it, which the file tools refuse to
- * write (protectedStateRoots), so no agent rewrites what runs at the next login.
- */
+/** Where the user manager reads the owner's units: $XDG_CONFIG_HOME/systemd/user, or ~/.config/systemd/user. */
+export function systemdUnitDirectory(environment: NodeJS.ProcessEnv, home: string): string {
+  return join(systemdConfigDirectory(environment, home), 'user')
+}
+
+/** The paths `buckle service install` writes: the unit, and the link `enable` makes to it. */
 export function systemdUnitPaths(environment: NodeJS.ProcessEnv, home: string): string[] {
   const directory = systemdUnitDirectory(environment, home)
   return [join(directory, SYSTEMD_UNIT), join(directory, 'default.target.wants', SYSTEMD_UNIT)]
+}
+
+/**
+ * Every path that changes what Buckle's unit runs at the next login, which the file tools refuse to read or write
+ * (protectedStateRoots): the unit and its link, its drop-in folder, and the `user.control` copy and its drop-ins, which
+ * systemd reads before `systemd/user` (fix brief 6, item 4). A folder covers every drop-in in it. The drop-ins every
+ * service reads (`service.d`) and the manager's own environment (`environment.d`) ask like any other file.
+ */
+export function systemdGuardedPaths(environment: NodeJS.ProcessEnv, home: string): string[] {
+  const control = join(systemdConfigDirectory(environment, home), 'user.control')
+  return [...systemdUnitPaths(environment, home), join(systemdUnitDirectory(environment, home), `${SYSTEMD_UNIT}.d`), join(control, SYSTEMD_UNIT), join(control, `${SYSTEMD_UNIT}.d`)]
 }
 
 /**
