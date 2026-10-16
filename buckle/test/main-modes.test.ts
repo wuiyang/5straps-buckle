@@ -114,8 +114,21 @@ describe('main', () => {
     vi.stubEnv('BUCKLE_PACKS', 'fs')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual('Not read: BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are set in this command\'s environment, but this node has no buckle.env. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; run buckle init to write the file, then set them with buckle settings set.')
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_PACKS and BUCKLE_ALLOW_SHELL are set in this command\'s environment, but this node has no buckle.env. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; run buckle init to write the file, then set them with buckle settings set.')
       expect(entry.loadConfig).toHaveBeenLastCalledWith(process.env, process.platform, expect.objectContaining({ file: null, defaultsFromFileAlone: true }))
+    } finally {
+      vi.unstubAllEnvs()
+    }
+  })
+
+  // Addendum A1 of Phase 3: the keys are listed as the pages list things, with the Oxford comma.
+  it('lists three or more keys it does not read with the Oxford comma', async () => {
+    vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
+    vi.stubEnv('BUCKLE_PACKS', 'fs')
+    vi.stubEnv('BUCKLE_MOUNTS', '/srv/assets:/assets')
+    try {
+      expect(await main(['policy', 'show'])).toBe(5)
+      expect(entry.warnings).toContainEqual(expect.stringMatching(/^Not read: BUCKLE_PACKS, BUCKLE_ALLOW_SHELL, and BUCKLE_MOUNTS are set in this command's environment, but this node has no buckle\.env\./))
     } finally {
       vi.unstubAllEnvs()
     }
@@ -129,7 +142,7 @@ describe('main', () => {
     vi.stubEnv('BUCKLE_COMMAND_DENY', '')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual('Not read: BUCKLE_COMMAND_DENY, BUCKLE_ALLOW_SHELL are set in this command\'s environment to another value than /state/buckle.env holds. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; change them with buckle settings set.')
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_COMMAND_DENY and BUCKLE_ALLOW_SHELL are set in this command\'s environment to another value than /state/buckle.env holds. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; change them with buckle settings set.')
     } finally {
       vi.unstubAllEnvs()
     }

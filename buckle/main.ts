@@ -13,6 +13,7 @@ import { loadEnvironmentFile, refuseForeignEnvironmentFile } from './common/runt
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
 import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
+import { wordList } from './common/domain/word-list.js'
 import { serveHttp } from './server/serve.js'
 import { builtEntryPath, setupServer } from './server/setup-server.js'
 
@@ -93,7 +94,7 @@ function configureProcess(kind: ServiceKind | 'cli'): { config: NodeConfig; logg
   const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller, defaultsFromFileAlone: true }
   // D85, Q3: every workspace's defaults come from the file alone, so a shell's or an MCP config's env never lifts them.
   const unread = unreadWorkspaceDefaults(layers)
-  const were = `${unread.join(', ')} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment`
+  const were = `${wordList(unread)} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment`
   if (unread.length > 0) logging.logger.warn(`Not read: ${were}${environment.file === null ? ', but this node has no buckle.env' : ` to another value than ${environment.file} holds`}. A node takes every workspace's defaults from its environment file alone, so a shell's or an MCP config's env cannot change them; ${environment.file === null ? 'run buckle init to write the file, then set them' : 'change them'} with buckle settings set.`)
   return { config: loadConfig(process.env, process.platform, layers), logging }
 }
