@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
-import { browserBlockRefusal, type BrowserSettingNames } from '../../../runtime/config.js'
+import { browserBlockRefusal, parseBrowserCdp, type BrowserSettingNames } from '../../../runtime/config.js'
 import { placesOnTheWay, type StoredPath, type UntrustedRoots } from '../../../domain/executable.js'
 import { comparablePath, ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
@@ -193,7 +193,8 @@ export function chooseBrowser(input: {
   // a relative path, or an attached Chrome beside a profile, arguments, or a window.
   const refusal = browserBlockRefusal({ cdp: input.cdp, profile: input.profile, args: input.args, headed: input.headed }, platform, input.names)
   if (refusal) return { refusal }
-  if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
+  // As the node's own setting is read: agent-browser takes the scheme in lower case only, and a hand-edited value may not be.
+  if (input.cdp) return { mode: { kind: 'attached', endpoint: parseBrowserCdp(input.cdp) ?? input.cdp } }
   const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
   const named = argumentPaths(input.args ?? '', platform)
   if (named.length > 0 && input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_ARGS is not passed while ${input.untrusted.rootsUnknown}` }

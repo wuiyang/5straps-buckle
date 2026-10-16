@@ -274,6 +274,30 @@ describe('the setup status of a browser another workspace holds', { timeout: 20_
   })
 })
 
+// An endpoint is stored as the node reads it from buckle.env: agent-browser takes the scheme in lower case only.
+describe('an endpoint typed with an upper-case scheme', { timeout: 20_000 }, () => {
+  it('is stored in lower case by the command, and passed so', async () => {
+    const { config, manager, calls } = await node()
+    expect((await set(config, 'alpha', 'browser.cdp', ' HTTP://127.0.0.1:9222 ')).exitCode).toBe(0)
+    const stored = JSON.parse(readFileSync(settingsPath(config.stateDirectory, idOf(manager, 'alpha')), 'utf8')) as { browser: { cdp: string } }
+    expect(stored.browser.cdp).toBe('http://127.0.0.1:9222')
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    expect(calls()[0]![calls()[0]!.indexOf('--cdp') + 1]).toBe('http://127.0.0.1:9222')
+    await manager.close()
+  })
+
+  it('written by hand is lowered where the browser is chosen, and still held by the one naming the same Chrome', async () => {
+    const { config, manager, calls } = await node()
+    const file = settingsPath(config.stateDirectory, idOf(manager, 'beta'))
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    writeFileSync(file, JSON.stringify({ ...stored, browser: { cdp: 'WS://127.0.0.1:9333/devtools/browser/x' } }))
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    expect(calls()[0]![calls()[0]!.indexOf('--cdp') + 1]).toBe('ws://127.0.0.1:9333/devtools/browser/x')
+    expect((await set(config, 'alpha', 'browser.cdp', '9333')).exitCode).toBe(1)
+    await manager.close()
+  })
+})
+
 // The browser's mode is one unit: a workspace naming an attached Chrome or a profile folder of its own takes both from
 // itself, and the block in force with the node's defaults meets the checks the node's own settings meet, at each write
 // and wherever the browser is chosen, so a hand edit passes nothing `buckle workspace set` refuses.
