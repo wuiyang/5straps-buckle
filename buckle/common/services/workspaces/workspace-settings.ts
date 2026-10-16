@@ -451,6 +451,8 @@ export function withMount(settings: WorkspaceSettings, mount: string | null | un
     if (mount === undefined) return rest
     return { ...rest, mounts: [] }
   }
+  const clash = owners.map(owner => mountTargetRefusal(owner.target, { folder: mount, others: [] })).find(refusal => refusal !== null)
+  if (clash) throw new WorkspaceSettingsInvalidError(`The folder cannot show at ${mount}: a mount of this workspace stands there (${clash})`)
   return { ...rest, mounts: [{ kind: 'workspace' as const, target: mount, access: 'rw' as const }, ...owners] }
 }
 

@@ -9,6 +9,7 @@ import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, typ
 import { credentialLikeName, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
+import { formatMount, parseMountSpec } from '../common/domain/mount-table.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -40,6 +41,9 @@ the one whose folder holds --dir <path>, or else the current directory. <name> i
                                        Give it another name; its id never changes
   buckle workspace remove <name> [--purge]
                                        Forget it; its records stay (adding the folder again takes them up) unless --purge
+  buckle workspace mount add <local>:<sandbox>[:ro] [--read-only] | remove <sandbox> | list [--json]
+                                       Share a host folder or file at a sandbox path, read-write unless :ro;
+                                       take one away; list the table as source:target:access
   buckle workspace set <key> <value> | unset <key>
                                        Change one setting: name, env.<NAME>, or a key buckle workspace show lists
   buckle workspace token create [--label <text>] | list | revoke <token-id>
@@ -79,6 +83,7 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
       case 'set': return await set(context)
       case 'unset': return await unset(context)
       case 'token': return await token(context)
+      case 'mount': return await mount(context)
       case 'help': case '--help': case '-h':
         process.stdout.write(USAGE)
         return { exitCode: 0 }
@@ -183,6 +188,7 @@ function show(context: Context): CliResult {
   const onOff = (on: boolean) => (on ? 'on' : 'off')
   const rows: Array<[string, string, SettingSource]> = [
     ['mount', inForce.mount ?? '(none: its real path)', inForce.sources.mount!],
+    ...(inForce.mounts.length === 0 ? [['mounts', '(none)', inForce.sources.mounts!] as [string, string, SettingSource]] : inForce.mounts.map((entry): [string, string, SettingSource] => ['mounts', formatMount(entry), inForce.sources.mounts!])),
     ['approvalWaitMs', inForce.approvalWaitMs === 0 ? '0 (until someone answers)' : String(inForce.approvalWaitMs), inForce.sources.approvalWaitMs!],
     ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
     ...(['shell', 'code', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
@@ -307,6 +313,7 @@ async function unset(context: Context): Promise<CliResult> {
  * changes it (D85, Q3).
  */
 function settingKey(key: string): SettingKey | string {
+  if (key === 'mounts') return 'mounts change with buckle workspace mount add <local>:<sandbox>[:ro] and buckle workspace mount remove <sandbox>'
   if (key.startsWith('browser.')) return `${key} does not take effect yet: the browser runs on the node's BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, and BUCKLE_BROWSER_HEADED until it reads each workspace's own, so buckle workspace set leaves it alone`
   return SETTING_KEYS.find(item => item.key === key) ?? nodeSettingRefusal(key) ?? `${key} is no workspace setting; buckle workspace show lists them`
 }
@@ -324,6 +331,53 @@ function credentialValueRefusal(context: Context, value: string): string | null 
   const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
   const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)
   return held ? 'That value holds one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
+}
+
+const MOUNT_USAGE = 'Usage: buckle workspace mount add <local>:<sandbox>[:ro] [--read-only] | mount remove <sandbox> | mount list [--json]'
+
+/**
+ * `buckle workspace mount` (Phase 2 item 1, D84 (3), Q6 after Docker's -v): `add` shares a host folder or file at a
+ * sandbox path, read-write unless `:ro` or `--read-only`; `remove` takes one away by its sandbox path; `list` prints
+ * the table in force, the folder's own entry first, as `source:target:access`. The system folders every sandbox binds
+ * are never listed (D85, Q1). A change applies once the workspace has no active work (Q2).
+ */
+async function mount(context: Context): Promise<CliResult> {
+  const [action, ...words] = context.rest
+  let parsed: { positionals: string[]; values: { 'read-only'?: boolean; json?: boolean } }
+  try { parsed = parseArgs({ args: words, options: { 'read-only': { type: 'boolean' }, json: { type: 'boolean' } }, allowPositionals: true }) } catch { return fail(MOUNT_USAGE) }
+  const { positionals, values } = parsed
+  const workspace = targeted(context)
+  if (action === 'add') {
+    if (positionals.length !== 1 || values.json) return fail(MOUNT_USAGE)
+    const spec = parseMountSpec(positionals[0]!, values['read-only'] === true)
+    if (!spec) return fail(`${positionals[0]} names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only`)
+    const added = await context.workspaces.addMount(workspace.id, { ...spec, source: resolve(context.cwd, spec.source) })
+    process.stdout.write(`Workspace ${workspace.name}: ${added.target} shows ${added.source}, ${added.access === 'rw' ? 'read-write' : 'read-only'}. It applies once the workspace has no active work.
+`)
+    return { exitCode: 0, detail: `mount add ${workspace.name} ${formatMount(added)}` }
+  }
+  if (action === 'remove') {
+    if (positionals.length !== 1 || values['read-only'] || values.json) return fail(MOUNT_USAGE)
+    const removed = await context.workspaces.removeMount(workspace.id, positionals[0]!)
+    process.stdout.write(`Workspace ${workspace.name}: ${removed.target} no longer shows ${removed.source}. It applies once the workspace has no active work.
+`)
+    return { exitCode: 0, detail: `mount remove ${workspace.name} ${removed.target}` }
+  }
+  if (action === 'list') {
+    if (positionals.length > 0 || values['read-only']) return fail(MOUNT_USAGE)
+    const inForce = resolveSettings(context.workspaces.settings(workspace.id), context.config.workspaceDefaults)
+    const rows = [
+      ...(inForce.mount === null ? [] : [{ source: workspace.dir, target: inForce.mount, access: 'rw' as const, from: 'folder' }]),
+      ...inForce.mounts.map(entry => ({ source: entry.source, target: entry.target, access: entry.access, from: entry.scratch ? 'node scratch root' : inForce.sources.mounts === 'node' ? 'node default' : 'workspace' })),
+    ]
+    if (values.json) return print(rows)
+    if (inForce.mount === null) process.stdout.write(`Workspace ${workspace.name}'s folder shows at its real path; buckle workspace set mount /workspace mounts it.
+`)
+    for (const row of rows) process.stdout.write(`${formatMount(row)}${row.from === 'node default' || row.from === 'node scratch root' ? `  (${row.from})` : ''}
+`)
+    return { exitCode: 0 }
+  }
+  return fail(MOUNT_USAGE)
 }
 
 /** How many words a 0.1 `token` spelling takes, its workspace's name first. */

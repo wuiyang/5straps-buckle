@@ -37,6 +37,24 @@ export function exposedRoots(node: Pick<NodeConfig, 'mountReadOnlyPaths' | 'work
     .map(path => { try { return nativePath(realpathSync.native(path)) } catch { return path } })
 }
 
+/**
+ * A mount's source as the disk names it (Phase 2 item 1): links followed, in the case the disk stores, an existing
+ * folder or file. Refused where it is a whole drive, or will not read as the system names it. `typed` is absolute.
+ */
+export function canonicalMountSource(typed: string, platform: NodeJS.Platform): string {
+  refuseWholeDrive(typed, platform)
+  let canonical: string
+  try {
+    canonical = realpathSync.native(typed)
+    const info = statSync(canonical)
+    if (!info.isDirectory() && !info.isFile()) throw new Error('Not a folder or file')
+  } catch { throw new WorkspaceError('A mount\'s source must be an existing folder or file') }
+  let named: string
+  try { named = nativePath(canonical, platform) } catch (error) { throw new WorkspaceError(error instanceof Error ? error.message : String(error)) }
+  if (isDriveRoot(named, platform)) throw new WorkspaceError(`A mount's source ${named}: ${WHOLE_DRIVE}`)
+  return named
+}
+
 export function assertNoHostExposure(root: string, exposed: readonly string[], platform: NodeJS.Platform): void {
   if (exposed.some(path => overlaps(path, root, platform))) {
     throw new WorkspaceError('Workspace overlaps a host toolchain or read-only mount; narrow the host exposure first', 409)

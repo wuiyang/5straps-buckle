@@ -7,7 +7,7 @@ import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dange
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { ownMount, withPolicy, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import type { CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -126,6 +126,11 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
     if (error instanceof PolicyError || error instanceof UsageError) {
       process.stderr.write(`${error.message}\n`)
       return { exitCode: exitCodeOf(error) }
+    }
+    // Moving or taking away where the folder shows while its mounts need it (withMount).
+    if (error instanceof WorkspaceSettingsInvalidError) {
+      process.stderr.write(`${error.message}\n`)
+      return { exitCode: 1 }
     }
     throw error
   }

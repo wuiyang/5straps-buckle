@@ -289,6 +289,15 @@ describe('the workspaces buckle serve lists', () => {
     expect(text).toMatch(/packs {3}.*\bfs\b/)
   })
 
+  // Phase 2 item 1: every mount of the table, at its target from its source; the system folders are never listed (Q1).
+  it('names each mount of a workspace, where it shows and from where, and how it is shared', async () => {
+    mkdirSync(join(base, 'data'), { recursive: true })
+    await manager.addMount(idOf(manager, 'Site two'), { source: join(base, 'data'), target: '/data', access: 'ro' })
+    const text = await describeOnline(manager)
+    expect(text).toContain(`    mount   /data from ${realpathSync(join(base, 'data'))}, read-only\n`)
+    expect(text).not.toMatch(/mount {3}\/usr/)
+  })
+
   it('lists them again after a change, and stops when asked', async () => {
     const written: string[] = []
     const stop = watchOnline({ workspaces: manager, write: text => void written.push(text), intervalMs: 20 })

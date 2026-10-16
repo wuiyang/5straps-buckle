@@ -849,7 +849,7 @@ describe('buckle workspace set and unset', () => {
     // Phase 2 item 6 reads the browser block per workspace; until then nothing writes a value that would not apply.
     [['browser.idleTimeoutMs', '600000'], 'browser.idleTimeoutMs does not take effect yet: the browser runs on the node\'s BUCKLE_BROWSER_CDP'],
     [['browser.headed', 'on'], 'browser.headed does not take effect yet'],
-    [['mounts', '/elsewhere'], 'mounts is no workspace setting'],
+    [['mounts', '/elsewhere'], 'mounts change with buckle workspace mount add <local>:<sandbox>[:ro]'],
     [['mount', 'elsewhere'], 'mount is an absolute path with plain segments'],
     // D85, Q3: a node setting is the node's, named with the command or file that changes it.
     [['host', '0.0.0.0'], 'host is a node setting (BUCKLE_HOST), the same for every workspace, so no workspace sets it. buckle settings set does not write it'],
@@ -965,5 +965,119 @@ describe('buckle workspace token', () => {
     const legacy = listed.find(item => item.label === 'legacy')!
     expect((await buckle(['token', 'revoke', 'alpha', legacy.id])).exitCode).toBe(0)
     expect(registry().workspaces[0]!.tokens.map(item => item.label)).toEqual(['Registered'])
+  })
+})
+
+// Phase 2 item 1 (D84 (3), D85 Q1 and Q6): the owner's mounts, after Docker's -v, read-write unless :ro.
+describe('buckle workspace mount', () => {
+  async function mounted(): Promise<{ data: string; docs: string }> {
+    await init(alpha)
+    const data = join(outside, 'data')
+    const docs = join(outside, 'docs')
+    for (const folder of [data, docs]) mkdirSync(folder)
+    return { data, docs }
+  }
+  const owners = () => (settings(alpha).mounts ?? []).filter(entry => !('kind' in entry))
+
+  it('adds a folder at a sandbox path, read-write unless :ro or --read-only, named as the disk names it', async () => {
+    const { data, docs } = await mounted()
+    symlinkSync(docs, join(outside, 'docs-link'))
+    expect(await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })).toMatchObject({ exitCode: 0, out: `Workspace alpha: /data shows ${data}, read-write. It applies once the workspace has no active work.\n` })
+    expect(await buckle(['mount', 'add', 'docs-link:/srv/docs:ro'], { cwd: outside, config: node() }).then(result => result.exitCode)).toBe(1)
+    expect((await buckle(['mount', 'add', '../outside/docs-link:/srv/docs:ro'], { cwd: alpha })).exitCode).toBe(0)
+    expect((await buckle(['mount', 'add', `${join(outside, 'note.txt')}:/note`], { cwd: alpha })).err).toContain('must be an existing folder or file')
+    writeFileSync(join(outside, 'note.txt'), 'shared')
+    expect((await buckle(['mount', 'add', '--read-only', `${join(outside, 'note.txt')}:/tmp/home/note.txt`], { cwd: alpha })).exitCode).toBe(0)
+    expect(settings(alpha).mounts).toEqual([
+      { kind: 'workspace', target: '/workspace', access: 'rw' },
+      { source: data, target: '/data', access: 'rw' },
+      { source: docs, target: '/srv/docs', access: 'ro' },
+      { source: join(outside, 'note.txt'), target: '/tmp/home/note.txt', access: 'ro' },
+    ])
+    expect(audit()).toContain(`mount add alpha ${data}:/data:rw`)
+  })
+
+  it('lists the table as source:target:access, the folder first, and the node\'s mounts it takes while it has none, marked', async () => {
+    const { data } = await mounted()
+    const scratchRoot = join(outside, 'scratch')
+    mkdirSync(scratchRoot)
+    const config = node({ BUCKLE_SCRATCH_ROOTS: scratchRoot })
+    expect((await buckle(['mount', 'list'], { cwd: alpha, config })).out).toBe(`${alpha}:/workspace:rw\n${scratchRoot}:${scratchRoot}:rw  (node scratch root)\n`)
+    await buckle(['mount', 'add', `${data}:/data:ro`], { cwd: alpha, config })
+    expect((await buckle(['mount', 'list'], { cwd: alpha, config })).out).toBe(`${alpha}:/workspace:rw\n${data}:/data:ro\n`)
+    expect(JSON.parse((await buckle(['mount', 'list', '--json'], { cwd: alpha, config })).out)).toEqual([
+      { source: alpha, target: '/workspace', access: 'rw', from: 'folder' },
+      { source: data, target: '/data', access: 'ro', from: 'workspace' },
+    ])
+    expect((await buckle(['show'], { cwd: alpha, config })).out).toMatch(/ {2}mounts {18}.+:\/data:ro +workspace/)
+  })
+
+  it('removes a mount by its sandbox path, never the folder\'s own entry or one of the node\'s', async () => {
+    const { data } = await mounted()
+    const scratchRoot = join(outside, 'scratch')
+    mkdirSync(scratchRoot)
+    const config = node({ BUCKLE_SCRATCH_ROOTS: scratchRoot })
+    expect((await buckle(['mount', 'remove', '/workspace'], { cwd: alpha, config })).err).toContain('/workspace is where workspace alpha\'s folder shows, which stays')
+    expect((await buckle(['mount', 'remove', scratchRoot], { cwd: alpha, config })).err).toContain('is one of the node\'s mounts (BUCKLE_MOUNTS or BUCKLE_SCRATCH_ROOTS in buckle.env)')
+    await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha, config })
+    expect((await buckle(['mount', 'remove', '/elsewhere'], { cwd: alpha, config })).err).toContain('No mount of workspace alpha shows at /elsewhere; its mounts show at /data')
+    expect((await buckle(['mount', 'remove', '/data'], { cwd: alpha, config })).out).toBe(`Workspace alpha: /data no longer shows ${data}. It applies once the workspace has no active work.\n`)
+    expect(settings(alpha).mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
+  })
+
+  it.each([
+    ['a target the sandbox keeps', (data: string) => `${data}:/etc/data`, 'for the host\'s own programs'],
+    ['/tmp', (data: string) => `${data}:/tmp`, 'for the host\'s own programs'],
+    ['/proc', (data: string) => `${data}:/proc/x`, 'for the host\'s own programs'],
+    ['a target inside the folder\'s', (data: string) => `${data}:/workspace/data`, 'where the workspace\'s folder shows'],
+    ['the root', (data: string) => `${data}:/`, 'is not an absolute sandbox path'],
+    ['a source inside the state directory', () => `${state}:/state`, 'must not hold, or sit inside, Buckle\'s state'],
+    ['the workspace\'s own folder', () => `${alpha}:/again`, 'the workspace\'s own folder'],
+    ['a source the folder holds', () => `${join(alpha, 'node_modules')}:/inner`, 'the workspace\'s own folder'],
+    ['a folder holding the workspace', () => `${base}:/above`, 'Buckle\'s state'],
+    ['the Node install shared writable', () => `${join(process.execPath, '..', '..')}:/node`, 'every sandbox runs programs from'],
+  ])('refuses %s, writing nothing', async (_name, spec, reason) => {
+    const { data } = await mounted()
+    mkdirSync(join(alpha, 'node_modules'))
+    const before = settings(alpha)
+    const result = await buckle(['mount', 'add', spec(data)], { cwd: alpha })
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toContain(reason)
+    expect(settings(alpha)).toEqual(before)
+  })
+
+  it('shares the Node install read-only, and refuses a second mount at a taken target or over a mounted source', async () => {
+    const { data, docs } = await mounted()
+    expect((await buckle(['mount', 'add', `${join(process.execPath, '..', '..')}:/node:ro`], { cwd: alpha })).exitCode).toBe(0)
+    await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })
+    expect((await buckle(['mount', 'add', `${docs}:/data`], { cwd: alpha })).err).toContain('A mount already shows at /data')
+    expect((await buckle(['mount', 'add', `${docs}:/data/docs`], { cwd: alpha })).err).toContain('where another mount shows')
+    mkdirSync(join(data, 'inner'))
+    expect((await buckle(['mount', 'add', `${join(data, 'inner')}:/inner`], { cwd: alpha })).err).toContain('the source of the mount at /data')
+  })
+
+  it('refuses a mount while the folder shows its real path, and taking the folder\'s mount away while it has mounts', async () => {
+    const { data } = await mounted()
+    await buckle(['set', 'mount', '/workspace'], { cwd: alpha })
+    await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })
+    const unset = await buckle(['unset', 'mount'], { cwd: alpha })
+    expect(unset.exitCode).toBe(1)
+    expect(unset.err).toContain('This workspace has 1 mount of its own, which need its folder mounted: remove it first with buckle workspace mount remove <sandbox-path>')
+    const policy = await runCli({ argv: ['policy', 'unmount'], config: node(), confirm: null, cwd: alpha })
+    expect(policy.exitCode).toBe(1)
+    expect(err).toContain('which need its folder mounted')
+    expect((await runCli({ argv: ['policy', 'mount', '/data'], config: node(), confirm: null, cwd: alpha })).exitCode).toBe(1)
+    expect(err).toContain('a mount of this workspace stands there')
+    await buckle(['mount', 'remove', '/data'], { cwd: alpha })
+    expect((await runCli({ argv: ['policy', 'unmount'], config: node(), confirm: null, cwd: alpha })).exitCode).toBe(0)
+    expect((await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })).err).toContain('A mount needs the workspace\'s folder mounted')
+    expect(owners()).toEqual([])
+  })
+
+  it('takes no spelling it cannot read as a mount', async () => {
+    await mounted()
+    for (const words of [['add'], ['add', '/data'], ['add', 'a:/b', 'c:/d'], ['add', '--read-only', 'a:/b:rw'], ['remove'], ['list', 'x'], ['grow']]) {
+      expect((await buckle(['mount', ...words], { cwd: alpha })).exitCode).toBe(1)
+    }
   })
 })

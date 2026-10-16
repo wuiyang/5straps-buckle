@@ -1,12 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, join, resolve } from 'pathe'
+import { basename, dirname, join, resolve } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
-import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
+import { actionsPath, dangerouslyAllowPath, protectedStateRoots, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf, type UntrustedRoot } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
@@ -21,10 +21,11 @@ import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode, type AskName } from './migration.js'
 import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
-import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
+import { assertNoHostExposure, canonicalDirectory, canonicalMountSource, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
-import { assertNodeDefaults, defaultSettings, openSettingsFile, ownerMounts, scopeOf, settingsPath, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
+import { assertNodeDefaults, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
+import { mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -390,6 +391,55 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if (unmet.length > 0) throw new WorkspaceError(`This node cannot build pack ${unmet.join(', ')}; set the prerequisite first, or leave the pack out`)
         return next
       }, expectedRevision)
+    },
+
+    /**
+     * Adds one of the owner's mounts to a workspace's table (Phase 2 item 1, Q6): the source as the disk names it, the
+     * target a path of the sandbox's own. Refused where the source holds, or sits inside, the node's state, the
+     * workspace's folder, or another of its mounts' sources; where a writable one would let an agent write a folder every
+     * sandbox runs programs from; or where the target is taken or kept (mountTargetRefusal). Every writable source is a
+     * root no program runs from, from this write on.
+     */
+    async addMount(id: string, mount: OwnerMount): Promise<OwnerMount> {
+      const workspace = requireStored(store.read(), id)
+      const source = canonicalMountSource(resolve(mount.source), platform)
+      const meets = (other: string) => overlaps(other, source, platform)
+      if ([stateRoot, ...protectedStateRoots(node)].some(meets)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, Buckle\'s state', 409)
+      if (meets(workspace.dir)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, the workspace\'s own folder, which shows at its own target', 409)
+      if (mount.access === 'rw' && exposed.some(meets)) throw new WorkspaceError('A writable mount\'s source must not hold, or sit inside, a folder every sandbox runs programs from (a system folder, the Node install, or a toolchain the node names); share it read-only with :ro', 409)
+      const added: OwnerMount = { source, target: mount.target, access: mount.access }
+      await settingsOf(id).update((current) => {
+        const resolved = resolveSettings(current, node.workspaceDefaults)
+        const owners = ownerMounts(current)
+        if (owners.some(owner => owner.target === added.target)) throw new WorkspaceError(`A mount already shows at ${added.target}; remove it first with buckle workspace mount remove ${added.target}`, 409)
+        const shared = owners.find(owner => overlaps(owner.source, source, platform))
+        if (shared) throw new WorkspaceError(`That source holds, or sits inside, the source of the mount at ${shared.target}`, 409)
+        const folder = ownMount(current) === undefined ? resolved.mount : ownMount(current) ?? null
+        const refusal = mountTargetRefusal(added.target, { folder, others: owners.map(owner => owner.target), fixed: node.mountReadOnlyPaths.concat(dirname(dirname(process.execPath))) })
+        if (refusal) throw new WorkspaceError(refusal)
+        return withOwnerMounts(current, [...owners, added], folder)
+      })
+      nodeRoots.take(registeredRoots(node.stateDirectory, store.read().workspaces))
+      return added
+    },
+
+    /** Takes one of the owner's mounts out of a workspace's table, by its target; the folder's own entry stays (Phase 2 item 1). */
+    async removeMount(id: string, target: string): Promise<OwnerMount> {
+      const workspace = requireStored(store.read(), id)
+      let removed: OwnerMount | undefined
+      await settingsOf(id).update((current) => {
+        const owners = ownerMounts(current)
+        removed = owners.find(owner => owner.target === target)
+        if (!removed) {
+          const resolved = resolveSettings(current, node.workspaceDefaults)
+          if (resolved.mount === target) throw new WorkspaceError(`${target} is where workspace ${workspace.name}'s folder shows, which stays; buckle workspace set mount <path> moves it`)
+          if (resolved.sources.mounts === 'node' && resolved.mounts.some(mount => mount.target === target)) throw new WorkspaceError(`${target} is one of the node's mounts (BUCKLE_MOUNTS or BUCKLE_SCRATCH_ROOTS in buckle.env), which this workspace takes while it has none of its own`)
+          throw new WorkspaceError(`No mount of workspace ${workspace.name} shows at ${target}${owners.length > 0 ? `; its mounts show at ${owners.map(owner => owner.target).join(', ')}` : ''}`, 404)
+        }
+        return withOwnerMounts(current, owners.filter(owner => owner !== removed), ownMount(current) ?? null)
+      })
+      nodeRoots.take(registeredRoots(node.stateDirectory, store.read().workspaces))
+      return removed!
     },
 
     async resolve(id: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace> {

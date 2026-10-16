@@ -3,6 +3,7 @@ import { printable } from '../common/domain/approval-instruction.js'
 import { logger } from '../common/runtime/log.js'
 import { WorkspaceError, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
+import type { ViewMount } from '../common/domain/path-view.js'
 
 /** How often `buckle serve` looks for a change to the workspaces it lists: a stat-cheap read, never a watcher (Q2). */
 export const ROSTER_POLL_MS = 2_000
@@ -25,6 +26,7 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
   let packs: string
   // In force: its own settings, else the node's (D85, Q3).
   let effective: WorkspacePolicy
+  let mounts: readonly ViewMount[]
   let waiting: string | null = null
   try {
     const { runtime } = await workspaces.resolve(workspace.id)
@@ -34,6 +36,7 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
     }
     packs = runtime.manifest().packs.filter(pack => pack.unavailableReason === null).map(pack => pack.id).join(', ') || 'none'
     effective = runtime.policy.effective()
+    mounts = runtime.paths().mounts
   } catch (error) {
     return [head, `    could not open, so it answers each call with the reason: ${error instanceof Error ? error.message : String(error)}`]
   }
@@ -41,6 +44,8 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
   return [
     head,
     `    folder  ${effective.mount ? `${effective.mount} from ${workspace.dir}` : `${workspace.dir}, at its real path`}`,
+    // Every mount the agent's view reaches (Phase 2 item 1); the system folders every sandbox binds are never listed (Q1).
+    ...mounts.map(mount => `    mount   ${mount.scratch ? `${mount.source}, a scratch root` : `${mount.target} from ${mount.source}`}, ${mount.access === 'rw' ? 'read-write' : 'read-only'}`),
     `    URLs    ${urls === 0 ? 'no approved list' : `an approved list of ${urls} entr${urls === 1 ? 'y' : 'ies'}`}`,
     `    packs   ${packs}`,
     ...(waiting === null ? [] : [`    note    ${waiting}`]),
