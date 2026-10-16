@@ -32,7 +32,9 @@ A workspace's [policy](policy.md) lists resolve in two ways:
   workspace with a list of its own uses it alone, and the node's list does not narrow it.
 - A deny list (the command deny list, the destructive list, and the denied tools) is the node's
   with the workspace's own added. The node's entries apply to every workspace: no workspace
-  setting, `buckle policy clear`, or the dangerously-allow switch lifts them.
+  setting or `buckle policy clear` lifts them. Under the
+  [dangerously-allow switch](approvals.md#dangerously-allow) the node's deny entries and denied
+  tools still refuse, and its destructive entries are answered like every other ask.
 
 An empty list is no list of the workspace's own: `buckle policy remove` of its last entry, or
 `buckle policy clear`, gives it the node's list again, and the command says so. A tool allow list

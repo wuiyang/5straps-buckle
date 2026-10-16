@@ -13,7 +13,8 @@ import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js
 
 // D83 addendum (7), and D85, Q14 ("Fallback plus node deny floor"): every list is bound to a workspace; where a workspace
 // has no allow-type list of its own the node's stands for it, whole, and the node's deny-type lists apply on top of
-// every workspace's, a floor no workspace setting lifts.
+// every workspace's. No workspace setting lifts them; the dangerously-allow switch, the owner's own decision to answer
+// every ask in the workspace, answers the node's destructive asks too, and the node's denials still refuse under it.
 
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -86,6 +87,20 @@ describe('a registered workspace\'s policy over the node\'s lists', () => {
     expect(asked.result.outcome).toBe('approval_required')
     expect(asked.execute).not.toHaveBeenCalled()
     expect((await effect(runtime, command('make', ['build']))).execute).toHaveBeenCalledOnce()
+  })
+
+  // Fix brief 4, findings 14 and 24: the pages said no switch lifts the node's destructive list, and the switch answers its asks.
+  it('answers a command the node\'s destructive list names once the dangerously-allow switch is on, and still refuses one its deny list names', async () => {
+    const runtime = await workspace(policy({ allow: ['make *', 'curl *'] }), { BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*', BUCKLE_COMMAND_DENY: 'curl' })
+    expect((await effect(runtime, command('make', ['deploy']))).result.outcome).toBe('approval_required')
+    await runtime.policy.setDangerouslyAllow(true)
+
+    const answered = await effect(runtime, command('make', ['deploy']))
+    expect(answered.result.outcome).toBe('ok')
+    expect(answered.execute).toHaveBeenCalledOnce()
+    const refused = await effect(runtime, command('curl', ['https://example.com']))
+    expect(refused.execute).not.toHaveBeenCalled()
+    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   })
 
   it('uses the node\'s approved URLs and interpreters where it has none of its own, and its own alone where it has them', async () => {
