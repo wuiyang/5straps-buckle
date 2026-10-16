@@ -77,7 +77,7 @@ describe('buckle workspace init', () => {
     expect(audit()).not.toContain(token)
   })
 
-  it('takes --dir from where it runs, with --name, and derives the id from the folder (D85, Q15)', async () => {
+  it('takes --dir from where it runs, with --name, and derives the id from the folder', async () => {
     await init(base, ['--dir', 'beta', '--name', 'The site'])
     expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(beta), name: 'The site', dir: beta }])
     expect((await buckle(['init', '--id', 'site'], { cwd: alpha })).err).toContain('Unknown option')

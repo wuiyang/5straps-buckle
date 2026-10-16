@@ -96,7 +96,7 @@ describe('answering a child workspace request from the terminal', () => {
   }, 30_000)
 
   // Q9 of the workspace-model brief: naming no workspace means every online one, and the token is answered where it waits.
-  it('answers a token with --all in the workspace whose queue holds it, and refuses it from a workspace that does not (Q9)', async () => {
+  it('answers a token with --all in the workspace whose queue holds it, and refuses it from a workspace that does not', async () => {
     const { config, manager } = await nodeWithChild()
     const token = await pendingIn((await byName(manager, 'child')).runtime)
 

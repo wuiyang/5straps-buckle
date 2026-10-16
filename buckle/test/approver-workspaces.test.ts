@@ -96,7 +96,7 @@ describe('buckle approvals naming no workspace', () => {
     expect((await buckle(['approvals', '--all'])).out).not.toContain(second)
   })
 
-  it('defaults to the workspace holding the current directory, listing it alone (Q9, item 4)', async () => {
+  it('defaults to the workspace holding the current directory, listing it alone', async () => {
     const first = await ask('Site one', '/outside/one.md')
     const second = await ask('Site two', '/outside/two.md')
     const listed = await buckle(['approvals'], join(base, 'one'))
@@ -105,7 +105,7 @@ describe('buckle approvals naming no workspace', () => {
     expect(listed.out).not.toContain(second)
   })
 
-  it('refuses from a directory no workspace holds, naming --workspace and --all and no folder (Q9, item 4)', async () => {
+  it('refuses from a directory no workspace holds, naming --workspace and --all and no folder', async () => {
     const refused = await buckle(['approvals'])
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('No workspace holds the current directory')
@@ -270,7 +270,7 @@ describe('buckle approvals --watch naming no workspace', () => {
     expect(readFileSync(actionsPath(node), 'utf8')).toContain('"tool":"cli_approvals"')
   })
 
-  it('refuses a watch from a directory no workspace holds, naming --workspace and --all (Q9, item 4)', async () => {
+  it('refuses a watch from a directory no workspace holds, naming --workspace and --all', async () => {
     const refused = await buckle(['approvals', '--watch'])
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('No workspace holds the current directory')

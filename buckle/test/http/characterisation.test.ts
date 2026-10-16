@@ -230,7 +230,7 @@ describe('unknown /setup paths', () => {
 })
 
 describe('workspace routing', () => {
-  it('serves /workspaces/<name>/** as an alias of the node faces, the name being the folder\'s (D85, Q15)', async () => {
+  it('serves /workspaces/<name>/** as an alias of the node faces, the name being the folder\'s', async () => {
     const buckle = await node()
     const direct = await (await buckle.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).json() as Record<string, unknown>
     const alias = await buckle.request('/workspaces/default/v1/manifest', { headers: bearer(NODE_AGENT) })

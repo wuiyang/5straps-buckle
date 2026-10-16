@@ -271,7 +271,7 @@ describe('what the switch never turns (policy.md: a matched deny stays denied)',
   })
 })
 
-describe('a workspace\'s switch, with no node switch beside it (Q14)', () => {
+describe('a workspace\'s switch, with no node switch beside it', () => {
   it('takes effect on its own', async () => {
     const setup = await node()
     await setup.runtime.policy.setDangerouslyAllow(true)

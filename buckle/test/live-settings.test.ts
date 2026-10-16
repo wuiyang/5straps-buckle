@@ -46,7 +46,7 @@ async function read(path = 'note.md') {
   return runtime.invoke({ request: { requestId: `read-${Math.random()}`, tool: 'fs_read', args: { path }, approvalTokens: [] }, sessionId: 'live' })
 }
 
-describe('the settings watcher takes a change up with no call (Q2, item 3)', () => {
+describe('the settings watcher takes a change up with no call', () => {
   it('applies a change while the workspace is idle, before any call', async () => {
     const { config } = await serving.resolve(site)
     expect(config.approvalTimeoutMs).toBe(15_000)

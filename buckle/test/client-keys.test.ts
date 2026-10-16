@@ -186,7 +186,7 @@ describe('a key\'s scope (owner decision D10)', () => {
 // Review items 9 and 22 of the proof-of-possession fixes: `--workspace node` scopes a key to the whole node,
 // so a workspace named node would let a key meant for it change every workspace and the registry.
 describe('the workspace id node', () => {
-  it('is reserved: registration refuses it as the 0.1 id spelling of a name too, where default is an ordinary name now (D85, Q15)', () => {
+  it('is reserved: registration refuses it as the 0.1 id spelling of a name too, where default is an ordinary name now', () => {
     const registration = { dir: '/srv/node' }
     const parsed = WorkspaceRegistrationSchema.safeParse({ ...registration, id: 'node' })
     expect(parsed.success).toBe(false)
