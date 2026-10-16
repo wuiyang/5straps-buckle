@@ -39,9 +39,13 @@ export interface CliResult {
   detail?: string
 }
 
-/** Needs no node config beyond where the audit log lives: init is what writes the configuration. */
+/**
+ * Needs no node config beyond where the audit log lives: init is what writes the configuration. The config is checked
+ * as the process entry checks it, a node setting a shell sets refusing before anything is written, and none of the
+ * workspace defaults, which the node reads from its file alone, read from the shell (a bad one there is no refusal).
+ */
 export function runInitCommand(argv: string[]): Promise<CliResult> {
-  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig())), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
+  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig(process.env, process.platform, { file: null, caller: process.env, defaultsFromFileAlone: true }))), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
 }
 
 export function runSettingsCommand(argv: string[]): Promise<CliResult> {
