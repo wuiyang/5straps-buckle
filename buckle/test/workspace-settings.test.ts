@@ -162,7 +162,7 @@ describe('a workspace variable\'s name', () => {
   })
 
   it.each(['PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL', 'TMPDIR'])('is refused where Buckle sets it for every command: %s', (name) => {
-    expect(variableNameRefusal(name)).toContain('set by Buckle for every command')
+    expect(variableNameRefusal(name)).toContain('is passed to every command by Buckle, not set by a workspace')
   })
 
   it.each(['NODE_ENV', 'RUST_LOG', 'MONKEY', 'KEYBOARD_LAYOUT', 'LANG'])('is taken when it is a plain name: %s', (name) => {

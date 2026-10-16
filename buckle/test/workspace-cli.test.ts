@@ -851,7 +851,7 @@ describe('buckle workspace set and unset', () => {
     [['browser.headed', 'on'], 'browser.headed does not take effect yet'],
     [['mounts', '/elsewhere'], 'mounts is no workspace setting'],
     [['mount', 'elsewhere'], 'mount is an absolute path with plain segments'],
-    // D85, Q3: a node setting is the node's, named with the command that changes it.
+    // D85, Q3: a node setting is the node's, named with the command or file that changes it.
     [['host', '0.0.0.0'], 'host is a node setting (BUCKLE_HOST), the same for every workspace, so no workspace sets it. buckle settings set does not write it'],
     [['BUCKLE_ADMIN_TOKEN', 'x'], 'BUCKLE_ADMIN_TOKEN is a node setting (BUCKLE_ADMIN_TOKEN), the same for every workspace'],
     [['experimental-admin-http', 'on'], 'experimental-admin-http is a node setting (BUCKLE_EXPERIMENTAL_ADMIN_HTTP), the same for every workspace, so no workspace sets it: buckle settings set experimental-admin-http <value> changes it.'],

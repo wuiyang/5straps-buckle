@@ -152,7 +152,7 @@ Without a terminal, the call stops and exits 3:
 Approval required: Writing to /workspace is not yet approved
   subject: /home/you/code/my-project
   expires in 10m 15s (2026-10-02T11:16:29.838Z)
-  waiting on workspace my-project (my-project)
+  waiting on workspace my-project
   see the whole action with: buckle approvals --workspace my-project
   then approve with: buckle approve 3f6c...-... --scope session --workspace my-project (it shows the action again and asks to confirm)
 ```

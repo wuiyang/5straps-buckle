@@ -18,7 +18,7 @@ node's applies again:
 
 | Key | Takes | Built-in |
 |---|---|---|
-| `name` | the workspace's name, shown beside its id | the folder's name |
+| `name` | the workspace's name: what the node shows, and `--workspace` takes | the folder's name |
 | `env.<NAME>` | a variable its shell commands see | none |
 | `mount` | where the agent sees the folder, such as `/workspace` | its real path |
 | `approvalWaitMs` | milliseconds a gated call waits for an answer; `0` waits until someone answers | `15000` |
@@ -29,11 +29,11 @@ node's applies again:
 | `packs.hostLsp` | `on` or `off`: language servers in the `dev` pack | off |
 
 A new workspace sets its mount, `/workspace`, and nothing else. `buckle workspace set` refuses a
-node setting, such as `host` or `BUCKLE_PORT`, naming `buckle settings set`.
+node setting, naming the command or file that changes it.
 
 A variable name that looks like a credential (holding token, secret, password, or key) is taken,
 with a warning that its value is plain text in `workspace.json` and reaches every command. A name
-starting `BUCKLE_`, and the names Buckle sets for every command (`PATH`, `HOME`, `USER`,
+starting `BUCKLE_`, and the names Buckle passes to every command (`PATH`, `HOME`, `USER`,
 `LOGNAME`, `SHELL`, and `TMPDIR`), are refused. So is a value that contains a secret the node
 holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search key, the report
 token, the Rings pairing key, or the approval webhook's URL) or a workspace's agent token as a

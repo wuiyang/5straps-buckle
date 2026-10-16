@@ -30,7 +30,7 @@ const KEY_WORD = /(?:^|_)KEYS?(?:_|$)/i
 export function variableNameRefusal(name: string): string | null {
   if (!VARIABLE_NAME.test(name)) return `${name} is not a variable name: letters, digits and underscores, not starting with a digit`
   if (name.toUpperCase().startsWith('BUCKLE_')) return `${name} names a Buckle setting, which a workspace variable cannot set`
-  if (RESERVED_VARIABLES.has(name.toUpperCase())) return `${name} is set by Buckle for every command, not by a workspace`
+  if (RESERVED_VARIABLES.has(name.toUpperCase())) return `${name} is passed to every command by Buckle, not set by a workspace`
   return null
 }
 

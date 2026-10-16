@@ -29,7 +29,7 @@ in. A gated call returns `approval_required` and exits with code 3:
 Approval required: Writing to /workspace is not yet approved
   subject: /home/you/code/my-project
   expires in 9m 59s (...)
-  waiting on workspace my-project (my-project)
+  waiting on workspace my-project
   see the whole action with: buckle approvals --workspace my-project
   then approve with: buckle approve 21bff0bf-... --scope session --workspace my-project (it shows the action again and asks to confirm)
 ```
