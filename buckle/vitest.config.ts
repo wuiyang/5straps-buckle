@@ -8,6 +8,10 @@ const HTTP = ['test/http/**/*.test.ts']
 
 export default defineConfig({
   test: {
+    // The files that spawn processes (check-url, bootstrap, node-settings) hit the default 5 s only when a review runs beside the
+    // gate; a real hang still fails, at 20 s.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     setupFiles: ['./test/support/scoped-temp.ts'],
     projects: [
       { extends: true, test: { name: 'unit', include: ['test/**/*.test.ts'], exclude: [...configDefaults.exclude, ...HTTP] } },
