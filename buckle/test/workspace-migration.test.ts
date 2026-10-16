@@ -360,6 +360,20 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(note).not.toContain('a registered workspace is named')
     })
 
+    // Fix brief 4, finding 37: a node folder called a%b was named so, and no HTTP route reaches it by that name.
+    it.each([['a%b', 'a-b'], ['100%', '100']])('names a node folder called %s %s, saying so, since a route cannot carry the first', async (folderName, expected) => {
+      const input = scene()
+      const folder = join(input.root, folderName)
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
+      version1(input)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await open(input)
+
+      expect(manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name).toBe(expected)
+      expect(notices.mock.calls.some(([message]) => String(message).includes('held a character no route can carry in a name') && String(message).includes(`so it is named ${expected}`))).toBe(true)
+    })
+
     it('refuses a record the registry would not read, naming its field, and changes nothing', async () => {
       const input = scene()
       const text = version1(input).replace('"label": "Registered"', `"label": "${'x'.repeat(121)}"`)

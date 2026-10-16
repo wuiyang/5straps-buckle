@@ -525,6 +525,20 @@ describe('a device verifies shared calls and asks the person before approving', 
     expect(older.output.stdout).toContain(`  workspace: ${id}\n`)
   })
 
+  // Fix brief 4, finding 38: a signed request names a workspace by at most 64 characters, and the client threw the schema's dump.
+  it('refuses a workspace named by more than 64 characters, and a request the protocol will not carry, plainly, before signing anything', async () => {
+    const device = await fakeNodeDevice(shared(call), [], { calls: { [shared(call).callRef!]: call } })
+    for (const argv of [['approvals', device.url, '--workspace', 'n'.repeat(65)], ['session', 'open', device.url, '--workspace', 'n'.repeat(65)]]) {
+      expect(await clientCommand(argv, device.environment)).toEqual({ exitCode: 1 })
+      expect(device.output.stderr).toContain('longer than the 64 characters a signed request names; name the workspace by its id')
+      device.output.stderr = ''
+    }
+    expect(await clientCommand(['request', 'GET', `${device.url}/workspaces/x/setup/status?${'a'.repeat(3_000)}`], device.environment)).toEqual({ exitCode: 1 })
+    expect(device.output.stderr).toContain('Nothing was signed: path')
+    expect(device.output.stderr).not.toContain('ZodError')
+    expect(device.decisions).toEqual([])
+  })
+
   it('shows a shared whole call once, keeps both asks visible, and confirms the complete action before signing one', async () => {
     const challenge = shared(call)
     const other = { ...challenge, token: 'second-token', subject: '/workspace/second' }

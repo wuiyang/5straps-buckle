@@ -1,5 +1,6 @@
 import { join } from 'pathe'
 import { z } from 'zod'
+import { SIGNED_WORKSPACE_MAX } from '@5straps/protocol/signed-request'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
@@ -21,13 +22,26 @@ export class WorkspaceRegistryError extends WorkspaceError {
 /** A workspace id: a UUID Buckle assigns (D85, Q15, workspaceIdFor), which nobody types, so it never names `node`, a key's scope for the whole node. */
 export const WorkspaceIdSchema = z.uuid('A workspace id is a UUID Buckle assigns')
 
+/** What no name may be: `node`, which names the whole node in a key's scope, and a UUID's form, which is a workspace id's. */
+function neverAName(schema: z.ZodString) {
+  return schema
+    .refine(value => !sameName(value, NODE_SCOPE), 'node is reserved: it names the whole node in a key\'s scope')
+    .refine(value => !looksLikeWorkspaceId(value), 'A name cannot have the form of a UUID, which is a workspace id')
+}
+
 /**
- * A workspace's name: the handle the owner types after `--workspace` and keeps in MCP configs (D85, Q15), unique on
- * the node without regard to case (sameName). `node` is reserved, as it names the whole node in a key's scope.
+ * A workspace's name as the registry reads it: the handle the owner types after `--workspace` and keeps in MCP configs
+ * (D85, Q15), unique on the node without regard to case (sameName). A name stored by 0.1 or by the move may be any text
+ * of up to 120 characters; NewWorkspaceNameSchema holds the names given now to what every route can carry.
  */
-export const WorkspaceNameSchema = z.string().trim().min(1, 'A name is not empty').max(120, 'A name is at most 120 characters')
-  .refine(value => !sameName(value, NODE_SCOPE), 'node is reserved: it names the whole node in a key\'s scope')
-  .refine(value => !looksLikeWorkspaceId(value), 'A name cannot have the form of a UUID, which is a workspace id')
+export const WorkspaceNameSchema = neverAName(z.string().trim().min(1, 'A name is not empty').max(120, 'A name is at most 120 characters'))
+
+/**
+ * A name given now, by `add`, `init`, `rename`, or a registration over HTTP (fix brief 4, findings 37 and 38): one path
+ * segment that reaches the node as typed, and short enough for a signed request to name it, as a person's device does.
+ */
+export const NewWorkspaceNameSchema = neverAName(z.string().trim().min(1, 'A name is not empty').max(SIGNED_WORKSPACE_MAX, `A name is at most ${SIGNED_WORKSPACE_MAX} characters`)
+  .refine(value => !/[/\\%\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..', 'A name cannot hold /, \\, %, or a control character, and is not . or ..'))
 
 /** Whether two names are one workspace's: compared without regard to case, stored as typed. */
 export function sameName(left: string, right: string): boolean {

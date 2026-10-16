@@ -20,7 +20,7 @@ import { unmetPackPrerequisite } from '../packs/index.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode, type AskName } from './migration.js'
-import { openRegistry, sameName, touched, WorkspaceError, WorkspaceNameSchema, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
+import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
@@ -51,15 +51,15 @@ const ABSENT_DIGEST = 'f'.repeat(64)
 
 export const WorkspaceRegistrationSchema = z.object({
   /** The 0.1 spelling of `name`: ids are assigned now (D85, Q15), and a registration that still sends one names its workspace by it. */
-  id: WorkspaceNameSchema.optional(),
-  name: WorkspaceNameSchema.optional(),
+  id: NewWorkspaceNameSchema.optional(),
+  name: NewWorkspaceNameSchema.optional(),
   dir: z.string().min(1).max(4096),
   policy: WorkspacePolicySchema.optional(),
   /** A folder whose removed records still exist starts a new id and leaves the old ones to prune, rather than taking them up (addendum to D85, Q15). */
   fresh: z.boolean().optional(),
 }).strict()
 export type WorkspaceRegistration = z.infer<typeof WorkspaceRegistrationSchema>
-export const WorkspacePatchSchema = z.object({ name: WorkspaceNameSchema.optional(), online: z.boolean().optional(), expectedUpdatedAt: z.string().nullable().optional() }).strict()
+export const WorkspacePatchSchema = z.object({ name: NewWorkspaceNameSchema.optional(), online: z.boolean().optional(), expectedUpdatedAt: z.string().nullable().optional() }).strict()
 export const WorkspaceTokenInputSchema = z.object({ label: z.string().trim().max(120).default('') }).strict()
 
 export interface WorkspaceDescriptor {
@@ -584,7 +584,7 @@ function nameTaken(state: Registry, name: string, exceptId?: string): boolean {
 
 /** The name as the registry will hold it, trimmed, or the refusal, before anything is written (fix brief 4, findings 2 and 19). */
 function checkedName(raw: string, source: 'folder' | 'given'): string {
-  const parsed = WorkspaceNameSchema.safeParse(raw)
+  const parsed = NewWorkspaceNameSchema.safeParse(raw)
   if (!parsed.success) throw new WorkspaceNameRefusedError(raw, parsed.error.issues.map(issue => issue.message).join('; '), source)
   return parsed.data
 }

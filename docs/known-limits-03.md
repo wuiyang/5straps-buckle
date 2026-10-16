@@ -59,6 +59,9 @@ model or later.
   cannot start (an unsupported platform, or too many open files), Buckle logs it once and falls
   back to the per-call check and the `buckle serve` poll, so a change is taken up at the next call
   or poll rather than at once.
+- A name given now is at most 64 characters and holds no `/`, `\`, or `%`. A workspace named
+  longer by 0.1 or by the move keeps its name, which `buckle client` cannot sign for: it says so,
+  and the workspace's id, which `buckle workspace list` prints, takes its place.
 - [Rings](rings.md), the separate 5straps control plane for agents, keeps its own copy of a
   node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
   re-reads the list to see the change.

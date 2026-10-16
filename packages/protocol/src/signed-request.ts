@@ -30,6 +30,9 @@ const MAX_HEADER_LENGTH = 8_192
 const REQUEST_CONTEXT = '5straps/signed-request/v1\0'
 const CHALLENGE_CONTEXT = '5straps/approval-challenge/v1\0'
 
+/** The longest workspace a signed request or a challenge names, the id or the name a person typed. */
+export const SIGNED_WORKSPACE_MAX = 64
+
 /** An enrolled key's name and fingerprint: `SHA256:` and the base64url sha256 of its raw public key. */
 export const KeyIdSchema = z.string().regex(/^SHA256:[A-Za-z0-9_-]{43}$/)
 /** A public key as it is shown and enrolled: `ed25519:` and its 32 raw bytes in base64url. */
@@ -51,7 +54,7 @@ export const SignedRequestPayloadSchema = z.object({
    * D11): two nodes that share a serverId never take each other's requests.
    */
   nodeKey: KeyIdSchema,
-  workspace: z.string().min(1).max(64),
+  workspace: z.string().min(1).max(SIGNED_WORKSPACE_MAX),
   method: z.string().regex(/^[A-Z]{1,16}$/),
   /** The path and query as requested. */
   path: z.string().regex(/^\/[^\s]*$/).max(2_048),
@@ -306,7 +309,7 @@ export const ApprovalChallengeSchema = z.object({
   v: z.literal(SIGNED_REQUEST_VERSION),
   purpose: z.literal('buckle-approval-challenge'),
   node: z.string().min(1).max(200),
-  workspace: z.string().min(1).max(64),
+  workspace: z.string().min(1).max(SIGNED_WORKSPACE_MAX),
   /**
    * The workspace's name as the node holds it when it signs, which a person's device shows beside the id (the id is a
    * UUID nobody reads). Optional and additive, the version unchanged: absent from a node built before it, where a

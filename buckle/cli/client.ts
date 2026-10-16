@@ -5,7 +5,7 @@ import { z } from 'zod'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 import { OwnerOnlyError, requireOwnerOnly, setMode, type OwnerOnlyCheck } from '../common/adapters/file-modes.js'
 import { describeAction, printable, sameCallNote, workspaceLabel } from '../common/domain/approval-instruction.js'
-import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
+import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SIGNED_WORKSPACE_MAX, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { realPathOf } from '../common/runtime/config.js'
 
@@ -132,12 +132,20 @@ async function send(input: { environment: NodeJS.ProcessEnv; method: string; url
   const method = input.method.toUpperCase()
   // A path that names no workspace is the node level, which a node-scoped key signs for (D85, Q15).
   const workspace = decodeURIComponent(/^\/workspaces\/([^/]+)\//.exec(input.url.pathname)?.[1] ?? 'node')
+  if (workspace.length > SIGNED_WORKSPACE_MAX) throw new ClientError(`The workspace name is longer than the ${SIGNED_WORKSPACE_MAX} characters a signed request names; name the workspace by its id, as buckle workspace list prints it. Nothing was signed.`)
   const pin = pinFor(input.environment, input.url)
   if (input.node !== undefined && input.node !== pin.serverId) throw new ClientError(`--node names ${input.node}, but ${input.url.origin} is pinned as ${pin.serverId}; nothing was signed`)
-  const authorization = signRequest({
-    key: loadClientKey(input.environment), purpose: input.purpose, node: pin.serverId, nodeKey: keyIdOf(pin.publicKey), workspace,
-    method, path: `${input.url.pathname}${input.url.search}`, body: input.body, ...(input.session ? { session: input.session } : {}),
-  })
+  let authorization: string
+  try {
+    authorization = signRequest({
+      key: loadClientKey(input.environment), purpose: input.purpose, node: pin.serverId, nodeKey: keyIdOf(pin.publicKey), workspace,
+      method, path: `${input.url.pathname}${input.url.search}`, body: input.body, ...(input.session ? { session: input.session } : {}),
+    })
+  } catch (error) {
+    // A request the protocol will not carry (a path over its limit, say) is refused plainly, not with the schema's dump.
+    if (error instanceof z.ZodError) throw new ClientError(`Nothing was signed: ${error.issues.map(issue => `${issue.path.join('.')} ${issue.message}`).join('; ')}`)
+    throw error
+  }
   return fetch(input.url, { method, headers: { authorization, ...(input.body ? { 'content-type': 'application/json' } : {}) }, ...(input.body ? { body: input.body } : {}), signal: AbortSignal.timeout(30_000) })
 }
 

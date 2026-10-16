@@ -51,11 +51,12 @@ buckle workspace token revoke <token-id>
 ```
 
 - `init` serves a folder as a new workspace and prints its agent token once; `add <dir>` is the
-  same, with the folder named first. The id is a UUID Buckle derives from the folder. The name is the folder's basename unless `--name` gives one. It
-  is 1 to 120 characters and unique on the node, case insensitively; `node` and UUID-shaped text
-  are not names. A taken or refused name is asked about at a terminal; with `--yes` or no terminal
-  the command is refused, and `buckle workspace init --name <name>` gives another. A folder inside
-  a workspace, or holding one or the state directory, is refused.
+  same, with the folder named first. The id is a UUID Buckle derives from the folder. The name is
+  the folder's basename unless `--name` gives one: 1 to 64 characters, unique on the node
+  (case insensitively), with no `/`, `\`, or `%`, and never `node`, `.`, `..`, or UUID-shaped
+  text. A taken or refused name is asked about at a terminal, and refused with `--yes` or without
+  one; `buckle workspace init --name <name>` gives another. A folder inside a workspace, or
+  holding one or the state directory, is refused.
 - `list` shows every workspace, online or not. `show`, the default verb, prints one workspace's
   settings in force, each with where it comes from; no token is ever shown again.
 - `disable` stops serving a workspace, as an MCP server is switched off: calls to it are refused,

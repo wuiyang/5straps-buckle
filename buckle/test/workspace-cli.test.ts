@@ -193,6 +193,20 @@ describe('a workspace\'s name', () => {
     expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'Beta site'])
   })
 
+  // Fix brief 4, findings 37 and 38: a name with a slash or a percent sign, or over 64 characters, could not be reached by
+  // name over HTTP, or named in a signed request.
+  it.each(['team/api', 'team\\api', '..', '100%', 'n'.repeat(65)])('refuses %j at add and at rename, naming what a name may be', async (name) => {
+    await init(alpha)
+    await init(beta)
+    mkdirSync(join(base, 'gamma'))
+    for (const argv of [['add', join(base, 'gamma'), '--name', name], ['rename', 'beta', name]]) {
+      const refused = await buckle(argv)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toMatch(/cannot be a workspace name: A name (cannot hold|is at most)/)
+    }
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'beta'])
+  })
+
   it('leaves no records behind when the registration fails after its settings were written', async () => {
     const failing = openWorkspaceManager({ config: node(), nodeRoots: { current: () => ({ untrustedRoots: [], rootsUnknown: null }), take: () => { throw new Error('the roots could not be taken') } } })
     const workspaces = await failing

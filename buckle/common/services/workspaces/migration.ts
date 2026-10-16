@@ -423,15 +423,24 @@ function keyOf(input: { keys: readonly string[]; spellings: readonly string[]; p
   return matching[0] ?? null
 }
 
+/** What a name given now may not hold, since a route cannot carry it as typed (NewWorkspaceNameSchema). */
+const UNREACHABLE = /[/\\%\u0000-\u001f\u007f]+/g
+
 /**
- * A name the registry reads (WorkspaceNameSchema, finding 3): one over 120 characters is cut at a word's end, and an
- * empty one is a fixed word; the owner is told either way.
+ * A name the registry reads (WorkspaceNameSchema, finding 3): one over 120 characters is cut at a word's end, an empty
+ * one is a fixed word, and a character a route cannot carry becomes a hyphen (fix brief 4, finding 37); the owner is
+ * told in each case.
  */
 function fittingName(input: { label: string; name: string; notes: string[] }): string {
   const trimmed = input.name.trim()
-  if (trimmed !== '' && trimmed.length <= NAME_LIMIT) return trimmed
-  const fit = (trimmed === '' ? '' : cutName(trimmed)) || UNNAMED
-  input.notes.push(`${input.label}'s name ${trimmed === '' ? 'was empty' : `was ${trimmed.length} characters, more than the ${NAME_LIMIT} a workspace name holds`}, so it is named ${fit}; rename it with buckle workspace rename ${workspaceArgument(fit)} <name>.`)
+  const carried = trimmed.replace(UNREACHABLE, '-')
+  const plain = carried === '.' || carried === '..' ? '' : carried
+  if (plain === trimmed && trimmed !== '' && trimmed.length <= NAME_LIMIT) return trimmed
+  const fit = (plain === '' ? '' : cutName(plain)) || UNNAMED
+  const why = trimmed === '' ? 'was empty'
+    : plain !== trimmed ? 'held a character no route can carry in a name (/, \\, %, or a control character), or was only dots'
+      : `was ${trimmed.length} characters, more than the ${NAME_LIMIT} a workspace name holds`
+  input.notes.push(`${input.label}'s name ${why}, so it is named ${fit}; rename it with buckle workspace rename ${workspaceArgument(fit)} <name>.`)
   return fit
 }
 
