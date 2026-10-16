@@ -67,9 +67,14 @@ export function overlapReason(target: string): string {
   return `The mount at ${target} overlaps the workspace's folder or Buckle's protected state, so Buckle binds nothing there; the owner narrows it`
 }
 
-/** Why a mount whose source is gone is refused, by its target alone. */
-export function missingMountReason(target: string): string {
-  return `The mount at ${target} has no source on disk; the owner re-adds it, or removes it with buckle workspace mount remove ${target}`
+/**
+ * Why a mount whose source is gone is refused, by its target alone, naming the command that changes it: the
+ * workspace's own mount table, or, for one of the node's BUCKLE_MOUNTS, the node's settings (fix brief 6, item 9).
+ */
+export function missingMountReason(target: string, node = false): string {
+  return node
+    ? `The mount at ${target} has no source on disk; it is one of the node's mounts, so the owner restores its source, or changes them with buckle settings set mounts, or buckle settings unset mounts`
+    : `The mount at ${target} has no source on disk; the owner re-adds it, or removes it with buckle workspace mount remove ${target}`
 }
 
 /**
@@ -92,7 +97,7 @@ export function refuseChangedFolder(folder: string, shownAt: string | null): voi
  * folder swapped for a link since it was added) or is gone is refused, naming the target alone. Only the stored source
  * is ever bound.
  */
-export function validateSandboxMounts<T extends { source: string; target: string }>(mounts: readonly T[], input: { protectedRoots: string[]; workspaceRoots: string[]; workspaceTarget: string }): T[] {
+export function validateSandboxMounts<T extends { source: string; target: string; node?: true }>(mounts: readonly T[], input: { protectedRoots: string[]; workspaceRoots: string[]; workspaceTarget: string }): T[] {
   const reserved = ['/', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys', input.workspaceTarget, ...input.protectedRoots, ...input.workspaceRoots]
   const canonical = (path: string) => {
     try { return nativePath(realpathSync(path)) } catch (error) {
@@ -104,7 +109,7 @@ export function validateSandboxMounts<T extends { source: string; target: string
   const result: T[] = []
   for (const mount of mounts) {
     const state = mountSourceState(mount.source)
-    if (state === 'missing') throw new ToolInputError(missingMountReason(mount.target), { code: 'PERMISSION_DENIED' })
+    if (state === 'missing') throw new ToolInputError(missingMountReason(mount.target, mount.node === true), { code: 'PERMISSION_DENIED' })
     if (state === 'moved') throw new ToolInputError(movedMountReason(mount.target), { code: 'PERMISSION_DENIED' })
     const source = nativePath(mount.source)
     const info = statSync(source)

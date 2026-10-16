@@ -23,6 +23,8 @@ export interface OwnerMount {
  */
 export interface TableMount extends OwnerMount {
   scratch?: true
+  /** One of the node's BUCKLE_MOUNTS, which `buckle settings` changes, not `buckle workspace mount` (fix brief 6, item 9). */
+  node?: true
 }
 
 /** The most mounts of the owner's one workspace holds, as BUCKLE_MOUNTS held. */

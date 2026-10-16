@@ -7,7 +7,7 @@ import type { JsonValue } from '@5straps/protocol'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { mountSourceState, validateSandboxMounts } from '../common/domain/sandbox-mounts.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { loadConfig, sandboxBinds } from '../common/runtime/config.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { checkpointRoots } from '../common/services/workspaces/workspace-runtime.js'
 import { withOwnerMounts } from '../common/services/workspaces/workspace-settings.js'
@@ -118,7 +118,27 @@ describe('the node\'s BUCKLE_MOUNTS', () => {
     mkdirSync(join(root, 'dotfiles'))
     symlinkSync(join(root, 'dotfiles'), join(root, 'dotfiles-link'))
     const config = loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_MOUNTS: JSON.stringify([{ source: join(root, 'dotfiles-link'), target: '/tmp/home/.config' }]) })
-    expect(config.workspaceDefaults.mounts).toEqual([{ source: join(root, 'dotfiles'), target: '/tmp/home/.config', access: 'ro' }])
+    expect(config.workspaceDefaults.mounts).toEqual([{ source: join(root, 'dotfiles'), target: '/tmp/home/.config', access: 'ro', node: true }])
+  })
+
+  // Fix brief 6, item 9 (finding 22 of recheck 4): a node mount whose source is gone was refused naming buckle workspace
+  // mount remove, which refuses a node mount; the refusal now names the node's settings, and still no source path.
+  it('are refused, once a source is gone, naming the node\'s settings and not workspace mount remove', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'dotfiles'))
+    mkdirSync(join(root, 'site'))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_MOUNTS: JSON.stringify([{ source: join(root, 'dotfiles'), target: '/srv/dotfiles' }]) }))
+    await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
+    const { config } = await byName(manager, 'site')
+    rmSync(join(root, 'dotfiles'), { recursive: true })
+    const check = () => validateSandboxMounts(sandboxBinds(config.mounts), { protectedRoots: [], workspaceRoots: [join(root, 'site')], workspaceTarget: '/workspace' })
+    expect(check).toThrow("The mount at /srv/dotfiles has no source on disk; it is one of the node's mounts, so the owner restores its source, or changes them with buckle settings set mounts, or buckle settings unset mounts")
+    let refusal = ''
+    try { check() } catch (error) { refusal = String(error) }
+    expect(refusal).not.toContain('workspace mount remove')
+    expect(refusal).not.toContain(root)
+    await expect(manager.removeMount(idOf(manager, 'site'), '/srv/dotfiles')).rejects.toThrow("/srv/dotfiles is one of the node's mounts")
+    await manager.close()
   })
 })
 

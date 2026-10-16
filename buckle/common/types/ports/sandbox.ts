@@ -5,6 +5,8 @@ export interface SandboxBind {
   source: string
   target: string
   readOnly: boolean
+  /** One of the node's BUCKLE_MOUNTS, so a refusal names the command that changes it. */
+  node?: true
 }
 
 export interface SandboxCommand {

@@ -42,7 +42,7 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
  */
 function refuseMissingMount(path: string, paths: PathView): void {
   const holder = paths.mountOf(path)
-  if (holder && !holder.scratch && mountSourceState(holder.source) === 'missing') throw new ToolInputError(missingMountReason(holder.target), { code: 'PERMISSION_DENIED' })
+  if (holder && !holder.scratch && mountSourceState(holder.source) === 'missing') throw new ToolInputError(missingMountReason(holder.target, holder.node === true), { code: 'PERMISSION_DENIED' })
 }
 
 /**

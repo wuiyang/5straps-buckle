@@ -15,6 +15,8 @@ export interface ViewMount {
   readonly target: string
   readonly access: MountAccess
   readonly scratch: boolean
+  /** One of the node's BUCKLE_MOUNTS, so a refusal names the command that changes it. */
+  readonly node?: true
 }
 
 /**
@@ -81,7 +83,7 @@ export function createPathView(input: { root: string; mount: string | null; moun
   const sourceOf = (path: string) => (onShares && shareRoot(path) !== null ? path : resolvePath(path))
   const mounts: ViewMount[] = table
     .filter(entry => mount !== null || entry.scratch)
-    .map(entry => ({ source: sourceOf(entry.source), target: entry.scratch ? sourceOf(entry.source) : entry.target, access: entry.access, scratch: entry.scratch === true }))
+    .map(entry => ({ source: sourceOf(entry.source), target: entry.scratch ? sourceOf(entry.source) : entry.target, access: entry.access, scratch: entry.scratch === true, ...(entry.node ? { node: true as const } : {}) }))
   const shares = onShares ? mounts.map(entry => entry.source).filter(source => shareRoot(source) !== null) : []
   const named = mounts.filter(entry => !entry.scratch)
   const scratchRoots = mounts.filter(entry => entry.scratch).map(entry => entry.source)

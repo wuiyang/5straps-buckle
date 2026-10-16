@@ -407,7 +407,7 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
  * (mountSourceState), as one of the owner's is.
  */
 function nodeMounts(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): TableMount[] {
-  const shared = parseSandboxMounts(environment.BUCKLE_MOUNTS).map((mount): TableMount => ({ source: realPathOf(mount.source, platform), target: mount.target, access: 'ro' }))
+  const shared = parseSandboxMounts(environment.BUCKLE_MOUNTS).map((mount): TableMount => ({ source: realPathOf(mount.source, platform), target: mount.target, access: 'ro', node: true }))
   const scratch = parseList(environment.BUCKLE_SCRATCH_ROOTS).map((root): TableMount => {
     const path = realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)
     return { source: path, target: path, access: 'rw', scratch: true }
@@ -479,7 +479,7 @@ export function scratchSources(mounts: readonly TableMount[]): string[] {
 
 /** A mount table's mounts as the shell binds them, at their targets, each read-only unless the owner shares it writable (Q6). */
 export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
-  return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro' }))
+  return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro', ...(mount.node ? { node: true as const } : {}) }))
 }
 
 /** A workspace's own state directory, and the node's when they differ. */
