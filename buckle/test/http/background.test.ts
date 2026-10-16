@@ -94,7 +94,9 @@ describe('buckle serve --background', () => {
     const status = buckle(node, ['service', 'status'])
     expect(status.status).toBe(0)
     expect(status.stdout).toMatch(new RegExp(`^Running    yes \\(pid ${pid}\\), started by buckle serve --background at `, 'm'))
-    expect(status.stdout).toContain(`Address    http://127.0.0.1:${node.port}\n`)
+    expect(status.stdout).toContain(`Address    http://127.0.0.1:${node.port}\nHealth     /health answers; /health/ready answers ready\n`)
+    expect(status.stdout).toMatch(/^Version    (\S+) running, \1 installed$/m)
+    expect(status.stdout).not.toContain('Next')
     await vi.waitFor(() => expect(buckle(node, ['service', 'logs', '-n', '200']).stdout).toContain('"message":"5straps Buckle listening"'), { timeout: 10_000 })
 
     const stopped = buckle(node, ['service', 'stop'])

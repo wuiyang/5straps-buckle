@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
+import { dirname, join } from 'pathe'
 import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath } from '../common/runtime/config.js'
@@ -307,24 +308,67 @@ function missingPrograms(installed: InstalledService): string | null {
   return `The Buckle service runs a ${gone.join(' and a ')} that is no longer there, as after Node is upgraded or moved; run buckle service install again.`
 }
 
+/**
+ * `buckle service status` (Phase 3, item 6): the definition and whether it starts at login, the node running and how it
+ * was started, whether it answers /health and /health/ready (which need no token), the running version against the
+ * installed one, and what to do next: restart after an upgrade, install again after Node moved, or, on Linux, the
+ * system's own command that starts it before login.
+ */
 async function status(context: ServiceContext, json: boolean): Promise<CliResult> {
   const { manager, location } = context
   const installed = manager === null ? null : await manager.installed()
   const running = await runningNode(location.stateDirectory)
+  const record = running?.record ?? null
+  const health = record === null ? null : await probeHealth(addressOf(record))
+  const installedVersion = versionOf(installed?.main ?? context.input.mainScript)
+  const beforeLogin = installed !== null && manager?.beforeLogin ? await manager.beforeLogin() : null
+  const missing = installed === null ? null : missingPrograms(installed)
+  const next = [
+    ...(missing === null ? [] : [missing]),
+    ...(record !== null && installedVersion !== null && record.version !== installedVersion ? [record.manager === 'background'
+      ? `The node runs ${record.version} and ${installedVersion} is installed: stop it with buckle service stop, then start it again with buckle serve --background.`
+      : `The node runs ${record.version} and ${installedVersion} is installed: run buckle service restart.`] : []),
+    ...(beforeLogin !== null && !beforeLogin.starts ? [`It starts at login. To start it at boot, before anyone logs in, the system's own setting is: ${beforeLogin.command} (Buckle does not run it; it may ask for an administrator's password).`] : []),
+  ]
   const report = {
     platform: context.input.platform,
     manager: manager?.kind ?? null,
-    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: installed.thisNode === true },
-    running: running === null ? null : { pid: running.record?.pid ?? null, startedBy: running.record?.manager ?? null, address: running.record === null ? null : addressOf(running.record), version: running.record?.version ?? null, startedAt: running.record?.startedAt ?? null },
+    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: installed.thisNode === true, ...(beforeLogin === null ? {} : { startsBeforeLogin: beforeLogin.starts }) },
+    running: running === null ? null : { pid: record?.pid ?? null, startedBy: record?.manager ?? null, address: record === null ? null : addressOf(record), version: record?.version ?? null, startedAt: record?.startedAt ?? null, health },
+    installedVersion,
+    next,
   }
   if (json) {
     context.out(`${JSON.stringify(report, null, 2)}\n`)
     return { exitCode: 0 }
   }
   context.out(`Service    ${report.definition === null ? (manager === null ? `none: ${unsupported(context.input.platform)}` : 'not installed') : `${report.definition.label}, ${report.definition.enabled ? 'starts at login' : 'disabled'}${report.definition.thisNode ? '' : ', for another state directory'}`}\n`)
-  context.out(`Running    ${running === null ? 'no' : `yes${pidOf(running)}${running.record === null ? ', starting' : `, started by ${startedBy(running.record)} at ${running.record.startedAt}`}`}\n`)
-  if (running?.record) context.out(`Address    ${addressOf(running.record)}\nVersion    ${running.record.version}\n`)
+  context.out(`Running    ${running === null ? 'no' : `yes${pidOf(running)}${record === null ? ', starting' : `, started by ${startedBy(record)} at ${record.startedAt}`}`}\n`)
+  if (record !== null && health !== null) {
+    context.out(`Address    ${addressOf(record)}\nHealth     ${health.live ? '/health answers' : '/health does not answer'}; ${health.ready === 200 ? '/health/ready answers ready' : health.ready === null ? '/health/ready does not answer' : `/health/ready answers ${health.ready}, not ready yet`}\n`)
+  }
+  context.out(`Version    ${record === null ? '' : `${record.version} running, `}${installedVersion ?? 'unknown'} installed\n`)
+  for (const line of next) context.out(`Next       ${line}\n`)
   return { exitCode: 0 }
+}
+
+/** How long status waits for each health probe. */
+const PROBE_MS = 2_000
+
+/** Whether the node answers its liveness probe, and the status its readiness probe gives; both need no token. */
+async function probeHealth(address: string): Promise<{ live: boolean; ready: number | null }> {
+  const status = (path: string) => fetch(`${address}${path}`, { signal: AbortSignal.timeout(PROBE_MS) }).then(response => response.status, () => null)
+  const [live, ready] = await Promise.all([status('/health'), status('/health/ready')])
+  return { live: live === 200, ready }
+}
+
+/** The version of the package whose dist/main.js this is, read from its package.json now; null where it cannot be read. */
+function versionOf(main: string): string | null {
+  try {
+    return (JSON.parse(readFileSync(join(dirname(dirname(main)), 'package.json'), 'utf8')) as { version?: string }).version ?? null
+  } catch {
+    return null
+  }
 }
 
 function startedBy(record: ServeRecord): string {

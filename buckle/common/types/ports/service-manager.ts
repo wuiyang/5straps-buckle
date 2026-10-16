@@ -53,6 +53,8 @@ export interface ServiceManager {
   stop?(): Promise<void>
   /** Restarts it in one step, where the manager can; otherwise a stop, then start. */
   restart?(): Promise<void>
+  /** Whether it starts before anyone logs in, and the system's command that would make it, where the platform has one. */
+  beforeLogin?(): Promise<{ starts: boolean; command: string }>
 }
 
 /**

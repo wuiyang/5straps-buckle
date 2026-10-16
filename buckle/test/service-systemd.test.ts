@@ -1,10 +1,14 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
+import { protectedStateRoots } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 import { serviceCommand } from '../cli/service.js'
 import { runProcess } from '../common/adapters/process-runner.js'
-import { createSystemdManager, readUnit, renderUnit, systemdUnitDirectory, systemdUnitPaths } from '../common/adapters/service-manager/systemd.js'
+import { createSystemdManager } from '../common/adapters/service-manager/systemd.js'
+import { readUnit, renderUnit, systemdUnitDirectory, systemdUnitPaths } from '../common/domain/systemd-unit.js'
 import { ServiceManagerError } from '../common/types/ports/service-manager.js'
 
 // Phase 3, item 2 of the workspace-model slice (Q4): on Linux, a systemd user unit. No systemd user session runs here
@@ -60,6 +64,31 @@ WantedBy=default.target
     expect(systemdUnitDirectory({ XDG_CONFIG_HOME: '/home/owner/cfg' }, '/home/owner')).toBe('/home/owner/cfg/systemd/user')
     expect(systemdUnitDirectory({ XDG_CONFIG_HOME: 'cfg' }, '/home/owner')).toBe('/home/owner/.config/systemd/user')
     expect(systemdUnitPaths({}, '/home/owner')).toEqual(['/home/owner/.config/systemd/user/buckle.service', '/home/owner/.config/systemd/user/default.target.wants/buckle.service'])
+  })
+})
+
+// Phase 3, item 6: the unit and its enablement link join Buckle's own state, so no file tool rewrites what runs at login.
+describe.skipIf(process.platform === 'win32')('the unit that starts Buckle at login', () => {
+  it('is among the protected state roots on Linux alone', () => {
+    const roots = protectedStateRoots({ stateDirectory: '/srv/state' }, 'linux', { XDG_CONFIG_HOME: '/home/owner/cfg' })
+    expect(roots).toEqual(expect.arrayContaining(['/home/owner/cfg/systemd/user/buckle.service', '/home/owner/cfg/systemd/user/default.target.wants/buckle.service']))
+    expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'darwin', { XDG_CONFIG_HOME: '/home/owner/cfg' }).join()).not.toContain('systemd')
+  })
+
+  it('is refused to the file tools, read or written, as Buckle\'s own state', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-unit-protected-')))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    vi.stubEnv('XDG_CONFIG_HOME', join(root, 'config'))
+    try {
+      const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_AUTH_TOKEN: 'unit-agent', BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }) })
+      const call = (tool: string, args: Record<string, string>) => runtime.invoke({ request: { requestId: crypto.randomUUID(), tool, args, approvalTokens: [] }, sessionId: 'unit' })
+      for (const path of systemdUnitPaths({ XDG_CONFIG_HOME: join(root, 'config') }, root)) {
+        expect(await call('fs_write', { path, content: '[Service]\nExecStart=/bin/sh -c evil\n' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Buckle\'s own state') } })
+        expect(await call('fs_read', { path })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+      }
+      expect(existsSync(join(root, 'config', 'systemd'))).toBe(false)
+    } finally { vi.unstubAllEnvs() }
   })
 })
 
@@ -137,6 +166,17 @@ describe.skipIf(process.platform === 'win32')('systemctl --user, imitated on PAT
     expect(await manager(fake, noSession).unavailable()).toBe('No systemd user session answers here (XDG_RUNTIME_DIR is not set)')
     expect(await manager(fake, { ...fake.environment, PATH: '/nonexistent' }).unavailable()).toBe('No systemd user session answers here (systemctl is not on PATH)')
     expect(await manager(fakeSystemd({ show: 1 })).unavailable()).toBe('No systemd user session answers here (systemctl --user did not answer)')
+  })
+
+  it('says whether the user manager starts before login, and the system\'s command that would make it, which it never runs', async () => {
+    const fake = fakeSystemd()
+    const linger = join(fake.root, 'linger')
+    mkdirSync(linger)
+    const systemd = createSystemdManager({ environment: { ...fake.environment, USER: 'owner' }, run: runProcess, location: { stateDirectory: join(fake.root, 'state'), environmentFile: null }, home: fake.root, lingerDirectory: linger })
+    expect(await systemd.beforeLogin!()).toEqual({ starts: false, command: 'loginctl enable-linger owner' })
+    writeFileSync(join(linger, 'owner'), '')
+    expect(await systemd.beforeLogin!()).toEqual({ starts: true, command: 'loginctl enable-linger owner' })
+    expect(fake.calls()).toEqual([])
   })
 
   it('refuses where systemctl fails, naming the command and where to look, and no path', async () => {

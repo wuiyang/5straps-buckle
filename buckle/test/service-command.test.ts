@@ -209,6 +209,44 @@ describe('buckle service start, stop, restart, and uninstall', () => {
   })
 })
 
+describe('buckle service status', () => {
+  it('says what runs, its health, the running version against the installed one, and what to do next', async () => {
+    const target = node()
+    writeFileSync(join(target.root, 'package.json'), JSON.stringify({ version: '0.1.5' }))
+    const { manager } = fakeManager(target.state, { installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true } })
+    const lingering = { ...manager, beforeLogin: async () => ({ starts: false, command: 'loginctl enable-linger owner' }) }
+    expect((await service(target, ['status'], lingering)).out).toBe([
+      'Service    the imitated definition, starts at login',
+      'Running    no',
+      'Version    0.1.5 installed',
+      'Next       It starts at login. To start it at boot, before anyone logs in, the system\'s own setting is: loginctl enable-linger owner (Buckle does not run it; it may ask for an administrator\'s password).',
+      '',
+    ].join('\n'))
+    const running = await serving(target.state, 'systemd', 900_010)
+    try {
+      const shown = await service(target, ['status'], { ...manager, beforeLogin: async () => ({ starts: true, command: 'loginctl enable-linger owner' }) })
+      expect(shown.out).toContain('Running    yes (pid 900010), started by systemd at 2026-10-16T00:00:00.000Z\nAddress    http://127.0.0.1:4320\nHealth     ')
+      expect(shown.out).toContain('Version    0.1.4 running, 0.1.5 installed\nNext       The node runs 0.1.4 and 0.1.5 is installed: run buckle service restart.\n')
+      expect(shown.out).not.toContain('enable-linger')
+      const json = JSON.parse((await service(target, ['status', '--json'], manager)).out)
+      expect(json).toMatchObject({ platform: 'linux', manager: 'systemd', definition: { label: 'the imitated definition', enabled: true, thisNode: true }, running: { pid: 900010, startedBy: 'systemd', address: 'http://127.0.0.1:4320', version: '0.1.4', health: { live: expect.any(Boolean) } }, installedVersion: '0.1.5', next: ['The node runs 0.1.4 and 0.1.5 is installed: run buckle service restart.'] })
+    } finally { await running.close() }
+  })
+
+  it('says to install again after Node moved, and to start again by hand for a node --background started', async () => {
+    const target = node()
+    writeFileSync(join(target.root, 'package.json'), JSON.stringify({ version: '0.1.5' }))
+    const { manager } = fakeManager(target.state, { installed: { node: join(target.root, 'gone', 'node'), main: target.main, thisNode: true, enabled: false } })
+    const running = await serving(target.state, 'background', 900_011)
+    try {
+      const shown = (await service(target, ['status'], manager)).out
+      expect(shown).toContain('Service    the imitated definition, disabled\n')
+      expect(shown).toContain('Next       The Buckle service runs a Node binary that is no longer there, as after Node is upgraded or moved; run buckle service install again.\n')
+      expect(shown).toContain('Next       The node runs 0.1.4 and 0.1.5 is installed: stop it with buckle service stop, then start it again with buckle serve --background.\n')
+    } finally { await running.close() }
+  })
+})
+
 describe('buckle service logs', () => {
   it('prints the last lines, 50 by default or -n of them, and says when there is no log yet', async () => {
     const target = node()

@@ -10,6 +10,7 @@ import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { compilePolicy, PolicyError } from '../domain/policy.js'
+import { systemdUnitPaths } from '../domain/systemd-unit.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -485,12 +486,14 @@ export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
 type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory'>>
 
 /**
- * Node configuration and all workspace maps are owner-only, never tool-accessible. Effects are judged
- * at their real paths, so each root is named by its real path too (a symlinked home, macOS /var), in
- * the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
+ * Node configuration and all workspace maps are owner-only, never tool-accessible, and so is the unit that starts the
+ * node at login. Effects are judged at their real paths, so each root is named by its real path too (a symlinked home,
+ * macOS /var), in the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
  */
-export function protectedStateRoots(config: StateDirectories): string[] {
-  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory]
+export function protectedStateRoots(config: StateDirectories, platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string[] {
+  // The Linux unit that starts this node at login, and its link (Phase 3, item 6), so no agent rewrites what runs then.
+  const unit = platform === 'linux' ? systemdUnitPaths(environment, homeDirectory(platform)) : []
+  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...unit]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
 
