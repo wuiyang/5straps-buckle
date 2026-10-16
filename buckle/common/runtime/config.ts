@@ -64,8 +64,6 @@ export interface NodeConfig {
   acknowledgedUnsandboxed: boolean
   historyMaxBytes: number
   historyRetentionDays: number
-  shellNetwork: boolean
-  isolateShell: boolean
   isolationMaxBytes: number
   environmentValidator?: string
   allowedHosts: string[]
@@ -134,6 +132,10 @@ export interface BuckleConfig extends NodeConfig {
   policy: WorkspacePolicy
   /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
   mounts: TableMount[]
+  /** Whether its shell may reach the network while it has no approved list (shell.network; Phase 2 item 4). */
+  shellNetwork: boolean
+  /** Whether its shell runs on private copies of the folder (shell.isolation). */
+  isolateShell: boolean
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
   /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
@@ -214,8 +216,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 1_073_741_824),
     historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
     experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
-    shellNetwork: environment.BUCKLE_SHELL_NETWORK === 'true',
-    isolateShell: environment.BUCKLE_SHELL_ISOLATION !== 'false',
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     allowedHosts: parseAllowedHosts(environment.BUCKLE_ALLOWED_HOSTS),
@@ -244,7 +244,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
   'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
-  'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS',
+  'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -318,6 +318,8 @@ export interface WorkspaceScope {
   packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
   /** Milliseconds a gated call is held for an answer; 0 holds it until someone answers. */
   approvalWaitMs: number
+  /** Whether its shell may reach the network, and runs on private copies (Phase 2 item 4). */
+  shell: { network: boolean; isolation: boolean }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -343,6 +345,8 @@ export interface NodeDefaults {
   packs: { enabled?: string[]; shell?: boolean; code?: boolean; hostGit?: boolean; hostLsp?: boolean }
   /** 0 holds a gated call until someone answers. */
   approvalWaitMs?: number
+  /** BUCKLE_SHELL_NETWORK and BUCKLE_SHELL_ISOLATION, where buckle.env names them. */
+  shell: { network?: boolean; isolation?: boolean }
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
   env: Readonly<Record<string, string>>
 }
@@ -377,6 +381,7 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
       ...defined('hostLsp', flag('BUCKLE_ALLOW_HOST_LSP', 'true')),
     },
     ...(approvalWait === undefined ? {} : { approvalWaitMs: approvalWait }),
+    shell: { ...defined('network', flag('BUCKLE_SHELL_NETWORK', 'true')), ...(environment.BUCKLE_SHELL_ISOLATION ? { isolation: environment.BUCKLE_SHELL_ISOLATION !== 'false' } : {}) },
     browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
     env: {},
   }
@@ -428,12 +433,14 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
+    shellNetwork: scope.shell.network,
+    isolateShell: scope.shell.isolation,
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,

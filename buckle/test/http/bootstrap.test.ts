@@ -226,7 +226,9 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
 
   it('cancels a running shell on SIGTERM: the call answers BUCKLE_SHUTTING_DOWN with 503, the process is gone, and Buckle exits 0 with no close step running out its bound (B19)', async () => {
     const marker = `${31 + Math.random()}`.slice(0, 12)
-    const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    const node = await prepareNode({ BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_PACKS: 'shell', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'bootstrap-admin-token', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
+    // Every workspace's shell isolation is a default the node reads from its own file alone (Phase 2 item 4).
+    writeFileSync(join(node.state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${node.workspace}\nBUCKLE_AUTH_TOKEN=${node.env.BUCKLE_AUTH_TOKEN}\nBUCKLE_SHELL_ISOLATION=false\n`, { mode: 0o600 })
     const owner = generateSigningKey()
     const cli = (args: string[]) => execFileSync(process.execPath, [entry, ...args], { cwd: node.workspace, env: node.env, encoding: 'utf8' })
     expect(cli(['keys', 'enroll', owner.publicKey, '--purpose', 'approval', '--workspace', 'workspace'])).toContain(owner.keyId)

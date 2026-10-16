@@ -43,6 +43,20 @@ const pack = (name: 'shell' | 'code' | 'hostGit' | 'hostLsp'): SettingKey => ({
   unset: settings => withoutPack(settings, name),
 })
 
+/** The shell block with `name` taken out: unset, so the node's value stands for it. */
+function withoutShell(settings: WorkspaceSettings, name: 'network' | 'isolation'): WorkspaceSettings {
+  const { [name]: _dropped, ...shell } = settings.shell
+  return { ...settings, shell }
+}
+
+/** A shell setting (Phase 2 item 4), on or off, over the node's BUCKLE_SHELL_NETWORK or BUCKLE_SHELL_ISOLATION. */
+const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
+  key: `shell.${name}`,
+  takes: `on or off: ${what} (the node's, else ${BUILT_IN_SETTINGS.shell[name] ? 'on' : 'off'})`,
+  set: (settings, raw) => ({ ...settings, shell: { ...settings.shell, [name]: onOff(`shell.${name}`, raw) } }),
+  unset: settings => withoutShell(settings, name),
+})
+
 export const SETTING_KEYS: readonly SettingKey[] = [
   {
     key: 'approvalWaitMs',
@@ -61,6 +75,8 @@ export const SETTING_KEYS: readonly SettingKey[] = [
     unset: settings => withoutPack(settings, 'enabled'),
   },
   pack('shell'), pack('code'), pack('hostGit'), pack('hostLsp'),
+  shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
+  shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
   {
     key: 'mount',
     takes: 'where the agent sees the folder, such as /workspace (the node\'s, else its real path)',

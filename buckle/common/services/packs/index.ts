@@ -218,7 +218,7 @@ function shellUnavailableReason(options: BuiltinPackOptions): string | null {
   // Where no sandbox could be had, such as a bwrap refused where an agent writes, that is the reason, not the mounts.
   if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return options.sandboxUnavailableReason ?? 'The workspace\'s mounts need bubblewrap; shell tools are withheld rather than shown a different view'
   if (!options.enableShell) return 'Shell tools are turned off in this workspace: its setting packs.shell is off'
-  if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
+  if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; the workspace setting shell.isolation, off, opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason
   if (options.paths.mount && !options.sandbox.supportsMount) {
     return `The workspace is mounted at ${options.paths.mount}, which needs bubblewrap; shell tools are withheld under the ${options.sandbox.mode} sandbox rather than shown a different view`

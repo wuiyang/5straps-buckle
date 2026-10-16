@@ -27,7 +27,7 @@ describe('a workspace\'s settings', () => {
       version: 1, revision: 0, updatedAt: null,
       policy: emptyWorkspacePolicy(),
       mounts: [{ kind: 'workspace', target: '/workspace', access: 'rw' }],
-      env: {}, packs: {}, browser: {},
+      env: {}, packs: {}, shell: {}, browser: {},
     })
     expect(resolveSettings(defaultSettings(), loadConfig({}).workspaceDefaults)).toMatchObject({
       mount: '/workspace',

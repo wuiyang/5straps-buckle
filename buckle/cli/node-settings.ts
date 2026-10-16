@@ -44,6 +44,9 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   // Code mode (owner decision D82): false withholds code_run and code_api.
   { key: 'BUCKLE_ALLOW_CODE', alias: 'code', kind: 'boolean', fallback: 'true', workspace: { key: 'packs.code', change: 'buckle workspace set packs.code on|off' } },
   { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', kind: 'boolean', fallback: 'false', workspace: { key: 'packs.hostGit', change: 'buckle workspace set packs.hostGit on|off' } },
+  // The shell's network and isolation (Phase 2 item 4): every workspace's defaults where its own settings hold none.
+  { key: 'BUCKLE_SHELL_NETWORK', alias: 'shell-network', kind: 'boolean', fallback: 'false', workspace: { key: 'shell.network', change: 'buckle workspace set shell.network on|off' } },
+  { key: 'BUCKLE_SHELL_ISOLATION', alias: 'shell-isolation', kind: 'boolean', fallback: 'true', workspace: { key: 'shell.isolation', change: 'buckle workspace set shell.isolation on|off' } },
   { key: 'BUCKLE_ALLOW_HOST_LSP', alias: 'host-lsp', kind: 'boolean', fallback: 'false', workspace: { key: 'packs.hostLsp', change: 'buckle workspace set packs.hostLsp on|off' } },
   { key: 'BUCKLE_COMMAND_ALLOW', alias: 'command-allow', kind: 'command-list', fallback: '(none: no allow list)', workspace: { key: 'policy.commands.allow', change: 'buckle policy allow-command <glob>' } },
   { key: 'BUCKLE_COMMAND_DENY', alias: 'command-deny', kind: 'command-list', fallback: '(none)', workspace: { key: 'policy.commands.deny', change: 'buckle policy deny-command <glob>, which adds to the node\'s' } },

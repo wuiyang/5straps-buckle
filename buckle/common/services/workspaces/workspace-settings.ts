@@ -64,6 +64,12 @@ const BROWSER_KEYS: ReadonlyArray<[string, string]> = [['BUCKLE_BROWSER_CDP', 'b
  * in the mount and browser phase (Q10), and `buckle workspace set` changes them from then; until then the node's own
  * browser settings drive it.
  */
+/** Its shell (Phase 2 item 4): `network` lets a command reach the network while no approved list is set; `isolation` runs each on a private copy. */
+const ShellSchema = z.object({
+  network: z.boolean().optional(),
+  isolation: z.boolean().optional(),
+}).strict()
+
 const BrowserSchema = z.object({
   idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).optional(),
   cdp: z.string().min(1).optional(),
@@ -177,6 +183,7 @@ export const WorkspaceSettingsSchema = z.object({
   /** Its own variables, over the node's key by key. */
   env: EnvironmentSchema.default({}),
   packs: PacksSchema.default({}),
+  shell: ShellSchema.default({}),
   browser: BrowserSchema.default({}),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
@@ -204,6 +211,7 @@ export type SettingSource = 'workspace' | 'node' | 'built-in'
 export const BUILT_IN_SETTINGS = Object.freeze({
   packs: Object.freeze({ enabled: null, shell: true, code: true, hostGit: false, hostLsp: false }),
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
+  shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
 })
 
@@ -216,6 +224,7 @@ export interface ResolvedSettings {
   mounts: readonly TableMount[]
   packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
   approvalWaitMs: number
+  shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
@@ -287,6 +296,10 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     mounts: mountsInForce(stored, node, sources),
     packs,
     approvalWaitMs: pick('approvalWaitMs', stored.approvalWaitMs, node.approvalWaitMs, BUILT_IN_SETTINGS.approvalWaitMs),
+    shell: {
+      network: pick('shell.network', stored.shell.network, node.shell.network, BUILT_IN_SETTINGS.shell.network),
+      isolation: pick('shell.isolation', stored.shell.isolation, node.shell.isolation, BUILT_IN_SETTINGS.shell.isolation),
+    },
     browser,
     env: { ...node.env, ...stored.env },
     sources,
@@ -419,9 +432,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

@@ -695,13 +695,13 @@ function policyHash(compiled: CompiledPolicy): string {
 }
 
 /**
- * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, and the
- * mount table (Q2: the sandbox layout changes only when no work is active). A change to any rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
+ * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, the mount
+ * table, and the shell's network and isolation (Q2: the sandbox layout changes only when no work is active). A change to any rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
  * is not among them: no pack reads it yet, so a hand edit of it changes no tool (browserInputs names what the browser
  * pack is handed, the node's settings until a later release reads each workspace's own).
  */
 function reshapeInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.packs, settings.mount, settings.mounts])
+  return JSON.stringify([settings.packs, settings.mount, settings.mounts, settings.shell])
 }
 
 /**
@@ -750,6 +750,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
+    shell: { network: config.shellNetwork, isolation: config.isolateShell },
     env: config.commandEnvironment,
   })
 }
