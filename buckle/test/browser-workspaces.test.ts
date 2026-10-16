@@ -221,6 +221,25 @@ describe('the holder of the node\'s browser', { timeout: 20_000 }, () => {
   })
 })
 
+// The refusal comes before the question: an approver is never asked about a call the holder rule then refuses, and an
+// answer of always stores no grant for it.
+describe('a call the holder rule refuses', { timeout: 20_000 }, () => {
+  it('asks nobody and stores no grant, though the page it names would ask', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { manager, calls } = await node({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    // A private address asks the approver of a workspace allowed to reach it.
+    const asked = await open(manager, 'alpha', { command: 'open', args: ['http://10.1.2.3/'] })
+    expect(asked).toMatchObject({ outcome: 'approval_required' })
+    const refused = await open(manager, 'beta', { command: 'open', args: ['http://10.1.2.3/'] })
+    expect(refused).toMatchObject({ outcome: 'error', error: { message: HELD('alpha') } })
+    expect((await byName(manager, 'beta')).runtime.grants.list()).toEqual([])
+    expect(calls().filter(call => call[0] === 'open')).toEqual([])
+    await manager.close()
+  })
+})
+
 // The browser's mode is one unit: a workspace naming an attached Chrome or a profile folder of its own takes both from
 // itself, and the block in force with the node's defaults meets the checks the node's own settings meet, at each write
 // and wherever the browser is chosen, so a hand edit passes nothing `buckle workspace set` refuses.

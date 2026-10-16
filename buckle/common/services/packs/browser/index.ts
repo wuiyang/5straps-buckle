@@ -143,6 +143,11 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   // one browser on a profile folder is never among them: other Buckle processes share it, so only the close command
   // and its idle timeout end it.
   const opened = new Set<string>()
+  // Q10: a profile folder or an attached Chrome serves one workspace at a time; read at each use, so a change is seen at once.
+  const assertHeld = (running: BrowserMode): void => {
+    const holder = running.kind === 'fresh' ? null : options.heldBy?.() ?? null
+    if (holder !== null) throw new ToolExecutionError(heldRefusal(running, holder), { code: 'BROWSER_COMMAND_FAILED' })
+  }
   return {
     id: PACK_ID,
     version: '1.0.0',
@@ -160,8 +165,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         tags: ['browser', 'agent-browser', 'network'],
         input: commandInput,
         effects: input => {
-          // Before anything is judged, so the owner is never asked about a call that cannot run.
+          // Before anything is judged, so the owner is never asked about a call that cannot run: not one the command refuses,
+          // and not one another workspace's hold on the profile folder or the Chrome refuses.
           assertRunnable(input)
+          if (mode !== null) assertHeld(mode)
           if ('refusal' in allowedDomains) throw new ToolInputError(allowedDomains.refusal, { code: 'PERMISSION_DENIED' })
           return [
             { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
@@ -171,9 +178,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
         run: async (input, context): Promise<JsonValue> => {
           const running = browserMode(mode)
           assertRunnable(input)
-          // Q10: a profile folder or an attached Chrome serves one workspace at a time; read now, so a change is seen at once.
-          const holder = running.kind === 'fresh' ? null : options.heldBy?.() ?? null
-          if (holder !== null) throw new ToolExecutionError(heldRefusal(running, holder), { code: 'BROWSER_COMMAND_FAILED' })
+          // Read again now: a change between the ask and the run is seen at once.
+          assertHeld(running)
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
 
