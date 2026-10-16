@@ -333,6 +333,24 @@ describe('buckle workspace list and show', () => {
     expect(JSON.parse(out)).toMatchObject({ sources: { 'mount': 'workspace', 'commands.allow': 'node', 'network.allow': 'workspace', 'commands.deny': { node: ['curl *'], workspace: ['rm *'] } } })
   })
 
+  // Fix brief 4, finding 25: five of the labels were pinned by no test, and a mutant fixing each one passed the suite.
+  it('names the node as the source of the mount, approved URLs, and destructive entries a workspace leaves to it, beside the workspace\'s own', async () => {
+    const config = node({ BUCKLE_WORKSPACE_MOUNT: '/node', BUCKLE_NETWORK_ALLOW: 'node.test', BUCKLE_COMMAND_DESTRUCTIVE: 'git push *' })
+    await init(alpha)
+    const policy = (...words: string[]) => runCli({ argv: ['policy', ...words], config, confirm: null, cwd: alpha })
+    expect((await buckle(['unset', 'mount'], { cwd: alpha, config })).exitCode).toBe(0)
+    expect((await policy('destructive-command', 'rm -rf *')).exitCode).toBe(0)
+    out = ''
+    expect((await policy('show')).exitCode).toBe(0)
+    expect(out).toContain('Mount     /node, the node\'s default, from buckle.env\n')
+    expect(out).toContain('Approved hosts and URLs (only these may be reached), the node\'s default, from buckle.env\n  node.test\n')
+    expect(out).toContain('Destructive additions')
+    expect(out).toMatch(/git push \*\s+the node's, for every workspace\n\s+rm -rf \*\s+the workspace's own/)
+    out = ''
+    expect((await policy('show', '--json')).exitCode).toBe(0)
+    expect(JSON.parse(out).sources).toMatchObject({ 'mount': 'node', 'network.allow': 'node', 'commands.destructive': { node: ['git push *'], workspace: ['rm -rf *'] } })
+  })
+
   it('says how to start where the node has none', async () => {
     expect((await buckle(['list'])).out).toContain('No workspace yet: run buckle workspace init in the folder to serve.')
   })

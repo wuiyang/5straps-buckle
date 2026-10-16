@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { PolicyError } from '../common/domain/policy.js'
-import { credentialLikeName, defaultSettings, openSettingsFile, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, defaultSettings, openSettingsFile, policySources, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsError, WorkspaceSettingsInvalidError, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { loadConfig, unreadWorkspaceDefaults } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
@@ -49,6 +49,31 @@ describe('a workspace\'s settings', () => {
     })
     // An empty value in buckle.env names nothing, as the node read it before.
     expect(resolveSettings(own, loadConfig({ BUCKLE_ALLOW_SHELL: '', BUCKLE_PACKS: '' }).workspaceDefaults)).toMatchObject({ packs: { enabled: null, shell: true }, sources: { 'packs.shell': 'built-in' } })
+  })
+
+  // Fix brief 4, finding 25: every source label and every deny partition of the policy view, from a mutant of each.
+  describe('where each part of the policy in force comes from', () => {
+    const defaults = loadConfig({ BUCKLE_WORKSPACE_MOUNT: '/node', BUCKLE_NETWORK_ALLOW: 'node.test', BUCKLE_COMMAND_DESTRUCTIVE: 'git push *' }).workspaceDefaults
+    const node = { ...defaults, policy: { ...defaults.policy, tools: { allow: ['fs_read'], deny: ['shell_exec'] } } }
+
+    it('is the node\'s for what a workspace leaves unset, with the node\'s deny entries as its floor, and Buckle\'s where neither sets a list', () => {
+      const unset = WorkspaceSettingsSchema.parse({ version: 1 })
+      expect(policySources(unset, node)).toEqual({
+        'mount': 'node', 'commands.allow': 'built-in', 'commands.allowedInterpreters': 'built-in', 'network.allow': 'node', 'tools.allow': 'node',
+        'commands.deny': { node: [], workspace: [] }, 'commands.destructive': { node: ['git push *'], workspace: [] }, 'tools.deny': { node: ['shell_exec'], workspace: [] },
+      })
+    })
+
+    it('is the workspace\'s for what it sets, each deny entry told apart from the node\'s', () => {
+      const own = WorkspaceSettingsSchema.parse({
+        version: 1, mounts: [{ kind: 'workspace', target: '/site', access: 'write' }],
+        policy: { ...emptyWorkspacePolicy(), network: { allow: ['own.test'] }, commands: { allow: ['pnpm *'], deny: ['curl *'], destructive: ['rm -rf *', 'git push *'], allowedInterpreters: ['node'] }, tools: { allow: ['fs_list'], deny: ['fs_write', 'shell_exec'] } },
+      })
+      expect(policySources(own, node)).toEqual({
+        'mount': 'workspace', 'commands.allow': 'workspace', 'commands.allowedInterpreters': 'workspace', 'network.allow': 'workspace', 'tools.allow': 'workspace',
+        'commands.deny': { node: [], workspace: ['curl *'] }, 'commands.destructive': { node: ['git push *'], workspace: ['rm -rf *'] }, 'tools.deny': { node: ['shell_exec'], workspace: ['fs_write'] },
+      })
+    })
   })
 
   // D85, Q3: each workspace has its own variables, set over the node's key by key, its own winning.
