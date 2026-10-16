@@ -15,13 +15,15 @@ describe('buckle serve\'s options', () => {
     expect(parseServeOptions(['--background'])).toMatchObject({ background: true, service: null })
     expect(parseServeOptions(['--service', 'systemd', '--state-dir', '/srv/state', '--env-file', '/srv/node.env'])).toEqual({ help: false, background: false, service: 'systemd', location: { stateDirectory: '/srv/state', environmentFile: '/srv/node.env' } })
     expect(parseServeOptions(['--background', '--service', 'task-scheduler', '--state-dir', '/srv/state'])).toMatchObject({ background: true, service: 'task-scheduler' })
+    // The macOS launchd agent (D85 Q4, owner ruling of 2026-10-17).
+    expect(parseServeOptions(['--service', 'launchd', '--state-dir', '/Users/owner/.5straps/buckle'])).toEqual({ help: false, background: false, service: 'launchd', location: { stateDirectory: '/Users/owner/.5straps/buckle' } })
     expect(parseServeOptions(['-h']).help).toBe(true)
   })
 
   it.each([
     [['--bogus'], /Unknown option '--bogus'[\s\S]*Usage: buckle serve \[--background\]/],
     [['extra'], /Unexpected argument 'extra'[\s\S]*Usage: buckle serve/],
-    [['--service', 'launchd'], /--service takes systemd, task-scheduler, background/],
+    [['--service', 'upstart'], /--service takes systemd, task-scheduler, launchd, background/],
     [['--state-dir', '/srv/state'], /--state-dir and --env-file are what a service definition passes; at a terminal, set BUCKLE_STATE_DIR or BUCKLE_ENV_FILE instead/],
     [['--service', 'systemd', '--state-dir', 'state'], /--state-dir must be an absolute path/],
     [['--service', 'systemd', '--env-file', 'node.env'], /--env-file must be an absolute path/],

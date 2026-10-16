@@ -21,6 +21,7 @@ import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-setting
 import { redeemPairingCode } from './pairing.js'
 import { createNamed } from './workspace.js'
 import { restartRoute, serviceInstalled, type RestartRoute } from '../common/services/node-service/installed.js'
+import { drivesServiceManager } from '../common/adapters/service-manager/index.js'
 import { attachCommand } from '../common/services/node-service/attach.js'
 import { runningNode, type RunningNode } from '../common/services/node-service/serve-record.js'
 import { homeDirectory } from '../common/domain/paths.js'
@@ -205,7 +206,7 @@ function startSteps(start: NodeStart, input: { out: string; platform: NodeJS.Pla
       : `  1. The node runs in service mode${pid} and serves this workspace now; no restart is needed.\n     Answer its approvals here with: ${attachCommand(input.stateDirectory, process.cwd(), input.platform)}`
   }
   if (start.kind === 'service') return hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform, 'buckle service start'))
-  const offer = input.platform === 'linux' || input.platform === 'win32' ? `\n${hintStep('     Or at every login:', serveCommand(input.out, process.env, input.platform, 'buckle service install --now'))}` : ''
+  const offer = drivesServiceManager(input.platform) ? `\n${hintStep('     Or at every login:', serveCommand(input.out, process.env, input.platform, 'buckle service install --now'))}` : ''
   return `${hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform))}${offer}`
 }
 

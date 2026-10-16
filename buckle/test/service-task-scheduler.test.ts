@@ -161,10 +161,12 @@ describe('schtasks.exe, imitated', () => {
 })
 
 describe('the service manager each platform has', () => {
-  it('is Task Scheduler on Windows and the systemd user manager on Linux', () => {
+  it('is Task Scheduler on Windows, the systemd user manager on Linux, launchd on macOS, and none elsewhere', () => {
     const context = { environment: {}, run: taskScheduler().run, location: { stateDirectory: '/srv/state', environmentFile: null } }
     expect(serviceManagerFor({ ...context, platform: 'win32' })?.label).toBe('the Task Scheduler task \\5straps\\Buckle')
     expect(serviceManagerFor({ ...context, platform: 'linux' })?.label).toBe('the systemd user unit buckle.service')
+    expect(serviceManagerFor({ ...context, platform: 'darwin' })?.label).toBe('the launchd agent com.5straps.buckle')
+    expect(serviceManagerFor({ ...context, platform: 'freebsd' })).toBeNull()
   })
 })
 

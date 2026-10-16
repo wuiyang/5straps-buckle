@@ -91,16 +91,16 @@ describe('buckle service, its words', () => {
   })
 })
 
-// Phase 3, item 4 (Q12): nothing for macOS yet.
-describe('buckle service on macOS, where Buckle drives no service manager', () => {
+// Phase 3, item 4: a platform other than Linux, macOS, and Windows, where Buckle drives no service manager.
+describe('buckle service where Buckle drives no service manager', () => {
   it('says it is not supported yet and exits 2 for each subcommand a definition needs, pointing at buckle serve --background', async () => {
     const target = node()
     for (const action of ['install', 'uninstall', 'start', 'restart']) {
-      expect(await service(target, [action], null, { platform: 'darwin' })).toMatchObject({ exitCode: 2, out: '', err: 'buckle service is not supported yet on macOS: buckle serve --background runs the node until it stops, and buckle service stop, status, and logs work on it.\n' })
+      expect(await service(target, [action], null, { platform: 'freebsd' })).toMatchObject({ exitCode: 2, out: '', err: 'buckle service is not supported yet on freebsd: buckle serve --background runs the node until it stops, and buckle service stop, status, and logs work on it.\n' })
     }
-    expect(await service(target, ['install', '--now'], null, { platform: 'freebsd' })).toMatchObject({ exitCode: 2, err: expect.stringContaining('not supported yet on freebsd') })
-    expect(await service(target, ['stop'], null, { platform: 'darwin' })).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n' })
-    expect((await service(target, ['status'], null, { platform: 'darwin' })).out).toContain('Service    none: buckle service is not supported yet on macOS')
+    expect(await service(target, ['install', '--now'], null, { platform: 'openbsd' })).toMatchObject({ exitCode: 2, err: expect.stringContaining('not supported yet on openbsd') })
+    expect(await service(target, ['stop'], null, { platform: 'freebsd' })).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n' })
+    expect((await service(target, ['status'], null, { platform: 'freebsd' })).out).toContain('Service    none: buckle service is not supported yet on freebsd')
   })
 })
 

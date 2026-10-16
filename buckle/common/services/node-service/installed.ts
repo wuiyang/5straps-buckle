@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
+import { launchdAgentPath, readAgent } from '../../domain/launchd-agent.js'
 import { homeDirectory } from '../../domain/paths.js'
 import { readUnit, systemdUnitPaths } from '../../domain/systemd-unit.js'
 import { sameDirectory } from '../../runtime/config.js'
@@ -6,16 +7,22 @@ import { runningNode, taskDefinitionCopy } from './serve-record.js'
 
 /**
  * Whether a service definition for this node is installed, read from disk without starting a program: on Linux the unit
- * naming this state directory, on Windows the task's copy kept in it. What the restart hints read (Phase 3, item 7).
+ * naming this state directory, on macOS the launchd agent naming it, on Windows the task's copy kept in it. What the
+ * restart hints read (Phase 3, item 7).
  */
 export function serviceInstalled(stateDirectory: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, home: string = homeDirectory(platform)): boolean {
   if (platform === 'win32') return existsSync(taskDefinitionCopy(stateDirectory))
-  if (platform !== 'linux') return false
-  const [unit] = systemdUnitPaths(environment, home)
-  if (!existsSync(unit!)) return false
+  if (platform === 'linux') return namesThisNode(systemdUnitPaths(environment, home)[0]!, text => readUnit(text).stateDirectory, stateDirectory, platform)
+  if (platform === 'darwin') return namesThisNode(launchdAgentPath(home), text => readAgent(text).stateDirectory, stateDirectory, platform)
+  return false
+}
+
+/** Whether the definition at `file` names this state directory, as `named` reads it; false where there is none or it cannot be read. */
+function namesThisNode(file: string, named: (text: string) => string | null, stateDirectory: string, platform: NodeJS.Platform): boolean {
+  if (!existsSync(file)) return false
   try {
-    const named = readUnit(readFileSync(unit!, 'utf8')).stateDirectory
-    return named !== null && sameDirectory(named, stateDirectory, platform)
+    const directory = named(readFileSync(file, 'utf8'))
+    return directory !== null && sameDirectory(directory, stateDirectory, platform)
   } catch {
     return false
   }

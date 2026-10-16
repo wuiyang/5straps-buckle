@@ -21,8 +21,8 @@ export interface CliResult {
 
 export const SERVICE_USAGE = `Usage: buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n <lines>]
 
-Runs this machine's node with no terminal, starting at login: a systemd user unit on Linux, a Task Scheduler task
-on Windows (docs/service.md). One node per machine. install writes the definition and enables it, and --now starts
+Runs this machine's node with no terminal, starting at login: a systemd user unit on Linux, a launchd agent on
+macOS, a Task Scheduler task on Windows (docs/service.md). One node per machine. install writes the definition and enables it, and --now starts
 it too; --skip-owner-only-check on install is kept in the definition. uninstall stops it and removes the definition,
 keeping the state directory. Where no service manager answers, buckle serve --background runs the node until it
 stops, and stop, status, and logs work on that node too.
@@ -65,15 +65,16 @@ const AUDITED = new Set(['install', 'uninstall', 'start', 'stop', 'restart'])
 /** The subcommands that need a service manager; stop, status, and logs also act on a node --background started. */
 const DEFINITION_ACTIONS = new Set(['install', 'uninstall', 'start', 'restart'])
 /**
- * The exit code where Buckle drives no service manager on this platform (Q12: nothing for macOS yet), so a script can
- * tell "not supported here" from a refusal.
+ * The exit code where Buckle drives no service manager on this platform (one other than Linux, macOS, and Windows), so
+ * a script can tell "not supported here" from a refusal.
  */
 export const UNSUPPORTED_EXIT = 2
 
 /**
- * `buckle service` (Phase 3 of the workspace-model slice), dispatched before buckle.env is read, so no credential is in
- * this process's environment when it starts a service manager's program, and each program gets an environment built
- * from a fixed list besides. A change is audited in the node's log, where the node has a state directory.
+ * `buckle service` (Phase 3 of the workspace-model slice): the systemd user unit on Linux, the launchd agent on macOS,
+ * and the Task Scheduler task on Windows. Dispatched before buckle.env is read, so no credential is in this process's
+ * environment when it starts systemctl, launchctl, or schtasks.exe, and each program gets an environment built from a
+ * fixed list besides. A change is audited in the node's log, where the node has a state directory.
  */
 export async function serviceCommand(input: ServiceCommandInput): Promise<CliResult> {
   const out = input.out ?? (text => void process.stdout.write(text))
@@ -140,9 +141,9 @@ function flags(argv: string[], options: ParseOptions): Record<string, string | b
 /** Where no service manager answers: the plain detach runs the node instead. */
 const FALLBACK = 'buckle serve --background runs the node until it stops'
 
-/** Phase 3, item 4 (Q12): nothing for macOS yet, nor for a platform Buckle drives no service manager on. */
+/** A platform Buckle drives no service manager on: one other than Linux, macOS, and Windows. */
 function unsupported(platform: NodeJS.Platform): string {
-  return `buckle service is not supported yet on ${platform === 'darwin' ? 'macOS' : platform}: ${FALLBACK}, and buckle service stop, status, and logs work on it.`
+  return `buckle service is not supported yet on ${platform}: ${FALLBACK}, and buckle service stop, status, and logs work on it.`
 }
 
 async function install(context: ServiceContext, now: boolean): Promise<CliResult> {
@@ -397,7 +398,7 @@ function versionOf(main: string): string | null {
 }
 
 function startedBy(record: ServeRecord): string {
-  return { background: 'buckle serve --background', terminal: 'buckle serve at a terminal', systemd: 'systemd', 'task-scheduler': 'Task Scheduler' }[record.manager]
+  return { background: 'buckle serve --background', terminal: 'buckle serve at a terminal', systemd: 'systemd', launchd: 'launchd', 'task-scheduler': 'Task Scheduler' }[record.manager]
 }
 
 /** How the running node picks up a newer install: as what started it restarts it. */

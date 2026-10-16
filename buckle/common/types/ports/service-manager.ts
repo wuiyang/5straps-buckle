@@ -16,7 +16,7 @@ export interface ServiceDefinition {
   main: string
   stateDirectory: string
   environmentFile: string | null
-  /** The installing shell's PATH, so the service finds the programs the owner's terminal finds (systemd). */
+  /** The installing shell's PATH, so the service finds the programs the owner's terminal finds (systemd, launchd). */
   path?: string
   /**
    * Whether the install command passed --skip-owner-only-check, which the service's node then passes to itself: a
@@ -38,12 +38,12 @@ export interface InstalledService {
 }
 
 /**
- * One platform's service manager: the systemd user manager on Linux, Task Scheduler on Windows. A refusal is thrown as
- * a ServiceManagerError naming no owner path.
+ * One platform's service manager: the systemd user manager on Linux, launchd on macOS, Task Scheduler on Windows. A
+ * refusal is thrown as a ServiceManagerError naming no owner path.
  */
 export interface ServiceManager {
-  readonly kind: 'systemd' | 'task-scheduler'
-  /** The definition as a person reads it, with no path: "the systemd user unit buckle.service". */
+  readonly kind: 'systemd' | 'launchd' | 'task-scheduler'
+  /** The definition as a person reads it, with no path: "the systemd user unit buckle.service" or "the launchd agent com.5straps.buckle". */
   readonly label: string
   /** Why this machine has no such manager to install into, or null where it answers. */
   unavailable(): Promise<string | null>
@@ -54,8 +54,8 @@ export interface ServiceManager {
   uninstall(): Promise<void>
   start(): Promise<void>
   /**
-   * Stops the service and waits for it, where the manager can signal the node (systemd's SIGTERM). Task Scheduler
-   * cannot, so it leaves this out, and the node is asked through its stop request instead.
+   * Stops the service and waits for it, where the manager can signal the node (systemd's and launchd's SIGTERM). Task
+   * Scheduler cannot, so it leaves this out, and the node is asked through its stop request instead.
    */
   stop?(): Promise<void>
   /** Restarts it in one step, where the manager can; otherwise a stop, then start. */

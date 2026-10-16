@@ -208,8 +208,14 @@ describe('the command init prints to start the node', () => {
     ])
   })
 
-  it('offers no service on macOS, where Buckle drives none yet', async () => {
+  // D85 Q4, owner ruling of 2026-10-17: the launchd agent on macOS; nothing on a platform Buckle drives no service manager on.
+  it('offers the service on macOS too', async () => {
     const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'darwin')
+    expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
+  })
+
+  it('offers no service where Buckle drives no service manager', async () => {
+    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'freebsd')
     expect(printed).not.toContain('buckle service install')
   })
 

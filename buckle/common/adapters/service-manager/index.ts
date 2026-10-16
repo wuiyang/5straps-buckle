@@ -1,5 +1,6 @@
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import type { NodeLocation, ServiceManager } from '../../types/ports/service-manager.js'
+import { createLaunchdManager } from './launchd.js'
 import { createSystemdManager } from './systemd.js'
 import { createTaskSchedulerManager } from './task-scheduler.js'
 
@@ -14,7 +15,14 @@ export interface ServiceManagerContext {
 
 /** The service manager Buckle drives on this platform; null where it drives none. */
 export function serviceManagerFor(context: ServiceManagerContext): ServiceManager | null {
-  if (context.platform === 'linux') return createSystemdManager({ environment: context.environment, run: context.run, location: context.location })
-  if (context.platform === 'win32') return createTaskSchedulerManager({ environment: context.environment, run: context.run, location: context.location })
+  const { environment, run, location } = context
+  if (context.platform === 'linux') return createSystemdManager({ environment, run, location })
+  if (context.platform === 'darwin') return createLaunchdManager({ environment, run, location })
+  if (context.platform === 'win32') return createTaskSchedulerManager({ environment, run, location })
   return null
+}
+
+/** Whether Buckle drives a service manager on this platform: the systemd user manager, launchd, or Task Scheduler. */
+export function drivesServiceManager(platform: NodeJS.Platform): boolean {
+  return platform === 'linux' || platform === 'darwin' || platform === 'win32'
 }

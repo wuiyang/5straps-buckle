@@ -10,9 +10,9 @@ import { replaceFile } from '../../adapters/json-file-store.js'
 
 /**
  * What started a serving process that runs on with no terminal (Phase 3 of the workspace-model slice): the systemd
- * user unit, the Windows Task Scheduler task, or `buckle serve --background` by hand.
+ * user unit, the Windows Task Scheduler task, the macOS launchd agent, or `buckle serve --background` by hand.
  */
-export const SERVICE_MANAGERS = ['systemd', 'task-scheduler', 'background'] as const
+export const SERVICE_MANAGERS = ['systemd', 'task-scheduler', 'launchd', 'background'] as const
 export type ServiceManagerKind = typeof SERVICE_MANAGERS[number]
 
 /**
