@@ -18,6 +18,11 @@ export interface ServiceDefinition {
   environmentFile: string | null
   /** The installing shell's PATH, so the service finds the programs the owner's terminal finds (systemd). */
   path?: string
+  /**
+   * Whether the install command passed --skip-owner-only-check, which the service's node then passes to itself: a
+   * state directory whose modes cannot be set (WSL on a Windows drive) would otherwise refuse it at every start.
+   */
+  skipOwnerOnlyCheck?: boolean
 }
 
 /** What an installed definition runs, read back from it; a field is null where the definition does not say. */
@@ -28,6 +33,8 @@ export interface InstalledService {
   thisNode: boolean | null
   /** Whether it starts at login. */
   enabled: boolean
+  /** Whether its node runs with --skip-owner-only-check. */
+  skipsOwnerOnlyCheck?: boolean
 }
 
 /**

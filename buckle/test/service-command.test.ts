@@ -166,6 +166,28 @@ describe('buckle service and a node buckle serve runs at a terminal', () => {
   })
 })
 
+// Finding 18 of recheck 4: troubleshooting.md tells an owner whose state directory modes cannot be set to pass the flag, and
+// serve --background passed it on, but a definition had no place for it, so the unit's node refused the directory at every start.
+describe('buckle service install and --skip-owner-only-check', () => {
+  it('writes the flag into the definition when the command had it, and leaves it out when it did not', async () => {
+    const target = node()
+    const { manager, calls } = fakeManager(target.state)
+    expect((await service(target, ['install'], manager, { skipOwnerOnlyCheck: true })).exitCode).toBe(0)
+    expect(calls).toEqual([['install', { node: process.execPath, main: target.main, stateDirectory: target.state, environmentFile: null, path: '/usr/bin:/bin', skipOwnerOnlyCheck: true }, { now: false }]])
+    expect((await service(target, ['install'], manager, { skipOwnerOnlyCheck: false })).exitCode).toBe(0)
+    expect(calls[1]![1]).not.toHaveProperty('skipOwnerOnlyCheck')
+  })
+
+  it('shows in status that the definition starts the node with the flag', async () => {
+    const target = node()
+    const { manager } = fakeManager(target.state, { installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true, skipsOwnerOnlyCheck: true } })
+    expect((await service(target, ['status'], manager)).out).toContain('Service    the imitated definition, starts at login, started with --skip-owner-only-check\n')
+    expect(JSON.parse((await service(target, ['status', '--json'], manager)).out).definition).toMatchObject({ skipsOwnerOnlyCheck: true })
+    const plain = fakeManager(target.state, { installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true } })
+    expect((await service(target, ['status'], plain.manager)).out).not.toContain('skip-owner-only-check')
+  })
+})
+
 describe('buckle service install', () => {
   it('writes the definition naming this Node, the built main.js, and where the node lives, as paths', async () => {
     const target = node()

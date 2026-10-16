@@ -1,5 +1,6 @@
 import { isAbsolute, join } from 'pathe'
 import { SERVE_REFUSED_EXIT, ServiceManagerError, type ServiceDefinition } from '../types/ports/service-manager.js'
+import { SKIP_OWNER_ONLY_FLAG } from './global-flags.js'
 
 /** The one Buckle unit a machine has (Phase 3, Q4): a systemd user unit, so it runs as the owner, at login. */
 export const SYSTEMD_UNIT = 'buckle.service'
@@ -43,7 +44,7 @@ export function renderUnit(definition: ServiceDefinition): string {
     if (path && /[\u0000-\u001f\u007f]/.test(path)) throw new ServiceManagerError('A path the service would name holds a control character, so Buckle writes no unit for it')
   }
   const command = [quoted(definition.node), quoted(definition.main), 'serve', '--service', 'systemd', '--state-dir', quoted(definition.stateDirectory),
-    ...(definition.environmentFile ? ['--env-file', quoted(definition.environmentFile)] : [])].join(' ')
+    ...(definition.environmentFile ? ['--env-file', quoted(definition.environmentFile)] : []), ...(definition.skipOwnerOnlyCheck ? [SKIP_OWNER_ONLY_FLAG] : [])].join(' ')
   return `# Written by buckle service install, which writes it again; buckle service uninstall removes it.
 # It names paths only: the node reads its settings from its own environment file.
 [Unit]
@@ -75,11 +76,11 @@ function quotedSetting(assignment: string): string {
 }
 
 /** What a unit's ExecStart runs, read back as renderUnit writes it; null fields where it does not say. */
-export function readUnit(text: string): { node: string | null; main: string | null; stateDirectory: string | null } {
+export function readUnit(text: string): { node: string | null; main: string | null; stateDirectory: string | null; skipsOwnerOnlyCheck: boolean } {
   const line = /^ExecStart=(.*)$/m.exec(text)?.[1]
   const words = line === undefined ? [] : execWords(line)
   const at = words.indexOf('--state-dir')
-  return { node: words[0] ?? null, main: words[1] ?? null, stateDirectory: at === -1 ? null : words[at + 1] ?? null }
+  return { node: words[0] ?? null, main: words[1] ?? null, stateDirectory: at === -1 ? null : words[at + 1] ?? null, skipsOwnerOnlyCheck: words.includes(SKIP_OWNER_ONLY_FLAG) }
 }
 
 /** ExecStart's words: double-quoted with backslash escapes, or bare; `%%` and `$$` read as one character. */

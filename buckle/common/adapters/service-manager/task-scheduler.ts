@@ -5,6 +5,7 @@ import { buildChildEnvironment } from '../../domain/environment.js'
 import { realPathOf } from '../../runtime/config.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../../types/ports/service-manager.js'
+import { SKIP_OWNER_ONLY_FLAG } from '../../domain/global-flags.js'
 import { replaceFile } from '../json-file-store.js'
 import { taskDefinitionCopy } from '../../services/node-service/serve-record.js'
 
@@ -112,7 +113,7 @@ export function stateDigest(stateDirectory: string): string {
  */
 export function renderTask(definition: ServiceDefinition & { userId: string }): string {
   const args = [windowsPath(definition.main), 'serve', '--background', '--service', 'task-scheduler', '--state-dir', windowsPath(definition.stateDirectory),
-    ...(definition.environmentFile ? ['--env-file', windowsPath(definition.environmentFile)] : [])]
+    ...(definition.environmentFile ? ['--env-file', windowsPath(definition.environmentFile)] : []), ...(definition.skipOwnerOnlyCheck ? [SKIP_OWNER_ONLY_FLAG] : [])]
   return `<?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.2" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
   <RegistrationInfo>
@@ -172,11 +173,12 @@ function element(text: string, name: string, within?: string): string | null {
 }
 
 /** What a task Buckle wrote runs, read back from its XML. */
-export function readTask(text: string): { node: string | null; main: string | null; source: string | null; enabled: boolean } {
+export function readTask(text: string): { node: string | null; main: string | null; source: string | null; enabled: boolean; skipsOwnerOnlyCheck: boolean } {
   const args = element(text, 'Arguments', 'Exec')
   return {
     node: element(text, 'Command', 'Exec'),
     main: args === null ? null : windowsArguments(args)[0] ?? null,
+    skipsOwnerOnlyCheck: args !== null && windowsArguments(args).includes(SKIP_OWNER_ONLY_FLAG),
     source: element(text, 'Source', 'RegistrationInfo'),
     enabled: element(text, 'Enabled', 'Settings') !== 'false',
   }
@@ -234,7 +236,7 @@ export function createTaskSchedulerManager(input: { environment: NodeJS.ProcessE
       const task = readTask(queried.stdout.replaceAll('\u0000', '').replace(/^﻿/, ''))
       const thisNode = task.source === null ? null : task.source === `${SOURCE_PREFIX}${stateDigest(input.location.stateDirectory)}`
       const own = thisNode === true && existsSync(copy) ? readTask(taskFileText(readFileSync(copy))) : null
-      return { node: own?.node ?? null, main: own?.main ?? null, thisNode, enabled: task.enabled }
+      return { node: own?.node ?? null, main: own?.main ?? null, thisNode, enabled: task.enabled, ...(own?.skipsOwnerOnlyCheck ? { skipsOwnerOnlyCheck: true } : {}) }
     },
     async install(definition, options) {
       const userId = [variable(input.environment, 'USERDOMAIN'), variable(input.environment, 'USERNAME')].filter(Boolean).join('\\')

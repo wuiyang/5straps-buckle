@@ -1,9 +1,9 @@
 import { chmodSync, fchmodSync, statSync } from 'node:fs'
 import type { Logger } from '@5straps/runtime'
+import { SKIP_OWNER_ONLY_FLAG } from '../domain/global-flags.js'
 import { logger } from '../runtime/log.js'
 
-/** The flag any command takes to use a credential file or directory that other users can reach. */
-export const SKIP_OWNER_ONLY_FLAG = '--skip-owner-only-check'
+export { SKIP_OWNER_ONLY_FLAG }
 
 // Set once by main from the command line, as the root logger is; a check's own `skip` wins.
 let skipFromCommandLine = false

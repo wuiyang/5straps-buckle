@@ -96,6 +96,36 @@ describe('buckle service on Linux, with the systemd user manager imitated', () =
     expect(environments).not.toMatch(/admin-fixture|BUCKLE_/)
   }, 120_000)
 
+  // Fix brief 6, item 11 (finding 18 of recheck 4): troubleshooting.md tells an owner whose state directory modes cannot be
+  // set to pass --skip-owner-only-check. serve --background passed it on, but the unit had no place for it, so its node
+  // refused the directory at every start and systemd restarted it every 5 s.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('writes --skip-owner-only-check into the unit, so its node starts on a state directory open to other users', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-service-loose-')))
+    const state = join(root, 'state')
+    mkdirSync(state, { mode: 0o700 })
+    mkdirSync(join(root, 'runtime'))
+    const port = await freePort()
+    writeFileSync(join(state, 'buckle.env'), `BUCKLE_HOST=127.0.0.1\nBUCKLE_PORT=${port}\nBUCKLE_ADMIN_TOKEN=file-admin-fixture\n`, { mode: 0o600 })
+    chmodSync(state, 0o755)
+    const bin = fakeUserManager(root, state)
+    const env: NodeJS.ProcessEnv = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TMPDIR: root, XDG_RUNTIME_DIR: join(root, 'runtime'), XDG_CONFIG_HOME: join(root, 'config'), BUCKLE_STATE_DIR: state }
+    const buckle = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', env, cwd: root, timeout: 60_000 })
+
+    const installed = buckle(['--skip-owner-only-check', 'service', 'install', '--now'])
+    expect(installed.stderr).toBe('')
+    const pid = Number(/^Installed and started the Buckle service \(the systemd user unit buckle\.service, pid (\d+)\); it starts at every login\.\n$/.exec(installed.stdout)![1])
+    pids.push(pid)
+    await waitForStatus(`http://127.0.0.1:${port}/health/ready`, 200)
+    expect(readFileSync(join(root, 'config', 'systemd', 'user', 'buckle.service'), 'utf8')).toContain(`ExecStart="${process.execPath}" "${entry}" serve --service systemd --state-dir "${state}" --skip-owner-only-check\n`)
+    expect(buckle(['service', 'status']).stdout).toContain('Service    the systemd user unit buckle.service, starts at login, started with --skip-owner-only-check\n')
+
+    expect(buckle(['service', 'stop']).status).toBe(0)
+    // Installed again without the flag, the unit no longer carries it.
+    expect(buckle(['service', 'install']).status).toBe(0)
+    expect(readFileSync(join(root, 'config', 'systemd', 'user', 'buckle.service'), 'utf8')).not.toContain('skip-owner-only-check')
+    expect(buckle(['service', 'uninstall']).status).toBe(0)
+  }, 120_000)
+
   // Fix brief 6, item 1 (findings 1 and 32 of recheck 4): a buckle serve typed at a terminal held no lock, so the family
   // could not see it: status said it was not running, --background started a second node, and a unit started beside it
   // failed on the port and restarted every 5 s. It now holds the lock as a `terminal` node, and each refuses beside it.

@@ -46,7 +46,16 @@ WantedBy=default.target
     expect(unit).toContain('ExecStart="/opt/n%%h/node" "/opt/$$HOME/\\"x\\"\\\\main.js" serve --service systemd --state-dir "/srv/state 100%%" --env-file "/srv/node$$.env"\n')
     expect(unit).toContain('Environment="PATH=/opt/%%t:/usr/bin"\n')
     expect(unit).toContain('WorkingDirectory=/srv/state 100%%\n')
-    expect(readUnit(unit)).toEqual({ node: odd.node, main: odd.main, stateDirectory: odd.stateDirectory })
+    expect(readUnit(unit)).toEqual({ node: odd.node, main: odd.main, stateDirectory: odd.stateDirectory, skipsOwnerOnlyCheck: false })
+  })
+
+  // Finding 18 of recheck 4: a node whose state directory modes cannot be set refused it at every start, as the unit had no flag.
+  it('carries --skip-owner-only-check at the end of ExecStart where the install had it, and reads it back', () => {
+    const skipped = renderUnit({ ...DEFINITION, environmentFile: '/srv/node.env', skipOwnerOnlyCheck: true })
+    expect(skipped).toContain('serve --service systemd --state-dir "/home/owner/.5straps/buckle" --env-file "/srv/node.env" --skip-owner-only-check\n')
+    expect(readUnit(skipped)).toMatchObject({ stateDirectory: '/home/owner/.5straps/buckle', skipsOwnerOnlyCheck: true })
+    expect(renderUnit(DEFINITION)).not.toContain('skip-owner-only-check')
+    expect(renderUnit({ ...DEFINITION, skipOwnerOnlyCheck: false })).toBe(renderUnit(DEFINITION))
   })
 
   it('names no PATH where the shell had none, and refuses a path holding a control character', () => {
@@ -55,8 +64,8 @@ WantedBy=default.target
   })
 
   it('reads a unit that does not say where its node lives as naming nothing', () => {
-    expect(readUnit('[Service]\nExecStart=/usr/bin/node /srv/main.js serve\n')).toEqual({ node: '/usr/bin/node', main: '/srv/main.js', stateDirectory: null })
-    expect(readUnit('[Unit]\n')).toEqual({ node: null, main: null, stateDirectory: null })
+    expect(readUnit('[Service]\nExecStart=/usr/bin/node /srv/main.js serve\n')).toEqual({ node: '/usr/bin/node', main: '/srv/main.js', stateDirectory: null, skipsOwnerOnlyCheck: false })
+    expect(readUnit('[Unit]\n')).toEqual({ node: null, main: null, stateDirectory: null, skipsOwnerOnlyCheck: false })
   })
 
   it('lives where the user manager reads the owner\'s units, beside the link enable makes', () => {
@@ -264,7 +273,7 @@ describe.skipIf(process.platform === 'win32')('buckle service on Linux, with sys
     const fake = fakeSystemd()
     const { state, main } = node(fake)
     expect(await run(fake, main, ['install'])).toMatchObject({ exitCode: 0, out: 'Installed the Buckle service (the systemd user unit buckle.service); it starts at every login. Start it now with buckle service start.\n', err: '' })
-    expect(readUnit(readFileSync(join(fake.root, 'config', 'systemd', 'user', 'buckle.service'), 'utf8'))).toEqual({ node: process.execPath, main, stateDirectory: state })
+    expect(readUnit(readFileSync(join(fake.root, 'config', 'systemd', 'user', 'buckle.service'), 'utf8'))).toEqual({ node: process.execPath, main, stateDirectory: state, skipsOwnerOnlyCheck: false })
     const other = { ...fake, environment: { ...fake.environment, BUCKLE_STATE_DIR: join(fake.root, 'other-state') } }
     mkdirSync(join(fake.root, 'other-state'), { mode: 0o700 })
     writeFileSync(join(fake.root, 'other-state', 'buckle.env'), '')

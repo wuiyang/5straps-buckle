@@ -71,7 +71,7 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
     return undefined
   }
   try {
-    return await runCommand(mode)
+    return await runCommand(mode, global)
   } catch (error) {
     return refuseCommand(error)
   }
@@ -130,14 +130,14 @@ function serviceOutput(parsed: ServeOptions): LogOutput {
   return output
 }
 
-async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<number> {
+async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: { skipOwnerOnlyCheck: boolean }): Promise<number> {
   // Before the file is loaded, so `settings show` can tell the file's values from the shell's.
   if (mode.kind === 'init') return (await runInitCommand(mode.argv)).exitCode
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
   // A person's device, which needs no node: its own key and the node it signs for.
   if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
   // Before the file is loaded, so no credential is in this process's environment when it runs systemctl or schtasks.exe.
-  if (mode.kind === 'service') return (await runServiceCommand(mode.argv)).exitCode
+  if (mode.kind === 'service') return (await runServiceCommand(mode.argv, { skipOwnerOnlyCheck: global.skipOwnerOnlyCheck })).exitCode
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode

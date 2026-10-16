@@ -33,7 +33,16 @@ describe('the Task Scheduler task', () => {
     const odd = { ...DEFINITION, main: 'C:/Program Files/Buckle & Co/dist/main.js', stateDirectory: 'D:/Owner <state>/', environmentFile: 'D:/Owner state/node.env' }
     const task = renderTask(odd)
     expect(task).toContain('<Arguments>&quot;C:\\Program Files\\Buckle &amp; Co\\dist\\main.js&quot; serve --background --service task-scheduler --state-dir &quot;D:\\Owner &lt;state&gt;\\\\&quot; --env-file &quot;D:\\Owner state\\node.env&quot;</Arguments>')
-    expect(readTask(task)).toEqual({ node: DEFINITION.node, main: 'C:\\Program Files\\Buckle & Co\\dist\\main.js', source: `5straps Buckle sha256:${stateDigest(odd.stateDirectory)}`, enabled: true })
+    expect(readTask(task)).toEqual({ node: DEFINITION.node, main: 'C:\\Program Files\\Buckle & Co\\dist\\main.js', source: `5straps Buckle sha256:${stateDigest(odd.stateDirectory)}`, enabled: true, skipsOwnerOnlyCheck: false })
+  })
+
+  // Finding 18 of recheck 4: the task's `serve --background` passes the flag on to the node it starts.
+  it('carries --skip-owner-only-check as the last argument where the install had it, and reads it back', () => {
+    const skipped = renderTask({ ...DEFINITION, skipOwnerOnlyCheck: true })
+    expect(skipped).toContain('--state-dir C:\\Users\\Owner\\.5straps\\buckle --skip-owner-only-check</Arguments>')
+    expect(readTask(skipped).skipsOwnerOnlyCheck).toBe(true)
+    expect(renderTask(DEFINITION)).not.toContain('skip-owner-only-check')
+    expect(readTask(renderTask(DEFINITION)).skipsOwnerOnlyCheck).toBe(false)
   })
 
   it.each([

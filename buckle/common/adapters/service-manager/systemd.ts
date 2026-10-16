@@ -53,8 +53,8 @@ export function createSystemdManager(input: { environment: NodeJS.ProcessEnv; ru
     async installed(): Promise<InstalledService | null> {
       if (!existsSync(unit)) return null
       const enabled = (await systemctl(['is-enabled', SYSTEMD_UNIT]).catch(() => ({ exitCode: 1 }))).exitCode === 0
-      const { node, main, stateDirectory } = readUnit(readFileSync(unit, 'utf8'))
-      return { node, main, thisNode: stateDirectory === null ? null : sameDirectory(stateDirectory, input.location.stateDirectory, 'linux'), enabled }
+      const { node, main, stateDirectory, skipsOwnerOnlyCheck } = readUnit(readFileSync(unit, 'utf8'))
+      return { node, main, thisNode: stateDirectory === null ? null : sameDirectory(stateDirectory, input.location.stateDirectory, 'linux'), enabled, ...(skipsOwnerOnlyCheck ? { skipsOwnerOnlyCheck } : {}) }
     },
     async install(definition, options) {
       const text = renderUnit(definition)

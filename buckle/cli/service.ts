@@ -3,6 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { dirname, join } from 'pathe'
 import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { SKIP_OWNER_ONLY_FLAG } from '../common/domain/global-flags.js'
 import { actionsPath } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
 import { addressOf, atTerminal } from '../common/services/node-service/attach.js'
@@ -22,8 +23,9 @@ export const SERVICE_USAGE = `Usage: buckle service install [--now] | uninstall 
 
 Runs this machine's node with no terminal, starting at login: a systemd user unit on Linux, a Task Scheduler task
 on Windows (docs/service.md). One node per machine. install writes the definition and enables it, and --now starts
-it too; uninstall stops it and removes the definition, keeping the state directory. Where no service manager answers,
-buckle serve --background runs the node until it stops, and stop, status, and logs work on that node too.
+it too; --skip-owner-only-check on install is kept in the definition. uninstall stops it and removes the definition,
+keeping the state directory. Where no service manager answers, buckle serve --background runs the node until it
+stops, and stop, status, and logs work on that node too.
 `
 
 /** How long a command waits for the node to listen after a start, and to end after a stop. */
@@ -47,6 +49,8 @@ export interface ServiceCommandInput {
   err?: (text: string) => void
   /** Ends `logs -f`; a terminal ends it with Ctrl-C. */
   signal?: AbortSignal
+  /** Whether the command line carried --skip-owner-only-check, which `install` writes into the definition. */
+  skipOwnerOnlyCheck?: boolean
 }
 
 interface ServiceContext {
@@ -176,6 +180,7 @@ function definitionFor(context: ServiceContext): ServiceDefinition {
     stateDirectory: context.location.stateDirectory,
     environmentFile: context.location.environmentFile,
     ...(path ? { path } : {}),
+    ...(context.input.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}),
   }
 }
 
@@ -340,7 +345,7 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
   const report = {
     platform: context.input.platform,
     manager: manager?.kind ?? null,
-    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: installed.thisNode === true, ...(beforeLogin === null ? {} : { startsBeforeLogin: beforeLogin.starts }) },
+    definition: installed === null ? null : { label: manager!.label, enabled: installed.enabled, thisNode: installed.thisNode === true, ...(beforeLogin === null ? {} : { startsBeforeLogin: beforeLogin.starts }), ...(installed.skipsOwnerOnlyCheck ? { skipsOwnerOnlyCheck: true } : {}) },
     running: running === null ? null : { pid: record?.pid ?? null, startedBy: record?.manager ?? null, address: record === null ? null : addressOf(record), version: record?.version ?? null, startedAt: record?.startedAt ?? null, health },
     installedVersion,
     next,
@@ -349,7 +354,7 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
     context.out(`${JSON.stringify(report, null, 2)}\n`)
     return { exitCode: 0 }
   }
-  context.out(`Service    ${report.definition === null ? (manager === null ? `none: ${unsupported(context.input.platform)}` : 'not installed') : `${report.definition.label}, ${report.definition.enabled ? 'starts at login' : 'disabled'}${report.definition.thisNode ? '' : ', for another state directory'}`}\n`)
+  context.out(`Service    ${report.definition === null ? (manager === null ? `none: ${unsupported(context.input.platform)}` : 'not installed') : `${report.definition.label}, ${report.definition.enabled ? 'starts at login' : 'disabled'}${report.definition.thisNode ? '' : ', for another state directory'}${report.definition.skipsOwnerOnlyCheck ? `, started with ${SKIP_OWNER_ONLY_FLAG}` : ''}`}\n`)
   context.out(`Running    ${running === null ? 'no' : `yes${pidOf(running)}${record === null ? ', starting' : `, started by ${startedBy(record)} at ${record.startedAt}`}`}\n`)
   if (record !== null && health !== null) {
     context.out(`Address    ${addressOf(record)}\nHealth     ${health.live ? '/health answers' : '/health does not answer'}; ${health.ready === 200 ? '/health/ready answers ready' : health.ready === null ? '/health/ready does not answer' : `/health/ready answers ${health.ready}, not ready yet`}\n`)

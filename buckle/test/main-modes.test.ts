@@ -109,6 +109,11 @@ describe('main', () => {
     }
     expect(await main(['--skip-owner-only-check', 'init', '--yes'])).toBe(3)
     expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])
+    // Fix brief 6, item 11: buckle service install writes it into the definition, so it reaches the command, wherever it stands.
+    for (const argv of [['--skip-owner-only-check', 'service', 'install'], ['service', 'install', '--skip-owner-only-check']]) {
+      expect(await main(argv)).toBe(6)
+      expect(entry.runServiceCommand).toHaveBeenLastCalledWith(['install'], { skipOwnerOnlyCheck: true })
+    }
     expect(await main(['--skip-owner-only-check', 'serve'])).toBeUndefined()
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ role: 'server' }))
     expect(await main(['policy', 'show'])).toBe(5)
@@ -163,7 +168,7 @@ describe('main', () => {
     expect(entry.runSettingsCommand).toHaveBeenCalledWith(['show'])
     // Phase 3: no credential is in the environment when buckle service starts systemctl or schtasks.exe.
     expect(await main(['service', 'install', '--now'])).toBe(6)
-    expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'])
+    expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'], { skipOwnerOnlyCheck: false })
     expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
     expect(entry.loadConfig).not.toHaveBeenCalled()
   })

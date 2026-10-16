@@ -60,9 +60,9 @@ export function runSettingsCommand(argv: string[]): Promise<CliResult> {
  * `buckle service` (Phase 3 of the workspace-model slice): before buckle.env is read, so the programs it starts, the
  * service manager's own, find no credential in its environment.
  */
-export function runServiceCommand(argv: string[]): Promise<CliResult> {
+export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?: boolean } = {}): Promise<CliResult> {
   const environment = process.env
-  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(),
+  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}),
     manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) })
 }
 
