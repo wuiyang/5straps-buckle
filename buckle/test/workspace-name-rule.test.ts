@@ -6,7 +6,9 @@ import { WorkspacePatchSchema, WorkspaceRegistrationSchema } from '../common/ser
 // Fix brief 4, findings 37 and 38: a name given now reaches every route as one path segment as typed, and fits what a
 // signed request names a workspace by. A name already stored keeps whatever 0.1 or the move gave it.
 
-const UNREACHABLE = ['team/api', 'team\\api', '.', '..', 'a%2Fb', '100%', 'tab\there', 'bell\u0007', 'n'.repeat(SIGNED_WORKSPACE_MAX + 1)]
+const UNREACHABLE = ['team/api', 'team\\api', '.', '..', 'a%2Fb', '100%', 'tab\there', 'bell\u0007', 'n'.repeat(SIGNED_WORKSPACE_MAX + 1),
+  // A command line reads a leading dash as an option, and no URL carries an unpaired surrogate (finding 49 of the third re-check).
+  '-site', '--all', '--', '-', 'a\ud800b', 'b\udc00']
 
 describe('a workspace name given now', () => {
   it.each(UNREACHABLE)('refuses %j, at registration, at rename, and as a name', (name) => {
@@ -25,6 +27,8 @@ describe('a workspace name given now', () => {
     const issue = (name: string) => NewWorkspaceNameSchema.safeParse(name).error?.issues.map(item => item.message).join('; ')
     expect(issue('a/b')).toBe('A name cannot hold /, \\, %, or a control character, and is not . or ..')
     expect(issue('n'.repeat(65))).toBe('A name is at most 64 characters')
+    expect(issue('-site')).toBe('A name does not begin with -')
+    expect(issue('a\ud800b')).toBe('A name holds no unpaired surrogate')
   })
 
   it('is no longer than a signed request can name', () => {
@@ -35,7 +39,7 @@ describe('a workspace name given now', () => {
 })
 
 describe('a workspace name already stored', () => {
-  it.each(['team/api', 'n'.repeat(120), '..'])('is still read when it is %j, so a registry from 0.1 or the move stays readable', (name) => {
+  it.each(['team/api', 'n'.repeat(120), '..', '-site'])('is still read when it is %j, so a registry from 0.1 or the move stays readable', (name) => {
     expect(WorkspaceNameSchema.safeParse(name).success).toBe(true)
   })
 })

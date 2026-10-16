@@ -41,7 +41,11 @@ export const WorkspaceNameSchema = neverAName(z.string().trim().min(1, 'A name i
  * segment that reaches the node as typed, and short enough for a signed request to name it, as a person's device does.
  */
 export const NewWorkspaceNameSchema = neverAName(z.string().trim().min(1, 'A name is not empty').max(SIGNED_WORKSPACE_MAX, `A name is at most ${SIGNED_WORKSPACE_MAX} characters`)
-  .refine(value => !/[/\\%\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..', 'A name cannot hold /, \\, %, or a control character, and is not . or ..'))
+  .refine(value => !/[/\\%\u0000-\u001f\u007f]/.test(value) && value !== '.' && value !== '..', 'A name cannot hold /, \\, %, or a control character, and is not . or ..')
+  // A command line reads a leading dash as an option (`--workspace -site` fails), and an unpaired surrogate is no text a
+  // URL can carry: neither can be named (finding 49 of the third re-check).
+  .refine(value => !value.startsWith('-'), 'A name does not begin with -')
+  .refine(value => value.isWellFormed(), 'A name holds no unpaired surrogate'))
 
 /** Whether two names are one workspace's: compared without regard to case, stored as typed. */
 export function sameName(left: string, right: string): boolean {

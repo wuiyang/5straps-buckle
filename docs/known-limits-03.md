@@ -60,7 +60,9 @@ The first release of [workspaces](workspaces.md) leaves these open for a later r
   cannot start (an unsupported platform, or too many open files), Buckle logs it once and falls
   back to the per-call check and the `buckle serve` poll, so a change is taken up at the next call
   or poll rather than at once.
-- A name given now is at most 64 characters and holds no `/`, `\`, or `%`. A workspace named
+- A name given now is at most 64 characters, holds no `/`, `\`, or `%`, and begins with no `-`,
+  as a command line would read it as an option; the move drops a leading `-` from a folder's
+  name, and holds a name typed at its question to the same rule. A workspace named
   longer by 0.1 or by the move keeps its name, which `buckle client` cannot sign for: it says so,
   and the workspace's id, which `buckle workspace list` prints, takes its place.
 - The node level serves no workspace: apart from the registry's routes and the node-scoped setup

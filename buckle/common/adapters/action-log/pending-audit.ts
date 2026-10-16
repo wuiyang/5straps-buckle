@@ -98,7 +98,8 @@ async function hasTerminalRecord(filePath: string, auditId: string, offset: numb
   } finally { lines.close(); stream.destroy() }
 }
 
-function processIsAlive(pid: number): boolean {
+/** Whether a process is running, as the kernel answers a signal 0: one that cannot be signalled for want of permission is. */
+export function processIsAlive(pid: number): boolean {
   try { process.kill(pid, 0); return true }
   catch (error) { return !(error instanceof Error && 'code' in error && error.code === 'ESRCH') }
 }

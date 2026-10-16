@@ -2,6 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realp
 import { basename, dirname, join, relative } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
+import { processIsAlive } from '../../adapters/action-log/pending-audit.js'
 import { editEnvironmentVariable, updateEnvironmentFile } from '../../adapters/environment-file.js'
 import { setMode } from '../../adapters/file-modes.js'
 import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
@@ -14,7 +15,7 @@ import { comparablePath, ignoresCase, nativePath } from '../../domain/paths.js'
 import { actionsPath, clientKeysPath, dangerouslyAllowPath, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { tokenDigest } from '../access/tokens.js'
-import { openRegistry, registryPath, RegistrySchema, sameName, WorkspaceNameSchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
+import { NewWorkspaceNameSchema, openRegistry, registryPath, RegistrySchema, sameName, WorkspaceNameSchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
 import { exposedRoots, overlaps } from './workspace-dirs.js'
 import { workspaceIdFor } from './workspace-id.js'
 import { openSettingsFile, settingsPath, withMount, withPolicy, WORKSPACE_MOUNT_TARGET, WorkspaceSettingsSchema, type WorkspaceSettings } from './workspace-settings.js'
@@ -370,18 +371,23 @@ function ownFolder(input: { node: NodeConfig; platform: NodeJS.Platform; stateRo
  */
 async function folderName(input: { dir: string; id: string; taken: readonly string[]; notes: string[]; askName?: AskName }): Promise<string> {
   const name = fittingName({ label: `The node's folder ${input.dir}`, name: basename(input.dir), notes: input.notes })
-  /** Why a name cannot be the folder's, or null: another workspace holds it, or the registry would not read it (`node`, a UUID's form). */
-  const unfit = (candidate: string): string | null => {
+  /**
+   * Why a name cannot be the folder's, or null: another workspace holds it, or the registry would not read it (`node`, a
+   * UUID's form). A name the owner types now is held to the rule for names given now (NewWorkspaceNameSchema; finding 48
+   * of the third re-check), as add, init, and rename hold theirs; the folder's own keeps the stored-name rule.
+   */
+  const unfit = (candidate: string, given = false): string | null => {
     if (input.taken.some(other => sameName(other, candidate))) return `a registered workspace is named ${candidate} already`
-    const parsed = WorkspaceNameSchema.safeParse(candidate)
+    const parsed = (given ? NewWorkspaceNameSchema : WorkspaceNameSchema).safeParse(candidate)
     return parsed.success ? null : `${candidate} cannot be a workspace name (${parsed.error.issues.map(issue => issue.message).join('; ')})`
   }
   const reason = unfit(name)
   if (reason === null) return name
   const fallback = `${name}-${input.id.slice(0, 8)}`
   const answer = input.askName === undefined ? '' : (await input.askName(`The node's folder ${input.dir} would be workspace ${name}, but ${reason}. Another name for the folder, or Enter for ${fallback}: `)).trim()
-  if (answer !== '' && unfit(answer) === null) return answer
-  input.notes.push(`The node's folder ${input.dir} is workspace ${fallback}: ${reason}${answer === '' ? '' : `, and ${answer} could not be used`}. Rename it with buckle workspace rename ${workspaceArgument(fallback)} <name>.`)
+  const refused = answer === '' ? null : unfit(answer, true)
+  if (answer !== '' && refused === null) return answer
+  input.notes.push(`The node's folder ${input.dir} is workspace ${fallback}: ${reason}${refused === null ? '' : `, and the name given could not be used: ${refused}`}. Rename it with buckle workspace rename ${workspaceArgument(fallback)} <name>.`)
   return fallback
 }
 
@@ -476,8 +482,8 @@ function keyOf(input: { keys: readonly string[]; spellings: readonly string[]; p
   return matching[0] ?? null
 }
 
-/** What a name given now may not hold, since a route cannot carry it as typed (NewWorkspaceNameSchema). */
-const UNREACHABLE = /[/\\%\u0000-\u001f\u007f]+/g
+/** What a name given now may not hold, since a route cannot carry it as typed (NewWorkspaceNameSchema): a character, or an unpaired surrogate. */
+const UNREACHABLE = /(?:[/\\%\u0000-\u001f\u007f]|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF])+/g
 
 /**
  * A name the registry reads (WorkspaceNameSchema, finding 3): one over 120 characters is cut at a word's end, an empty
@@ -486,12 +492,13 @@ const UNREACHABLE = /[/\\%\u0000-\u001f\u007f]+/g
  */
 function fittingName(input: { label: string; name: string; notes: string[] }): string {
   const trimmed = input.name.trim()
-  const carried = trimmed.replace(UNREACHABLE, '-')
+  // A leading dash reads as an option on a command line (finding 49 of the third re-check), so a leading run of them goes.
+  const carried = trimmed.replace(UNREACHABLE, '-').replace(/^-+/, '')
   const plain = carried === '.' || carried === '..' ? '' : carried
   if (plain === trimmed && trimmed !== '' && trimmed.length <= NAME_LIMIT) return trimmed
   const fit = (plain === '' ? '' : cutName(plain)) || UNNAMED
   const why = trimmed === '' ? 'was empty'
-    : plain !== trimmed ? 'held a character no route can carry in a name (/, \\, %, or a control character), or was only dots'
+    : plain !== trimmed ? 'held a character no route can carry in a name (/, \\, %, a control character, or an unpaired surrogate), began with -, or was only dots'
       : `was ${trimmed.length} characters, more than the ${NAME_LIMIT} a workspace name holds`
   input.notes.push(`${input.label}'s name ${why}, so it is named ${fit}; rename it with buckle workspace rename ${workspaceArgument(fit)} <name>.`)
   return fit
@@ -632,7 +639,8 @@ const PendingAuditSchema = z.object({ version: z.literal(1), pending: z.record(z
  * The 0.1 node's audit log held every call of the node's folder, and its owner's commands beside them. It becomes the
  * folder's workspace's log, so `buckle log --workspace <name>` reads what the folder's agents did before the move, and
  * the node's own log starts fresh with the owner's commands (fix brief 4, findings 17 and 18). The attempts it still
- * tracks as open move with it, but for this very process's, whose results the node's log will record. A workspace that
+ * tracks as open move with it where their process is dead; a live process's, this very one's among them, stay, as its
+ * result is recorded in the node's log. A workspace that
  * has a log already (a node that went back to 0.1 and moves again) keeps it, and the old one stays where it is; so does
  * a log whose open attempts will not read. Answers whether the log moved.
  */
@@ -646,7 +654,9 @@ async function moveAuditLog(node: NodeConfig, planned: Planned): Promise<boolean
   const source = createJsonFileStore({ filePath: `${from}.pending.json`, ...open })
   const target = createJsonFileStore({ filePath: `${to}.pending.json`, ...open })
   try {
-    const leaving = Object.entries(source.read().pending).filter(([, attempt]) => attempt.processId !== process.pid)
+    // A live process (a 0.1 serve still running, a command started beside this one) records its result in the node's
+    // log by path and pairs it there, so its attempt stays at the node: moved, it would read as interrupted later.
+    const leaving = Object.entries(source.read().pending).filter(([, attempt]) => attempt.processId !== process.pid && !processIsAlive(attempt.processId))
     if (leaving.length > 0) {
       await target.update((state) => { for (const [id, attempt] of leaving) state.pending[id] = attempt })
       await source.update((state) => { for (const [id] of leaving) delete state.pending[id] })

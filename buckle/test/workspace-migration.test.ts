@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -401,8 +402,27 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(note).not.toContain('a registered workspace is named')
     })
 
-    // Fix brief 4, finding 37: a node folder called a%b was named so, and no HTTP route reaches it by that name.
-    it.each([['a%b', 'a-b'], ['100%', '100']])('names a node folder called %s %s, saying so, since a route cannot carry the first', async (folderName, expected) => {
+    // Finding 48 of the third re-check: the name typed at the move's question is one given now, held to the rule add,
+    // init, and rename hold theirs to; one it refuses falls back, saying why.
+    it.each(['team/api', '100%', 'n'.repeat(100), 'tab\there', '-site', 'a\ud800b'])('falls back where the name typed at the question is %j, which a route cannot carry, saying why', async (answer) => {
+      const input = scene()
+      const folder = join(input.root, 'node')
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
+      version1(input)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await openWorkspaceManager({ config: loadConfig(input.environment), askName: async () => answer })
+
+      const fallback = `node-${workspaceIdOf(folder).slice(0, 8)}`
+      expect(manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name).toBe(fallback)
+      const note = notices.mock.calls.map(([message]) => String(message)).find(message => message.startsWith(`The node's folder ${folder} is workspace ${fallback}:`))
+      expect(note).toContain('and the name given could not be used')
+      expect(note).toContain('cannot be a workspace name')
+    })
+
+    // Fix brief 4, finding 37: a node folder called a%b was named so, and no HTTP route reaches it by that name. Finding
+    // 49 of the third re-check: nor does a command line reach one that begins with a dash.
+    it.each([['a%b', 'a-b'], ['100%', '100'], ['%docs', 'docs'], ['-docs', 'docs'], ['--all', 'all']])('names a node folder called %s %s, saying so, since a route cannot carry the first', async (folderName, expected) => {
       const input = scene()
       const folder = join(input.root, folderName)
       mkdirSync(folder)
@@ -847,16 +867,21 @@ describe('moving a 0.1 node onto the workspace model', () => {
         expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual(expect.stringContaining('now workspace project\'s log: buckle log --workspace project reads it'))
       })
 
-      it('takes the open attempts of other processes with it, and leaves this process\'s for the node\'s log to settle', async () => {
+      // A live process (a 0.1 serve still running) records its result in the node's log by path: its attempt, moved,
+      // would later read as interrupted in the workspace's (finding 47 of the third re-check).
+      it('takes the open attempts of dead processes with it, and leaves a live one\'s, this process\'s among them, for the node\'s log to settle', async () => {
         const input = scene()
         const { config } = withFile(input)
-        writeFileSync(join(input.state, 'actions.jsonl'), `${entry('fs_write')}\n`)
-        writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify({ version: 1, pending: { crashed: attempt('crashed', 999_999), mine: attempt('mine', process.pid) } }))
-        await migrateNode({ node: config })
+        const live = spawn('sleep', ['30'], { stdio: 'ignore' })
+        try {
+          writeFileSync(join(input.state, 'actions.jsonl'), `${entry('fs_write')}\n`)
+          writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify({ version: 1, pending: { crashed: attempt('crashed', 999_999), running: attempt('running', live.pid!), mine: attempt('mine', process.pid) } }))
+          await migrateNode({ node: config })
 
-        const pendingOf = (file: string) => Object.keys(JSON.parse(readFileSync(file, 'utf8')).pending)
-        expect(pendingOf(join(input.state, 'workspaces', ownId(input), 'actions.jsonl.pending.json'))).toEqual(['crashed'])
-        expect(pendingOf(join(input.state, 'actions.jsonl.pending.json'))).toEqual(['mine'])
+          const pendingOf = (file: string) => Object.keys(JSON.parse(readFileSync(file, 'utf8')).pending)
+          expect(pendingOf(join(input.state, 'workspaces', ownId(input), 'actions.jsonl.pending.json'))).toEqual(['crashed'])
+          expect(pendingOf(join(input.state, 'actions.jsonl.pending.json')).sort()).toEqual(['mine', 'running'])
+        } finally { live.kill() }
       })
 
       it('stays in the state directory where the workspace has a log of its own already, and where its open attempts will not read', async () => {
