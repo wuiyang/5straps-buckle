@@ -39,13 +39,15 @@ names; for a refused shim, point `BUCKLE_AGENT_BROWSER_COMMAND` at the package's
 | `fs`, `web`, `git`, `forge`, `dev`, and `browser` packs | yes | yes | same code, not tested in CI |
 | Process sandbox for shell tools | bubblewrap | Seatbelt (`/usr/bin/sandbox-exec`) | none |
 | Shell tools with the settings `buckle init` writes | yes, with `bwrap` installed | withheld | withheld |
-| Shell tools after a settings change | | with `BUCKLE_SHELL_ISOLATION=false` and no workspace mount | only unsandboxed: `BUCKLE_SANDBOX=none`, `BUCKLE_SHELL_ISOLATION=false`, and no workspace mount |
+| Shell tools after a settings change | | with `shell.isolation` off and no workspace mount | only unsandboxed: `BUCKLE_SANDBOX=none`, `shell.isolation` off, and no workspace mount |
 | Shell isolation in private copies | yes | no | no |
 | `node-pty` binary | built from source at install | prebuilt | prebuilt |
 
 The shell rows follow from two checks: isolated shell execution and a workspace mount, such as
-`buckle init`'s `/workspace`, both need bubblewrap.
-[Sandbox and tools](sandbox-and-tools.md) explains both.
+`buckle init`'s `/workspace`, both need bubblewrap. `shell.isolation` is a workspace setting
+(`buckle workspace set shell.isolation off`); `BUCKLE_SHELL_ISOLATION=false` in `buckle.env` is its
+default for every workspace. The mount table, which shares more folders with `buckle workspace mount`,
+is on [Mounts](mounts.md). [Sandbox and tools](sandbox-and-tools.md) explains both checks.
 
 ## Install
 

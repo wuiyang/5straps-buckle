@@ -82,7 +82,7 @@ and the decision binds the whole call.
 The answer can come from anywhere: a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can also post each pending approval to
-the relay `BUCKLE_APPROVAL_WEBHOOK` names, so a person can be reached away from the machine. A
+the relay `BUCKLE_APPROVAL_WEBHOOK` names, to reach a person away from the machine. A
 call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a token to retry
 with.
 
@@ -93,8 +93,7 @@ buckle grants list
 ```
 
 Owners set the policy with `buckle policy`: command allow and deny globs matched one shell
-word at a time, an approved host and URL list, and a mount that shows only `/workspace`.
-Deny wins.
+word at a time, an approved host and URL list, and where the folder shows. Deny wins.
 
 ```bash
 buckle policy allow-command 'pnpm {build,test} *'
@@ -102,26 +101,29 @@ buckle policy allow-url localhost:3000
 buckle policy mount /workspace
 ```
 
+`buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders ([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)).
+
 `buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
 allow, destructive commands included. Explicit deny rules and the mount boundary still refuse,
 and a path outside the workspace still asks.
-It is off by default;
+Off by default;
 [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
 
 ## Sandbox
 
 - Linux: shell commands run under bubblewrap.
-- macOS: shell commands run under Seatbelt once `BUCKLE_SHELL_ISOLATION=false` is set and no
-  workspace mount is, since shell isolation and the mount both need bubblewrap.
+- macOS: shell commands run under Seatbelt once `shell.isolation` is off and no workspace mount
+  is set, since both need bubblewrap.
 - Elsewhere, or with no sandbox available, the shell pack is withheld. `BUCKLE_SANDBOX=none`
-  is the explicit acknowledgement that commands run unsandboxed; it too needs
-  `BUCKLE_SHELL_ISOLATION=false` and no mount.
+  acknowledges that commands run unsandboxed; it too needs
+  `shell.isolation` off and no mount.
 
 On Linux, shell tools work on private copies of the workspace by default and publish
-changes through conflict-checked checkpoints; `BUCKLE_SHELL_ISOLATION=false` selects
-shared-workspace execution. Host Git and forge tools (`packs.hostGit`) and host language
-servers (`packs.hostLsp`) are off by default, because they run outside the sandbox. Without `rg`, `fs_search_content` is absent, unexplained.
+changes through conflict-checked checkpoints; `shell.isolation` off selects shared-workspace
+execution (`BUCKLE_SHELL_ISOLATION=false` sets it for every workspace). Host Git and forge
+tools (`packs.hostGit`) and host language servers (`packs.hostLsp`) are off by default, because
+they run outside the sandbox. Without `rg`, `fs_search_content` is absent.
 
 ## Audit log
 
@@ -138,7 +140,7 @@ not a tamper-proof record.
 
 ## Rings
 
-Rings, the 5straps agent control plane, can optionally pair with Buckle nodes to collect their
+Rings, the 5straps agent control plane, can pair with Buckle nodes to collect their
 action logs and refused calls, relay pending approvals, and, where the experimental admin face is
 on, push policy; Buckle runs without it.
 
