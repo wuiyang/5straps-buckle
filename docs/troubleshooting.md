@@ -32,7 +32,7 @@ In a clone, `pnpm rebuild node-pty`. Terminals also need bubblewrap.
 
 | Reason | Fix |
 |---|---|
-| `Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints` | on Linux, install bubblewrap; on macOS, add `BUCKLE_SHELL_ISOLATION=false` to `buckle.env` |
+| `Isolated shell execution requires bubblewrap; the workspace setting shell.isolation, off, opts into shared-workspace checkpoints` | on Linux, install bubblewrap; on macOS, `buckle workspace set shell.isolation off`, or `BUCKLE_SHELL_ISOLATION=false` in `buckle.env` for every workspace |
 | `No process sandbox is available here, so shell tools are withheld. Install bubblewrap (Linux) or set BUCKLE_SANDBOX=none to run commands unsandboxed on purpose.` | install bubblewrap, or accept unsandboxed commands with `BUCKLE_SANDBOX=none` |
 | `The workspace is mounted at /workspace, which needs bubblewrap; shell tools are withheld under the seatbelt sandbox rather than shown a different view` | on macOS, `buckle policy unmount` |
 | `Shell tools are turned off in this workspace: its setting packs.shell is off` | `buckle workspace set packs.shell on` |

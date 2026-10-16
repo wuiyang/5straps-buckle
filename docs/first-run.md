@@ -34,7 +34,7 @@ setting to the node's default in `buckle.env`, else the one shown:
 | Shell tools on? | on | `packs.shell` |
 | Host Git and forge tools on? | off | `packs.hostGit` |
 | Approved hosts and URLs | none | the workspace's approved list |
-| Private-address hosts `web_fetch` may reach, first run only | none | `BUCKLE_ALLOWED_HOSTS` |
+| Approved hosts for every workspace, first run only | none | `BUCKLE_ALLOWED_HOSTS` |
 
 `--yes`, or no terminal, takes every default and says so. Its summary checks
 `bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it

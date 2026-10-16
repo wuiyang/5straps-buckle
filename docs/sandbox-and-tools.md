@@ -2,8 +2,8 @@
 
 Buckle, the approval and sandbox runtime on your machine, groups its tools into packs. A pack
 that cannot run here is withheld with a reason rather than failing at call time, so
-`buckle tools` lists only what works and `buckle manifest` says why the rest is missing. One tool
-is the exception: `fs_search_content` is left out without `rg`, and no reason is given.
+`buckle tools` lists only what works and `buckle manifest` says why the rest is missing, but for
+`fs_search_content`, absent without `rg`.
 
 ## Packs
 
@@ -30,29 +30,26 @@ for the agent: `buckle skills` lists them and `buckle skills buckle-shell` print
 `BUCKLE_SANDBOX=auto`, the default, picks the sandbox for shell tools:
 
 - Linux: bubblewrap, when Buckle finds `bwrap` where it looks for programs
-  ([Install](install.md#requirements)). A command gets new user, process, host name, and IPC
-  namespaces, and no network; it sees `/usr`, `/bin`, `/lib`, and a few `/etc` files read-only,
-  a fresh `/tmp`, `HOME=/tmp/home`, and the workspace, writable only below its working
-  directory and `BUCKLE_SCRATCH_ROOTS`.
+  ([Install](install.md#requirements)). A command runs as `agent` on a host named `buckle`, with
+  new user, process, and IPC namespaces and no network, in an empty root holding the system
+  folders read-only, a fresh `/tmp`, the workspace (writable below its working directory), and
+  each [mount](mounts.md#what-the-agent-sees).
 - macOS: Seatbelt, through `/usr/bin/sandbox-exec`, with a profile that denies by default,
   allows reading system paths and the workspace, and allows writing the writable roots and `/tmp`.
   Under Seatbelt, Buckle supports neither a workspace mount nor shell isolation.
 - Anywhere else, or Linux without `bwrap`: no sandbox, and the shell pack is withheld.
 
 `BUCKLE_SANDBOX=none` runs commands with no sandbox at all, on purpose. It still needs
-`BUCKLE_SHELL_ISOLATION=false` and no workspace mount before shell tools appear. Every shell
-result carries a `sandbox` field naming the mode it ran under.
+`shell.isolation` off and no workspace mount before shell tools appear. Every shell result
+carries a `sandbox` field naming the mode it ran under.
 
 Under bubblewrap and Seatbelt, Buckle hides its state directory and `~/.5straps` from commands,
 and masks credential files inside the workspace unless a call asks for one by name. With
 `none`, nothing is hidden.
 
-`BUCKLE_MOUNT_READ_ONLY` adds host directories a command may read, for toolchains outside
-`/usr`.
-
 ## Shell isolation
 
-With bubblewrap, shell isolation is on by default (`BUCKLE_SHELL_ISOLATION=true`). Each
+With bubblewrap, shell isolation is on by default (the workspace setting `shell.isolation`). Each
 `shell_exec` or `script_run` call:
 
 1. copies the workspace, without hidden and credential paths, into a private copy under
@@ -71,10 +68,11 @@ buckle workspaces publish <id>    # or: discard <id>
 buckle workspaces prune
 ```
 
-`BUCKLE_SHELL_ISOLATION=false` runs commands in the workspace itself, under the same sandbox.
+A read-write mount is read-only to an isolated command, and its result says so.
+`shell.isolation` off runs commands in the workspace itself, under the same sandbox.
 
-Commands have no network unless `BUCKLE_SHELL_NETWORK=true`, no approved list is set, and
-`BUCKLE_ALLOWED_HOSTS` is empty; the call must then also pass `allowNetwork: true`. The
+Commands have no network unless `shell.network` is on and no approved list is set; the call must
+then also pass `allowNetwork: true`. The
 [`web` tools](policy.md#network) are the scoped way to reach the network. A command runs for
 `BUCKLE_DEFAULT_TIMEOUT_MS` (30 seconds) unless the call asks for more, up to
 `BUCKLE_MAX_TIMEOUT_MS` (5 minutes).
@@ -105,13 +103,13 @@ rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 ## The browser's allowed hosts
 
 `browser_command` runs one `agent-browser` command in a session of its own, headless unless
-`BUCKLE_BROWSER_HEADED=true`. By default each session gets a fresh browser with no saved state; the
+the workspace sets `browser.headed` on. By default each session gets a fresh browser with no saved state; the
 owner can choose a profile folder that keeps logins, or their own Chrome, as
 [Using your own browser](browser-login.md) describes. No agent call can. The first call in a mode
 launches the browser and may outlast a client's wait; the same call again reuses it.
 
 The owner installs `agent-browser` outside any workspace (Buckle refuses one inside):
-`npm i -g agent-browser`, then `agent-browser install`, which downloads the browser. Buckle
+`npm i -g agent-browser`, then `agent-browser install`. Buckle
 looks for it where it looks for every program ([Install](install.md#requirements)), reading, never
 running, npm's `.cmd` shim on Windows. Without it, the pack's reason says where Buckle looked.
 

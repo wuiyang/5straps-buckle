@@ -10,15 +10,16 @@ hiding, and paths, and [part three](known-limits-03.md) code mode, the command l
 - Buckle runs each program it needs, such as `rg`, `git`, the sandbox program `bwrap`, or the
   environment validator, from where `PATH`, or a place it looks after `PATH`, really leads, and
   refuses one an agent could have written: one found in, or through a link in, any workspace or
-  scratch root this node knows, whichever workspace runs it. `BUCKLE_MOUNTS` shares folders
-  read-only, so a program there runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin`
+  scratch root this node knows, or the source of any workspace's read-write
+  [mount](mounts.md), whichever workspace runs it. A read-only mount's source is no such place,
+  so a program there runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin`
   first on `PATH`, so an `rg` there leaves content search out of every workspace, and a `bwrap`
   there leaves no sandbox: the shell tools are withheld rather than run without one. A node
   started while its workspace registry cannot be read runs no program: repair the registry, then
   restart the node.
 - Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
-  starts `#!/usr/bin/env node` never finds a `node` an agent planted. The shell keeps the agent's
-  `PATH`.
+  starts `#!/usr/bin/env node` never finds a `node` an agent planted. A sandboxed shell command
+  gets Buckle's own `PATH` instead ([what the agent sees](mounts.md#what-the-agent-sees)).
 - After `PATH`, Buckle looks beside its own `buckle` command, as npm lays out a global install,
   beside the Node.js it runs on, and on Windows in `%APPDATA%\npm`. A program another installer
   put elsewhere is found only on `PATH`.
@@ -30,7 +31,8 @@ hiding, and paths, and [part three](known-limits-03.md) code mode, the command l
   path Windows gives every place on its way too, links included, so a `subst` drive or a drive mapped to a folder cannot hide a
   workspace, and in long names, so an 8.3 short name such as `PROJEC~1` cannot either. A real path
   Buckle cannot read or that lies on a network share is refused, and so is a short name it cannot
-  read back. Only an imitated Windows has tested this so far, not a Windows machine.
+  read back, unless a [mount](mounts.md#windows-shares) of the workspace holds the share. Only an
+  imitated Windows has tested this so far, not a Windows machine.
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory
   lies elsewhere.

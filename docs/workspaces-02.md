@@ -27,8 +27,13 @@ node's applies again:
 | `packs.code` | `on` or `off`: [code mode](code-mode.md) | on |
 | `packs.hostGit` | `on` or `off`: the `git` and `forge` packs, which read the repository outside per-file checks | off |
 | `packs.hostLsp` | `on` or `off`: language servers in the `dev` pack | off |
+| `shell.network` | `on` or `off`: shell commands may reach the network while no approved list is set | off |
+| `shell.isolation` | `on` or `off`: each shell command runs on a private copy of the folder | on |
+| `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
+| `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
 
-A new workspace sets its mount, `/workspace`, and nothing else. `buckle workspace set` refuses a
+A new workspace sets its mount, `/workspace`, and nothing else. Its [mounts](mounts.md) change
+with `buckle workspace mount`. `buckle workspace set` refuses a
 node setting, naming the command or file that changes it.
 
 A variable name that looks like a credential (holding token, secret, password, or key) is taken,
@@ -40,20 +45,19 @@ token, the Rings pairing key, or the approval webhook's URL) or a workspace's ag
 word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
 and every command can read them. A call's own `env` is set over them.
 
-The policy lists change with `buckle policy` ([Policy](policy.md)). The browser settings
-(`browser.cdp`, `browser.profile`, `browser.args`, `browser.headed`, and `browser.idleTimeoutMs`)
-are kept in the file but not read: the browser runs on the node's `BUCKLE_BROWSER_*` settings
-until a later release reads each workspace's own.
+The policy lists change with `buckle policy` ([Policy](policy.md)). A profile folder or an
+attached Chrome belongs to one workspace at a time: naming one another workspace names as its own
+is refused, naming that workspace.
 
 ## When a change applies
 
 A running `buckle serve` or `buckle mcp` watches a workspace's state folder and takes a change up
 while the workspace is idle, with a check at each call's start as the fallback. A change to the
-policy lists, the variables, or the approval wait applies from the next call, even while another
-runs, which keeps its own rules; a list change alone waits while a workbench that process runs is
-open, as taking it up stops its terminals. A change to the packs or to where the folder shows
-waits until the workspace has no active work, such as a running call or a shell copy awaiting
-review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.
+policy lists, the variables, the browser settings, or the approval wait applies from the next
+call, even while another runs, which keeps its own rules; a list change alone waits while a
+workbench that process runs is open, as taking it up stops its terminals. A change to the packs,
+to where the folder shows, to the mounts, or to the shell settings waits until the workspace has
+no active work, such as a running call or a shell copy awaiting review. A waiting change, or one that will not apply, refuses calls with a 409 until it applies.
 A file that will not read leaves the settings in force, and the owner's log says so.
 `buckle serve` watches the registry folder too, its poll the fallback. A change to `buckle.env`
 applies when the node restarts.

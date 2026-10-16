@@ -1,41 +1,38 @@
 # Using your own browser
 
 Buckle, the approval and sandbox runtime on your machine, gives every agent session a fresh
-browser by default: no cookies, no saved logins, and nothing kept after `close`. Three node
-settings let the owner choose otherwise: a profile folder that keeps logins, your own Chrome
-attached over its DevTools port, or extra Chromium arguments. Only the owner's settings set them,
-in `buckle.env` or the shell Buckle starts from, whose value wins; nothing an agent sends can
-select one. After a change, restart every Buckle process on the node: `buckle serve` and each
-`buckle mcp`.
+browser by default: no cookies, no saved logins, and nothing kept after `close`. A workspace's
+[browser settings](workspaces-02.md#settings) choose otherwise: a profile folder that keeps
+logins, your own Chrome attached over its DevTools port, or extra Chromium arguments. `buckle
+workspace set browser.<key>` applies from the workspace's next call; `BUCKLE_BROWSER_*` in
+`buckle.env`, every workspace's default, at a restart. Nothing an agent sends can select one.
 
-Install agent-browser, the browser Buckle drives, outside any workspace: `npm i -g agent-browser`,
-then `agent-browser install`; Buckle also looks beside `buckle` itself.
+Install agent-browser, the browser Buckle drives, outside any workspace
+([Sandbox and tools](sandbox-and-tools.md#the-browsers-allowed-hosts)).
 
 ## Logging in without a setting
 
-With `BUCKLE_BROWSER_HEADED=true` the browser opens a visible window, and a person logs in there
+With `browser.headed` on, the browser opens a visible window, and a person logs in there
 by hand. The agent never sees the credentials, only the pages after.
-That session lives until `close`, 5 idle minutes, or a change to the approved hosts, which
-relaunches the browser.
+That session lives until `close`, its idle timeout (`browser.idleTimeoutMs`, 5 minutes unless
+set, 1 minute to 1 day), or a change to the approved hosts, which relaunches the browser.
 
 ## The settings
 
-| Setting | Value | What Buckle passes to `agent-browser` |
+| Setting (node default) | Value | What Buckle passes to `agent-browser` |
 |---|---|---|
-| `BUCKLE_BROWSER_PROFILE` | an absolute folder that already exists | `--profile <folder>`, so cookies, storage, and cache survive `close`, idle shutdown, and node restarts |
-| `BUCKLE_BROWSER_CDP` | a DevTools port such as `9222`, or a `ws://`, `wss://`, `http://`, or `https://` URL | `--cdp <value>` on every command, which then runs in your Chrome |
-| `BUCKLE_BROWSER_ARGS` | Chromium arguments, separated by commas or new lines | `--args <value>` for a browser Buckle launches |
+| `browser.profile` (`BUCKLE_BROWSER_PROFILE`) | an absolute folder that already exists | `--profile <folder>`, so cookies, storage, and cache survive `close`, idle shutdown, and node restarts |
+| `browser.cdp` (`BUCKLE_BROWSER_CDP`) | a DevTools port such as `9222`, or a `ws://`, `wss://`, `http://`, or `https://` URL | `--cdp <value>` on every command, which then runs in your Chrome |
+| `browser.args` (`BUCKLE_BROWSER_ARGS`) | Chromium arguments, separated by commas or new lines | `--args <value>` for a browser Buckle launches |
 
-`BUCKLE_BROWSER_CDP` stands alone. An attached browser keeps the profile, arguments, and window
-you started it with, so Buckle refuses to start when it is set beside `BUCKLE_BROWSER_PROFILE`,
-`BUCKLE_BROWSER_ARGS`, or `BUCKLE_BROWSER_HEADED=true`, and the message names them.
+An attached browser stands alone: it keeps the profile, arguments, and window you started it
+with, so Buckle refuses one set beside a profile, arguments, or a window, naming the settings.
 
 The profile folder is judged by the rule that judges `BUCKLE_AGENT_BROWSER_COMMAND`: Buckle does
 not load from where an agent can write. A folder inside or around a workspace, a scratch root, or
 the node's state directory, or one reached through a link there, is refused, and so is one that
 does not exist yet. A path an argument names, such as `--load-extension=<folder>`, is judged
-the same way. The browser pack is then withheld, its reason naming the setting, never the path, in
-`buckle manifest`.
+the same way. The browser pack is then withheld, its reason naming the setting, never the path.
 
 For example:
 
@@ -51,7 +48,7 @@ refuses to start, naming the setting, when the value holds:
 - a path spelled with a `..` segment, a leading `./` or `~`, a `file:` URL, or on Windows a drive
   or a root alone: give the absolute path, which is judged like the profile folder. A bare relative
   name, such as `ext`, resolves against Buckle's browser state directory, where no agent writes;
-- `--user-data-dir` or `--profile-directory`: name a profile folder with `BUCKLE_BROWSER_PROFILE`;
+- `--user-data-dir` or `--profile-directory`: name a profile folder with `browser.profile`;
 - `--restore-last-session`, `--restore-session`, `--app`, `--app-id`,
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open
   pages, so `agent-browser` refuses them beside an approved list.
@@ -80,19 +77,19 @@ On Windows, in PowerShell:
 
 Since Chrome 136, Chrome ignores the port on its default profile, so keep a second profile folder
 for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out of it.
-Then set `BUCKLE_BROWSER_CDP=9222` in `buckle.env` and restart every Buckle process.
+Then set `browser.cdp` to `9222` for the workspace that drives it.
 `agent-browser` expects an approval prompt only from the switch at
 `chrome://inspect/#remote-debugging` (Chrome 144 and later), not from a port on Chrome's command
 line; if Chrome shows one, approve it and have the agent retry.
 
-Buckle never closes that browser. `close` only disconnects, and so does an idle session after 5
-minutes or Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
+Buckle never closes that browser. `close` only disconnects, and so does an idle session or
+Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
 session works in that one browser: sessions share its cookies, and the agent can see and use every
 tab open there. A session starts on a tab you already have open, so its first `open` replaces
 that tab's page, and `tab close` can close any of your tabs but the last.
 
 The DevTools port answers anything on this machine that reaches it. Shell commands have no
-network unless `BUCKLE_SHELL_NETWORK=true` or `BUCKLE_SANDBOX=none`; with either, a command could
+network unless `shell.network` is on or `BUCKLE_SANDBOX=none`; with either, a command could
 drive the browser around Buckle's rules.
 
 ## What containment is lost, and what is still judged
@@ -116,11 +113,12 @@ No longer judged in those modes: where a page goes after it loads, and what it r
 login kept in that profile folder or browser is within the agent's reach, so it should hold only
 the logins the agent's work needs.
 
-Chrome opens a profile folder in one browser at a time, so every agent session, in every
-workspace and every Buckle process, shares the one browser on it, with its tabs and logins. A
-Buckle process that stops leaves it running; `close` from any session, or 5 idle minutes, ends it
-for all. Buckle tells its processes apart by process id alone, so after a settings change restart
-every one rather than rely on it to close or reuse the right browser.
+A profile folder or an attached Chrome belongs to one workspace at a time: the one naming it as
+its own setting, else the first online workspace taking the node's. Another naming it as its own
+is refused, and a browser call elsewhere is refused, naming the holder. Every agent session of
+that workspace, in every Buckle process, shares the one browser on it, with its tabs and logins;
+`close` from any session, or the idle timeout, ends it for all. Buckle tells its processes apart
+by process id alone, so after a node settings change restart every one.
 
 ## Checking the mode
 

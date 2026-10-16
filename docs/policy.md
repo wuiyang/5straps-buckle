@@ -63,14 +63,14 @@ An entry is a host (`example.com`), a host and port (`example.com:8443`), a patt
 (`*.example.com` covers the apex and every subdomain), or an http(s) URL prefix. A
 wildcard anywhere but the whole leftmost label is refused.
 
-With a list, `web_fetch`, browser navigation, and forge pushes reach only what it names, a listed
-private address with no approval. Without one, public hosts are reachable, and loopback, private,
-and other reserved addresses ask, per host and port.
-`web_fetch` checks every resolved address and every redirect hop, up to five.
-
-`BUCKLE_ALLOWED_HOSTS` lists hosts `web_fetch` may reach even when they resolve to a private
-address. With no public-suffix list, `*.com` would cover every `.com` name. An empty
-approved list is no list: `buckle policy remove` warns when it takes out the last entry.
+Each workspace has one approved list, shared by `web_fetch`, browser navigation, and forge
+pushes: its own, else the node's (`BUCKLE_NETWORK_ALLOW` and `BUCKLE_ALLOWED_HOSTS` as one). With
+a list, they reach only what it names. An entry naming a host exactly, or a URL prefix, reaches it
+even at a private address; a host a wildcard covers is refused where it resolves into one.
+Without a list, public hosts are reachable, and loopback, private, and other reserved addresses
+ask, per host and port. `web_fetch` checks every resolved address and every redirect hop, up to
+five. With no public-suffix list, `*.com` would cover every `.com` name. An empty approved list is
+no list: `buckle policy remove` warns when it takes out the last entry.
 
 `buckle check-url <url|host>` shows what an address would meet, with no node running; it exits 0
 approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
@@ -80,7 +80,7 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 - `buckle policy deny-tool fs_write` refuses a tool outright; `allow-tool` lifts that. A tool
   in a withheld pack stays withheld.
 - `buckle policy mount /workspace` shows the workspace to the agent at that path; every path
-  outside it and `BUCKLE_SCRATCH_ROOTS` is then refused, not asked. A mount under `/bin`, `/etc`,
+  outside it and its [mounts](mounts.md) is then refused, not asked. A mount under `/bin`, `/etc`,
   `/home`, `/tmp`, `/usr`, or another system directory is refused.
 - Sensitive files ask every time, matched on the exact path, so a granted directory never unlocks
   one: anything under `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.config/gcloud`,

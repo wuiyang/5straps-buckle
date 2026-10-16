@@ -49,11 +49,11 @@ setup face's policy view carry the same as `sources`.
 Some settings belong to the node alone, the same for every workspace, and no workspace sets
 them: the host and port, the admin credential, the state directory, the server's id and name, the
 sandbox mode, logging, request and timeout caps, history and isolation budgets, the experimental
-admin face, where programs such as `agent-browser` are, the browser settings for now, the pairing
-with [Rings](rings.md) (the 5straps control plane for agents), and `BUCKLE_ALLOWED_HOSTS`. Each
-workspace also takes the node's scratch roots, `BUCKLE_MOUNTS`, skill folders, and
-`BUCKLE_STRICT_WRITES` until a later release gives each workspace a mount table of its own.
-`BUCKLE_SHELL_NETWORK` and `BUCKLE_SHELL_ISOLATION` stay the node's until then too.
+admin face, where programs such as `agent-browser` are, the toolchains every sandbox binds
+(`BUCKLE_MOUNT_READ_ONLY`), and the pairing with [Rings](rings.md) (the 5straps control plane for
+agents). Each workspace also takes the node's skill folders and `BUCKLE_STRICT_WRITES`.
+`BUCKLE_MOUNTS` and `BUCKLE_BROWSER_*` are defaults too, set by hand in `buckle.env`: the node's
+[mounts](mounts.md#the-nodes-mounts) and its browser.
 
 `buckle settings show` lists the node's settings, then the workspace defaults, each with its
 value and where it comes from. `buckle settings set <key> <value>` and `unset <key>` change one,
@@ -68,7 +68,9 @@ checked as a workspace's own would be:
 | `command-allow` (`BUCKLE_COMMAND_ALLOW`) | the command allow list |
 | `command-deny` (`BUCKLE_COMMAND_DENY`) | the command deny list, for every workspace |
 | `command-destructive` (`BUCKLE_COMMAND_DESTRUCTIVE`) | the destructive list, for every workspace |
-| `network-allow` (`BUCKLE_NETWORK_ALLOW`) | the approved hosts and URLs |
+| `network-allow` (`BUCKLE_NETWORK_ALLOW`) and `allowed-hosts` (`BUCKLE_ALLOWED_HOSTS`) | the approved hosts and URLs, the two lists as one |
+| `scratch-roots` (`BUCKLE_SCRATCH_ROOTS`) | the mounts, as folders writable without asking |
+| `shell-network` and `shell-isolation` (`BUCKLE_SHELL_*`) | `shell.network` and `shell.isolation` |
 | `allowed-interpreters` (`BUCKLE_ALLOWED_INTERPRETERS`) | the allowed interpreters |
 
 Lists are comma separated; command globs, which hold commas, are separated by `;;`, such as

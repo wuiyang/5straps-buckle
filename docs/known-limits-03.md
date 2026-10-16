@@ -2,7 +2,8 @@
 
 What Buckle, the approval and sandbox runtime on this machine, does not yet handle in code mode, on
 the command line, and in workspaces. [Known limits](known-limits.md) covers reading commands, credential hiding, and
-paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
+paths, [part two](known-limits-02.md) the programs Buckle starts itself, and [part four](known-limits-04.md) mounts,
+the sandbox layout, the URL list, and the browser.
 
 ## Code mode
 
@@ -70,13 +71,6 @@ The first release of [workspaces](workspaces.md) leaves these open for a later r
   re-reads the list to see the change. Upgrading from 0.1 gives every workspace a new UUID id, and
   the node's folder loses the id `default`, so a Rings holding the old ids has to re-read the list;
   a registered workspace's old id stays as its name.
-- The browser settings in `workspace.json` are stored and checked but not read. The browser runs
-  on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until a later release
-  reads each workspace's own and `buckle workspace set` accepts them.
-- The setup face's `/workspaces/<name>/setup/status` reports `browser.setting` as the node's `BUCKLE_BROWSER_*`
-  setting that chose the mode. [Rings](rings.md), a separate 5straps control plane for agents,
-  reads that field, so the name stays until a later release, and renaming it then means Rings has
-  to follow.
 - [Node defaults](workspaces-03.md) cover the settings a 0.1 node kept in `buckle.env`. The node
   names no command variables and no tool lists there, as `buckle.env` takes `BUCKLE_` settings
   alone: a workspace's variables and tool lists are its own, and each resolves over an empty node
@@ -84,6 +78,3 @@ The first release of [workspaces](workspaces.md) leaves these open for a later r
 - An empty list is no list of a workspace's own, so a workspace cannot hold an empty command
   allow list, approved list, or interpreter list over the node's. To free one workspace from a
   node list, unset the node's and give each other workspace its own.
-- A command in the sandbox can read `/proc/self/mountinfo`, which lists the host folder behind
-  each bind. A later release, which builds the sandbox from each workspace's mount table, takes
-  this off these limits.

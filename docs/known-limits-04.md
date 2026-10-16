@@ -1,0 +1,56 @@
+# Known limits, part four
+
+What Buckle, the approval and sandbox runtime on this machine, does not yet handle in a
+workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its browser.
+[Part three](known-limits-03.md) covers code mode, the command line, and workspaces.
+
+## The sandbox layout
+
+- A command in the sandbox can read `/proc/self/mountinfo`, which names the host folder behind
+  each bind: the workspace's folder, each mount's source, the toolchains, and the folder holding
+  the sandbox's own account files. No bind layout hides it.
+- No test starts a real `bwrap`: neither this project's machines nor CI install bubblewrap, so the
+  layout (`--tmpfs /`, the system folders, the `/etc` files, each mount, and `--hostname buckle`) is
+  checked as the arguments Buckle passes. A distribution that keeps its certificates or loader
+  elsewhere, such as NixOS or Alpine, may need a toolchain folder named in
+  `BUCKLE_MOUNT_READ_ONLY`.
+- The sandbox's own `/etc/passwd` and `/etc/group` name the user and group the command runs as
+  `agent`. A program that looks up another account, or a group the owner belongs to, finds none.
+- Buckle hides credential files in the workspace's folder from shell commands, but not those
+  inside a mount, and does not read a mount through for them: a mount shares what it holds.
+- Without a mount, the folder shows at its real path, and the node's `BUCKLE_MOUNTS` reach the
+  shell alone, as before: the file tools cannot name a target there.
+- A workbench terminal shows its copy of the folder at `/workspace` whatever the workspace's
+  mount, and every mount read-only.
+- The [dangerously-allow switch](approvals.md#dangerously-allow) answers asks about paths inside
+  the workspace's folder, not inside its mounts: a write into a read-write mount still asks.
+
+## Windows shares
+
+- A share is judged by the mount table alone: Buckle reaches a path on one where a mount holds
+  it, and cannot tell a share another program redirects. Only an imitated Windows has tested
+  shares and mapped drives so far, not a Windows machine.
+- A program on a share runs only from a read-only mount; a share a program's `PATH` entry names
+  outside every mount is dropped from that `PATH`, as in 0.1.5.
+
+## The URL list
+
+- `web_fetch` checks where a host resolves, then fetches it: a name that resolves elsewhere
+  between the two (DNS rebinding) can still reach a private address. A host a wildcard entry
+  covers is checked this way; one an entry names exactly is not checked, as the owner named it.
+- `BUCKLE_ALLOWED_HOSTS` is now the node's URL list too, so a node that set it and no
+  `BUCKLE_NETWORK_ALLOW` turns the list on for every workspace that has none of its own: an
+  unlisted public host is refused, where 0.1 reached it. A wildcard entry no longer lets
+  `web_fetch` reach a private address.
+- With a list, no grant decides: an unlisted host is refused, never asked, so the browser's
+  `--allowed-domains` is the list's entries alone; grants join it once a mode that asks about
+  an unlisted host exists.
+
+## The browser
+
+- A profile folder or an attached Chrome serves one workspace at a time, judged at each
+  `browser_command`. A browser another workspace started on it before the change keeps running
+  until its `close` or its idle timeout.
+- The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
+  setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
+  as [Rings](rings.md), the 5straps control plane for agents, reads that field.
