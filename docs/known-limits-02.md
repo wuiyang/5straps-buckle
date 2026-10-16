@@ -3,7 +3,8 @@
 More of what Buckle, the approval and sandbox runtime on this machine, does not yet handle: the
 programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents, and the
 files a browser command writes. [Known limits](known-limits.md) covers reading commands, credential
-hiding, and paths, and [part three](known-limits-03.md) code mode, the command line, and workspaces.
+hiding, and paths, [part three](known-limits-03.md) code mode, the command line, and workspaces, and
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser.
 
 ## Where programs come from
 
@@ -18,8 +19,9 @@ hiding, and paths, and [part three](known-limits-03.md) code mode, the command l
   started while its workspace registry cannot be read runs no program: repair the registry, then
   restart the node.
 - Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
-  starts `#!/usr/bin/env node` never finds a `node` an agent planted. A sandboxed shell command
-  gets Buckle's own `PATH` instead ([what the agent sees](mounts.md#what-the-agent-sees)).
+  starts `#!/usr/bin/env node` never finds a `node` an agent planted. Under bubblewrap, a shell
+  command gets Buckle's own `PATH` instead ([what the agent sees](mounts.md#what-the-agent-sees)).
+  Under Seatbelt, or with the sandbox off, it keeps the node's `PATH`.
 - After `PATH`, Buckle looks beside its own `buckle` command, as npm lays out a global install,
   beside the Node.js it runs on, and on Windows in `%APPDATA%\npm`. A program another installer
   put elsewhere is found only on `PATH`.

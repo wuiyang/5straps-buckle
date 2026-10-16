@@ -2,8 +2,9 @@
 
 What Buckle, the approval and sandbox runtime on this machine, does not yet read, hide, or
 handle, each with an example. [What stays unread](policy-03.md) covers reading commands in more
-depth, [part two](known-limits-02.md) the programs it starts itself, and
-[part three](known-limits-03.md) code mode, the command line, and workspaces.
+depth, [part two](known-limits-02.md) the programs it starts itself,
+[part three](known-limits-03.md) code mode, the command line, and workspaces, and
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser.
 
 ## Reading commands
 
@@ -20,8 +21,9 @@ depth, [part two](known-limits-02.md) the programs it starts itself, and
   `git push *`.
 - A startup file that reaches bash through a shebang script or `make` is not marked:
   `BASH_ENV=<(echo ...) ./deploy.sh` reads as complete, and no rule meets what the file runs.
-- `npx`, `pnpx`, and `bunx` are ordinary commands, judged by their own words, not interpreters:
-  `npx some-tool` meets only a rule that names `npx`.
+- `npm exec`, `pnpm dlx`, and `yarn dlx` run a package's code as `npx` does, but are ordinary
+  commands, judged by their own words, not interpreters: `npm exec some-tool` meets only a rule
+  that names `npm`. `npx`, `pnpx`, and `bunx` are interpreters ([policy](policy-02.md#interpreters)).
 - Interpreter names match exactly: `buckle policy allow-interpreter python3` does not allow
   `python3.12`.
 
