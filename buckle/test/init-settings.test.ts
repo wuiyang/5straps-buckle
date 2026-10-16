@@ -260,6 +260,23 @@ describe.skipIf(process.platform === 'win32')('buckle init writes the environmen
   })
 })
 
+// The node's hosts apply to a workspace with no approved list of its own, and the question, asked just after the
+// workspace's own list, says so as the comment above the line it writes does.
+describe('the node hosts question', () => {
+  it('is for a workspace with no list of its own, as the buckle.env comment above the line says', async () => {
+    const prompt = scripted([workspace, '', 'Fixture', '', '', '', 'example.com', 'db.internal'])
+    const result = await init(prompt)
+
+    expect(prompt.asked[6]).toContain('Approved hosts and URLs')
+    expect(prompt.asked[7]).toContain('Hosts a workspace with no approved list of its own may reach, which turns that list on')
+    expect(prompt.asked[7]).not.toContain('every workspace')
+    expect(result.written).toContain('# Hosts a workspace with no approved list of its own may reach, which turns that list on')
+    expect(parseEnv(result.written).BUCKLE_ALLOWED_HOSTS).toBe('db.internal')
+    // This workspace keeps the list it was just given; the node's hosts serve the others.
+    expect(served().settings.policy.network.allow).toEqual(['example.com'])
+  })
+})
+
 describe('workspace-first initialization defaults', () => {
   it.each([true, false])('uses the current folder, /workspace and the full path name (interactive=%s)', async interactive => {
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace)
