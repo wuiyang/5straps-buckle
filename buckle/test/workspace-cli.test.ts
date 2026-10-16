@@ -1058,7 +1058,7 @@ describe('buckle workspace mount', () => {
     ['a source inside the state directory', () => `${state}:/state`, 'must not hold, or sit inside, Buckle\'s state'],
     ['the workspace\'s own folder', () => `${alpha}:/again`, 'the workspace\'s own folder'],
     ['a source the folder holds', () => `${join(alpha, 'node_modules')}:/inner`, 'the workspace\'s own folder'],
-    ['a folder holding the workspace', () => `${base}:/above`, 'Buckle\'s state'],
+    ['a folder holding the state and the workspace', () => `${base}:/above`, 'Buckle\'s state'],
     ['the Node install shared writable', () => `${join(process.execPath, '..', '..')}:/node`, 'every sandbox runs programs from'],
   ])('refuses %s, writing nothing', async (_name, spec, reason) => {
     const { data } = await mounted()
@@ -1068,6 +1068,20 @@ describe('buckle workspace mount', () => {
     expect(result.exitCode).toBe(1)
     expect(result.err).toContain(reason)
     expect(settings(alpha)).toEqual(before)
+  })
+
+  // The state lies outside the source here, so only the workspace-folder check can refuse it.
+  it.each([['read-write', ''], ['read-only', ':ro']])('refuses a folder holding the workspace\'s own, though the state lies elsewhere (%s), writing nothing', async (_access, suffix) => {
+    const code = join(outside, 'code')
+    const site = join(code, 'site')
+    mkdirSync(site, { recursive: true })
+    await init(site)
+    const before = settings(site)
+    const result = await buckle(['mount', 'add', `${code}:/code${suffix}`], { cwd: site })
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toContain('must not hold, or sit inside, the workspace\'s own folder')
+    expect(result.err).not.toContain('Buckle\'s state')
+    expect(settings(site)).toEqual(before)
   })
 
   it('holds a workspace to 32 mounts of its own, not counting its folder, saying so plainly at the 33rd', { timeout: 60_000 }, async () => {
