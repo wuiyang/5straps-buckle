@@ -15,7 +15,8 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
   elsewhere, such as NixOS or Alpine, may need a toolchain folder named in
   `BUCKLE_MOUNT_READ_ONLY`.
 - The sandbox's own `/etc/passwd` and `/etc/group` name the user and group the command runs as
-  `agent`, and its `/etc/hosts` names `localhost` and `buckle` alone. A program that looks up another
+  `agent`, and its `/etc/hosts` names `localhost`, `buckle`, and the IPv6 aliases `ip6-localhost` and
+  `ip6-loopback` alone. A program that looks up another
   account, a group the owner belongs to, or a name the machine's hosts file holds, finds none.
 - A mount's source, and the workspace's folder, are checked where they land at each shell call,
   then bound by path: a swap for a link in the moment between the two is not caught.
@@ -59,6 +60,9 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
   `browser_command` by the folder it really is and the Chrome's host and port. Two names of one
   machine, such as a DNS name and its address, count as two Chromes: Buckle does not resolve them. A browser another workspace started on it before the change keeps running
   until its `close` or its idle timeout.
+- The holder of the node's profile folder or Chrome is chosen by the packs and tool policy in force,
+  not by whether the pack runs. A workspace whose browser pack is withheld for its own reason, such as
+  a refused setting, still holds it until the setting changes or the pack is switched off.
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
   setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
   as [Rings](rings.md), the 5straps control plane for agents, reads that field.

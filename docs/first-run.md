@@ -16,7 +16,7 @@ buckle init
 The first run sets this machine's node up, then serves the current directory as a
 [workspace](workspaces.md). It writes the node's settings to one file, `buckle.env`, in the
 state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
-macOS the directory gets mode 700 and the file 600. It never writes into
+macOS it creates the directory with mode 700 and the file with 600. It never writes into
 the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file
 with `BUCKLE_ENV_FILE` whenever you start Buckle; `buckle mcp` needs it in the state
 directory. A node set up already keeps its file unless you pass `--force`, and `buckle init` in
@@ -29,12 +29,12 @@ setting to the node's default in `buckle.env`, else the one shown:
 |---|---|---|
 | Folder to serve | the current directory | the workspace's folder |
 | Where the agent sees it | `/workspace` | the workspace's mount |
-| Name for this node, first run only | the folder's path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
+| Name for this node, first run or `--force` | the folder's path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
 | Packs to offer | every built-in pack, and plugins | `packs.enabled` |
 | Shell tools on? | on | `packs.shell` |
 | Host Git and forge tools on? | off | `packs.hostGit` |
 | Approved hosts and URLs | none | the workspace's approved list |
-| Approved hosts for workspaces without a list, first run only | none | `BUCKLE_ALLOWED_HOSTS` |
+| Approved hosts for workspaces without a list, first run or `--force` | none | `BUCKLE_ALLOWED_HOSTS` |
 
 `--yes`, or no terminal, takes every default and says so. Its summary checks
 `bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it
@@ -52,7 +52,7 @@ unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, 
   `buckle workspace` needs it before it changes workspaces or mints tokens.
 
 Running tools and answering approvals from the local CLI needs neither. `buckle init` prints both
-once in its summary, so treat that terminal output like the file.
+once, so treat that output like the file.
 
 ## Choosing the folder
 

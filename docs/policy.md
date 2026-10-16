@@ -81,8 +81,9 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 - `buckle policy deny-tool fs_write` refuses a tool outright; `allow-tool` lifts that. A tool
   in a withheld pack stays withheld.
 - `buckle policy mount /workspace` shows the workspace to the agent at that path; every path
-  outside it and its [mounts](mounts.md) is then refused, not asked. A mount under `/bin`, `/etc`,
-  `/home`, `/tmp`, `/usr`, or another system directory is refused.
+  outside it and its [mounts](mounts.md) is then refused, not asked. The folder may not show under
+  `/bin`, `/etc`, `/home`, `/tmp`, `/usr`, or another system directory; extra mounts follow that
+  page's list.
 - Sensitive files ask every time, matched on the exact path, so a granted directory never unlocks
   one: anything under `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.config/gcloud`,
   `.password-store`, browser and mail profiles, or `keychains`; `.env` files except

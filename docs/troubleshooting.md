@@ -57,8 +57,9 @@ for this start with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` l
 
 `buckle serve` prints this, starts nothing, and exits 1 where a node already serves the state
 directory with no terminal, as the [service](service.md) or `buckle serve --background` runs it.
-Answer its approvals with the command it names, `buckle approvals --watch`; `buckle service status`
-shows it, and `buckle service stop` stops it, after which `buckle serve` runs at the terminal.
+Answer its approvals with the command it names: `buckle approvals --watch` in the workspace folder,
+else `--all`. `buckle service status` shows it, and `buckle service stop` stops it, after which
+`buckle serve` runs at the terminal.
 
 ## The state directory has the wrong modes
 

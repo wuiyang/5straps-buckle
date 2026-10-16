@@ -12,8 +12,8 @@ node runs, and only the node owner chooses it:
   `close`; the next launch has no cookies or saved authentication.
 - A profile folder: every session shares one browser on the owner's folder, as Chrome opens a
   folder in one browser at a time. Logins and cookies outlive `close`, which closes that browser
-  for every session; a Buckle process that stops leaves it running until `close` or five idle
-  minutes.
+  for every session; a Buckle process that stops leaves it running until `close` or the workspace's
+  idle timeout (five minutes unless the owner set another).
 - The owner's own Chrome, attached: every session shares that one browser, its cookies, and its
   tabs. A session starts on one of the owner's open tabs, so begin with `tab new <url>` to leave
   it alone, and never close a tab you did not open. `close` only disconnects; the browser and its
@@ -93,7 +93,8 @@ Pass `session` to name a browser within the current caller. Buckle scopes the al
 supplied caller and optional stage ID. A new stage starts a separate browser; on an attached
 browser a stage or alias is a separate connection to the owner's one Chrome, not a separate
 browser. Labels group work and are not authentication identities. Close each browser when the task
-ends. State expires after five idle minutes; close explicitly when running headed. On a profile
+ends. State expires after the workspace's idle timeout (five minutes unless the owner set another); close
+explicitly when running headed. On a profile
 folder, no stage or `session` names a separate browser, cookies and logins stay in the folder, and `close`
 ends the browser for every session, so close it only when the work is done; on an attached
 browser, idle expiry only disconnects.
