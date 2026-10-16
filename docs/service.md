@@ -14,10 +14,12 @@ upgrade, and remove them.
 | `buckle service uninstall` | stops it and removes the definition; the state directory stays |
 | `buckle serve --background` | starts the node detached from this terminal, once |
 
-Each prints one line on success and a plain reason on refusal. A machine runs one service, for one
-state directory: `install` refuses while another node's service is installed. The definition names
-paths alone: Node, Buckle's `main.js`, the state directory, and `BUCKLE_ENV_FILE` where you set it.
-The node reads its settings, credentials among them, from its own `buckle.env`, as `buckle serve`
+`install`, `uninstall`, `start`, `stop`, and `restart` print one line on success; `status` and `logs`
+print their report; each refusal is a plain reason. Run `buckle init` first: `install` refuses a node
+with no `buckle.env`. A machine runs one service, for one state directory: `install` refuses while
+another node's service is installed. The definition names paths alone: Node, Buckle's `main.js`, the
+state directory, and `BUCKLE_ENV_FILE` where you set it; `--skip-owner-only-check` stays in it where
+the install had it. The node reads its settings, credentials among them, from its own `buckle.env`, as `buckle serve`
 does. `buckle service` runs before that file is read, and starts the service manager's program with
 a fixed list of variables, so no credential reaches it.
 
@@ -110,6 +112,7 @@ A node setting in `buckle.env` takes effect when the node restarts: `buckle sett
 
 `buckle service uninstall` stops the node and removes the definition; workspaces, grants, and logs
 stay in the state directory. Run it before `npm uninstall -g @5straps/buckle`, or the definition
-keeps naming a `main.js` that is gone.
+keeps naming a `main.js` that is gone, and before going back to 0.1, which cannot remove it and
+ignores its flags ([Going back](workspaces-04.md)).
 
 [Known limits, part five](known-limits-05.md) lists what is not covered yet.
