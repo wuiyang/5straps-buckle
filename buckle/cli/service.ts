@@ -57,6 +57,13 @@ interface ServiceContext {
 }
 
 const AUDITED = new Set(['install', 'uninstall', 'start', 'stop', 'restart'])
+/** The subcommands that need a service manager; stop, status, and logs also act on a node --background started. */
+const DEFINITION_ACTIONS = new Set(['install', 'uninstall', 'start', 'restart'])
+/**
+ * The exit code where Buckle drives no service manager on this platform (Q12: nothing for macOS yet), so a script can
+ * tell "not supported here" from a refusal.
+ */
+export const UNSUPPORTED_EXIT = 2
 
 /**
  * `buckle service` (Phase 3 of the workspace-model slice), dispatched before buckle.env is read, so no credential is in
@@ -79,24 +86,37 @@ export async function serviceCommand(input: ServiceCommandInput): Promise<CliRes
   return auditOperation({ actions: createFileActionLog(actionsPath(location)), workspaceId: NODE_SCOPE, tool: 'cli_service', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, describe: result => result.detail, operation: run })
 }
 
+/** Each subcommand's options, read before anything runs, so a word it does not take is refused first. */
+const OPTIONS: Record<string, ParseOptions> = {
+  install: { now: { type: 'boolean' } },
+  uninstall: {},
+  start: {},
+  stop: {},
+  restart: {},
+  status: { json: { type: 'boolean' } },
+  logs: { follow: { type: 'boolean', short: 'f' }, lines: { type: 'string', short: 'n' } },
+}
+
 async function dispatch(context: ServiceContext, action: string, rest: string[]): Promise<CliResult> {
+  const options = Object.hasOwn(OPTIONS, action) ? OPTIONS[action] : undefined
+  if (options === undefined) {
+    context.err(SERVICE_USAGE)
+    return { exitCode: 1 }
+  }
   try {
-    if (action === 'install') return await install(context, flags(rest, { now: { type: 'boolean' } }).now === true)
-    if (action === 'uninstall' || action === 'start' || action === 'stop' || action === 'restart') {
-      noFlags(rest)
-      return await { uninstall, start, stop, restart }[action](context)
+    const values = flags(rest, options)
+    if (context.manager === null && DEFINITION_ACTIONS.has(action)) {
+      context.err(`${unsupported(context.input.platform)}\n`)
+      return { exitCode: UNSUPPORTED_EXIT }
     }
-    if (action === 'status') return await status(context, flags(rest, { json: { type: 'boolean' } }).json === true)
-    if (action === 'logs') {
-      const values = flags(rest, { follow: { type: 'boolean', short: 'f' }, lines: { type: 'string', short: 'n' } })
-      return await logs(context, { follow: values.follow === true, lines: typeof values.lines === 'string' ? values.lines : undefined })
-    }
+    if (action === 'install') return await install(context, values.now === true)
+    if (action === 'status') return await status(context, values.json === true)
+    if (action === 'logs') return await logs(context, { follow: values.follow === true, lines: typeof values.lines === 'string' ? values.lines : undefined })
+    return await { uninstall, start, stop, restart }[action as 'uninstall' | 'start' | 'stop' | 'restart'](context)
   } catch (error) {
     if (error instanceof ServiceManagerError || error instanceof UsageError) return fail(context.err, error.message)
     throw error
   }
-  context.err(SERVICE_USAGE)
-  return { exitCode: 1 }
 }
 
 class UsageError extends Error {}
@@ -112,20 +132,17 @@ function flags(argv: string[], options: ParseOptions): Record<string, string | b
   }
 }
 
-function noFlags(argv: string[]): void {
-  flags(argv, {})
-}
-
 /** Where no service manager answers: the plain detach runs the node instead. */
 const FALLBACK = 'buckle serve --background runs the node until it stops'
 
-function noManager(context: ServiceContext): string {
-  return `Buckle drives no service manager on this machine (${context.input.platform}); ${FALLBACK}.`
+/** Phase 3, item 4 (Q12): nothing for macOS yet, nor for a platform Buckle drives no service manager on. */
+function unsupported(platform: NodeJS.Platform): string {
+  return `buckle service is not supported yet on ${platform === 'darwin' ? 'macOS' : platform}: ${FALLBACK}, and buckle service stop, status, and logs work on it.`
 }
 
 async function install(context: ServiceContext, now: boolean): Promise<CliResult> {
-  const { manager, location } = context
-  if (manager === null) return fail(context.err, `${noManager(context)} Nothing was installed.`)
+  const { location } = context
+  const manager = context.manager!
   const unavailable = await manager.unavailable()
   if (unavailable !== null) return fail(context.err, `${unavailable}, so nothing was installed; ${FALLBACK}.`)
   if (!existsSync(location.environmentFile ?? defaultEnvironmentFile({ BUCKLE_STATE_DIR: location.stateDirectory }))) {
@@ -171,9 +188,8 @@ function otherNode(installed: InstalledService): string | null {
 }
 
 async function uninstall(context: ServiceContext): Promise<CliResult> {
-  const { manager } = context
-  const installed = manager === null ? null : await manager.installed()
-  if (manager === null || installed === null) {
+  const manager = context.manager!
+  if (await manager.installed() === null) {
     context.out('No Buckle service is installed; nothing was removed.\n')
     return { exitCode: 0 }
   }
@@ -188,10 +204,11 @@ async function uninstall(context: ServiceContext): Promise<CliResult> {
 }
 
 async function start(context: ServiceContext): Promise<CliResult> {
-  const { manager, location } = context
+  const { location } = context
+  const manager = context.manager!
   const running = await runningNode(location.stateDirectory)
-  const installed = manager === null ? null : await manager.installed()
-  if (manager === null || installed === null) {
+  const installed = await manager.installed()
+  if (installed === null) {
     if (running !== null) return fail(context.err, `No Buckle service is installed. ${inBackground(running)}.`)
     return fail(context.err, `No Buckle service is installed: buckle service install installs one, and ${FALLBACK}.`)
   }
@@ -239,10 +256,11 @@ async function askToStop(context: ServiceContext, running: RunningNode | null): 
 }
 
 async function restart(context: ServiceContext): Promise<CliResult> {
-  const { manager, location } = context
+  const { location } = context
+  const manager = context.manager!
   const running = await runningNode(location.stateDirectory)
-  const installed = manager === null ? null : await manager.installed()
-  if (manager === null || installed === null) {
+  const installed = await manager.installed()
+  if (installed === null) {
     if (running?.record?.manager === 'background') return fail(context.err, `No Buckle service is installed to restart. ${inBackground(running)}: stop it with buckle service stop, then start it again with buckle serve --background.`)
     return fail(context.err, `No Buckle service is installed to restart: buckle service install installs one, and ${FALLBACK}.`)
   }
@@ -303,7 +321,7 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
     context.out(`${JSON.stringify(report, null, 2)}\n`)
     return { exitCode: 0 }
   }
-  context.out(`Service    ${report.definition === null ? (manager === null ? 'none: Buckle drives no service manager here' : 'not installed') : `${report.definition.label}, ${report.definition.enabled ? 'starts at login' : 'disabled'}${report.definition.thisNode ? '' : ', for another state directory'}`}\n`)
+  context.out(`Service    ${report.definition === null ? (manager === null ? `none: ${unsupported(context.input.platform)}` : 'not installed') : `${report.definition.label}, ${report.definition.enabled ? 'starts at login' : 'disabled'}${report.definition.thisNode ? '' : ', for another state directory'}`}\n`)
   context.out(`Running    ${running === null ? 'no' : `yes${pidOf(running)}${running.record === null ? ', starting' : `, started by ${startedBy(running.record)} at ${running.record.startedAt}`}`}\n`)
   if (running?.record) context.out(`Address    ${addressOf(running.record)}\nVersion    ${running.record.version}\n`)
   return { exitCode: 0 }

@@ -83,14 +83,20 @@ describe('buckle service, its words', () => {
   })
 })
 
-describe('buckle service where Buckle drives no service manager', () => {
-  it('installs nothing, starts nothing, removes nothing, and points at buckle serve --background', async () => {
+// Phase 3, item 4 (Q12): nothing for macOS yet.
+describe('buckle service on macOS, where Buckle drives no service manager', () => {
+  it('says it is not supported yet and exits 2 for each subcommand a definition needs, pointing at buckle serve --background', async () => {
     const target = node()
-    expect(await service(target, ['install'], null)).toMatchObject({ exitCode: 1, err: 'Buckle drives no service manager on this machine (linux); buckle serve --background runs the node until it stops. Nothing was installed.\n' })
-    expect(await service(target, ['start'], null)).toMatchObject({ exitCode: 1, err: 'No Buckle service is installed: buckle service install installs one, and buckle serve --background runs the node until it stops.\n' })
-    expect(await service(target, ['uninstall'], null)).toMatchObject({ exitCode: 0, out: 'No Buckle service is installed; nothing was removed.\n' })
-    expect(await service(target, ['stop'], null)).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n' })
+    for (const action of ['install', 'uninstall', 'start', 'restart']) {
+      expect(await service(target, [action], null, { platform: 'darwin' })).toMatchObject({ exitCode: 2, out: '', err: 'buckle service is not supported yet on macOS: buckle serve --background runs the node until it stops, and buckle service stop, status, and logs work on it.\n' })
+    }
+    expect(await service(target, ['install', '--now'], null, { platform: 'freebsd' })).toMatchObject({ exitCode: 2, err: expect.stringContaining('not supported yet on freebsd') })
+    expect(await service(target, ['stop'], null, { platform: 'darwin' })).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n' })
+    expect((await service(target, ['status'], null, { platform: 'darwin' })).out).toContain('Service    none: buckle service is not supported yet on macOS')
   })
+})
+
+describe('buckle service and a node buckle serve --background started', () => {
 
   it('stops a node buckle serve --background started through its stop request, and audits it in the node\'s log', async () => {
     const target = node()
@@ -103,12 +109,15 @@ describe('buckle service where Buckle drives no service manager', () => {
     ])
   })
 
-  it('will not restart or start a node buckle serve --background started, and says how', async () => {
+  it('will not restart or start a node buckle serve --background started where no service is installed, and says how', async () => {
     const target = node()
+    const { manager } = fakeManager(target.state)
+    expect(await service(target, ['start'], manager)).toMatchObject({ exitCode: 1, err: 'No Buckle service is installed: buckle service install installs one, and buckle serve --background runs the node until it stops.\n' })
+    expect(await service(target, ['uninstall'], manager)).toMatchObject({ exitCode: 0, out: 'No Buckle service is installed; nothing was removed.\n' })
     const running = await serving(target.state, 'background', 900_002)
     try {
-      expect((await service(target, ['restart'], null)).err).toBe('No Buckle service is installed to restart. A node runs in the background (pid 900002), started by buckle serve --background: stop it with buckle service stop, then start it again with buckle serve --background.\n')
-      expect((await service(target, ['start'], null)).err).toBe('No Buckle service is installed. A node runs in the background (pid 900002), started by buckle serve --background.\n')
+      expect((await service(target, ['restart'], manager)).err).toBe('No Buckle service is installed to restart. A node runs in the background (pid 900002), started by buckle serve --background: stop it with buckle service stop, then start it again with buckle serve --background.\n')
+      expect((await service(target, ['start'], manager)).err).toBe('No Buckle service is installed. A node runs in the background (pid 900002), started by buckle serve --background.\n')
     } finally { await running.close() }
   })
 })
