@@ -106,7 +106,8 @@ async function serve(options: string[], skipOwnerOnlyCheck: boolean): Promise<nu
 /**
  * Q5 of the 2026-10-15 rulings: `buckle serve` where a node already serves the state directory with no terminal (the
  * service, or --background) says Buckle is already running in service mode, names the command that answers its
- * approvals here, and exits 1, attaching nothing and starting nothing. Read before buckle.env, as paths alone.
+ * approvals here, and exits 1, attaching nothing and starting nothing; beside a serve at another terminal it says to stop
+ * that one there with Ctrl-C (fix brief 6, item 1). Read before buckle.env, as paths alone.
  */
 async function besideRunningNode(): Promise<number | null> {
   let stateDirectory: string
@@ -210,12 +211,12 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
 async function startService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
   if (input.kind === 'serve') {
     // Before anything else, so a second node on this state directory is refused before it builds anything.
-    const unattended = input.service === null ? {} : await holdService({ ...input, service: input.service })
+    const held = await holdService(input)
     // The built app, with the host and the one cli:call listener bound before anything is accepted.
     const server = await setupServer({ ...input, entryPath: builtEntryPath() })
     // HTTP asks through the app's cli:call hook, which main's listener answers (ruling 4 of 2026-09-28).
     input.common.bindRequester(server.requestCli)
-    return serveHttp({ ...input, server, ...unattended })
+    return serveHttp({ ...input, server, ...held })
   }
   // MCP stdio is handed the requester itself; stdin carries the protocol.
   input.common.bindRequester(input.requestCli)
@@ -225,22 +226,23 @@ async function startService(input: { kind: ServiceKind; options: string[]; servi
 }
 
 /**
- * A serve with no terminal (Phase 3): it holds the state directory's serve lock for its life, records its pid, version,
- * and address once it listens, stops when `buckle service stop` asks it to (Windows delivers a service no SIGTERM), and
- * logs the workspaces it serves, as no terminal shows them.
+ * Every serve holds the state directory's serve lock for its life and records its pid, version, and address once it
+ * listens, a terminal's too, under the manager `terminal`, so `buckle serve --background` and the service family see it
+ * (fix brief 6, item 1). A serve at a terminal stops there, with Ctrl-C, and lists its workspaces there. A serve with no
+ * terminal (Phase 3) also stops when `buckle service stop` asks it to (Windows delivers a service no SIGTERM), and logs
+ * the workspaces it serves, as no terminal shows them.
  */
-async function holdService(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; service: ServiceManagerKind }): Promise<Pick<ServeHttpInput, 'onListening' | 'write'>> {
+async function holdService(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; service: ServiceManagerKind | null }): Promise<Pick<ServeHttpInput, 'onListening' | 'write'>> {
   const { stateDirectory } = input.config
   const hold = await holdServe({ stateDirectory, owner: input.common.owner })
+  const onListening: NonNullable<ServeHttpInput['onListening']> = address => hold.publish({ manager: input.service ?? 'terminal', version: BUCKLE_VERSION, host: address.address, port: address.port })
+  if (input.service === null) return { onListening }
   const onStop = () => {
     input.logger.info('Shutdown requested', { by: 'buckle service stop' })
     void input.shutdown.close()
   }
   input.common.owner.onClose('timers', 'stop request', watchStopRequest({ stateDirectory, onStop }))
-  return {
-    onListening: address => hold.publish({ manager: input.service, version: BUCKLE_VERSION, host: address.address, port: address.port }),
-    write: text => input.logger.info('Workspaces served', { workspaces: text.trimEnd() }),
-  }
+  return { onListening, write: text => input.logger.info('Workspaces served', { workspaces: text.trimEnd() }) }
 }
 
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol. The question is

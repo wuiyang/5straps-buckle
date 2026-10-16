@@ -5,6 +5,7 @@ import { join } from 'pathe'
 import { z } from 'zod'
 import { isRuntimeError, RuntimeErrorCode, type RuntimeOwner } from '@5straps/runtime'
 import { acquireFileLock, acquireOwnershipLock } from '@5straps/runtime/sqlite'
+import { requireOwnerOnly } from '../../adapters/file-modes.js'
 import { replaceFile } from '../../adapters/json-file-store.js'
 
 /**
@@ -13,6 +14,13 @@ import { replaceFile } from '../../adapters/json-file-store.js'
  */
 export const SERVICE_MANAGERS = ['systemd', 'task-scheduler', 'background'] as const
 export type ServiceManagerKind = typeof SERVICE_MANAGERS[number]
+
+/**
+ * What runs a serving process, as its record says: a service manager above, or `terminal` for a `buckle serve` typed at
+ * a terminal, which holds the same lock so the service family sees it (fix brief 6, item 1). A state file, not protocol.
+ */
+export const SERVE_MANAGERS = [...SERVICE_MANAGERS, 'terminal'] as const
+export type ServeManagerKind = typeof SERVE_MANAGERS[number]
 
 /** Where a node's service files live: owner-only, inside the state directory, so no agent tool reads or writes them. */
 export function serviceDirectory(stateDirectory: string): string {
@@ -39,10 +47,10 @@ const STOP_FILE = 'stop-request'
 const LOCK_WAIT_MS = 2_000
 const STOP_POLL_MS = 1_000
 
-/** What a serving process with no terminal records once it listens, read by `buckle service status` and `buckle serve`. */
+/** What a serving process records once it listens, read by `buckle service status` and `buckle serve`. */
 export const ServeRecordSchema = z.object({
   pid: z.number().int().positive(),
-  manager: z.enum(SERVICE_MANAGERS),
+  manager: z.enum(SERVE_MANAGERS),
   version: z.string(),
   host: z.string(),
   port: z.number().int().nonnegative(),
@@ -50,7 +58,7 @@ export const ServeRecordSchema = z.object({
 }).strict()
 export type ServeRecord = z.infer<typeof ServeRecordSchema>
 
-/** What `buckle serve` and `buckle service` see of a node already serving with no terminal; null where none serves. */
+/** What `buckle serve` and `buckle service` see of a node already serving the state directory; null where none serves. */
 export interface RunningNode {
   /** Its record, or null in the instant between taking the lock and listening, or where the record cannot be read. */
   record: ServeRecord | null
@@ -71,8 +79,11 @@ export interface ServeHold {
  * Takes the state directory's serve lock for this process's life, released at the owner's `locks` stage (the OS drops
  * it if the process dies, so a killed node leaves no stale lock), and clears a stop request an earlier process left.
  * Refused, as AlreadyServingError, where another process holds it. The record is removed before the lock is released.
+ * A state directory other users can reach is refused first, as the node refuses it at start, so nothing is made in it;
+ * where --skip-owner-only-check lets it be used, the start's own check warns, once.
  */
 export async function holdServe(input: { stateDirectory: string; owner: RuntimeOwner }): Promise<ServeHold> {
+  requireOwnerOnly(input.stateDirectory, 'directory', { logger: { warn: () => {} } })
   const directory = serviceDirectory(input.stateDirectory)
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   try {
@@ -104,7 +115,7 @@ async function acquireLockWithin(input: { path: string; owner: RuntimeOwner }): 
   }
 }
 
-/** The node serving this state directory with no terminal, read without waiting; null where none holds the lock. */
+/** The node serving this state directory, at a terminal or not, read without waiting; null where none holds the lock. */
 export async function runningNode(stateDirectory: string): Promise<RunningNode | null> {
   const path = join(serviceDirectory(stateDirectory), LOCK_FILE)
   if (!existsSync(path)) return null

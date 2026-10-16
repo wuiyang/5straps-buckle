@@ -17,8 +17,11 @@ const entry = vi.hoisted(() => ({
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
   configureOwnerOnlyCheck: vi.fn(),
-  /** A node serving the state directory with no terminal, as `buckle serve` sees one; none by default. */
+  /** A node serving the state directory, as `buckle serve` sees one; none by default. */
   runningNode: vi.fn(async (): Promise<unknown> => null),
+  /** The serve lock every serve takes, and the record it publishes once it listens. */
+  holdServe: vi.fn(async () => ({ publish: entry.publish })),
+  publish: vi.fn(async () => {}),
   /** What the root logger main configures was told to warn about, by message. */
   warnings: [] as string[],
 }))
@@ -29,7 +32,7 @@ vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
-vi.mock('../common/services/node-service/serve-record.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/services/node-service/serve-record.js')>(), runningNode: entry.runningNode }))
+vi.mock('../common/services/node-service/serve-record.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/services/node-service/serve-record.js')>(), runningNode: entry.runningNode, holdServe: entry.holdServe }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 vi.mock('../common/runtime/log.js', async importOriginal => {
   const original = await importOriginal<typeof import('../common/runtime/log.js')>()
@@ -180,6 +183,26 @@ describe('main', () => {
     expect(entry.runCli).not.toHaveBeenCalled()
     // The process's one requester is bound before anything is served.
     expect(entry.initializeCommon.mock.results[0]!.value.bindRequester).toHaveBeenCalledTimes(1)
+  })
+
+  // Fix brief 6, item 1: a serve at a terminal holds the state directory's serve lock as a service does, and records
+  // itself as `terminal` once it listens, so the service family sees it; it keeps listing its workspaces at the terminal.
+  it('holds the serve lock for a serve at a terminal, before anything is built, and records it as terminal once it listens', async () => {
+    expect(await main(['serve'])).toBeUndefined()
+    expect(entry.holdServe).toHaveBeenCalledWith(expect.objectContaining({ stateDirectory: config.stateDirectory }))
+    expect(entry.holdServe.mock.invocationCallOrder[0]).toBeLessThan(entry.setupServer.mock.invocationCallOrder[0]!)
+    const served = (entry.serveHttp.mock.calls as unknown[][])[0]![0] as { onListening?: (address: { address: string; port: number }) => Promise<void>; write?: unknown }
+    expect(served.write).toBeUndefined()
+    await served.onListening!({ address: '127.0.0.1', port: 4320 })
+    expect(entry.publish).toHaveBeenCalledWith(expect.objectContaining({ manager: 'terminal', host: '127.0.0.1', port: 4320 }))
+  })
+
+  it('refuses buckle serve beside a serve at another terminal, saying to stop that one there with Ctrl-C', async () => {
+    entry.runningNode.mockResolvedValueOnce({ record: { pid: 4243, manager: 'terminal', version: '0.1.4', host: '127.0.0.1', port: 4320, startedAt: '2026-10-16T00:00:00.000Z' } })
+    const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect(await main(['serve'])).toBe(1)
+    expect(String(refused.mock.calls[0]![0])).toBe('Buckle runs at a terminal (pid 4243); stop it there with Ctrl-C, then run buckle serve again.\n')
+    expect(entry.initializeCommon).not.toHaveBeenCalled()
   })
 
   it('listens for the stop signals of this platform, so a stop always runs the close steps', async () => {

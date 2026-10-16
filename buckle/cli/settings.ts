@@ -7,7 +7,7 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from '../common/adapters/environment-file.js'
 import { movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
-import { serviceInstalled } from '../common/services/node-service/installed.js'
+import { restartRoute, restartSteps, restartSubject, type RestartRoute } from '../common/services/node-service/installed.js'
 import { homeDirectory } from '../common/domain/paths.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting, ROOT_SETTING, type NodeSetting } from './node-settings.js'
 
@@ -17,24 +17,31 @@ export interface CliResult {
   detail?: string
 }
 
-const usageText = (installed: boolean) => `Usage:
+const usageText = (restart: RestartRoute) => `Usage:
   buckle settings show                 Node settings, their values and where each came from
   buckle settings set <key> <value>    Write one setting to the environment file
   buckle settings unset <key>          Remove it from the file, so the default applies
 
 Keys (either name): ${NODE_SETTINGS.map(setting => `${setting.alias} (${setting.key})`).join(', ')}.
-Lists are comma separated, command globs separated by ;;. ${takesEffect(installed)}
+Lists are comma separated, command globs separated by ;;. ${takesEffect(restart)}
 From approval-wait on, each is a default every workspace takes where its own settings hold no value,
 which buckle workspace set and buckle policy change; the command deny and destructive lists apply to
 every workspace whatever its own say.
 `
 
 /**
- * When a node setting applies (Phase 3, item 7): where a service runs the node, at `buckle service restart`; else when
- * the owner restarts buckle serve.
+ * When a node setting applies (Phase 3, item 7, and fix brief 6, item 1): when the node restarts, as what runs it
+ * restarts it: `buckle service restart`, Ctrl-C at the terminal of a `buckle serve` and that again, or a stop and
+ * `buckle serve --background`; with nothing running or installed, when buckle serve restarts.
  */
-function takesEffect(installed: boolean): string {
-  return installed ? 'A change takes effect when the node restarts: buckle service restart.' : 'A change takes effect when buckle serve restarts.'
+function takesEffect(restart: RestartRoute): string {
+  const steps = restartSteps(restart)
+  return `A change takes effect when ${restartSubject(restart)} restarts${steps === null ? '' : `: ${steps}`}.`
+}
+
+function restartLine(restart: RestartRoute): string {
+  const steps = restartSteps(restart)
+  return `Restart ${restartSubject(restart)} for the change to take effect${steps === null ? '' : `: ${steps}`}.`
 }
 
 /**
@@ -51,12 +58,12 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
   const file = resolve(input.cwd, input.environmentFile)
   const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
-  const installed = serviceInstalled(stateDirectoryOf(merged), input.environment, process.platform, input.home ?? homeDirectory())
+  const restart = await restartRoute(stateDirectoryOf(merged), input.environment, process.platform, input.home ?? homeDirectory())
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
     workspaceId: NODE_SCOPE, tool: 'cli_settings', sessionId: 'local-owner',
     isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
-    operation: () => dispatch({ ...input, file, fileText, merged, installed }),
+    operation: () => dispatch({ ...input, file, fileText, merged, restart }),
   })
 }
 
@@ -69,16 +76,16 @@ interface SettingsContext {
   merged: NodeJS.ProcessEnv
   cwd: string
   home?: string
-  /** Whether a service runs this node, so the restart hint names buckle service restart. */
-  installed: boolean
+  /** How the node restarts, so the restart hint names what restarts it. */
+  restart: RestartRoute
 }
 
 function dispatch(context: SettingsContext): CliResult | Promise<CliResult> {
   const [action, ...rest] = context.argv
-  if (action === undefined || action === 'show') return rest.length ? usage(context.installed) : show(context)
+  if (action === undefined || action === 'show') return rest.length ? usage(context.restart) : show(context)
   if (action === 'set' && rest.length === 2) return write(context, rest[0]!, rest[1]!)
   if (action === 'unset' && rest.length === 1) return write(context, rest[0]!, null)
-  return usage(context.installed)
+  return usage(context.restart)
 }
 
 function show(context: SettingsContext): CliResult {
@@ -112,7 +119,7 @@ function show(context: SettingsContext): CliResult {
     process.stdout.write(`\nAlso in the file, not shown here:\n`)
     for (const name of hidden) process.stdout.write(`  ${name} (set, hidden)\n`)
   }
-  process.stdout.write(`\nChange one with: buckle settings set <key> <value>. ${takesEffect(context.installed)}\n`)
+  process.stdout.write(`\nChange one with: buckle settings set <key> <value>. ${takesEffect(context.restart)}\n`)
   return { exitCode: 0 }
 }
 
@@ -157,7 +164,7 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   if (workspace) process.stdout.write(FLOOR_KEYS.has(setting.key)
     ? `It applies to every workspace, over each one's own ${workspace.key}.\n`
     : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)
-  process.stdout.write(context.installed ? 'Restart the node for the change to take effect: buckle service restart.\n' : 'Restart buckle serve for the change to take effect.\n')
+  process.stdout.write(`${restartLine(context.restart)}\n`)
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
 }
 
@@ -174,8 +181,8 @@ function buckleVariables(text: string | null): NodeJS.ProcessEnv {
   return Object.fromEntries(Object.entries(parseEnv(text)).filter(([name]) => name.startsWith('BUCKLE_')))
 }
 
-function usage(installed: boolean): CliResult {
-  process.stderr.write(usageText(installed))
+function usage(restart: RestartRoute): CliResult {
+  process.stderr.write(usageText(restart))
   return { exitCode: 1 }
 }
 

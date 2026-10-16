@@ -3,8 +3,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, inject, it } from 'vitest'
-import { readRecord, serviceLogPath } from '../../common/services/node-service/serve-record.js'
-import { freePort, waitForStatus } from '../support/buckle-process.js'
+import { readRecord, runningNode, serviceLogPath } from '../../common/services/node-service/serve-record.js'
+import { freePort, spawnBuckle, waitForStatus } from '../support/buckle-process.js'
 
 // Phase 3, items 1 and 2 of the workspace-model slice: the built `buckle service` installs a systemd user unit and
 // drives it through systemctl. No systemd user session runs on CI, so a systemctl on PATH plays the user manager: it
@@ -94,5 +94,49 @@ describe('buckle service on Linux, with the systemd user manager imitated', () =
     ])
     const environments = readFileSync(join(root, 'environments'), 'utf8')
     expect(environments).not.toMatch(/admin-fixture|BUCKLE_/)
+  }, 120_000)
+
+  // Fix brief 6, item 1 (findings 1 and 32 of recheck 4): a buckle serve typed at a terminal held no lock, so the family
+  // could not see it: status said it was not running, --background started a second node, and a unit started beside it
+  // failed on the port and restarted every 5 s. It now holds the lock as a `terminal` node, and each refuses beside it.
+  it('sees a buckle serve at a terminal: refuses to start anything beside it, shows it, names Ctrl-C, and the unit exits 2', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-service-terminal-')))
+    const state = join(root, 'state')
+    const workspace = join(root, 'workspace')
+    mkdirSync(state, { mode: 0o700 })
+    mkdirSync(workspace)
+    mkdirSync(join(root, 'runtime'))
+    const port = await freePort()
+    writeFileSync(join(state, 'buckle.env'), `BUCKLE_HOST=127.0.0.1\nBUCKLE_PORT=${port}\nBUCKLE_ADMIN_TOKEN=file-admin-fixture\n`, { mode: 0o600 })
+    const bin = fakeUserManager(root, state)
+    const env: NodeJS.ProcessEnv = { PATH: `${bin}:${process.env.PATH}`, HOME: root, TMPDIR: root, XDG_RUNTIME_DIR: join(root, 'runtime'), XDG_CONFIG_HOME: join(root, 'config'), BUCKLE_STATE_DIR: state }
+    const buckle = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', env, cwd: workspace, timeout: 60_000 })
+
+    const terminal = spawnBuckle({ entry, args: ['serve'], env, cwd: workspace })
+    pids.push(terminal.child.pid!)
+    await waitForStatus(`http://127.0.0.1:${port}/health/ready`, 200)
+    const pid = terminal.child.pid!
+    expect(readRecord(state)).toMatchObject({ pid, manager: 'terminal', port })
+    const atTerminal = `Buckle runs at a terminal (pid ${pid}); stop it there with Ctrl-C`
+
+    expect(buckle(['service', 'status']).stdout).toContain(`Running    yes (pid ${pid}), started by buckle serve at a terminal at `)
+    expect(buckle(['serve', '--background'])).toMatchObject({ status: 1, stderr: `${atTerminal}, then run buckle serve --background again.\n` })
+    expect(buckle(['service', 'install', '--now'])).toMatchObject({ status: 1, stderr: `${atTerminal}, then run buckle service install --now again.\n` })
+    expect(buckle(['service', 'install']).status).toBe(0)
+    expect(buckle(['settings', 'set', 'approval-wait', '20000']).stdout).toContain('Restart buckle serve for the change to take effect: Ctrl-C at its terminal, then buckle serve again.\n')
+    expect(buckle(['service', 'start'])).toMatchObject({ status: 1, stderr: `${atTerminal}, then run buckle service start again.\n` })
+    expect(buckle(['service', 'restart'])).toMatchObject({ status: 1, stderr: `${atTerminal}, then run buckle service start.\n` })
+    expect(buckle(['service', 'stop'])).toMatchObject({ status: 1, stderr: `${atTerminal}.\n` })
+    expect(readFileSync(join(root, 'calls'), 'utf8')).not.toMatch(/ (start|restart|stop) buckle\.service/)
+    // The unit's own serve beside it is refused at the lock and exits 2, which the unit does not restart on.
+    const unit = buckle(['serve', '--service', 'systemd', '--state-dir', state])
+    expect(unit.status).toBe(2)
+    expect(readFileSync(serviceLogPath(state), 'utf8')).not.toContain('EADDRINUSE')
+
+    terminal.child.kill('SIGTERM')
+    expect(await terminal.exited).toMatchObject({ code: 0 })
+    expect(await runningNode(state)).toBeNull()
+    expect(readRecord(state)).toBeNull()
+    expect(buckle(['service', 'uninstall']).status).toBe(0)
   }, 120_000)
 })

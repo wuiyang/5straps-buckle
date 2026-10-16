@@ -6,11 +6,18 @@ import { ALREADY_SERVING, type RunningNode } from './serve-record.js'
 
 /**
  * Why a serve is refused beside a node already serving the state directory with no terminal (Q5, Phase 3 item 5): it
- * says so, and names the command that answers that node's approvals here.
+ * says so, and names the command that answers that node's approvals here. Beside a serve at a terminal, which answers
+ * its approvals there, it says to stop that one with Ctrl-C first (fix brief 6, item 1).
  */
 export function besideService(input: { running: RunningNode; command: string; stateDirectory: string; cwd: string; platform?: NodeJS.Platform | undefined }): string {
   const pid = input.running.record === null ? '' : ` (pid ${input.running.record.pid})`
+  if (input.running.record?.manager === 'terminal') return `${atTerminal(input.running)}, then run ${input.command} again.`
   return `${ALREADY_SERVING}${pid}, so ${input.command} starts nothing. Answer its approvals here with: ${attachCommand(input.stateDirectory, input.cwd, input.platform)}`
+}
+
+/** A node `buckle serve` runs at a terminal, which only Ctrl-C there stops: the start of every refusal beside it. */
+export function atTerminal(running: RunningNode): string {
+  return `Buckle runs at a terminal${running.record === null ? '' : ` (pid ${running.record.pid})`}; stop it there with Ctrl-C`
 }
 
 /**

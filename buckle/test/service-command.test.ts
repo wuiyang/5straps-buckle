@@ -1,10 +1,11 @@
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { serviceCommand, SERVICE_USAGE, type ServiceCommandInput } from '../cli/service.js'
-import { holdServe, serviceDirectory, serviceLogPath, watchStopRequest, type ServiceManagerKind } from '../common/services/node-service/serve-record.js'
+import { holdServe, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
+import { startInBackground } from '../server/service-mode.js'
 import type { InstalledService, ServiceDefinition, ServiceManager } from '../common/types/ports/service-manager.js'
 
 // Phase 3 of the workspace-model slice: the `buckle service` family over a service manager, here one that imitates a
@@ -25,7 +26,7 @@ function node(options: { setUp?: boolean } = {}): Node {
 }
 
 /** A node serving the state directory with no terminal, in this process, under a pid of its own so a stop request can name it. */
-async function serving(state: string, manager: ServiceManagerKind, pid: number): Promise<{ close(): Promise<void> }> {
+async function serving(state: string, manager: ServeManagerKind, pid: number): Promise<{ close(): Promise<void> }> {
   const owner = createRuntimeOwner({ name: 'fake-node', services: [] })
   await holdServe({ stateDirectory: state, owner })
   writeFileSync(join(serviceDirectory(state), 'serve.json'), JSON.stringify({ pid, manager, version: '0.1.4', host: '127.0.0.1', port: 4320, startedAt: '2026-10-16T00:00:00.000Z' }))
@@ -118,6 +119,49 @@ describe('buckle service and a node buckle serve --background started', () => {
     try {
       expect((await service(target, ['restart'], manager)).err).toBe('No Buckle service is installed to restart. A node runs in the background (pid 900002), started by buckle serve --background: stop it with buckle service stop, then start it again with buckle serve --background.\n')
       expect((await service(target, ['start'], manager)).err).toBe('No Buckle service is installed. A node runs in the background (pid 900002), started by buckle serve --background.\n')
+    } finally { await running.close() }
+  })
+})
+
+// Fix brief 6, item 1: a buckle serve typed at a terminal holds the same lock and records itself as `terminal`, so the
+// service family sees it: nothing starts beside it, status shows it, and stop names Ctrl-C at its terminal.
+describe('buckle service and a node buckle serve runs at a terminal', () => {
+  it('refuses serve --background, start, restart, and install --now beside it, naming Ctrl-C, and starts nothing', async () => {
+    const target = node()
+    const { manager, calls } = fakeManager(target.state)
+    const running = await serving(target.state, 'terminal', 900_020)
+    try {
+      expect(await service(target, ['start'], manager)).toMatchObject({ exitCode: 1, err: 'No Buckle service is installed. Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C.\n' })
+      expect(await service(target, ['restart'], manager)).toMatchObject({ exitCode: 1, err: 'No Buckle service is installed to restart. Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C, then run buckle serve again.\n' })
+      expect(await service(target, ['install', '--now'], manager)).toMatchObject({ exitCode: 1, err: 'Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C, then run buckle service install --now again.\n' })
+      expect(calls).toEqual([])
+      expect((await service(target, ['install'], manager)).exitCode).toBe(0)
+      expect(await service(target, ['start'], manager)).toMatchObject({ exitCode: 1, err: 'Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C, then run buckle service start again.\n' })
+      expect(await service(target, ['restart'], manager)).toMatchObject({ exitCode: 1, err: 'Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C, then run buckle service start.\n' })
+      expect(calls.map(call => call[0])).toEqual(['install'])
+      const background = await startInBackground({ options: { help: false, background: true, service: null, location: {} }, location: { stateDirectory: target.state, environmentFile: null }, mainScript: target.main, skipOwnerOnlyCheck: false, environment: target.environment, cwd: target.root })
+      expect(background).toEqual({ exitCode: 1, message: 'Buckle runs at a terminal (pid 900020); stop it there with Ctrl-C, then run buckle serve --background again.' })
+    } finally { await running.close() }
+  })
+
+  it('is shown by status as started at a terminal, and stop says to press Ctrl-C there, asking nothing of it', async () => {
+    const target = node()
+    writeFileSync(join(target.root, 'package.json'), JSON.stringify({ version: '0.1.5' }))
+    const { manager, calls } = fakeManager(target.state, { installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true } })
+    const running = await serving(target.state, 'terminal', 900_021)
+    try {
+      const shown = (await service(target, ['status'], manager)).out
+      expect(shown).toContain('Running    yes (pid 900021), started by buckle serve at a terminal at 2026-10-16T00:00:00.000Z\n')
+      expect(shown).toContain('Next       The node runs 0.1.4 and 0.1.5 is installed: stop it with Ctrl-C at its terminal, then run buckle serve again.\n')
+      expect(JSON.parse((await service(target, ['status', '--json'], manager)).out).running).toMatchObject({ pid: 900021, startedBy: 'terminal' })
+      expect(await service(target, ['stop'], manager)).toMatchObject({ exitCode: 1, out: '', err: 'Buckle runs at a terminal (pid 900021); stop it there with Ctrl-C.\n' })
+      expect(await service(target, ['stop'], null)).toMatchObject({ exitCode: 1, err: 'Buckle runs at a terminal (pid 900021); stop it there with Ctrl-C.\n' })
+      expect(existsSync(join(serviceDirectory(target.state), 'stop-request'))).toBe(false)
+      // Uninstalling where the manager cannot signal its node asks nothing of a serve at a terminal, which is not the service's.
+      const unsignalled = fakeManager(target.state, { kind: 'task-scheduler', signals: false, installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true } })
+      expect(await service(target, ['uninstall'], unsignalled.manager)).toMatchObject({ exitCode: 0, out: 'Removed the Buckle service (the imitated definition); the state directory is kept.\n' })
+      expect(existsSync(join(serviceDirectory(target.state), 'stop-request'))).toBe(false)
+      expect(calls).toEqual([])
     } finally { await running.close() }
   })
 })

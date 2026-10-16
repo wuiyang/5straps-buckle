@@ -4,6 +4,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
+import { createRuntimeOwner } from '@5straps/runtime'
+import { holdServe } from '../common/services/node-service/serve-record.js'
 import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
@@ -813,6 +815,12 @@ describe('buckle workspace set and unset', () => {
     vi.stubEnv('XDG_CONFIG_HOME', config)
     try {
       expect((await set('host', '0.0.0.0')).err).toContain(process.platform === 'linux' ? 'change it in the node\'s buckle.env, and run buckle service restart.' : 'and restart buckle serve.')
+      // Fix brief 6, item 1: a serve at a terminal runs the node now, so its restart is Ctrl-C there, whatever is installed.
+      const owner = createRuntimeOwner({ name: 'terminal-serve', services: [] })
+      await (await holdServe({ stateDirectory: state, owner })).publish({ manager: 'terminal', version: '0.1.4', host: '127.0.0.1', port: 4320 })
+      try {
+        expect((await set('host', '0.0.0.0')).err).toContain('change it in the node\'s buckle.env, and restart buckle serve (Ctrl-C at its terminal, then buckle serve again).')
+      } finally { await owner.close() }
     } finally { vi.unstubAllEnvs() }
   })
 

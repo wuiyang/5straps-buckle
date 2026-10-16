@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
-import { addressOf } from '../common/services/node-service/attach.js'
+import { addressOf, atTerminal } from '../common/services/node-service/attach.js'
 import { requestStop, runningNode, serviceLogPath, waitForStop, type RunningNode, type ServeRecord } from '../common/services/node-service/serve-record.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
@@ -155,6 +155,7 @@ async function install(context: ServiceContext, now: boolean): Promise<CliResult
   if (refusal !== null) return fail(context.err, refusal)
   const running = await runningNode(location.stateDirectory)
   if (now && running?.record?.manager === 'background') return fail(context.err, `${inBackground(running)}; stop it first with buckle service stop, then install again.`)
+  if (now && running?.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}, then run buckle service install --now again.`)
   await manager.install(definitionFor(context), { now })
   if (!now) {
     context.out(`Installed the Buckle service (${manager.label}); it starts at every login. Start it now with buckle service start.\n`)
@@ -194,9 +195,11 @@ async function uninstall(context: ServiceContext): Promise<CliResult> {
     context.out('No Buckle service is installed; nothing was removed.\n')
     return { exitCode: 0 }
   }
-  // A manager that cannot signal the node asks it to stop first, so it closes cleanly before its definition goes.
-  if (!manager.stop) {
-    const refusal = await askToStop(context, await runningNode(context.location.stateDirectory))
+  // A manager that cannot signal the node asks it to stop first, so it closes cleanly before its definition goes. A serve
+  // at a terminal is not the service's node, and stops at its terminal alone.
+  const running = await runningNode(context.location.stateDirectory)
+  if (!manager.stop && running?.record?.manager !== 'terminal') {
+    const refusal = await askToStop(context, running)
     if (refusal !== null) return fail(context.err, refusal)
   }
   await manager.uninstall()
@@ -210,10 +213,12 @@ async function start(context: ServiceContext): Promise<CliResult> {
   const running = await runningNode(location.stateDirectory)
   const installed = await manager.installed()
   if (installed === null) {
+    if (running?.record?.manager === 'terminal') return fail(context.err, `No Buckle service is installed. ${atTerminal(running)}.`)
     if (running !== null) return fail(context.err, `No Buckle service is installed. ${inBackground(running)}.`)
     return fail(context.err, `No Buckle service is installed: buckle service install installs one, and ${FALLBACK}.`)
   }
   if (running?.record?.manager === 'background') return fail(context.err, `${inBackground(running)}; stop it first with buckle service stop.`)
+  if (running?.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}, then run buckle service start again.`)
   if (running !== null) {
     context.out(`The Buckle service is already running${pidOf(running)}.\n`)
     return { exitCode: 0 }
@@ -230,6 +235,8 @@ async function stop(context: ServiceContext): Promise<CliResult> {
     context.out('Buckle is not running.\n')
     return { exitCode: 0 }
   }
+  // A serve at a terminal stops there: Buckle asks nothing of it (fix brief 6, item 1).
+  if (running.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}.`)
   const { manager } = context
   if (manager?.stop && running.record?.manager === manager.kind) {
     await manager.stop()
@@ -263,9 +270,11 @@ async function restart(context: ServiceContext): Promise<CliResult> {
   const installed = await manager.installed()
   if (installed === null) {
     if (running?.record?.manager === 'background') return fail(context.err, `No Buckle service is installed to restart. ${inBackground(running)}: stop it with buckle service stop, then start it again with buckle serve --background.`)
+    if (running?.record?.manager === 'terminal') return fail(context.err, `No Buckle service is installed to restart. ${atTerminal(running)}, then run buckle serve again.`)
     return fail(context.err, `No Buckle service is installed to restart: buckle service install installs one, and ${FALLBACK}.`)
   }
   if (running?.record?.manager === 'background') return fail(context.err, `${inBackground(running)}; stop it first with buckle service stop.`)
+  if (running?.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}, then run buckle service start.`)
   const missing = missingPrograms(installed)
   if (missing !== null) return fail(context.err, missing)
   const before = running?.record?.pid
@@ -325,9 +334,7 @@ async function status(context: ServiceContext, json: boolean): Promise<CliResult
   const missing = installed === null ? null : missingPrograms(installed)
   const next = [
     ...(missing === null ? [] : [missing]),
-    ...(record !== null && installedVersion !== null && record.version !== installedVersion ? [record.manager === 'background'
-      ? `The node runs ${record.version} and ${installedVersion} is installed: stop it with buckle service stop, then start it again with buckle serve --background.`
-      : `The node runs ${record.version} and ${installedVersion} is installed: run buckle service restart.`] : []),
+    ...(record !== null && installedVersion !== null && record.version !== installedVersion ? [`The node runs ${record.version} and ${installedVersion} is installed: ${upgradeStep(record)}.`] : []),
     ...(beforeLogin !== null && !beforeLogin.starts ? [`It starts at login. To start it at boot, before anyone logs in, the system's own setting is: ${beforeLogin.command} (Buckle does not run it; it may ask for an administrator's password).`] : []),
   ]
   const report = {
@@ -372,7 +379,14 @@ function versionOf(main: string): string | null {
 }
 
 function startedBy(record: ServeRecord): string {
-  return record.manager === 'background' ? 'buckle serve --background' : record.manager === 'systemd' ? 'systemd' : 'Task Scheduler'
+  return { background: 'buckle serve --background', terminal: 'buckle serve at a terminal', systemd: 'systemd', 'task-scheduler': 'Task Scheduler' }[record.manager]
+}
+
+/** How the running node picks up a newer install: as what started it restarts it. */
+function upgradeStep(record: ServeRecord): string {
+  if (record.manager === 'background') return 'stop it with buckle service stop, then start it again with buckle serve --background'
+  if (record.manager === 'terminal') return 'stop it with Ctrl-C at its terminal, then run buckle serve again'
+  return 'run buckle service restart'
 }
 
 async function logs(context: ServiceContext, options: { follow: boolean; lines: string | undefined }): Promise<CliResult> {

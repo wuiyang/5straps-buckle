@@ -20,7 +20,7 @@ import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 import { createNamed } from './workspace.js'
-import { serviceInstalled } from '../common/services/node-service/installed.js'
+import { restartRoute, type RestartRoute } from '../common/services/node-service/installed.js'
 
 export interface CliResult {
   exitCode: number
@@ -165,7 +165,7 @@ switch it on: buckle settings set experimental-admin-http on
     if (!values.pair) return { exitCode: 0 }
     const token = served.token ?? await workspaces.addToken(served.id, { label: 'Rings' })
     const { runtime } = await workspaces.resolve(served.id)
-    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, serviceInstalled: serviceInstalled(node.stateDirectory) })
+    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, restart: await restartRoute(node.stateDirectory) })
   } catch (error) {
     if (error instanceof WorkspaceError) return fail(error.message)
     throw error
@@ -242,9 +242,9 @@ function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mou
 }
 
 /** Re-pairs or pairs the node, sending the workspace's token and its manifest (BUCKLE-D08). */
-async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; serviceInstalled: boolean }): Promise<CliResult> {
+async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; restart: RestartRoute }): Promise<CliResult> {
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
-  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, serviceInstalled: input.serviceInstalled, ...(input.home ? { home: input.home } : {}) })
+  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, restart: input.restart, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
   if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform), { column: 'Start it with: '.length, indent: '  ' })}\n`)
   return { exitCode: result.ok ? 0 : 1 }
