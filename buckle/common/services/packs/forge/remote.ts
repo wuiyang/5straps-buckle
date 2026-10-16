@@ -14,9 +14,10 @@ const MAX_POINTER_BYTES = 4_096
 const DEFAULT_PORTS: Record<string, string> = { 'https:': '443', 'http:': '80' }
 
 /**
- * Where a push goes: a forge reached over https, or a repository on this filesystem. `display`
- * drops any userinfo, because a remote configured with a credential in it would otherwise reach
- * the caller through the tool's own result.
+ * Where a push goes: a remote reached over http or https (`kind: 'https'` names both; the URL holds
+ * which, and only the forge's own scheme and port are sent its credential), or a repository on this
+ * filesystem. `display` drops any userinfo, because a remote configured with a credential in it
+ * would otherwise reach the caller through the tool's own result.
  */
 export type ForgeRemote =
   | { kind: 'https'; url: URL; host: string; display: string }

@@ -123,17 +123,18 @@ function bareOrigin(): { origin: string; repository: string } {
   return { origin, repository }
 }
 
-function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string }) {
+function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string }) {
   const token = input.token ?? TOKEN
+  const forgeApi = input.apiUrl ?? apiUrl
   const options: ForgePackOptions = {
     paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
     git: { path: 'git', argv0: 'git', args: [] },
     stateDirectory: input.stateDirectory ?? temporaryRoot('state'),
     forge: {
-      client: token ? createGitHubForgeClient({ token, apiUrl }) : null,
-      apiUrl,
-      gitHost: forgeGitHost(new URL(apiUrl)),
+      client: token ? createGitHubForgeClient({ token, apiUrl: forgeApi }) : null,
+      apiUrl: forgeApi,
+      gitHost: forgeGitHost(new URL(forgeApi)),
       token,
     },
     author: { name: '5straps agent', email: 'agent@5straps.local' },
@@ -143,7 +144,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   return createForgePack(options)
 }
 
-async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string }): Promise<JsonValue> {
+async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string }): Promise<JsonValue> {
   const built = pack(input)
   const tool = built.tools.find(candidate => candidate.capability.name === input.tool)
   if (!tool) throw new Error(`the forge pack registered no ${input.tool}`)
@@ -376,8 +377,9 @@ describe('git_push', () => {
       writeFileSync(join(repository, 'kept.txt'), 'kept\n')
       await call({ repository, tool: 'git_commit', args: { message: 'first', paths: ['kept.txt'] } })
 
-      // The recording origin is not a git server, so the push fails there, at the right host.
-      await expect(call({ repository, tool: 'git_push', args: { branch: 'main' } })).rejects.toThrow()
+      // The recording origin is not a git server, so the push fails there, at the right host. It is on the forge's host
+      // but not its port, so it is pushed to as a destination the list names, without the forge credential.
+      await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, approved: [new URL(origin.url).host] })).rejects.toThrow()
       expect(proxy.connections()).toBe(0)
       expect(origin.paths).toContain('/5straps/demo.git/info/refs?service=git-receive-pack')
     } finally { origin.close(); proxy.close() }
@@ -1180,6 +1182,50 @@ describe('pr_open', () => {
     const repository = workRepository({ origin: 'https://gitlab.example.com/attacker/demo.git' })
     await expect(call({ repository, tool: 'pr_open', args: { head: 'forge-live-check', base: 'main', title: 't', body: '' } }))
       .rejects.toThrow(/the pull-request tools act on that forge alone/)
+  })
+})
+
+// The forge credential goes to the forge's own scheme and port alone: an http origin on the forge host would carry the
+// owner's token in clear text to whoever answers there.
+describe('the forge credential, held to the forge\'s own scheme and port', () => {
+  const servers: GitHttpServer[] = []
+  afterEach(async () => { for (const started of servers.splice(0)) await started.close() })
+
+  it('refuses a real push to an http origin on the forge host when the forge is reached over https, and sends it nothing', async () => {
+    const root = temporaryRoot('downgrade')
+    const judged = join(root, 'repos', 'team', 'demo.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', judged])
+    const server = await startGitHttp({ projectRoot: join(root, 'repos') })
+    servers.push(server)
+    const repository = workRepository({ origin: `${server.url}/team/demo.git` })
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    // The forge's API is https on the same host and port; only the scheme differs.
+    const forgeApi = server.url.replace('http://', 'https://')
+    for (const approved of [undefined, [new URL(server.url).host]]) {
+      await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, apiUrl: forgeApi, ...(approved ? { approved } : {}) }))
+        .rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('on the forge host 127.0.0.1 over http; the forge is reached over https alone') })
+    }
+    expect(server.authorizations).toEqual([])
+    expect(execFileSync('git', ['-C', judged, 'for-each-ref'], { encoding: 'utf8' })).toBe('')
+  })
+
+  it('sends the token to the forge\'s own port alone: another port on its host is a destination the list must name, and is sent none', async () => {
+    const forgeApi = 'https://127.0.0.1:9'
+    const elsewhere = 'https://127.0.0.1:8443/5straps/demo.git'
+    const repository = workRepository({ origin: elsewhere })
+    await expect(call({ repository, tool: 'git_push', args: { branch: 'main' }, apiUrl: forgeApi, runner: scriptedGit([], elsewhere) }))
+      .rejects.toThrow(/Pushing elsewhere needs that host on this workspace's approved URL list/)
+    const calls: ProcessRequest[] = []
+    await call({ repository, tool: 'git_push', args: { branch: 'main' }, apiUrl: forgeApi, approved: ['127.0.0.1:8443'], runner: scriptedGit(calls, elsewhere) })
+    const push = calls.find(request => request.args[0] === 'push')
+    expect(gitConfigOf(push?.environment)[`http.${elsewhere}.extraheader`]).toBeUndefined()
+    expect(JSON.stringify(push?.environment)).not.toContain(Buffer.from(`x-access-token:${TOKEN}`).toString('base64'))
+  })
+
+  it('refuses the pull-request tools on an http origin of the forge host', async () => {
+    const repository = workRepository({ origin: 'http://github.com/5straps/demo.git' })
+    await expect(call({ repository, tool: 'pr_read', args: { number: 7 }, apiUrl: 'https://api.github.com' }))
+      .rejects.toThrow('origin is http://github.com/5straps/demo.git, and the configured forge is https://github.com; the pull-request tools act on that forge alone')
   })
 })
 

@@ -11,7 +11,7 @@ import type { PathView } from '../../../domain/path-view.js'
 import { isInside } from '../../../domain/paths.js'
 import { stripSecret } from '../../../domain/redact.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
-import type { UrlMatcher } from '../../../domain/url-pattern.js'
+import { effectivePort, type UrlMatcher } from '../../../domain/url-pattern.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { judgedPath } from '../judged-path.js'
 import { resolveTarget } from '../../invocation/real-path.js'
@@ -248,7 +248,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
 
   const forgeRepository = (repository: string): ForgeRepository => {
     const remote = classifyRemote(readOriginUrl(repository))
-    assertForgeHost({ remote, gitHost: forge.gitHost })
+    assertForgeHost({ remote, forge })
     return repositoryOf(remote)
   }
 
@@ -296,7 +296,8 @@ export function createForgePack(options: ForgePackOptions): Pack {
       // checks and git reading it (review H3).
       exclusive: true,
       // The destination is read once, before the rules judge it, and the push goes there or nowhere.
-      judge: input => judgedRemote(classifyRemote(readOriginUrl(paths.resolve(input.repo)))),
+      // A plain-http origin on the forge host is refused here, before any rule judges it or anyone is asked.
+      judge: input => assertNoDowngrade(judgedRemote(classifyRemote(readOriginUrl(paths.resolve(input.repo)))), forge),
       effects: (input, destination) => [{ kind: 'read_path', path: input.repo }, remoteEffect(destination)],
       run: async (input, context, destination): Promise<JsonValue> => {
         if (input.force) {
@@ -306,7 +307,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const repository = judgedPath({ named: input.repo, kind: 'read', paths, context })
         await assertPushTarget({ repository, pinned: destination, context })
         await assertDestinationUnaliased({ repository, destination, context })
-        assertDestinationAllowed({ remote: destination, gitHost: forge.gitHost, approved: options.approved, context })
+        assertDestinationAllowed({ remote: destination, forge, approved: options.approved, context })
         // To the judged destination by name, never the symbolic origin, which a config change could move
         // after the check. `remote.origin.receivepack` is first-wins in git, so only the command line resets it.
         // A local destination is its absolute real path, which git never reads as a remote name (git refuses a
@@ -448,7 +449,7 @@ function pushConfig(input: { remote: ForgeRemote; forge: ForgePackOptions['forge
   // `display` is the URL without userinfo, which is the form git matches a request against.
   const scope = input.remote.display.replace(/\/+$/, '')
   const transport = transportConfig(scope)
-  const credential = input.remote.host === input.forge.gitHost ? basicCredential(input.forge.token) : userinfoCredential(input.remote.url)
+  const credential = isForgeEndpoint(input.remote, input.forge) ? basicCredential(input.forge.token) : userinfoCredential(input.remote.url)
   if (credential === null) return transport
   return [...transport, { key: `http.${scope}.extraheader`, value: `Authorization: Basic ${credential}` }]
 }
@@ -503,10 +504,35 @@ function credentialForms(token: string): string[] {
   return token ? [token, basicCredential(token)] : []
 }
 
+/** The forge's own git endpoint, by which the credential's destination is judged. */
+type ForgeEndpoint = Pick<ForgePackOptions['forge'], 'apiUrl' | 'gitHost'>
+
+/**
+ * Whether a remote is the forge's own git endpoint: its git host, over the scheme and on the effective port of its API
+ * (https on 443 for GitHub). The forge credential goes there alone, so an `http://` origin on the forge host never
+ * carries it in clear text, whoever answers on port 80.
+ */
+function isForgeEndpoint(remote: ForgeRemote, forge: ForgeEndpoint): boolean {
+  if (remote.kind !== 'https') return false
+  const api = new URL(forge.apiUrl)
+  return remote.host === forge.gitHost && remote.url.protocol === api.protocol && effectivePort(remote.url) === effectivePort(api)
+}
+
+/**
+ * An origin on the forge host over another scheme than the forge's own (`http://` beside an https API) is refused: it
+ * names the forge, so a push there would be a push to it without the transport its credential is meant for.
+ */
+function assertNoDowngrade(remote: ForgeRemote, forge: ForgeEndpoint): ForgeRemote {
+  if (remote.kind !== 'https' || remote.host !== forge.gitHost) return remote
+  const api = new URL(forge.apiUrl)
+  if (remote.url.protocol === api.protocol) return remote
+  throw new ToolInputError(`origin is ${remote.display}, on the forge host ${forge.gitHost} over ${remote.url.protocol.slice(0, -1)}; the forge is reached over ${api.protocol.slice(0, -1)} alone, and its credential is never sent another way, so this push is refused`, { code: 'PERMISSION_DENIED' })
+}
+
 /** A pull request is opened and read on the forge the credential belongs to, wherever origin points. */
-function assertForgeHost(input: { remote: ForgeRemote; gitHost: string }): void {
-  if (input.remote.kind === 'https' && input.remote.host === input.gitHost) return
-  throw new ToolInputError(`origin is ${input.remote.display}, and the configured forge is ${input.gitHost}; the pull-request tools act on that forge alone, so this repository is refused`, { code: 'PERMISSION_DENIED' })
+function assertForgeHost(input: { remote: ForgeRemote; forge: ForgeEndpoint }): void {
+  if (isForgeEndpoint(input.remote, input.forge)) return
+  throw new ToolInputError(`origin is ${input.remote.display}, and the configured forge is ${new URL(input.forge.apiUrl).protocol}//${input.forge.gitHost}; the pull-request tools act on that forge alone, so this repository is refused`, { code: 'PERMISSION_DENIED' })
 }
 
 function nonEmptyLines(text: string): string[] {
@@ -518,15 +544,16 @@ function nonEmptyLines(text: string): string[] {
  * where the call's permission check judged a write (GPT review of c71dee5), an https one only on the forge
  * host or the owner's approved list.
  */
-function assertDestinationAllowed(input: { remote: ForgeRemote; gitHost: string; approved: UrlMatcher | null; context: Pick<ToolContext, 'authorizeWrite'> }): void {
+function assertDestinationAllowed(input: { remote: ForgeRemote; forge: ForgeEndpoint; approved: UrlMatcher | null; context: Pick<ToolContext, 'authorizeWrite'> }): void {
   const { remote } = input
   if (remote.kind === 'local') {
     if (!input.context.authorizeWrite || input.context.authorizeWrite(remote.path)) return
     throw new ToolInputError(`origin is ${remote.display}, a repository on this filesystem the permission check did not judge as a write; send the call again`, { code: 'PERMISSION_DENIED' })
   }
-  if (remote.host === input.gitHost) return
+  assertNoDowngrade(remote, input.forge)
+  if (isForgeEndpoint(remote, input.forge)) return
   if (input.approved?.matches(remote.url)) return
-  throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.gitHost}. Pushing elsewhere needs that host on this workspace's approved URL list (the owner runs \`buckle policy allow-url <host>\`), and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
+  throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.forge.gitHost}. Pushing elsewhere needs that host on this workspace's approved URL list (the owner runs \`buckle policy allow-url <host>\`), and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
 }
 
 function assertBranchName(branch: string): string {
