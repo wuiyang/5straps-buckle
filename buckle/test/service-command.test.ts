@@ -218,6 +218,23 @@ describe('buckle service install', () => {
 })
 
 describe('buckle service start, stop, restart, and uninstall', () => {
+  // Fix brief 6, item 7 (finding 31 of recheck 4): a record a killed node left was read as the new node's while it held
+  // the lock and had not listened, so start reported the dead pid and the old address.
+  it('reports the node it started, not a record a killed node left, where the new one listens late', async () => {
+    const target = node()
+    mkdirSync(serviceDirectory(target.state), { recursive: true, mode: 0o700 })
+    writeFileSync(join(serviceDirectory(target.state), 'serve.json'), JSON.stringify({ pid: 999_999, manager: 'systemd', version: '0.1.3', host: '127.0.0.1', port: 1111, startedAt: '2026-10-01T00:00:00.000Z' }))
+    const owner = createRuntimeOwner({ name: 'late-node', services: [] })
+    const { manager } = fakeManager(target.state, { installed: { node: process.execPath, main: target.main, thisNode: true, enabled: true } })
+    const late: ServiceManager = { ...manager, start: async () => {
+      const hold = await holdServe({ stateDirectory: target.state, owner })
+      setTimeout(() => void hold.publish({ manager: 'systemd', version: '0.1.4', host: '127.0.0.1', port: 4320 }), 1_000)
+    } }
+    try {
+      expect(await service(target, ['start'], late)).toMatchObject({ exitCode: 0, out: `Started the Buckle service (pid ${process.pid}) at http://127.0.0.1:4320.\n` })
+    } finally { await owner.close() }
+  })
+
   it('starts the installed service, says it already runs, stops it through the manager, and removes it', async () => {
     const target = node()
     const { manager, calls } = fakeManager(target.state)

@@ -61,6 +61,20 @@ describe('the serve lock and record', () => {
     await holder.close()
   })
 
+  // Fix brief 6, item 7 (finding 31 of recheck 4): a node killed before its close stage left its record, which the next
+  // holder was reported by until it listened: the dead pid, the old address, and the old version.
+  it('clears a record an earlier process left, so the new holder has none until it listens', async () => {
+    const state = stateDirectory()
+    mkdirSync(serviceDirectory(state), { recursive: true, mode: 0o700 })
+    writeFileSync(join(serviceDirectory(state), 'serve.json'), JSON.stringify({ pid: 999_999, manager: 'systemd', version: '0.1.3', host: '127.0.0.1', port: 1111, startedAt: '2026-10-01T00:00:00.000Z' }))
+    const holder = owner()
+    const hold = await holdServe({ stateDirectory: state, owner: holder })
+    expect(await runningNode(state)).toEqual({ record: null })
+    await hold.publish(LISTENING)
+    expect(await runningNode(state)).toEqual({ record: expect.objectContaining({ pid: process.pid, port: 4320 }) })
+    await holder.close()
+  })
+
   it('waits for a node to stop, and says when it has not', async () => {
     const state = stateDirectory()
     const holder = owner()

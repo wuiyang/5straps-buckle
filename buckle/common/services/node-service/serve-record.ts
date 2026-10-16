@@ -77,7 +77,7 @@ export interface ServeHold {
 
 /**
  * Takes the state directory's serve lock for this process's life, released at the owner's `locks` stage (the OS drops
- * it if the process dies, so a killed node leaves no stale lock), and clears a stop request an earlier process left.
+ * it if the process dies, so a killed node leaves no stale lock), and clears a stop request and a record an earlier process left.
  * Refused, as AlreadyServingError, where another process holds it. The record is removed before the lock is released.
  * A state directory other users can reach is refused first, as the node refuses it at start, so nothing is made in it;
  * where --skip-owner-only-check lets it be used, the start's own check warns, once.
@@ -94,6 +94,9 @@ export async function holdServe(input: { stateDirectory: string; owner: RuntimeO
   }
   rmSync(join(directory, STOP_FILE), { force: true })
   const record = join(directory, RECORD_FILE)
+  // Whoever wrote a record here no longer holds the lock: a node ended before its close stage (killed, or out of memory)
+  // left it, and it would be read as this one's pid, address, and version until this one listens (fix brief 6, item 7).
+  rmSync(record, { force: true })
   input.owner.onClose('locks', 'serve record', () => {
     if (readRecord(input.stateDirectory)?.pid === process.pid) rmSync(record, { force: true })
   })
