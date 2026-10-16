@@ -49,16 +49,17 @@ refusal in full.
 ## Interpreters
 
 Code run by `python` (and `pypy`), `node` and `nodejs`, `deno`, `bun`, `perl`, `ruby`, `php`, `awk`
-(also `gawk`, `mawk`, and `nawk`), `lua`, `luajit`, `pwsh`, `powershell`, `tsx`, `ts-node`, the C
-shells `tcsh` and `csh`, and a `busybox` or `toybox` shell applet is unknown to Buckle, a reading
-limit, until `buckle policy allow-interpreter <name>` makes that program an ordinary command.
+(also `gawk`, `mawk`, and `nawk`), `lua`, `luajit`, `pwsh`, `powershell`, `tsx`, `ts-node`, the
+package runners `npx`, `pnpx`, and `bunx`, the C shells `tcsh` and `csh`, and a `busybox` or
+`toybox` shell applet is unknown to Buckle, a reading limit, until `buckle policy
+allow-interpreter <name>` makes that program an ordinary command. A command allow such as
+`npx *` is not enough on its own: the floor still asks, and a deny list refuses.
 
 Each name is allowed separately: `python`, `python3`, and `python3.12` are three names, as are
 `node` and `nodejs`, and `buckle policy remove-interpreter <name>` takes one back. `script_run`
 with the `python` runtime runs `python3`, and with `node` it runs `node`. Version and help calls
 stay ordinary, such as `python3 --version`, `python3 -VV`, `perl -V`, `ruby -v`, and `deno -v`.
-Static grading of such code (safe, warn, danger, unknown) comes after the first release. The
-package runners `npx`, `pnpx`, and `bunx` stay ordinary commands for now, judged by their own words.
+Static grading of such code (safe, warn, danger, unknown) comes after the first release.
 
 A workspace's list is its own where it has one, used alone; else it is the node's
 `BUCKLE_ALLOWED_INTERPRETERS` (`buckle settings set allowed-interpreters`), which is empty by

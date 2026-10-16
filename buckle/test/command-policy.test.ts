@@ -1534,6 +1534,11 @@ describe('a call that runs code with an interpreter', () => {
     ['env', ['busybox', 'hush', '-c', 'echo 1'], 'busybox'],
     ['toybox', ['sh', '-c', 'echo 1'], 'toybox'],
     ['toybox', ['toysh', 'script.sh'], 'toybox'],
+    // D86 (4): the package runners fetch and run a package's code Buckle never reads.
+    ['npx', ['tsx', 'script.ts'], 'npx'],
+    ['pnpx', ['ts-node', 'script.ts'], 'pnpx'],
+    ['bunx', ['cowsay', 'hi'], 'bunx'],
+    ['bash', ['-c', 'npx prettier --check .'], 'npx'],
   ] as const
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
@@ -1614,10 +1619,10 @@ describe('a call that runs code with an interpreter', () => {
     [engine, switched, 'toybox', ['ls', '-la']],
     [engine, switched, 'bash', ['-c', 'busybox']],
     [engine, switched, 'bash', ['-c', 'toybox']],
-    // Package runners stay ordinary commands until that is decided (docs/dev/architecture.md, Interpreters).
-    [engine, switched, 'npx', ['tsx', 'script.ts']],
-    [engine, switched, 'pnpx', ['ts-node', 'script.ts']],
-    [engine, switched, 'bunx', ['cowsay', 'hi']],
+    // The package runners print their version or help and run nothing, as the other interpreters do (D86 (4)).
+    [engine, switched, 'npx', ['--version']],
+    [engine, switched, 'pnpx', ['-v']],
+    [engine, switched, 'bunx', ['--help']],
   ] as const))('leaves %s, switch on: %s, %s %j an ordinary command: it prints, or reads the input Buckle leaves empty', (engine, switched, command, args) => {
     expect(check(engine, switched, [command, args], { deny: ['terraform destroy *'] })).toMatchObject({ kind: 'allow' })
     expect(check(engine, switched, [command, args], { deny: [] })).toMatchObject({ kind: 'allow' })

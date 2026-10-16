@@ -95,10 +95,10 @@ other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-in
 `python3.12`.
 
 The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
-node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the C
-shells, and the busybox and toybox shell applets. The package runners `npx`, `pnpx`, and `bunx`
-stay ordinary commands, judged by their own words, until that is decided. Static grading of
-interpreter code comes after the first release.
+node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the
+package runners `npx`, `pnpx`, and `bunx` (owner ruling of 2026-10-15), the C shells, and the
+busybox and toybox shell applets. Static grading of interpreter code comes after the first
+release.
 
 The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
 

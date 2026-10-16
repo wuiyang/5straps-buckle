@@ -88,7 +88,28 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
     expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(names)
   })
 
-  it.each([['bash'], ['python3 -c'], ['Node'], ['npx'], ['bunx']])('refuses %s, which is no interpreter Buckle knows, storing nothing', async (name) => {
+  // D86 (4): the package runners are interpreters, which need allow-interpreter; a command allow alone never runs one:
+  // the floor asks, as for every unknown interpreter, and a deny glob beside it refuses it.
+  it('runs npx, pnpx, and bunx under a plain command allow only once the workspace allows each as an interpreter', async () => {
+    const config = node()
+    for (const runner of ['npx', 'pnpx', 'bunx']) {
+      expect((await cli(config, ['policy', 'allow-command', `${runner} *`])).exitCode).toBe(0)
+      expect(await call(config, runner, ['prettier', '--check', '.'])).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command', reason: `${unknown(runner)}; asked rather than guessed at` }] })
+      expect((await cli(config, ['policy', 'allow-interpreter', runner])).exitCode).toBe(0)
+      expect(await call(config, runner, ['prettier', '--check', '.'])).toMatchObject({ outcome: 'ok' })
+    }
+    expect(JSON.parse((await cli(config, ['policy', 'export'])).out).commands.allowedInterpreters).toEqual(['npx', 'pnpx', 'bunx'])
+  })
+
+  it('refuses npx under a command allow beside a deny glob until the workspace allows it as an interpreter', async () => {
+    const config = node()
+    await cli(config, ['policy', 'allow-command', 'npx *'])
+    await cli(config, ['policy', 'deny-command', 'terraform destroy *'])
+    expect(await call(config, 'npx', ['prettier', '--check', '.'])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(unknown('npx')) } })
+    expect(await call(config, 'npx', ['--version'])).toMatchObject({ outcome: 'ok' })
+  })
+
+  it.each([['bash'], ['python3 -c'], ['Node'], ['npm'], ['pnpm']])('refuses %s, which is no interpreter Buckle knows, storing nothing', async (name) => {
     const config = node()
     const result = await cli(config, ['policy', 'allow-interpreter', name])
     expect(result.exitCode).toBe(1)

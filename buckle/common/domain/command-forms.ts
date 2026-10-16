@@ -372,11 +372,12 @@ const PYTHONS: readonly string[] = ['python', 'pypy']
 /**
  * Programs whose code Buckle cannot read as shell (docs/dev/architecture.md, Interpreters): each name, alone or with a
  * version (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary
- * commands. awk and its variants, lua, PowerShell, and the TypeScript runners are listed; the package runners npx, pnpx,
- * and bunx stay ordinary commands until that is decided. So are PyPy, the C shells, whose syntax is not the POSIX
- * shell's, and busybox, whose shell applet may be ash or hush; toybox, whose shell applet is its own toysh, is one too.
+ * commands. awk and its variants, lua, PowerShell, and the TypeScript runners are listed; so are the package runners
+ * npx, pnpx, and bunx (D86 (4)), which fetch and run a package's code Buckle never reads, so a command allow alone never
+ * lets one through. So are PyPy, the C shells, whose syntax is not the POSIX shell's, and busybox, whose shell applet
+ * may be ash or hush; toybox, whose shell applet is its own toysh, is one too.
  */
-const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'tcsh', 'csh', 'busybox', 'toybox'] as const
+const INTERPRETERS = [...PYTHONS, 'node', 'nodejs', 'deno', 'bun', 'perl', 'ruby', 'php', 'awk', 'gawk', 'mawk', 'nawk', 'lua', 'luajit', 'pwsh', 'powershell', 'tsx', 'ts-node', 'npx', 'pnpx', 'bunx', 'tcsh', 'csh', 'busybox', 'toybox'] as const
 /**
  * The CPython builds' names carry a build suffix after the version: `t` for the free-threaded build (python3.13t), `d`
  * for a debug build, and Debian's `-dbg`; PyPy installs as pypy and pypy3.
@@ -437,6 +438,9 @@ const INTERPRETER_INFO: Readonly<Record<string, ReadonlySet<string>>> = {
   powershell: POWERSHELL_INFO,
   tsx: new Set(['--version', '-v', '--help', '-h']),
   'ts-node': new Set(['--version', '-v', '--help', '-h']),
+  npx: new Set(['--version', '-v', '--help', '-h']),
+  pnpx: new Set(['--version', '-v', '--help', '-h']),
+  bunx: new Set(['--version', '-v', '--help', '-h']),
   tcsh: new Set(['--version', '--help']),
   csh: new Set(),
   busybox: new Set(['--help', '--list', '--list-full']),
