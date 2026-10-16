@@ -62,4 +62,4 @@ package runners `npx`, `pnpx`, and `bunx` stay ordinary commands for now, judged
 
 Each workspace's list is its own, empty by default. A node moving from 0.1 copies its
 `BUCKLE_ALLOWED_INTERPRETERS` into each workspace's list
-([Moving a node from 0.1](workspaces-02.md#moving-a-node-from-01)).
+([Moving a node from 0.1](workspaces-04.md)).

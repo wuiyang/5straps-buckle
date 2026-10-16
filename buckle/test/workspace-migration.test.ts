@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { parseEnv } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -163,7 +163,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const notices = vi.spyOn(logger, 'warn')
     const manager = await open(input)
 
-    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site keeps its own command allow list and approved URL list, which it now uses alone: the node\'s BUCKLE_COMMAND_ALLOW and BUCKLE_NETWORK_ALLOW apply only to a workspace without one of its own (docs/workspaces-02.md). Add to its list with buckle policy where it needs what the node\'s admitted.')
+    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site keeps its own command allow list and approved URL list, which it now uses alone: the node\'s BUCKLE_COMMAND_ALLOW and BUCKLE_NETWORK_ALLOW apply only to a workspace without one of its own (docs/workspaces-03.md). Add to its list with buckle policy where it needs what the node\'s admitted.')
     expect((await byName(manager, 'site')).runtime.policy.effective()).toMatchObject({ commands: { allow: ['git *'] }, network: { allow: ['b.example'] } })
   })
 
@@ -556,7 +556,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace project, give agents the new token, then buckle workspace token revoke node --workspace project'))
       expect(told).toContainEqual(expect.stringContaining('An older Buckle sharing this state directory now refuses to start'))
       expect(told).toContainEqual(expect.stringContaining(`the node's own folder ${input.folder} is workspace project (id ${ownId(input)}), with its records in workspaces/${ownId(input)}/ in the state directory`))
-      // What docs/workspaces-02.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
+      // What docs/workspaces-04.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
       expect(told).toContainEqual(expect.stringContaining('The registry and policy files it changed are kept as workspaces.v1.json and policy.v1.json in the state directory, with grants.v1.json and dangerously-allow.v1.json beside where each grants and switch file it moved was, for going back to 0.1'))
       expect(told).toContainEqual(expect.stringContaining('policy.json is a version 2 file it cannot read'))
       expect(told).toContainEqual(expect.stringContaining('Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent\'s own configuration'))
@@ -589,6 +589,34 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(readFileSync(join(input.state, 'workspaces', ownId(input), 'grants.json'), 'utf8')).not.toBe(before['grants.json'])
       expect(existsSync(join(input.state, 'workspaces', 'site', 'grants.json'))).toBe(false)
       expect(readFileSync(join(input.state, 'workspaces', siteId(input), 'grants.json'), 'utf8')).toContain(siteId(input))
+    })
+
+    // Fix brief 4, findings 5 and 15: what workspaces-04.md says of the records 0.1 kept, which the move renames into each
+    // workspace's own directory, and which going back moves to where 0.1 reads them.
+    it('moves the plugins, history, pending approvals, and shell copies into the workspace\'s directory, and moving them back restores 0.1\'s layout', async () => {
+      const input = scene()
+      const { config } = withFile(input)
+      version1(input)
+      const records = { 'plugins.json': '{"version":1,"plugins":[]}', 'approvals.json': '{"version":1,"pending":[]}', [join('history', 'h1')]: 'a restore point', [join('isolated-shell', 'abc', 'f')]: 'a shell copy awaiting review' }
+      const places = [[input.state, ownId(input)], [join(input.state, 'workspaces', 'site'), siteId(input)]] as const
+      for (const [directory] of places) {
+        for (const [file, text] of Object.entries(records)) {
+          mkdirSync(dirname(join(directory, file)), { recursive: true })
+          writeFileSync(join(directory, file), text)
+        }
+      }
+      await openWorkspaceManager({ config })
+
+      for (const [directory, id] of places) {
+        const moved = join(input.state, 'workspaces', id)
+        for (const [file, text] of Object.entries(records)) {
+          expect(existsSync(join(directory, file))).toBe(false)
+          expect(readFileSync(join(moved, file), 'utf8')).toBe(text)
+        }
+        // The page's step: every entry but workspace.json and the lock files goes back where 0.1 kept it.
+        for (const entry of readdirSync(moved).filter(name => name !== 'workspace.json' && !name.endsWith('.lock.sqlite'))) renameSync(join(moved, entry), join(directory, entry))
+        for (const [file, text] of Object.entries(records)) expect(readFileSync(join(directory, file), 'utf8')).toBe(text)
+      }
     })
 
     it('keeps an empty version 1 registry for a node that had none, which 0.1 reads as it read no file', async () => {

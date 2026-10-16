@@ -1,12 +1,12 @@
-# Workspace settings, and moving from 0.1
+# Workspace settings
 
 Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox runtime on this
 machine, keeps its own settings in `workspaces/<id>/workspace.json` in the state directory. The
 node keeps its own in `buckle.env`, and those are every workspace's defaults: a setting a
-workspace leaves unset is the node's, else Buckle's built-in one. This page lists the settings,
-says when a change applies, and covers the move from 0.1. [Node defaults](workspaces-03.md)
-covers how each setting resolves, the deny lists every workspace is held to, and the node's own
-settings.
+workspace leaves unset is the node's, else Buckle's built-in one. This page lists the settings
+and says when a change applies; [moving from 0.1](workspaces-04.md) has its own page. [Node
+defaults](workspaces-03.md) covers how each setting resolves, the deny lists every workspace is
+held to, and the node's own settings.
 
 ## Settings
 
@@ -57,46 +57,3 @@ review. A waiting change, or one that will not apply, refuses calls with a 409 u
 A file that will not read leaves the settings in force, and the owner's log says so once.
 `buckle serve` watches the registry folder too, its poll the fallback. A change to `buckle.env`
 applies when the node restarts.
-
-## Moving a node from 0.1
-
-The first command of this release on a state directory 0.1 used moves the node onto
-workspaces, once, under the registry's lock:
-
-- The folder the node served, `BUCKLE_WORKSPACE_ROOT` or the directory the command runs in,
-  becomes a workspace named after its folder, with a UUID id and its records under
-  `workspaces/<id>/`. `BUCKLE_AUTH_TOKEN` becomes its token `node`, so agents configured with it
-  keep working; `buckle workspace token create --workspace <that name>`, then `token revoke
-  node`, rotates it.
-- Each workspace registered with `buckle workspace add` keeps its 0.1 id as its name, gets a UUID
-  id, and keeps its folder, tokens, and `/workspace` mount. A disabled or retired one stays
-  offline. Each workspace's own admin credential goes: the node's is the one.
-- The registry keeps each token's SHA-256 digest alone.
-- Each `workspace.json` holds what was the workspace's own: the lists `buckle policy` stored, and
-  for the node's folder a mount it stored. The settings `buckle.env` held stay there as every
-  workspace's defaults. A workspace with an allow list of its own now uses it alone, where the
-  node's list was a ceiling over it, and the move says so.
-- Grants, remembered denials, and the dangerously-allow switch move from the folder they were
-  kept under to the workspace's id; device keys enrolled for it, from its 0.1 id.
-
-A state directory that served nothing gets no workspace until `buckle init` makes one.
-
-The move keeps owner-only copies of what it changes: `workspaces.v1.json` and
-`policy.v1.json` in the state directory (empty where the node had no registry or policy),
-`client-keys.v1.json` there where a device key moved, and
-`grants.v1.json` and `dangerously-allow.v1.json` beside each grants and switch file it moved: in
-the state directory for the node's folder, and in `workspaces/<0.1 id>/` for each workspace
-registered under 0.1 ([the files](install-02.md)). It makes `policy.json`
-a version 2 stub and takes `BUCKLE_AUTH_TOKEN` out of `buckle.env`, so an older Buckle refuses to
-start.
-
-To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
-set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token your agents use (Buckle kept only its
-digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's folder (see `buckle workspace list`)
-if `buckle settings unset root` removed it, and install the older release. Going back loses
-every workspace registered, token created, key enrolled, grant, denial, and `workspace.json`
-written after the move.
-
-`workspaces.v1.json` holds the registered workspaces' agent tokens and admin credentials in clear
-text. Once the node works, delete every `*.v1.json` file in the state directory and in each
-`workspaces/<0.1 id>/` folder; the way back goes with them.

@@ -150,7 +150,7 @@ For users:
   requirements, platform status, and upgrading.
 - [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
   HTTP faces.
-- [Workspaces](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces.md) ([settings, and moving from 0.1](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-02.md)):
+- [Workspaces](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces.md) ([settings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-02.md), [defaults](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-03.md), and [moving from 0.1](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-04.md)):
   one node, many folders, and their tokens.
 - [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md): what asks, the scopes, the destructive floor, where to
   answer, and the dangerously-allow switch.

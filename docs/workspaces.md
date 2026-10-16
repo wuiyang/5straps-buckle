@@ -5,8 +5,8 @@ machine. The node serves workspaces: each one is a folder an agent works in, wit
 tokens, policy, settings, grants, approvals, and history. The node's admin credential, host,
 port, and other node settings are its alone; its other settings in `buckle.env` are each
 workspace's defaults. This page covers making and changing workspaces; [the next
-one](workspaces-02.md) covers their settings and moving a node set up before them, and [Node
-defaults](workspaces-03.md) how the node's settings apply to each.
+one](workspaces-02.md) covers their settings, [Node defaults](workspaces-03.md) how the node's
+settings apply to each, and [Moving a node from 0.1](workspaces-04.md) a node set up before them.
 
 ## buckle init
 
