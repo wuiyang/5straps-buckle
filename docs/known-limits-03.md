@@ -37,7 +37,7 @@ paths, and [part two](known-limits-02.md) the programs Buckle starts itself.
 ## The command line
 
 - `buckle --help`, `buckle serve --help`, and `buckle mcp --help` print the usage without reading
-  any configuration. `buckle mcp` takes `--workspace <id>` and `--dir <path>` alone: any other
+  any configuration. `buckle mcp` takes `--workspace <name>` and `--dir <path>` alone: any other
   argument stops it with "Buckle failed to start", where 0.1 ignored one, so an MCP config left
   with an old argument starts nothing until the argument goes. `buckle serve` ignores an argument
   it does not know.
@@ -62,13 +62,16 @@ model or later.
 - A name given now is at most 64 characters and holds no `/`, `\`, or `%`. A workspace named
   longer by 0.1 or by the move keeps its name, which `buckle client` cannot sign for: it says so,
   and the workspace's id, which `buckle workspace list` prints, takes its place.
+- The node level serves no workspace: apart from the registry's routes and the node-scoped setup
+  session, a `/setup` route without `/workspaces/<name>/` answers 404, so scripts and Rings
+  address `/workspaces/<name>/setup/`.
 - [Rings](rings.md), the separate 5straps control plane for agents, keeps its own copy of a
   node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
   re-reads the list to see the change.
 - The browser settings in `workspace.json` are stored and checked but not read. The browser runs
   on the node's `BUCKLE_BROWSER_*` settings, the same for every workspace, until Phase 2 reads
   each workspace's own and `buckle workspace set` accepts them.
-- The setup face's `/setup/status` reports `browser.setting` as the node's `BUCKLE_BROWSER_*`
+- The setup face's `/workspaces/<name>/setup/status` reports `browser.setting` as the node's `BUCKLE_BROWSER_*`
   setting that chose the mode. [Rings](rings.md), a separate 5straps control plane for agents,
   reads that field, so the name stays until Phase 2, and renaming it then means Rings has to
   follow.

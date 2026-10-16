@@ -29,8 +29,8 @@ const USAGE = `Usage:
   buckle client request <METHOD> <url> [--body <json>] [--purpose setup|approval] [--node <server-id>] [--session <id>]
                                       Send one request to a pinned node's setup face, signed with this device's key;
                                       --node, when given, must name the node pinned for the URL
-  buckle client session open <node-url> --workspace <name>
-  buckle client session close <node-url> <session-id> --workspace <name>
+  buckle client session open <node-url> [--workspace <name>]
+  buckle client session close <node-url> <session-id> [--workspace <name>]
                                       A setup session: signed setup changes name it with --session
   buckle client trust <node-url> <server-id> <node-public-key>
                                       Pin the node at that URL, as \`buckle keys node\` prints it on that node
@@ -243,7 +243,7 @@ async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node:
   const url = setupUrl(input.node, input.workspace, 'approvals/challenges?fields=workspaceName')
   const pin = pinFor(input.environment, url)
   const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
-  if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}`)
+  if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}${response.status === 401 || response.status === 404 ? `; check that --workspace names the workspace this device's key is enrolled for` : ''}`)
   const body = await response.json() as { challenges?: Array<{ token: string; signed?: unknown; error?: unknown }>; calls?: Record<string, unknown> }
   const nodeKey = publicKeyFrom(pin.publicKey)
   const listed = Array.isArray(body.challenges) ? body.challenges : []
@@ -340,7 +340,7 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
   const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' } }, allowPositionals: true })
   const [node] = positionals
   if (!node || positionals.length !== 1) throw new ClientError(USAGE)
-  const { challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: values.workspace })
+  const { challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: namedWorkspace(values.workspace) })
   const carried = new Map<string, string>()
   const shown = [...challenges.map(item => {
     const reference = item.consistent ? item.challenge.callRef : undefined
@@ -358,7 +358,7 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
   const scope = values.scope ?? 'once'
   if (scope !== 'once' && scope !== 'session' && scope !== 'always') throw new ClientError('--scope takes once, session or always')
-  const { pin, origin, challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: values.workspace })
+  const { pin, origin, challenges, unsigned } = await verifiedChallenges({ environment, node, workspace: namedWorkspace(values.workspace) })
   const found = challenges.find(item => item.token === token)
   const refused = unsigned.find(item => item.token === token)
   if (!found && refused) throw new ClientError(`${describeUnsigned(refused)}; nothing was signed`)
@@ -378,6 +378,12 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
   const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
   const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId })
   return report(response, await response.text())
+}
+
+/** The node level serves no workspace's approvals, so a device names the workspace, which its key is enrolled for (D85, Q15). */
+function namedWorkspace(workspace: string | undefined): string {
+  if (workspace === undefined) throw new ClientError('Name the workspace with --workspace <name>: the node level serves no workspace\'s approvals, and a device key signs for one workspace. Nothing was signed.')
+  return workspace
 }
 
 /** An approval route takes an approval signature; every other setup route a setup one. */

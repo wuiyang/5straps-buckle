@@ -525,6 +525,27 @@ describe('a device verifies shared calls and asks the person before approving', 
     expect(older.output.stdout).toContain(`  workspace: ${id}\n`)
   })
 
+  // Fix brief 4, finding 12: the node level serves no workspace's approvals, so a device that named none signed for the node
+  // and got an unexplained 401 for a key enrolled for a workspace.
+  it('refuses to list or decide without a workspace, naming --workspace, and says what a 401 or 404 may mean', async () => {
+    const device = await fakeNodeDevice(shared(call), [], { calls: { [shared(call).callRef!]: call } })
+    for (const argv of [['approvals', device.url], ['approve', device.url, 'some-token', '--deny']]) {
+      expect(await clientCommand(argv, device.environment)).toEqual({ exitCode: 1 })
+      expect(device.output.stderr).toContain('Name the workspace with --workspace <name>')
+      device.output.stderr = ''
+    }
+    expect(device.decisions).toEqual([])
+
+    const refusing = createServer((_request, response) => { response.statusCode = 401; response.end('{}') })
+    servers.push(refusing)
+    await new Promise<void>(resolve => refusing.listen(0, '127.0.0.1', resolve))
+    const url = `http://127.0.0.1:${(refusing.address() as { port: number }).port}`
+    const key = generateSigningKey()
+    expect((await clientCommand(['trust', url, 'refusing-node', key.publicKey], device.environment)).exitCode).toBe(0)
+    expect(await clientCommand(['approvals', url, '--workspace', 'site'], device.environment)).toEqual({ exitCode: 1 })
+    expect(device.output.stderr).toContain("The node answered HTTP 401; check that --workspace names the workspace this device's key is enrolled for")
+  })
+
   // Fix brief 4, finding 38: a signed request names a workspace by at most 64 characters, and the client threw the schema's dump.
   it('refuses a workspace named by more than 64 characters, and a request the protocol will not carry, plainly, before signing anything', async () => {
     const device = await fakeNodeDevice(shared(call), [], { calls: { [shared(call).callRef!]: call } })

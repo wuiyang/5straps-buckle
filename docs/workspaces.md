@@ -98,7 +98,7 @@ token belongs to, so an agent's configuration needs only the host, the port, and
 token of no workspace and a token of another workspace get the same refusal, revealing nothing
 about which workspaces exist. A disabled workspace answers 409.
 
-`buckle mcp` serves one workspace over stdio: the one `--workspace <id>` names, else the one
+`buckle mcp` serves one workspace over stdio: the one `--workspace <name>` names, else the one
 holding `--dir <path>`, else the one holding `BUCKLE_WORKSPACE_ROOT` (for older configurations),
 else the one holding the client's working directory:
 

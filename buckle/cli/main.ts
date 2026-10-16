@@ -107,7 +107,12 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
       throw error
     }
     // Q9 (Phase 1b item 4): an approver's command defaults to the workspace holding the current directory; --all widens to every online one.
-    if (APPROVER_COMMANDS.includes(command) && taken.target.workspace === undefined && taken.target.dir === undefined) {
+    const named = taken.target.workspace !== undefined || taken.target.dir !== undefined
+    // --all widens an approver's command over every online workspace, so it cannot also name one (fix brief 4, finding 33).
+    if (APPROVER_COMMANDS.includes(command) && named && taken.argv.includes('--all')) {
+      return nodeAudited({ workspaces, command }, () => fail('Name one workspace with --workspace or --dir, or pass --all, not both'))
+    }
+    if (APPROVER_COMMANDS.includes(command) && !named) {
       if (taken.argv.includes('--all')) return runApproverCommand({ ...input, workspaces, rest: taken.argv.filter(word => word !== '--all') })
       if (!holdsCurrentDirectory(workspaces, input.cwd)) {
         return nodeAudited({ workspaces, command }, () => fail('No workspace holds the current directory. Name one with --workspace <name>, or pass --all to answer every online workspace.'))
@@ -140,7 +145,7 @@ async function runNodeCommand(input: { workspaces: WorkspaceManager; config: Nod
 }
 
 /**
- * A command on the workspace it targets (D83 (4)): `--workspace <id>`, else `--dir <path>`, else the directory it runs
+ * A command on the workspace it targets (D83 (4)): `--workspace <name>`, else `--dir <path>`, else the directory it runs
  * in. `buckle policy` opens an offline workspace too, so its owner can set it up before it serves.
  */
 async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; confirm: Confirm | null; cwd: string }): Promise<CliResult> {
@@ -384,10 +389,10 @@ interface CommandInput {
  * terminal when a prompt was on screen there, so without this the tokens waiting on a node were
  * readable through the admin API alone.
  */
-const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name>], or buckle approvals show <token> [--json] [--workspace <name>]'
+const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name> | --all], or buckle approvals show <token> [--json] [--workspace <name> | --all]'
 
 function approvalsArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, all: { type: 'boolean' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' } }, allowPositionals: true })
 }
 
 /**
@@ -541,10 +546,10 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
  * nothing is approved (a denial still is), and an ask recorded before this build, whose whole call was never
  * kept, can only be denied (review H2).
  */
-const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <id>]"
+const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]"
 
 function approveArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, all: { type: 'boolean' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' } }, allowPositionals: true })
 }
 
 async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {

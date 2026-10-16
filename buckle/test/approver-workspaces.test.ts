@@ -191,6 +191,29 @@ describe('an owner\'s command refused before it names a workspace, under the nod
     expect(nodeEntries(tool)).toEqual(recorded)
   })
 
+  // Fix brief 4, findings 33 and 34: --all beside a named workspace was ignored, and the usage texts left --all out.
+  it.each([
+    [['approvals', '--all', '--workspace', 'Site one'], 'cli_approvals'],
+    [['approvals', '--all', '--dir', 'one'], 'cli_approvals'],
+    [['approve', 'bogus-token', '--all', '--workspace', 'Site one'], 'cli_approve'],
+    [['approve', 'bogus-token', '--deny', '--all', '--dir', 'two'], 'cli_approve'],
+  ])('refuses --all beside a workspace it names, recording it: %j', async (argv, tool) => {
+    await ask('Site two', '/outside/two.md')
+    const refused = await buckle(argv)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('Name one workspace with --workspace or --dir, or pass --all, not both')
+    expect(refused.out).toBe('')
+    expect(nodeEntries(tool)).toEqual(recorded)
+  })
+
+  it.each([
+    [['approve', 'bogus-token', '--bogus'], '[--workspace <name> | --all]'],
+    [['approvals', '--bogus'], '[--workspace <name> | --all]'],
+  ])('names --all in the usage it answers an unknown option with: %j', async (argv, flags) => {
+    const refused = await buckle(argv, join(base, 'one'))
+    expect(refused.err).toContain(flags)
+  })
+
   it.each([
     [['approve', 'bogus-token', '--bogus', '--all'], 'Usage: buckle approve'],
     [['approvals', '--bogus', '--all'], 'Usage: buckle approvals'],

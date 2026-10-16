@@ -103,7 +103,7 @@ Serves every online workspace over HTTP, native RPC, and MCP, at BUCKLE_HOST and
 default). An agent's token chooses its workspace. In a terminal it lists the workspaces it serves and asks each
 approval there. Ctrl-C stops it.
 `,
-  mcp: `Usage: buckle mcp [--workspace <id> | --dir <path>]
+  mcp: `Usage: buckle mcp [--workspace <name> | --dir <path>]
 
 Serves one workspace's MCP over stdio, for an MCP client to start: the workspace --workspace names, else the one
 holding --dir, else the one holding BUCKLE_WORKSPACE_ROOT where this command's own environment sets it, else the one

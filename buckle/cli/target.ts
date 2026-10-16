@@ -1,4 +1,4 @@
-/** The workspace a command names: `--workspace <id>`, or `--dir <path>`, relative to where it runs (D83 (4)). */
+/** The workspace a command names: `--workspace <name>`, or `--dir <path>`, relative to where it runs (D83 (4)). */
 export interface CommandTarget { workspace?: string; dir?: string }
 
 const FLAGS = { '--workspace': 'workspace', '--dir': 'dir' } as const

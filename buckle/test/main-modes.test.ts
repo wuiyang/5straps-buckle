@@ -262,6 +262,13 @@ describe('main', () => {
     expect(String(printed.mock.calls[0]![0])).toContain('over HTTP, native RPC, and MCP, at')
   })
 
+  // Fix brief 4, findings 34 and 49: a workspace is typed by its name, not the UUID Buckle assigns.
+  it('names the workspace buckle mcp serves by --workspace <name>', async () => {
+    const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect(await main(['mcp', '--help'])).toBe(0)
+    expect(String(printed.mock.calls[0]![0])).toContain('Usage: buckle mcp [--workspace <name> | --dir <path>]')
+  })
+
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
     expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config })

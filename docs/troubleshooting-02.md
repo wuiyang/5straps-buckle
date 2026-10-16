@@ -56,7 +56,7 @@ variable after an option that takes one (`nice -n "$n" make`), or hand a shell i
 
 ## A rule changes another workspace than you meant
 
-`buckle policy` acts on the workspace `--workspace <id>` or `--dir <path>` names, or else on the
+`buckle policy` acts on the workspace `--workspace <name>` or `--dir <path>` names, or else on the
 one whose folder holds the current directory, and `buckle policy show` names it on its first
 line. A rule `buckle policy` adds is that workspace's own, so it does nothing in another; only the
 node's lists in `buckle.env` reach every workspace ([Node defaults](workspaces-03.md)). `buckle workspace list` shows each workspace's id and folder

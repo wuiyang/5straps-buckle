@@ -14,7 +14,7 @@ its tool lists, its filesystem rules, and where the agent sees its folder. The n
 `buckle.env` are every workspace's defaults: an allow list a workspace has none of is the node's,
 and the node's deny and destructive lists apply to every workspace ([Node
 defaults](workspaces-03.md)). No other workspace's applies. `buckle policy` acts on the workspace `--workspace
-<id>` or `--dir <path>` names, or else on the one whose folder holds the current directory.
+<name>` or `--dir <path>` names, or else on the one whose folder holds the current directory.
 
 ## Commands
 

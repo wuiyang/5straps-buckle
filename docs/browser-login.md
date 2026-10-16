@@ -124,6 +124,6 @@ every one rather than rely on it to close or reuse the right browser.
 
 ## Checking the mode
 
-The setup face's `/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`,
+The setup face's `/workspaces/<name>/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`,
 `browser.setting` as the setting that chose it, never its value, and `browser.withheld` as why
 the browser pack is withheld, or null while it runs.

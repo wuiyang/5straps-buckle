@@ -10,7 +10,7 @@ is recorded as fully as a success.
 ## Reading it
 
 `buckle log` reads the log of the workspace a command means
-([Workspaces](workspaces.md#which-workspace-a-command-means)), `--workspace <id>` naming another.
+([Workspaces](workspaces.md#which-workspace-a-command-means)), `--workspace <name>` naming another.
 
 ```bash
 buckle log                 # the last 50 entries

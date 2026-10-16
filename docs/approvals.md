@@ -59,7 +59,7 @@ arguments, so approving `rm -rf build` does not approve `rm -rf /`.
 
 ## What the approver sees
 
-Every deciding route shows the ask, naming its workspace's id and name, then the whole action:
+Every deciding route shows the ask, naming its workspace by name, then the whole action:
 node, workspace, a summary, rule, subject, reason, working directory, every effect, and every
 argument as JSON. Nothing is cut or paged. Scripts and free text show as written; a plain value under a key naming password,
 secret, or token, and a URL's password and credential query values, read `[redacted]`, with
@@ -76,22 +76,23 @@ ask whose whole call was not recorded can be denied, never approved.
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, get text pointing to `buckle approvals` |
 
-A question ignores keys until the keyboard has rested half a second; at the `buckle serve`
-terminal each line of it starts `[<id>]`. With no `--workspace` or `--dir`, `buckle approvals`,
-`--watch`, and `buckle approve` cover every online [workspace](workspaces.md).
+A question ignores keys until the keyboard rests half a second; `buckle serve` prefixes each line
+`[<name>]`. `buckle approvals`, `--watch`, and `buckle approve` take the
+[workspace](workspaces.md) holding the current directory, `--workspace <name>`, or every online
+one with `--all`.
 
 Nothing the agent token reaches can decide. With the experimental
-`BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /setup/approvals` takes a denial under the admin
-credential, and an approval only when a device key enrolled with `buckle keys enroll` signed it,
-as `buckle client approve <node-url> <token>` does.
+`BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /workspaces/<name>/setup/approvals` takes a denial
+under the admin credential, and an approval only when a device key enrolled with `buckle keys
+enroll` signed it, as `buckle client approve <node-url> <token> --workspace <name>` does.
 
 `BUCKLE_APPROVAL_WEBHOOK` names a URL Buckle posts each new ask to. It announces, never
 decides; [Rings](rings.md#approval-webhook) describes what it sends.
 
 ## Timeouts
 
-`buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000 by
-default, and an answer inside that window lets it run. `0` holds until someone answers. When a
+`buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs` (15000
+by default); an answer inside that window lets it run. `0` holds until someone answers. When a
 hold ends unanswered, the call returns `approval_required`, its asks stay answerable ten more
 minutes, and the agent retries the same call once answered. An HTTP caller's
 `context.approvalWait` overrides it:
@@ -102,7 +103,7 @@ command waits only while its terminal question is open. `buckle workspace set ap
 ## Dangerously allow
 
 ```bash
-buckle policy dangerously-allow on [--workspace <id>]
+buckle policy dangerously-allow on [--workspace <name>]
 buckle policy dangerously-allow off
 ```
 
