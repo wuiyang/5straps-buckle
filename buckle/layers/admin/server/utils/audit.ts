@@ -46,9 +46,9 @@ export async function withSetupAudit<T>(event: H3Event, input: { actions: Action
  * node-admin session, each naming the actor the guard let in, so a token mint is tied to the key or
  * credential that asked for it (review item 19 of the proof-of-possession fixes).
  */
-export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; actorId: string }, run: () => Promise<T>): Promise<T> {
+export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; workspaceName?: string; actorId: string; named?: (value: T) => { workspaceId: string; workspaceName: string } }, run: () => Promise<T>): Promise<T> {
   const auditId = crypto.randomUUID()
-  const entry = (outcome: ActionLogEntry['outcome'], event: 'attempt' | 'result'): ActionLogEntry => ({ auditId, event, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId,
+  const entry = (outcome: ActionLogEntry['outcome'], event: 'attempt' | 'result', whose: { workspaceId: string; workspaceName?: string } = input): ActionLogEntry => ({ auditId, event, workspaceId: whose.workspaceId, ...(whose.workspaceName === undefined ? {} : { workspaceName: whose.workspaceName }), at: new Date().toISOString(), requestId: auditId,
     sessionId: 'node-admin', tool: input.tool, outcome, durationMs: 0, effects: [], args: {}, ...(input.actorId ? { actorId: input.actorId } : {}) })
   await actions.record(entry('started', 'attempt'))
   let value: T
@@ -58,6 +58,7 @@ export async function withRegistryAudit<T>(actions: ActionLog, input: { tool: st
     await actions.record(entry('error', 'result'))
     throw error
   }
-  await actions.record(entry('ok', 'result'))
+  // A registration names its workspace by the id it was assigned only once it exists: the result says which, the attempt could not.
+  await actions.record(entry('ok', 'result', input.named ? input.named(value) : input))
   return value
 }

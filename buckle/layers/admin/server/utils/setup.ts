@@ -89,7 +89,7 @@ interface RegistryCall {
   workspaces: WorkspaceManager
   views: SetupViews
   /** Runs one registry change inside its workspace_* attempt and result entries on the node's log, which name the actor. */
-  audited<T>(input: { tool: string; workspaceId: string }, run: () => Promise<T>): Promise<T>
+  audited<T>(input: { tool: string; workspaceId: string; workspaceName?: string; named?: (value: T) => { workspaceId: string; workspaceName: string } }, run: () => Promise<T>): Promise<T>
   body(): Promise<unknown>
   query(): Record<string, string>
 }

@@ -307,6 +307,24 @@ describe('audit tool names per face', () => {
     const registered = audited(buckle).filter(entry => entry.tool === 'workspace_register')
     expect(registered.map(entry => [entry.event, entry.actorId])).toEqual([['attempt', 'admin:node'], ['result', 'admin:node']])
   })
+
+  // Fix brief 4, findings 22 and 40: the registration's entries named the name asked for in the id field, or `unresolved`,
+  // and never the UUID the registry assigned.
+  it('records a registration under the id the registry assigned, with the name it holds, and the attempt under the name asked for', async () => {
+    const buckle = await node()
+    const second = join(buckle.root, 'second')
+    mkdirSync(second)
+    await buckle.registerOne()
+    const legacy = await buckle.request('/setup/workspaces', { method: 'POST', headers: json(NODE_ADMIN), body: JSON.stringify({ id: 'legacy', dir: second }) })
+    expect(legacy.status).toBe(201)
+
+    const made = (await legacy.json() as { workspace: { id: string } }).workspace.id
+    const entries = audited(buckle).filter(entry => entry.tool === 'workspace_register').map(entry => [entry.event, entry.workspaceId, entry.workspaceName])
+    expect(entries).toEqual([
+      ['attempt', 'unresolved', 'one'], ['result', await buckle.idOf('one'), 'one'],
+      ['attempt', 'unresolved', 'legacy'], ['result', made, 'legacy'],
+    ])
+  })
 })
 
 describe('health', () => {

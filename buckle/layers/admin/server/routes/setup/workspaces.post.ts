@@ -6,7 +6,9 @@ export default defineRegistryHandler({
   access: 'setup',
   handler: async ({ workspaces, views, audited, body }) => {
     const registration = views.registration((await body()) ?? null)
-    const created = await audited({ tool: 'workspace_register', workspaceId: registration.id ?? 'unresolved' }, () => workspaces.create(registration))
+    // The attempt knows the name asked for and no id; the result names the id the registry assigned, and the name it holds.
+    const asked = registration.name ?? registration.id
+    const created = await audited({ tool: 'workspace_register', workspaceId: 'unresolved', ...(asked === undefined ? {} : { workspaceName: asked }), named: result => ({ workspaceId: result.workspace.id, workspaceName: result.workspace.name }) }, () => workspaces.create(registration))
     return json(created, { status: 201, headers: { 'cache-control': 'no-store' } })
   },
 })
