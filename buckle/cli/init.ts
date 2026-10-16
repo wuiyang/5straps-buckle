@@ -104,7 +104,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
       : { folder: given ?? process.cwd(), mount: values.mount ?? '/workspace', name: values.name ?? null, allowedHosts: null }
     if (interactive) {
       choices = await askWorkspaceChoices(prompt)
-      if (writesNode) answers.allowedHosts = await askValid(prompt, 'Hosts a workspace with no approved list of its own may reach, which turns that list on (other hosts are refused; a host named exactly may be private), e.g. db.internal [none]: ', raw => nodeSettingValue('BUCKLE_ALLOWED_HOSTS', raw))
+      if (writesNode) answers.allowedHosts = await askValid(prompt, `Hosts a workspace with no approved list of its own may reach, which turns that list on (other hosts are refused; a host named exactly may be private), e.g. db.internal [${earlierHosts(out) ?? 'none'}]: `, raw => nodeSettingValue('BUCKLE_ALLOWED_HOSTS', raw))
     }
   } finally {
     prompt.close()
@@ -121,7 +121,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
 
   const name = answers.name?.trim() || defaultNodeName(folder)
   // Read before anything changes, so a default it cannot carry refuses init with nothing written.
-  const carried = writesNode && existsSync(out) ? carriedDefaults(out) : { keys: [], into: (text: string) => text }
+  const carried = writesNode && existsSync(out) ? carriedDefaults(out, answers.allowedHosts === null ? [] : ['BUCKLE_ALLOWED_HOSTS']) : { keys: [], into: (text: string) => text }
   if ('exitCode' in carried) return carried
   const fromEnvironment = !existsSync(out) && !movedOntoWorkspaces(stateDirectoryOf(process.env, platform)) ? carriedFromEnvironment(out) : { keys: [], into: (text: string) => text }
   if ('exitCode' in fromEnvironment) return fromEnvironment
@@ -199,18 +199,26 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?:
 }
 
 /**
- * The node's workspace defaults the file `--force` writes again held (D85, Q3): init asks for none of them, and its deny
- * lists are a floor over every workspace (Q14), so the new file keeps each, every one of WORKSPACE_DEFAULT_KEYS, a command
- * list written with `;;` between its globs, as the node reads one. One that cannot be carried refuses init before anything
- * changes.
+ * The node's workspace defaults the file `--force` writes again held (D85, Q3): init asks for one of them, the node's
+ * hosts, and its deny lists are a floor over every workspace (Q14), so the new file keeps each, every one of
+ * WORKSPACE_DEFAULT_KEYS, a command list written with `;;` between its globs, as the node reads one. A key this run
+ * `answered` is the owner's new value, so it is neither written over nor listed as kept; the hosts question shows the
+ * old value as its default (`earlierHosts`), so Enter keeps it and an answer replaces it. One that cannot be carried
+ * refuses init before anything changes.
  */
-function carriedDefaults(out: string): { keys: string[]; into: (text: string) => string } | CliResult {
+function carriedDefaults(out: string, answered: string[]): { keys: string[]; into: (text: string) => string } | CliResult {
   const values = Object.fromEntries(buckleVariables(readFileSync(out, 'utf8')))
   const keys = [...new Set([...NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key), ...WORKSPACE_DEFAULT_KEYS])]
-  const kept = keys.filter(key => values[key]?.trim())
+  const kept = keys.filter(key => values[key]?.trim() && !answered.includes(key))
     .map(key => ({ key, value: findNodeSetting(key)?.kind === 'command-list' ? commandList(values[key]!) : values[key]!.trim() }))
   return carriedInto({ kept, heading: 'Every workspace\'s defaults, kept from the file this one replaced (buckle settings show lists them).',
     refusal: reason => `buckle init --force keeps the node's workspace defaults, and cannot carry one as ${out} writes it: ${reason}. Set it with buckle settings set, then run buckle init --force again.` })
+}
+
+/** The hosts the file `--force` writes again holds, which the hosts question offers as its default; null when it holds none. */
+function earlierHosts(out: string): string | null {
+  if (!existsSync(out)) return null
+  try { return Object.fromEntries(buckleVariables(readFileSync(out, 'utf8'))).BUCKLE_ALLOWED_HOSTS?.trim() || null } catch { return null }
 }
 
 /**

@@ -289,6 +289,40 @@ describe('the node hosts question', () => {
   })
 })
 
+// Finding 4 of the fourth recheck: --force asked the hosts question, then wrote the old file's value over the answer.
+describe('the node hosts question under --force', () => {
+  const earlier = 'BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_ALLOWED_HOSTS=old.example,second.example\nBUCKLE_SANDBOX=none\n'
+  const hostsQuestion = (prompt: { asked: string[] }) => prompt.asked.find(text => text.startsWith('Hosts a workspace with no approved list'))
+
+  it('writes the owner\'s answer, not the old file\'s value, and does not list the key as kept', async () => {
+    writeFileSync(out, earlier, { mode: 0o600 })
+    const prompt = scripted([workspace, '', 'Fixture', '', '', '', '', 'new.example'])
+    const result = await init(prompt, ['--force'])
+
+    expect(result.exitCode).toBe(0)
+    expect(parseEnv(result.written).BUCKLE_ALLOWED_HOSTS).toBe('new.example')
+    expect(result.printed).toMatch(/Kept {8}BUCKLE_ALLOW_SHELL, every workspace's defaults/)
+    expect(result.printed).not.toMatch(/Kept[^\n]*BUCKLE_ALLOWED_HOSTS/)
+  })
+
+  it('offers the old value as the question\'s default, so Enter keeps it and says it kept it', async () => {
+    writeFileSync(out, earlier, { mode: 0o600 })
+    const prompt = scripted([workspace, '', 'Fixture', '', '', '', '', ''])
+    const result = await init(prompt, ['--force'])
+
+    expect(hostsQuestion(prompt)).toMatch(/\[old\.example,second\.example\]: $/)
+    expect(parseEnv(result.written).BUCKLE_ALLOWED_HOSTS).toBe('old.example,second.example')
+    expect(result.printed).toMatch(/Kept {8}BUCKLE_ALLOW_SHELL, BUCKLE_ALLOWED_HOSTS.*every workspace's defaults/)
+  })
+
+  it('still shows [none] when the file written again holds no hosts', async () => {
+    writeFileSync(out, 'BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_SANDBOX=none\n', { mode: 0o600 })
+    const forced = scripted([workspace, '', 'Fixture', '', '', '', '', ''])
+    await init(forced, ['--force'])
+    expect(hostsQuestion(forced)).toMatch(/\[none\]: $/)
+  })
+})
+
 describe('workspace-first initialization defaults', () => {
   it.each([true, false])('uses the current folder, /workspace and the full path name (interactive=%s)', async interactive => {
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace)
