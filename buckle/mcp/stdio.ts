@@ -6,7 +6,7 @@ import { withOperationScope, type Logger } from '@5straps/runtime'
 import type { NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { createAuditedStdioTransport } from './audited-stdio-transport.js'
-import { WorkspaceError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, WorkspaceRegistryError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
@@ -54,6 +54,8 @@ function stillServed(workspaces: WorkspaceManager, runtime: BuckleRuntime): () =
     const name = runtime.workspaceName()
     let current: ManagedWorkspace
     try { current = await workspaces.resolve(runtime.workspaceId) } catch (error) {
+      // The registry's own message names its file, which the state directory hides from agents; the owner's log has it.
+      if (error instanceof WorkspaceRegistryError) throw new WorkspaceError(`Workspace ${name} is not served now: the node's registry cannot be read; the owner's log says why. Tell the person you work with.`, 409)
       if (error instanceof WorkspaceError) {
         const why = error.status === 404 ? 'it was removed' : error.message.replace(/^Workspace is /, 'it is ')
         throw new WorkspaceError(`Workspace ${name} is not served now: ${why}. Tell the person you work with: once it is served again this server answers, and if it was removed and added again this MCP server must be restarted.`, 409)

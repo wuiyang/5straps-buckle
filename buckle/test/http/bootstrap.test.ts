@@ -515,7 +515,8 @@ describe('the workspace buckle mcp serves (built dist)', () => {
 // Fix round 3 of the workspace model, on buckle mcp resolving its workspace once: a workspace the owner takes offline,
 // removes, or removes and registers again must stop being served by a process that started before the change.
 describe('a buckle mcp process whose workspace changes under it (built dist)', () => {
-  it('answers each call with a refusal naming the workspace once it is offline, removed, or registered again, and serves it again once enabled', async () => {
+  /** A node with workspace `site` in a project folder, and a buckle mcp serving it: owner commands, a read, and the node's root. */
+  async function serving() {
     const node = await prepareNode({ BUCKLE_ADMIN_TOKEN: 'mcp-guard-admin-fixture' })
     const { BUCKLE_WORKSPACE_ROOT: _root, BUCKLE_AUTH_TOKEN: _token, ...env } = node.env
     const project = join(node.root, 'project')
@@ -552,6 +553,11 @@ describe('a buckle mcp process whose workspace changes under it (built dist)', (
     await mcp.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
     await send('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'guard-test', version: '0.0.0' } })
     mcp.child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
+    return { node, owner, mcp, read }
+  }
+
+  it('answers each call with a refusal naming the workspace once it is offline, removed, or registered again, and serves it again once enabled', async () => {
+    const { node, owner, mcp, read } = await serving()
 
     expect(await read()).toMatchObject({ failed: false, text: expect.stringContaining('OLD-CONTENT') })
 
@@ -577,6 +583,26 @@ describe('a buckle mcp process whose workspace changes under it (built dist)', (
     expect(again.text).toContain('Workspace site was removed and registered again')
     expect(again.text).not.toContain(node.root)
 
+    mcp.child.stdin!.end()
+    expect(await mcp.exited).toEqual({ code: 0, signal: null })
+  }, 90_000)
+
+  // Fix brief 4, finding 10: the refusal for a registry that will not read carried the registry file's path to the agent.
+  it.each([
+    ['truncated', (text: string) => text.slice(0, -5)],
+    ['no longer the shape the node reads', () => JSON.stringify({ version: 2, workspaces: [{ id: 'not-a-uuid' }] })],
+  ])('tells the agent the registry cannot be read, naming no path or file, where workspaces.json is %s', async (_how, damage) => {
+    const { node, read, mcp } = await serving()
+    expect(await read()).toMatchObject({ failed: false })
+
+    const registry = join(node.state, 'workspaces.json')
+    writeFileSync(registry, damage(readFileSync(registry, 'utf8')))
+    const refused = await read()
+
+    expect(refused.failed).toBe(true)
+    expect(refused.text).toContain('Workspace site is not served now: the node\'s registry cannot be read; the owner\'s log says why')
+    expect(refused.text).not.toContain(node.root)
+    expect(refused.text).not.toContain('workspaces.json')
     mcp.child.stdin!.end()
     expect(await mcp.exited).toEqual({ code: 0, signal: null })
   }, 90_000)
