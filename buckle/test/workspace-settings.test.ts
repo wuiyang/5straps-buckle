@@ -264,7 +264,7 @@ describe('a workspace\'s runtime on its settings', () => {
     await registerWorkspace(manager, { id: 'site', dir: folder })
     const { config, runtime } = await byName(manager, 'site')
 
-    expect(config).toMatchObject({ scratchRoots: [realpathSync(join(folder, 'scratch'))], sandboxMounts: [{ source: '/etc/hostname', target: '/etc/hostname', readOnly: true }], skillDirectories: node.skillDirectories, strictWrites: true })
+    expect(config).toMatchObject({ mounts: [{ source: '/etc/hostname', target: '/etc/hostname', access: 'ro' }, { source: realpathSync(join(folder, 'scratch')), access: 'rw', scratch: true }], skillDirectories: node.skillDirectories, strictWrites: true })
     const written = await runtime.invoke({ request: { requestId: 'scratch-write', tool: 'fs_write', args: { path: 'scratch/a.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'site' })
     expect(written).toMatchObject({ outcome: 'ok' })
     await manager.close()

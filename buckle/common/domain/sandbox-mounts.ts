@@ -27,8 +27,11 @@ export function parseSandboxMounts(value: string | undefined): SandboxMount[] {
   }
 }
 
-/** Explicit mounts expose credentials, but cannot alias workspace restrictions or private node state. */
-export function validateSandboxMounts(mounts: SandboxMount[], input: { protectedRoots: string[]; workspaceRoots: string[]; workspaceTarget: string }): SandboxMount[] {
+/**
+ * Mounts expose what they hold, credentials included, but cannot alias workspace restrictions or private node state:
+ * each source is checked where it really lands at every use, so a folder swapped for a link since it was added is refused.
+ */
+export function validateSandboxMounts<T extends { source: string; target: string }>(mounts: readonly T[], input: { protectedRoots: string[]; workspaceRoots: string[]; workspaceTarget: string }): T[] {
   const reserved = ['/', '/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys', input.workspaceTarget, ...input.protectedRoots, ...input.workspaceRoots]
   const canonical = (path: string) => {
     try { return nativePath(realpathSync(path)) } catch (error) {
@@ -37,7 +40,7 @@ export function validateSandboxMounts(mounts: SandboxMount[], input: { protected
     }
   }
   const forbiddenSources = [...input.protectedRoots, ...input.workspaceRoots].map(canonical)
-  const result: SandboxMount[] = []
+  const result: T[] = []
   for (const mount of mounts) {
     const source = nativePath(realpathSync(mount.source))
     const info = statSync(source)

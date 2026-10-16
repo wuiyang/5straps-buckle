@@ -55,7 +55,7 @@ export async function searchContent(input: {
       const canonical = canonicalOf(await realpath(path))
       const held = await file.stat()
       const current = canonical === null ? null : await stat(canonical)
-      if (canonical === null || current === null || !held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || isLinkedOnStateDevice({ info: held, path: canonical, protectedRoots: input.protectedRoots, roots: [input.paths.root, ...input.paths.scratchRoots] }) || !await input.authorizeRead(canonical)) {
+      if (canonical === null || current === null || !held.isFile() || held.size > MAX_FILE_BYTES || held.ino !== current.ino || held.dev !== current.dev || isLinkedOnStateDevice({ info: held, path: canonical, protectedRoots: input.protectedRoots, roots: input.paths.reachableRoots }) || !await input.authorizeRead(canonical)) {
         excludedFiles += 1
         continue
       }

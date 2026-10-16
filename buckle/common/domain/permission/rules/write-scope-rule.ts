@@ -1,5 +1,5 @@
 import type { GrantScope } from '@5straps/protocol'
-import { outsideMountReason, type PathView } from '../../path-view.js'
+import { outsideMountReason, readOnlyMountReason, type PathView } from '../../path-view.js'
 import { isInside, isInsideAny } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
@@ -12,15 +12,22 @@ export interface WriteScopeOptions {
   pathDecision?: (path: string) => 'inherit' | 'allow' | 'ask' | 'deny'
 }
 
+/**
+ * A write inside a scratch root is free; inside a mount the owner shares read-only it is refused, as no approval makes
+ * it writable (Q6); beyond a mounted view's roots it is refused; anywhere else, the workspace and a read-write mount
+ * among it, the first write to a directory asks, and an approval is remembered as the scope offered allows.
+ */
 export function createWriteScopeRule({ paths, strict, pathDecision }: WriteScopeOptions): PermissionRule {
   const offeredScopes: GrantScope[] = strict ? ['once'] : ['once', 'session', 'always']
-  const reachable = [paths.root, ...paths.scratchRoots]
+  const reachable = paths.reachableRoots
+  const readOnly = paths.mounts.filter(mount => mount.access === 'ro').map(mount => mount.source)
 
   return {
     id: 'write_scope',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'write_path') return null
       if (isInsideAny(paths.scratchRoots, effect.path)) return { kind: 'allow' }
+      if (isInsideAny(readOnly, effect.path)) return deny('write_scope', effect.path, readOnlyMountReason(paths.toVirtual(effect.path)))
       // A mount is the boundary, so a write beyond it is refused rather than offered for approval.
       if (paths.mount && !isInsideAny(reachable, effect.path)) {
         return deny('write_scope', effect.path, outsideMountReason({ named: null, displayRoots: paths.displayRoots }))

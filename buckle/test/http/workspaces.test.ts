@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
-import type { BuckleConfig } from '../../common/runtime/config.js'
+import { sandboxBinds, type BuckleConfig } from '../../common/runtime/config.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const NODE_AGENT = 'node-agent'
@@ -177,5 +177,5 @@ it('refuses a workspace holding a mount\'s source, and gives every other the nod
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
   const child = await (await app.services.getWorkspaces()).resolve(await app.idOf('one'))
-  expect(child.config.sandboxMounts).toEqual(mounts)
+  expect(sandboxBinds(child.config.mounts)).toEqual(mounts)
 })

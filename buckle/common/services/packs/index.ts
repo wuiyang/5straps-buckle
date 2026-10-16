@@ -1,4 +1,3 @@
-import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { ToolCapability, WorkspacePolicy } from '@5straps/protocol'
 import { createPiCodemodeVm } from '../../adapters/script-vm/pi-codemode.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
@@ -15,7 +14,7 @@ import { forgeGitHost } from '../../domain/forge.js'
 import { createGitHubForgeClient } from '../../adapters/forge/github.js'
 import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
-import type { Sandbox } from '../../types/ports/sandbox.js'
+import type { Sandbox, SandboxBind } from '../../types/ports/sandbox.js'
 import type { ApprovedList } from './browser/allowed-domains.js'
 import { createBrowserPack } from './browser/index.js'
 import { chooseBrowser } from './browser/mode.js'
@@ -27,7 +26,8 @@ import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
 
 export interface BuiltinPackOptions {
-  sandboxMounts?: SandboxMount[]
+  /** The workspace's mounts as the shell binds them (sandboxBinds). */
+  sandboxMounts?: SandboxBind[]
   filesystemPolicy?: { policy: WorkspacePolicy }
   cwd: string
   paths: PathView
@@ -214,7 +214,7 @@ function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgra
 
 function shellUnavailableReason(options: BuiltinPackOptions): string | null {
   // Where no sandbox could be had, such as a bwrap refused where an agent writes, that is the reason, not the mounts.
-  if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return options.sandboxUnavailableReason ?? 'Explicit mounts require bubblewrap'
+  if (options.sandboxMounts?.length && options.sandbox.mode !== 'bubblewrap') return options.sandboxUnavailableReason ?? 'The workspace\'s mounts need bubblewrap; shell tools are withheld rather than shown a different view'
   if (!options.enableShell) return 'Shell tools are turned off in this workspace: its setting packs.shell is off'
   if (options.shellIsolation && options.sandbox.mode !== 'bubblewrap') return 'Isolated shell execution requires bubblewrap; BUCKLE_SHELL_ISOLATION=false opts into shared-workspace checkpoints'
   if (options.sandboxUnavailableReason) return options.sandboxUnavailableReason

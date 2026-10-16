@@ -1,5 +1,6 @@
-import { parseSandboxMounts, type SandboxMount } from '../domain/sandbox-mounts.js'
+import { parseSandboxMounts } from '../domain/sandbox-mounts.js'
 import type { TableMount } from '../domain/mount-table.js'
+import type { SandboxBind } from '../types/ports/sandbox.js'
 import { realpathSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
@@ -133,10 +134,6 @@ export interface BuckleConfig extends NodeConfig {
   policy: WorkspacePolicy
   /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
   mounts: TableMount[]
-  /** The table's scratch roots: writable without asking, at their own path. */
-  scratchRoots: string[]
-  /** The table's other mounts, which the shell binds read-only. */
-  sandboxMounts: SandboxMount[]
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
   /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
@@ -431,14 +428,12 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'scratchRoots' | 'sandboxMounts' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
-    scratchRoots: scope.mounts.filter(mount => mount.scratch).map(mount => mount.source),
-    sandboxMounts: scope.mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: true as const })),
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,
@@ -447,6 +442,16 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
     commandEnvironment: { ...scope.env },
   }
+}
+
+/** The scratch roots of a mount table: writable without asking, at their own path. */
+export function scratchSources(mounts: readonly TableMount[]): string[] {
+  return mounts.filter(mount => mount.scratch).map(mount => mount.source)
+}
+
+/** A mount table's mounts as the shell binds them, at their targets, each read-only unless the owner shares it writable (Q6). */
+export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
+  return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro' }))
 }
 
 /** A workspace's own state directory, and the node's when they differ. */

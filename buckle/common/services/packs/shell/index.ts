@@ -1,5 +1,5 @@
 import { realpathSync, statSync } from 'node:fs'
-import { validateSandboxMounts, type SandboxMount } from '../../../domain/sandbox-mounts.js'
+import { validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'pathe'
@@ -14,7 +14,7 @@ import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessRunner, ProcessResult } from '../../../types/ports/process-runner.js'
-import type { Sandbox } from '../../../types/ports/sandbox.js'
+import type { Sandbox, SandboxBind } from '../../../types/ports/sandbox.js'
 import { loadPackSkill } from '../pack-skill.js'
 
 const PACK_ID = 'shell'
@@ -57,7 +57,8 @@ const scriptInput = z.object({
 })
 
 export interface ShellPackOptions {
-  mounts?: SandboxMount[]
+  /** The workspace's mounts, each bound at its target (sandboxBinds). */
+  mounts?: SandboxBind[]
   filesystemPolicy?: { policy: WorkspacePolicy }
   paths: PathView
   runProcess: ProcessRunner
@@ -97,7 +98,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     context: ToolContext
   }): Promise<JsonValue> => {
     const mounts = validateSandboxMounts(options.mounts ?? [], { protectedRoots: options.hiddenPaths, workspaceRoots: options.writableRoots, workspaceTarget: options.paths.displayRoot })
-    if (mounts.length && options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('Explicit mounts require bubblewrap', { code: 'PERMISSION_DENIED' })
+    if (mounts.length && options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('The workspace\'s mounts need bubblewrap', { code: 'PERMISSION_DENIED' })
     const sensitiveFiles = [...new Set(input.sensitiveFiles)].map(path => options.paths.resolve(path))
     if (sensitiveFiles.length && (options.sandbox.mode !== 'bubblewrap' || !options.isolation)) throw new ToolInputError('Sensitive file requests require isolated bubblewrap execution', { code: 'PERMISSION_DENIED' })
     for (const path of sensitiveFiles) {
@@ -120,13 +121,20 @@ export function createShellPack(options: ShellPackOptions): Pack {
     hidden.directories.push(...restrictions.hiddenPaths)
     hidden.files.push(...restrictions.hiddenFiles)
     const writableRoots = [cwd, ...options.paths.scratchRoots]
+    // Isolation copies the workspace's folder alone (Q6): a scratch root outside it, and each mount the owner shares
+    // writable, is bound read-only for the call, and its result names them.
+    const isolated = Boolean(options.isolation)
+    const outsideScratch = isolated ? options.paths.scratchRoots.filter(root => !isInsideAny([options.paths.root], root)) : []
+    const callWritable = writableRoots.filter(root => !outsideScratch.includes(root))
+    const callMounts = isolated ? [...mounts.map(mount => ({ ...mount, readOnly: true })), ...outsideScratch.map(root => ({ source: root, target: root, readOnly: true }))] : mounts
+    const heldReadOnly = isolated ? [...mounts.filter(mount => !mount.readOnly).map(mount => mount.target), ...outsideScratch] : []
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
       const wrapped = options.sandbox.wrap({
         command,
         args: [...program?.args ?? [], ...input.args],
         cwd: mapped(cwd),
-        writableRoots: writableRoots.map(mapped),
+        writableRoots: callWritable.map(mapped),
         workspaceRoot: copyRoot ?? options.paths.root,
         allowNetwork: input.allowNetwork,
         commandIsPid1: Boolean(copyRoot),
@@ -134,7 +142,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
         hiddenPaths: copyRoot ? hidden.directories.filter(path => !isInsideAny([options.paths.root], path)) : hidden.directories,
         hiddenFiles: copyRoot ? hidden.files.filter(path => !isInsideAny([options.paths.root], path)) : hidden.files,
         readOnlyPaths: options.readOnlyPaths,
-        mounts: [...mounts, ...sensitiveFiles.map(source => ({ source, target: options.paths.toVirtual(source), readOnly: true as const }))],
+        mounts: [...callMounts, ...sensitiveFiles.map(source => ({ source, target: options.paths.toVirtual(source), readOnly: true }))],
         readOnlyWorkspacePaths: restrictions.readOnlyWorkspacePaths.map(mapped),
       })
       return options.runProcess({
@@ -144,9 +152,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
     }
     if (!options.isolation) return toJson(await run(), options.sandbox.mode)
     if (options.sandbox.mode !== 'bubblewrap') throw new ToolInputError('Isolated shell execution requires bubblewrap', { code: 'PERMISSION_DENIED' })
-    if (writableRoots.some(root => !isInsideAny([options.paths.root], root))) throw new ToolInputError('Isolated shell scratch roots must be inside the workspace', { code: 'PERMISSION_DENIED' })
     const result = await runIsolatedShell({
-      isolation: options.isolation, sourceRoot: options.paths.root, writableRoots,
+      isolation: options.isolation, sourceRoot: options.paths.root, writableRoots: callWritable,
       excluded: [...hidden.directories, ...hidden.files, ...sensitiveFiles],
       readOnlyOverlayPaths: [...sensitiveFiles, ...hidden.directories.filter(directory => isInsideAny([options.paths.root], directory) && sensitiveFiles.some(path => isInsideAny([directory], path)))],
       readOnlyPaths: restrictions.readOnlyWorkspacePaths,
@@ -155,7 +162,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool },
       execute: run,
     })
-    return toJson(result, options.sandbox.mode)
+    return toJson(result, options.sandbox.mode, heldReadOnly)
   }
 
   return {
@@ -209,7 +216,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
   }
 }
 
-function toJson(result: ProcessResult, sandboxMode: string): JsonValue {
+/** A shell's result; `heldReadOnly` names, as the agent names them, the writable mounts isolation bound read-only for it. */
+function toJson(result: ProcessResult, sandboxMode: string, heldReadOnly: readonly string[] = []): JsonValue {
   return {
     exitCode: result.exitCode,
     signal: result.signal,
@@ -218,5 +226,6 @@ function toJson(result: ProcessResult, sandboxMode: string): JsonValue {
     truncated: result.truncated,
     timedOut: result.timedOut,
     sandbox: sandboxMode,
+    ...(heldReadOnly.length > 0 ? { readOnlyMounts: [...heldReadOnly], note: `Shell isolation copies the workspace's folder alone, so these writable mounts were read-only to this command: ${heldReadOnly.join(', ')}. Write to them with the file tools, which ask as the workspace's own writes do.` } : {}),
   }
 }

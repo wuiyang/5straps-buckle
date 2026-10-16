@@ -21,7 +21,7 @@ function buildArgs(command: SandboxCommand, nodePrefix: string): string[] {
   for (const path of command.readOnlyWorkspacePaths ?? []) args.push('--ro-bind', path, sandboxPath(path, command))
   for (const path of command.hiddenPaths) args.push('--tmpfs', sandboxPath(path, command))
   for (const path of command.hiddenFiles ?? []) args.push('--ro-bind', '/dev/null', sandboxPath(path, command))
-  for (const mount of command.mounts ?? []) args.push('--ro-bind', mount.source, mount.target)
+  for (const mount of command.mounts ?? []) args.push(mount.readOnly ? '--ro-bind' : '--bind', mount.source, mount.target)
   args.push('--chdir', sandboxPath(command.cwd, command), '--', command.command, ...command.args)
   return args
 }

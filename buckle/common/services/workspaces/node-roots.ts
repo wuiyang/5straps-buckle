@@ -26,7 +26,7 @@ export interface NodeRoots {
  * at each resolution. The workspace runtime and `buckle init` both resolve by it, so init reports a program the node
  * refuses as refused (review of 2026-10-14).
  */
-export function workspaceUntrusted(view: { root: string; scratchRoots: readonly string[] }, nodeRoots?: NodeRoots): UntrustedRoots {
+export function workspaceUntrusted(view: Parameters<typeof ownRoots>[0], nodeRoots?: NodeRoots): UntrustedRoots {
   const node = nodeRoots?.current()
   return { untrustedRoots: [...ownRoots(view).untrustedRoots, ...node?.untrustedRoots ?? []], rootsUnknown: node?.rootsUnknown ?? null }
 }

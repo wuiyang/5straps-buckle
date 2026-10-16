@@ -21,7 +21,7 @@ import { createFileGrantStore } from '../../adapters/grant-store/file-grant-stor
 import { runProcess } from '../../adapters/process-runner.js'
 import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js'
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
-import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
+import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, sandboxBinds, scratchSources, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
@@ -213,7 +213,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   mkdirSync(browserStateDirectory, { recursive: true })
 
   // Where no program run here may come from: this workspace's roots and every root the node knows, read at each resolution.
-  const untrusted = (): UntrustedRoots => workspaceUntrusted({ root: config.cwd, scratchRoots: config.scratchRoots }, input.nodeRoots)
+  const untrusted = (): UntrustedRoots => workspaceUntrusted({ root: config.cwd, scratchRoots: scratchSources(config.mounts), mounts: config.mounts }, input.nodeRoots)
   // The sandbox program is refused where an agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
@@ -278,7 +278,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   let pickingUp: Promise<void> | undefined
 
   let compiled = compileStartupPolicy(applied)
-  let paths = createPathView({ root: config.cwd, mount: compiled.mount, scratchRoots: config.scratchRoots })
+  let paths = createPathView({ root: config.cwd, mount: compiled.mount, mounts: config.mounts })
   // Read from the store at each evaluation; an unreadable store fails closed.
   const dangerouslyAllow = () => {
     let on = false
@@ -317,7 +317,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (!config.enableShell || config.enabledPacks && !config.enabledPacks.includes('shell') || sandbox.sandbox.mode !== 'bubblewrap') throw new WorkbenchError('Interactive terminals require an enabled bubblewrap sandbox', 403)
       const { commands } = compiled.policy
       if (commands.allow.length || commands.deny.length || commands.destructive?.length) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
-      const mounts = validateSandboxMounts(config.sandboxMounts ?? [], { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' })
+      // A terminal works in the workbench's own copy, so a mount the owner shares writable is read-only there, as under shell isolation (Q6).
+      const mounts = validateSandboxMounts(sandboxBinds(config.mounts).map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' })
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
       const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
@@ -489,7 +490,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const fields = workspaceFields(scopeOf(input.settings, config.workspaceDefaults))
     const nextConfig: BuckleConfig = { ...config, ...fields }
     const nextCompiled = compilePolicy(fields.policy)
-    const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, scratchRoots: config.scratchRoots })
+    const nextPaths = createPathView({ root: config.cwd, mount: nextCompiled.mount, mounts: nextConfig.mounts })
     const [resolved, before] = [resolveSettings(input.settings, config.workspaceDefaults), resolveSettings(applied, config.workspaceDefaults)]
     // The packs, the mounts, or the browser settings changed: the tools themselves are reshaped, which waits until no
     // work is active. A policy list or a variable changed alone is swapped in for the next call without waiting (fix
@@ -502,7 +503,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools }) : null
-    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mount: resolved.mount }) === browserInputs({ config, compiled, mount: before.mount }) }) : null
+    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     Object.assign(config, fields)
     applied = input.settings
@@ -543,7 +544,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         grants,
         actions,
         history,
-        historyRoots: [nativePath(realpathSync(config.cwd)), ...config.scratchRoots.map(root => { let existing = root; while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing); return nativePath(realpathSync(existing)) })],
+        // The workspace and every place the view lets it write, so the execution lock and history cover each (Phase 2 item 2).
+        historyRoots: [nativePath(realpathSync(config.cwd)), ...settled.paths.mounts.filter(mount => mount.access === 'rw').map(mount => { let existing = mount.source; while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing); return nativePath(realpathSync(existing)) })],
         reporter,
         paths: settled.paths,
         serverId: config.serverId,
@@ -643,10 +645,10 @@ async function buildPacks(input: {
     runProcess,
     sandbox: input.sandbox.sandbox,
     sandboxUnavailableReason: input.sandbox.unavailableReason,
-    writableRoots: [input.config.cwd, ...input.config.scratchRoots],
+    writableRoots: [input.config.cwd, ...scratchSources(input.config.mounts)],
     hiddenPaths: protectedStateRoots(input.config),
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
-    sandboxMounts: input.config.sandboxMounts,
+    sandboxMounts: sandboxBinds(input.config.mounts),
     approvedUrls: input.compiled.network,
     approvedLists: input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : [],
     braveSearchApiKey: input.config.braveSearchApiKey,
@@ -691,13 +693,13 @@ function policyHash(compiled: CompiledPolicy): string {
 }
 
 /**
- * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered and where the folder shows. A change
- * to either rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
+ * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, and the
+ * mount table (Q2: the sandbox layout changes only when no work is active). A change to any rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
  * is not among them: no pack reads it yet, so a hand edit of it changes no tool (browserInputs names what the browser
  * pack is handed, the node's settings until a later release reads each workspace's own).
  */
 function reshapeInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.packs, settings.mount])
+  return JSON.stringify([settings.packs, settings.mount, settings.mounts])
 }
 
 /**
@@ -717,11 +719,11 @@ const BROWSER_PACK = 'browser'
  * browser block, which the pack does not read: a rebuild for anything else, the variables, or a list changed in
  * order, port, or path only, carries the pack over with the browsers it runs, so an agent's tabs and cookies survive it.
  */
-function browserInputs(input: { config: BuckleConfig; compiled: CompiledPolicy; mount: ResolvedSettings['mount'] }): string {
+function browserInputs(input: { config: BuckleConfig; compiled: CompiledPolicy; mounts: [ResolvedSettings['mount'], ResolvedSettings['mounts']] }): string {
   const { config } = input
   const mode: BrowserMode = config.browserCdp ? { kind: 'attached', endpoint: config.browserCdp } : config.browserProfile ? { kind: 'profile', directory: config.browserProfile } : FRESH_BROWSER
   const domains = browserAllowedDomains(input.compiled.network ? [{ name: 'workspace', entries: input.compiled.network.patterns }] : [])
-  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded }), input.mount])
+  return JSON.stringify([allowedDomainsKey(domains), modeFingerprint(mode, { ...(config.browserArgs === undefined ? {} : { launchArgs: config.browserArgs }), headed: config.browserHeaded }), input.mounts])
 }
 
 /**
@@ -794,7 +796,7 @@ function buildManifest(input: {
       mode: input.sandbox.sandbox.mode,
       acknowledgedUnsandboxed: input.config.acknowledgedUnsandboxed,
     },
-    workspaceRoots: [input.paths.displayRoot, ...input.config.scratchRoots],
+    workspaceRoots: input.paths.displayRoots,
     tools: input.registry.capabilities(),
     skills: input.skills.map(toDescriptor),
     packs: input.packs.map(packDescriptor),

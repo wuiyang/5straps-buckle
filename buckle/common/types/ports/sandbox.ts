@@ -1,8 +1,15 @@
-import type { SandboxMount } from '../../domain/sandbox-mounts.js'
 import type { SandboxMode } from '@5straps/protocol'
 
+/** A host folder or file bound at `target` inside the sandbox, read-only unless `readOnly` is false (a writable mount, Q6). */
+export interface SandboxBind {
+  source: string
+  target: string
+  readOnly: boolean
+}
+
 export interface SandboxCommand {
-  mounts?: SandboxMount[]
+  /** The mounts: each bound at its target after the workspace. */
+  mounts?: SandboxBind[]
   command: string
   args: string[]
   /** The real working directory. A mounted sandbox translates it to the virtual one. */

@@ -199,9 +199,13 @@ export function rootsOf(kind: RootKind, paths: readonly string[]): UntrustedRoot
   return paths.map(path => ({ path, kind }))
 }
 
-/** A workspace's own roots, its root and its scratch roots, which a pack built without the node's roots refuses. */
-export function ownRoots(view: { root: string; scratchRoots: readonly string[] }): UntrustedRoots {
-  return { untrustedRoots: [...rootsOf('workspace', [view.root]), ...rootsOf('scratch root', view.scratchRoots)] }
+/**
+ * A workspace's own roots, its root, its scratch roots, and the source of each mount it shares writable, which a pack
+ * built without the node's roots refuses.
+ */
+export function ownRoots(view: { root: string; scratchRoots: readonly string[]; mounts?: readonly { source: string; access: 'rw' | 'ro'; scratch?: boolean }[] }): UntrustedRoots {
+  const writable = (view.mounts ?? []).filter(mount => mount.access === 'rw' && !mount.scratch).map(mount => mount.source)
+  return { untrustedRoots: [...rootsOf('workspace', [view.root]), ...rootsOf('scratch root', view.scratchRoots), ...rootsOf('writable mount', writable)] }
 }
 
 /**

@@ -62,7 +62,7 @@ export async function prepareTransfer(input: {
         const slot = join(directory, String(files.size))
         mkdirSync(slot, { recursive: true, mode: 0o700 })
         const file = { named, target, staged: join(slot, basename(target)), kind }
-        if (kind === 'read') await withFileBeneathAsync(target, { flags: constants.O_RDONLY, shown: named, protectedRoots: input.protectedRoots, roots: [input.paths.root, ...input.paths.scratchRoots] }, source => copyInto({ source, staged: file.staged, named, signal }))
+        if (kind === 'read') await withFileBeneathAsync(target, { flags: constants.O_RDONLY, shown: named, protectedRoots: input.protectedRoots, roots: input.paths.reachableRoots }, source => copyInto({ source, staged: file.staged, named, signal }))
         files.set(named, file)
       }
     }

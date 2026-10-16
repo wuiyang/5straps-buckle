@@ -197,11 +197,11 @@ function resolveRepository(input: { paths: PathView; repo: string; context: Pick
 }
 
 /**
- * The real root git must find its whole repository in: the workspace root or the scratch root that holds the judged
+ * The real root git must find its whole repository in: the workspace root or the mount (a scratch root among them) that holds the judged
  * directory, as each really is, or, for a directory outside them all that a read approval judged, that directory.
  */
 function repositoryBoundary(paths: PathView, judged: string, platform: NodeJS.Platform): string {
-  return [paths.root, ...paths.scratchRoots].map(root => realPathOr(root, platform)).find(root => isInside(root, judged, platform)) ?? judged
+  return paths.reachableRoots.map(root => realPathOr(root, platform)).find(root => isInside(root, judged, platform)) ?? judged
 }
 
 /** Git looks for a repository no higher than `boundary`: GIT_CEILING_DIRECTORIES names the folder above it. */

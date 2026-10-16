@@ -392,8 +392,8 @@ function logLoosened(loosened: LoosenedEntry[]): void {
 }
 
 function realPath(argument: string, paths: PathView): string {
-  if (argument.startsWith('-') || !paths.mount) return argument
-  return argument === paths.mount || argument.startsWith(`${paths.mount}/`) ? paths.resolve(argument) : argument
+  if (argument.startsWith('-')) return argument
+  return paths.namesVirtual(argument) ? paths.resolve(argument) : argument
 }
 
 /** Most agent-browser commands honour --json; a few (screenshot paths) print plain text. */

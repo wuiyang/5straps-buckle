@@ -12,7 +12,7 @@ import { childPath, descent, isDriveRoot, isInside, isInsideComparable, isPlainN
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { clientDirectory } from '../cli/client.js'
 import { runInit } from '../cli/init.js'
-import { stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
+import { scratchSources, stateDirectoryOf, workspaceHolds } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { workspacesOf } from './support/workspaces.js'
@@ -372,7 +372,7 @@ describe('case and links on Windows, imitated', () => {
     symlinkSync(join(root, 'Scratch'), join(root, 'link'))
     diskCase(join(root, 'scratch'), join(root, 'Scratch'))
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: join(scratch(), 'state'), BUCKLE_SCRATCH_ROOTS: `${join(root, 'link')},${join(root, 'scratch')}` })
-    expect(config.scratchRoots).toEqual([join(root, 'Scratch'), join(root, 'Scratch')])
+    expect(scratchSources(config.mounts)).toEqual([join(root, 'Scratch'), join(root, 'Scratch')])
   })
 
   it('refuses in init, as the node does, a workspace that holds the state directory through a link or in another case', async () => {

@@ -4,18 +4,19 @@ import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
 
 /**
- * Reads are free inside the workspace; anything else asks and, once approved, joins the sandbox.
- * With a mount there is nothing to ask about: a path that resolves outside the roots the view
- * names is refused, which is also what catches a symlink pointing off the workspace.
+ * Reads are free inside the workspace and inside each mount the owner shares into it (Phase 2 item 2); anything else
+ * asks and, once approved, joins the sandbox. With a mount there is nothing to ask about: a path that resolves outside
+ * the roots the view names is refused, which is also what catches a symlink pointing off the workspace.
  */
 export function createReadScopeRule({ paths }: { paths: PathView }): PermissionRule {
-  const reachable = [paths.root, ...paths.scratchRoots]
+  const reachable = paths.reachableRoots
+  const shared = paths.mounts.filter(mount => !mount.scratch).map(mount => mount.source)
 
   return {
     id: 'read_scope',
     evaluate({ effect, grants }) {
       if (effect.kind !== 'read_path') return null
-      if (isInside(paths.root, effect.path)) return { kind: 'allow' }
+      if (isInside(paths.root, effect.path) || isInsideAny(shared, effect.path)) return { kind: 'allow' }
       if (paths.mount && !isInsideAny(reachable, effect.path)) {
         return deny('read_scope', effect.path, outsideMountReason({ named: null, displayRoots: paths.displayRoots }))
       }
