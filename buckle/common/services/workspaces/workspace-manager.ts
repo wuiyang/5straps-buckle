@@ -404,8 +404,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     /**
      * Closes the runtimes this process opened for workspaces the registry no longer holds or holds offline, once each
-     * has no active work, so a removed workspace's browser, terminals, and language servers end with it. `buckle serve`
-     * calls it at each look at the registry (finding 2).
+     * has no active work, so a removed workspace's browser, terminals, and language servers end with it. A workbench
+     * lock another process holds is not work, and a runtime that will not close is logged, not allowed to keep the
+     * others open. `buckle serve` calls it at each look at the registry (finding 2; fix brief 4, finding 28).
      */
     async closeUnserved(): Promise<void> {
       let registered: StoredWorkspace[]
@@ -416,8 +417,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       }
       for (const [id, pending] of [...runtimes]) {
         if (registered.some(workspace => workspace.id === id && workspace.online)) continue
-        const opened = await pending.catch(() => null)
-        if (opened && !await earlierHasWork(opened.runtime)) await drop(id, pending, opened)
+        // One that will not close is logged, and the rest still close.
+        try {
+          const opened = await pending.catch(() => null)
+          if (opened && !await earlierHasWork(opened.runtime)) await drop(id, pending, opened)
+        } catch (error) { logger.error('Could not close a workspace this process no longer serves', { workspaceId: id, error }) }
       }
     },
 

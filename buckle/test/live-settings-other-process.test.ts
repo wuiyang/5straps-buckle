@@ -2,9 +2,10 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { loadConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -101,5 +102,44 @@ describe('a settings change taken up while no process holds the workbenches', ()
     expect(await read(mcp)).toMatchObject({ outcome: 'ok' })
     expect(packsOf(mcp)).toEqual(['fs'])
     await expect(serve.workbenches.list()).resolves.toHaveLength(1)
+  })
+})
+
+// buckle serve closes the runtimes of workspaces another process took offline, once each has no work. A lock on the
+// workbenches that a buckle mcp holds is not work, and one runtime that will not close cannot keep the others open.
+describe('buckle serve closing the runtimes of workspaces taken offline, while another process holds a workbench lock', () => {
+  let other: string
+  let serve: WorkspaceManager
+  let owner: WorkspaceManager
+  beforeEach(async () => {
+    const folder = join(base, 'other')
+    mkdirSync(folder)
+    other = (await (await open()).create({ id: 'other', dir: folder })).workspace.id
+    await useWorkbench((await (await open()).resolve(site)).runtime)
+    serve = await open()
+    await serve.resolve(site)
+    await serve.resolve(other)
+    owner = await open()
+    await owner.update(site, { online: false })
+    await owner.update(other, { online: false })
+  })
+
+  it('closes every idle runtime, the lock being no work', async () => {
+    await expect(serve.opened()).resolves.toHaveLength(2)
+
+    await serve.closeUnserved()
+
+    await expect(serve.opened()).resolves.toEqual([])
+  })
+
+  it('closes the others when one will not close, and logs the one that failed', async () => {
+    const failing = (await serve.opened()).find(runtime => runtime.workspaceId === site)!
+    vi.spyOn(failing, 'hasActiveWork').mockRejectedValue(new Error('the records cannot be read'))
+    const logged = vi.spyOn(logger, 'error')
+
+    await serve.closeUnserved()
+
+    expect((await serve.opened()).map(runtime => runtime.workspaceId)).toEqual([site])
+    expect(logged).toHaveBeenCalledWith('Could not close a workspace this process no longer serves', expect.objectContaining({ workspaceId: site }))
   })
 })
