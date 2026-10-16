@@ -553,7 +553,7 @@ describe('a buckle mcp process whose workspace changes under it (built dist)', (
     await mcp.waitForLine(line => line.message === '5straps Buckle MCP stdio ready')
     await send('initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'guard-test', version: '0.0.0' } })
     mcp.child.stdin!.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
-    return { node, owner, mcp, read }
+    return { node, env, project, owner, mcp, read }
   }
 
   it('answers each call with a refusal naming the workspace once it is offline, removed, or registered again, and serves it again once enabled', async () => {
@@ -583,6 +583,26 @@ describe('a buckle mcp process whose workspace changes under it (built dist)', (
     expect(again.text).toContain('Workspace site was removed and registered again')
     expect(again.text).not.toContain(node.root)
 
+    mcp.child.stdin!.end()
+    expect(await mcp.exited).toEqual({ code: 0, signal: null })
+  }, 90_000)
+
+  // Fix brief 4, finding 32: a stale process kept auditing its refused calls into the folder of a workspace that was purged,
+  // which made the folder again, so a later registration reported records it never took up.
+  it('audits the refusals of a workspace removed and purged in the node\'s log, making no folder of it, so registering it again takes up nothing', async () => {
+    const { node, env, project, owner, mcp, read } = await serving()
+    expect(await read()).toMatchObject({ failed: false })
+    const [{ id }] = (JSON.parse(readFileSync(join(node.state, 'workspaces.json'), 'utf8')) as { workspaces: { id: string }[] }).workspaces as [{ id: string }]
+
+    expect(await owner(['workspace', 'remove', 'site', '--purge'])).toEqual({ code: 0, signal: null })
+    for (let call = 0; call < 2; call++) expect((await read()).failed).toBe(true)
+
+    expect(existsSync(join(node.state, 'workspaces', id))).toBe(false)
+    expect(readFileSync(join(node.state, 'actions.jsonl'), 'utf8')).toContain(`"workspaceId":"${id}"`)
+    const pruned = execFileSync(entry, ['workspace', 'prune'], { encoding: 'utf8', env, cwd: project })
+    expect(pruned).toContain('No removed workspace has records left to prune.')
+    const registered = execFileSync(entry, ['workspace', 'init', '--name', 'site'], { encoding: 'utf8', env, cwd: project })
+    expect(registered).not.toContain('takes up the records')
     mcp.child.stdin!.end()
     expect(await mcp.exited).toEqual({ code: 0, signal: null })
   }, 90_000)

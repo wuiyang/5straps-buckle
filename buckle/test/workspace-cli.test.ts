@@ -414,6 +414,18 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
   })
 
+  // Fix brief 4, finding 32: a stray log in a workspace's directory is no records, so adding the folder takes nothing up.
+  it('takes up nothing for a folder whose workspace directory holds only a log, and registers it afresh', async () => {
+    const directory = join(state, 'workspaces', workspaceIdOf(beta))
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'actions.jsonl'), '')
+
+    const added = await buckle(['add', beta])
+    expect(added.exitCode).toBe(0)
+    expect(added.out).not.toContain('takes up the records')
+    expect(registry().workspaces.map(workspace => [workspace.id, workspace.name])).toContainEqual([workspaceIdOf(beta), 'beta'])
+  })
+
   // Fix brief 4, finding 3: a folder added fresh has a random id, so the next plain add took up the older records that
   // fresh had left, and the fresh workspace's own were orphaned.
   describe('a folder removed, added fresh, and removed again', () => {

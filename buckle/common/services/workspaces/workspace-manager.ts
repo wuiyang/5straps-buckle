@@ -130,8 +130,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   /** The registration each runtime was opened for: its folder as stored, and when it was made. */
   const registrations = new WeakMap<ManagedWorkspace, Pick<StoredWorkspace, 'dir' | 'createdAt'>>()
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
-  /** Whether records of a workspace by this id are still on disk, from one removed without --purge (Q7). */
-  const leftover = (id: string) => existsSync(join(node.stateDirectory, 'workspaces', id))
+  /** Whether records of a workspace by this id are still on disk, from one removed without --purge (Q7): its settings, or its removal marker, not a stray log. */
+  const leftover = (id: string) => existsSync(settingsPath(node.stateDirectory, id)) || existsSync(removedMarker(id))
   /** The marker a removal leaves beside the kept records: the folder, its name, and when (addendum to D85, Q15). */
   const removedMarker = (id: string) => join(node.stateDirectory, 'workspaces', id, 'removed.json')
 

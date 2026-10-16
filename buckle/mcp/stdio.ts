@@ -8,6 +8,7 @@ import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { createAuditedStdioTransport } from './audited-stdio-transport.js'
 import { WorkspaceError, WorkspaceRegistryError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { ActionLog } from '../common/types/ports/action-log.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
@@ -35,12 +36,21 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
   const version = runtime.manifest().version
   const transport = createAuditedStdioTransport({
     transport: createStdioWire({ stdin: process.stdin, stdout: process.stdout, maxBufferBytes: config.maxRequestBytes }),
-    actions: runtime.actions, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
+    actions: { ...runtime.actions, record: entry => loggedIn(workspaces, runtime).record(entry) }, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
   const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel, beforeCall: stillServed(workspaces, runtime) }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
+}
+
+/**
+ * Where a refused or served call is audited: the workspace's own log while the registry holds it, else the node's. A
+ * workspace removed since this process started, and purged, has no folder, which writing its log would make again (fix
+ * brief 4, finding 32); a registry that will not read leaves the workspace's log as it was.
+ */
+function loggedIn(workspaces: WorkspaceManager, runtime: BuckleRuntime): ActionLog {
+  try { return workspaces.known(runtime.workspaceId) ? runtime.actions : workspaces.nodeActions } catch { return runtime.actions }
 }
 
 /**
