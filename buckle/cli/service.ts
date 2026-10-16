@@ -160,12 +160,20 @@ async function install(context: ServiceContext, now: boolean): Promise<CliResult
   const running = await runningNode(location.stateDirectory)
   if (now && running?.record?.manager === 'background') return fail(context.err, `${inBackground(running)}; stop it first with buckle service stop, then install again.`)
   if (now && running?.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}, then run buckle service install --now again.`)
-  await manager.install(definitionFor(context), { now })
+  // A manager with no restart of its own (Task Scheduler) starts the definition's node through a start that does nothing
+  // while another serves, so the earlier install's node is asked to stop between writing the definition and starting it.
+  const replace = now && !manager.restart && ownsNode(manager, running)
+  await manager.install(definitionFor(context), { now: now && !replace })
   if (!now) {
     context.out(`Installed the Buckle service (${manager.label}); it starts at every login. Start it now with buckle service start.\n`)
     return { exitCode: 0, detail: `install ${manager.kind}` }
   }
-  const record = await waitForNewRecord(location.stateDirectory, undefined)
+  if (replace) {
+    const refusal = await askToStop(context, running)
+    if (refusal !== null) return fail(context.err, `Installed the Buckle service (${manager.label}). ${refusal}`)
+    await manager.start()
+  }
+  const record = await waitForNewRecord(location.stateDirectory, running?.record?.pid)
   if (record === null) return fail(context.err, `Installed the Buckle service (${manager.label}), and it has not listened within ${START_WAIT_MS / 1000} seconds; buckle service status and buckle service logs show what it is doing.`)
   context.out(`Installed and started the Buckle service (${manager.label}, pid ${record.pid}); it starts at every login.\n`)
   return { exitCode: 0, detail: `install --now ${manager.kind}` }
@@ -184,6 +192,11 @@ function definitionFor(context: ServiceContext): ServiceDefinition {
   }
 }
 
+/** Whether a node serves under this manager's definition: its record names the manager, or it has not written one yet. */
+function ownsNode(manager: ServiceManager, running: RunningNode | null): running is RunningNode {
+  return running !== null && (running.record === null || running.record.manager === manager.kind)
+}
+
 /**
  * One service per machine (Phase 3, item 5): a definition for another state directory, or one Buckle cannot read,
  * refuses an install, naming neither path.
@@ -200,10 +213,10 @@ async function uninstall(context: ServiceContext): Promise<CliResult> {
     context.out('No Buckle service is installed; nothing was removed.\n')
     return { exitCode: 0 }
   }
-  // A manager that cannot signal the node asks it to stop first, so it closes cleanly before its definition goes. A serve
-  // at a terminal is not the service's node, and stops at its terminal alone.
+  // A manager that cannot signal the node asks it to stop first, so it closes cleanly before its definition goes. A node
+  // another manager started (a serve at a terminal, or by hand with --background) is not the definition's, and stays.
   const running = await runningNode(context.location.stateDirectory)
-  if (!manager.stop && running?.record?.manager !== 'terminal') {
+  if (!manager.stop && ownsNode(manager, running)) {
     const refusal = await askToStop(context, running)
     if (refusal !== null) return fail(context.err, refusal)
   }

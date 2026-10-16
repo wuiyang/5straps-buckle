@@ -4,7 +4,7 @@ import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
 import { describe, expect, it, vi } from 'vitest'
 import { serviceCommand, SERVICE_USAGE, type ServiceCommandInput } from '../cli/service.js'
-import { holdServe, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
+import { holdServe, runningNode, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { startInBackground } from '../server/service-mode.js'
 import type { InstalledService, ServiceDefinition, ServiceManager } from '../common/types/ports/service-manager.js'
 
@@ -36,13 +36,20 @@ async function serving(state: string, manager: ServeManagerKind, pid: number): P
 
 let nextPid = 900_000
 
-/** A service manager that keeps its definition in memory and starts a node in this process; `signals` gives it a stop of its own, as systemd has. */
-function fakeManager(state: string, options: { kind?: 'systemd' | 'task-scheduler'; unavailable?: string; installed?: InstalledService | null; signals?: boolean } = {}) {
+/**
+ * A service manager that keeps its definition in memory and starts a node in this process; `signals` gives it a stop of
+ * its own, as systemd has, and `startsNothingBeside` makes a start do nothing while a node serves, as Task Scheduler's
+ * does (its action is `serve --background`, which finds the node serving and starts nothing).
+ */
+function fakeManager(state: string, options: { kind?: 'systemd' | 'task-scheduler'; unavailable?: string; installed?: InstalledService | null; signals?: boolean; startsNothingBeside?: boolean } = {}) {
   const kind = options.kind ?? 'systemd'
   let installed = options.installed ?? null
   let running: { close(): Promise<void> } | null = null
   const calls: Array<[string, ...unknown[]]> = []
-  const begin = async () => { running = await serving(state, kind, nextPid++) }
+  const begin = async () => {
+    if (options.startsNothingBeside && await runningNode(state) !== null) return
+    running = await serving(state, kind, nextPid++)
+  }
   const manager: ServiceManager = {
     kind,
     label: 'the imitated definition',
@@ -163,6 +170,50 @@ describe('buckle service and a node buckle serve runs at a terminal', () => {
       expect(existsSync(join(serviceDirectory(target.state), 'stop-request'))).toBe(false)
       expect(calls).toEqual([])
     } finally { await running.close() }
+  })
+})
+
+// Fix brief 6, item 11 (findings 19 and 30 of recheck 4): Task Scheduler has no restart, so install --now ran /Run beside
+// the old task's node, which started nothing, and the command reported the old pid as started; uninstall asked whatever
+// node served to stop, including one a person started by hand with --background.
+describe('buckle service install --now and uninstall where the manager has no restart of its own', () => {
+  const installedHere: InstalledService = { node: process.execPath, main: '/unused', thisNode: true, enabled: true }
+
+  it('stops the old task\'s node between writing the definition and starting it, and reports the pid of the new one', async () => {
+    const target = node()
+    const { manager, calls } = fakeManager(target.state, { kind: 'task-scheduler', signals: false, startsNothingBeside: true, installed: { ...installedHere, main: target.main } })
+    const old = await serving(target.state, 'task-scheduler', 900_030)
+    const installed = await service(target, ['install', '--now'], manager)
+    try {
+      expect(installed.err).toBe('')
+      expect(installed.exitCode).toBe(0)
+      expect(installed.out).toMatch(/^Installed and started the Buckle service \(the imitated definition, pid (\d+)\); it starts at every login\.\n$/)
+      expect(installed.out).not.toContain('900030')
+      expect(calls.map(call => call[0])).toEqual(['install', 'start'])
+      expect(calls[0]).toEqual(['install', expect.anything(), { now: false }])
+      expect(audited(target.state).at(-1)).toMatchObject({ tool: 'cli_service', outcome: 'ok', detail: 'install --now task-scheduler' })
+    } finally { await old.close(); await service(target, ['stop'], manager) }
+  })
+
+  it('starts the first node itself where none runs, with the definition written and started as one step', async () => {
+    const target = node()
+    const { manager, calls } = fakeManager(target.state, { kind: 'task-scheduler', signals: false, startsNothingBeside: true })
+    const installed = await service(target, ['install', '--now'], manager)
+    expect(installed.exitCode).toBe(0)
+    expect(calls).toEqual([['install', expect.anything(), { now: true }]])
+    await service(target, ['stop'], manager)
+  })
+
+  it('leaves a node started by hand with --background running when it uninstalls, as it leaves a serve at a terminal', async () => {
+    const target = node()
+    const { manager, calls } = fakeManager(target.state, { kind: 'task-scheduler', signals: false, installed: { ...installedHere, main: target.main } })
+    const byHand = await serving(target.state, 'background', 900_031)
+    try {
+      expect(await service(target, ['uninstall'], manager)).toMatchObject({ exitCode: 0, out: 'Removed the Buckle service (the imitated definition); the state directory is kept.\n' })
+      expect(calls).toEqual([['uninstall']])
+      expect(existsSync(join(serviceDirectory(target.state), 'stop-request'))).toBe(false)
+      expect((await runningNode(target.state))?.record).toMatchObject({ pid: 900_031, manager: 'background' })
+    } finally { await byHand.close() }
   })
 })
 
