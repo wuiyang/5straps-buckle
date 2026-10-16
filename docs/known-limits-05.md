@@ -1,8 +1,8 @@
 # Known limits, part five
 
-What [running Buckle as a service](service.md) does not yet cover. Buckle is the approval and
-sandbox runtime that runs an AI agent's tool calls on your machine; the [first part](known-limits.md)
-lists the other limits.
+What running Buckle as a service ([part one](service.md) and [part two](service-02.md)) does not
+yet cover. Buckle is the approval and sandbox runtime that runs an AI agent's tool calls on your
+machine; the [first part](known-limits.md) lists the other limits.
 
 ## Tested without the service managers
 
@@ -15,27 +15,38 @@ lists the other limits.
   Linux, imitating Windows. Whether a node the task's start detached outlives that start on every
   Windows version, and which encoding `schtasks.exe` writes its answers in, are for the owner's
   Windows machine to confirm.
-- Nothing for macOS: `buckle service install`, `start`, `restart`, and `uninstall` say they are
-  not supported yet. `buckle serve --background` works there, with nothing to start it at login.
+- No Mac has run the launchd agent yet (launchd is macOS's own service manager), and macOS
+  testing is parked until there is a Mac to test on. The agent is checked as the text launchd
+  reads, and `launchctl` is a program the tests imitate at a path of their own, as the Windows task
+  is checked without Windows.
 
 ## What a service does not do
 
 - A node the Windows task detached is not restarted after a crash: Task Scheduler sees its start
-  end, not the node. systemd restarts a failed node on Linux.
+  end, not the node. systemd restarts a failed node on Linux, and launchd on macOS.
+- launchd has no setting like the unit's `RestartPreventExitStatus`, which keeps a refused start
+  from starting again. So a node the agent started that finds another node serving its state
+  directory exits 0, which launchd leaves alone: the agent stays loaded and starts again at the next
+  login or `buckle service start`. Every other failed exit starts again five seconds later, as on
+  Linux.
+- The launchd agent starts at login only: nothing starts Buckle on a Mac before someone logs in.
 - The node does not restart itself after an upgrade. Until `buckle service restart`, it runs the
   old version, and files a newer install replaced may be read by it; `buckle service status`
   says when the versions differ.
-- `buckle service` acts on the unit or task Buckle wrote. A shell command that names Buckle's unit
-  or task through `systemctl`, `loginctl`, or `schtasks.exe`, or reloads the user manager, is
-  refused and audited. An agent with an unsandboxed shell, as under `BUCKLE_SANDBOX=none`, can
-  still reach the service manager by other means; a sandboxed shell cannot, as no `/run/user` is
-  bound. The file tools refuse Buckle's own unit, its link, its drop-ins, and a copy in
-  `user.control`; what the user manager gives every service, such as `environment.d`, asks like
-  any other file.
-- The unit captures `PATH` once, at install. A program installed later in a folder that `PATH` did
-  not name then is not found until `buckle service install` runs again.
+- `buckle service` acts on the unit, agent, or task Buckle wrote. A shell command that names
+  Buckle's unit, agent, or task through `systemctl`, `loginctl`, `launchctl`, or `schtasks.exe`, or
+  reloads the user manager, is refused and audited. An agent with an unsandboxed shell, as under
+  `BUCKLE_SANDBOX=none`, can still reach the service manager by other means. On Linux a sandboxed
+  shell cannot, as no `/run/user` is bound; the macOS sandbox lets a command reach launchd, so
+  there the refusal is all that stands in the way. The file tools refuse Buckle's own unit, its
+  link, its drop-ins, a copy in `user.control`, and on macOS the agent's file; what the user
+  manager gives every service, such as `environment.d`, and another agent in
+  `~/Library/LaunchAgents` ask like any other file.
+- The unit and the agent capture `PATH` once, at install. A program installed later in a folder
+  that `PATH` did not name then is not found until `buckle service install` runs again.
 - A node started before login, with lingering on, has no desktop: a visible browser window or your
   own Chrome may not open there.
 - A log line a node writes before it reads its settings, such as a refusal of `buckle.env`, goes to
-  the service's log file; a crash before even that goes to the systemd journal on Linux, and
+  the service's log file; a crash before even that goes to the systemd journal on Linux, to
+  `logs/launchd.log` on macOS, which nothing rotates and `buckle service logs` does not show, and
   nowhere on Windows or for `buckle serve --background`.

@@ -44,9 +44,9 @@ registered under 0.1 ([the files](install-02.md)). It makes `policy.json`
 a version 2 stub and takes `BUCKLE_AUTH_TOKEN` out of `buckle.env`, so an older Buckle refuses to
 start.
 
-To go back to 0.1, first run `buckle service uninstall` where a service is installed: 0.1 has no
-such command, and its `serve` ignores the flags the definition passes. Then stop Buckle and its MCP
-clients. Copy each `*.v1.json` file over its original,
+To go back to 0.1, first run `buckle service uninstall` where a service is installed
+([Uninstall](service-02.md)): 0.1 has no such command, and its `serve` ignores the flags the
+definition passes. Then stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
 and move the other records back where 0.1 kept them: out of `workspaces/<id>/` into the state
 directory for the node's folder, and into `workspaces/<0.1 id>/` for a registered workspace,
 leaving `workspace.json`, `actions.jsonl`, and the lock files. Set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token

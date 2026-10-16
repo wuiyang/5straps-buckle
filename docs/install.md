@@ -42,7 +42,7 @@ names; for a refused shim, point `BUCKLE_AGENT_BROWSER_COMMAND` at the package's
 | Shell tools after a settings change | | with `shell.isolation` off and no workspace mount | only unsandboxed: `BUCKLE_SANDBOX=none`, `shell.isolation` off, and no workspace mount |
 | Shell isolation in private copies | yes | no | no |
 | `node-pty` binary | built from source at install | prebuilt | prebuilt |
-| Start at login, `buckle service install` ([Service](service.md)) | systemd user unit | not yet; `buckle serve --background` runs it once | Task Scheduler task, experimental |
+| Start at login, `buckle service install` ([Service](service.md)) | systemd user unit | launchd agent, not yet run on a Mac | Task Scheduler task, experimental |
 
 The shell rows follow from two checks: isolated shell execution and a workspace mount, such as
 `buckle init`'s `/workspace`, both need bubblewrap. `shell.isolation` is a workspace setting
@@ -97,8 +97,8 @@ node onto workspaces once, and an older Buckle then fails closed;
 npm uninstall -g @5straps/buckle
 ```
 
-Run `buckle service uninstall` first where a service runs the node, or its definition keeps naming
-a program that is gone. This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
+Run `buckle service uninstall` first where a service runs the node ([Uninstall](service-02.md)), or
+its definition keeps naming a program that is gone. This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
 directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
 `buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit logs, so
 copy `actions.jsonl`, which holds the node's own commands, and each `workspaces/<id>/actions.jsonl`,
