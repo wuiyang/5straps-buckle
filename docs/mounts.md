@@ -66,9 +66,10 @@ A command runs as the user `agent` on a host named `buckle`, with Buckle's own `
 install, the toolchains, then the system folders), `USER`, `LOGNAME`, `SHELL`, `TMPDIR`, and
 `HOME`, never the node's. The workspace's variables, then the call's own `env`, are set over them.
 
-The file tools read inside a mount without asking. A write into a read-only mount is refused; a
-write into a read-write one asks as a write to the workspace does, and its history and the
-workspace's write lock cover it. A mount shares what it holds: Buckle hides credential files in
+The file tools read inside a mount without asking. A write into a read-only mount is refused,
+and the git tools read a repository there on a private copy of its index, so they write nothing
+in it; a write into a read-write one asks as a write to the workspace does, and its history and
+the workspace's write lock cover it. A mount shares what it holds: Buckle hides credential files in
 the workspace's folder from the shell, not those inside a mount, though the file tools still ask
 before reading one.
 

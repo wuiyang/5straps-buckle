@@ -39,6 +39,8 @@ export interface ConfigListing {
  */
 export const ISOLATION_ENVIRONMENT: Record<string, string> = {
   GIT_TERMINAL_PROMPT: '0',
+  // A read refreshes no index and takes no index.lock it can do without (git status), so a read tool writes nothing.
+  GIT_OPTIONAL_LOCKS: '0',
   GIT_CONFIG_NOSYSTEM: '1',
   GIT_CONFIG_GLOBAL: '/dev/null',
   GIT_PAGER: 'cat',

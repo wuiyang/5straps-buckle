@@ -1,4 +1,5 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -224,4 +225,38 @@ describe('the shell under isolation', () => {
     expect(args.slice(args.indexOf('/srv') - 1, args.indexOf('/srv') + 2)).toEqual(['--bind', '/srv', '/data'])
     expect(output).not.toHaveProperty('note')
   })
+})
+
+// Finding 41 of the third re-check: git status and git diff refresh .git/index (and take index.lock) whatever the
+// read-only bind says, as the git pack runs host git; in a mount the owner shares read-only they now write nothing.
+describe.runIf(spawnSync('git', ['--version']).status === 0)('the git tools in a mount the owner shares read-only', () => {
+  it('answer git_status and git_diff, and leave the repository\'s index as it was, bytes and time', async () => {
+    const root = scratch()
+    const docs = join(root, 'docs')
+    mkdirSync(docs)
+    mkdirSync(join(root, 'site'))
+    const git = (...args: string[]) => execFileSync('git', ['-C', docs, '-c', 'user.name=t', '-c', 'user.email=t@e.com', ...args], { encoding: 'utf8' })
+    git('init', '-q', '-b', 'main')
+    writeFileSync(join(docs, 'a.txt'), 'shared\n')
+    git('add', 'a.txt')
+    git('commit', '-q', '-m', 'first')
+    // The file's time moves, its content does not: a refresh would rewrite the index's stat for it.
+    utimesSync(join(docs, 'a.txt'), new Date('2001-01-01T00:00:00Z'), new Date('2001-01-01T00:00:00Z'))
+    const index = join(docs, '.git', 'index')
+    const before = { bytes: readFileSync(index), mtime: statSync(index).mtimeMs }
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs,git', BUCKLE_ALLOW_HOST_GIT: 'true' }))
+    await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
+    await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: docs, target: '/docs', access: 'ro' }], '/workspace'))
+    const { runtime } = await byName(manager, 'site')
+    const call = (tool: string) => runtime.invoke({ request: { requestId: `${tool}-${Math.random()}`, tool, args: { repo: '/docs' }, approvalTokens: [] }, sessionId: 'site' })
+    expect(await call('git_status')).toMatchObject({ outcome: 'ok', output: { entries: [] } })
+    expect(await call('git_diff')).toMatchObject({ outcome: 'ok', output: { diff: '' } })
+    expect(readFileSync(index).equals(before.bytes)).toBe(true)
+    expect(statSync(index).mtimeMs).toBe(before.mtime)
+    expect(existsSync(join(docs, '.git', 'index.lock'))).toBe(false)
+    // The private copy is gone once each call ends.
+    const copies = join(root, 'state', 'workspaces', idOf(manager, 'site'), 'git-index')
+    expect(existsSync(copies) ? readdirSync(copies) : []).toEqual([])
+    await manager.close()
+  }, 30_000)
 })

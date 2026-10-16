@@ -1,4 +1,5 @@
-import { realpathSync, statSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { copyFileSync, existsSync, mkdirSync, realpathSync, rmSync, statSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
@@ -59,7 +60,7 @@ export interface GitPackOptions {
 export function createGitPack(options: GitPackOptions): Pack {
   const environment = options.environment ?? hostEnvironment(() => ownRoots(options.paths))
   const platform = options.platform ?? process.platform
-  const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; boundary: string; timeoutMs: number; signal: AbortSignal }): Promise<ProcessResult> => {
+  const spawnGit = (input: { cwd: string; args: string[]; config: GitConfig[]; boundary: string; timeoutMs: number; signal: AbortSignal; extra?: Record<string, string> }): Promise<ProcessResult> => {
     if (options.git.path === null) throw new ToolExecutionError(options.git.reason, { code: 'GIT_FAILED' })
     return options.runProcess({
       command: options.git.path,
@@ -67,32 +68,42 @@ export function createGitPack(options: GitPackOptions): Pack {
       args: [...options.git.args, ...input.args],
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: environment({ ...ISOLATION_ENVIRONMENT, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config) }),
+      environment: environment({ ...ISOLATION_ENVIRONMENT, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config), ...input.extra }),
       signal: input.signal,
     })
   }
 
-  /** `args` may be built from the judged real repository git runs in, for a path git is handed relative to it. */
+  /**
+   * `args` may be built from the judged real repository git runs in, for a path git is handed relative to it.
+   * `refreshesIndex`: the command may write the repository's index (git diff refreshes it whatever GIT_OPTIONAL_LOCKS
+   * says), so in a mount the owner shares read-only it runs on a private copy of the index instead.
+   */
   const run = async (input: Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> & {
     repo: string
     args: string[] | ((repository: string) => string[])
+    refreshesIndex?: boolean
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
     const boundary = repositoryBoundary(options.paths, cwd, platform)
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
-    const spawnHere = (args: string[], config: GitConfig[]) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal })
-    assertRepositoryInside({ answer: await spawnHere(REPOSITORY_QUERY, isolation), boundary, repo: input.repo, platform })
+    const spawnHere = (args: string[], config: GitConfig[], extra?: Record<string, string>) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal, ...(extra ? { extra } : {}) })
+    const found = await spawnHere(REPOSITORY_QUERY, isolation)
+    assertRepositoryInside({ answer: found, boundary, repo: input.repo, platform })
     const keys = await configuredFilterPrograms({
       spawn: args => spawnHere(args, isolation),
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
     const config = [...isolation, ...filterProgramOverrides(keys)]
     const args = typeof input.args === 'function' ? input.args(cwd) : input.args
-    const result = await spawnHere(args, config)
-    if (result.exitCode !== 0) {
-      throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
-    }
-    return result.stdout
+    const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
+    const index = readOnly ? privateIndex({ gitDirectory: found.stdout.split('\n')[1]!, stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
+    try {
+      const result = await spawnHere(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index ? { GIT_INDEX_FILE: index.path } : undefined)
+      if (result.exitCode !== 0) {
+        throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
+      }
+      return result.stdout
+    } finally { index?.remove() }
   }
 
   const tools = [
@@ -106,7 +117,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       run: async (input, context): Promise<JsonValue> => {
         const args = ['status', '--porcelain=v2', '--branch']
         if (!input.untracked) args.push('--untracked-files=no')
-        return parseStatus(await run({ repo: input.repo, args, ...context }))
+        return parseStatus(await run({ repo: input.repo, args, refreshesIndex: true, ...context }))
       },
     }),
     defineTool(PACK_ID, {
@@ -120,7 +131,7 @@ export function createGitPack(options: GitPackOptions): Pack {
         const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS]
         if (input.staged) args.push('--staged')
         if (input.paths.length > 0) args.push('--', ...input.paths)
-        return { diff: await run({ repo: input.repo, args, ...context }) }
+        return { diff: await run({ repo: input.repo, args, refreshesIndex: true, ...context }) }
       },
     }),
     defineTool(PACK_ID, {
@@ -175,6 +186,28 @@ export function createGitPack(options: GitPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     unavailableReason: options.git.path === null ? options.git.reason : null,
   }
+}
+
+/** A private index is written whole, with no untracked cache, so git writes nothing beside it in the repository. */
+const PRIVATE_INDEX_CONFIG: GitConfig[] = [{ key: 'core.splitIndex', value: 'false' }, { key: 'core.untrackedCache', value: 'false' }]
+
+/**
+ * A copy of a repository's index under Buckle's state directory, owner-only, which git reads and may refresh in place
+ * of the one in a mount the owner shares read-only (Q6): git writes `.git/index` and takes `.git/index.lock` when it
+ * refreshes, and the read-only bind holds the shell alone. A repository with no index yet has none to copy, which
+ * git reads as the empty index it is. Refused, plainly, where the copy cannot be made.
+ */
+function privateIndex(input: { gitDirectory: string; stateDirectory: string; shown: string }): { path: string; remove: () => void } {
+  const directory = join(input.stateDirectory, 'git-index')
+  const path = join(directory, `${randomUUID()}.index`)
+  try {
+    mkdirSync(directory, { recursive: true, mode: 0o700 })
+    const index = join(nativePath(input.gitDirectory.trim()), 'index')
+    if (existsSync(index)) copyFileSync(index, path)
+  } catch {
+    throw new ToolInputError(`The repository at ${input.shown} is in a mount the owner shares read-only, and Buckle could not copy its index to read it without writing there, so git is not run`, { code: 'PERMISSION_DENIED' })
+  }
+  return { path, remove: () => { for (const file of [path, `${path}.lock`]) rmSync(file, { force: true }) } }
 }
 
 /** The file git_blame reads, as its effect names it: where git finds it, under the repository. */
