@@ -107,15 +107,15 @@ describe('main', () => {
     expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: false })
   })
 
-  // D85, Q3: a workspace key in the environment is the node's default for every workspace, read at each start, so the
-  // start no longer warns about it (finding 42's warning became the fallback, tested in workspace-settings.test.ts).
-  it('takes the workspace defaults the environment sets without a warning, as node settings', async () => {
+  // D85, Q3, and fix brief 4, finding 42: a node reads every workspace's defaults from its environment file alone, so a
+  // node with no file has none, and a start whose environment sets any says so, naming the keys and no value.
+  it('warns at start, naming each workspace default the environment sets where the node has no file, which it does not read', async () => {
     vi.stubEnv('BUCKLE_ALLOW_SHELL', 'false')
     vi.stubEnv('BUCKLE_PACKS', 'fs')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings.filter(message => message.includes('BUCKLE_ALLOW_SHELL') || message.includes('BUCKLE_PACKS'))).toEqual([])
-      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config })
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_PACKS, BUCKLE_ALLOW_SHELL are set in this command\'s environment, but this node has no buckle.env. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; run buckle init to write the file, then set them with buckle settings set.')
+      expect(entry.loadConfig).toHaveBeenLastCalledWith(process.env, process.platform, expect.objectContaining({ file: null, defaultsFromFileAlone: true }))
     } finally {
       vi.unstubAllEnvs()
     }
@@ -191,7 +191,7 @@ describe('main', () => {
     vi.stubEnv('BUCKLE_ALLOW_SHELL', 'true')
     try {
       await main(['fs', 'read', 'notes.txt'])
-      expect(entry.loadConfig).toHaveBeenCalledWith(process.env, process.platform, { file: { path: '/state/buckle.env', values: { BUCKLE_ALLOW_SHELL: 'false' } }, caller: expect.objectContaining({ BUCKLE_ALLOW_SHELL: 'true' }) })
+      expect(entry.loadConfig).toHaveBeenCalledWith(process.env, process.platform, { file: { path: '/state/buckle.env', values: { BUCKLE_ALLOW_SHELL: 'false' } }, caller: expect.objectContaining({ BUCKLE_ALLOW_SHELL: 'true' }), defaultsFromFileAlone: true })
     } finally { vi.unstubAllEnvs() }
   })
 

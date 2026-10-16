@@ -146,6 +146,12 @@ export interface EnvironmentLayers {
   file: { path: string; values: Readonly<Record<string, string>> } | null
   /** The environment the process was started with, before the file filled in what it left unset. */
   caller: NodeJS.ProcessEnv
+  /**
+   * Set by the process entry: every workspace's defaults come from the file alone, so a node with none has none, and a
+   * shell's or an MCP config's env, which an agent may be able to write, never sets them (fix brief 4, finding 42). Left
+   * unset, one environment stands for both, as a test or a caller building a config from values has it.
+   */
+  defaultsFromFileAlone?: boolean
 }
 
 /**
@@ -198,7 +204,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     // From the environment file alone, where the node has one, as migration reads it (finding 34): a shell's or an MCP
     // config's env, which an agent may be able to write, never sets or lifts every workspace's defaults and deny floor,
     // and buckle mcp reads no file outside the state directory (refuseForeignEnvironmentFile; fix brief 4, finding 7).
-    workspaceDefaults: nodeDefaultsFrom(layers.file?.values ?? environment, platform),
+    workspaceDefaults: nodeDefaultsFrom(layers.file?.values ?? (layers.defaultsFromFileAlone ? {} : environment), platform),
     // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
     scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
@@ -241,11 +247,11 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_TIMEOUT_MS',
 ])
 
-/** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read. */
+/** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
 export function unreadWorkspaceDefaults(layers: EnvironmentLayers): string[] {
   const file = layers.file
-  if (file === null) return []
-  return WORKSPACE_DEFAULT_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key])
+  if (file === null && layers.defaultsFromFileAlone !== true) return []
+  return WORKSPACE_DEFAULT_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file?.values[key])
 }
 
 /**

@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -349,7 +349,9 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
   }, 60_000)
 
   it('exits 1 with the reason when startup fails after listening', async () => {
-    const node = await prepareNode({ BUCKLE_PACKS: 'no-such-pack' })
+    // In the node's file, which is where a node takes every workspace's defaults from.
+    const node = await prepareNode()
+    writeFileSync(join(node.state, 'buckle.env'), 'BUCKLE_PACKS=no-such-pack\n', { mode: 0o600 })
     const buckle = serve(node)
 
     expect(await buckle.exited).toEqual({ code: 1, signal: null })
@@ -357,6 +359,26 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     expect(failure).toMatchObject({ level: 'fatal', error: { message: expect.stringContaining('Invalid BUCKLE_PACKS: Unknown pack no-such-pack') } })
     expect(buckle.lines().some(line => line.message === '5straps Buckle listening')).toBe(false)
     expect(existsSync(join(node.state, 'actions.jsonl'))).toBe(false)
+  }, 60_000)
+})
+
+// Fix brief 4, finding 42: a node with no buckle.env took every workspace's defaults, its deny floor among them, from the
+// environment it started with, which an MCP config an agent could write sets.
+describe('a node with no buckle.env (built dist)', () => {
+  it('reads no workspace default from its environment, and says which it did not read, naming no value', async () => {
+    const node = await prepareNode()
+    const env = { ...node.env, BUCKLE_ADMIN_TOKEN: 'no-file-admin-fixture', BUCKLE_COMMAND_DENY: 'curl-secret-fixture *', BUCKLE_NETWORK_ALLOW: 'lifted.example.test' }
+    const project = join(node.root, 'project')
+    mkdirSync(project)
+    const buckle = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', env, cwd: project, timeout: 30_000 })
+    expect(buckle(['workspace', 'init', '--name', 'site']).status).toBe(0)
+
+    const shown = buckle(['policy', 'show', '--json'])
+    expect(shown.status).toBe(0)
+    expect(JSON.parse(shown.stdout).sources).toMatchObject({ 'network.allow': 'built-in', 'commands.deny': { node: [], workspace: [] } })
+    expect(shown.stderr).toMatch(/Not read: BUCKLE_COMMAND_DENY, BUCKLE_NETWORK_ALLOW[^"]* (is|are) set in this command's environment, but this node has no buckle\.env/)
+    expect(shown.stderr).not.toContain('curl-secret-fixture')
+    expect(shown.stderr).not.toContain('lifted.example.test')
   }, 60_000)
 })
 

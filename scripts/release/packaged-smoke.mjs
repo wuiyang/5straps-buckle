@@ -73,6 +73,9 @@ function prepareInstallation() {
   for (const directory of [packageDirectory, installation, workspace]) mkdirSync(directory)
   // The state directory holds workspace credentials; Buckle refuses one other users can reach.
   mkdirSync(state, { mode: 0o700 })
+  // The node's own file, as 0.1 wrote it: a node takes its folder, its agent token, and every workspace's defaults from the
+  // file alone (D85, Q3), so the packs, the shell, and the approval wait are set here and not in the environment.
+  writeFileSync(join(state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_AUTH_TOKEN=${agentToken}\nBUCKLE_PACKS=fs,code\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_APPROVAL_TIMEOUT_MS=1\n`, { mode: 0o600 })
   writeFileSync(join(root, 'npmrc'), '')
   for (const name of ['protocol', 'runtime', 'buckle']) {
     run('pnpm', ['--filter', `@5straps/${name}`, 'pack', '--pack-destination', packageDirectory], { cwd: repository })
@@ -131,12 +134,12 @@ function assertExecutableBin(path) {
 
 /** The admin HTTP layer is experimental (owner decision D8): switched on here wherever the smoke drives /setup. */
 function nodeEnvironment({ admin = true, adminHttp = admin } = {}) {
-  // The state directory's own file, which is not there: the node is set up by this environment alone, and buckle mcp
+  // The state directory's own file, which holds the folder, the token, and the defaults (prepareInstallation); buckle mcp
   // takes no settings file outside the state directory.
   return { ...environment, BUCKLE_ENV_FILE: join(state, 'buckle.env'), BUCKLE_HOST: '127.0.0.1',
-    BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke', BUCKLE_WORKSPACE_ROOT: workspace,
-    BUCKLE_STATE_DIR: state, BUCKLE_PACKS: 'fs,code', BUCKLE_ALLOW_SHELL: 'false',
-    BUCKLE_AUTH_TOKEN: agentToken, ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), ...(adminHttp ? { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' } : {}), BUCKLE_APPROVAL_TIMEOUT_MS: '1' }
+    BUCKLE_PORT: String(port ?? 4320), BUCKLE_SERVER_ID: 'package-smoke',
+    BUCKLE_STATE_DIR: state,
+    ...(admin ? { BUCKLE_ADMIN_TOKEN: adminToken } : {}), ...(adminHttp ? { BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' } : {}) }
 }
 
 function cli(args) {

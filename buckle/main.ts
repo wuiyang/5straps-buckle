@@ -90,10 +90,11 @@ function configureProcess(kind: ServiceKind | 'cli'): { config: NodeConfig; logg
   const logging = configureRootLogger(loggerConfigFrom(process.env))
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
-  const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller }
+  const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller, defaultsFromFileAlone: true }
   // D85, Q3: every workspace's defaults come from the file alone, so a shell's or an MCP config's env never lifts them.
   const unread = unreadWorkspaceDefaults(layers)
-  if (unread.length > 0) logging.logger.warn(`Not read: ${unread.join(', ')} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment to another value than ${environment.file} holds. A node takes every workspace's defaults from its environment file alone, so a shell's or an MCP config's env cannot change them; change them with buckle settings set.`)
+  const were = `${unread.join(', ')} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment`
+  if (unread.length > 0) logging.logger.warn(`Not read: ${were}${environment.file === null ? ', but this node has no buckle.env' : ` to another value than ${environment.file} holds`}. A node takes every workspace's defaults from its environment file alone, so a shell's or an MCP config's env cannot change them; ${environment.file === null ? 'run buckle init to write the file, then set them' : 'change them'} with buckle settings set.`)
   return { config: loadConfig(process.env, process.platform, layers), logging }
 }
 

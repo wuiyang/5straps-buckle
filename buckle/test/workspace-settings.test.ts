@@ -102,8 +102,23 @@ describe('a workspace\'s settings', () => {
     expect(loadConfig({ ...values, ...caller }, process.platform, layers).workspaceDefaults).toMatchObject({ policy: { commands: { deny: ['curl *'] } }, packs: { shell: false } })
     expect(loadConfig({ ...values, ...caller }, process.platform, layers).workspaceDefaults.packs).not.toHaveProperty('enabled')
     expect(unreadWorkspaceDefaults(layers)).toEqual(['BUCKLE_COMMAND_DENY', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL'])
-    // A node with no file is configured by the environment it starts with.
+    // Where a caller builds a config from one environment and names no file, that environment stands for both.
     expect(loadConfig({ BUCKLE_ALLOW_SHELL: 'false' }).workspaceDefaults.packs.shell).toBe(false)
+  })
+
+  // Fix brief 4, finding 42: a node with no buckle.env took its defaults from the shell, so an MCP config an agent could write
+  // set the deny floor of a node that had no file.
+  it('come from no environment at all where the process entry finds the node has no file', () => {
+    const caller = { BUCKLE_COMMAND_DENY: 'nothing *', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_NETWORK_ALLOW: 'lifted.test', BUCKLE_STATE_DIR: join(scratch(), 'state') }
+    const layers = { file: null, caller, defaultsFromFileAlone: true }
+    const defaults = loadConfig(caller, process.platform, layers).workspaceDefaults
+    expect(defaults.policy.commands.deny).toEqual([])
+    expect(defaults.policy.network.allow).toEqual([])
+    expect(defaults.packs).not.toHaveProperty('shell')
+    expect(unreadWorkspaceDefaults(layers)).toEqual(['BUCKLE_COMMAND_DENY', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOW_SHELL'])
+    // Its file, once it has one, is the only place they are read from.
+    const file = { path: join(scratch(), 'buckle.env'), values: { BUCKLE_COMMAND_DENY: 'curl *' } }
+    expect(loadConfig(caller, process.platform, { ...layers, file }).workspaceDefaults.policy.commands.deny).toEqual(['curl *'])
   })
 
   it('refuse a node setting the node would not read, naming the variable', async () => {

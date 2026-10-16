@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'pathe'
 import { fileURLToPath } from 'node:url'
@@ -35,6 +35,9 @@ async function probe(run) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-mcp-probe-'))
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const state = join(root, 'state'); mkdirSync(state, { mode: 0o700 })
+  // The node's own file: it takes the folder it moves onto workspaces and every workspace's defaults from there alone.
+  // One millisecond answers a gated call at once instead of holding it for a person (0 would wait until answered).
+  writeFileSync(join(state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_PACKS=fs\nBUCKLE_APPROVAL_TIMEOUT_MS=1\n`, { mode: 0o600 })
 
   const elicitations = []
   const client = new Client({ name: 'buckle-mcp-probe', version: '0.0.0' }, {
@@ -56,11 +59,7 @@ async function probe(run) {
     env: {
       PATH: process.env.PATH ?? '',
       HOME: process.env.HOME ?? root,
-      BUCKLE_WORKSPACE_ROOT: workspace,
       BUCKLE_STATE_DIR: state,
-      BUCKLE_PACKS: 'fs',
-      // One millisecond answers a gated call at once instead of holding it for a person (0 would wait until answered).
-      BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     },
   })
 
