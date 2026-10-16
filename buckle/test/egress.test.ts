@@ -185,7 +185,7 @@ describe('a * in a host', () => {
 })
 
 describe('BUCKLE_ALLOWED_HOSTS at load', () => {
-  it('folds into the node\'s URL list, every workspace\'s where it has none of its own (Phase 2 item 5)', () => {
+  it('folds into the node\'s URL list, every workspace\'s where it has none of its own', () => {
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-egress-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-egress-state-')), BUCKLE_NETWORK_ALLOW: 'api.example.test', BUCKLE_ALLOWED_HOSTS: 'db.internal, api.example.test' })
     expect(config.policy.network.allow).toEqual(['api.example.test', 'db.internal'])
   })

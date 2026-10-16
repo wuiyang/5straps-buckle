@@ -3,7 +3,7 @@ import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { createBubblewrapSandbox, SANDBOX_HOSTNAME, SANDBOX_USER } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
+import { createBubblewrapSandbox, ETC_FILES, SANDBOX_HOSTNAME, SANDBOX_USER } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
@@ -52,15 +52,24 @@ describe('the bubblewrap layout', () => {
 
   it('binds the system folders, the chosen /etc files, the Node install, and the toolchains at their own paths, never the host\'s accounts', () => {
     const fixed = pairs(args, '--ro-bind-try')
-    for (const path of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ld.so.cache', '/etc/resolv.conf', '/etc/ssl/certs', '/etc/pki/tls/certs', '/home/me/.nvm/versions/node/v24', '/home/me/.cargo']) expect(fixed).toContainEqual([path, path])
-    // The links Debian and Ubuntu reach awk, which, and cc through; Fedora's OpenSSL default CA file; what
-    // getservbyname and getprotobyname read.
-    for (const path of ['/etc/alternatives', '/etc/pki/tls/cert.pem', '/etc/services', '/etc/protocols']) expect(fixed).toContainEqual([path, path])
+    for (const path of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/home/me/.nvm/versions/node/v24', '/home/me/.cargo']) expect(fixed).toContainEqual([path, path])
+    // Every /etc file the layout names is bound at its own path, whichever it is.
+    for (const path of ETC_FILES) expect(fixed).toContainEqual([path, path])
     expect(args).not.toContain('/etc/passwd')
     expect(args).not.toContain('/etc/group')
     // The machine's hosts file names it, and not the sandbox's host: the sandbox writes its own.
     expect(args).not.toContain('/etc/hosts')
     expect(fixed.map(([path]) => path)).not.toContain('/etc')
+  })
+
+  // The list is pinned whole, so a file dropped from it, the time zone included, is a change a reviewer sees here: the
+  // loader cache; name lookup (nsswitch, resolv.conf); the links Debian and Ubuntu reach awk, which, and cc through;
+  // the certificate stores of Debian and Fedora, and Fedora's OpenSSL default CA file; services and protocols; the time zone.
+  it('names the /etc files the page promises: the loader cache, name lookup, certificates, and the time zone', () => {
+    expect([...ETC_FILES]).toEqual([
+      '/etc/ld.so.cache', '/etc/nsswitch.conf', '/etc/resolv.conf', '/etc/services', '/etc/protocols', '/etc/ssl/certs', '/etc/pki/tls/certs',
+      '/etc/pki/tls/cert.pem', '/etc/pki/ca-trust/extracted', '/etc/localtime', '/etc/alternatives',
+    ])
   })
 
   it('binds the folder at its target, then each mount at its own, writable as the owner shares it', () => {
