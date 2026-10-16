@@ -10,6 +10,7 @@ import { INTERPRETER_NAMES, isInterpreter } from '../domain/command-forms.js'
 import { childPath, homeDirectory, ignoresCase, isDriveRoot, isInside, isInsideComparable, nativePath, parentDirectory, typedPath, WHOLE_DRIVE, workingDirectory } from '../domain/paths.js'
 import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { compilePolicy, PolicyError } from '../domain/policy.js'
+import { launchdGuardedPaths } from '../domain/launchd-agent.js'
 import { systemdGuardedPaths } from '../domain/systemd-unit.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -486,15 +487,16 @@ export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
 type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory'>>
 
 /**
- * Node configuration and all workspace maps are owner-only, never tool-accessible, and so is the unit that starts the
- * node at login. Effects are judged at their real paths, so each root is named by its real path too (a symlinked home,
- * macOS /var), in the case the disk stores it (realpathSync.native); the rule folds case where the disk ignores it.
+ * Node configuration and all workspace maps are owner-only, never tool-accessible, and so is the unit or agent that
+ * starts the node at login. Effects are judged at their real paths, so each root is named by its real path too (a
+ * symlinked home, macOS /var), in the case the disk stores it (realpathSync.native); the rule folds case where the disk
+ * ignores it.
  */
 export function protectedStateRoots(config: StateDirectories, platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string[] {
-  // The Linux unit that starts this node at login, its link, and the drop-ins and copy systemd reads beside it (Phase 3,
-  // item 6, and fix brief 6, item 4), so no agent rewrites what runs then.
-  const unit = platform === 'linux' ? systemdGuardedPaths(environment, homeDirectory(platform)) : []
-  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...unit]
+  // What starts this node at login, so no agent rewrites what runs then: on Linux the unit, its link, and the drop-ins and
+  // copy systemd reads beside it (Phase 3, item 6, and fix brief 6, item 4); on macOS the launchd agent's property list.
+  const definition = platform === 'linux' ? systemdGuardedPaths(environment, homeDirectory(platform)) : platform === 'darwin' ? launchdGuardedPaths(homeDirectory(platform)) : []
+  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...definition]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
 

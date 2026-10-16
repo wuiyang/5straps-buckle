@@ -71,11 +71,16 @@ export function administersBuckle(line: string): boolean {
 
 /**
  * The service manager's programs, by basename, with `.exe` or not and in any case, as Windows reads them, each a word of
- * its own: what starts, stops, or rewrites the unit or task that runs Buckle at login (fix brief 6, item 8).
+ * its own: what starts, stops, or rewrites the unit, agent, or task that runs Buckle at login (fix brief 6, item 8, and
+ * the macOS launchd agent of 2026-10-17).
  */
-const SERVICE_PROGRAM = /(?:^|[\s/\\'"`(])(?:systemctl|loginctl|schtasks)(?:\.exe)?(?=$|[\s'"`)])/i
-/** Buckle's unit, as a word of its own (systemctl reads a bare `buckle` as `buckle.service`), or its task by name. */
-const SERVICE_TARGET = /(?:^|[\s'"=])buckle(?:\.service)?(?=$|[\s'"])|5straps[\\/]+buckle(?![\w.-])/i
+const SERVICE_PROGRAM = /(?:^|[\s/\\'"`(])(?:systemctl|loginctl|launchctl|schtasks)(?:\.exe)?(?=$|[\s'"`)])/i
+/**
+ * Buckle's unit, as a word of its own (systemctl reads a bare `buckle` as `buckle.service`), its task by name, or its
+ * launchd agent's label, alone, at the end of a service target such as `gui/501/com.5straps.buckle`, or as the name of
+ * its property list.
+ */
+const SERVICE_TARGET = /(?:^|[\s'"=])buckle(?:\.service)?(?=$|[\s'"])|5straps[\\/]+buckle(?![\w.-])|(?:^|[\s'"=/])com\.5straps\.buckle(?:\.plist)?(?=$|[\s'"])/i
 /** A reload of the user manager, which takes up a changed unit or drop-in. */
 const DAEMON_RELOAD = /(?:^|[\s'"])daemon-reload(?=$|[\s'"])/
 const USER_MANAGER = /(?:^|[\s'"])--user(?=$|[\s'"])/
@@ -83,8 +88,9 @@ const USER_MANAGER = /(?:^|[\s'"])--user(?=$|[\s'"])/
 const STATEMENT_END = /[;&|\n`()]/
 
 /**
- * Whether the line runs `systemctl`, `loginctl`, or `schtasks.exe` on Buckle's own unit or task, or reloads the user
- * manager (fix brief 6, item 8): a tool that could would stop the node, or start a rewritten one, outside its approvals.
+ * Whether the line runs `systemctl`, `loginctl`, `launchctl`, or `schtasks.exe` on Buckle's own unit, agent, or task, or
+ * reloads the user manager (fix brief 6, item 8): a tool that could would stop the node, or start a rewritten one,
+ * outside its approvals.
  * Read statement by statement, each with patterns that hold no nested repetition, so in linear time. A speed bump, as
  * the name match above is: an unsandboxed shell reaches the service manager by other means (known-limits-05).
  */

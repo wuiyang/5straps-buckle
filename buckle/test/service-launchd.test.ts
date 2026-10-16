@@ -2,16 +2,23 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
-import { describe, expect, it } from 'vitest'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
+import { describe, expect, it, vi } from 'vitest'
 import { serviceCommand } from '../cli/service.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { createLaunchdManager, LAUNCHCTL } from '../common/adapters/service-manager/launchd.js'
 import { launchdAgentPath, launchdGuardedPaths, launchdLogPath, readAgent, renderAgent } from '../common/domain/launchd-agent.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
+import { compilePolicy } from '../common/domain/policy.js'
+import { protectedStateRoots } from '../common/runtime/config.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { serviceInstalled } from '../common/services/node-service/installed.js'
 import { holdServe, runningNode, serviceDirectory } from '../common/services/node-service/serve-record.js'
 import type { ProcessRequest, ProcessRunner } from '../common/types/ports/process-runner.js'
 import { ServiceManagerError, type ServiceManager } from '../common/types/ports/service-manager.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 // D85 Q4, owner ruling of 2026-10-17 ("macOS find equivalent of Linux"): on macOS, a launchd agent, the counterpart of
 // the systemd user unit. No launchd runs here or on CI, so the agent is checked as the text launchd reads, and launchctl
@@ -462,5 +469,74 @@ describe('whether a launchd agent runs this node', () => {
     writeFileSync(launchdAgentPath(root), renderAgent({ ...DEFINITION, stateDirectory: state }))
     expect(serviceInstalled(state, {}, 'darwin', root)).toBe(true)
     expect(serviceInstalled(state, {}, 'linux', root)).toBe(false)
+  })
+})
+
+// The agent's property list joins Buckle's own state on macOS, as the unit does on Linux, so no file tool rewrites what
+// runs at the next login.
+describe('the agent that starts Buckle at login', () => {
+  it('is among the protected state roots on macOS alone', () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-launchd-home-')))
+    vi.stubEnv('HOME', home)
+    try {
+      expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'darwin', {})).toEqual(expect.arrayContaining([join(home, 'Library', 'LaunchAgents', 'com.5straps.buckle.plist')]))
+      expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'linux', {}).join()).not.toContain('LaunchAgents')
+      expect(protectedStateRoots({ stateDirectory: '/srv/state' }, 'darwin', { XDG_CONFIG_HOME: join(home, 'cfg') }).join()).not.toContain('systemd')
+    } finally { vi.unstubAllEnvs() }
+  })
+})
+
+function evaluate(command: string, args: string[]) {
+  const policy = emptyWorkspacePolicy()
+  policy.commands.allow = ['*', 'bash -c *']
+  const engine = createPermissionEngine([createCommandPolicyRule(compilePolicy(policy))])
+  return engine.evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command, args }], grants: { subjectsFor: () => [] } })
+}
+
+// The self-administration guard (fix brief 6, item 8) on macOS: launchctl reaches the agent that runs Buckle at login.
+describe('a shell command on Buckle\'s own launchd agent', () => {
+  it.each([
+    ['launchctl', ['bootout', 'gui/501/com.5straps.buckle']],
+    ['launchctl', ['kickstart', '-k', 'gui/501/com.5straps.buckle']],
+    ['launchctl', ['unload', '~/Library/LaunchAgents/com.5straps.buckle.plist']],
+    ['/bin/launchctl', ['bootstrap', 'gui/501', '/Users/owner/Library/LaunchAgents/com.5straps.buckle.plist']],
+    ['launchctl', ['disable', "'gui/501/com.5straps.buckle'"]],
+    ['launchctl', ['remove', 'com.5straps.buckle']],
+    ['bash', ['-c', 'cd /tmp && launchctl kill SIGTERM gui/$UID/com.5straps.buckle']],
+  ] as Array<[string, string[]]>)('refuses %s %j, which reaches Buckle\'s own agent', (command, args) => {
+    const outcome = evaluate(command, args)
+    expect(outcome.kind === 'deny' ? outcome.denial.reason : '').toBe('A tool cannot administer the Buckle that runs it')
+  })
+
+  it.each([
+    ['launchctl', ['list']],
+    ['launchctl', ['print', 'gui/501/com.example.agent']],
+    ['launchctl', ['bootout', 'gui/501/com.5straps.buckle-docs']],
+    ['bash', ['-c', 'launchctl list | grep buckle']],
+    ['echo', ['com.5straps.buckle']],
+  ] as Array<[string, string[]]>)('leaves %s %j alone, which names nothing of Buckle\'s', (command, args) => {
+    expect(evaluate(command, args).kind).not.toBe('deny')
+  })
+
+  it.skipIf(process.platform === 'win32')('is refused before it runs, and audited as a denial', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-launchd-command-')))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    // A launchctl of the test's own, found first on PATH, which marks that it ran.
+    const bin = join(root, 'bin')
+    mkdirSync(bin)
+    writeFileSync(join(bin, 'launchctl'), `#!/bin/sh\ntouch '${join(root, 'ran')}'\n`, { mode: 0o755 })
+    vi.stubEnv('PATH', `${bin}:${process.env.PATH}`)
+    const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell' }) })
+    try {
+      const refused = await runtime.invoke({ request: { requestId: 'agent-bootout', tool: 'shell_exec', args: { command: 'launchctl', args: ['bootout', 'gui/501/com.5straps.buckle'] }, approvalTokens: [] }, sessionId: 'launchd' })
+      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it' } })
+      expect(runtime.actions.read(20).filter(entry => entry.event === 'result')).toContainEqual(expect.objectContaining({ requestId: 'agent-bootout', outcome: 'denied' }))
+      expect(existsSync(join(root, 'ran'))).toBe(false)
+    } finally {
+      vi.unstubAllEnvs()
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
   })
 })
