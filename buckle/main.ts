@@ -135,7 +135,8 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: { ski
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
   // A person's device, which needs no node: its own key and the node it signs for.
   if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
-  // Before the file is loaded, so no credential is in this process's environment when it runs systemctl, launchctl, or schtasks.exe.
+  // Before the file is loaded, so no credential is in this process's environment when it runs systemctl, launchctl, or
+  // schtasks.exe.
   if (mode.kind === 'service') return (await runServiceCommand(mode.argv, { skipOwnerOnlyCheck: global.skipOwnerOnlyCheck })).exitCode
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)

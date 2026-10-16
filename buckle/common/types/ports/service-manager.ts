@@ -43,7 +43,7 @@ export interface InstalledService {
  */
 export interface ServiceManager {
   readonly kind: 'systemd' | 'launchd' | 'task-scheduler'
-  /** The definition as a person reads it, with no path: "the systemd user unit buckle.service" or "the launchd agent com.5straps.buckle". */
+  /** The definition as a person reads it, with no path: "the systemd user unit buckle.service", "the launchd agent com.5straps.buckle". */
   readonly label: string
   /** Why this machine has no such manager to install into, or null where it answers. */
   unavailable(): Promise<string | null>

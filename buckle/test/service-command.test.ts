@@ -89,6 +89,11 @@ describe('buckle service, its words', () => {
     expect(refused.err).toContain("Unknown option '--at'")
     expect((await service(target, ['stop', 'now'], null)).err).toContain("Unexpected argument 'now'")
   })
+
+  it('keeps each line of its usage within the width of the first', () => {
+    const [first, ...rest] = SERVICE_USAGE.split('\n')
+    expect(rest.filter(line => line.length > first!.length)).toEqual([])
+  })
 })
 
 // Phase 3, item 4: a platform other than Linux, macOS, and Windows, where Buckle drives no service manager.
