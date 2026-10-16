@@ -377,9 +377,9 @@ describe('shutdown in an attached browser', () => {
 })
 
 // Fix brief 2, R2: a pack replaced by one built from other settings ends its browsers and leaves each session's record,
-// so the pack that follows runs the session again, and shutdown alone forgets it.
+// so the pack that follows knows the list each session last ran under, and shutdown alone forgets it.
 describe('a pack replaced by one built from other settings', () => {
-  it('closes each browser it started and keeps its session, which the pack that follows runs again and forgets at shutdown', async () => {
+  it('closes each browser it started and keeps its session, which the pack that follows relaunches under a new name and forgets at shutdown', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-retire-'))
     const calls: ProcessRequest[] = []
     const build = (approved: string[]) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [{ name: 'workspace', entries: approved }], browser: { mode: { kind: 'fresh' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
@@ -400,10 +400,14 @@ describe('a pack replaced by one built from other settings', () => {
 
     const successor = build(['example.com', 'docs.example.com'])
     const answer = await successor.tools[0]!.prepare({ command: 'snapshot' }).execute(context) as { notice?: string }
-    expect(calls[2]!.args).toContain(session)
+    // Fix brief 4, finding 9: the browser last run under the other list is closed, and the call runs on a new one.
+    expect(calls[2]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(calls[3]!.args[0]).toBe('snapshot')
+    const relaunched = calls[3]!.args[calls[3]!.args.indexOf('--session') + 1]!
+    expect(relaunched).not.toBe(session)
     expect(answer.notice).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
     await successor.close?.()
-    expect(calls[3]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(calls[4]!.args).toEqual(['close', '--session', relaunched, '--json'])
     expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })

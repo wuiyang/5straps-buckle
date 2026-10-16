@@ -86,14 +86,15 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   const roots: string[] = []
   afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-  async function fixture(network: string[], closeDelayMs = 0) {
+  async function fixture(network: string[], closeDelayMs = 0, waitDelayMs = 0) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-allowed-domains-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
     const log = join(root, 'calls.jsonl')
     const binary = join(root, 'agent-browser')
     const slowClose = closeDelayMs > 0 ? `if (process.argv[2] === 'close') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${closeDelayMs})\n` : ''
-    writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true}')\n`)
+    const slowWait = waitDelayMs > 0 ? `if (process.argv[2] === 'wait') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${waitDelayMs})\n` : ''
+    writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\n${slowWait}process.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
     const runtime = await createRuntime({ config })
@@ -169,10 +170,13 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
       await runtime.policy.apply(policy(['*.example.test']))
       expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
       expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
-      // The pack the change replaced closed the browser between the two calls; the session's calls are the agent's.
-      const [first, second] = calls().filter(call => call[0] !== 'close')
-      expect(sessionOf(second)).toBe(sessionOf(first))
+      // The session's browser was closed before the call that was told so, which ran on a new one under the new list (fix brief 4, finding 9).
+      const all = calls()
+      const [first, second, third] = all.filter(call => call[0] !== 'close')
+      expect(sessionOf(second)).not.toBe(sessionOf(first))
+      expect(sessionOf(third)).toBe(sessionOf(second))
       expect(flagOf(second)).toBe('*.example.test')
+      expect(all.findIndex(call => call[0] === 'close' && sessionOf(call) === sessionOf(first))).toBeLessThan(all.indexOf(second!))
       expect(warn).toHaveBeenCalledWith('Browser relaunched because its allowed domains changed', { previous: '*.example.test,docs.test', current: '*.example.test' })
     } finally {
       warn.mockRestore()
@@ -192,12 +196,47 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     expect(Object.values(stored().sessions)).toEqual([session])
     expect(Object.values(stored().allowedDomains)).toEqual(['*.example.test,docs.test'])
     expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
-    expect(sessionOf(calls().at(-1))).toBe(session)
+    // The session's next call closes what ran under the old list, whoever closed it before, and starts a browser under a new name (fix brief 4, finding 9).
+    const relaunched = sessionOf(calls().at(-1))
+    expect(relaunched).not.toBe(session)
+    expect(Object.values(stored().sessions)).toEqual([relaunched])
 
     await runtime.closeSessions()
-    // Two browsers were started under this session, one before the change and one after, and each was closed.
-    expect(calls().filter(call => call[0] === 'close')).toEqual([['close', '--session', session, '--json'], ['close', '--session', session, '--json']])
+    // Two browsers were started for this session, one before the change and one after, and each was closed.
+    expect(calls().filter(call => call[0] === 'close')).toEqual([['close', '--session', session, '--json'], ['close', '--session', session, '--json'], ['close', '--session', relaunched, '--json']])
     expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+  }, 20000)
+
+  // Fix brief 4, finding 9: a host list swapped in while another call ran left the session on the daemon launched with
+  // the old list, and the agent was told it had been relaunched.
+  it('relaunches a session before its next call when the hosts change while another call runs, so that call runs under the new list', async () => {
+    const { runtime, calls, config } = await fixture(['*.example.test', 'docs.test'], 0, 1_500)
+    expect(noticeOf(await browse(runtime, { command: 'open', args: ['https://app.example.test'] }))).toBeNull()
+    const before = sessionOf(calls()[0])
+    // Another agent's call runs on a browser of its own while the hosts change.
+    const waiting = runtime.invoke({ request: { requestId: 'wait', tool: 'browser_command', args: { command: 'wait', args: ['1000'] }, approvalTokens: [] }, sessionId: 'other-agent' })
+    await vi.waitFor(() => expect(calls().some(call => call[0] === 'wait')).toBe(true))
+    const other = sessionOf(calls().find(call => call[0] === 'wait'))
+    await openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory!, config.workspaceId) }).update(settings => ({ ...settings, policy: { ...settings.policy, network: { allow: ['*.example.test'] } } }))
+
+    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
+    const all = calls()
+    const snapshot = all.findIndex(call => call[0] === 'snapshot')
+    const after = sessionOf(all[snapshot])
+    expect(after).not.toBe(before)
+    expect(flagOf(all[snapshot])).toBe('*.example.test')
+    // The browser launched under the old list was closed before the call that was told so.
+    const closedBefore = all.findIndex(call => call[0] === 'close' && sessionOf(call) === before)
+    expect(closedBefore).toBeGreaterThan(-1)
+    expect(closedBefore).toBeLessThan(snapshot)
+
+    expect(await waiting).toMatchObject({ outcome: 'ok' })
+    // The pack the change replaced ends the other agent's browser once its call ends, and never the relaunched one.
+    await vi.waitFor(() => expect(calls().some(call => call[0] === 'close' && sessionOf(call) === other)).toBe(true))
+    expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBeNull()
+    expect(sessionOf(calls().filter(call => call[0] === 'snapshot').at(-1))).toBe(after)
+    expect(calls().filter(call => call[0] === 'close' && sessionOf(call) === after)).toEqual([])
+    await runtime.closeSessions()
   }, 20000)
 
   it('keeps the browser and its session through a change to the workspace variables, which rebuilds the other packs alone', async () => {

@@ -76,9 +76,10 @@ export interface BrowserPackOptions {
   environment?: HostEnvironment
   /**
    * The workspace's approved list, when it has one, else nothing. Passed on every call as --allowed-domains, so
-   * clicks, redirects and page requests stay on their hosts too. The pack is rebuilt when the list changes: the pack
-   * replaced ends its browsers and keeps each session's record (retire), so the session's next call starts its
-   * browser again under the new list and says so (RELAUNCH_NOTICE).
+   * clicks, redirects and page requests stay on their hosts too. The pack is rebuilt when the list changes, and a
+   * daemon keeps the list it was launched with, so a session last run under another list has its browser closed and a
+   * new one named at its next call, before that call runs, which says so (RELAUNCH_NOTICE). The pack replaced ends its
+   * own browsers once its calls end (retire), and never one under a name the new pack chose.
    */
   approvedLists: ApprovedList[]
   /** Buckle's protected roots: an upload of a hard-linked file on their device is refused. */
@@ -181,7 +182,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             // keyed by the mode and its settings too, so no process ever reaches a session started in another mode.
             const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([running.kind, fingerprint, context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
             const own = running.kind === 'profile' ? profileSession(running.directory) : null
-            const { session, previous, replaced, sibling } = await sessions.update((state) => {
+            const { session, relaunchedFrom, replaced, sibling } = await sessions.update((state) => {
               const known = state.sessions[key]
               // Only the shared profile key can hold other settings: every other key carries its own.
               const mismatch = known !== undefined && state.modes[key] !== fingerprint
@@ -189,17 +190,23 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               // call either makes. The same folder's session is reused; another folder's is left alone beside this one.
               const writer = state.writers[key]
               if (own !== null && mismatch && writer !== undefined && writer !== process.pid && processAlive(writer)) {
-                return own === known ? { session: known, previous: state.allowedDomains[key], replaced: null, sibling: true } : { session: own, previous: undefined, replaced: null, sibling: true }
+                return { session: own === known ? known : own, relaunchedFrom: undefined, replaced: null, sibling: true }
               }
+              // A daemon keeps the --allowed-domains it was launched with, so a fresh session last run under another list
+              // is relaunched as one from other settings is: closed, and a new one named, before this call runs, so the
+              // notice is true, and the pack this one replaced, ending what it opened once its calls end, never reaches the
+              // new one (fix brief 4, finding 9).
+              const recorded = state.allowedDomains[key]
+              const stale = running.kind === 'fresh' && input.command !== 'close' && known !== undefined && recorded !== undefined && recorded !== flag
               // A daemon started under other settings keeps them, so its session is closed and a new one named.
-              const replaced = mismatch ? known : null
+              const replaced = mismatch || stale ? known : null
               if (known === undefined || replaced !== null) {
                 state.sessions[key] = own ?? `buckle-${randomUUID()}`
                 delete state.allowedDomains[key]
               }
               state.modes[key] = fingerprint
               state.writers[key] = process.pid
-              return { session: state.sessions[key]!, previous: state.allowedDomains[key], replaced, sibling: false }
+              return { session: state.sessions[key]!, relaunchedFrom: stale ? recorded : undefined, replaced, sibling: false }
             })
             if (sibling) logSiblingSettings()
             if (replaced !== null) {
@@ -242,8 +249,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               if (running.kind !== 'profile') opened.add(session)
               await sessions.update(state => { state.allowedDomains[key] = flag })
             }
-            const relaunched = running.kind === 'fresh' && input.command !== 'close' && previous !== undefined && previous !== flag
-            if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: previous ?? 'none', current: flag ?? 'none' })
+            const relaunched = relaunchedFrom !== undefined
+            if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: relaunchedFrom ?? 'none', current: flag ?? 'none' })
             return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated, ...(relaunched ? { notice: RELAUNCH_NOTICE } : {}) }
           } finally {
             transfer.close()
@@ -302,8 +309,8 @@ const CLOSE_TIMEOUT_MS = 5_000
  * timeout. They close in parallel under one bound, so a few stuck daemons cannot outlast the close step before the
  * store is updated (review L10 of B18-B19). A daemon that will not close is left to that timeout, with a warning. At
  * shutdown (`forget`) each session is forgotten too; a pack replaced by one built from other settings keeps the
- * records instead (fix brief 2, R2): the successor finds each session's key and the list it last ran under, starts
- * the browser again under the new list at the session's next call, and says it was relaunched.
+ * records instead (fix brief 2, R2): the successor finds each session's key and the list it last ran under, and at the
+ * session's next call closes it and starts a browser under a new name and the new list, saying it was relaunched.
  */
 async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string>; forget: boolean }): Promise<void> {
   const closing = [...input.opened]
