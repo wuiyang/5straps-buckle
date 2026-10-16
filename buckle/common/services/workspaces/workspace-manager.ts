@@ -26,7 +26,7 @@ import { assertNoHostExposure, canonicalDirectory, canonicalMountSource, exposed
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
 import { assertNodeDefaults, browserInForceRefusal, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
-import { mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
+import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -436,6 +436,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         const resolved = resolveSettings(current, node.workspaceDefaults)
         const owners = ownerMounts(current)
         if (owners.some(owner => owner.target === added.target)) throw new WorkspaceError(`A mount already shows at ${added.target}; remove it first with buckle workspace mount remove ${added.target}`, 409)
+        // The folder's own entry is no part of the count; the settings schema keeps the bound for a file edited by hand.
+        if (owners.length >= MAX_OWNER_MOUNTS) throw new WorkspaceError(`A workspace holds at most ${MAX_OWNER_MOUNTS} mounts of its own, not counting its folder; remove one first with buckle workspace mount remove <sandbox-path>`, 409)
         const shared = owners.find(owner => overlaps(owner.source, source, platform))
         if (shared) throw new WorkspaceError(`That source holds, or sits inside, the source of the mount at ${shared.target}`, 409)
         const folder = ownMount(current) === undefined ? resolved.mount : ownMount(current) ?? null

@@ -1070,6 +1070,25 @@ describe('buckle workspace mount', () => {
     expect(settings(alpha)).toEqual(before)
   })
 
+  it('holds a workspace to 32 mounts of its own, not counting its folder, saying so plainly at the 33rd', { timeout: 60_000 }, async () => {
+    await mounted()
+    const folders = Array.from({ length: 33 }, (_, index) => {
+      const folder = join(outside, `mount-${index}`)
+      mkdirSync(folder)
+      return folder
+    })
+    for (const [index, folder] of folders.slice(0, 32).entries()) expect((await buckle(['mount', 'add', `${folder}:/m${index}`], { cwd: alpha })).exitCode).toBe(0)
+    const before = settings(alpha)
+    const refused = await buckle(['mount', 'add', `${folders[32]}:/m32`], { cwd: alpha })
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('A workspace holds at most 32 mounts of its own, not counting its folder; remove one first with buckle workspace mount remove <sandbox-path>')
+    expect(refused.err).not.toContain('Too big')
+    expect(settings(alpha)).toEqual(before)
+    // Room made, it goes in.
+    expect((await buckle(['mount', 'remove', '/m0'], { cwd: alpha })).exitCode).toBe(0)
+    expect((await buckle(['mount', 'add', `${folders[32]}:/m32`], { cwd: alpha })).exitCode).toBe(0)
+  })
+
   it('shares the Node install read-only, and refuses a second mount at a taken target or over a mounted source', async () => {
     const { data, docs } = await mounted()
     expect((await buckle(['mount', 'add', `${join(process.execPath, '..', '..')}:/node:ro`], { cwd: alpha })).exitCode).toBe(0)

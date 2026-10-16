@@ -36,7 +36,8 @@ Buckle refuses, and writes nothing, where:
 - a writable source holds, or sits inside, a folder every sandbox runs programs from: share
   such a folder with `:ro`;
 - the folder shows at its real path: mounts need it mounted, so `buckle workspace set mount
-  /workspace` comes first.
+  /workspace` comes first;
+- the workspace already holds 32 mounts of its own, not counting its folder.
 
 Taking the folder's mount away, or moving it onto a mount, is refused while mounts need it.
 
