@@ -326,12 +326,18 @@ function ownFolder(input: { node: NodeConfig; platform: NodeJS.Platform; stateRo
  */
 async function folderName(input: { dir: string; id: string; taken: readonly string[]; notes: string[]; askName?: AskName }): Promise<string> {
   const name = fittingName({ label: `The node's folder ${input.dir}`, name: basename(input.dir), notes: input.notes })
-  const free = (candidate: string) => !input.taken.some(other => sameName(other, candidate)) && WorkspaceNameSchema.safeParse(candidate).success
-  if (free(name)) return name
-  const answer = input.askName === undefined ? '' : (await input.askName(`The node's folder ${input.dir} would be workspace ${name}, but a registered workspace is named ${name} already. Another name for the folder, or Enter for ${name}-${input.id.slice(0, 8)}: `)).trim()
-  if (answer !== '' && free(answer)) return answer
+  /** Why a name cannot be the folder's, or null: another workspace holds it, or the registry would not read it (`node`, a UUID's form). */
+  const unfit = (candidate: string): string | null => {
+    if (input.taken.some(other => sameName(other, candidate))) return `a registered workspace is named ${candidate} already`
+    const parsed = WorkspaceNameSchema.safeParse(candidate)
+    return parsed.success ? null : `${candidate} cannot be a workspace name (${parsed.error.issues.map(issue => issue.message).join('; ')})`
+  }
+  const reason = unfit(name)
+  if (reason === null) return name
   const fallback = `${name}-${input.id.slice(0, 8)}`
-  input.notes.push(`The node's folder ${input.dir} is workspace ${fallback}: a registered workspace is named ${name} already${answer === '' ? '' : `, and ${answer} could not be used`}. Rename it with buckle workspace rename ${workspaceArgument(fallback)} <name>.`)
+  const answer = input.askName === undefined ? '' : (await input.askName(`The node's folder ${input.dir} would be workspace ${name}, but ${reason}. Another name for the folder, or Enter for ${fallback}: `)).trim()
+  if (answer !== '' && unfit(answer) === null) return answer
+  input.notes.push(`The node's folder ${input.dir} is workspace ${fallback}: ${reason}${answer === '' ? '' : `, and ${answer} could not be used`}. Rename it with buckle workspace rename ${workspaceArgument(fallback)} <name>.`)
   return fallback
 }
 

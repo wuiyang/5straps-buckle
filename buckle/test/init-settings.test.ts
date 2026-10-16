@@ -435,3 +435,37 @@ describe('buckle init checks the programs Buckle runs', () => {
       .toContain(`  agent-browser   found ${windows(join(npm, 'agent-browser.cmd'))}, a shim Buckle cannot read; set BUCKLE_AGENT_BROWSER_COMMAND to the agent-browser .exe or script inside its package\n`)
   })
 })
+
+// Fix brief 4, findings 2 and 41: init in a folder named node threw the registry's schema dump after it had written the
+// folder's records, and every later init was refused over records that were never removed.
+describe.each([['node'], ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e']])('buckle init in a folder named %s', (folderName) => {
+  let folder: string
+  let errors: string
+  beforeEach(() => {
+    folder = join(workspace, '..', folderName)
+    mkdirSync(folder)
+    errors = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { errors += String(chunk); return true })
+  })
+
+  it('is refused without a name to ask for, naming the command that takes one, with no schema dump and no records written', async () => {
+    const result = await runInit(['--out', out, '--port', '4399', '--dir', folder, '--yes'], scripted([], false), {})
+
+    expect(result.exitCode).toBe(1)
+    expect(errors).toContain('cannot be a workspace name')
+    expect(errors).toContain('name it with buckle workspace init --dir <folder> --name <name>')
+    expect(errors).not.toMatch(/"code"|workspaces\.\d/)
+    expect(existsSync(join(state, 'workspaces'))).toBe(false)
+    // The node itself is set up, so the command it names works at once.
+    expect(existsSync(out)).toBe(true)
+  })
+
+  it('asks for the workspace\'s name at a terminal, and serves the folder under the answer', async () => {
+    const prompt = scripted([folder, '', 'Fixture', '', '', '', '', '', 'nodejs'])
+    const result = await init(prompt)
+
+    expect(result.exitCode).toBe(0)
+    expect(prompt.asked.at(-1)).toContain('cannot be a workspace name')
+    expect(served(folder).name).toBe('nodejs')
+  })
+})

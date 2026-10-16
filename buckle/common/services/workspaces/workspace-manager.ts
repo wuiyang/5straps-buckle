@@ -34,6 +34,15 @@ export class WorkspaceNameTakenError extends WorkspaceError {
   constructor(name: string) { super(`A workspace is already named ${name}; choose another name`, 409) }
 }
 
+/**
+ * A name the registry would refuse, the folder's own or one given (D85, Q15): the owner is asked for another at a
+ * terminal, and refused naming --name without one. Raised before anything is written, so a refused name leaves no records.
+ */
+export class WorkspaceNameRefusedError extends WorkspaceError {
+  override readonly code = 'WORKSPACE_NAME_REFUSED'
+  constructor(name: string, reasons: string, source: 'folder' | 'given') { super(`${source === 'folder' ? `The folder's name ${name}` : `The name ${name}`} cannot be a workspace name: ${reasons}`, 400) }
+}
+
 /** Said where a workspace was registered again while its earlier registration's runtime has work: no path, as an agent reads it. */
 const REGISTERED_AGAIN = 'This workspace was registered again while work under its earlier registration is active; it serves its new registration once that work is resolved, or after buckle serve restarts, so call again then'
 
@@ -157,11 +166,13 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      * records taken up is refused, as they would be dropped (finding 36 of the Phase 1 review).
      */
     async create(value: WorkspaceRegistration & { label?: string; settings?: (defaults: WorkspaceSettings) => WorkspaceSettings }): Promise<{ workspace: WorkspaceDescriptor; token: MintedToken; takenUp: TakenUp | null }> {
-      const named = WorkspaceRegistrationSchema.pick({ id: true, name: true }).safeParse({ id: value.id, name: value.name })
-      if (!named.success) throw new WorkspaceError(`Invalid workspace: ${named.error.issues.map(issue => issue.message).join('; ')}`)
+      const given = value.name ?? value.id
+      const chosen = given === undefined ? undefined : checkedName(given, 'given')
       const dir = canonicalDirectory(value.dir, platform)
       assertNoHostExposure(dir, exposed, platform)
       const minted: MintedToken = { id: 'initial', token: mintToken(), label: value.label ?? 'Registered', createdAt: new Date().toISOString() }
+      /** The settings this call wrote, taken away again where the registration then fails, so no record is left for a later take-up to claim. */
+      let wrote: string | null = null
       const created = await store.update(async (state) => {
         if ([stateRoot, ...state.workspaces.map(workspace => workspace.dir)].some(existing => overlaps(existing, dir, platform))) {
           throw new WorkspaceError('A workspace folder must not hold, or sit inside, another workspace or Buckle state', 409)
@@ -169,7 +180,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         // A folder's id is derived from it, so re-registering takes up its removed records; --fresh starts a new id and leaves them (addendum to D85, Q15).
         const id = value.fresh === true ? randomUUID() : workspaceIdFor(dir)
         if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError('This folder is a workspace already', 409)
-        const name = value.name ?? value.id ?? basename(dir)
+        // Every check on the name comes before the first write (fix brief 4, findings 2, 19, and 41).
+        const name = chosen ?? checkedName(basename(dir), 'folder')
         if (nameTaken(state, name)) throw new WorkspaceNameTakenError(name)
         const takenUp = leftover(id) ? { dangerouslyAllow: switchKeys(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) })).includes(id) } : null
         if (takenUp && (value.policy || value.settings)) {
@@ -178,6 +190,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if (!existsSync(settingsPath(node.stateDirectory, id))) {
           // The folder shows at /workspace (D84 (3)); a policy names lists alone, and every other setting is the node's.
           const defaults = value.policy ? withPolicy(defaultSettings(), value.policy) : defaultSettings()
+          wrote = existsSync(join(node.stateDirectory, 'workspaces', id)) ? settingsPath(node.stateDirectory, id) : join(node.stateDirectory, 'workspaces', id)
           await settingsOf(id).update(() => (value.settings ? value.settings(defaults) : defaults))
         }
         const workspace: StoredWorkspace = { id, name, dir, online: true, revision: 0, updatedAt: minted.createdAt, createdAt: minted.createdAt,
@@ -187,6 +200,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if (takenUp) rmSync(removedMarker(id), { force: true })
         nodeRoots.take(state.workspaces.map(item => item.dir))
         return { workspace: describe(workspace), takenUp }
+      }).catch((error: unknown) => {
+        if (wrote !== null) rmSync(wrote, { recursive: true, force: true })
+        throw error
       })
       return { ...created, token: minted }
     },
@@ -264,6 +280,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      * processes took offline at its next look at the registry (closeUnserved).
      */
     async update(id: string, patch: z.infer<typeof WorkspacePatchSchema>): Promise<WorkspaceDescriptor> {
+      const renamed = patch.name === undefined ? undefined : checkedName(patch.name, 'given')
       const checked = patch.online === false ? await assertIdle(id, { refusal: 'Resolve active tools and staged work before taking this workspace offline', deletes: false }) : null
       const opened = await openedRuntime(id)
       const pending = runtimes.get(id)
@@ -272,8 +289,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         described = await store.update((state) => {
           const workspace = requireStored(state, id)
           if (patch.expectedUpdatedAt !== undefined && workspace.updatedAt !== patch.expectedUpdatedAt) throw new WorkspaceError('Workspace changed; reload before saving', 409)
-          if (patch.name !== undefined && nameTaken(state, patch.name, id)) throw new WorkspaceNameTakenError(patch.name)
-          if (patch.name !== undefined) workspace.name = patch.name
+          if (renamed !== undefined && nameTaken(state, renamed, id)) throw new WorkspaceNameTakenError(renamed)
+          if (renamed !== undefined) workspace.name = renamed
           if (patch.online !== undefined) workspace.online = patch.online
           touched(workspace)
           return describe(workspace)
@@ -548,6 +565,13 @@ function lookupStored(state: Registry, handle: string): StoredWorkspace | undefi
 /** Whether another workspace than `exceptId` holds `name`, compared without regard to case. */
 function nameTaken(state: Registry, name: string, exceptId?: string): boolean {
   return state.workspaces.some(item => item.id !== exceptId && sameName(item.name, name))
+}
+
+/** The name as the registry will hold it, trimmed, or the refusal, before anything is written (fix brief 4, findings 2 and 19). */
+function checkedName(raw: string, source: 'folder' | 'given'): string {
+  const parsed = WorkspaceNameSchema.safeParse(raw)
+  if (!parsed.success) throw new WorkspaceNameRefusedError(raw, parsed.error.issues.map(issue => issue.message).join('; '), source)
+  return parsed.data
 }
 
 /** The workspaces' names as a refusal lists them, so the owner can name one. */

@@ -140,6 +140,68 @@ describe('a workspace\'s name', () => {
     expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'Beta site'])
   })
 
+  // Fix brief 4, findings 2 and 41: the folder's own name was checked only when the registry was written, after the
+  // folder's records were, and the refusal was a raw schema dump over an orphan that the next add reported as taken up.
+  describe.each([['node'], ['Node'], ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e'], ['x'.repeat(121)]])('a folder named %s', (folderName) => {
+    it('is refused before any record is written, naming --name, and registers under the name given instead', async () => {
+      const folder = join(base, folderName)
+      mkdirSync(folder)
+
+      const refused = await buckle(['init'], { cwd: folder })
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('cannot be a workspace name')
+      expect(refused.err).toContain('name it with --name <name>')
+      expect(refused.err).not.toMatch(/"code"|workspaces\.\d/)
+      expect(existsSync(join(state, 'workspaces'))).toBe(false)
+      expect((await buckle(['list'])).out).toContain('No workspace yet')
+
+      const named = await buckle(['init', '--name', 'nodejs'], { cwd: folder })
+      expect(named.exitCode).toBe(0)
+      expect(named.out).not.toContain('takes up the records')
+      expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['nodejs'])
+    })
+
+    it('is asked about at a terminal, and registers under the answer', async () => {
+      const folder = join(base, folderName)
+      mkdirSync(folder)
+      const prompt = scripted(['nodejs'])
+
+      expect(await command(['add', folder], prompt)).toMatchObject({ exitCode: 0 })
+      expect(prompt.asked).toHaveLength(1)
+      expect(prompt.asked[0]).toContain('cannot be a workspace name')
+      expect(registry().workspaces).toMatchObject([{ name: 'nodejs', dir: folder }])
+    })
+  })
+
+  // Fix brief 4, finding 19: only the registry write trimmed a name, so 'Alpha ' passed the check against alpha.
+  it('is compared as the registry holds it, without the spaces around it, and is never empty', async () => {
+    await init(alpha)
+    await init(beta)
+    mkdirSync(join(base, 'gamma'))
+    for (const argv of [['add', join(base, 'gamma'), '--name', 'Alpha '], ['add', join(base, 'gamma'), '--name', '  ALPHA'], ['rename', 'beta', 'alpha '], ['set', 'name', ' ALPHA', '--workspace', 'beta']]) {
+      const refused = await buckle(argv)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('A workspace is already named')
+    }
+    for (const argv of [['add', join(base, 'gamma'), '--name', '   '], ['rename', 'beta', '   ']]) {
+      const refused = await buckle(argv)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('A name is not empty')
+    }
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'beta'])
+    expect((await buckle(['rename', 'beta', '  Beta site  '])).exitCode).toBe(0)
+    expect(registry().workspaces.map(workspace => workspace.name)).toEqual(['alpha', 'Beta site'])
+  })
+
+  it('leaves no records behind when the registration fails after its settings were written', async () => {
+    const failing = openWorkspaceManager({ config: node(), nodeRoots: { current: () => ({ untrustedRoots: [], rootsUnknown: null }), take: () => { throw new Error('the roots could not be taken') } } })
+    const workspaces = await failing
+    try {
+      await expect(workspaces.create({ dir: alpha })).rejects.toThrow('the roots could not be taken')
+      expect(existsSync(join(state, 'workspaces', workspaceIdOf(alpha)))).toBe(false)
+    } finally { await workspaces.close() }
+  })
+
   it('is asked for at a terminal until one is free, and Enter stops with nothing added', async () => {
     await init(alpha)
     mkdirSync(join(base, 'other', 'alpha'), { recursive: true })

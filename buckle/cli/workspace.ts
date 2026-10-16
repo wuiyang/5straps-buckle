@@ -5,7 +5,7 @@ import { ZodError } from 'zod'
 import type { NodeConfig } from '../common/runtime/config.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
-import { WorkspaceError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { credentialLikeName, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
@@ -137,8 +137,8 @@ export async function createNamed<T>(prompt: NamePrompt, input: { name?: string;
   let name = input.name
   for (;;) {
     try { return await create(name) } catch (error) {
-      if (!(error instanceof WorkspaceNameTakenError)) throw error
-      if (input.yes || !prompt.interactive) throw new WorkspaceError(`${error.message}: ${input.refusal}`, 409)
+      if (!(error instanceof WorkspaceNameTakenError || error instanceof WorkspaceNameRefusedError)) throw error
+      if (input.yes || !prompt.interactive) throw new WorkspaceError(`${error.message}: ${input.refusal}`, error.status)
       const answer = (await prompt.question(`${error.message}. Another name, or Enter to stop: `)).trim()
       if (answer === '') throw new WorkspaceError(`No name given, so nothing was added; ${input.refusal}`, 409)
       name = answer

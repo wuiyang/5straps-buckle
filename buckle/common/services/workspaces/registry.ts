@@ -25,7 +25,7 @@ export const WorkspaceIdSchema = z.uuid('A workspace id is a UUID Buckle assigns
  * A workspace's name: the handle the owner types after `--workspace` and keeps in MCP configs (D85, Q15), unique on
  * the node without regard to case (sameName). `node` is reserved, as it names the whole node in a key's scope.
  */
-export const WorkspaceNameSchema = z.string().trim().min(1).max(120)
+export const WorkspaceNameSchema = z.string().trim().min(1, 'A name is not empty').max(120, 'A name is at most 120 characters')
   .refine(value => !sameName(value, NODE_SCOPE), 'node is reserved: it names the whole node in a key\'s scope')
   .refine(value => !looksLikeWorkspaceId(value), 'A name cannot have the form of a UUID, which is a workspace id')
 

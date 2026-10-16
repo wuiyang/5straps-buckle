@@ -52,9 +52,11 @@ buckle workspace token revoke <token-id>
 
 - `init` serves a folder as a new workspace and prints its agent token once; `add <dir>` is the
   same, with the folder named first. The id is a UUID Buckle derives from the folder, so the same
-  folder always has the same id; the name is the folder's basename unless `--name` gives one, and
-  is unique on the node, case insensitively. A folder inside a workspace, or holding one or the
-  state directory, is refused.
+  folder always has the same id. The name is the folder's basename unless `--name` gives one. It
+  is 1 to 120 characters and unique on the node, case insensitively; `node` and UUID-shaped text
+  are not names. A taken or refused name is asked about at a terminal; with `--yes` or no terminal
+  the command is refused, and `buckle workspace init --name <name>` gives another. A folder inside
+  a workspace, or holding one or the state directory, is refused.
 - `list` shows every workspace, online or not. `show`, the default verb, prints one workspace's
   settings in force, each with where it comes from; no token is ever shown again.
 - `disable` stops serving a workspace, as an MCP server is switched off: calls to it are refused,
@@ -70,8 +72,8 @@ buckle workspace token revoke <token-id>
   each token's id, label, and date, never the token. `token revoke` refuses one from the next call
   on; the last token of a workspace cannot be revoked.
 
-The 0.1 spelling `buckle workspace add <id> --root <dir>` is gone: `add` now names the folder
-first and Buckle assigns the id. `buckle workspace token add <id>` still works for one release.
+The 0.1 `buckle workspace add <id> --root <dir>` is gone: `add` names the folder first.
+`buckle workspace token add <id>` still works for one release.
 
 ## Which workspace a command means
 
@@ -93,12 +95,12 @@ An agent token belongs to one workspace. Buckle keeps only its SHA-256 digest, s
 shown once, when it is minted. Over HTTP, `/mcp` and `/v1/*` serve the workspace the presented
 token belongs to, so an agent's configuration needs only the host, the port, and its token.
 `/workspaces/<id>/mcp` and `/workspaces/<id>/v1/*` also work, for a token of `<id>` alone. A
-token of no workspace and a token of another workspace get the same refusal, so a caller learns
-nothing about which workspaces exist. A disabled workspace answers 409.
+token of no workspace and a token of another workspace get the same refusal, revealing nothing
+about which workspaces exist. A disabled workspace answers 409.
 
 `buckle mcp` serves one workspace over stdio: the one `--workspace <id>` names, else the one
-holding `--dir <path>`, else the one holding `BUCKLE_WORKSPACE_ROOT` (for configurations written
-before workspaces), else the one holding the client's working directory:
+holding `--dir <path>`, else the one holding `BUCKLE_WORKSPACE_ROOT` (for older configurations),
+else the one holding the client's working directory:
 
 ```json
 {

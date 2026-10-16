@@ -325,6 +325,41 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(notices.mock.calls.some(([message]) => String(message).includes(`was ${folderName.length} characters, more than the 120 a workspace name holds, so it is named ${expected}`))).toBe(true)
     })
 
+    // Fix brief 4, finding 2: the question said a registered workspace was named node already, when none was.
+    it.each([
+      ['node', 'node is reserved'],
+      ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e', 'cannot be a workspace name'],
+    ])('asks for another name for a node folder called %s, saying why its own cannot be used, and takes the answer', async (folderName, why) => {
+      const input = scene()
+      const folder = join(input.root, folderName)
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
+      version1(input)
+      const asked: string[] = []
+      await migrateNode({ node: loadConfig(input.environment), askName: async (question) => { asked.push(question); return 'the node folder' } })
+
+      expect(asked).toHaveLength(1)
+      expect(asked[0]).toContain(why)
+      expect(asked[0]).not.toContain('a registered workspace is named')
+      expect(JSON.parse(registry(input)).workspaces.map((workspace: { name: string }) => workspace.name)).toEqual(['the node folder', 'site'])
+    })
+
+    it('falls back to the folder\'s name with the start of its id, saying why in the note, where nobody can be asked', async () => {
+      const input = scene()
+      const folder = join(input.root, 'node')
+      mkdirSync(folder)
+      input.environment.BUCKLE_WORKSPACE_ROOT = folder
+      version1(input)
+      const notices = vi.spyOn(logger, 'warn')
+      const manager = await open(input)
+
+      const fallback = `node-${workspaceIdOf(folder).slice(0, 8)}`
+      expect(manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name).toBe(fallback)
+      const note = notices.mock.calls.map(([message]) => String(message)).find(message => message.startsWith(`The node's folder ${folder} is workspace ${fallback}:`))
+      expect(note).toContain('node is reserved')
+      expect(note).not.toContain('a registered workspace is named')
+    })
+
     it('refuses a record the registry would not read, naming its field, and changes nothing', async () => {
       const input = scene()
       const text = version1(input).replace('"label": "Registered"', `"label": "${'x'.repeat(121)}"`)
