@@ -127,9 +127,11 @@ export interface ApprovalService {
   decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
   /**
    * The challenges and each large whole call once, by its signed full-content reference. The device verifies
-   * that reference and the tool/arguments digest before showing the shared directory, summary and effects.
+   * that reference and the tool/arguments digest before showing the shared directory, summary and effects. A challenge
+   * carries the workspace's name only where `workspaceName` asks for it: a device from before the name existed refuses
+   * a challenge with a field it does not know, so the listing is what it always was unless the device asks.
    */
-  challengeListing(): ChallengeListing
+  challengeListing(options?: { workspaceName?: boolean }): ChallengeListing
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /**
@@ -311,7 +313,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const { challenge } = input
       const result = await options.registry.resolve(input.decision, input.authority, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => { const shown = challengeOf(ask, createCallShapes()); return shown !== null && challengeBytes(shown).digest === challenge } }),
+        // The digest a device signed is of the challenge it was shown, with the workspace's name or without it.
+        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => [false, true].some((named) => { const shown = challengeOf(ask, createCallShapes(), named); return shown !== null && challengeBytes(shown).digest === challenge }) }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
         ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
       })
@@ -340,11 +343,11 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return settledDecision({ decision: parsed.data, result })
     },
 
-    challengeListing() {
+    challengeListing(listing) {
       const shown = createCallShapes()
       const calls: ChallengeListing['calls'] = {}
       const challenges = options.registry.waiting().map((ask) => {
-        const challenge = challengeOf(ask, shown)
+        const challenge = challengeOf(ask, shown, listing?.workspaceName === true)
         if (challenge?.callRef !== undefined && ask.call) calls[challenge.callRef] = shownCallOf(challenge.tool, ask.call)
         return { token: ask.request.token, challenge }
       })
@@ -382,12 +385,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   // Each challenge signs either the whole inline call or the digest of every shared display field. The workspace's name is
-  // read as it is signed, so a rename shows, and travels beside its id for a person's device to show (D85, Q15).
-  function challengeOf(ask: PendingAsk, shapes: CallShapes): ApprovalChallenge | null {
+  // read as it is signed, so a rename shows, and travels beside its id for a device that asked for it to show (D85, Q15).
+  function challengeOf(ask: PendingAsk, shapes: CallShapes, withName = false): ApprovalChallenge | null {
     const { request, call } = ask
     if (!call?.complete) return null
     const { digest, callRef, inline } = shapes(request.tool, call)
-    const name = options.workspaceName
+    const name = withName ? options.workspaceName : undefined
     return {
       v: SIGNED_REQUEST_VERSION, purpose: 'buckle-approval-challenge', node: options.serverId, workspace: options.workspaceId,
       ...(name && name.length <= WORKSPACE_NAME_MAX ? { workspaceName: name } : {}),

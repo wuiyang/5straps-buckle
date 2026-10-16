@@ -55,8 +55,8 @@ function signed(buckle: Node, input: { method: string; path: string; body: strin
   return signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: buckle.nodeKey, workspace: buckle.runtime.workspaceId, method: input.method, path: input.path, body: input.body, now: input.at ?? Date.now() })
 }
 
-async function challenges(buckle: Node): Promise<{ node: { keyId: string; publicKey: string }; challenges: Array<{ token: string; signed: string; digest: string; error?: string }> }> {
-  const path = buckle.setup('approvals/challenges')
+async function challenges(buckle: Node, query = ''): Promise<{ node: { keyId: string; publicKey: string }; challenges: Array<{ token: string; signed: string; digest: string; error?: string }> }> {
+  const path = buckle.setup(`approvals/challenges${query}`)
   const response = await buckle.request(path, { headers: { authorization: signed(buckle, { method: 'GET', path, body: '' }) } })
   expect(response.status).toBe(200)
   return await response.json() as Awaited<ReturnType<typeof challenges>>
@@ -132,6 +132,25 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect(existsSync(join(buckle.root, 'outside.md'))).toBe(false)
   })
 
+  it('signs the workspace\'s name into a challenge only for a device that asks for it, and takes a decision on either digest', async () => {
+    const buckle = await node()
+    const token = await ask(buckle, write(buckle.root, 'named-challenge'))
+    const signer = await buckle.services.getNodeSigner()
+    const read = (item: { signed: string }) => readChallenge({ signed: item.signed, nodeKey: publicKeyFrom(signer.publicKey) })!.challenge
+    const [plain] = (await challenges(buckle)).challenges
+    expect(read(plain!)).not.toHaveProperty('workspaceName')
+    for (const query of ['?fields=', '?fields=other', '?other=workspaceName']) expect(read((await challenges(buckle, query)).challenges[0]!)).not.toHaveProperty('workspaceName')
+    const [named] = (await challenges(buckle, '?fields=workspaceName')).challenges
+    expect(read(named!).workspaceName).toBe(buckle.runtime.workspaceName())
+    expect(read(named!)).toEqual({ ...read(plain!), workspaceName: buckle.runtime.workspaceName() })
+    expect(named!.digest).not.toBe(plain!.digest)
+    // The digest a device signs is of the challenge it was shown: one asked with the name, the other without it.
+    expect((await decide(buckle, { token, approved: true, scope: 'once', challenge: named!.digest }).send()).status).toBe(200)
+    const other = await ask(buckle, write(buckle.root, 'named-challenge-2', 'second.md'))
+    const second = (await challenges(buckle)).challenges.find(item => item.token === other)
+    expect((await decide(buckle, { token: other, approved: true, scope: 'once', challenge: second!.digest }).send()).status).toBe(200)
+  })
+
   it('shows each waiting ask as the node signed it, raw, and answers exactly the ask whose challenge it names', async () => {
     const buckle = await node()
     const request = write(buckle.root, 'proof-1')
@@ -150,8 +169,8 @@ describe('an approval decision a person\'s key proves (B24)', () => {
       description: `Write 7 bytes to ${JSON.stringify(join(buckle.root, 'outside.md'))} in ${JSON.stringify(buckle.config.cwd)}`, effects: [`write ${join(buckle.root, 'outside.md')}`],
     })
     expect(verified?.challenge).not.toHaveProperty('truncated')
-    // Fix brief 4, finding 13: the name the person knows the workspace by, signed beside its id.
-    expect(verified?.challenge.workspaceName).toBe(buckle.runtime.workspaceName())
+    // A device from before the name existed refuses a challenge with a field it does not know, so none is sent unasked.
+    expect(verified?.challenge).not.toHaveProperty('workspaceName')
     // Signed once, the same challenge every time.
     expect((await challenges(buckle)).challenges).toEqual(listed.challenges)
 

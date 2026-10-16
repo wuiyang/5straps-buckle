@@ -231,7 +231,8 @@ interface UnsignedAsk { token: string; error: string }
  * ask never hides the others (review M3 of the second proof-of-possession re-review).
  */
 async function verifiedChallenges(input: { environment: NodeJS.ProcessEnv; node: string; workspace: string | undefined }): Promise<{ pin: Pin; origin: string; challenges: VerifiedChallenge[]; unsigned: UnsignedAsk[] }> {
-  const url = setupUrl(input.node, input.workspace, 'approvals/challenges')
+  // Asks for the workspace's name beside its id; a node from before the name existed ignores the field and sends none.
+  const url = setupUrl(input.node, input.workspace, 'approvals/challenges?fields=workspaceName')
   const pin = pinFor(input.environment, url)
   const response = await send({ environment: input.environment, method: 'GET', url, body: '', purpose: 'buckle-approval' })
   if (!response.ok) throw new ClientError(`The node answered HTTP ${response.status}`)
