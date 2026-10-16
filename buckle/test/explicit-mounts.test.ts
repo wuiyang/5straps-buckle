@@ -45,12 +45,12 @@ it('refuses state, workspace aliases and parent directories containing them', ()
   for (const path of [state, workspace, root]) expect(() => validate(mounts(path, '/srv/auth'))).toThrow('overlaps')
   expect(() => validate([...mounts(source, '/srv/auth'), ...mounts(source, '/srv/auth/config.json')])).toThrow('overlap')
 })
-it.skipIf(process.platform === 'win32')('resolves source symlinks before checking protected paths', () => {
+it.skipIf(process.platform === 'win32')('refuses a source that lands elsewhere through a link, never binding where it lands', () => {
   const alias = join(root, 'alias'); symlinkSync(state, alias)
-  expect(() => validate(mounts(alias))).toThrow('protected')
+  expect(() => validate(mounts(alias))).toThrow(`The mount at ${target} changed on disk`)
 })
 it('refuses a missing source instead of silently ignoring the mount', () => {
-  expect(() => validate(mounts(join(root, 'missing')))).toThrow()
+  expect(() => validate(mounts(join(root, 'missing')))).toThrow(`The mount at ${target} has no source on disk`)
 })
 it('passes explicit credentials after home creation while keeping workspace secrets masked', async () => {
   writeFileSync(join(workspace, '.env'), 'SYNTHETIC=true')

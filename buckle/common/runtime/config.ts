@@ -393,11 +393,12 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
 
 /**
  * The node's mounts (Phase 2 item 1): BUCKLE_MOUNTS read-only at the targets it names, then each BUCKLE_SCRATCH_ROOTS
- * folder at its own path, as the disk names it, as the workspace root is: a judged effect path is real and in the
- * disk's case.
+ * folder at its own path, each source as the disk names it, links followed, as the workspace root is: a judged effect
+ * path is real and in the disk's case, and a source swapped for a link after the node started is refused at its use
+ * (mountSourceState), as one of the owner's is.
  */
 function nodeMounts(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): TableMount[] {
-  const shared = parseSandboxMounts(environment.BUCKLE_MOUNTS).map((mount): TableMount => ({ source: mount.source, target: mount.target, access: 'ro' }))
+  const shared = parseSandboxMounts(environment.BUCKLE_MOUNTS).map((mount): TableMount => ({ source: realPathOf(mount.source, platform), target: mount.target, access: 'ro' }))
   const scratch = parseList(environment.BUCKLE_SCRATCH_ROOTS).map((root): TableMount => {
     const path = realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)
     return { source: path, target: path, access: 'rw', scratch: true }

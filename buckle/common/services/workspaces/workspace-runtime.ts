@@ -1,4 +1,4 @@
-import { validateSandboxMounts } from '../../domain/sandbox-mounts.js'
+import { mountSourceState, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedStateRoots } from '../../runtime/config.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
@@ -25,7 +25,8 @@ import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, g
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
-import { createPathView, type PathView } from '../../domain/path-view.js'
+import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
+import { ToolInputError } from '../../domain/tool.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
 import { createCommandPolicyRule } from '../../domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../../domain/permission/rules/destructive-command-rule.js'
@@ -322,7 +323,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       const { commands } = compiled.policy
       if (commands.allow.length || commands.deny.length || commands.destructive?.length) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
       // A terminal works in the workbench's own copy, so a mount the owner shares writable is read-only there, as under shell isolation (Q6).
-      const mounts = validateSandboxMounts(sandboxBinds(config.mounts).map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' })
+      const mounts = refusedAsWorkbench(() => validateSandboxMounts(sandboxBinds(config.mounts).map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
       const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
@@ -549,8 +550,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         grants,
         actions,
         history,
-        // The workspace and every place the view lets it write, so the execution lock and history cover each (Phase 2 item 2).
-        historyRoots: [nativePath(realpathSync(config.cwd)), ...settled.paths.mounts.filter(mount => mount.access === 'rw').map(mount => { let existing = mount.source; while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing); return nativePath(realpathSync(existing)) })],
+        historyRoots: checkpointRoots(config.cwd, settled.paths.mounts),
         reporter,
         paths: settled.paths,
         serverId: config.serverId,
@@ -814,5 +814,35 @@ function buildManifest(input: {
       maxTimeoutMs: input.config.maxTimeoutMs,
     },
     generatedAt: new Date().toISOString(),
+  }
+}
+
+/**
+ * The roots a call's checkpoint and the workspace's execution lock cover (Phase 2 item 2): the folder, and each writable
+ * mount at its stored source. A mount whose source was swapped for a link since it was added is left out, so nothing is
+ * snapshotted where the link lands, and so is one of the owner's whose source is gone: there is nothing to checkpoint,
+ * and the folder above it is never taken in its place. A scratch root not made yet is covered from the nearest folder
+ * that is, as it always was, since its first write may make it.
+ */
+export function checkpointRoots(folder: string, mounts: readonly ViewMount[]): string[] {
+  const roots = [nativePath(realpathSync(folder))]
+  for (const mount of mounts) {
+    if (mount.access !== 'rw') continue
+    const state = mountSourceState(mount.source)
+    if (state === 'present') roots.push(nativePath(mount.source))
+    else if (state === 'missing' && mount.scratch) {
+      let existing = mount.source
+      while (!existsSync(existing) && parentDirectory(existing) !== existing) existing = parentDirectory(existing)
+      roots.push(nativePath(realpathSync(existing)))
+    }
+  }
+  return roots
+}
+
+/** A refusal of the mounts said to the owner's terminal as the workbench says its own. */
+function refusedAsWorkbench<T>(check: () => T): T {
+  try { return check() } catch (error) {
+    if (error instanceof ToolInputError) throw new WorkbenchError(error.message, 403)
+    throw error
   }
 }
