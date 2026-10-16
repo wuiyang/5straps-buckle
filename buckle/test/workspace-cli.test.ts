@@ -73,7 +73,7 @@ describe('buckle workspace init', () => {
 
     expect(registry().workspaces).toMatchObject([{ id: workspaceIdOf(alpha), name: 'alpha', dir: alpha, online: true, tokens: [{ label: 'Registered' }] }])
     expect(registryText()).not.toContain(token)
-    expect(settings(alpha).mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    expect(settings(alpha).mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
     expect(audit()).not.toContain(token)
   })
 
@@ -812,7 +812,7 @@ describe('buckle workspace set and unset', () => {
     expect((await set('packs.enabled', 'fs, web')).exitCode).toBe(0)
     expect((await set('packs.hostGit', 'on')).exitCode).toBe(0)
     expect((await set('mount', '/alpha')).exitCode).toBe(0)
-    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true }, mounts: [{ kind: 'workspace', target: '/alpha', access: 'write' }] })
+    expect(settings(alpha)).toMatchObject({ approvalWaitMs: 0, packs: { enabled: ['fs', 'web'], hostGit: true }, mounts: [{ kind: 'workspace', target: '/alpha', access: 'rw' }] })
 
     for (const key of ['packs.shell', 'packs.enabled', 'approvalWaitMs', 'mount']) expect((await buckle(['unset', key], { cwd: alpha })).exitCode).toBe(0)
     const left = settings(alpha)

@@ -8,10 +8,10 @@ import { createFileActionLog } from '../../adapters/action-log/file-action-log.j
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
-import { rootsOf } from '../../domain/executable.js'
+import { rootsOf, type UntrustedRoot } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
 import { createRuntime, type BuckleRuntime } from './workspace-runtime.js'
-import { createNodeRoots, type NodeRoots } from './node-roots.js'
+import { createNodeRoots, MOUNTS_UNREADABLE, REGISTRY_UNREADABLE, type NodeRoots } from './node-roots.js'
 import { bearerDigest, digestMatches, mintToken, tokenDigest, tokenMatches } from '../access/tokens.js'
 import { storedGrantMatches, workbenchesDirectory, workbenchGrant } from '../workbench/storage.js'
 import { createAuditHealth } from '../audit/audit-health.js'
@@ -24,7 +24,7 @@ import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError
 import { assertNoHostExposure, canonicalDirectory, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
-import { assertNodeDefaults, defaultSettings, openSettingsFile, scopeOf, settingsPath, withPolicy, type WorkspaceSettings } from './workspace-settings.js'
+import { assertNodeDefaults, defaultSettings, openSettingsFile, ownerMounts, scopeOf, settingsPath, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -87,21 +87,39 @@ export interface RemovedWorkspace { id: string; dir: string; name: string; remov
 export interface TokenOwner { workspaceId: string; tokenId: string }
 
 /**
- * The roots of a node (NodeRoots): every workspace folder its registry holds, BUCKLE_SCRATCH_ROOTS, and the sources
- * of writable mounts. No program Buckle runs comes from any of them.
+ * The roots of a node (NodeRoots): every workspace folder its registry holds, the node's own writable mounts
+ * (BUCKLE_SCRATCH_ROOTS), and the source of every mount a workspace's own table shares writable. No program Buckle runs
+ * comes from any of them.
  */
 export function nodeRootsOf(config: NodeConfig, platform: NodeJS.Platform = process.platform): NodeRoots {
   const registry = openRegistry({ stateDirectory: config.stateDirectory, lockDeadlineMs: config.stateLockDeadlineMs })
-  // BUCKLE_MOUNTS shares every folder read-only today, so this is empty: it guards a writable mount added later.
-  const writableMounts = (config.sandboxMounts ?? []).filter(mount => !mount.readOnly).map(mount => mount.source)
+  const nodeWritable = (config.workspaceDefaults.mounts ?? []).filter(mount => mount.access === 'rw')
   return createNodeRoots({
-    fixed: [...rootsOf('scratch root', config.scratchRoots), ...rootsOf('writable mount', writableMounts)],
+    fixed: [...rootsOf('scratch root', nodeWritable.filter(mount => mount.scratch).map(mount => mount.source)), ...rootsOf('writable mount', nodeWritable.filter(mount => !mount.scratch).map(mount => mount.source))],
     readRegistered: () => {
-      try { return registry.read().workspaces.map(workspace => workspace.dir) }
-      catch (error) { if (error instanceof WorkspaceRegistryError) return null; throw error }
+      try { return registeredRoots(config.stateDirectory, registry.read().workspaces) }
+      catch (error) { if (error instanceof WorkspaceRegistryError) return REGISTRY_UNREADABLE; throw error }
     },
     platform,
   })
+}
+
+/**
+ * The roots the registered workspaces hold: each folder, and the source of each mount its own table shares writable;
+ * or why they are unknown, where a workspace's settings will not read, as a mount it holds could be anywhere.
+ */
+export function registeredRoots(stateDirectory: string, workspaces: readonly Pick<StoredWorkspace, 'id' | 'dir'>[]): UntrustedRoot[] | string {
+  const roots: UntrustedRoot[] = []
+  for (const workspace of workspaces) {
+    roots.push(...rootsOf('workspace', [workspace.dir]))
+    let settings: WorkspaceSettings
+    try { settings = openSettingsFile({ filePath: settingsPath(stateDirectory, workspace.id) }).read() } catch (error) {
+      if (error instanceof WorkspaceSettingsError) return MOUNTS_UNREADABLE
+      throw error
+    }
+    roots.push(...rootsOf('writable mount', ownerMounts(settings).filter(mount => mount.access === 'rw').map(mount => mount.source)))
+  }
+  return roots
 }
 
 /** The node's workspaces (D83): migrates a node set up before the workspace model first (migrateNode), then serves the registry. */
@@ -199,7 +217,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         state.workspaces.push(workspace)
         // The records are an active workspace's again: the removal marker goes, so prune no longer lists them.
         if (takenUp) rmSync(removedMarker(id), { force: true })
-        nodeRoots.take(state.workspaces.map(item => item.dir))
+        nodeRoots.take(registeredRoots(node.stateDirectory, state.workspaces))
         return { workspace: describe(workspace), takenUp }
       }).catch((error: unknown) => {
         if (wrote !== null) rmSync(wrote, { recursive: true, force: true })
@@ -320,7 +338,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       const removed = await store.update((state) => {
         const workspace = requireStored(state, id)
         state.workspaces = state.workspaces.filter(item => item.id !== id)
-        nodeRoots.take(state.workspaces.map(item => item.dir))
+        nodeRoots.take(registeredRoots(node.stateDirectory, state.workspaces))
         return describe(workspace)
       })
       const pending = runtimes.get(id)
@@ -376,8 +394,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
 
     async resolve(id: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace> {
       const registered = store.read().workspaces
-      // Every folder the registry holds now, one registered from another process included, is one no program runs from.
-      nodeRoots.take(registered.map(item => item.dir))
+      // Every folder the registry holds now, one registered from another process included, and every mount a workspace
+      // shares writable, is one no program runs from.
+      nodeRoots.take(registeredRoots(node.stateDirectory, registered))
       const workspace = registered.find(item => item.id === id)
       if (!workspace) throw new WorkspaceError('Workspace not found', 404)
       if (!options.setup && !workspace.online) throw new WorkspaceError('Workspace is offline', 409)

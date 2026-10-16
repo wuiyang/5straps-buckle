@@ -88,7 +88,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
     const { settings } = served()
     expect(settings.packs).toEqual({})
     expect(settings.policy.network).toEqual({ allow: [] })
-    expect(settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    expect(settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
     expect(result.printed).toMatch(/Packs\s+all, and plugins/)
     expect(result.printed).toMatch(/Shell\s+on/)
   })
@@ -264,7 +264,7 @@ describe('workspace-first initialization defaults', () => {
     const cwd = vi.spyOn(process, 'cwd').mockReturnValue(workspace)
     try {
       const env = parseEnv((await init(scripted([], interactive))).written)
-      expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+      expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
       expect(env.BUCKLE_SERVER_NAME).toBe(workspace.replace(/[\\/]/g, '-'))
     } finally { cwd.mockRestore() }
   })
@@ -275,7 +275,7 @@ describe('workspace-first initialization defaults', () => {
   })
   it('preserves explicit mount and name overrides', async () => {
     const env = parseEnv((await init(scripted([]), ['--dir', workspace, '--mount', '/project', '--name', 'Demo node', '--yes'])).written)
-    expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/project', access: 'write' }])
+    expect(served().settings.mounts).toEqual([{ kind: 'workspace', target: '/project', access: 'rw' }])
     expect(env.BUCKLE_SERVER_NAME).toBe('Demo node')
   })
 })
@@ -387,7 +387,8 @@ describe('buckle init checks the programs Buckle runs', () => {
     symlinkSync(real, join(base, 'proj'))
     executable(join(real, 'node_modules', '.bin', 'agent-browser'))
     executable(join(base, 'scratch', 'rg'))
-    vi.stubEnv('BUCKLE_SCRATCH_ROOTS', join(base, 'scratch'))
+    // A node default now, which the node reads from its file alone, so the file --force writes again carries it.
+    writeFileSync(out, `BUCKLE_SCRATCH_ROOTS=${join(base, 'scratch')}\n`)
     const search = { environment: { PATH: [join(real, 'node_modules', '.bin'), join(base, 'scratch')].join(':') }, places: [] }
     const printed = await programs({ platform: 'linux', root: join(base, 'proj'), programSearch: search })
     expect(printed).toContain(`  agent-browser   found at ${join(real, 'node_modules', '.bin', 'agent-browser')}, not run: agent-browser is found in or through a workspace of this node, where an agent can write, so Buckle does not run it\n`)

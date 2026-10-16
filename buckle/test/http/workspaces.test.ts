@@ -172,7 +172,8 @@ it('checks policy revisions and applies read-denied paths to filesystem tools', 
 // node's for every workspace, as the docs say; a workspace still cannot hold a mount's source.
 it('refuses a workspace holding a mount\'s source, and gives every other the node\'s mounts', async () => {
   const mounts = [{ source: join(root, 'two', 'hello.txt'), target: '/srv/auth/config.json', readOnly: true as const }]
-  app = await node((config) => { config.sandboxMounts = mounts })
+  // BUCKLE_MOUNTS: the node's read-only mounts, every workspace's where its own table holds none.
+  app = await node((config) => { config.workspaceDefaults = { ...config.workspaceDefaults, mounts: [{ source: mounts[0]!.source, target: mounts[0]!.target, access: 'ro' }] } })
   expect((await register('two')).status).toBe(409)
   expect((await register('one')).status).toBe(201)
   const child = await (await app.services.getWorkspaces()).resolve(await app.idOf('one'))

@@ -30,9 +30,10 @@ export function overlaps(left: string, right: string, platform: NodeJS.Platform)
   return isInsideComparable(left, right, ignoresCase(platform), platform) || isInsideComparable(right, left, ignoresCase(platform), platform)
 }
 
-/** The host folders every sandbox shares read-only, which no workspace may hold or sit inside: toolchains and owner mounts. */
-export function exposedRoots(node: Pick<NodeConfig, 'mountReadOnlyPaths' | 'sandboxMounts'>): string[] {
-  return [...node.mountReadOnlyPaths, ...(node.sandboxMounts ?? []).map(mount => mount.source), dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64']
+/** The host folders every sandbox shares read-only, which no workspace may hold or sit inside: toolchains and the node's read-only mounts. */
+export function exposedRoots(node: Pick<NodeConfig, 'mountReadOnlyPaths' | 'workspaceDefaults'>): string[] {
+  const shared = (node.workspaceDefaults.mounts ?? []).filter(mount => mount.access === 'ro').map(mount => mount.source)
+  return [...node.mountReadOnlyPaths, ...shared, dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64']
     .map(path => { try { return nativePath(realpathSync.native(path)) } catch { return path } })
 }
 

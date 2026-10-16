@@ -429,7 +429,7 @@ function describePrograms(input: { node: NodeConfig; folder: string; platform: N
     { label: 'git', name: 'git', unlocks: 'the git and forge packs, once host Git is turned on' },
     { label: 'agent-browser', name: config.agentBrowserCommand, unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
   ]
-  const search = { ...input.search, platform: input.platform, ...workspaceUntrusted({ root: realPathOf(input.folder, input.platform), scratchRoots: config.scratchRoots }, nodeRootsOf(config, input.platform)) }
+  const search = { ...input.search, platform: input.platform, ...workspaceUntrusted({ root: realPathOf(input.folder, input.platform), scratchRoots: (config.workspaceDefaults.mounts ?? []).filter(mount => mount.access === 'rw').map(mount => mount.source) }, nodeRootsOf(config, input.platform)) }
   const lines = programs.map(program => `  ${program.label.padEnd(15)} ${programLine(program, search)}`)
   return `Programs\n${lines.join('\n')}`
 }

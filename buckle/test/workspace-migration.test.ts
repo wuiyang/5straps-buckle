@@ -130,7 +130,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     expect(site.packs).toEqual({})
     expect(site).not.toHaveProperty('approvalWaitMs')
     expect(site.policy.commands).toMatchObject({ allow: [], deny: [] })
-    expect(site.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'write' }])
+    expect(site.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
     // In force, each takes the node's settings, and the node's deny list over its own.
     expect((await byName(manager, 'project')).config).toMatchObject({ enableShell: false, enabledPacks: ['fs', 'web'], approvalTimeoutMs: null, policy: { mount: '/project', commands: { deny: ['curl *', 'wget *'] } } })
     expect((await byName(manager, 'site')).config).toMatchObject({ enableShell: false, enabledPacks: ['fs', 'web'], approvalTimeoutMs: null, policy: { mount: '/workspace', commands: { deny: ['curl *'] } } })

@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -26,7 +26,7 @@ describe('a workspace\'s settings', () => {
     expect(defaultSettings()).toEqual({
       version: 1, revision: 0, updatedAt: null,
       policy: emptyWorkspacePolicy(),
-      mounts: [{ kind: 'workspace', target: '/workspace', access: 'write' }],
+      mounts: [{ kind: 'workspace', target: '/workspace', access: 'rw' }],
       env: {}, packs: {}, browser: {},
     })
     expect(resolveSettings(defaultSettings(), loadConfig({}).workspaceDefaults)).toMatchObject({
@@ -66,7 +66,7 @@ describe('a workspace\'s settings', () => {
 
     it('is the workspace\'s for what it sets, each deny entry told apart from the node\'s', () => {
       const own = WorkspaceSettingsSchema.parse({
-        version: 1, mounts: [{ kind: 'workspace', target: '/site', access: 'write' }],
+        version: 1, mounts: [{ kind: 'workspace', target: '/site', access: 'rw' }],
         policy: { ...emptyWorkspacePolicy(), network: { allow: ['own.test'] }, commands: { allow: ['pnpm *'], deny: ['curl *'], destructive: ['rm -rf *', 'git push *'], allowedInterpreters: ['node'] }, tools: { allow: ['fs_list'], deny: ['fs_write', 'shell_exec'] } },
       })
       expect(policySources(own, node)).toEqual({
@@ -134,8 +134,8 @@ describe('a workspace\'s settings', () => {
     ['an idle timeout under a minute', { version: 1, browser: { idleTimeoutMs: 59_999 } }],
     ['an idle timeout of 0', { version: 1, browser: { idleTimeoutMs: 0 } }],
     ['an idle timeout over a day', { version: 1, browser: { idleTimeoutMs: 86_400_001 } }],
-    ['a second mount, before the mount phase', { version: 1, mounts: [{ kind: 'workspace', target: '/workspace', access: 'write' }, { kind: 'workspace', target: '/other', access: 'write' }] }],
-    ['a mount under a folder the sandbox needs', { version: 1, mounts: [{ kind: 'workspace', target: '/usr/project', access: 'write' }] }],
+    ['a second mount, before the mount phase', { version: 1, mounts: [{ kind: 'workspace', target: '/workspace', access: 'rw' }, { kind: 'workspace', target: '/other', access: 'rw' }] }],
+    ['a mount under a folder the sandbox needs', { version: 1, mounts: [{ kind: 'workspace', target: '/usr/project', access: 'rw' }] }],
     // Finding 25 of the Phase 1 review: a misspelled list used to be dropped, loosening the policy.
     ['a misspelled policy key', { version: 1, policy: { ...emptyWorkspacePolicy(), comands: { deny: ['git push*'] } } }],
     ['a misspelled command list', { version: 1, policy: { ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], Deny: ['git push*'] } } }],
@@ -225,7 +225,7 @@ describe('a workspace\'s runtime on its settings', () => {
       packs: { ...settings.packs, shell: false, code: false },
       approvalWaitMs: 0,
       policy: { ...settings.policy, commands: { ...settings.policy.commands, deny: ['curl *'] } },
-      mounts: [{ kind: 'workspace', target: '/site', access: 'write' }],
+      mounts: [{ kind: 'workspace', target: '/site', access: 'rw' }],
     }))
     const { config: site, runtime } = await byName(manager, 'site')
 
@@ -264,7 +264,7 @@ describe('a workspace\'s runtime on its settings', () => {
     await registerWorkspace(manager, { id: 'site', dir: folder })
     const { config, runtime } = await byName(manager, 'site')
 
-    expect(config).toMatchObject({ scratchRoots: node.scratchRoots, sandboxMounts: node.sandboxMounts, skillDirectories: node.skillDirectories, strictWrites: true })
+    expect(config).toMatchObject({ scratchRoots: [realpathSync(join(folder, 'scratch'))], sandboxMounts: [{ source: '/etc/hostname', target: '/etc/hostname', readOnly: true }], skillDirectories: node.skillDirectories, strictWrites: true })
     const written = await runtime.invoke({ request: { requestId: 'scratch-write', tool: 'fs_write', args: { path: 'scratch/a.txt', content: 'x' }, approvalTokens: [] }, sessionId: 'site' })
     expect(written).toMatchObject({ outcome: 'ok' })
     await manager.close()

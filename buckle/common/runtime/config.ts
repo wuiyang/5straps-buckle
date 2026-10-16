@@ -1,4 +1,5 @@
 import { parseSandboxMounts, type SandboxMount } from '../domain/sandbox-mounts.js'
+import type { TableMount } from '../domain/mount-table.js'
 import { realpathSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'pathe'
 import { emptyWorkspacePolicy, SandboxModeSchema, type WorkspacePolicy } from '@5straps/protocol'
@@ -57,8 +58,6 @@ export interface NodeConfig {
   migration: MigrationInput
   /** The workspace settings buckle.env names, which every workspace takes where its own workspace.json holds none (D85, Q3). */
   workspaceDefaults: NodeDefaults
-  /** Directories writable without asking. Empty by default, so the first write anywhere asks. */
-  scratchRoots: string[]
   strictWrites: boolean
   sandboxMode: 'auto' | 'none' | 'bubblewrap' | 'seatbelt'
   acknowledgedUnsandboxed: boolean
@@ -90,9 +89,10 @@ export interface NodeConfig {
   browserArgs?: string
   /** Where to announce a pending approval, so a person can be reached away from the machine. */
   approvalWebhook?: string
-  /** Owner-authorized read-only file and folder aliases, every workspace's until the mount table holds them per workspace (Phase 2). */
-  sandboxMounts?: SandboxMount[]
-  /** Host directories still readable inside a mounted sandbox, for toolchains outside /usr. */
+  /**
+   * Host directories still readable inside a mounted sandbox, for toolchains outside /usr: bound at their own path for
+   * every workspace, beside the system folders, and never listed as a mount (D85, Q1).
+   */
   mountReadOnlyPaths: string[]
   /** Where every refused call is posted as it happens. Rings, usually. */
   reportUrl?: string
@@ -131,6 +131,12 @@ export interface BuckleConfig extends NodeConfig {
   commandEnvironment: Readonly<Record<string, string>>
   /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
   policy: WorkspacePolicy
+  /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
+  mounts: TableMount[]
+  /** The table's scratch roots: writable without asking, at their own path. */
+  scratchRoots: string[]
+  /** The table's other mounts, which the shell binds read-only. */
+  sandboxMounts: SandboxMount[]
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
   /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
@@ -205,8 +211,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     // config's env, which an agent may be able to write, never sets or lifts every workspace's defaults and deny floor,
     // and buckle mcp reads no file outside the state directory (refuseForeignEnvironmentFile; fix brief 4, finding 7).
     workspaceDefaults: nodeDefaultsFrom(layers.file?.values ?? (layers.defaultsFromFileAlone ? {} : environment), platform),
-    // As the disk names each, as the workspace root is: a judged effect path is real and in the disk's case.
-    scratchRoots: parseList(environment.BUCKLE_SCRATCH_ROOTS).map(root => realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)),
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
@@ -227,7 +231,6 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     browserHeaded: environment.BUCKLE_BROWSER_HEADED === 'true',
     ...parseBrowserSettings(environment, platform),
     approvalWebhook: environment.BUCKLE_APPROVAL_WEBHOOK || undefined,
-    sandboxMounts: parseSandboxMounts(environment.BUCKLE_MOUNTS),
     mountReadOnlyPaths: parseList(environment.BUCKLE_MOUNT_READ_ONLY).map(path => typedPath(path, platform)),
     reportUrl: environment.BUCKLE_REPORT_URL || undefined,
     reportToken: environment.BUCKLE_REPORT_TOKEN || undefined,
@@ -244,7 +247,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
   'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
-  'BUCKLE_APPROVAL_TIMEOUT_MS',
+  'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -312,6 +315,8 @@ export interface WorkspaceScope {
   dir: string
   /** Where the agent sees the folder, from its mount table; null shows the real path. */
   mount: string | null
+  /** The owner's mounts in force: its own table's, else the node's. */
+  mounts: readonly TableMount[]
   policy: WorkspacePolicy
   packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
   /** Milliseconds a gated call is held for an answer; 0 holds it until someone answers. */
@@ -333,6 +338,11 @@ export interface NodeDefaults {
   /** The lists, empty where the environment names none; `mount` stays null, as `mount` below holds it. */
   policy: WorkspacePolicy
   mount?: string
+  /**
+   * The node's mounts, every workspace's where its own table holds none (Phase 2 item 1): BUCKLE_MOUNTS read-only at
+   * the targets it names, and each BUCKLE_SCRATCH_ROOTS folder writable without asking at its own path.
+   */
+  mounts?: TableMount[]
   packs: { enabled?: string[]; shell?: boolean; code?: boolean; hostGit?: boolean; hostLsp?: boolean }
   /** 0 holds a gated call until someone answers. */
   approvalWaitMs?: number
@@ -357,9 +367,11 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
   const code = environment.BUCKLE_ALLOW_CODE ? environment.BUCKLE_ALLOW_CODE !== 'false' : undefined
   const packs = parseList(environment.BUCKLE_PACKS)
   const approvalWait = environment.BUCKLE_APPROVAL_TIMEOUT_MS ? parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_WAIT_MS) ?? 0 : undefined
+  const mounts = nodeMounts(environment, platform)
   return {
     policy: { ...policy, mount: null },
     ...(policy.mount === null ? {} : { mount: policy.mount }),
+    ...(mounts.length === 0 ? {} : { mounts }),
     packs: {
       ...(packs.length > 0 ? { enabled: [...new Set(packs)] } : {}),
       ...(shell === undefined ? {} : { shell }),
@@ -371,6 +383,20 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
     browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
     env: {},
   }
+}
+
+/**
+ * The node's mounts (Phase 2 item 1): BUCKLE_MOUNTS read-only at the targets it names, then each BUCKLE_SCRATCH_ROOTS
+ * folder at its own path, as the disk names it, as the workspace root is: a judged effect path is real and in the
+ * disk's case.
+ */
+function nodeMounts(environment: NodeJS.ProcessEnv, platform: NodeJS.Platform): TableMount[] {
+  const shared = parseSandboxMounts(environment.BUCKLE_MOUNTS).map((mount): TableMount => ({ source: mount.source, target: mount.target, access: 'ro' }))
+  const scratch = parseList(environment.BUCKLE_SCRATCH_ROOTS).map((root): TableMount => {
+    const path = realFolder(typedPath(root, platform), 'BUCKLE_SCRATCH_ROOTS', platform)
+    return { source: path, target: path, access: 'rw', scratch: true }
+  })
+  return [...shared, ...scratch]
 }
 
 function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
@@ -388,8 +414,8 @@ function refusedAs(key: string, compile: () => unknown): void {
 /**
  * One workspace's runtime configuration (D83): the node's settings, then the workspace's own. Every workspace keeps its
  * state in `workspaces/<id>/` under the node's directory, the one made from the node's own folder included (D85, Q15).
- * Each takes the node's BUCKLE_SCRATCH_ROOTS, BUCKLE_MOUNTS, BUCKLE_SKILLS_DIRS, and BUCKLE_STRICT_WRITES until the mount
- * table holds them per workspace (fix brief 1, F; finding 43 of the Phase 1 review).
+ * Each takes the node's BUCKLE_SKILLS_DIRS and BUCKLE_STRICT_WRITES (fix brief 1, F; finding 43 of the Phase 1 review);
+ * its mounts are its table's, else the node's (Phase 2 item 1).
  */
 export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): BuckleConfig {
   return {
@@ -405,11 +431,14 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'scratchRoots' | 'sandboxMounts' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
+    mounts: scope.mounts.map(mount => ({ ...mount })),
+    scratchRoots: scope.mounts.filter(mount => mount.scratch).map(mount => mount.source),
+    sandboxMounts: scope.mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: true as const })),
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,

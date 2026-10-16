@@ -239,8 +239,9 @@ describe('the sandbox program in a folder a mount shares', () => {
     const { workspace, state } = scene()
     const shared = bwrapIn(join(scratch(), 'tools'))
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state })
-    // Every mount is read-only today; a writable one is imitated past the schema that allows no other.
-    const roots = nodeRootsOf({ ...nodeConfigOf(config), sandboxMounts: [{ source: dirname(shared), target: '/opt/tools', readOnly: false as unknown as true }] }).current()
+    // A node default mount shared writable, as a workspace's own `buckle workspace mount add` shares one (Q6).
+    const node = nodeConfigOf(config)
+    const roots = nodeRootsOf({ ...node, workspaceDefaults: { ...node.workspaceDefaults, mounts: [{ source: dirname(shared), target: '/opt/tools', access: 'rw' }] } }).current()
     const resolved = resolveSandbox({ requested: 'bubblewrap', acknowledgedUnsandboxed: false, ...roots, environment: { PATH: dirname(shared) }, platform: 'linux' })
     expect(resolved.unavailableReason).toBe('bwrap is found in or through the source of a writable mount of this node, where an agent can write, so Buckle does not run it; no process sandbox is available, so shell tools are withheld')
   })

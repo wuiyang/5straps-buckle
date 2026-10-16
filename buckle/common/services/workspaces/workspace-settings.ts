@@ -4,6 +4,8 @@ import { z } from 'zod'
 import { allowedInterpreters, CommandPolicySchema, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
+import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount, type TableMount } from '../../domain/mount-table.js'
+import { comparablePath, ignoresCase, isInside, pathRoot } from '../../domain/paths.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
 import { DEFAULT_APPROVAL_WAIT_MS, parseBrowserSettings, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
@@ -85,17 +87,55 @@ export function browserSettingsRefusal(browser: Pick<ResolvedSettings['browser']
   }
 }
 
-/** The workspace's folder in the agent's view. The mount phase adds system and owner entries beside it (Q1, Q6). */
-const MountSchema = z.object({
+/**
+ * The workspace's folder in the agent's view: where it shows, read and write. `write` is how the first workspace.json
+ * spelled `rw`, read as it.
+ */
+const FolderMountSchema = z.object({
   kind: z.literal('workspace'),
   target: MountPathSchema,
-  access: z.literal('write'),
+  access: z.enum(['rw', 'write']).transform((): 'rw' => 'rw'),
 }).strict().superRefine((mount, context) => {
   try { compilePolicy({ ...emptyWorkspacePolicy(), mount: mount.target }) } catch (error) {
     if (error instanceof PolicyError) context.addIssue({ code: 'custom', message: error.message })
     else throw error
   }
 })
+
+/**
+ * One of the owner's mounts (D84 (3), D85 Q6), as `buckle workspace mount add` stores it: the source as the disk names
+ * it, checked against the disk when it is added, and here for its shape.
+ */
+const OwnerMountSchema = z.object({
+  source: z.string().min(1).max(4096).refine(source => !/[\0\r\n]/.test(source) && pathRoot(source) !== '', 'A mount source is an absolute path'),
+  target: z.string().min(1).max(4096),
+  access: z.enum(['rw', 'ro']),
+}).strict()
+
+/**
+ * The mount table (Phase 2 item 1): the folder's own entry and the owner's mounts. System folders are bound for every
+ * workspace and never listed (D85, Q1). An owner's mount needs the folder mounted, as its target is a path in the
+ * sandbox's own tree; no two targets overlap, nor two sources, and no target stands on a folder the sandbox keeps.
+ */
+const MountsSchema = z.array(z.union([FolderMountSchema, OwnerMountSchema])).max(MAX_OWNER_MOUNTS + 1).superRefine((mounts, context) => {
+  const folders = mounts.filter(entry => 'kind' in entry)
+  if (folders.length > 1) context.addIssue({ code: 'custom', message: 'The mount table holds one entry for the workspace\'s folder' })
+  const owners = mounts.filter((entry): entry is OwnerMount => !('kind' in entry))
+  const folder = folders[0]?.target ?? null
+  if (owners.length > 0 && folder === null) context.addIssue({ code: 'custom', message: 'A mount needs the workspace\'s folder mounted, such as at /workspace: set mount first' })
+  const caseless = ignoresCase()
+  owners.forEach((mount, index) => {
+    const refusal = mountTargetRefusal(mount.target, { folder, others: owners.slice(0, index).map(other => other.target) })
+    if (refusal) context.addIssue({ code: 'custom', message: refusal, path: [mounts.indexOf(mount), 'target'] })
+    const shared = owners.slice(0, index).find(other => sourcesOverlap(other.source, mount.source, caseless))
+    if (shared) context.addIssue({ code: 'custom', message: `The source of the mount at ${mount.target} overlaps the source of the one at ${shared.target}`, path: [mounts.indexOf(mount), 'source'] })
+  })
+})
+
+function sourcesOverlap(left: string, right: string, caseless: boolean): boolean {
+  const [one, other] = [comparablePath(left, caseless), comparablePath(right, caseless)]
+  return isInside(one, other) || isInside(other, one)
+}
 
 const EnvironmentSchema = z.record(z.string(), z.string().max(4096).refine(value => !value.includes('\0'), 'A value cannot hold a NUL character')).superRefine((variables, context) => {
   for (const name of Object.keys(variables)) {
@@ -129,8 +169,11 @@ export const WorkspaceSettingsSchema = z.object({
   revision: z.number().int().nonnegative().default(0),
   updatedAt: z.iso.datetime().nullable().default(null),
   policy: SettingsPolicySchema.default(emptyWorkspacePolicy),
-  /** Where the folder shows: one entry, or none for its real path. Absent, the node's BUCKLE_WORKSPACE_MOUNT says. */
-  mounts: z.array(MountSchema).max(1).optional(),
+  /**
+   * The mount table: where the folder shows (one entry, or none for its real path), and the owner's mounts. Absent, the
+   * node's BUCKLE_WORKSPACE_MOUNT says where the folder shows; with no mount of its own, the node's mounts are its own.
+   */
+  mounts: MountsSchema.optional(),
   /** Its own variables, over the node's key by key. */
   env: EnvironmentSchema.default({}),
   packs: PacksSchema.default({}),
@@ -151,7 +194,7 @@ export function assertNodeDefaults(node: NodeDefaults): void {
 
 /** A new workspace's settings: the folder at /workspace (D84 (3)), and every other setting the node's, else Buckle's own. */
 export function defaultSettings(): WorkspaceSettings {
-  return WorkspaceSettingsSchema.parse({ version: 1, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'write' }] })
+  return WorkspaceSettingsSchema.parse({ version: 1, mounts: [{ kind: 'workspace', target: WORKSPACE_MOUNT_TARGET, access: 'rw' }] })
 }
 
 /** Where a setting in force came from (D85, Q3): the workspace's own workspace.json, the node's buckle.env, or Buckle itself. */
@@ -169,6 +212,8 @@ export interface ResolvedSettings {
   /** The policy in force, its lists resolved; where the folder shows is `mount`. */
   policy: WorkspacePolicy
   mount: string | null
+  /** The owner's mounts in force: the workspace's own, else the node's (BUCKLE_MOUNTS, and BUCKLE_SCRATCH_ROOTS as scratch). */
+  mounts: readonly TableMount[]
   packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
   approvalWaitMs: number
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
@@ -239,6 +284,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
   return {
     policy: resolvePolicy(stored.policy, node.policy, sources),
     mount: pick('mount', ownMount(stored), node.mount, null),
+    mounts: mountsInForce(stored, node, sources),
     packs,
     approvalWaitMs: pick('approvalWaitMs', stored.approvalWaitMs, node.approvalWaitMs, BUILT_IN_SETTINGS.approvalWaitMs),
     browser,
@@ -278,6 +324,18 @@ function resolvePolicy(own: WorkspacePolicy, node: WorkspacePolicy, sources: Rec
   const toolDeny = floor('policy.tools.deny', node.tools?.deny ?? [], own.tools?.deny ?? [])
   if (toolDeny.length > 0) policy.tools = { ...(policy.tools?.allow === undefined ? {} : { allow: policy.tools.allow }), deny: toolDeny }
   return policy
+}
+
+/**
+ * The mounts in force, as an allow-type list resolves (D85, Q14): the workspace's own where it has any, else the node's
+ * whole. A workspace whose table holds its folder alone has none of its own, so removing its last mount takes the
+ * node's up again.
+ */
+function mountsInForce(stored: WorkspaceSettings, node: NodeDefaults, sources: Record<string, SettingSource>): TableMount[] {
+  const own = ownerMounts(stored)
+  const nodes = node.mounts ?? []
+  sources.mounts = own.length > 0 ? 'workspace' : nodes.length > 0 ? 'node' : 'built-in'
+  return (own.length > 0 ? own : nodes).map(mount => ({ ...mount }))
 }
 
 function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
@@ -361,14 +419,14 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */
 export function ownMount(settings: WorkspaceSettings): string | null | undefined {
-  return settings.mounts === undefined ? undefined : settings.mounts.find(entry => entry.kind === 'workspace')?.target ?? null
+  return settings.mounts === undefined ? undefined : settings.mounts.find(entry => 'kind' in entry)?.target ?? null
 }
 
 /** A policy back as the workspace's own: its lists alone, as where the folder shows is `mounts`' to say (withMount). */
@@ -376,9 +434,36 @@ export function withPolicy(settings: WorkspaceSettings, policy: WorkspacePolicy)
   return { ...settings, policy: { ...policy, mount: null } }
 }
 
-/** Where the folder shows, as the workspace's own: a path, null for its real path, or undefined to take the node's again. */
+/** The owner's mounts the workspace's own table holds, in order. */
+export function ownerMounts(settings: WorkspaceSettings): OwnerMount[] {
+  return (settings.mounts ?? []).filter((entry): entry is OwnerMount => !('kind' in entry)).map(mount => ({ ...mount }))
+}
+
+/**
+ * Where the folder shows, as the workspace's own: a path, null for its real path, or undefined to take the node's again.
+ * The owner's mounts stay; as they need the folder mounted, taking the mount away while it has any is refused.
+ */
 export function withMount(settings: WorkspaceSettings, mount: string | null | undefined): WorkspaceSettings {
   const { mounts: _dropped, ...rest } = settings
-  if (mount === undefined) return rest
-  return { ...rest, mounts: mount === null ? [] : [{ kind: 'workspace' as const, target: mount, access: 'write' as const }] }
+  const owners = ownerMounts(settings)
+  if (mount === undefined || mount === null) {
+    if (owners.length > 0) throw new WorkspaceSettingsInvalidError(`This workspace has ${owners.length} mount${owners.length === 1 ? '' : 's'} of its own, which need its folder mounted: remove ${owners.length === 1 ? 'it' : 'them'} first with buckle workspace mount remove <sandbox-path>`)
+    if (mount === undefined) return rest
+    return { ...rest, mounts: [] }
+  }
+  return { ...rest, mounts: [{ kind: 'workspace' as const, target: mount, access: 'rw' as const }, ...owners] }
+}
+
+/**
+ * The owner's mounts as the workspace's own, beside its folder's entry; `folder` is where the folder shows in force,
+ * written as the workspace's own where the table did not hold it, so a node's later change to BUCKLE_WORKSPACE_MOUNT
+ * never moves the folder under the mounts. None leaves the folder's entry, so the node's mounts apply again.
+ */
+export function withOwnerMounts(settings: WorkspaceSettings, owners: readonly OwnerMount[], folder: string | null): WorkspaceSettings {
+  const entry = (settings.mounts ?? []).find(item => 'kind' in item)
+  const target = entry?.target ?? folder
+  if (owners.length > 0 && target === null) throw new WorkspaceSettingsInvalidError('A mount needs the workspace\'s folder mounted, so the agent has a sandbox to see it in: buckle workspace set mount /workspace first')
+  const folderEntry = target === null ? [] : [{ kind: 'workspace' as const, target, access: 'rw' as const }]
+  if (owners.length === 0 && settings.mounts === undefined) return settings
+  return { ...settings, mounts: [...folderEntry, ...owners.map(mount => ({ ...mount }))] }
 }
