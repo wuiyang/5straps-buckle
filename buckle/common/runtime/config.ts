@@ -137,6 +137,8 @@ export interface BuckleConfig extends NodeConfig {
   browserArgs?: string
   browserHeaded: boolean
   browserIdleTimeoutMs: number
+  /** How a refusal of the browser settings in force names each: the workspace's own by its key; the variable when absent. */
+  browserSettingNames?: BrowserSettingNames | undefined
   /** The node's own state directory, which holds the registry and every workspace's settings. */
   nodeStateDirectory?: string
   /** True for the workspace migration made of the node's own folder (D85, Q15): its face carries the node-wide readiness, and a node-level workbench grant opens here. */
@@ -319,8 +321,11 @@ export interface WorkspaceScope {
   approvalWaitMs: number
   /** Whether its shell may reach the network, and runs on private copies (Phase 2 item 4). */
   shell: { network: boolean; isolation: boolean }
-  /** Its browser's mode, window, and idle timeout (Phase 2 item 6). */
-  browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
+  /**
+   * Its browser's mode, window, and idle timeout (Phase 2 item 6), and how a refusal names each setting: the workspace's
+   * own by its key, the node's by its variable.
+   */
+  browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -438,7 +443,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'>): WorkspaceFields {
   return {
@@ -452,6 +457,7 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     browserArgs: scope.browser.args,
     browserHeaded: scope.browser.headed,
     browserIdleTimeoutMs: scope.browser.idleTimeoutMs,
+    browserSettingNames: scope.browser.names,
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,
@@ -677,6 +683,27 @@ export function parseBrowserSettings(environment: NodeJS.ProcessEnv, platform: N
     ...(browserCdp ? { browserCdp } : {}),
     ...(browserProfile ? { browserProfile } : {}),
     ...(browserArgs ? { browserArgs } : {}),
+  }
+}
+
+/** The browser settings a refusal names: each by its environment variable unless a caller names it otherwise. */
+export interface BrowserSettingNames { cdp: string; profile: string; args: string; headed: string }
+
+const BROWSER_VARIABLES: BrowserSettingNames = { cdp: 'BUCKLE_BROWSER_CDP', profile: 'BUCKLE_BROWSER_PROFILE', args: 'BUCKLE_BROWSER_ARGS', headed: 'BUCKLE_BROWSER_HEADED' }
+
+/**
+ * Why a browser block is refused, or null: the checks the node's own settings meet at start (parseBrowserSettings): an
+ * attached browser beside a profile, arguments, or a window; a profile that is no absolute path; a DevTools value of
+ * another shape; and arguments Buckle refuses. Each setting is named as `names` says, as the variable by default,
+ * never by its value.
+ */
+export function browserBlockRefusal(block: { cdp?: string | undefined; profile?: string | undefined; args?: string | undefined; headed?: boolean | undefined }, platform: NodeJS.Platform = process.platform, names: Partial<BrowserSettingNames> = {}): string | null {
+  try {
+    parseBrowserSettings({ BUCKLE_BROWSER_CDP: block.cdp, BUCKLE_BROWSER_PROFILE: block.profile, BUCKLE_BROWSER_ARGS: block.args, ...(block.headed ? { BUCKLE_BROWSER_HEADED: 'true' } : {}) }, platform)
+    return null
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return (Object.keys(BROWSER_VARIABLES) as Array<keyof BrowserSettingNames>).reduce((text, key) => text.replaceAll(BROWSER_VARIABLES[key], names[key] ?? BROWSER_VARIABLES[key]), message)
   }
 }
 

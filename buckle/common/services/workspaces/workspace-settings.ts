@@ -7,7 +7,7 @@ import { isSecretName } from '../../domain/environment.js'
 import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount, type TableMount } from '../../domain/mount-table.js'
 import { comparablePath, ignoresCase, isInside, pathRoot } from '../../domain/paths.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
-import { DEFAULT_APPROVAL_WAIT_MS, parseBrowserSettings, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
+import { browserBlockRefusal, DEFAULT_APPROVAL_WAIT_MS, type BrowserSettingNames, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
@@ -70,10 +70,11 @@ const ShellSchema = z.object({
 }).strict()
 
 /**
- * The workspace's browser (Phase 2 item 6, Q10): checked at each write (browserSettingsRefusal), and read by its browser
- * pack, each the workspace's own, else the node's (BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, and
- * BUCKLE_BROWSER_HEADED), else Buckle's. A profile folder or an attached Chrome belongs to one workspace at a time
- * (the workspace manager's browserHeldBy).
+ * The workspace's browser (Phase 2 item 6, Q10): checked at each write (browserSettingsRefusal, and with the node's
+ * defaults, browserInForceRefusal), and again where its browser pack chooses the browser, so a hand edit passes nothing
+ * a write would not; each the workspace's own, else the node's (BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE,
+ * BUCKLE_BROWSER_ARGS, and BUCKLE_BROWSER_HEADED), else Buckle's, the mode resolved as one unit (resolveSettings). A
+ * profile folder or an attached Chrome belongs to one workspace at a time (the workspace manager's browserHeldBy).
  */
 const BrowserSchema = z.object({
   idleTimeoutMs: z.number().int().min(BROWSER_IDLE_BOUNDS.min).max(BROWSER_IDLE_BOUNDS.max).optional(),
@@ -89,13 +90,28 @@ const BrowserSchema = z.object({
  * naming the settings and never a value.
  */
 export function browserSettingsRefusal(browser: Pick<ResolvedSettings['browser'], 'cdp' | 'profile' | 'args'> & { headed?: boolean }, platform: NodeJS.Platform = process.platform): string | null {
-  try {
-    parseBrowserSettings({ BUCKLE_BROWSER_CDP: browser.cdp, BUCKLE_BROWSER_PROFILE: browser.profile, BUCKLE_BROWSER_ARGS: browser.args, ...(browser.headed ? { BUCKLE_BROWSER_HEADED: 'true' } : {}) }, platform)
-    return null
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    return BROWSER_KEYS.reduce((text, [from, to]) => text.replaceAll(from, to), message)
-  }
+  return browserBlockRefusal(browser, platform, WORKSPACE_BROWSER_NAMES)
+}
+
+/** The browser settings by their keys in workspace.json. */
+const WORKSPACE_BROWSER_NAMES: BrowserSettingNames = Object.freeze(Object.fromEntries(BROWSER_KEYS.map(([variable, key]) => [key.slice('browser.'.length), key]))) as unknown as BrowserSettingNames
+
+/**
+ * How a refusal of the browser block in force names each setting: the workspace's own by its key in workspace.json,
+ * the node's by its variable in buckle.env, so the owner reads which file to change.
+ */
+export function browserSettingNames(sources: Readonly<Record<string, SettingSource>>): BrowserSettingNames {
+  const name = (key: keyof BrowserSettingNames, variable: string) => (sources[`browser.${key}`] === 'node' ? variable : `browser.${key}`)
+  return { cdp: name('cdp', 'BUCKLE_BROWSER_CDP'), profile: name('profile', 'BUCKLE_BROWSER_PROFILE'), args: name('args', 'BUCKLE_BROWSER_ARGS'), headed: name('headed', 'BUCKLE_BROWSER_HEADED') }
+}
+
+/**
+ * Why the browser block in force is refused, or null (browserBlockRefusal on what resolveSettings resolved), naming
+ * each setting by its layer: a workspace setting only args or headed over the node's BUCKLE_BROWSER_CDP is refused here,
+ * as the node refuses the two in one buckle.env.
+ */
+export function browserInForceRefusal(resolved: Pick<ResolvedSettings, 'browser' | 'sources'>, platform: NodeJS.Platform = process.platform): string | null {
+  return browserBlockRefusal(resolved.browser, platform, browserSettingNames(resolved.sources))
 }
 
 /**
@@ -288,12 +304,19 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     hostGit: pick('packs.hostGit', stored.packs.hostGit, node.packs.hostGit, BUILT_IN_SETTINGS.packs.hostGit),
     hostLsp: pick('packs.hostLsp', stored.packs.hostLsp, node.packs.hostLsp, BUILT_IN_SETTINGS.packs.hostLsp),
   }
+  // The browser's mode is one unit (finding 8 of the third re-check): a workspace that names an attached Chrome or a
+  // profile folder of its own takes both from itself, never the node's other one, and under an attached Chrome neither
+  // the node's arguments nor its window apply, as the Chrome keeps its owner's.
+  const ownMode = stored.browser.cdp !== undefined || stored.browser.profile !== undefined
+  const cdp = pick('browser.cdp', stored.browser.cdp, ownMode ? undefined : node.browser.cdp, undefined)
+  const profile = pick('browser.profile', stored.browser.profile, ownMode ? undefined : node.browser.profile, undefined)
+  const attached = cdp !== undefined
   const browser = {
     idleTimeoutMs: pick('browser.idleTimeoutMs', stored.browser.idleTimeoutMs, undefined, BUILT_IN_SETTINGS.browser.idleTimeoutMs),
-    ...defined('cdp', pick('browser.cdp', stored.browser.cdp, node.browser.cdp, undefined)),
-    ...defined('profile', pick('browser.profile', stored.browser.profile, node.browser.profile, undefined)),
-    ...defined('args', pick('browser.args', stored.browser.args, node.browser.args, undefined)),
-    headed: pick('browser.headed', stored.browser.headed, node.browser.headed, BUILT_IN_SETTINGS.browser.headed),
+    ...defined('cdp', cdp),
+    ...defined('profile', profile),
+    ...defined('args', pick('browser.args', stored.browser.args, attached ? undefined : node.browser.args, undefined)),
+    headed: pick('browser.headed', stored.browser.headed, attached ? undefined : node.browser.headed, BUILT_IN_SETTINGS.browser.headed),
   }
   return {
     policy: resolvePolicy(stored.policy, node.policy, sources),
@@ -439,7 +462,7 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
 export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: resolved.browser, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

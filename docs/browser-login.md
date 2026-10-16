@@ -26,7 +26,8 @@ set, 1 minute to 1 day), or a change to the approved hosts, which relaunches the
 | `browser.args` (`BUCKLE_BROWSER_ARGS`) | Chromium arguments, separated by commas or new lines | `--args <value>` for a browser Buckle launches |
 
 An attached browser stands alone: it keeps the profile, arguments, and window you started it
-with, so Buckle refuses one set beside a profile, arguments, or a window, naming the settings.
+with, so Buckle refuses one set beside a profile, arguments, or a window, in either file, naming
+the settings.
 
 The profile folder is judged by the rule that judges `BUCKLE_AGENT_BROWSER_COMMAND`: Buckle does
 not load from where an agent can write. A folder inside or around a workspace, a scratch root, or
@@ -84,8 +85,7 @@ line; if Chrome shows one, approve it and have the agent retry.
 
 Buckle never closes that browser. `close` only disconnects, and so does an idle session or
 Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
-session works in that one browser: sessions share its cookies, and the agent can see and use every
-tab open there. A session starts on a tab you already have open, so its first `open` replaces
+session works in that one browser, sharing its cookies, and can see and use every tab open there. A session starts on a tab you already have open, so its first `open` replaces
 that tab's page, and `tab close` can close any of your tabs but the last.
 
 The DevTools port answers anything on this machine that reaches it. Shell commands have no

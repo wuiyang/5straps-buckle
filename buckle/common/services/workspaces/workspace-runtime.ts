@@ -668,6 +668,7 @@ async function buildPacks(input: {
     browserProfile: input.config.browserProfile,
     browserArgs: input.config.browserArgs,
     browserIdleTimeoutMs: input.config.browserIdleTimeoutMs,
+    browserSettingNames: input.config.browserSettingNames,
     ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,

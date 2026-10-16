@@ -25,7 +25,7 @@ import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError
 import { assertNoHostExposure, canonicalDirectory, canonicalMountSource, exposedRoots, overlaps } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
-import { assertNodeDefaults, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
+import { assertNodeDefaults, browserInForceRefusal, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
 import { mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
@@ -390,6 +390,10 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         const next = change(current)
         const unmet = (next.packs.enabled ?? []).flatMap((pack) => { const reason = unmetPackPrerequisite(pack, node); return reason ? [`${pack} (${reason})`] : [] })
         if (unmet.length > 0) throw new WorkspaceError(`This node cannot build pack ${unmet.join(', ')}; set the prerequisite first, or leave the pack out`)
+        // The browser block in force with the node's defaults passes the checks the node's own settings meet: a window or
+        // arguments of the workspace's own beside the node's BUCKLE_BROWSER_CDP is refused, naming that variable.
+        const browserRefusal = browserInForceRefusal(resolveSettings(next, node.workspaceDefaults), platform)
+        if (browserRefusal) throw new WorkspaceError(browserRefusal)
         // Q10: a profile folder or an attached Chrome another workspace names as its own belongs to that one.
         const claimed = ownBrowserKey(next)
         const holder = claimed === null ? undefined : store.read().workspaces.find(other => other.id !== id && ownBrowserKey(readable(other.id)) === claimed)

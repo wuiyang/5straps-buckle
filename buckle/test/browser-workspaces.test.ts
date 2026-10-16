@@ -166,3 +166,71 @@ describe('an attached Chrome', () => {
     await manager.close()
   })
 })
+
+// The browser's mode is one unit: a workspace naming an attached Chrome or a profile folder of its own takes both from
+// itself, and the block in force with the node's defaults meets the checks the node's own settings meet, at each write
+// and wherever the browser is chosen, so a hand edit passes nothing `buckle workspace set` refuses.
+describe('the browser block in force', { timeout: 20_000 }, () => {
+  async function handWritten(config: NodeConfig, manager: WorkspaceManager, name: string, browser: Record<string, unknown>) {
+    const file = settingsPath(config.stateDirectory, idOf(manager, name))
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    writeFileSync(file, JSON.stringify({ ...stored, browser }))
+  }
+  const withheld = async (manager: WorkspaceManager, name: string) => (await byName(manager, name)).runtime.manifest().packs.find(pack => pack.id === 'browser')?.unavailableReason
+
+  it('takes a workspace\'s own profile folder over the node\'s attached Chrome, which it then leaves alone', async () => {
+    const { root, config, manager, calls } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    expect((await set(config, 'alpha', 'browser.profile', join(root, 'profile'))).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    const [alpha, beta] = calls()
+    expect(alpha![alpha!.indexOf('--profile') + 1]).toBe(join(root, 'profile'))
+    expect(alpha).not.toContain('--cdp')
+    expect(beta![beta!.indexOf('--cdp') + 1]).toBe('9222')
+    await manager.close()
+  })
+
+  it('takes a workspace\'s own attached Chrome over the node\'s profile and window, which it does not apply', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'node-profile'))
+    const { config, manager, calls } = await node({ BUCKLE_BROWSER_PROFILE: join(root, 'node-profile'), BUCKLE_BROWSER_HEADED: 'true', BUCKLE_BROWSER_ARGS: '--lang=en-GB' })
+    expect((await set(config, 'alpha', 'browser.cdp', '9333')).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'ok' })
+    const [alpha] = calls()
+    expect(alpha!.slice(alpha!.indexOf('--idle-timeout'))).toEqual(['--idle-timeout', '300000', '--cdp', '9333'])
+    await manager.close()
+  })
+
+  it.each([['browser.headed', 'on'], ['browser.args', '--disable-gpu']])('refuses %s of a workspace\'s own beside the node\'s attached Chrome, naming BUCKLE_BROWSER_CDP', async (key, value) => {
+    const { config, manager } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    const refused = await set(config, 'alpha', key, value)
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain(`BUCKLE_BROWSER_CDP cannot be set with ${key}: an attached browser keeps the profile, arguments, and window its owner started it with`)
+    expect(refused.err).not.toContain('9222')
+    await manager.close()
+  })
+
+  it.each([
+    ['a profile switch in the arguments', { args: '--user-data-dir=/elsewhere/profile' }, 'browser.args may not pass --user-data-dir'],
+    ['a relative path climbing out of the state folder', { args: '--load-extension=../../../../alpha/ext' }, 'browser.args names a path by a spelling Buckle cannot place'],
+    ['a page switch', { args: '--restore-last-session' }, 'browser.args'],
+    ['an attached Chrome beside a profile', { cdp: '9222', profile: '/elsewhere/profile' }, 'browser.cdp cannot be set with browser.profile'],
+  ])('withholds the browser for %s written into workspace.json by hand, as the command line refuses it', async (_, browser, reason) => {
+    const { config, manager, calls } = await node()
+    await handWritten(config, manager, 'alpha', browser)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error' })
+    expect(await withheld(manager, 'alpha')).toContain(reason)
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    expect(calls()).toHaveLength(1)
+    await manager.close()
+  })
+
+  it('withholds the browser for a window written by hand beside the node\'s attached Chrome, naming each by its layer', async () => {
+    const { config, manager, calls } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    await handWritten(config, manager, 'alpha', { headed: true })
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error' })
+    expect(await withheld(manager, 'alpha')).toBe('BUCKLE_BROWSER_CDP cannot be set with browser.headed: an attached browser keeps the profile, arguments, and window its owner started it with')
+    expect(calls()).toEqual([])
+    await manager.close()
+  })
+})

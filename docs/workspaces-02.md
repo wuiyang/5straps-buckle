@@ -32,6 +32,12 @@ node's applies again:
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
 
+The browser's mode is one setting: a workspace that sets its own `browser.cdp` or
+`browser.profile` takes both from itself, never the node's other one, and under an attached Chrome
+the node's `browser.args` and `browser.headed` do not apply. A workspace's own arguments or window
+beside the node's `BUCKLE_BROWSER_CDP` is refused, naming it, at `buckle workspace set` and in a
+hand-edited `workspace.json`.
+
 A new workspace sets its mount, `/workspace`, and nothing else. Its [mounts](mounts.md) change
 with `buckle workspace mount`. `buckle workspace set` refuses a
 node setting, naming the command or file that changes it.

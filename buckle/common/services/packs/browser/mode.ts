@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { statSync } from 'node:fs'
 import { posix, win32 } from 'node:path'
 import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
+import { browserBlockRefusal, type BrowserSettingNames } from '../../../runtime/config.js'
 import { placesOnTheWay, type StoredPath, type UntrustedRoots } from '../../../domain/executable.js'
 import { comparablePath, ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
 
@@ -172,14 +173,23 @@ export function chooseBrowser(input: {
   cdp?: string
   profile?: string
   args?: string
+  /** The window, judged with the rest: an attached Chrome keeps its owner's. */
+  headed?: boolean
+  /** How a refusal names each setting; the variables when absent (browserBlockRefusal). */
+  names?: Partial<BrowserSettingNames>
   untrusted: UntrustedRoots
   protectedRoots: readonly string[]
   platform?: NodeJS.Platform
   /** How a Windows path resolves; the host's unless a test imitates Windows. */
   storedPath?: StoredPath
 }): BrowserChoice {
-  if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
   const platform = input.platform ?? process.platform
+  // The block in force is judged where the browser is chosen, as the node's own settings are at start and `buckle
+  // workspace set` judges a write, so a hand-edited workspace.json passes nothing they refuse: a page or profile switch,
+  // a relative path, or an attached Chrome beside a profile, arguments, or a window.
+  const refusal = browserBlockRefusal({ cdp: input.cdp, profile: input.profile, args: input.args, headed: input.headed }, platform, input.names)
+  if (refusal) return { refusal }
+  if (input.cdp) return { mode: { kind: 'attached', endpoint: input.cdp } }
   const roots = [...input.untrusted.untrustedRoots.map(root => root.path), ...input.protectedRoots]
   const named = argumentPaths(input.args ?? '', platform)
   if (named.length > 0 && input.untrusted.rootsUnknown) return { refusal: `BUCKLE_BROWSER_ARGS is not passed while ${input.untrusted.rootsUnknown}` }
@@ -197,8 +207,8 @@ export function chooseBrowser(input: {
 /**
  * Each switch value the system reads as an absolute path, as node's own path module for the node's platform reads it:
  * `//./home/x` on Linux and macOS, and a device or share path such as `\\.\C:\x` on Windows, are absolute there although
- * pathe reads them otherwise. Every other spelling of a path was refused at start (browserArgumentsRefusal), or is a
- * bare name in Buckle's browser state directory.
+ * pathe reads them otherwise. Every other spelling of a path was refused before (browserBlockRefusal, as chooseBrowser
+ * first runs it), or is a bare name in Buckle's browser state directory.
  */
 function argumentPaths(args: string, platform: NodeJS.Platform): string[] {
   const absolute = platform === 'win32' ? win32.isAbsolute : posix.isAbsolute

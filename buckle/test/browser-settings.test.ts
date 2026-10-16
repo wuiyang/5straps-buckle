@@ -201,13 +201,14 @@ describe('where a profile folder may lie', () => {
     expect(choose(join(root, 'into-workspace', 'profile'))).toEqual({ refusal: UNTRUSTED })
   })
 
+  // Judged first by the checks the node's own settings meet at start, as a hand-edited workspace.json is (browserBlockRefusal).
   it('refuses on Windows a folder rooted at a slash alone, which names whichever drive is current', () => {
     const untrusted = { untrustedRoots: [], rootsUnknown: null }
     for (const folder of ['/owner/profile', '\\owner\\profile']) {
-      expect(chooseBrowser({ profile: folder, untrusted, protectedRoots: [], platform: 'win32' })).toEqual({ refusal: UNTRUSTED })
+      expect(chooseBrowser({ profile: folder, untrusted, protectedRoots: [], platform: 'win32' })).toEqual({ refusal: 'BUCKLE_BROWSER_PROFILE must be an absolute path: Buckle never resolves a browser profile against the working directory' })
     }
     expect(chooseBrowser({ args: '--load-extension=/owner/ext', untrusted, protectedRoots: [], platform: 'win32' }))
-      .toEqual({ refusal: 'BUCKLE_BROWSER_ARGS names a path inside or around a workspace, a scratch root, or the node\'s state directory, where an agent can write or Buckle keeps its state, so Buckle does not pass it' })
+      .toEqual({ refusal: expect.stringMatching(/^BUCKLE_BROWSER_ARGS names a path by a spelling Buckle cannot place: .* on Windows a drive or a root alone/) })
   })
 
   it('refuses a folder that is itself the workspace, a scratch root, or the state directory', () => {

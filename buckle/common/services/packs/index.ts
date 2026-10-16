@@ -18,6 +18,7 @@ import type { Sandbox, SandboxBind } from '../../types/ports/sandbox.js'
 import type { ApprovedList } from './browser/allowed-domains.js'
 import { createBrowserPack } from './browser/index.js'
 import { chooseBrowser } from './browser/mode.js'
+import type { BrowserSettingNames } from '../../runtime/config.js'
 import { createDevPack } from './dev/index.js'
 import { createForgePack } from './forge/index.js'
 import { createFsPack } from './fs/index.js'
@@ -61,6 +62,8 @@ export interface BuiltinPackOptions {
   browserArgs?: string
   /** browser.idleTimeoutMs: how long an idle browser lives; five minutes when absent. */
   browserIdleTimeoutMs?: number
+  /** How a refusal of the browser settings names each: the workspace's own by its key, the node's by its variable. */
+  browserSettingNames?: BrowserSettingNames | undefined
   /** Which other workspace holds the profile folder or the attached Chrome, read at each browser call (Q10). */
   browserHeldBy?: () => string | null
   allowHostGit?: boolean
@@ -156,7 +159,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       sessionDirectory: options.browserStateDirectory,
       headed: options.browserHeaded,
       // A profile folder is judged as the agent-browser program is, against every root an agent can write, and Buckle's state.
-      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, args: options.browserArgs, untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
+      browser: chooseBrowser({ cdp: options.browserCdp, profile: options.browserProfile, args: options.browserArgs, headed: options.browserHeaded, ...(options.browserSettingNames ? { names: options.browserSettingNames } : {}), untrusted: untrusted(), protectedRoots: options.hiddenPaths, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
       ...(options.browserArgs ? { launchArgs: options.browserArgs } : {}),
       agentBrowser: program(options.agentBrowserCommand),
       environment,
