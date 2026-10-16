@@ -10,6 +10,7 @@ const entry = vi.hoisted(() => ({
   loadConfig: vi.fn(),
   runInitCommand: vi.fn(async () => ({ exitCode: 3 })),
   runSettingsCommand: vi.fn(async () => ({ exitCode: 4 })),
+  runServiceCommand: vi.fn(async () => ({ exitCode: 6 })),
   runCli: vi.fn(async () => ({ exitCode: 5 })),
   serveHttp: vi.fn(async () => {}),
   setupServer: vi.fn(async () => ({ requestCli: vi.fn() })),
@@ -21,7 +22,7 @@ const entry = vi.hoisted(() => ({
 }))
 vi.mock('../common/runtime/environment.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/environment.js')>(), loadEnvironmentFile: entry.loadEnvironmentFile }))
 vi.mock('../common/runtime/config.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/runtime/config.js')>(), loadConfig: entry.loadConfig }))
-vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
+vi.mock('../cli/main.js', () => ({ runInitCommand: entry.runInitCommand, runSettingsCommand: entry.runSettingsCommand, runServiceCommand: entry.runServiceCommand, runCli: entry.runCli, answerWithoutConfiguration: () => null }))
 vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
@@ -67,6 +68,7 @@ describe('selectMode', () => {
     [['init', '--yes'], { kind: 'init', argv: ['--yes'] }],
     [['settings', 'set', 'shell', 'off'], { kind: 'settings', argv: ['set', 'shell', 'off'] }],
     [['client', 'keygen'], { kind: 'client', argv: ['keygen'] }],
+    [['service', 'install', '--now'], { kind: 'service', argv: ['install', '--now'] }],
     [['serve'], { kind: 'serve', options: [] }],
     [['mcp'], { kind: 'mcp', options: [] }],
     [['mcp', '--workspace', 'site'], { kind: 'mcp', options: ['--workspace', 'site'] }],
@@ -148,11 +150,14 @@ describe('main', () => {
     }
   })
 
-  it('runs init and settings before, and without, the environment file and the node config', async () => {
+  it('runs init, settings, and service before, and without, the environment file and the node config', async () => {
     expect(await main(['init', '--yes'])).toBe(3)
     expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])
     expect(await main(['settings', 'show'])).toBe(4)
     expect(entry.runSettingsCommand).toHaveBeenCalledWith(['show'])
+    // Phase 3: no credential is in the environment when buckle service starts systemctl or schtasks.exe.
+    expect(await main(['service', 'install', '--now'])).toBe(6)
+    expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'])
     expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
     expect(entry.loadConfig).not.toHaveBeenCalled()
   })

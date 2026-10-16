@@ -3,7 +3,7 @@ import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
 import { askAtTerminal } from './cli/ask.js'
-import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
+import { answerWithoutConfiguration, runCli, runInitCommand, runServiceCommand, runSettingsCommand } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
@@ -18,10 +18,11 @@ import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
 import { wordList } from './common/domain/word-list.js'
 import { serveHttp, type ServeHttpInput } from './server/serve.js'
 import { parseServeOptions, SERVE_USAGE, startInBackground, useServiceLocation, type ServeOptions } from './server/service-mode.js'
-import { builtEntryPath, builtMainPath, setupServer } from './server/setup-server.js'
+import { builtEntryPath, setupServer } from './server/setup-server.js'
+import { builtMainPath } from './common/runtime/package-root.js'
 
 export type Mode =
-  | { kind: 'init' | 'settings' | 'client' | 'cli'; argv: string[] }
+  | { kind: 'init' | 'settings' | 'client' | 'service' | 'cli'; argv: string[] }
   | { kind: 'serve' | 'mcp'; options: string[] }
 
 type ServiceKind = 'serve' | 'mcp'
@@ -50,7 +51,7 @@ export function takeGlobalFlags(argv: readonly string[]): { argv: string[]; skip
 
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
-  if (command === 'init' || command === 'settings' || command === 'client') return { kind: command, argv: rest }
+  if (command === 'init' || command === 'settings' || command === 'client' || command === 'service') return { kind: command, argv: rest }
   if (command === 'serve' || command === 'mcp') return { kind: command, options: rest }
   return { kind: 'cli', argv: [...argv] }
 }
@@ -111,6 +112,8 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
   // A person's device, which needs no node: its own key and the node it signs for.
   if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
+  // Before the file is loaded, so no credential is in this process's environment when it runs systemctl or schtasks.exe.
+  if (mode.kind === 'service') return (await runServiceCommand(mode.argv)).exitCode
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode

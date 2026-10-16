@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { describe, expect, it } from 'vitest'
 import { nodeLocation } from '../common/runtime/environment.js'
-import { addressOf, attachCommand, parseServeOptions, useServiceLocation } from '../server/service-mode.js'
+import { addressOf, attachCommand } from '../common/services/node-service/attach.js'
+import { parseServeOptions, useServiceLocation } from '../server/service-mode.js'
 
 // Phase 3, item 1: `buckle serve` takes --background at a terminal, and what a service definition passes, which no
 // terminal's serve takes; it refuses anything else rather than ignore it, as it ignored --background before.

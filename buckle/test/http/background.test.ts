@@ -79,6 +79,30 @@ describe('buckle serve --background', () => {
     expect(messages.at(-1)).toBe('5straps Buckle stopped')
   }, 90_000)
 
+  it('is shown by buckle service status and logs, and stopped by buckle service stop, before buckle.env is read', async () => {
+    const node = await prepareNode()
+    const run = buckle(node, ['serve', '--background'])
+    expect(run.status).toBe(0)
+    const pid = Number(/\(pid (\d+)\)/.exec(run.stdout)![1])
+    started.push(pid)
+
+    const status = buckle(node, ['service', 'status'])
+    expect(status.status).toBe(0)
+    expect(status.stdout).toMatch(new RegExp(`^Running    yes \\(pid ${pid}\\), started by buckle serve --background at `, 'm'))
+    expect(status.stdout).toContain(`Address    http://127.0.0.1:${node.port}\n`)
+    await vi.waitFor(() => expect(buckle(node, ['service', 'logs', '-n', '200']).stdout).toContain('"message":"5straps Buckle listening"'), { timeout: 10_000 })
+
+    const stopped = buckle(node, ['service', 'stop'])
+    expect(stopped.stderr).toBe('')
+    expect(stopped).toMatchObject({ status: 0, stdout: `Stopped Buckle (pid ${pid}).\n` })
+    expect(alive(pid)).toBe(false)
+    expect(buckle(node, ['service', 'stop']).stdout).toBe('Buckle is not running.\n')
+    // Audited in the node's own log, as buckle settings and buckle init are.
+    const audit = readFileSync(join(node.state, 'actions.jsonl'), 'utf8')
+    expect(audit).toContain('"tool":"cli_service"')
+    expect(audit).not.toContain('background-admin-fixture')
+  }, 90_000)
+
   it('says a node that did not start failed, and its log says why', async () => {
     const node = await prepareNode('BUCKLE_SANDBOX=no-such-sandbox\n')
     const run = buckle(node, ['serve', '--background'])

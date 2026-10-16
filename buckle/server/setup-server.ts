@@ -31,11 +31,6 @@ export function builtEntryPath(): string {
   return join(PACKAGE_ROOT, '.output', 'server', 'index.mjs')
 }
 
-/** The built CLI entry, which a service definition and `buckle serve --background` run with Node by its absolute path. */
-export function builtMainPath(): string {
-  return join(PACKAGE_ROOT, 'dist', 'main.js')
-}
-
 /**
  * Imports the built app and binds it before anything is accepted (nitro/coordination.md, Ownership):
  * the host (owner, services, logger and the app's one requester) the context plugin reads per

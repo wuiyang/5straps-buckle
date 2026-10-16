@@ -1,13 +1,11 @@
 import { spawn } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync } from 'node:fs'
 import { isAbsolute } from 'pathe'
 import { parseArgs } from 'node:util'
 import { SKIP_OWNER_ONLY_FLAG } from '../common/adapters/file-modes.js'
-import { ignoresCase, isInsideComparable } from '../common/domain/paths.js'
-import { realPathOf } from '../common/runtime/config.js'
 import { nodeLocation, type NodeLocation } from '../common/runtime/environment.js'
-import { ALREADY_SERVING, runningNode, SERVICE_MANAGERS, waitForRecord, type RunningNode, type ServiceManagerKind } from '../common/services/node-service/serve-record.js'
-import { registryPath, RegistrySchema } from '../common/services/workspaces/registry.js'
+import { addressOf, attachCommand, besideService } from '../common/services/node-service/attach.js'
+import { runningNode, SERVICE_MANAGERS, waitForRecord, type ServiceManagerKind } from '../common/services/node-service/serve-record.js'
 
 /** How `buckle serve` was asked to run (Phase 3, item 1). */
 export interface ServeOptions {
@@ -103,37 +101,4 @@ export async function startInBackground(input: { options: ServeOptions; mainScri
       : { exitCode: 1, message: `Buckle did not start in the background (exit code ${exit}); buckle service logs shows why.` }
   }
   return { exitCode: 0, message: `Buckle runs in the background (pid ${record.pid}) at ${addressOf(record)}. Answer its approvals with ${attachCommand(location.stateDirectory, cwd, input.platform)}; stop it with buckle service stop.` }
-}
-
-/**
- * Why a serve is refused beside a node already serving the state directory with no terminal (Q5, Phase 3 item 5): it
- * says so, and names the command that answers that node's approvals here.
- */
-export function besideService(input: { running: RunningNode; command: string; stateDirectory: string; cwd: string; platform?: NodeJS.Platform | undefined }): string {
-  const pid = input.running.record === null ? '' : ` (pid ${input.running.record.pid})`
-  return `${ALREADY_SERVING}${pid}, so ${input.command} starts nothing. Answer its approvals here with: ${attachCommand(input.stateDirectory, input.cwd, input.platform)}`
-}
-
-/**
- * The command that answers a running node's approvals at this terminal: `buckle approvals --watch`, which answers the
- * workspace holding the current directory (Q9), where that is the one workspace online, and with `--all` otherwise.
- */
-export function attachCommand(stateDirectory: string, cwd: string, platform: NodeJS.Platform = process.platform): string {
-  try {
-    // Read as it is, with nothing logged: a registry this command cannot read names every workspace instead.
-    const workspaces = RegistrySchema.parse(JSON.parse(readFileSync(registryPath(stateDirectory), 'utf8'))).workspaces
-    const online = workspaces.filter(workspace => workspace.online)
-    const real = realPathOf(cwd, platform)
-    const holder = workspaces.filter(workspace => isInsideComparable(workspace.dir, real, ignoresCase(platform), platform)).sort((left, right) => right.dir.length - left.dir.length)[0]
-    if (online.length === 1 && holder?.id === online[0]!.id) return 'buckle approvals --watch'
-  } catch {
-    // An unreadable registry names every workspace, which the watch reports on.
-  }
-  return 'buckle approvals --watch --all'
-}
-
-/** Where a node's record says it listens, as a URL a person can open: an unspecified address is reached at loopback. */
-export function addressOf(record: { host: string; port: number }): string {
-  const host = record.host === '0.0.0.0' ? '127.0.0.1' : record.host === '::' ? '::1' : record.host
-  return `http://${host.includes(':') ? `[${host}]` : host}:${record.port}`
 }

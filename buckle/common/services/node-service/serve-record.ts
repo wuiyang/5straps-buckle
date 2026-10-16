@@ -133,10 +133,11 @@ export async function requestStop(stateDirectory: string, pid: number): Promise<
 }
 
 /** Calls `onStop` once a stop request naming this process appears, polled on a timer that never holds the process open. */
-export function watchStopRequest(input: { stateDirectory: string; onStop: () => void; intervalMs?: number }): () => void {
+export function watchStopRequest(input: { stateDirectory: string; onStop: () => void; intervalMs?: number; pid?: number }): () => void {
   const file = join(serviceDirectory(input.stateDirectory), STOP_FILE)
+  const pid = input.pid ?? process.pid
   const timer = setInterval(() => {
-    if (requestedPid(file) !== process.pid) return
+    if (requestedPid(file) !== pid) return
     rmSync(file, { force: true })
     clearInterval(timer)
     input.onStop()

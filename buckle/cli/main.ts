@@ -30,6 +30,10 @@ import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } fr
 import { workspaceRegistryCommand } from './workspace.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
+import { serviceCommand } from './service.js'
+import { runProcess } from '../common/adapters/process-runner.js'
+import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
+import { builtMainPath } from '../common/runtime/package-root.js'
 import { BUCKLE_VERSION } from '../common/runtime/version.js'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 
@@ -50,6 +54,16 @@ export function runInitCommand(argv: string[]): Promise<CliResult> {
 
 export function runSettingsCommand(argv: string[]): Promise<CliResult> {
   return settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd() })
+}
+
+/**
+ * `buckle service` (Phase 3 of the workspace-model slice): before buckle.env is read, so the programs it starts, the
+ * service manager's own, find no credential in its environment.
+ */
+export function runServiceCommand(argv: string[]): Promise<CliResult> {
+  const environment = process.env
+  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(),
+    manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) })
 }
 
 /** Help and the version, which need no configuration; null for every other command. */
@@ -277,7 +291,10 @@ function printUsage(): CliResult {
   buckle init                        Set this machine's node up once, and serve the current folder as a
                                      workspace; prints its agent token once
   buckle init --pair <code> --rings <url>   Redeem a Rings pairing code and register this node
-  buckle serve                       Serve every online workspace over HTTP: native RPC and MCP
+  buckle serve [--background]        Serve every online workspace over HTTP: native RPC and MCP; detached
+                                     from this terminal with --background
+  buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n N]
+                                     Run the node with no terminal, starting at every login
   buckle mcp [--workspace <name> | --dir <path>]   Serve one workspace's MCP over stdio
 
   A command acts on the workspace --workspace <name> or --dir <path> names, else on the one whose
