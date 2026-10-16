@@ -328,10 +328,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       const { commands } = compiled.policy
       if (commands.allow.length || commands.deny.length || commands.destructive?.length) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
       // A terminal works in the workbench's own copy, so a mount the owner shares writable is read-only there, as under shell isolation (Q6).
-      const mounts = refusedAsWorkbench(() => validateSandboxMounts(sandboxBinds(config.mounts).map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
+      // The node's scratch roots outside the folder are bound read-only too, as an isolated shell binds them: checked as a
+      // mount is, and one not made yet holds nothing to show. Credentials inside one are masked where it shows them.
+      const scratchRoots = scratchSources(config.mounts).filter(root => !isInside(config.cwd, root))
+      const binds = [...sandboxBinds(config.mounts), ...scratchRoots.filter(root => existsSync(root)).map(root => ({ source: root, target: root, readOnly: true }))]
+      const mounts = refusedAsWorkbench(() => validateSandboxMounts(binds.map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
-      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
+      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
@@ -339,8 +343,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
         mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
-      // The variables a shell command gets (Q11), and a terminal's TERM.
-      const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { ...sandbox.sandbox.environment?.(config.mountReadOnlyPaths), TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
+      // The variables a shell command gets (Q11): Buckle's, then the workspace's, then a terminal's TERM.
+      const environment = Object.fromEntries(Object.entries(buildChildEnvironment({ parent: process.env, extra: { ...sandbox.sandbox.environment?.(config.mountReadOnlyPaths), ...config.commandEnvironment, TERM: 'xterm-256color' } })).filter((entry): entry is [string, string] => entry[1] !== undefined))
       return { ...wrapped, cwd: request.cwd, environment, cols: request.cols, rows: request.rows }
     },
   })

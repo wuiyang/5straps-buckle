@@ -24,7 +24,8 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
 - Without a mount, the folder shows at its real path, and the node's `BUCKLE_MOUNTS` reach the
   shell alone, as before: the file tools cannot name a target there.
 - A workbench terminal shows its copy of the folder at `/workspace` whatever the workspace's
-  mount, and every mount read-only.
+  mount, and every mount read-only, the node's scratch roots outside the folder included. It
+  sees the workspace's variables, as a shell does.
 - The [dangerously-allow switch](approvals.md#dangerously-allow) answers asks about paths inside
   the workspace's folder, not inside its mounts: a write into a read-write mount still asks.
 

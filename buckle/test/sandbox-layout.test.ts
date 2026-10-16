@@ -164,7 +164,7 @@ describe('a shell command\'s variables', () => {
 })
 
 describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
-  it('are the shell\'s, with its TERM', async () => {
+  it('are the shell\'s, the workspace\'s over Buckle\'s, with its TERM', async () => {
     const root = scratch()
     const folder = join(root, 'site')
     mkdirSync(folder)
@@ -177,12 +177,14 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
     vi.stubEnv('USER', 'me')
     const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false' }))
     await registerWorkspace(manager, { id: 'site', dir: folder })
+    await manager.updateSettings(idOf(manager, 'site'), settings => ({ ...settings, env: { WORKSPACE_FIXTURE: 'from-the-workspace', TERM: 'dumb' } }))
     const { runtime } = await byName(manager, 'site')
     const grant = { id: randomUUID(), token: 'workbench-fixture-token-with-enough-bytes', projectId: 'project-a', chatId: 'chat-a', allowShell: true }
     await runtime.workbenches.provision(grant)
     await runtime.workbenches.startTerminal(grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })
     await vi.waitFor(() => expect(existsSync(seen) && readFileSync(seen, 'utf8')).toMatch(/TERM=xterm-256color/))
     const variables = readFileSync(seen, 'utf8')
+    expect(variables).toMatch(/^WORKSPACE_FIXTURE=from-the-workspace$/m)
     expect(variables).toMatch(/^USER=agent$/m)
     expect(variables).toMatch(/^TMPDIR=\/tmp$/m)
     expect(variables).not.toContain(`${bin}:`)
@@ -194,17 +196,18 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
 // the shell's: off unless shell.network is on and the workspace has no URL list to hold it to (the list is the
 // workspace's, else the node's, BUCKLE_ALLOWED_HOSTS folded in). The runtime builds the layout; a fake bwrap records it.
 describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
-  async function terminalArguments(input: { environment?: Record<string, string>; settings?: (settings: WorkspaceSettings) => WorkspaceSettings; mount?: boolean }): Promise<string[]> {
+  async function terminalArguments(input: { environment?: Record<string, string>; settings?: (settings: WorkspaceSettings) => WorkspaceSettings; mount?: boolean; scratchRoot?: (root: string) => string }): Promise<string[]> {
     const root = scratch()
     const folder = join(root, 'site')
     const data = join(root, 'data')
     const bin = join(root, 'bin')
     for (const path of [folder, data, bin]) mkdirSync(path)
+    const scratchRoot = input.scratchRoot?.(root)
     const seen = join(root, 'seen.args')
     writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${seen}'\n`)
     chmodSync(join(bin, 'bwrap'), 0o755)
     vi.stubEnv('PATH', `${bin}:/usr/bin:/bin`)
-    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...input.environment }))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...(scratchRoot ? { BUCKLE_SCRATCH_ROOTS: scratchRoot } : {}), ...input.environment }))
     await registerWorkspace(manager, { id: 'site', dir: folder })
     const id = idOf(manager, 'site')
     if (input.mount) await manager.addMount(id, { source: data, target: '/data', access: 'rw' })
@@ -224,6 +227,25 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
     const data = args.find((argument, index) => argument.endsWith('/data') && args[index + 1] === '/data')!
     expect(pairs(args, '--ro-bind')).toContainEqual([data, '/data'])
     expect(pairs(args, '--bind').map(([, target]) => target)).not.toContain('/data')
+  })
+
+  it('binds a scratch root outside the folder read-only, and masks the credentials inside it where it shows them', async () => {
+    const args = await terminalArguments({
+      scratchRoot: (root) => {
+        const scratchRoot = join(root, 'scratch')
+        mkdirSync(join(scratchRoot, '.ssh'), { recursive: true })
+        writeFileSync(join(scratchRoot, '.env'), 'TOKEN=scratch-fixture\n')
+        writeFileSync(join(scratchRoot, '.ssh', 'id_ed25519'), 'key')
+        return scratchRoot
+      },
+    })
+    const scratchRoot = args.find(argument => argument.endsWith('/scratch'))!
+    const bind = args.findIndex((argument, index) => argument === '--ro-bind' && args[index + 1] === scratchRoot && args[index + 2] === scratchRoot)
+    expect(bind).toBeGreaterThan(-1)
+    expect(pairs(args, '--bind').map(([, target]) => target)).not.toContain(scratchRoot)
+    for (const file of [join(scratchRoot, '.env'), join(scratchRoot, '.ssh', 'id_ed25519')]) {
+      expect(args.findIndex((argument, index) => argument === '--ro-bind' && args[index + 1] === '/dev/null' && args[index + 2] === file)).toBeGreaterThan(bind)
+    }
   })
 
   it.each([
