@@ -7,6 +7,7 @@ import { isRuntimeError, RuntimeErrorCode, type RuntimeOwner } from '@5straps/ru
 import { acquireFileLock, acquireOwnershipLock } from '@5straps/runtime/sqlite'
 import { requireOwnerOnly } from '../../adapters/file-modes.js'
 import { replaceFile } from '../../adapters/json-file-store.js'
+import { SERVE_REFUSED_EXIT } from '../../types/ports/service-manager.js'
 
 /**
  * What started a serving process that runs on with no terminal (Phase 3 of the workspace-model slice): the systemd
@@ -68,6 +69,16 @@ export const ALREADY_SERVING = 'Buckle is already running in service mode'
 
 export class AlreadyServingError extends Error {
   override readonly name = 'AlreadyServingError'
+}
+
+/**
+ * The exit code of a serve that `service` started and that found another node serving its state directory. The systemd
+ * unit does not restart on SERVE_REFUSED_EXIT (RestartPreventExitStatus). launchd has no such setting and restarts every
+ * failed exit (KeepAlive, SuccessfulExit false), so under launchd the refusal exits 0, which it leaves, rather than start
+ * again every five seconds beside the other node (Phase 3b, item 3). The refusal is logged the same either way.
+ */
+export function refusedServeExit(service: ServiceManagerKind | null): number {
+  return service === 'launchd' ? 0 : SERVE_REFUSED_EXIT
 }
 
 /** A serving process's hold on its state directory: the lock for its life, and the record it writes once it listens. */

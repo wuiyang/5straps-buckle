@@ -67,6 +67,7 @@ export interface ServiceManager {
 /**
  * The exit code of a serve a definition started that found another node already serving its state directory: a
  * definition does not restart it on that code (systemd's RestartPreventExitStatus), as starting again changes nothing.
+ * launchd has no such setting, so a serve it started exits 0 there instead (refusedServeExit).
  */
 export const SERVE_REFUSED_EXIT = 2
 

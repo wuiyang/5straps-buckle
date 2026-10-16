@@ -15,7 +15,7 @@ import { compilePolicy } from '../common/domain/policy.js'
 import { protectedStateRoots } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { serviceInstalled } from '../common/services/node-service/installed.js'
-import { holdServe, runningNode, serviceDirectory } from '../common/services/node-service/serve-record.js'
+import { holdServe, refusedServeExit, runningNode, SERVICE_MANAGERS, serviceDirectory } from '../common/services/node-service/serve-record.js'
 import type { ProcessRequest, ProcessRunner } from '../common/types/ports/process-runner.js'
 import { ServiceManagerError, type ServiceManager } from '../common/types/ports/service-manager.js'
 import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
@@ -565,5 +565,16 @@ describe('a shell command on Buckle\'s own launchd agent', () => {
       await runtime.approvalService.close()
       await runtime.history.close()
     }
+  })
+})
+
+// Phase 3b, item 3: launchd restarts every failed exit, so a serve it started that finds another node serving exits 0,
+// which launchd leaves, where the unit's exits 2, which the unit does not restart on. The built CLI is run on both in
+// test/http/service-systemd.test.ts.
+describe('the exit of a serve refused beside another node', () => {
+  it('is 0 under launchd alone, and 2 under every other manager and at a terminal', () => {
+    expect(refusedServeExit('launchd')).toBe(0)
+    for (const manager of SERVICE_MANAGERS.filter(kind => kind !== 'launchd')) expect(refusedServeExit(manager)).toBe(2)
+    expect(refusedServeExit(null)).toBe(2)
   })
 })

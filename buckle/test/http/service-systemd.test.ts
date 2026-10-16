@@ -129,7 +129,7 @@ describe('buckle service on Linux, with the systemd user manager imitated', () =
   // Fix brief 6, item 1 (findings 1 and 32 of recheck 4): a buckle serve typed at a terminal held no lock, so the family
   // could not see it: status said it was not running, --background started a second node, and a unit started beside it
   // failed on the port and restarted every 5 s. It now holds the lock as a `terminal` node, and each refuses beside it.
-  it('sees a buckle serve at a terminal: refuses to start anything beside it, shows it, names Ctrl-C, and the unit exits 2', async () => {
+  it('sees a buckle serve at a terminal: refuses to start anything beside it, shows it, names Ctrl-C, the unit exits 2, and the launchd agent 0', async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-service-terminal-')))
     const state = join(root, 'state')
     const workspace = join(root, 'workspace')
@@ -162,6 +162,12 @@ describe('buckle service on Linux, with the systemd user manager imitated', () =
     const unit = buckle(['serve', '--service', 'systemd', '--state-dir', state])
     expect(unit.status).toBe(2)
     expect(readFileSync(serviceLogPath(state), 'utf8')).not.toContain('EADDRINUSE')
+    // Phase 3b, item 3: launchd restarts every failed exit, so the launchd agent's serve exits 0 on the same refusal,
+    // which launchd leaves; it is logged as the unit's is.
+    const agent = buckle(['serve', '--service', 'launchd', '--state-dir', state])
+    expect(agent.status).toBe(0)
+    const refusals = readFileSync(serviceLogPath(state), 'utf8').split('\n').filter(line => line.includes('Buckle failed to start') && line.includes('Buckle is already running in service mode'))
+    expect(refusals).toHaveLength(2)
 
     terminal.child.kill('SIGTERM')
     expect(await terminal.exited).toMatchObject({ code: 0 })

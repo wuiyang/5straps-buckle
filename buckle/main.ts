@@ -13,9 +13,8 @@ import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from 
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
-import { AlreadyServingError, holdServe, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
+import { AlreadyServingError, holdServe, refusedServeExit, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
 import { besideService } from './common/services/node-service/attach.js'
-import { SERVE_REFUSED_EXIT } from './common/types/ports/service-manager.js'
 import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
 import { wordList } from './common/domain/word-list.js'
 import { serveHttp, type ServeHttpInput } from './server/serve.js'
@@ -202,8 +201,9 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
     // A stop requested during startup is a normal stop, not a failed start.
     if (shutdown.requested()) return
     logging.logger.fatal('Buckle failed to start', { error })
-    // A definition does not restart a node that found another serving its state directory (SERVE_REFUSED_EXIT).
-    process.exitCode = error instanceof AlreadyServingError ? SERVE_REFUSED_EXIT : 1
+    // A definition does not restart a node that found another serving its state directory: the unit does not on
+    // SERVE_REFUSED_EXIT, and launchd does not on 0 (refusedServeExit).
+    process.exitCode = error instanceof AlreadyServingError ? refusedServeExit(input.service) : 1
     await shutdown.close()
   }
 }
