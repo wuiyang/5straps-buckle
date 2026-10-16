@@ -12,6 +12,7 @@ import { rekeySwitch, switchKeys } from '../../adapters/policy-store/file-danger
 import { readStoredPolicies } from '../../adapters/policy-store/file-policy-store.js'
 import { workspaceArgument } from '../../domain/approval-instruction.js'
 import { comparablePath, ignoresCase, nativePath } from '../../domain/paths.js'
+import { wholeCharacters } from '../../domain/whole-characters.js'
 import { actionsPath, clientKeysPath, dangerouslyAllowPath, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { tokenDigest } from '../access/tokens.js'
@@ -504,11 +505,14 @@ function fittingName(input: { label: string; name: string; notes: string[] }): s
   return fit
 }
 
-/** The first 120 characters, ended at the last word's end in their second half where there is one. */
+/**
+ * The first 120 characters, ended at the last word's end in their second half where there is one, and never inside a
+ * surrogate pair, which would leave half a character the name rule refuses (fix brief 6, item 9).
+ */
 function cutName(name: string): string {
   const head = name.slice(0, NAME_LIMIT + 1)
   const end = Math.max(-1, ...[...head.matchAll(/[\s\-_./\\]/g)].map(match => match.index))
-  return (end >= NAME_LIMIT / 2 ? head.slice(0, end) : head.slice(0, NAME_LIMIT)).replace(/[\s\-_./\\]+$/, '')
+  return (end >= NAME_LIMIT / 2 ? head.slice(0, end) : wholeCharacters(head, NAME_LIMIT)).replace(/[\s\-_./\\]+$/, '')
 }
 
 /** Every record checked as the registry's reader will check it, so the move never writes a registry it then refuses (finding 3). */

@@ -354,6 +354,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
       ['a name whose 120th character falls inside a word, cut at the word before', `${'alpha beta gamma '.repeat(7)}deltaepsilonzeta`, 'alpha beta gamma '.repeat(7).trim()],
       ['a name with no separator at all, cut at 120 characters', 'x'.repeat(130), 'x'.repeat(120)],
       ['a name whose only separator is in its first half, cut at 120 characters', `ab ${'x'.repeat(130)}`, `ab ${'x'.repeat(117)}`],
+      // Fix brief 6, item 9 (finding 23 of recheck 4): the 120-unit cut kept the first half of a pair straddling it.
+      ['a name whose 120th unit begins a surrogate pair, cut before the pair', `${'a'.repeat(119)}\u{1F600}b`, 'a'.repeat(119)],
     ])('cuts %s', async (_label, folderName, expected) => {
       const input = scene()
       const folder = join(input.root, folderName)
@@ -364,6 +366,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       const manager = await open(input)
       const name = manager.list().find(workspace => workspace.id === workspaceIdOf(folder))!.name
       expect(name).toBe(expected)
+      expect(name.isWellFormed()).toBe(true)
       expect(notices.mock.calls.some(([message]) => String(message).includes(`was ${folderName.length} characters, more than the 120 a workspace name holds, so it is named ${expected}`))).toBe(true)
     })
 

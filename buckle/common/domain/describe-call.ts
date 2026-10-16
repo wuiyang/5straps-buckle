@@ -2,6 +2,7 @@ import { redactCredentials } from '@5straps/runtime'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { printable } from './approval-instruction.js'
 import { shownCommand } from './argv.js'
+import { wholeCharacters } from './whole-characters.js'
 
 /** Longest fact a description quotes whole: a command, a URL, a pattern; paths get more room. */
 const FACT_LENGTH = 200
@@ -154,11 +155,6 @@ function closeQuote(text: string): string {
 }
 
 /** The first `length` UTF-16 units, one fewer where the cut would split a surrogate pair. */
-function wholeCharacters(text: string, length: number): string {
-  const end = /[\uD800-\uDBFF]/.test(text.charAt(length - 1)) ? length - 1 : length
-  return text.slice(0, end)
-}
-
 function bytes(value: JsonValue | undefined, encoding?: JsonValue): string {
   return count(byteCount(value, encoding), 'byte')
 }
