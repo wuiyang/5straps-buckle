@@ -262,6 +262,27 @@ describe('main', () => {
     expect(String(printed.mock.calls[0]![0])).toContain('over HTTP, native RPC, and MCP, at')
   })
 
+  // Fix brief 4, finding 20: buckle serve was the first command after an upgrade and never asked for the node folder's name.
+  describe('the question for the node folder\'s name while a 0.1 node moves', () => {
+    const terminals = (isTTY: boolean) => {
+      for (const stream of [process.stdin, process.stderr]) Object.defineProperty(stream, 'isTTY', { value: isTTY, configurable: true, writable: true })
+    }
+    afterEach(() => { for (const stream of [process.stdin, process.stderr]) Reflect.deleteProperty(stream, 'isTTY') })
+
+    it('is asked at a terminal by buckle serve, which hands the runtime a way to ask', async () => {
+      terminals(true)
+      await main(['serve'])
+      expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ role: 'server', askName: expect.any(Function) }))
+    })
+
+    it.each([['serve without a terminal', ['serve'], false], ['mcp at a terminal, where stdin carries the protocol', ['mcp'], true]])('is never asked by %s', async (_how, argv, isTTY) => {
+      terminals(isTTY)
+      await main(argv)
+      expect(entry.initializeCommon).toHaveBeenCalledTimes(1)
+      expect((entry.initializeCommon.mock.calls as unknown[][])[0]![0]).not.toHaveProperty('askName')
+    })
+  })
+
   // Fix brief 4, findings 34 and 49: a workspace is typed by its name, not the UUID Buckle assigns.
   it('names the workspace buckle mcp serves by --workspace <name>', async () => {
     const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)

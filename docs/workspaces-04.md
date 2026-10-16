@@ -10,7 +10,8 @@ workspace then holds.
 
 - The folder the node served, `BUCKLE_WORKSPACE_ROOT` or the directory the command runs in,
   becomes a workspace named after its folder, with a UUID id and its records under
-  `workspaces/<id>/`. `BUCKLE_AUTH_TOKEN` becomes its token `node`, so agents configured with it
+  `workspaces/<id>/`. A name another workspace holds, or `node`, is asked about at a terminal,
+  `buckle serve` included, else it takes the start of the id. `BUCKLE_AUTH_TOKEN` becomes its token `node`, so agents configured with it
   keep working; `buckle workspace token create --workspace <that name>`, then `token revoke
   node`, rotates it.
 - Each workspace registered with `buckle workspace add` keeps its 0.1 id as its name, gets a UUID

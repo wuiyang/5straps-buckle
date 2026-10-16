@@ -2,6 +2,7 @@
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import type { Logger, LoggerRoot, RequestCli } from '@5straps/runtime'
+import { askAtTerminal } from './cli/ask.js'
 import { answerWithoutConfiguration, runCli, runInitCommand, runSettingsCommand } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
@@ -127,7 +128,9 @@ function refuseCommand(error: unknown): number {
 async function runService(input: { kind: ServiceKind; options: string[]; config: NodeConfig; logging: LoggerRoot }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)
-  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger })
+  // At a terminal, `buckle serve` may ask for the node folder's name while it moves a 0.1 node onto workspaces (D85, Q15), as
+  // every other command does, before the approval terminal starts; `buckle mcp` cannot, as stdin carries the protocol.
+  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminalFor(input.kind) ? { askName: question => askAtTerminal(question) } : {}) })
   common.owner.onClose('sinks', 'logger', () => logging.flush())
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
   const cli = setupCli({ terminal: terminalFor(input.kind) })

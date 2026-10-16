@@ -4,7 +4,7 @@ import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { environmentFilePath } from '../common/runtime/environment.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
-import { createInterface } from 'node:readline/promises'
+import { askAtTerminal } from './ask.js'
 import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
@@ -712,12 +712,6 @@ function print(value: unknown): CliResult {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
-}
-
-/** One question at this process's terminal, on stderr, closed once answered. */
-async function askAtTerminal(question: string): Promise<string> {
-  const readline = createInterface({ input: process.stdin, output: process.stderr })
-  try { return await readline.question(question) } finally { readline.close() }
 }
 
 async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
