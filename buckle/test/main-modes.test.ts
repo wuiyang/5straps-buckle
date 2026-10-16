@@ -268,6 +268,15 @@ describe('main', () => {
     expect(entry.initializeCommon).not.toHaveBeenCalled()
   })
 
+  // Phase 3, item 1: serve ignored every option it did not take, --background among them, and served in the foreground.
+  it.each([[['serve', '--bogus'], "Unknown option '--bogus'"], [['serve', '--state-dir', '/srv/state'], 'what a service definition passes']])('refuses %j with the reason, reading no configuration and starting nothing', async (argv, reason) => {
+    const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect(await main(argv)).toBe(1)
+    expect(String(refused.mock.calls[0]![0])).toContain(reason)
+    expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
+    expect(entry.initializeCommon).not.toHaveBeenCalled()
+  })
+
   // House rule: the Oxford comma in a list of three, in the text an owner reads first.
   it('writes the three faces buckle serve offers with the Oxford comma', async () => {
     const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)

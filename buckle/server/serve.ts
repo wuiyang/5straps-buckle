@@ -12,15 +12,27 @@ import { createHttpServer, type BuckleServer } from './setup-server.js'
  * never a refused connection. Every request carries a workspace's token, so the node needs no agent
  * credential of its own (D83).
  */
-export async function serveHttp(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; server: BuckleServer }): Promise<void> {
+export interface ServeHttpInput {
+  config: NodeConfig
+  common: BuckleCommon
+  logger: Logger
+  server: BuckleServer
+  /** Called once the node listens, before it is ready: a node with no terminal records its address then. */
+  onListening?: (address: AddressInfo) => void | Promise<void>
+  /** Where the online workspaces are listed: the terminal's stderr by default. */
+  write?: (text: string) => void
+}
+
+export async function serveHttp(input: ServeHttpInput): Promise<void> {
   const { config, common } = input
   const http = createHttpServer({ common, listener: input.server.middleware })
   const address = await http.listen({ host: config.host, port: config.port })
+  await input.onListening?.(address)
   await common.start()
   const workspaces = await common.services.getWorkspaces()
   logListening({ logger: input.logger, config, workspaces: workspaces.list(), address })
   // On the terminal the questions are asked on, the online workspaces, and again after each change (item 6).
-  const write = (text: string) => void process.stderr.write(text)
+  const write = input.write ?? ((text: string) => void process.stderr.write(text))
   write(await describeOnline(workspaces))
   common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write, watchPath: config.stateDirectory }))
   if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })

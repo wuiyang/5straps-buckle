@@ -1,7 +1,10 @@
-import { createLogger, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel } from '@5straps/runtime'
+import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
 import { parseList } from './config.js'
 
 const COMPONENT = 'buckle'
+/** The service log's bounds: five files of about 10 MiB, so a node left running for months keeps its disk use bounded. */
+const LOG_FILE_MAX_BYTES = 10 * 1_048_576
+const LOG_FILE_MAX_FILES = 5
 // Created on first use with the defaults, until main configures it from the environment.
 let root: LoggerRoot | undefined
 
@@ -16,10 +19,16 @@ export function rootLogger(): LoggerRoot {
   return root
 }
 
+/**
+ * Where the process's log lines go: stderr, or, for a node running with no terminal (`buckle service`, `buckle serve
+ * --background`), the one rotating file under its state directory alone, which no agent tool reads (Phase 3, item 6).
+ */
+export type LogOutput = { file: string } | 'stderr'
+
 /** Main calls this once, before anything else logs; a default root made earlier is flushed and replaced. */
-export function configureRootLogger(config: LoggerConfig): LoggerRoot {
+export function configureRootLogger(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
   const previous = root
-  root = createRoot(config)
+  root = createRoot(config, output)
   void previous?.close()
   return root
 }
@@ -56,8 +65,13 @@ export function loggerConfigFrom(environment: NodeJS.ProcessEnv): LoggerConfig {
   }
 }
 
-function createRoot(config: LoggerConfig): LoggerRoot {
-  return createLogger({ ...config, component: COMPONENT, sinks: [createStderrJsonSink()] })
+function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
+  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output)] })
+}
+
+function sinkFor(output: LogOutput): LogSink {
+  if (output === 'stderr') return createStderrJsonSink()
+  return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
 }
 
 // Resolved on every call, so a logger taken at import time follows the root main configures later.

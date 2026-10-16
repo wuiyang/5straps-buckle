@@ -51,6 +51,24 @@ function ownEnvironmentFile(named: string, environment: NodeJS.ProcessEnv): bool
   return isInside(realPathOf(stateDirectoryOf(environment)), realPathOf(path))
 }
 
+/** Where a node lives, as paths alone: its state directory, and the environment file BUCKLE_ENV_FILE names, if any. */
+export interface NodeLocation {
+  stateDirectory: string
+  environmentFile: string | null
+}
+
+/**
+ * Where the node lives, read before its environment file is loaded, so a command that starts another program (`buckle
+ * service`, `buckle serve --background`) has no credential in its own environment. A file BUCKLE_ENV_FILE names may
+ * move the state directory, as loadEnvironmentFile honours its BUCKLE_STATE_DIR line; that one line is read, by name,
+ * and no other value of the file.
+ */
+export function nodeLocation(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeLocation {
+  const environmentFile = environment.BUCKLE_ENV_FILE ? environmentFilePath(environment) : null
+  const named = environment.BUCKLE_STATE_DIR || (environmentFile !== null && existsSync(environmentFile) ? Object.fromEntries(buckleVariables(readFileSync(environmentFile, 'utf8'))).BUCKLE_STATE_DIR : undefined)
+  return { stateDirectory: stateDirectoryOf({ ...environment, BUCKLE_STATE_DIR: named }, platform), environmentFile }
+}
+
 /** buckle.env in the state directory the process environment names. */
 export function defaultEnvironmentFile(environment: NodeJS.ProcessEnv = process.env): string {
   return join(stateDirectoryOf(environment), ENVIRONMENT_FILE_NAME)

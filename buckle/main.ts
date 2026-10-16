@@ -8,14 +8,17 @@ import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
-import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
+import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
-import { configureRootLogger, flushLogs, logger, loggerConfigFrom } from './common/runtime/log.js'
+import { configureRootLogger, flushLogs, logger, loggerConfigFrom, type LogOutput } from './common/runtime/log.js'
+import { BUCKLE_VERSION } from './common/runtime/version.js'
+import { holdServe, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
 import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
 import { wordList } from './common/domain/word-list.js'
-import { serveHttp } from './server/serve.js'
-import { builtEntryPath, setupServer } from './server/setup-server.js'
+import { serveHttp, type ServeHttpInput } from './server/serve.js'
+import { parseServeOptions, SERVE_USAGE, startInBackground, useServiceLocation, type ServeOptions } from './server/service-mode.js'
+import { builtEntryPath, builtMainPath, setupServer } from './server/setup-server.js'
 
 export type Mode =
   | { kind: 'init' | 'settings' | 'client' | 'cli'; argv: string[] }
@@ -58,9 +61,10 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   configureOwnerOnlyCheck({ skip: global.skipOwnerOnlyCheck })
   const mode = selectMode(global.argv)
   if (!('argv' in mode)) {
+    if (mode.kind === 'serve') return serve(mode.options, global.skipOwnerOnlyCheck)
     // Help needs no configuration, and starts nothing (finding 24 of the workspace-model Phase 1 review).
     if (mode.options.some(option => option === '--help' || option === '-h')) return printServiceUsage(mode.kind)
-    await runService({ kind: mode.kind, options: mode.options, ...configureProcess(mode.kind) })
+    await runService({ kind: mode.kind, options: mode.options, service: null, ...configureProcess(mode.kind) })
     return undefined
   }
   try {
@@ -68,6 +72,37 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   } catch (error) {
     return refuseCommand(error)
   }
+}
+
+/**
+ * `buckle serve`: at this terminal, detached from it with --background, or, with --service, as a service definition
+ * runs it (Phase 3 of the workspace-model slice).
+ */
+async function serve(options: string[], skipOwnerOnlyCheck: boolean): Promise<number | undefined> {
+  let parsed: ServeOptions
+  try { parsed = parseServeOptions(options) } catch (error) { return refuseCommand(error) }
+  if (parsed.help) return printServiceUsage('serve')
+  // Before buckle.env is read: the node it starts reads the file itself, and this process holds no credential.
+  if (parsed.background) {
+    const started = await startInBackground({ options: parsed, mainScript: builtMainPath(), skipOwnerOnlyCheck })
+    ;(started.exitCode === 0 ? process.stdout : process.stderr).write(`${started.message}\n`)
+    return started.exitCode
+  }
+  const output = serviceOutput(parsed)
+  await runService({ kind: 'serve', options, service: parsed.service, ...configureProcess('serve', output) })
+  return undefined
+}
+
+/**
+ * Where a serve logs: stderr at a terminal; with no terminal, the state directory's one rotating file alone, from the
+ * first line, so a start that fails is logged there too (Phase 3, item 6).
+ */
+function serviceOutput(parsed: ServeOptions): LogOutput {
+  if (parsed.service === null) return 'stderr'
+  useServiceLocation(parsed.location)
+  const output = { file: serviceLogPath(stateDirectoryOf(process.env)) }
+  configureRootLogger({}, output)
+  return output
 }
 
 async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<number> {
@@ -82,13 +117,13 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>): Promise<numb
   return (await runCli({ argv: mode.argv, config: configureProcess('cli').config })).exitCode
 }
 
-function configureProcess(kind: ServiceKind | 'cli'): { config: NodeConfig; logging: LoggerRoot } {
+function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr'): { config: NodeConfig; logging: LoggerRoot } {
   // An MCP client starts buckle mcp, from a config an agent may write: it reads no settings file but the node's own.
   if (kind === 'mcp') refuseForeignEnvironmentFile()
   // What the process was started with, before the file fills in the rest: migration reads the file alone (MigrationInput).
   const caller = { ...process.env }
   const environment = loadEnvironmentFile()
-  const logging = configureRootLogger(loggerConfigFrom(process.env))
+  const logging = configureRootLogger(loggerConfigFrom(process.env), output)
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
   const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller, defaultsFromFileAlone: true }
@@ -100,12 +135,7 @@ function configureProcess(kind: ServiceKind | 'cli'): { config: NodeConfig; logg
 }
 
 const SERVICE_USAGE: Record<ServiceKind, string> = {
-  serve: `Usage: buckle serve
-
-Serves every online workspace over HTTP, native RPC, and MCP, at BUCKLE_HOST and BUCKLE_PORT (127.0.0.1:4320 by
-default). An agent's token chooses its workspace. In a terminal it lists the workspaces it serves and asks each
-approval there. Ctrl-C stops it.
-`,
+  serve: SERVE_USAGE,
   mcp: `Usage: buckle mcp [--workspace <name> | --dir <path>]
 
 Serves one workspace's MCP over stdio, for an MCP client to start: the workspace --workspace names, else the one
@@ -127,15 +157,16 @@ function refuseCommand(error: unknown): number {
 }
 
 // One common runtime for the process; main owns its signals and closes it stage by stage.
-async function runService(input: { kind: ServiceKind; options: string[]; config: NodeConfig; logging: LoggerRoot }): Promise<void> {
+async function runService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; logging: LoggerRoot }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)
   // At a terminal, `buckle serve` may ask for the node folder's name while it moves a 0.1 node onto workspaces (D85, Q15), as
   // every other command does, before the approval terminal starts; `buckle mcp` cannot, as stdin carries the protocol.
-  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminalFor(input.kind) ? { askName: question => askAtTerminal(question) } : {}) })
+  const terminal = input.service === null ? terminalFor(input.kind) : null
+  const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminal ? { askName: question => askAtTerminal(question) } : {}) })
   common.owner.onClose('sinks', 'logger', () => logging.flush())
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
-  const cli = setupCli({ terminal: terminalFor(input.kind) })
+  const cli = setupCli({ terminal })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const shutdown = closeOnSignals({ common, logging })
   try {
@@ -149,19 +180,40 @@ async function runService(input: { kind: ServiceKind; options: string[]; config:
   }
 }
 
-async function startService(input: { kind: ServiceKind; options: string[]; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
+async function startService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
   if (input.kind === 'serve') {
+    // Before anything else, so a second node on this state directory is refused before it builds anything.
+    const unattended = input.service === null ? {} : await holdService({ ...input, service: input.service })
     // The built app, with the host and the one cli:call listener bound before anything is accepted.
     const server = await setupServer({ ...input, entryPath: builtEntryPath() })
     // HTTP asks through the app's cli:call hook, which main's listener answers (ruling 4 of 2026-09-28).
     input.common.bindRequester(server.requestCli)
-    return serveHttp({ ...input, server })
+    return serveHttp({ ...input, server, ...unattended })
   }
   // MCP stdio is handed the requester itself; stdin carries the protocol.
   input.common.bindRequester(input.requestCli)
   // The client closing stdin ends the session. 'end' needs a reader, so attaching first misses nothing.
   process.stdin.once('end', () => { void input.shutdown.close() })
   return serveMcpStdio({ ...input, target: mcpTarget(input.options) })
+}
+
+/**
+ * A serve with no terminal (Phase 3): it holds the state directory's serve lock for its life, records its pid, version,
+ * and address once it listens, stops when `buckle service stop` asks it to (Windows delivers a service no SIGTERM), and
+ * logs the workspaces it serves, as no terminal shows them.
+ */
+async function holdService(input: { config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; service: ServiceManagerKind }): Promise<Pick<ServeHttpInput, 'onListening' | 'write'>> {
+  const { stateDirectory } = input.config
+  const hold = await holdServe({ stateDirectory, owner: input.common.owner })
+  const onStop = () => {
+    input.logger.info('Shutdown requested', { by: 'buckle service stop' })
+    void input.shutdown.close()
+  }
+  input.common.owner.onClose('timers', 'stop request', watchStopRequest({ stateDirectory, onStop }))
+  return {
+    onListening: address => hold.publish({ manager: input.service, version: BUCKLE_VERSION, host: address.address, port: address.port }),
+    write: text => input.logger.info('Workspaces served', { workspaces: text.trimEnd() }),
+  }
 }
 
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol. The question is
