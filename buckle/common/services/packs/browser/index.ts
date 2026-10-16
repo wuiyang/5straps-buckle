@@ -212,10 +212,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               const stale = running.kind === 'fresh' && input.command !== 'close' && known !== undefined && recorded !== undefined && recorded !== flag
               // A daemon started under other settings keeps them, so its session is closed and a new one named.
               const replaced = mismatch || stale ? known : null
-              if (known === undefined || replaced !== null) {
-                state.sessions[key] = own ?? `buckle-${randomUUID()}`
-                delete state.allowedDomains[key]
-              }
+              if (known === undefined || replaced !== null) state.sessions[key] = own ?? `buckle-${randomUUID()}`
+              // A daemon starts under this list at this call's first command, whether the call then succeeds, fails, or
+              // times out, so the list is recorded before it runs: a later change then relaunches it.
+              if (input.command !== 'close') state.allowedDomains[key] = flag
               state.modes[key] = fingerprint
               state.writers[key] = process.pid
               return { session: state.sessions[key]!, relaunchedFrom: stale ? recorded : undefined, replaced, sibling: false }
@@ -226,6 +226,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
               if (!closed) logger.warn('A browser session from other settings did not close; its idle timeout ends it')
             }
+            // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
+            // retire of the pack a change replaces, and by the node's shutdown.
+            if (running.kind !== 'profile' && input.command !== 'close') opened.add(session)
             args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs, idleTimeoutMs }))
             if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
@@ -257,9 +260,6 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
                 delete state.modes[key]
                 delete state.writers[key]
               })
-            } else {
-              if (running.kind !== 'profile') opened.add(session)
-              await sessions.update(state => { state.allowedDomains[key] = flag })
             }
             const relaunched = relaunchedFrom !== undefined
             if (relaunched) logger.warn('Browser relaunched because its allowed domains changed', { previous: relaunchedFrom ?? 'none', current: flag ?? 'none' })

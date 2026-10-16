@@ -94,14 +94,18 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const binary = join(root, 'agent-browser')
     const slowClose = closeDelayMs > 0 ? `if (process.argv[2] === 'close') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${closeDelayMs})\n` : ''
     const slowWait = waitDelayMs > 0 ? `if (process.argv[2] === 'wait') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${waitDelayMs})\n` : ''
-    writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\n${slowWait}process.stdout.write('{"success":true}')\n`)
+    // While this file exists, the next call fails once: the daemon it started still runs, as agent-browser's does.
+    const failMarker = join(root, 'fail-next')
+    const failOnce = `if (require('node:fs').existsSync(${JSON.stringify(failMarker)})) { require('node:fs').rmSync(${JSON.stringify(failMarker)}); process.stderr.write('page did not load'); process.exit(1) }\n`
+    writeFileSync(binary, `#!/usr/bin/env node\n${slowClose}require('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\n${failOnce}${slowWait}process.stdout.write('{"success":true}')\n`)
     chmodSync(binary, 0o755)
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary, ...environment })
     const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
     const stored = () => JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
-    return { runtime, calls, config, stored }
+    const failNext = () => writeFileSync(failMarker, '')
+    return { runtime, calls, config, stored, failNext }
   }
 
   function policy(network: string[]): WorkspacePolicy {
@@ -190,6 +194,34 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
       warn.mockRestore()
     }
   }, 20000) // three real agent-browser spawns in sequence; default 5000ms is tight under a loaded gate
+
+  // A first call that fails still started the session's daemon under the list of that moment, so a change to the hosts
+  // relaunches it, and the pack the change replaces ends it, as for one whose first call succeeded.
+  it('relaunches, with the notice, a session whose first call failed once the hosts change, and ends the browser that call started', async () => {
+    const { runtime, calls, stored, failNext } = await fixture(['app.example.test', 'removed.example.test'])
+    failNext()
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'error' })
+    const first = sessionOf(calls()[0])
+    expect(Object.values(stored().allowedDomains)).toEqual(['app.example.test,removed.example.test'])
+    await runtime.policy.apply(policy(['app.example.test']))
+    // The replaced pack's retire closes the browser the failed call started.
+    expect(calls().at(-1)).toEqual(['close', '--session', first, '--json'])
+    const response = await browse(runtime, { command: 'snapshot', args: [] })
+    expect(noticeOf(response)).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
+    const snapshot = calls().find(call => call[0] === 'snapshot')
+    expect(sessionOf(snapshot)).not.toBe(first)
+    expect(flagOf(snapshot)).toBe('app.example.test')
+  }, 20000)
+
+  it('closes at shutdown the browser a session\'s only, failed, call started, and forgets the session', async () => {
+    const { runtime, calls, stored, failNext } = await fixture(['app.example.test'])
+    failNext()
+    expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'error' })
+    const session = sessionOf(calls()[0])
+    await runtime.closeSessions()
+    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+  }, 20000)
 
   // Fix brief 2, R2: the pack a policy change replaces is retired, not shut down, so the agent's session carries over.
   it('ends the browsers of the pack a policy change replaces, keeps their sessions for the pack that follows, and forgets them at shutdown alone', async () => {
