@@ -64,6 +64,18 @@ describe('a write to workspace.json from another process', () => {
     expect(await read()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
   })
 
+  // Left from the fix round that fenced the browser pack (H13): the stored browser block, which no pack reads yet, still
+  // counted as a change to the tools, so a hand edit of it rebuilt every other pack once the workspace was idle.
+  it('leaves every pack as it is through a hand edit of the stored browser block, which no pack reads yet', async () => {
+    await read()
+    const { runtime } = await serving.resolve(site)
+    const registry = runtime.registry()
+    await owner.updateSettings(site, settings => ({ ...settings, browser: { ...settings.browser, idleTimeoutMs: 120_000 } }))
+
+    expect(await read()).toMatchObject({ outcome: 'ok' })
+    expect(runtime.registry()).toBe(registry)
+  })
+
   it('applies the approval wait and the variables at the next call', async () => {
     await read()
     await owner.updateSettings(site, settings => ({ ...settings, approvalWaitMs: 1_234, env: { GREETING: 'hello' } }))
@@ -209,6 +221,14 @@ describe('a policy list or a variable changed while work is active', () => {
     await vi.waitFor(() => expect(runtime.inspectActiveWork()).toBe(true))
     return { runtime, config, held, call: (tool: string, args: Record<string, unknown>) => runtime.invoke({ request: { requestId: `${tool}-${Math.random()}`, tool, args: args as never, approvalTokens: [] }, sessionId: 'live' }) }
   }
+
+  it('answers a call at once through a hand edit of the stored browser block, which no pack reads, though another call is in flight', async () => {
+    const { held, call } = await holdingWrite()
+    await owner.updateSettings(site, settings => ({ ...settings, browser: { ...settings.browser, headed: true } }))
+
+    expect(await call('fs_read', { path: 'note.md' })).toMatchObject({ outcome: 'ok' })
+    expect(await held).toMatchObject({ outcome: 'approval_required' })
+  })
 
   it('applies a policy list at the next call with no 409 while another call is in flight, which keeps the rules it started with', async () => {
     const { held, call } = await holdingWrite()

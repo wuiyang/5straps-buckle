@@ -691,11 +691,13 @@ function policyHash(compiled: CompiledPolicy): string {
 }
 
 /**
- * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered, where the folder shows, and the
- * browser settings. A change to any of it rebuilds the packs once no work is active, and refuses calls with a 409 until then.
+ * What reshapes a workspace's tools (fix brief 1, D), as in force: the packs offered and where the folder shows. A change
+ * to either rebuilds the packs once no work is active, and refuses calls with a 409 until then. The stored browser block
+ * is not among them: no pack reads it yet, so a hand edit of it changes no tool (browserInputs names what the browser
+ * pack is handed, the node's settings until a later release reads each workspace's own).
  */
 function reshapeInputs(settings: ResolvedSettings): string {
-  return JSON.stringify([settings.packs, settings.mount, settings.browser])
+  return JSON.stringify([settings.packs, settings.mount])
 }
 
 /**
