@@ -17,6 +17,8 @@ const entry = vi.hoisted(() => ({
   serveMcpStdio: vi.fn(async () => {}),
   initializeCommon: vi.fn(() => ({ owner: { onClose: vi.fn(), close: vi.fn(async () => {}) }, bindRequester: vi.fn() })),
   configureOwnerOnlyCheck: vi.fn(),
+  /** A node serving the state directory with no terminal, as `buckle serve` sees one; none by default. */
+  runningNode: vi.fn(async (): Promise<unknown> => null),
   /** What the root logger main configures was told to warn about, by message. */
   warnings: [] as string[],
 }))
@@ -27,6 +29,7 @@ vi.mock('../server/serve.js', () => ({ serveHttp: entry.serveHttp }))
 vi.mock('../server/setup-server.js', () => ({ setupServer: entry.setupServer, builtEntryPath: () => '/built/.output/server/index.mjs' }))
 vi.mock('../mcp/stdio.js', async importOriginal => ({ serveMcpStdio: entry.serveMcpStdio, mcpTarget: (await importOriginal<typeof import('../mcp/stdio.js')>()).mcpTarget }))
 vi.mock('../common/runtime/initialize.js', () => ({ initializeCommon: entry.initializeCommon }))
+vi.mock('../common/services/node-service/serve-record.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/services/node-service/serve-record.js')>(), runningNode: entry.runningNode }))
 vi.mock('../common/adapters/file-modes.js', async importOriginal => ({ ...await importOriginal<typeof import('../common/adapters/file-modes.js')>(), configureOwnerOnlyCheck: entry.configureOwnerOnlyCheck }))
 vi.mock('../common/runtime/log.js', async importOriginal => {
   const original = await importOriginal<typeof import('../common/runtime/log.js')>()
@@ -271,6 +274,17 @@ describe('main', () => {
     expect(String(printed.mock.calls[0]![0])).toContain(`Usage: buckle ${argv[0]}`)
     expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
     expect(entry.initializeCommon).not.toHaveBeenCalled()
+  })
+
+  // Q5 of the 2026-10-15 rulings (Phase 3, item 5): beside a node running with no terminal, serve attaches nothing and starts nothing.
+  it('refuses buckle serve where a node already serves in service mode, naming the attach command, reading no configuration', async () => {
+    entry.runningNode.mockResolvedValueOnce({ record: { pid: 4242, manager: 'systemd', version: '0.1.4', host: '127.0.0.1', port: 4320, startedAt: '2026-10-16T00:00:00.000Z' } })
+    const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    expect(await main(['serve'])).toBe(1)
+    expect(String(refused.mock.calls[0]![0])).toMatch(/^Buckle is already running in service mode \(pid 4242\), so buckle serve starts nothing\. Answer its approvals here with: buckle approvals --watch( --all)?\n$/)
+    expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
+    expect(entry.initializeCommon).not.toHaveBeenCalled()
+    expect(entry.serveHttp).not.toHaveBeenCalled()
   })
 
   // Phase 3, item 1: serve ignored every option it did not take, --background among them, and served in the foreground.

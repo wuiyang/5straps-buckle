@@ -13,7 +13,8 @@ import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from 
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { configureRootLogger, flushLogs, logger, loggerConfigFrom, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
-import { AlreadyServingError, holdServe, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
+import { AlreadyServingError, holdServe, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
+import { besideService } from './common/services/node-service/attach.js'
 import { SERVE_REFUSED_EXIT } from './common/types/ports/service-manager.js'
 import { mcpTarget, serveMcpStdio } from './mcp/stdio.js'
 import { wordList } from './common/domain/word-list.js'
@@ -93,9 +94,27 @@ async function serve(options: string[], skipOwnerOnlyCheck: boolean): Promise<nu
     ;(started.exitCode === 0 ? process.stdout : process.stderr).write(`${started.message}\n`)
     return started.exitCode
   }
+  if (parsed.service === null) {
+    const refused = await besideRunningNode()
+    if (refused !== null) return refused
+  }
   const output = serviceOutput(parsed)
   await runService({ kind: 'serve', options, service: parsed.service, ...configureProcess('serve', output) })
   return undefined
+}
+
+/**
+ * Q5 of the 2026-10-15 rulings: `buckle serve` where a node already serves the state directory with no terminal (the
+ * service, or --background) says Buckle is already running in service mode, names the command that answers its
+ * approvals here, and exits 1, attaching nothing and starting nothing. Read before buckle.env, as paths alone.
+ */
+async function besideRunningNode(): Promise<number | null> {
+  let stateDirectory: string
+  try { stateDirectory = nodeLocation(process.env).stateDirectory } catch (error) { return refuseCommand(error) }
+  const running = await runningNode(stateDirectory)
+  if (running === null) return null
+  process.stderr.write(`${besideService({ running, command: 'buckle serve', stateDirectory, cwd: process.cwd() })}\n`)
+  return 1
 }
 
 /**

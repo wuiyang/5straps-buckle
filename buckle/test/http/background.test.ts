@@ -108,6 +108,23 @@ describe('buckle serve --background', () => {
     expect(audit).not.toContain('background-admin-fixture')
   }, 90_000)
 
+  // Q5 of the 2026-10-15 rulings (Phase 3, item 5): `buckle serve` beside it says so, names the attach command, and starts nothing.
+  it('refuses buckle serve beside it, naming buckle approvals --watch for the one online workspace holding this folder, and --all elsewhere', async () => {
+    const node = await prepareNode()
+    expect(buckle(node, ['workspace', 'init', '--name', 'site']).status).toBe(0)
+    const run = buckle(node, ['serve', '--background'])
+    expect(run.status).toBe(0)
+    expect(run.stdout).toContain('Answer its approvals with buckle approvals --watch; stop it with buckle service stop.')
+    const pid = Number(/\(pid (\d+)\)/.exec(run.stdout)![1])
+    started.push(pid)
+
+    const beside = buckle(node, ['serve'])
+    expect(beside).toMatchObject({ status: 1, stdout: '', stderr: `Buckle is already running in service mode (pid ${pid}), so buckle serve starts nothing. Answer its approvals here with: buckle approvals --watch\n` })
+    const elsewhere = spawnSync(process.execPath, [entry, 'serve'], { encoding: 'utf8', env: node.env, cwd: node.root, timeout: 60_000 })
+    expect(elsewhere.stderr).toBe(`Buckle is already running in service mode (pid ${pid}), so buckle serve starts nothing. Answer its approvals here with: buckle approvals --watch --all\n`)
+    expect(buckle(node, ['service', 'stop']).status).toBe(0)
+  }, 90_000)
+
   // Phase 3, item 3: the Windows task's action is this start, naming where the node lives; it detaches the node and ends,
   // and the node stops on its stop request, as Task Scheduler delivers no SIGTERM. Run here on Linux, imitating it.
   it('starts the node as the Windows task\'s action does, from where the definition names, and stops it by its request', async () => {
