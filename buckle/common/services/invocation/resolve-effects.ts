@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises'
 import { dirname } from 'pathe'
 import type { ResolvedEffect, ToolEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
+import { missingMountReason, mountSourceState } from '../../domain/sandbox-mounts.js'
 import { ToolInputError } from '../../domain/tool.js'
 import { realPathOrPlanned } from './real-path.js'
 
@@ -21,6 +22,7 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
     // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
     const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)
     const path = await realPathOrPlanned(named, { shares: paths.shares })
+    if (effect.kind === 'write_path') refuseMissingMount(path, paths)
     return { kind: effect.kind, path, directory: await containingDirectory(path) }
   }
   if (effect.kind === 'network') {
@@ -31,6 +33,16 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
     }
   }
   return effect
+}
+
+/**
+ * A write into one of the owner's mounts whose source is gone is refused before any rule judges it, naming the mount
+ * by its target: it would make a folder where the owner's was (a renamed ~/data), and history has nothing there to
+ * checkpoint. A scratch root not made yet is still written, as its first write may make it.
+ */
+function refuseMissingMount(path: string, paths: PathView): void {
+  const holder = paths.mountOf(path)
+  if (holder && !holder.scratch && mountSourceState(holder.source) === 'missing') throw new ToolInputError(missingMountReason(holder.target), { code: 'PERMISSION_DENIED' })
 }
 
 /**

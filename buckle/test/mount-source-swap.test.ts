@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -119,5 +119,66 @@ describe('the node\'s BUCKLE_MOUNTS', () => {
     symlinkSync(join(root, 'dotfiles'), join(root, 'dotfiles-link'))
     const config = loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_MOUNTS: JSON.stringify([{ source: join(root, 'dotfiles-link'), target: '/tmp/home/.config' }]) })
     expect(config.workspaceDefaults.mounts).toEqual([{ source: join(root, 'dotfiles'), target: '/tmp/home/.config', access: 'ro' }])
+  })
+})
+
+// A writable mount whose source is gone (a renamed or deleted ~/data, or a hand-edited source) gives history nothing to
+// checkpoint: the folder above it is never taken in its place, and a write or a shell run aimed at it is refused.
+describe('a mount whose source is gone', () => {
+  async function workspaceBesideHome() {
+    const root = scratch()
+    const home = join(root, 'home')
+    mkdirSync(join(home, 'data'), { recursive: true })
+    writeFileSync(join(home, 'big.bin'), Buffer.alloc(200_000, 1))
+    writeFileSync(join(home, 'secret.txt'), 'owner secret')
+    mkdirSync(join(root, 'site'))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_HISTORY_MAX_BYTES: '100000' }))
+    await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
+    await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: join(home, 'data'), target: '/data', access: 'rw' }], '/workspace'))
+    const { runtime } = await byName(manager, 'site')
+    await runtime.grants.grant({ sessionId: 'site', rule: 'write_scope', subject: join(root, 'site'), scope: 'always' })
+    await runtime.grants.grant({ sessionId: 'site', rule: 'write_scope', subject: join(home, 'data'), scope: 'always' })
+    const write = (path: string) => runtime.invoke({ request: { requestId: `write-${Math.random()}`, tool: 'fs_write', args: { path, content: 'written' }, approvalTokens: [] }, sessionId: 'site' })
+    return { root, home, manager, runtime, write }
+  }
+
+  it('leaves the workspace writable, and history never snapshots the folder above it', async () => {
+    const { root, home, manager, write } = await workspaceBesideHome()
+    rmSync(join(home, 'data'), { recursive: true })
+    expect(await write('/workspace/b.txt')).toMatchObject({ outcome: 'ok' })
+    const history = join(root, 'state', 'workspaces', idOf(manager, 'site'), 'history')
+    const [key] = readdirSync(history).filter(name => !name.startsWith('.'))
+    const database = new DatabaseSync(join(history, key!, 'history.sqlite'), { readOnly: true })
+    const roots = database.prepare('SELECT data FROM checkpoints').all().map(row => (JSON.parse(String(row.data)) as { roots: string[] }).roots)
+    const copied = database.prepare('SELECT content FROM objects').all().map(row => Buffer.from(row.content as Uint8Array).toString('utf8'))
+    database.close()
+    expect(roots).toEqual([[join(root, 'site')]])
+    expect(copied).not.toContain('owner secret')
+    await manager.close()
+  })
+
+  it('refuses a write into it, naming the mount by its target and the command that removes it', async () => {
+    const { root, home, manager, write } = await workspaceBesideHome()
+    expect(await write('/data/a.txt')).toMatchObject({ outcome: 'ok' })
+    rmSync(join(home, 'data'), { recursive: true })
+    const refused = await write('/data/b.txt')
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('The mount at /data has no source on disk; the owner re-adds it, or removes it with buckle workspace mount remove /data') } })
+    expect(JSON.stringify(refused)).not.toContain(root)
+    expect(existsSync(join(home, 'data'))).toBe(false)
+    await manager.close()
+  })
+
+  it('refuses a shell run, naming the target, where it used to fail on a raw ENOENT', () => {
+    const root = scratch()
+    expect(() => validateSandboxMounts([{ source: join(root, 'gone'), target: '/data', readOnly: false }], { protectedRoots: [], workspaceRoots: [join(root, 'site')], workspaceTarget: '/workspace' }))
+      .toThrow('The mount at /data has no source on disk; the owner re-adds it, or removes it with buckle workspace mount remove /data')
+  })
+
+  it('still covers a scratch root not made yet from the nearest folder that is, as its first write may make it', () => {
+    const root = scratch()
+    const site = join(root, 'site')
+    mkdirSync(site)
+    const mounts = createPathView({ root: site, mount: '/workspace', mounts: [{ source: join(root, 'scratch', 'later'), target: join(root, 'scratch', 'later'), access: 'rw', scratch: true }, { source: join(root, 'gone'), target: '/gone', access: 'rw' }] }).mounts
+    expect(checkpointRoots(site, mounts)).toEqual([site, root])
   })
 })
