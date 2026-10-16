@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
 import { MountPathSchema, type HarnessManifest } from '@5straps/protocol'
-import { loadConfig, realPathOf, stateDirectoryOf, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
+import { loadConfig, realPathOf, stateDirectoryOf, WORKSPACE_DEFAULT_KEYS, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
 import { buckleVariables, defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
 import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
 import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
@@ -196,13 +196,15 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?:
 
 /**
  * The node's workspace defaults the file `--force` writes again held (D85, Q3): init asks for none of them, and its deny
- * lists are a floor over every workspace (Q14), so the new file keeps each, a command list written with `;;` between
- * its globs, as the node reads one. One that cannot be carried refuses init before anything changes.
+ * lists are a floor over every workspace (Q14), so the new file keeps each, every one of WORKSPACE_DEFAULT_KEYS, a command
+ * list written with `;;` between its globs, as the node reads one. One that cannot be carried refuses init before anything
+ * changes.
  */
 function carriedDefaults(out: string): { keys: string[]; into: (text: string) => string } | CliResult {
   const values = Object.fromEntries(buckleVariables(readFileSync(out, 'utf8')))
-  const kept = NODE_SETTINGS.filter(setting => setting.workspace && values[setting.key]?.trim())
-    .map(setting => ({ key: setting.key, value: setting.kind === 'command-list' ? values[setting.key]!.split(/\r?\n|;;/).map(item => item.trim()).filter(Boolean).join(';;') : values[setting.key]!.trim() }))
+  const keys = [...new Set([...NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key), ...WORKSPACE_DEFAULT_KEYS])]
+  const kept = keys.filter(key => values[key]?.trim())
+    .map(key => ({ key, value: findNodeSetting(key)?.kind === 'command-list' ? values[key]!.split(/\r?\n|;;/).map(item => item.trim()).filter(Boolean).join(';;') : values[key]!.trim() }))
   const into = (text: string): string => kept.reduce((written, { key, value }) => {
     const edit = editEnvironmentVariable({ text: written, name: key, value })
     if (!edit.ok) throw new Error(`${edit.reason}`)

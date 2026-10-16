@@ -5,6 +5,7 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
+import { loadConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceIdOf } from './support/workspaces.js'
 import { defaultEnvironmentFile } from '../common/runtime/environment.js'
@@ -320,6 +321,39 @@ describe('buckle init on a node set up before workspaces', () => {
     // The records moved to the workspace's own directory (D85, Q15), keyed by its id.
     expect(JSON.parse(readFileSync(join(state, 'workspaces', workspaceIdOf(workspace), 'grants.json'), 'utf8')).grants.map((item: { workspace: string }) => item.workspace)).toEqual([workspaceIdOf(workspace)])
     expect(parseEnv(result.written).BUCKLE_ADMIN_TOKEN).not.toBe('old-admin-fixture')
+  })
+})
+
+// Finding 13 of the third recheck: --force kept the defaults NODE_SETTINGS named and dropped the node's mounts and browser.
+describe('buckle init --force keeps every workspace default of the file it replaces', () => {
+  it('writes the node\'s mounts and browser lines again and names them on the Kept line', async () => {
+    const shared = join(workspace, '..', 'shared')
+    mkdirSync(shared)
+    const mounts = JSON.stringify([{ source: shared, target: '/tmp/home/.config', readOnly: true }])
+    const profile = join(workspace, '..', 'browser-profile')
+    writeFileSync(out, `BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_MOUNTS=${mounts}\nBUCKLE_BROWSER_PROFILE=${profile}\nBUCKLE_BROWSER_ARGS=--lang=en\nBUCKLE_BROWSER_HEADED=true\nBUCKLE_SANDBOX=none\n`, { mode: 0o600 })
+
+    let failed = ''
+    const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { failed += String(chunk); return true })
+    const result = await init(scripted([], false), ['--force', '--yes', '--name', 'Fixture', '--dir', workspace])
+    stderr.mockRestore()
+
+    expect(failed).toBe('')
+    expect(result.exitCode).toBe(0)
+    expect(parseEnv(result.written)).toMatchObject({ BUCKLE_ALLOW_SHELL: 'false', BUCKLE_MOUNTS: mounts, BUCKLE_BROWSER_PROFILE: profile, BUCKLE_BROWSER_ARGS: '--lang=en', BUCKLE_BROWSER_HEADED: 'true' })
+    expect(result.printed).toMatch(/Kept {8}BUCKLE_ALLOW_SHELL,.*BUCKLE_MOUNTS.*BUCKLE_BROWSER_PROFILE.*BUCKLE_BROWSER_ARGS.*BUCKLE_BROWSER_HEADED.*every workspace's defaults/)
+    // The node reads them from the file written again.
+    const defaults = loadConfig({ ...parseEnv(result.written), BUCKLE_STATE_DIR: state }).workspaceDefaults
+    expect(defaults.browser).toEqual({ profile, args: '--lang=en', headed: true })
+    expect(defaults.mounts).toMatchObject([{ source: shared, target: '/tmp/home/.config', access: 'ro' }])
+  })
+
+  it('carries an attached Chrome, and refuses nothing for a value only the file holds', async () => {
+    writeFileSync(out, 'BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_BROWSER_CDP=9222\nBUCKLE_SANDBOX=none\n', { mode: 0o600 })
+    const result = await init(scripted([], false), ['--force', '--yes', '--name', 'Fixture', '--dir', workspace])
+    expect(result.exitCode).toBe(0)
+    expect(parseEnv(result.written).BUCKLE_BROWSER_CDP).toBe('9222')
+    expect(result.printed).toContain('Kept        BUCKLE_BROWSER_CDP, every workspace\'s defaults')
   })
 })
 
