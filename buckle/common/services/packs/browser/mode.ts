@@ -151,10 +151,14 @@ export function profileSession(directory: string): string {
  * The mode the node's settings choose, as `/setup/status` reports it: a word, the setting, never its value, and why
  * the browser pack is withheld, or null while it runs, so a refused profile folder never reads as a running mode.
  * `pack` is the browser pack as the manifest lists it, absent when the workspace's packs.enabled leaves it out.
+ * `heldBy` is the workspace holding the folder or the Chrome, whose hold withholds the browser here too (Q10).
  */
-export function browserModeStatus(settings: { browserCdp?: string; browserProfile?: string }, pack: { unavailableReason: string | null } | undefined): { mode: BrowserModeName; setting: string | null; withheld: string | null } {
+export function browserModeStatus(settings: { browserCdp?: string; browserProfile?: string }, pack: { unavailableReason: string | null } | undefined, heldBy: string | null = null): { mode: BrowserModeName; setting: string | null; withheld: string | null } {
   const mode: BrowserModeName = settings.browserCdp ? 'attached' : settings.browserProfile ? 'profile' : 'fresh'
-  return { mode, setting: MODE_SETTINGS[mode], withheld: pack ? pack.unavailableReason : 'the workspace setting packs.enabled leaves the browser pack out' }
+  if (!pack) return { mode, setting: MODE_SETTINGS[mode], withheld: 'the workspace setting packs.enabled leaves the browser pack out' }
+  // Another workspace holding the folder or the Chrome refuses every call here, so the browser does not run (Q10); its name, never the setting's value.
+  const held = pack.unavailableReason === null && mode !== 'fresh' && heldBy !== null ? `${mode === 'attached' ? 'the owner\'s Chrome' : 'the profile folder'} belongs to workspace ${heldBy}, which serves one workspace at a time` : null
+  return { mode, setting: MODE_SETTINGS[mode], withheld: pack.unavailableReason ?? held }
 }
 
 /** The warning a mode without in-browser containment logs at pack start, or null for a fresh browser. */

@@ -60,8 +60,8 @@ export function createSetupViews(): SetupViews {
         sandbox: manifest.sandbox,
         packs: manifest.packs,
         // Which browser browser_command drives, as a word and the setting that chose it, never the setting's value,
-        // and why the pack is withheld when it is.
-        browser: browserModeStatus(config, manifest.packs.find(pack => pack.id === 'browser')),
+        // and why the pack is withheld when it is, or the workspace that holds its profile folder or Chrome.
+        browser: browserModeStatus(config, manifest.packs.find(pack => pack.id === 'browser'), runtime.browserHeldBy()),
         // Code mode (owner decision D82): on, or withheld with the reason the manifest gives.
         code: codeStatus(manifest.packs.find(pack => pack.id === 'code')),
         policy: { restrictive: isRestrictive(effective), storedAt: runtime.policy.stored()?.updatedAt ?? null },

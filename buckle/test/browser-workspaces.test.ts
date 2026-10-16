@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig, unreadWorkspaceDefaults, type NodeConfig } from '../common/runtime/config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
@@ -38,6 +39,12 @@ async function node(environment: Record<string, string> = {}) {
 
 function open(manager: WorkspaceManager, name: string, call: { command: string; args: string[] } = { command: 'snapshot', args: [] }) {
   return byName(manager, name).then(({ runtime }) => runtime.invoke({ request: { requestId: `open-${randomUUID()}`, tool: 'browser_command', args: call, approvalTokens: [] }, sessionId: name }))
+}
+
+/** What the owner's setup status says of the browser in a workspace. */
+async function browserStatus(manager: WorkspaceManager, name: string) {
+  const { config, runtime } = await byName(manager, name, { setup: true })
+  return (await createSetupViews().status({ config, runtime })).browser as { mode: string; setting: string | null; withheld: string | null }
 }
 
 const HELD = (holder: string, what = 'The profile folder this browser keeps its logins in') => `${what} belongs to workspace ${holder}, and serves one workspace at a time; the owner chooses which with buckle workspace set browser.profile or browser.cdp`
@@ -236,6 +243,33 @@ describe('a call the holder rule refuses', { timeout: 20_000 }, () => {
     expect(refused).toMatchObject({ outcome: 'error', error: { message: HELD('alpha') } })
     expect((await byName(manager, 'beta')).runtime.grants.list()).toEqual([])
     expect(calls().filter(call => call[0] === 'open')).toEqual([])
+    await manager.close()
+  })
+})
+
+// The owner's status says what a call finds: the browser does not run in a workspace whose every call is refused.
+describe('the setup status of a browser another workspace holds', { timeout: 20_000 }, () => {
+  it('names the holder as why the browser is withheld, follows a change, and never shows the setting\'s value', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { config, manager } = await node({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })
+    expect(await browserStatus(manager, 'alpha')).toEqual({ mode: 'profile', setting: 'BUCKLE_BROWSER_PROFILE', withheld: null })
+    const beta = await browserStatus(manager, 'beta')
+    expect(beta).toEqual({ mode: 'profile', setting: 'BUCKLE_BROWSER_PROFILE', withheld: 'the profile folder belongs to workspace alpha, which serves one workspace at a time' })
+    expect(JSON.stringify(beta)).not.toContain(root)
+    // beta names the folder as its own, so the two flip; offline, it holds nothing.
+    expect((await set(config, 'beta', 'browser.profile', join(root, 'shared-profile'))).exitCode).toBe(0)
+    expect((await browserStatus(manager, 'alpha')).withheld).toBe('the profile folder belongs to workspace beta, which serves one workspace at a time')
+    expect((await browserStatus(manager, 'beta')).withheld).toBeNull()
+    await manager.update(idOf(manager, 'beta'), { online: false })
+    expect((await browserStatus(manager, 'alpha')).withheld).toBeNull()
+    await manager.close()
+  })
+
+  it('says so for the owner\'s Chrome too, and keeps a withheld pack\'s own reason', async () => {
+    const { manager } = await node({ BUCKLE_BROWSER_CDP: '9222' })
+    expect((await browserStatus(manager, 'beta')).withheld).toBe('the owner\'s Chrome belongs to workspace alpha, which serves one workspace at a time')
+    expect(await browserStatus(manager, 'alpha')).toMatchObject({ mode: 'attached', withheld: null })
     await manager.close()
   })
 })

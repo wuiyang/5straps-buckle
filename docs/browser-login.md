@@ -124,4 +124,4 @@ by process id alone, so after a node settings change restart every one.
 
 The setup face's `/workspaces/<name>/setup/status` reports `browser.mode` as `fresh`, `profile`, or `attached`,
 `browser.setting` as the setting that chose it, never its value, and `browser.withheld` as why
-the browser pack is withheld, or null while it runs.
+the browser pack is withheld or which workspace holds its folder or Chrome, else null while it runs.

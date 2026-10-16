@@ -138,6 +138,11 @@ export interface BuckleRuntime {
    * process holds counts here too.
    */
   inspectActiveWork(): boolean
+  /**
+   * The name of another workspace holding this one's profile folder or attached Chrome, so every browser call here is
+   * refused (Q10), else null; read at each use. Internal, for the owner's status: the manifest and the protocol carry none.
+   */
+  browserHeldBy(): string | null
   manifest(): HarnessManifest
   toolCatalog(): { tools: ToolCapability[]; unavailable: Array<{ name: string; reason: string }> }
   registry(): ToolRegistry
@@ -348,6 +353,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     auditHealth,
     executionBudget,
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
+    browserHeldBy: () => browserHeldBy?.() ?? null,
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
