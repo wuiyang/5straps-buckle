@@ -10,7 +10,8 @@ import { createShellPack } from '../common/services/packs/shell/index.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 import type { SandboxCommand } from '../common/types/ports/sandbox.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
-import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
+import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 // Phase 2 item 3 of the workspace-model brief (D85, Q1 and Q11): bubblewrap from the mount table, an empty root, the
 // system folders and the chosen /etc files, each mount at its target, the user `agent` on the host `buckle`, and the
@@ -186,5 +187,52 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
     expect(variables).toMatch(/^TMPDIR=\/tmp$/m)
     expect(variables).not.toContain(`${bin}:`)
     await manager.close()
+  })
+})
+
+// A terminal works in the workbench's own copy, so what it shares of the owner's is read-only there, and its network is
+// the shell's: off unless shell.network is on and the workspace has no URL list to hold it to (the list is the
+// workspace's, else the node's, BUCKLE_ALLOWED_HOSTS folded in). The runtime builds the layout; a fake bwrap records it.
+describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
+  async function terminalArguments(input: { environment?: Record<string, string>; settings?: (settings: WorkspaceSettings) => WorkspaceSettings; mount?: boolean }): Promise<string[]> {
+    const root = scratch()
+    const folder = join(root, 'site')
+    const data = join(root, 'data')
+    const bin = join(root, 'bin')
+    for (const path of [folder, data, bin]) mkdirSync(path)
+    const seen = join(root, 'seen.args')
+    writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${seen}'\n`)
+    chmodSync(join(bin, 'bwrap'), 0o755)
+    vi.stubEnv('PATH', `${bin}:/usr/bin:/bin`)
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...input.environment }))
+    await registerWorkspace(manager, { id: 'site', dir: folder })
+    const id = idOf(manager, 'site')
+    if (input.mount) await manager.addMount(id, { source: data, target: '/data', access: 'rw' })
+    if (input.settings) await manager.updateSettings(id, input.settings)
+    const { runtime } = await byName(manager, 'site')
+    const grant = { id: randomUUID(), token: 'workbench-fixture-token-with-enough-bytes', projectId: 'project-a', chatId: 'chat-a', allowShell: true }
+    await runtime.workbenches.provision(grant)
+    await runtime.workbenches.startTerminal(grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })
+    await vi.waitFor(() => expect(existsSync(seen)).toBe(true))
+    const args = readFileSync(seen, 'utf8').split('\n')
+    await manager.close()
+    return args
+  }
+
+  it('binds the owner\'s writable mounts read-only, as it works on a copy', async () => {
+    const args = await terminalArguments({ mount: true })
+    const data = args.find((argument, index) => argument.endsWith('/data') && args[index + 1] === '/data')!
+    expect(pairs(args, '--ro-bind')).toContainEqual([data, '/data'])
+    expect(pairs(args, '--bind').map(([, target]) => target)).not.toContain('/data')
+  })
+
+  it.each([
+    ['is off the network by default', {}, undefined, true],
+    ['reaches the network with shell.network on and no URL list', {}, (settings: WorkspaceSettings) => ({ ...settings, shell: { ...settings.shell, network: true } }), false],
+    ['stays off the network with shell.network on and a URL list of the workspace\'s own', {}, (settings: WorkspaceSettings) => ({ ...settings, shell: { ...settings.shell, network: true }, policy: { ...settings.policy, network: { allow: ['example.com'] } } }), true],
+    ['stays off the network with shell.network on and the URL list the node gives it in BUCKLE_ALLOWED_HOSTS', { BUCKLE_ALLOWED_HOSTS: 'example.com' }, (settings: WorkspaceSettings) => ({ ...settings, shell: { ...settings.shell, network: true } }), true],
+  ])('%s', async (_when, environment, settings, off) => {
+    const args = await terminalArguments({ environment, ...(settings ? { settings } : {}) })
+    expect(args.includes('--unshare-net')).toBe(off)
   })
 })

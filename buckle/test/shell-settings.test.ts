@@ -43,8 +43,8 @@ describe('a workspace\'s shell, from its settings', () => {
     for (const folder of ['shared', 'isolated']) mkdirSync(join(root, folder))
   })
 
-  async function node() {
-    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs,shell' }))
+  async function node(environment: Record<string, string> = {}) {
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs,shell', ...environment }))
     // Each at its real path: with no bubblewrap here, the shell is withheld under a mount whatever its own settings say.
     for (const name of ['shared', 'isolated']) {
       await registerWorkspace(manager, { id: name, dir: join(root, name) })
@@ -71,6 +71,34 @@ describe('a workspace\'s shell, from its settings', () => {
     expect(await call()).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Shell networking is disabled') } })
     await manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, shell: { ...settings.shell, network: true } }))
     expect(await call()).toMatchObject({ outcome: 'ok', output: { exitCode: 0 } })
+    await manager.close()
+  })
+
+  // A shell cannot honour a URL list from inside the command, so with a list in force it stays off the network
+  // whatever shell.network says: the list is the workspace's, else the node's (BUCKLE_ALLOWED_HOSTS folds into it).
+  async function networkedShell(environment: Record<string, string>) {
+    const manager = await node(environment)
+    const { runtime } = await byName(manager, 'shared')
+    await runtime.policy.setDangerouslyAllow(true)
+    await manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, shell: { ...settings.shell, network: true } }))
+    const call = () => runtime.invoke({ request: { requestId: `net-${Math.random()}`, tool: 'shell_exec', args: { command: 'true', allowNetwork: true }, approvalTokens: [] }, sessionId: 'shared' })
+    return { manager, call, list: (allow: string[]) => manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, policy: { ...settings.policy, network: { allow } } })) }
+  }
+  const OFF_THE_NETWORK = { outcome: 'error', error: { message: expect.stringContaining('Shell networking is disabled') } }
+
+  it('stays off the network with a URL list of its own, though shell.network is on, and reaches it again without one', async () => {
+    const { manager, call, list } = await networkedShell({})
+    expect(await call()).toMatchObject({ outcome: 'ok' })
+    await list(['example.com'])
+    expect(await call()).toMatchObject(OFF_THE_NETWORK)
+    await list([])
+    expect(await call()).toMatchObject({ outcome: 'ok' })
+    await manager.close()
+  })
+
+  it('stays off the network with the URL list the node gives it in BUCKLE_ALLOWED_HOSTS, though shell.network is on', async () => {
+    const { manager, call } = await networkedShell({ BUCKLE_ALLOWED_HOSTS: 'example.com' })
+    expect(await call()).toMatchObject(OFF_THE_NETWORK)
     await manager.close()
   })
 
