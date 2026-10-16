@@ -149,7 +149,8 @@ export interface ProgramSearch {
   /**
    * On Windows, the sources of the workspace's mounts that lie on a network share (D84 (1), Q8): a program, a PATH
    * entry, or a place on a program's way on a share is read only where one of these holds it, and refused elsewhere,
-   * as in 0.1.5. A writable one is an untrusted root besides, so only a read-only mount runs a program from a share.
+   * as before the workspace model. A writable one is an untrusted root besides, so only a read-only mount runs a
+   * program from a share.
    */
   shares?: readonly string[]
 }

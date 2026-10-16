@@ -39,7 +39,7 @@ export interface PathView {
   readonly reachableRoots: string[]
   /**
    * On Windows, the sources of mounts that lie on a network share (D84 (1), Q8): a path on a share is read only where
-   * one of these holds it (nativePath), and refused everywhere else, as in 0.1.5. Empty elsewhere.
+   * one of these holds it (nativePath), and refused everywhere else, as before the workspace model. Empty elsewhere.
    */
   readonly shares: string[]
   /** The virtual root, when the owner mounted the workspace. */

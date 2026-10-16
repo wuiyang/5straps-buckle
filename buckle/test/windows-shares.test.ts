@@ -10,8 +10,9 @@ import { canonicalMountSource } from '../common/services/workspaces/workspace-di
 
 // D84 (1) and Q8 of the workspace-model brief: on Windows a network share or a mapped drive is reached only where a
 // mount of the workspace holds it; a mapped drive is stored as the share it points to; a device path stays refused;
-// everywhere else keeps the 0.1.5 refusal. Windows is imitated through the platform each check takes, as the other
-// Windows path tests do; on Linux and macOS nothing of this applies, as a leading `//` is the root there.
+// everywhere else keeps the refusal from before the workspace model. Windows is imitated through the platform each
+// check takes, as the other Windows path tests do; on Linux and macOS nothing of this applies, as a leading `//` is
+// the root there.
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -24,7 +25,7 @@ function scratch(): string {
 const DOCS = '//fileserver/team/docs'
 
 describe('a path on a share, read on Windows', () => {
-  it('is refused, as in 0.1.5, where no mount holds it', () => {
+  it('is refused, as before the workspace model, where no mount holds it', () => {
     for (const path of ['\\\\fileserver\\team\\docs\\a.txt', '//fileserver/team/docs']) {
       expect(() => nativePath(path, 'win32')).toThrow(/network share or is a device path/)
       expect(() => nativePath(path, 'win32', ['//fileserver/team/other'])).toThrow(/network share or is a device path/)
@@ -138,7 +139,7 @@ describe('a workspace\'s view of a mount on a share, on Windows', () => {
 describe('where a path on a share lands, on Windows', () => {
   afterEach(() => { vi.restoreAllMocks() })
 
-  it('is the share path the system answers, where a mount holds it, and refused, as in 0.1.5, where none does', () => {
+  it('is the share path the system answers, where a mount holds it, and refused, as before the workspace model, where none does', () => {
     vi.spyOn(realpathSync, 'native').mockImplementation(((path: string) => path.replaceAll('/', '\\')) as typeof realpathSync.native)
     expect(resolveTarget(`${DOCS}/a.txt`, { shares: [DOCS], platform: 'win32' })).toBe(`${DOCS}/a.txt`)
     expect(() => resolveTarget(`${DOCS}/a.txt`, { platform: 'win32' })).toThrow(/network share or is a device path/)
@@ -159,7 +160,7 @@ describe('a program on a share, on Windows', () => {
     return { tools, program: `${tools}/rg.exe`, storedPath }
   }
 
-  it('runs where a read-only mount of the workspace holds it, and is refused as in 0.1.5 where none does', () => {
+  it('runs where a read-only mount of the workspace holds it, and is refused as before the workspace model where none does', () => {
     const { tools, program, storedPath } = onShare()
     const found = resolveProgram('rg', { untrustedRoots: [], lookup: () => program, platform: 'win32', storedPath, shares: [tools] })
     expect(found).toMatchObject({ path: program, argv0: program })

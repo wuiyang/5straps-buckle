@@ -36,7 +36,7 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
   it, and cannot tell a share another program redirects. Only an imitated Windows has tested
   shares and mapped drives so far, not a Windows machine.
 - A program on a share runs only from a read-only mount; a share a program's `PATH` entry names
-  outside every mount is dropped from that `PATH`, as in 0.1.5.
+  outside every mount is dropped from that `PATH`, as before workspaces.
 
 ## The URL list
 
