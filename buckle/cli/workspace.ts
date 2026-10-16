@@ -3,7 +3,8 @@ import { parseArgs } from 'node:util'
 import { isAbsolute } from 'node:path'
 import { resolve } from 'pathe'
 import { ZodError } from 'zod'
-import type { NodeConfig } from '../common/runtime/config.js'
+import { scratchSources, type NodeConfig } from '../common/runtime/config.js'
+import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -133,7 +134,18 @@ async function add(context: Context): Promise<CliResult> {
 async function serve(context: Context, input: { dir: string; name?: string; yes: boolean; fresh?: boolean }): Promise<CliResult> {
   const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(input.fresh ? { fresh: true } : {}), ...(name === undefined ? {} : { name }) }))
   printMinted(workspace, token, takenUp)
+  noteScratchOverFolder(context, workspace)
   return { exitCode: 0, detail: `init ${workspace.name}` }
+}
+
+/**
+ * Fix brief 6, item 3: a node scratch root that holds this workspace's folder while the folder shows at a mount would
+ * show it a second time, so the shell refuses each call there; the owner is told at the command that makes it so.
+ */
+function noteScratchOverFolder(context: Pick<Context, 'config' | 'workspaces'>, workspace: { id: string; name: string; dir: string }): void {
+  const inForce = resolveSettings(context.workspaces.settings(workspace.id), context.config.workspaceDefaults)
+  const holding = scratchRootOverFolder({ root: workspace.dir, mount: inForce.mount, scratchRoots: scratchSources(inForce.mounts) })
+  if (holding !== null) process.stdout.write(`${scratchOverFolderNote({ scratchRoot: holding, workspace: workspace.name })}\n`)
 }
 
 /**
@@ -295,6 +307,7 @@ async function set(context: Context): Promise<CliResult> {
   if (typeof setting === 'string') return fail(setting)
   await context.workspaces.updateSettings(workspace.id, settings => setting.set(settings, value))
   process.stdout.write(`Workspace ${workspace.name}: ${key} is set.\n`)
+  if (key === 'mount') noteScratchOverFolder(context, workspace)
   return { exitCode: 0, detail: setting.logsValue === false ? `set ${workspace.name} ${key}` : `set ${workspace.name} ${key} ${value}` }
 }
 

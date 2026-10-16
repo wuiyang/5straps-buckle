@@ -2,13 +2,16 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { actionsPath, stateDirectoryOf } from '../common/runtime/config.js'
+import { actionsPath, realPathOf, stateDirectoryOf } from '../common/runtime/config.js'
+import { scratchOverFolderNote } from '../common/domain/sandbox-mounts.js'
+import { registryPath, RegistrySchema } from '../common/services/workspaces/registry.js'
+import { ownerMounts, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } from '../common/adapters/environment-file.js'
 import { movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { restartRoute, restartSteps, restartSubject, type RestartRoute } from '../common/services/node-service/installed.js'
-import { homeDirectory } from '../common/domain/paths.js'
+import { homeDirectory, isInside } from '../common/domain/paths.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting, ROOT_SETTING, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
@@ -164,8 +167,33 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   if (workspace) process.stdout.write(FLOOR_KEYS.has(setting.key)
     ? `It applies to every workspace, over each one's own ${workspace.key}.\n`
     : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)
+  if (setting.key === 'BUCKLE_SCRATCH_ROOTS' && next !== null) for (const note of scratchOverFolders(stateDirectoryOf(context.merged), next.split(','))) process.stdout.write(`${note}\n`)
   process.stdout.write(`${restartLine(context.restart)}\n`)
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
+}
+
+/**
+ * Fix brief 6, item 3: a scratch root that holds a registered workspace's folder, where that workspace takes the node's
+ * mounts (it has none of its own), makes its shell refuse each call while the folder shows at a mount. One note each;
+ * none where the registry cannot be read.
+ */
+function scratchOverFolders(stateDirectory: string, roots: string[]): string[] {
+  let workspaces: Array<{ id: string; name: string; dir: string }>
+  try { workspaces = RegistrySchema.parse(JSON.parse(readFileSync(registryPath(stateDirectory), 'utf8'))).workspaces } catch { return [] }
+  const real = roots.map(root => realPathOf(root))
+  return workspaces.flatMap((workspace) => {
+    const holding = real.find(root => isInside(root, workspace.dir))
+    return holding === undefined || hasOwnMounts(stateDirectory, workspace.id) ? [] : [scratchOverFolderNote({ scratchRoot: holding, workspace: workspace.name })]
+  })
+}
+
+/** Whether a workspace's own settings hold mounts of their own, so the node's scratch roots are not in its table. */
+function hasOwnMounts(stateDirectory: string, id: string): boolean {
+  try {
+    return ownerMounts(WorkspaceSettingsSchema.parse(JSON.parse(readFileSync(settingsPath(stateDirectory, id), 'utf8')))).length > 0
+  } catch {
+    return false
+  }
 }
 
 /** The node's deny-type lists, a floor over every workspace's own (D85, Q14). */

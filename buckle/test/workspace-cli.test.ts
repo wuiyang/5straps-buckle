@@ -14,6 +14,7 @@ import { openWorkspaceManager, type WorkspaceManager } from '../common/services/
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { workspaceRegistryCommand, type NamePrompt } from '../cli/workspace.js'
+import { settingsCommand } from '../cli/settings.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, workspaceIdOf } from './support/workspaces.js'
@@ -799,6 +800,32 @@ describe('a workspace removed and registered again while buckle serve runs', () 
     await serving.closeUnserved()
     expect(await serving.opened()).toEqual([])
     expect(closed).toHaveBeenCalledTimes(1)
+  })
+})
+
+// Fix brief 6, item 3: a node scratch root holding a workspace's folder shows it a second time once the folder shows at a
+// mount, which the shell refuses at each call; the commands that make it so say it, naming the way out.
+describe('a node scratch root that holds a workspace\'s folder', () => {
+  it('is named by workspace init, set mount, policy mount, and settings set scratch-roots, and by nothing where none holds it', async () => {
+    const code = join(base, 'code')
+    const site = join(code, 'site')
+    mkdirSync(site, { recursive: true })
+    const config = node({ BUCKLE_SCRATCH_ROOTS: code })
+    const note = `The scratch root ${code} holds the folder of workspace site, so its shell commands are refused while that folder shows at a mount, as the scratch root would show it a second time: narrow the node's scratch roots (buckle settings set scratch-roots), or show the folder at its real path (buckle policy unmount).\n`
+    expect((await buckle(['init'], { cwd: site, config })).out).toContain(note)
+    expect((await buckle(['init'], { cwd: alpha, config })).out).not.toContain('scratch root')
+    expect((await runCli({ argv: ['policy', 'unmount'], config, confirm: null, cwd: site })).exitCode).toBe(0)
+    expect((await buckle(['set', 'mount', '/srv/site'], { cwd: site, config })).out).toContain(note)
+    out = ''
+    expect((await runCli({ argv: ['policy', 'mount', '/workspace'], config, confirm: null, cwd: site })).exitCode).toBe(0)
+    expect(out).toContain(note)
+
+    const file = join(state, 'buckle.env')
+    writeFileSync(file, `BUCKLE_ADMIN_TOKEN=${ADMIN}\n`, { mode: 0o600 })
+    out = ''
+    expect((await settingsCommand({ argv: ['set', 'scratch-roots', code], environment: { BUCKLE_STATE_DIR: state }, environmentFile: file, cwd: base, home: base })).exitCode).toBe(0)
+    expect(out).toContain(note)
+    expect(out.match(/The scratch root/g)).toHaveLength(1)
   })
 })
 

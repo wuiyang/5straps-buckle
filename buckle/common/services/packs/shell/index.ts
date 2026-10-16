@@ -1,5 +1,5 @@
 import { existsSync, realpathSync, statSync } from 'node:fs'
-import { refuseChangedFolder, validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
+import { overlapReason, refuseChangedFolder, scratchRootOverFolder, validateSandboxMounts } from '../../../domain/sandbox-mounts.js'
 import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'pathe'
@@ -128,6 +128,11 @@ export function createShellPack(options: ShellPackOptions): Pack {
     // Isolation copies the workspace's folder alone (Q6): a scratch root outside it, and each mount the owner shares
     // writable, is bound read-only for the call, and its result names them.
     const isolated = Boolean(options.isolation)
+    // Where the folder shows at a mount, a scratch root holding it would show it a second time, bound writable at its
+    // own path, past the masks and the owner's rules laid where the folder shows (fix brief 6, item 3): refused, as the
+    // isolated shell refuses it below. Without a mount there is one view, and nothing to refuse.
+    const holding = !isolated && options.sandbox.mode === 'bubblewrap' ? scratchRootOverFolder(options.paths) : null
+    if (holding !== null) throw new ToolInputError(overlapReason(holding), { code: 'PERMISSION_DENIED' })
     const outsideScratch = isolated ? options.paths.scratchRoots.filter(root => !isInsideAny([options.paths.root], root)) : []
     const callWritable = writableRoots.filter(root => !outsideScratch.includes(root))
     // Bound as mounts are, so each is checked as one is: a root that moved, or that holds or sits inside Buckle's

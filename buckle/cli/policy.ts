@@ -3,6 +3,7 @@ import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { isRestrictive, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
+import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -79,9 +80,13 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
       }
       case 'allow-url':
         return await save(runtime, edit(current(), policy => policy.network.allow.push(required(rest[0], action))))
-      case 'mount':
+      case 'mount': {
         await runtime.policy.setMount(required(rest[0], action))
+        // Fix brief 6, item 3: a node scratch root holding the folder now shows it a second time, which the shell refuses.
+        const holding = scratchRootOverFolder(runtime.paths())
+        if (holding !== null) process.stdout.write(`${scratchOverFolderNote({ scratchRoot: holding, workspace: runtime.workspaceName() })}\n`)
         return show(runtime, [])
+      }
       case 'unmount':
         await runtime.policy.setMount(null)
         return show(runtime, [])

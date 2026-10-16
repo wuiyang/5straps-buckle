@@ -50,7 +50,9 @@ Taking the folder's mount away, or moving it onto a mount, is refused while moun
 with any mount of its own uses its table alone, as a list of its own does
 ([node defaults](workspaces-03.md)); removing its last mount gives it the node's again. Both are
 read from `buckle.env` alone, never from a shell's or an MCP config's environment, and
-`buckle settings set mounts` and `scratch-roots` write them.
+`buckle settings set mounts` and `scratch-roots` write them. A scratch root holding a folder that
+shows at a mount would show it twice, so the shell refuses each call there, and the commands
+that make it so say it.
 `BUCKLE_MOUNT_READ_ONLY` names toolchains outside `/usr`, which every sandbox binds read-only at
 their own path, beside the Node install; they are never listed as mounts.
 

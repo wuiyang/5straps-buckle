@@ -47,6 +47,26 @@ export function movedMountReason(target: string): string {
   return `The mount at ${target} changed on disk since the owner added it, so Buckle uses nothing there; the owner re-adds it`
 }
 
+/**
+ * The scratch root holding the workspace's folder where the folder shows at a mount (fix brief 6, item 3): bound
+ * writable at its own path, it would show the folder a second time, past the masks and the owner's rules laid where the
+ * folder shows, so the shell refuses it. Null where none holds it, or where the folder shows at its real path, one view.
+ */
+export function scratchRootOverFolder(paths: { root: string; mount: string | null; scratchRoots: readonly string[] }, platform?: NodeJS.Platform): string | null {
+  if (paths.mount === null) return null
+  return paths.scratchRoots.find(root => isInside(root, paths.root, platform)) ?? null
+}
+
+/** What the owner's command says where a scratch root holds a workspace's folder (scratchRootOverFolder). */
+export function scratchOverFolderNote(input: { scratchRoot: string; workspace: string }): string {
+  return `The scratch root ${input.scratchRoot} holds the folder of workspace ${input.workspace}, so its shell commands are refused while that folder shows at a mount, as the scratch root would show it a second time: narrow the node's scratch roots (buckle settings set scratch-roots), or show the folder at its real path (buckle policy unmount).`
+}
+
+/** Why a mount over the workspace's folder or Buckle's state is refused, by its target alone. */
+export function overlapReason(target: string): string {
+  return `The mount at ${target} overlaps the workspace's folder or Buckle's protected state, so Buckle binds nothing there; the owner narrows it`
+}
+
 /** Why a mount whose source is gone is refused, by its target alone. */
 export function missingMountReason(target: string): string {
   return `The mount at ${target} has no source on disk; the owner re-adds it, or removes it with buckle workspace mount remove ${target}`
@@ -89,7 +109,7 @@ export function validateSandboxMounts<T extends { source: string; target: string
     const source = nativePath(mount.source)
     const info = statSync(source)
     if (!info.isFile() && !info.isDirectory()) throw new Error('Explicit mounts support regular files and directories only')
-    if (forbiddenSources.some(path => overlaps(source, path))) throw new ToolInputError(`The mount at ${mount.target} overlaps the workspace's folder or Buckle's protected state, so Buckle binds nothing there; the owner narrows it`, { code: 'PERMISSION_DENIED' })
+    if (forbiddenSources.some(path => overlaps(source, path))) throw new ToolInputError(overlapReason(mount.target), { code: 'PERMISSION_DENIED' })
     if (mount.target === '/' || reserved.slice(1).some(path => overlaps(mount.target, path)) || mount.target === '/tmp' || mount.target === SANDBOX_HOME) throw new Error('Mount target overlaps a reserved sandbox path')
     if (result.some(entry => overlaps(entry.target, mount.target))) throw new Error('Mount targets must not overlap')
     result.push({ ...mount, source })

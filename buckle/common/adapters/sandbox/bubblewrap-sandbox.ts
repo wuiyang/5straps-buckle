@@ -64,9 +64,9 @@ function buildArgs(command: SandboxCommand, nodePrefix: string, identity: Sandbo
   for (const path of command.readOnlyWorkspacePaths ?? []) args.push('--ro-bind', path, sandboxPath(path, command))
   // Every mount before the masks, so hidden state inside one is masked where it shows, over the mount.
   for (const mount of command.mounts ?? []) args.push(mount.readOnly ? '--ro-bind' : '--bind', mount.source, mount.target)
-  const shown = (path: string): string | null => shownAt(path, { command, root, fixed })
-  for (const path of command.hiddenPaths) { const at = shown(path); if (at !== null) args.push('--tmpfs', at) }
-  for (const path of command.hiddenFiles ?? []) { const at = shown(path); if (at !== null) args.push('--ro-bind', '/dev/null', at) }
+  const shown = (path: string): string[] => shownAt(path, { command, root, fixed })
+  for (const path of command.hiddenPaths) for (const at of shown(path)) args.push('--tmpfs', at)
+  for (const path of command.hiddenFiles ?? []) for (const at of shown(path)) args.push('--ro-bind', '/dev/null', at)
   // After the masks: an approved sensitive file is bound over its own mask.
   for (const overlay of command.overlays ?? []) args.push('--ro-bind', overlay.source, overlay.target)
   args.push('--chdir', sandboxPath(command.cwd, command), '--', command.command, ...command.args)
@@ -74,20 +74,23 @@ function buildArgs(command: SandboxCommand, nodePrefix: string, identity: Sandbo
 }
 
 /**
- * Where a hidden host path shows inside the sandbox, or null where nothing bound holds it: inside the workspace's
- * folder or a writable root, at its sandbox path; inside a mount's source, at the mount's target with the rest; inside
- * a folder bound at its own path, there.
+ * Every place a hidden host path shows inside the sandbox, none where nothing bound holds it, so a mask is laid at each
+ * (fix brief 6, item 3): inside the workspace's folder or a writable root, below where that is bound (the folder's
+ * mount, or a root's own path); inside a mount's source, at the mount's target with the rest; inside a folder bound at
+ * its own path, there. One host path bound twice shows twice.
  */
-function shownAt(path: string, input: { command: SandboxCommand; root: string; fixed: readonly string[] }): string | null {
+function shownAt(path: string, input: { command: SandboxCommand; root: string; fixed: readonly string[] }): string[] {
   const { command } = input
-  if ([input.root, ...command.writableRoots].some(place => isInside(place, path, 'linux'))) return sandboxPath(path, command)
-  const mount = (command.mounts ?? []).find(entry => isInside(entry.source, path, 'linux'))
-  if (mount) {
-    const rest = relative(mount.source, path)
-    return rest === '' ? mount.target : `${mount.target}/${rest}`
+  const places: string[] = []
+  const below = (at: string, rest: string) => (rest === '' ? at : `${at === '/' ? '' : at}/${rest}`)
+  for (const place of [input.root, ...command.writableRoots]) {
+    if (isInside(place, path, 'linux')) places.push(below(sandboxPath(place, command), relative(place, path)))
   }
-  if (input.fixed.some(place => isInside(place, path, 'linux'))) return path
-  return null
+  for (const mount of command.mounts ?? []) {
+    if (isInside(mount.source, path, 'linux')) places.push(below(mount.target, relative(mount.source, path)))
+  }
+  if (input.fixed.some(place => isInside(place, path, 'linux'))) places.push(path)
+  return [...new Set(places)]
 }
 
 /**
