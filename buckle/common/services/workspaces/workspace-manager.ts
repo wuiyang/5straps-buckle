@@ -177,8 +177,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         if ([stateRoot, ...state.workspaces.map(workspace => workspace.dir)].some(existing => overlaps(existing, dir, platform))) {
           throw new WorkspaceError('A workspace folder must not hold, or sit inside, another workspace or Buckle state', 409)
         }
-        // A folder's id is derived from it, so re-registering takes up its removed records; --fresh starts a new id and leaves them (addendum to D85, Q15).
-        const id = value.fresh === true ? randomUUID() : workspaceIdFor(dir)
+        // A folder registered again takes up the records of its most recently removed registration, whichever id that held;
+        // --fresh starts a new id and leaves them, and the older ones, for prune (addendum to D85, Q15; fix brief 4, finding 3).
+        const id = value.fresh === true ? randomUUID() : lastRemovedFor(dir, state) ?? workspaceIdFor(dir)
         if (state.workspaces.some(workspace => workspace.id === id)) throw new WorkspaceError('This folder is a workspace already', 409)
         // Every check on the name comes before the first write (fix brief 4, findings 2, 19, and 41).
         const name = chosen ?? checkedName(basename(dir), 'folder')
@@ -341,18 +342,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      * folder, nor the records of a registered workspace.
      */
     prune(options: { yes?: boolean } = {}): RemovedWorkspace[] {
-      const base = join(node.stateDirectory, 'workspaces')
-      if (!existsSync(base)) return []
-      const registered = new Set(store.read().workspaces.map(workspace => workspace.id))
-      const removed: RemovedWorkspace[] = []
-      for (const id of readdirSync(base)) {
-        if (registered.has(id) || !existsSync(removedMarker(id))) continue
-        try {
-          const marker = JSON.parse(readFileSync(removedMarker(id), 'utf8')) as { dir?: string; name?: string; removedAt?: string }
-          removed.push({ id, dir: marker.dir ?? '', name: marker.name ?? id, removedAt: marker.removedAt ?? '' })
-        } catch { removed.push({ id, dir: '', name: id, removedAt: '' }) }
-      }
-      if (options.yes) for (const entry of removed) rmSync(join(base, entry.id), { recursive: true, force: true })
+      const removed = removedWorkspaces(store.read())
+      if (options.yes) for (const entry of removed) rmSync(join(node.stateDirectory, 'workspaces', entry.id), { recursive: true, force: true })
       return removed
     },
 
@@ -506,6 +497,30 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
       throw new WorkspaceError(input.refusal, 409)
     }
     return { openedForCheck }
+  }
+
+  /** Every removed workspace whose records are kept and that no current registration holds, from its marker. */
+  function removedWorkspaces(state: Registry): RemovedWorkspace[] {
+    const base = join(node.stateDirectory, 'workspaces')
+    if (!existsSync(base)) return []
+    const registered = new Set(state.workspaces.map(workspace => workspace.id))
+    const removed: RemovedWorkspace[] = []
+    for (const id of readdirSync(base)) {
+      if (registered.has(id) || !existsSync(removedMarker(id))) continue
+      try {
+        const marker = JSON.parse(readFileSync(removedMarker(id), 'utf8')) as { dir?: string; name?: string; removedAt?: string }
+        removed.push({ id, dir: marker.dir ?? '', name: marker.name ?? id, removedAt: marker.removedAt ?? '' })
+      } catch { removed.push({ id, dir: '', name: id, removedAt: '' }) }
+    }
+    return removed
+  }
+
+  /** The id of the workspace most recently removed from this folder, whose records a registration of it takes up; undefined where none was. */
+  function lastRemovedFor(dir: string, state: Registry): string | undefined {
+    const caseless = ignoresCase(platform)
+    return removedWorkspaces(state)
+      .filter(entry => entry.dir !== '' && comparablePath(entry.dir, caseless) === comparablePath(dir, caseless))
+      .sort((left, right) => right.removedAt.localeCompare(left.removedAt))[0]?.id
   }
 
   function writeRemovedMarker(id: string, removed: WorkspaceDescriptor): void {

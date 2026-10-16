@@ -246,7 +246,7 @@ function prune(context: Context): CliResult {
   if (!values.yes) {
     process.stdout.write('Removed workspaces whose records are still kept:\n')
     for (const entry of removed) process.stdout.write(`  ${entry.name}  ${entry.dir}${entry.removedAt ? `  removed ${entry.removedAt}` : ''}  (workspaces/${entry.id}/)\n`)
-    process.stdout.write('Delete their records with buckle workspace prune --yes; adding a folder again takes its records up instead.\n')
+    process.stdout.write('Delete their records with buckle workspace prune --yes; adding a folder again takes up the records of its most recent registration instead.\n')
     return { exitCode: 0 }
   }
   for (const entry of removed) process.stdout.write(`Deleted the records of ${entry.name} (${entry.dir}).\n`)

@@ -51,8 +51,7 @@ buckle workspace token revoke <token-id>
 ```
 
 - `init` serves a folder as a new workspace and prints its agent token once; `add <dir>` is the
-  same, with the folder named first. The id is a UUID Buckle derives from the folder, so the same
-  folder always has the same id. The name is the folder's basename unless `--name` gives one. It
+  same, with the folder named first. The id is a UUID Buckle derives from the folder. The name is the folder's basename unless `--name` gives one. It
   is 1 to 120 characters and unique on the node, case insensitively; `node` and UUID-shaped text
   are not names. A taken or refused name is asked about at a terminal; with `--yes` or no terminal
   the command is refused, and `buckle workspace init --name <name>` gives another. A folder inside
@@ -63,10 +62,10 @@ buckle workspace token revoke <token-id>
   and its files, records, and tokens stay. `enable` serves it again. `rename` gives it another
   name; its id never changes.
 - `remove` forgets a workspace and never touches its folder. Its records stay in the state
-  directory under `workspaces/<id>/`, and adding the folder again takes them up; `--purge`
-  deletes them. `add <dir> --fresh` starts a new id and leaves the old records for
-  `buckle workspace prune`, which lists the removed workspaces whose records are kept and, with
-  `--yes`, deletes them.
+  directory under `workspaces/<id>/`, and adding the folder again takes up those of its most
+  recently removed workspace; `--purge` deletes them. `add <dir> --fresh` starts a new id and
+  leaves the older records for `buckle workspace prune`, which lists the removed workspaces whose
+  records are kept and, with `--yes`, deletes them.
 - `set` and `unset` change one setting; [the next page](workspaces-02.md#settings) lists them.
 - `token create` mints another agent token for the workspace, shown once. `token list` shows
   each token's id, label, and date, never the token. `token revoke` refuses one from the next call

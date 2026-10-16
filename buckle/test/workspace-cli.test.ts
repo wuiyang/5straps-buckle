@@ -382,6 +382,44 @@ describe('buckle workspace enable, disable and remove', () => {
     expect(existsSync(join(state, 'workspaces', id, 'removed.json'))).toBe(true)
   })
 
+  // Fix brief 4, finding 3: a folder added fresh has a random id, so the next plain add took up the older records that
+  // fresh had left, and the fresh workspace's own were orphaned.
+  describe('a folder removed, added fresh, and removed again', () => {
+    const markOf = (id: string) => openSettingsFile({ filePath: settingsPath(state, id) }).read().env.MARK
+    let first: string
+    let fresh: string
+
+    beforeEach(async () => {
+      first = workspaceIdOf(alpha)
+      await buckle(['set', 'env.MARK', 'first'], { cwd: alpha })
+      expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+      expect((await buckle(['add', alpha, '--fresh', '--name', 'alpha fresh'])).exitCode).toBe(0)
+      fresh = registry().workspaces[0]!.id
+      await buckle(['set', 'env.MARK', 'fresh'], { cwd: alpha })
+      expect((await buckle(['remove', 'alpha fresh'])).exitCode).toBe(0)
+    })
+
+    it('takes up the records of the most recently removed registration when added again, and leaves the older ones to prune', async () => {
+      const added = await buckle(['add', alpha])
+
+      expect(added.out).toContain('takes up the records this folder left')
+      expect(registry().workspaces).toMatchObject([{ id: fresh, name: 'alpha', dir: alpha }])
+      expect(markOf(fresh)).toBe('fresh')
+      const listed = await buckle(['prune'])
+      expect(listed.out).toContain(`workspaces/${first}/`)
+      expect(listed.out).not.toContain(`workspaces/${fresh}/`)
+      expect(markOf(first)).toBe('first')
+    })
+
+    it('starts afresh under the id the folder derives once prune has deleted the records both left', async () => {
+      expect((await buckle(['prune', '--yes'])).exitCode).toBe(0)
+      expect(existsSync(join(state, 'workspaces', fresh))).toBe(false)
+      expect((await buckle(['add', alpha])).out).not.toContain('takes up the records')
+      expect(registry().workspaces).toMatchObject([{ id: first }])
+      expect(markOf(first)).toBeUndefined()
+    })
+  })
+
   // Addendum to D85, Q15: prune lists the removed workspaces whose records are kept, and --yes deletes them.
   it('prunes the kept records of removed workspaces, and --yes deletes them', async () => {
     const id = workspaceIdOf(alpha)
