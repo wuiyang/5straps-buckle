@@ -23,6 +23,9 @@ workspace then holds.
   node's list was a ceiling over it, and the move says so.
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
   kept under to the workspace's id; device keys enrolled for it, from its 0.1 id.
+- The audit log 0.1 kept holds the node folder's calls, so it becomes that workspace's log, which
+  `buckle log --workspace <name>` reads. The node's own log starts fresh. A workspace that has a
+  log already keeps it, and the old one stays where it is.
 - The folder's other records, its plugins, history, pending approvals, and staged shell copies
   among them, move into `workspaces/<id>/` too, as does each registered workspace's
   `workspaces/<0.1 id>/` folder's.
@@ -43,13 +46,14 @@ start.
 To go back to 0.1, stop Buckle and its MCP clients. Copy each `*.v1.json` file over its original,
 and move the other records back where 0.1 kept them: out of `workspaces/<id>/` into the state
 directory for the node's folder, and into `workspaces/<0.1 id>/` for a registered workspace,
-leaving `workspace.json` and the lock files. Set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token
+leaving `workspace.json`, `actions.jsonl`, and the lock files. Set `BUCKLE_AUTH_TOKEN` in `buckle.env` to the token
 your agents use (Buckle kept only its digest), set `BUCKLE_WORKSPACE_ROOT` there to the node's
 folder (see `buckle workspace list`) if `buckle settings unset root` removed it, and install the
 older release. Going back loses every workspace registered, token created, key enrolled, grant,
 denial, and `workspace.json` written after the move. Records left in `workspaces/<id>/` are lost
 to 0.1, which would start with no plugins, no history to undo from, and no pending approvals or
-shell copies awaiting review.
+shell copies awaiting review; the calls from before the move stay in `actions.jsonl` there, which
+0.1 does not read.
 
 Moving again later starts from what 0.1 holds then. The copies are made again from those files,
 the move says so, and records the first move left in `workspaces/<id>/` are kept beside the new

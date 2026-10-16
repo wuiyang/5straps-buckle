@@ -1,9 +1,10 @@
 # The audit log
 
-Buckle, the approval and sandbox runtime on your machine, records what it was asked to do in
-`actions.jsonl` in the state directory, `~/.5straps/buckle` by default, beside the node's own
-commands. Every [workspace](workspaces.md) keeps its calls in `workspaces/<id>/actions.jsonl`, the
-workspace made of a 0.1 node's folder included. The log shows what an agent tried as well as what ran: a refusal
+Buckle, the approval and sandbox runtime on your machine, records what it was asked to do. Every
+[workspace](workspaces.md) keeps its calls in `workspaces/<id>/actions.jsonl` in the state
+directory, `~/.5straps/buckle` by default, and the node keeps its own commands and refusals in
+`actions.jsonl` beside it. The workspace made of a 0.1 node's folder starts with the calls 0.1
+recorded, which the move brings along. The log shows what an agent tried as well as what ran: a refusal
 is recorded as fully as a success.
 
 ## Reading it

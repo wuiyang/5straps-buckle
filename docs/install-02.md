@@ -32,7 +32,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `dangerously-allow.json` | the dangerously-allow switch, where it is on |
 | `grants.json` | session and always grants, and remembered denials |
 | `approvals.json`, `approval-calls/` | asks waiting for a person, recent decisions, unspent once approvals, and the whole call behind each ask |
-| `actions.jsonl` | the [audit log](audit-log.md) |
+| `actions.jsonl` | the [audit log](audit-log.md): in the state directory the node's own commands and refusals, and in each workspace's folder its calls |
 | `plugins.json` | plugins added with `buckle plugin add` |
 | `history/` | checkpoints of file changes, read by `buckle history` |
 | `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |

@@ -17,6 +17,7 @@ import { migrateNode, MigrationError, REGISTRY_BACKUP } from '../common/services
 import { openWorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { runCli } from './support/cli.js'
 import { byName, workspaceIdOf } from './support/workspaces.js'
 
 // The workspace-model brief, item 1, and D85, Q3, Q14, and Q15: a node set up before the workspace model moves onto it at
@@ -704,6 +705,66 @@ describe('moving a 0.1 node onto the workspace model', () => {
         expect(JSON.parse(readFileSync(join(home, 'dangerously-allow.json'), 'utf8')).workspaces).toHaveProperty(ownId(input))
         expect(readdirSync(home).filter(name => name.includes('earlier-move'))).toEqual([])
         expect(manager.list()).toHaveLength(2)
+      })
+    })
+
+    // Fix brief 4, findings 17 and 18: the 0.1 audit log held the node folder's calls, and the move left it in the state
+    // directory, where `buckle log` did not read it, beside a new empty log for the workspace.
+    describe('the audit log 0.1 kept', () => {
+      const entry = (tool: string) => JSON.stringify({ at: '2026-10-01T00:00:00.000Z', requestId: `r-${tool}`, sessionId: 's', tool, outcome: 'ok', event: 'result', durationMs: 1, effects: [], args: {}, workspaceId: 'default' })
+      const attempt = (auditId: string, processId: number) => ({ offset: 0, processId, processInstanceId: 'instance', entry: { auditId, at: '2026-10-01T00:00:00.000Z', requestId: auditId, sessionId: 's', tool: 'fs_write', args: {}, effects: [], durationMs: 0 } })
+
+      it('becomes the node folder\'s workspace\'s log, which buckle log reads, and the node\'s own log starts fresh', async () => {
+        const input = scene()
+        const { config } = withFile(input)
+        writeFileSync(join(input.state, 'actions.jsonl'), `${entry('fs_read')}\n${entry('fs_write')}\n`)
+        const notices = vi.spyOn(logger, 'warn')
+        let printed = ''
+        vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
+
+        const result = await runCli({ argv: ['log', '--workspace', 'project'], config, confirm: null, cwd: input.folder })
+
+        expect(result.exitCode).toBe(0)
+        expect(printed).toContain('fs_read')
+        expect(printed).toContain('fs_write')
+        expect(readFileSync(join(input.state, 'workspaces', ownId(input), 'actions.jsonl'), 'utf8')).toContain(entry('fs_read'))
+        // The node's own log has the owner's refusals since, and none of the folder's calls.
+        await runCli({ argv: ['approvals', '--workspace', 'nosuch'], config, confirm: null, cwd: input.folder })
+        const node = existsSync(join(input.state, 'actions.jsonl')) ? readFileSync(join(input.state, 'actions.jsonl'), 'utf8') : ''
+        expect(node).not.toContain('fs_read')
+        expect(node).toContain('cli_approvals')
+        expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual(expect.stringContaining('now workspace project\'s log: buckle log --workspace project reads it'))
+      })
+
+      it('takes the open attempts of other processes with it, and leaves this process\'s for the node\'s log to settle', async () => {
+        const input = scene()
+        const { config } = withFile(input)
+        writeFileSync(join(input.state, 'actions.jsonl'), `${entry('fs_write')}\n`)
+        writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify({ version: 1, pending: { crashed: attempt('crashed', 999_999), mine: attempt('mine', process.pid) } }))
+        await migrateNode({ node: config })
+
+        const pendingOf = (file: string) => Object.keys(JSON.parse(readFileSync(file, 'utf8')).pending)
+        expect(pendingOf(join(input.state, 'workspaces', ownId(input), 'actions.jsonl.pending.json'))).toEqual(['crashed'])
+        expect(pendingOf(join(input.state, 'actions.jsonl.pending.json'))).toEqual(['mine'])
+      })
+
+      it('stays in the state directory where the workspace has a log of its own already, and where its open attempts will not read', async () => {
+        const first = scene()
+        const { config } = withFile(first)
+        mkdirSync(join(first.state, 'workspaces', ownId(first)), { recursive: true })
+        writeFileSync(join(first.state, 'workspaces', ownId(first), 'actions.jsonl'), `${entry('fs_stat')}\n`)
+        writeFileSync(join(first.state, 'actions.jsonl'), `${entry('fs_read')}\n`)
+        await openWorkspaceManager({ config })
+        expect(readFileSync(join(first.state, 'workspaces', ownId(first), 'actions.jsonl'), 'utf8')).toBe(`${entry('fs_stat')}\n`)
+        expect(readFileSync(join(first.state, 'actions.jsonl'), 'utf8')).toBe(`${entry('fs_read')}\n`)
+
+        const damaged = scene()
+        const { config: damagedConfig } = withFile(damaged)
+        writeFileSync(join(damaged.state, 'actions.jsonl'), `${entry('fs_read')}\n`)
+        writeFileSync(join(damaged.state, 'actions.jsonl.pending.json'), '{ not json')
+        await migrateNode({ node: damagedConfig })
+        expect(JSON.parse(readFileSync(join(damaged.state, 'workspaces.json'), 'utf8'))).toMatchObject({ version: 2 })
+        expect(existsSync(join(damaged.state, 'workspaces', ownId(damaged), 'actions.jsonl'))).toBe(false)
       })
     })
 
