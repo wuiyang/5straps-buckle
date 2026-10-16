@@ -31,7 +31,7 @@ export interface NodeConfig {
   usage: string
   /**
    * BUCKLE_AUTH_TOKEN, the agent token of a node set up before the workspace model, as this process sees it: migration
-   * hashes the file's into workspace default's tokens as `node` (MigrationInput) and takes it out of the file; a node
+   * hashes the file's into the node folder's workspace's tokens as `node` (MigrationInput) and takes it out of the file; a node
    * already moved warns that it is set. No request is checked against it, and pairing sends a workspace's own token.
    */
   authToken: string
@@ -164,9 +164,9 @@ export interface EnvironmentLayers {
 export interface MigrationInput {
   /** The environment file read, which migration takes BUCKLE_AUTH_TOKEN out of once it is hashed; null where none was. */
   file: string | null
-  /** BUCKLE_AUTH_TOKEN, which becomes workspace default's token `node`. */
+  /** BUCKLE_AUTH_TOKEN, which becomes the node folder's workspace's token `node`. */
   authToken: string
-  /** BUCKLE_WORKSPACE_ROOT as typed: workspace default's folder. */
+  /** BUCKLE_WORKSPACE_ROOT as typed: the node folder's workspace's folder. */
   workspaceRoot?: string
   /** The keys the caller's own environment sets to another value than the file holds, which refuse the move. */
   conflicts: readonly string[]
@@ -289,7 +289,7 @@ function sameEntries(left: readonly string[], right: readonly string[]): boolean
 /**
  * The folder a node set up before the workspace model served, as the disk names it: BUCKLE_WORKSPACE_ROOT, or the
  * directory the command runs in. Refused where it is a whole drive, or where it holds the state directory, which an
- * agent writing anywhere in its workspace could then rewrite. Migration takes it as workspace default's folder (Q15).
+ * agent writing anywhere in its workspace could then rewrite. Migration takes it as the node folder's workspace's folder (Q15).
  */
 export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'migration' | 'stateDirectory'>; platform?: NodeJS.Platform }): string {
   const platform = input.platform ?? process.platform

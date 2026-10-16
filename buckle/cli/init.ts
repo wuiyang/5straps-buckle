@@ -176,7 +176,7 @@ switch it on: buckle settings set experimental-admin-http on
 
 /**
  * `--force` on a node set up before workspaces moves it from the file it is about to replace (fix brief 1, A4, findings
- * 11 and 21): workspace default keeps its 0.1 folder, token, policy, and grants, which the rewritten file no longer
+ * 11 and 21): the node folder's workspace keeps its 0.1 folder, token, policy, and grants, which the rewritten file no longer
  * names. A file that will not load is left for --force to rewrite once the node has moved; before, it is refused.
  */
 async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?: (question: string) => Promise<string>): Promise<CliResult | null> {

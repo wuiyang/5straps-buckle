@@ -284,7 +284,7 @@ function defined<K extends string, V>(key: K, value: V | undefined): Partial<Rec
   return value === undefined ? {} : { [key]: value } as Record<K, V>
 }
 
-/** `<state>/workspaces/<id>/workspace.json`, for every workspace, workspace default included. */
+/** `<state>/workspaces/<id>/workspace.json`, for every workspace, the node folder's included. */
 export function settingsPath(nodeStateDirectory: string, workspaceId: string): string {
   return join(nodeStateDirectory, 'workspaces', workspaceId, 'workspace.json')
 }
