@@ -32,7 +32,9 @@ apply to every workspace whatever its own say.
  * file is the one `buckle serve` reads: `BUCKLE_ENV_FILE`, or buckle.env in the state directory.
  * Only the allow-listed keys in `NODE_SETTINGS` are printed or written; every other line,
  * credentials included, is kept byte for byte and shown by name at most. Before the file exists,
- * `show` still reports the process environment and the defaults; only a write needs it. Each run
+ * `show` still reports the process environment for the node's own settings and the defaults, and a
+ * workspace default this shell sets as not read, as the node reads none without the file; only a
+ * write needs it. Each run
  * is audited in the node's action log, a write with the key and value it set.
  */
 export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string }): Promise<CliResult> {
@@ -70,8 +72,8 @@ function show(context: SettingsContext): CliResult {
   const fileValues = context.fileText === null ? {} : parseEnv(context.fileText)
   process.stdout.write(`Node settings, from ${describeSource(context)}\n\n`)
   const line = (setting: NodeSetting) => {
-    // A workspace default is read from the file alone where there is one, whatever this shell sets (D85, Q3).
-    const fromFileAlone = setting.workspace !== undefined && context.fileText !== null && context.environment[setting.key] !== undefined
+    // A workspace default is read from the file alone, whatever this shell sets (D85, Q3); a node with no file reads none.
+    const fromFileAlone = setting.workspace !== undefined && context.environment[setting.key] !== undefined
     const [value, source] = fromFileAlone
       ? [fileValues[setting.key] ?? setting.fallback, `${fileValues[setting.key] !== undefined ? 'environment file' : 'default'}; this shell's value is not read`]
       : context.environment[setting.key] !== undefined
@@ -82,7 +84,11 @@ function show(context: SettingsContext): CliResult {
   for (const setting of NODE_SETTINGS.filter(item => !item.workspace)) line(setting)
   // D85, Q3 and Q14: these are each workspace's defaults, and the deny lists a floor over every workspace.
   process.stdout.write(`\nWorkspace defaults, which a workspace's own settings replace (buckle workspace show); the command deny and destructive lists apply to every workspace:\n`)
-  for (const setting of NODE_SETTINGS.filter(item => item.workspace)) line(setting)
+  const workspaceDefaults = NODE_SETTINGS.filter(item => item.workspace)
+  if (context.fileText === null && workspaceDefaults.some(setting => context.environment[setting.key] !== undefined)) {
+    process.stdout.write(`This node has no buckle.env, so it reads none of these from the environment: run buckle init, then buckle settings set <key> <value>.\n`)
+  }
+  for (const setting of workspaceDefaults) line(setting)
   if (fileValues[ROOT_SETTING.key] !== undefined || context.environment[ROOT_SETTING.key] !== undefined) {
     process.stdout.write(movedOntoWorkspaces(stateDirectoryOf(context.merged))
       ? `\n${ROOT_SETTING.key} was read once, when this node moved onto workspaces, as the folder of the workspace it made; the node no longer reads it (buckle settings unset root).\n`

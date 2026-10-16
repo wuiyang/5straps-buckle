@@ -84,6 +84,22 @@ describe('buckle settings show', () => {
     expect(refused.printed).toContain(`${absent} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
   })
 
+  // A node with no file reads no workspace default from the environment (the process entry's layers), so show says a
+  // shell's value is not read, as policy show and workspace show then print the defaults.
+  it('shows a workspace default this shell sets as not read where the node has no environment file, and says so once', async () => {
+    const absent = join(state, 'buckle.env')
+    const shown = await settings(['show'], { BUCKLE_STATE_DIR: state, BUCKLE_COMMAND_DENY: 'curl *', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true' }, absent)
+    expect(shown.exitCode).toBe(0)
+    expect(shown.out).toMatch(/BUCKLE_COMMAND_DENY\s+\(none\)\s+default; this shell's value is not read\n/)
+    expect(shown.out).toMatch(/BUCKLE_SHELL_ISOLATION\s+\S+\s+default; this shell's value is not read\n/)
+    expect(shown.out).not.toContain('curl *')
+    expect(shown.out.match(/This node has no buckle.env, so it reads none of these from the environment: run buckle init, then buckle settings set <key> <value>./g)).toHaveLength(1)
+    // A node setting is still the process environment's.
+    expect(shown.out).toMatch(/experimental-admin-http\s+BUCKLE_EXPERIMENTAL_ADMIN_HTTP\s+true\s+process environment\n/)
+    const quiet = await settings(['show'], { BUCKLE_STATE_DIR: state }, absent)
+    expect(quiet.out).not.toContain('This node has no buckle.env')
+  })
+
   it('prints each allow-listed setting with its value and source, and every other key by name alone', async () => {
     const result = await settings(['show'], { BUCKLE_MOUNT_READ_ONLY: '/opt/tools', BUCKLE_ALLOWED_HOSTS: 'db.internal' })
 

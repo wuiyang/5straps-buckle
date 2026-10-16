@@ -20,8 +20,10 @@ another file: `buckle mcp` takes `BUCKLE_ENV_FILE` only where it names a file in
 directory, and refuses to start otherwise, naming the variable. A command started with one of the
 defaults set to another value says at start that it is not read. The move from 0.1 refuses
 instead where the command deny or destructive list is set otherwise in its environment, as 0.1
-applied that list: put it in `buckle.env` with `buckle settings set`, or remove it from that environment. A change to `buckle.env` applies when
-the node restarts.
+applied that list, and on a node with no `buckle.env` where either is set there at all: put it in
+`buckle.env` with `buckle settings set`, after `buckle init` where there is no file, or remove it
+from that environment. `buckle settings show` names a default a shell sets as not read. A change
+to `buckle.env` applies when the node restarts.
 
 ## The policy lists
 

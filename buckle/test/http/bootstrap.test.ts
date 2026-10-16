@@ -369,7 +369,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
 describe('a node with no buckle.env (built dist)', () => {
   it('reads no workspace default from its environment, and says which it did not read, naming no value', async () => {
     const node = await prepareNode()
-    const env = { ...node.env, BUCKLE_ADMIN_TOKEN: 'no-file-admin-fixture', BUCKLE_COMMAND_DENY: 'curl-secret-fixture *', BUCKLE_NETWORK_ALLOW: 'lifted.example.test' }
+    const env = { ...node.env, BUCKLE_ADMIN_TOKEN: 'no-file-admin-fixture', BUCKLE_COMMAND_ALLOW: 'curl-secret-fixture *', BUCKLE_NETWORK_ALLOW: 'lifted.example.test' }
     const project = join(node.root, 'project')
     mkdirSync(project)
     const buckle = (args: string[]) => spawnSync(process.execPath, [entry, ...args], { encoding: 'utf8', env, cwd: project, timeout: 30_000 })
@@ -377,10 +377,25 @@ describe('a node with no buckle.env (built dist)', () => {
 
     const shown = buckle(['policy', 'show', '--json'])
     expect(shown.status).toBe(0)
-    expect(JSON.parse(shown.stdout).sources).toMatchObject({ 'network.allow': 'built-in', 'commands.deny': { node: [], workspace: [] } })
-    expect(shown.stderr).toMatch(/Not read: BUCKLE_COMMAND_DENY, BUCKLE_NETWORK_ALLOW[^"]* (is|are) set in this command's environment, but this node has no buckle\.env/)
+    expect(JSON.parse(shown.stdout).sources).toMatchObject({ 'commands.allow': 'built-in', 'network.allow': 'built-in', 'commands.deny': { node: [], workspace: [] } })
+    expect(shown.stderr).toMatch(/Not read: BUCKLE_COMMAND_ALLOW, BUCKLE_NETWORK_ALLOW[^"]* (is|are) set in this command's environment, but this node has no buckle\.env/)
     expect(shown.stderr).not.toContain('curl-secret-fixture')
     expect(shown.stderr).not.toContain('lifted.example.test')
+  }, 60_000)
+
+  // Finding 9 of the third re-check: a deny list such a node's environment alone sets is one 0.1 enforced, so the move
+  // refuses rather than drop it, and says to write the file first.
+  it('refuses to move a node whose environment alone sets a deny list, saying to run buckle init first, naming no value', async () => {
+    const node = await prepareNode()
+    const env = { ...node.env, BUCKLE_ADMIN_TOKEN: 'no-file-admin-fixture', BUCKLE_COMMAND_DENY: 'curl-secret-fixture *' }
+    const project = join(node.root, 'project')
+    mkdirSync(project)
+    const refused = spawnSync(process.execPath, [entry, 'workspace', 'init', '--name', 'site'], { encoding: 'utf8', env, cwd: project, timeout: 30_000 })
+    expect(refused.status).not.toBe(0)
+    expect(refused.stderr).toContain('BUCKLE_COMMAND_DENY is set in this command\'s environment, but this node has no environment file, buckle.env')
+    expect(refused.stderr).toContain('Run buckle init to write the file, then buckle settings set BUCKLE_COMMAND_DENY')
+    expect(refused.stderr).not.toContain('curl-secret-fixture')
+    expect(existsSync(join(node.state, 'workspaces.json'))).toBe(false)
   }, 60_000)
 })
 

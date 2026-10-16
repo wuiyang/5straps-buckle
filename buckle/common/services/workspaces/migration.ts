@@ -500,19 +500,24 @@ function refuseUnreadable(plans: Planned[]): void {
  * would lift what the node enforced.
  */
 function refuseCallerSettings(input: MigrationInput): void {
-  refuseDroppedFloor(input.floorConflicts)
+  refuseDroppedFloor(input.floorConflicts, input.file)
   if (input.conflicts.length === 0) return
   const keys = input.conflicts.join(', ')
   const one = input.conflicts.length === 1
   throw new MigrationError(`${keys} ${one ? 'is' : 'are'} set in this command's environment to another value than ${input.file} holds. Buckle moves the node onto workspaces from that file alone, so a shell's or an MCP config's env never becomes a workspace's token or folder: remove ${one ? 'it' : 'them'} from the environment this command runs in, or give the file the same value, then start Buckle again. Nothing was changed.`)
 }
 
-/** The refusal for deny-type lists the caller names otherwise than the file: the keys and the repair, never a value or a path. */
-function refuseDroppedFloor(keys: readonly string[]): void {
+/**
+ * The refusal for deny-type lists the caller names otherwise than the file: the keys and the repair, never a value or a
+ * path. Where the node has no file, `buckle settings set` has none to write, so the repair starts with `buckle init`.
+ */
+function refuseDroppedFloor(keys: readonly string[], file: string | null): void {
   if (keys.length === 0) return
   const one = keys.length === 1
   const repairs = keys.map(key => `buckle settings set ${key} '<globs separated by ;;>'`).join(' and ')
-  throw new MigrationError(`${keys.join(', ')} ${one ? 'is' : 'are'} set in this command's environment to other entries than the node's environment file holds. Before the workspace model the environment's list applied; from the move on the node reads ${one ? 'it' : 'them'} from the file alone, so moving now would drop entries the node enforced. Put ${one ? 'the list' : 'each list'} in the file with ${repairs}, or remove ${one ? 'the variable' : 'the variables'} from the environment this command runs in, then start Buckle again. Nothing was changed.`)
+  const held = file === null ? ', but this node has no environment file, buckle.env' : ' to other entries than the node\'s environment file holds'
+  const repair = file === null ? `Run buckle init to write the file, then ${repairs}` : `Put ${one ? 'the list' : 'each list'} in the file with ${repairs}`
+  throw new MigrationError(`${keys.join(', ')} ${one ? 'is' : 'are'} set in this command's environment${held}. Before the workspace model the environment's list applied; from the move on the node reads ${one ? 'it' : 'them'} from the file alone, so moving now would drop entries the node enforced. ${repair}, or remove ${one ? 'the variable' : 'the variables'} from the environment this command runs in, then start Buckle again. Nothing was changed.`)
 }
 
 /**

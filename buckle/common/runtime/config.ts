@@ -277,8 +277,11 @@ function migrationInput(merged: NodeJS.ProcessEnv, layers: EnvironmentLayers, pl
     authToken: environment.BUCKLE_AUTH_TOKEN ?? '',
     ...(environment.BUCKLE_WORKSPACE_ROOT ? { workspaceRoot: typedPath(environment.BUCKLE_WORKSPACE_ROOT, platform) } : {}),
     conflicts: file === null ? [] : MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file.values[key]),
-    // Compared as the entries each names, so the same list spelled otherwise (another separator or order, empty or unset) is no conflict.
-    floorConflicts: file === null ? [] : FLOOR_MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && !sameEntries(parsePatterns(layers.caller[key]), parsePatterns(file.values[key]))),
+    // Compared as the entries each names, so the same list spelled otherwise (another separator or order, empty or unset)
+    // is no conflict. A node with no file that reads its defaults from a file alone (the process entry's layers) reads
+    // none after the move, so a list the caller names is compared with an empty one (finding 9 of the third re-check);
+    // a caller building a config from one environment still reads its lists from it, and loses nothing.
+    floorConflicts: file === null && layers.defaultsFromFileAlone !== true ? [] : FLOOR_MIGRATION_KEYS.filter(key => layers.caller[key] !== undefined && !sameEntries(parsePatterns(layers.caller[key]), parsePatterns(file?.values[key]))),
   }
 }
 

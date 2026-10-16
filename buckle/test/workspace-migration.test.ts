@@ -273,6 +273,46 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
     })
 
+    // A node with no buckle.env, its lists set by its environment alone (a service unit, an MCP config's env), reads none
+    // after the move, as the process entry's layers say: its list is compared with none, and the move refuses.
+    function withoutFile(input: Scene, caller: Record<string, string>) {
+      const environment = { ...input.environment, ...caller }
+      return openWorkspaceManager({ config: loadConfig(environment, process.platform, { file: null, caller: environment, defaultsFromFileAlone: true }) })
+    }
+
+    it.each([
+      ['a deny list', { BUCKLE_COMMAND_DENY: 'curl *' }, ['BUCKLE_COMMAND_DENY']],
+      ['a destructive list', { BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*' }, ['BUCKLE_COMMAND_DESTRUCTIVE']],
+      ['both lists', { BUCKLE_COMMAND_DENY: 'curl *;;wget *', BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*' }, ['BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE']],
+    ])('refuses the move of a node with no buckle.env whose environment sets %s, saying to run buckle init first', async (_case, lists, keys) => {
+      const input = scene()
+      const before = version1(input)
+      const refused = await withoutFile(input, lists).catch((error: unknown) => error)
+
+      expect(refused).toBeInstanceOf(MigrationError)
+      const message = (refused as Error).message
+      expect(message).toContain(`${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} set in this command's environment, but this node has no environment file, buckle.env`)
+      expect(message).toContain(`Run buckle init to write the file, then ${keys.map(key => `buckle settings set ${key} '<globs separated by ;;>'`).join(' and ')}, or remove`)
+      for (const value of ['curl', 'wget', 'make deploy', input.root]) expect(message).not.toContain(value)
+      expect(registry(input)).toBe(before)
+      expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
+    })
+
+    it('moves a node with no buckle.env whose environment sets no list, or an empty one', async () => {
+      const input = scene()
+      version1(input)
+      await withoutFile(input, { BUCKLE_COMMAND_DENY: ' ;; ' })
+      expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
+    })
+
+    it('keeps reading the lists of a config built from one environment, which the move then leaves to it', async () => {
+      const input = scene()
+      version1(input)
+      const manager = await open(input, { BUCKLE_COMMAND_DENY: 'curl *' })
+      expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
+      await manager.close()
+    })
+
     it('moves a caller whose deny list holds the file\'s entries, spelled otherwise', async () => {
       const input = scene()
       version1(input)
