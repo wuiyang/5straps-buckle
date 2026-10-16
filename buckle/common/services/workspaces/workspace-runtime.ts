@@ -330,9 +330,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (commands.allow.length || commands.deny.length || commands.destructive?.length) throw new WorkbenchError('Interactive shells cannot enforce command allowlists, denylists or command approval rules', 403)
       // A terminal works in the workbench's own copy, so a mount the owner shares writable is read-only there, as under shell isolation (Q6).
       // The node's scratch roots outside the folder are bound read-only too, as an isolated shell binds them: checked as a
-      // mount is, and one not made yet holds nothing to show. Credentials inside one are masked where it shows them.
-      const scratchRoots = scratchSources(config.mounts).filter(root => !isInside(config.cwd, root))
-      const binds = [...sandboxBinds(config.mounts), ...scratchRoots.filter(root => existsSync(root)).map(root => ({ source: root, target: root, readOnly: true }))]
+      // mount is, and one not made yet (or gone since) holds nothing to bind or to scan, so it is left out of both.
+      // Credentials inside one are masked where it shows them.
+      const scratchRoots = scratchSources(config.mounts).filter(root => !isInside(config.cwd, root) && existsSync(root))
+      const binds = [...sandboxBinds(config.mounts), ...scratchRoots.map(root => ({ source: root, target: root, readOnly: true }))]
       const mounts = refusedAsWorkbench(() => validateSandboxMounts(binds.map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })

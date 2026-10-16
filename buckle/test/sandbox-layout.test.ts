@@ -163,6 +163,24 @@ describe('a shell command\'s variables', () => {
   })
 })
 
+// Finding 28 of the fourth recheck, as the shell pack has it: the credential scan took every writable root, so a scratch
+// root not made yet failed every sandboxed shell call with a raw ENOENT naming the owner's path, where the binds skip it.
+describe('a sandboxed shell command and a scratch root that does not exist', () => {
+  it('runs, binding and scanning only what exists', async () => {
+    const root = scratch()
+    const missing = join(scratch(), 'never-made')
+    const calls: ProcessRequest[] = []
+    const pack = createShellPack({
+      paths: createPathView({ root, mount: '/workspace', scratchRoots: [missing] }), sandbox: createBubblewrapSandbox('/usr/bin/bwrap', { nodePrefix: '/opt/node' }),
+      writableRoots: [root, missing], hiddenPaths: [], readOnlyPaths: [], unavailableReason: null,
+      runProcess: async (request) => { calls.push(request); return { exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false } },
+    })
+    await pack.tools[0]!.prepare({ command: 'true', env: {} }).execute({ requestId: randomUUID(), sessionId: 'caller', timeoutMs: 1000, signal: new AbortController().signal })
+    expect(calls).toHaveLength(1)
+    for (const flag of ['--bind', '--ro-bind', '--ro-bind-try']) expect(pairs(calls[0]!.args, flag).filter(([source, target]) => source === missing || target === missing)).toEqual([])
+  })
+})
+
 describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
   it('are the shell\'s, the workspace\'s over Buckle\'s, with its TERM', async () => {
     const root = scratch()
@@ -196,7 +214,7 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s variables', () => {
 // the shell's: off unless shell.network is on and the workspace has no URL list to hold it to (the list is the
 // workspace's, else the node's, BUCKLE_ALLOWED_HOSTS folded in). The runtime builds the layout; a fake bwrap records it.
 describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
-  async function terminalArguments(input: { environment?: Record<string, string>; settings?: (settings: WorkspaceSettings) => WorkspaceSettings; mount?: boolean; scratchRoot?: (root: string) => string }): Promise<string[]> {
+  async function terminalArguments(input: { environment?: Record<string, string>; settings?: (settings: WorkspaceSettings) => WorkspaceSettings; mount?: boolean; scratchRoot?: (root: string) => string; goneBeforeStart?: boolean }): Promise<string[]> {
     const root = scratch()
     const folder = join(root, 'site')
     const data = join(root, 'data')
@@ -213,6 +231,7 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
     if (input.mount) await manager.addMount(id, { source: data, target: '/data', access: 'rw' })
     if (input.settings) await manager.updateSettings(id, input.settings)
     const { runtime } = await byName(manager, 'site')
+    if (input.goneBeforeStart && scratchRoot) rmSync(scratchRoot, { recursive: true, force: true })
     const grant = { id: randomUUID(), token: 'workbench-fixture-token-with-enough-bytes', projectId: 'project-a', chatId: 'chat-a', allowShell: true }
     await runtime.workbenches.provision(grant)
     await runtime.workbenches.startTerminal(grant.id, { actorId: 'alice', cwd: '.', cols: 80, rows: 24 })
@@ -246,6 +265,18 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
     for (const file of [join(scratchRoot, '.env'), join(scratchRoot, '.ssh', 'id_ed25519')]) {
       expect(args.findIndex((argument, index) => argument === '--ro-bind' && args[index + 1] === '/dev/null' && args[index + 2] === file)).toBeGreaterThan(bind)
     }
+  })
+
+  // Finding 28: the credential scan took every outside scratch root, so one not made yet, or removed since the node
+  // started, failed every terminal start with a raw ENOENT naming the owner's path, while the binds skipped it.
+  it.each([
+    ['not made yet', false],
+    ['removed since the runtime opened', true],
+  ])('opens where a scratch root outside the folder is %s, binding and scanning only the roots that exist', async (_when, goneBeforeStart) => {
+    let missing = ''
+    const args = await terminalArguments({ goneBeforeStart, scratchRoot: (root) => { missing = join(root, 'scratch-later'); if (goneBeforeStart) mkdirSync(missing); return missing } })
+    expect(args).toContain('--chdir')
+    for (const flag of ['--bind', '--ro-bind', '--ro-bind-try']) expect(pairs(args, flag).filter(([source, target]) => source === missing || target === missing)).toEqual([])
   })
 
   it.each([

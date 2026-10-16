@@ -115,8 +115,9 @@ export function createShellPack(options: ShellPackOptions): Pack {
     // Unsandboxed, the command word is spawned as the system finds it, which on Windows is the working directory first.
     const program = options.sandbox.mode === 'none' ? runnableCommand(input.command, { ...untrustedBeside(options.writableRoots), ...options.programSearch }) : null
     const command = program?.path ?? input.command
+    // A root not made yet, or gone since the node started, is bound nowhere and holds nothing to hide, so it is not scanned.
     const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
-      roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths], protectedPaths: options.hiddenPaths, signal: input.signal,
+      roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths].filter(root => existsSync(root)), protectedPaths: options.hiddenPaths, signal: input.signal,
     })
     if (options.sandbox.mode === 'none' && options.filesystemPolicy?.policy.filesystem?.rules.length) throw new ToolInputError('Filesystem policy requires an operating-system sandbox', { code: 'PERMISSION_DENIED' })
     const restrictions = options.filesystemPolicy
@@ -124,7 +125,9 @@ export function createShellPack(options: ShellPackOptions): Pack {
       : { hiddenPaths: [], hiddenFiles: [], readOnlyWorkspacePaths: [] }
     hidden.directories.push(...restrictions.hiddenPaths)
     hidden.files.push(...restrictions.hiddenFiles)
-    const writableRoots = [cwd, ...options.paths.scratchRoots]
+    // A scratch root not made yet, or gone since the node started, is bound nowhere: bwrap would refuse a bind of it.
+    const scratchRoots = options.paths.scratchRoots.filter(root => existsSync(root))
+    const writableRoots = [cwd, ...scratchRoots]
     // Isolation copies the workspace's folder alone (Q6): a scratch root outside it, and each mount the owner shares
     // writable, is bound read-only for the call, and its result names them.
     const isolated = Boolean(options.isolation)
@@ -133,7 +136,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     // isolated shell refuses it below. Without a mount there is one view, and nothing to refuse.
     const holding = !isolated && options.sandbox.mode === 'bubblewrap' ? scratchRootOverFolder(options.paths) : null
     if (holding !== null) throw new ToolInputError(overlapReason(holding), { code: 'PERMISSION_DENIED' })
-    const outsideScratch = isolated ? options.paths.scratchRoots.filter(root => !isInsideAny([options.paths.root], root)) : []
+    const outsideScratch = isolated ? scratchRoots.filter(root => !isInsideAny([options.paths.root], root)) : []
     const callWritable = writableRoots.filter(root => !outsideScratch.includes(root))
     // Bound as mounts are, so each is checked as one is: a root that moved, or that holds or sits inside Buckle's
     // state, is refused; one not made yet holds nothing to show. Hidden state inside one is masked where it shows.
