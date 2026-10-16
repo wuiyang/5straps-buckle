@@ -8,6 +8,7 @@ import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { fixedInteraction } from './support/interaction.js'
 
@@ -130,6 +131,70 @@ describe('a write to workspace.json from another process', () => {
     await read()
     await owner.update(site, { online: false })
     await expect(read()).rejects.toMatchObject({ status: 409, message: 'Workspace is offline' })
+  })
+})
+
+// A call refused before the invoker sees it, for a settings change that waits for work, one that will not apply, or an
+// offline workspace, leaves the pair every call leaves: an attempt, and an error result with the refusal's code, its
+// arguments redacted, so the log holds what the agent was told.
+describe('a call refused before it reaches the invoker', () => {
+  const REFUSED = 'refused-before-the-invoker'
+  // The runtime a stdio server already holds: a resolve of an offline workspace is refused before any call.
+  const held = async () => (await serving.resolve(site)).runtime
+  const call = (runtime: BuckleRuntime, path = 'note.md') => runtime.invoke({ request: { requestId: REFUSED, tool: 'fs_read', args: { path }, approvalTokens: [] }, sessionId: 'live' }).catch((error: unknown) => error)
+  const recorded = (runtime: BuckleRuntime) => runtime.actions.read(100).filter(entry => entry.requestId === REFUSED)
+  function expectPair(entries: ReturnType<typeof recorded>) {
+    expect(entries.map(entry => [entry.event, entry.outcome, entry.detail])).toEqual([['attempt', 'started', undefined], ['result', 'error', 'WORKSPACE_REFUSED']])
+    expect(entries[0]!.auditId).toBe(entries[1]!.auditId)
+    for (const entry of entries) expect(entry).toMatchObject({ workspaceId: site, sessionId: 'live', tool: 'fs_read', args: { path: '[7 characters]' }, effects: [] })
+    expect(JSON.stringify(entries)).not.toContain('note.md')
+  }
+
+  it('records a call refused while a change to the packs waits for active work', async () => {
+    const runtime = await held()
+    await read()
+    await owner.updateSettings(site, settings => ({ ...settings, packs: { ...settings.packs, enabled: ['fs', 'web'] } }))
+    vi.spyOn(runtime, 'hasActiveWork').mockResolvedValue(true)
+
+    expect(await call(runtime)).toMatchObject({ status: 409 })
+    expectPair(recorded(runtime))
+  })
+
+  it('records a call refused while a change to the mounts waits for active work', async () => {
+    const runtime = await held()
+    await read()
+    mkdirSync(join(base, 'data'))
+    await owner.addMount(site, { source: join(base, 'data'), target: '/data', access: 'rw' })
+    vi.spyOn(runtime, 'hasActiveWork').mockResolvedValue(true)
+
+    expect(await call(runtime)).toMatchObject({ status: 409 })
+    expectPair(recorded(runtime))
+  })
+
+  it('records a call refused because the settings change will not apply', async () => {
+    const runtime = await held()
+    await read()
+    const file = settingsPath(join(base, 'state'), site)
+    const before = JSON.parse(readFileSync(file, 'utf8')) as WorkspaceSettings
+    writeFileSync(file, JSON.stringify({ ...before, revision: before.revision + 1, packs: { ...before.packs, enabled: ['fs', 'environment'] } }))
+
+    expect(await call(runtime)).toMatchObject({ status: 409, message: expect.stringContaining('could not be taken up yet') })
+    expectPair(recorded(runtime))
+  })
+
+  it('records a call refused because the workspace is offline', async () => {
+    const runtime = await held()
+    await read()
+    await owner.update(site, { online: false })
+
+    expect(await call(runtime)).toMatchObject({ status: 409, message: 'Workspace is offline' })
+    expectPair(recorded(runtime))
+  })
+
+  it('records nothing for a call that is answered, beyond the invoker\'s own pair', async () => {
+    const runtime = await held()
+    expect(await call(runtime)).toMatchObject({ outcome: 'ok' })
+    expect(recorded(runtime).map(entry => [entry.event, entry.outcome])).toEqual([['attempt', 'started'], ['result', 'ok']])
   })
 })
 

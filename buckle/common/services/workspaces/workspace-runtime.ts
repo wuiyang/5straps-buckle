@@ -57,7 +57,7 @@ import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
 import { createExecutionBudget, createExecutions, type ExecutionBudget } from '../invocation/executions.js'
-import { createInvoker, InvocationsClosedError, type InvokeInput } from '../invocation/invoker.js'
+import { createInvoker, InvocationsClosedError, recordRefusedCall, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
@@ -410,8 +410,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
 
     async invoke(call) {
-      if (input.serving && !input.serving()) throw new WorkspaceError('Workspace is offline', 409)
-      await pickUp()
+      try {
+        if (input.serving && !input.serving()) throw new WorkspaceError('Workspace is offline', 409)
+        await pickUp()
+      } catch (error) {
+        // Refused before the invoker, so it records nothing: the refusal is audited here, as a call refused inside it is.
+        if (error instanceof WorkspaceError) await recordRefusedCall({ actions, workspaceId, call, code: error.code })
+        throw error
+      }
       return invokeNow(call, inForce())
     },
 

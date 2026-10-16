@@ -28,7 +28,9 @@ buckle log --json          # the same entries as JSON
 Every tool call writes two lines. The first, with outcome `started`, is written before the call is
 judged; if Buckle cannot write it, the call does not run. The second carries the result: `ok`,
 `error`, `denied`, or `approval_required`. A call whose process stopped before its result was
-written is marked `interrupted` the next time a Buckle process opens the log.
+written is marked `interrupted` the next time a Buckle process opens the log. A call refused
+before it reaches its tool, because the workspace is offline or a settings change waits for active
+work, writes the same two lines, the second `error` with the detail `WORKSPACE_REFUSED`.
 
 Owner commands are logged too, under names such as `cli_policy`, `cli_approve`,
 `cli_approvals`, `cli_settings`, and `cli_init`. So are refused HTTP requests, each use of the

@@ -129,13 +129,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
-      await options.actions.record({
-        auditId, event: 'attempt', workspaceId: options.workspaceId,
-        at: new Date().toISOString(), requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: sessionId.slice(0, MAX_LOGGED_ID),
-        tool: request.tool.slice(0, MAX_LOGGED_ID), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
-        ...auditContext(request, via),
-
-      })
+      await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
       let effects: ResolvedEffect[] = []
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
       // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
@@ -264,6 +258,29 @@ export function createInvoker(options: InvokerOptions): Invoker {
     },
   }
   return invoker
+}
+
+/** The line a call writes before it is judged: who asked for what, with its arguments redacted. */
+function attemptEntry(input: { auditId: string; workspaceId: string; request: InvokeRequest; sessionId: string; via?: NestedOrigin | undefined }): ActionLogEntry {
+  const { request } = input
+  return {
+    auditId: input.auditId, event: 'attempt', workspaceId: input.workspaceId,
+    at: new Date().toISOString(), requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: input.sessionId.slice(0, MAX_LOGGED_ID),
+    tool: request.tool.slice(0, MAX_LOGGED_ID), outcome: 'started', durationMs: 0, effects: [], args: redactAuditArguments(request.args),
+    ...auditContext(request, input.via),
+  }
+}
+
+/**
+ * A call refused before it reaches the invoker, because the workspace is offline or a settings change waits for active
+ * work, leaves the pair every call leaves: an attempt, and a result of outcome `error` whose detail is the refusal's
+ * code, shaped as the invoker's own entries. A required write, as the invoker's attempt is: where the log refuses it
+ * the refusal is the log's.
+ */
+export async function recordRefusedCall(input: { actions: ActionLog; workspaceId: string; call: Pick<InvokeInput, 'request' | 'sessionId'>; code: string }): Promise<void> {
+  const attempt = attemptEntry({ auditId: randomUUID(), workspaceId: input.workspaceId, request: input.call.request, sessionId: input.call.sessionId })
+  await input.actions.record(attempt)
+  await input.actions.record({ ...attempt, event: 'result', at: new Date().toISOString(), outcome: 'error', detail: input.code })
 }
 
 /** Said to a script that names a code tool (owner decision D82, point 3). */
