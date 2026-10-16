@@ -360,7 +360,8 @@ describe('buckle workspace enable, disable and remove', () => {
   beforeEach(async () => { await init(alpha) })
 
   it('switches a workspace off and on, keeping its tokens and settings', async () => {
-    expect((await buckle(['disable', 'alpha'])).out).toContain('Workspace alpha is offline')
+    // House rule: the Oxford comma in a list of three.
+    expect((await buckle(['disable', 'alpha'])).out).toContain('Workspace alpha is offline: calls to it are refused, and its files, records, and tokens stay.')
     expect(registry().workspaces[0]).toMatchObject({ online: false, tokens: [expect.anything()] })
     expect((await buckle(['enable', 'alpha'])).out).toContain('Workspace alpha is online')
     expect(registry().workspaces[0]!.online).toBe(true)

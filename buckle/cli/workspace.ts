@@ -211,7 +211,7 @@ const SOURCE_LABELS: Readonly<Record<SettingSource, string>> = { 'workspace': 'w
 async function online(context: Context, on: boolean): Promise<CliResult> {
   const named = handle(context, onlyHandle(context.rest, on ? 'enable' : 'disable'))
   const workspace = await context.workspaces.update(named.id, { online: on })
-  process.stdout.write(`Workspace ${workspace.name} is ${on ? 'online: buckle serve serves it at its next call' : 'offline: calls to it are refused, and its files, records and tokens stay'}.\n`)
+  process.stdout.write(`Workspace ${workspace.name} is ${on ? 'online: buckle serve serves it at its next call' : 'offline: calls to it are refused, and its files, records, and tokens stay'}.\n`)
   return { exitCode: 0, detail: `${on ? 'enable' : 'disable'} ${workspace.name}` }
 }
 

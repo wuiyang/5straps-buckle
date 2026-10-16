@@ -361,7 +361,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
  * What the switch covers, said the same way wherever it is shown (review L15 of B23-B25; owner decision
  * D7): asks about paths inside the boundary, and every ask that names no path, wherever it points.
  */
-const DANGEROUSLY_ALLOW_COVERS = 'Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
+const DANGEROUSLY_ALLOW_COVERS = 'Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
 
 function describeDangerously(state: { on: boolean; boundTo: string }): string {
   return state.on ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'off'

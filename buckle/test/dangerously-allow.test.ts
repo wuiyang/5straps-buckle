@@ -434,7 +434,7 @@ describe('the audit of every use and every change', () => {
     await policyCommand(setup.runtime, ['dangerously-allow', 'on'])
     expect(printed).toContain('WARNING: dangerously allow is on')
     expect(printed).toContain(`bound to the workspace root, or its mount when one is set (${setup.workspace})`)
-    const covers = 'Every ask about a path inside it, and every command, host and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
+    const covers = 'Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
     expect(printed).toContain(covers)
     expect(printed).not.toContain('mount boundary still refuse')
     printed = ''

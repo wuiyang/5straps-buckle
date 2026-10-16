@@ -57,6 +57,13 @@ async function init(prompt: InitPrompt, extra: string[] = [], platform?: NodeJS.
 }
 
 describe('buckle init asks for the workspace\'s settings after its folder', () => {
+  it('writes the choices it asks about as a list with the Oxford comma in its usage', async () => {
+    const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect((await runInit(['--help'], scripted([], false), {})).exitCode).toBe(0)
+    expect(printed.mock.calls.map(call => String(call[0])).join('')).toContain('the shell, host Git, and the approved hosts;')
+    printed.mockRestore()
+  })
+
   it('shows each default, and Enter keeps the shipped ones', async () => {
     const prompt = scripted([workspace, '', 'Fixture'])
     const result = await init(prompt)
