@@ -1,5 +1,5 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { hostname, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
@@ -53,8 +53,13 @@ describe('the bubblewrap layout', () => {
   it('binds the system folders, the chosen /etc files, the Node install, and the toolchains at their own paths, never the host\'s accounts', () => {
     const fixed = pairs(args, '--ro-bind-try')
     for (const path of ['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc/ld.so.cache', '/etc/resolv.conf', '/etc/ssl/certs', '/etc/pki/tls/certs', '/home/me/.nvm/versions/node/v24', '/home/me/.cargo']) expect(fixed).toContainEqual([path, path])
+    // The links Debian and Ubuntu reach awk, which, and cc through; Fedora's OpenSSL default CA file; what
+    // getservbyname and getprotobyname read.
+    for (const path of ['/etc/alternatives', '/etc/pki/tls/cert.pem', '/etc/services', '/etc/protocols']) expect(fixed).toContainEqual([path, path])
     expect(args).not.toContain('/etc/passwd')
     expect(args).not.toContain('/etc/group')
+    // The machine's hosts file names it, and not the sandbox's host: the sandbox writes its own.
+    expect(args).not.toContain('/etc/hosts')
     expect(fixed.map(([path]) => path)).not.toContain('/etc')
   })
 
@@ -115,6 +120,16 @@ describe('the sandbox\'s own accounts', () => {
     expect(readFileSync(join(directory, 'passwd'), 'utf8')).toBe(`agent:x:${process.getuid!()}:${process.getgid!()}:agent:/tmp/home:/bin/sh\n`)
     expect(readFileSync(join(directory, 'group'), 'utf8')).toBe(`agent:x:${process.getgid!()}:\n`)
     expect(readFileSync(join(directory, 'passwd'), 'utf8')).not.toContain(process.env.USER ?? 'nobody-here')
+  })
+
+  it('name the sandbox\'s host buckle and the loopback in a hosts file of its own, in place of the machine\'s', () => {
+    const directory = join(scratch(), 'sandbox-etc')
+    const { args } = createBubblewrapSandbox('/usr/bin/bwrap', { nodePrefix: '/opt/node', identityDirectory: directory }).wrap(command())
+    expect(pairs(args, '--ro-bind')).toContainEqual([join(directory, 'hosts'), '/etc/hosts'])
+    expect(pairs(args, '--ro-bind-try').map(([path]) => path)).not.toContain('/etc/hosts')
+    const hosts = readFileSync(join(directory, 'hosts'), 'utf8')
+    expect(hosts).toBe(`127.0.0.1 localhost\n127.0.1.1 ${SANDBOX_HOSTNAME}\n::1 localhost ip6-localhost ip6-loopback\n`)
+    expect(hosts).not.toContain(hostname())
   })
 })
 

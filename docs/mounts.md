@@ -56,7 +56,9 @@ their own path, beside the Node install; they are never listed as mounts.
 Inside the bubblewrap sandbox, `ls /` shows the folder's target, each mount's, and the folders
 every sandbox keeps: `/usr`, `/bin`, `/sbin`, `/lib`, and `/lib64`, read-only, as the kernel
 opens a program's loader at a fixed path and scripts need `/bin/sh` and `/usr/bin/env`; an
-`/etc` built from the loader cache, name lookup, certificate, and time zone files; `/dev`;
+`/etc` built from the loader cache, name lookup, certificate, and time zone files, and the
+program alternatives (`/etc/alternatives`, the links Debian and Ubuntu reach `awk` and `cc`
+through), with its own `passwd`, `group`, and `hosts`; `/dev`;
 `/proc`; and a fresh `/tmp`, holding the home folder `/tmp/home`. The Node install and the
 node's toolchains show at their own paths. No mount table lists these, and none removes them.
 

@@ -52,7 +52,7 @@ describe('bubblewrap with the workspace mounted', () => {
 
   it('keeps the system directories, the node install and the named extras readable', () => {
     const readOnly = pairs(args, '--ro-bind-try').map(([from]) => from)
-    expect(readOnly).toEqual(expect.arrayContaining(['/usr', '/etc/hosts', '/opt/node', '/home/me/.local/share/pnpm']))
+    expect(readOnly).toEqual(expect.arrayContaining(['/usr', '/etc/resolv.conf', '/opt/node', '/home/me/.local/share/pnpm']))
     expect(readOnly).not.toContain('/home')
   })
 
