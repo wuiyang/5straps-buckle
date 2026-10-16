@@ -54,7 +54,7 @@ refuses to start, naming the setting, when the value holds:
   `--app-launch-url-for-shortcuts-menu-item`, or `--load-and-launch-app`, which restore or open
   pages, so `agent-browser` refuses them beside an approved list.
 
-Whatever is set, a site may still refuse a browser it takes for an automated one.
+A site may still refuse a browser it takes for automated.
 
 ## Attaching your own Chrome
 
@@ -77,15 +77,15 @@ On Windows, in PowerShell:
 ```
 
 Since Chrome 136, Chrome ignores the port on its default profile, so keep a second profile folder
-for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out of it.
+for Buckle, sign in there to the sites the agent needs, and leave your everyday profile out.
 Then set `browser.cdp` to `9222` for the workspace that drives it.
 `agent-browser` expects an approval prompt only from the switch at
 `chrome://inspect/#remote-debugging` (Chrome 144 and later), not from a port on Chrome's command
 line; if Chrome shows one, approve it and have the agent retry.
 
-Buckle never closes that browser. `close` only disconnects, and so does an idle session or
-Buckle's own shutdown: your browser, its tabs, and its logins stay open. Every agent
-session works in that one browser, sharing its cookies, and can see and use every tab open there. A session starts on a tab you already have open, so its first `open` replaces
+Buckle never closes that browser: `close`, an idle session, and Buckle's own shutdown only
+disconnect, so your browser, tabs, and logins stay open. Every agent
+session works in that one browser, sharing its cookies and every open tab. A session starts on a tab you already have open, so its first `open` replaces
 that tab's page, and `tab close` can close any of your tabs but the last.
 
 The DevTools port answers anything on this machine that reaches it. Shell commands have no
@@ -98,8 +98,8 @@ With a fresh browser and an approved list, Buckle passes the list's hosts as `ag
 `--allowed-domains`, so clicks, redirects, and page requests stay on them inside the browser.
 `agent-browser` refuses that flag with a profile folder or an attached browser, because
 Chrome can open or restore pages before the containment is installed. In those modes Buckle passes
-no list, and says so in a warning naming the setting at pack start, in the tool description, and
-in the agent's skill.
+no list, and says so in a pack-start warning naming the setting, in the tool description, and in
+the agent's skill.
 
 Still judged in every mode:
 
@@ -114,8 +114,8 @@ login kept in that profile folder or browser is within the agent's reach, so it 
 the logins the agent's work needs.
 
 A profile folder or an attached Chrome belongs to one workspace at a time: the one naming it as
-its own setting, else the first online workspace taking the node's. Another naming it as its own
-is refused, and a browser call elsewhere is refused, naming the holder. Every agent session of
+its own setting, else the first online workspace offering the browser that takes the node's.
+Another naming it as its own is refused, and a browser call elsewhere is refused, naming the holder. Every agent session of
 that workspace, in every Buckle process, shares the one browser on it, with its tabs and logins;
 `close` from any session, or the idle timeout, ends it for all. Buckle tells its processes apart
 by process id alone, so after a node settings change restart every one.

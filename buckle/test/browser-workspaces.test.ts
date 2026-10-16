@@ -194,6 +194,33 @@ describe('an attached Chrome two workspaces reach', { timeout: 20_000 }, () => {
   })
 })
 
+// A workspace whose packs leave the browser out uses no profile folder or Chrome, so it holds none.
+describe('the holder of the node\'s browser', { timeout: 20_000 }, () => {
+  it.each([
+    ['profile', (root: string) => ({ BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })],
+    ['attached', () => ({ BUCKLE_BROWSER_CDP: '9222' })],
+  ])('is not a workspace whose own packs leave the %s browser out: the next one takes it', async (_, setting) => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { config, manager, calls } = await node(setting(root))
+    expect((await set(config, 'alpha', 'packs.enabled', 'fs')).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error', error: { code: 'TOOL_NOT_FOUND' } })
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    expect(calls()).toHaveLength(1)
+    await manager.close()
+  })
+
+  it('is read from the packs in force, the node\'s included: a workspace turning the browser on over a node that leaves it out holds it', async () => {
+    const root = scratch()
+    mkdirSync(join(root, 'shared-profile'))
+    const { config, manager } = await node({ BUCKLE_PACKS: 'fs', BUCKLE_BROWSER_PROFILE: join(root, 'shared-profile') })
+    expect((await set(config, 'beta', 'packs.enabled', 'fs,browser')).exitCode).toBe(0)
+    expect(await open(manager, 'alpha')).toMatchObject({ outcome: 'error', error: { code: 'TOOL_NOT_FOUND' } })
+    expect(await open(manager, 'beta')).toMatchObject({ outcome: 'ok' })
+    await manager.close()
+  })
+})
+
 // The browser's mode is one unit: a workspace naming an attached Chrome or a profile folder of its own takes both from
 // itself, and the block in force with the node's defaults meets the checks the node's own settings meet, at each write
 // and wherever the browser is chosen, so a hand edit passes nothing `buckle workspace set` refuses.

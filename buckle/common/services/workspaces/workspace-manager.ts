@@ -405,10 +405,11 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     /**
      * The name of the workspace that holds `id`'s profile folder or attached Chrome, where that is another one (Q10:
      * one workspace at a time), else null: a workspace naming it as its own setting first, then one taking the node's,
-     * each in the registry's order, among the online workspaces. Read at each browser call, so a change shows at once.
+     * each in the registry's order, among the online workspaces whose packs offer the browser (one that leaves it out
+     * uses no folder or Chrome, so it holds none). Read at each browser call, so a change shows at once.
      */
     browserHeldBy(id: string): string | null {
-      const online = store.read().workspaces.filter(workspace => workspace.online)
+      const online = store.read().workspaces.filter(workspace => workspace.online && offersBrowser(readable(workspace.id)))
       const keyed = online.map(workspace => ({ workspace, ...browserKeyOf(readable(workspace.id)) }))
       const mine = keyed.find(entry => entry.workspace.id === id)
       if (!mine?.key) return null
@@ -614,7 +615,12 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
     }
   }
 
-  /** What a workspace's browser in force is keyed by (an attached Chrome's endpoint, else its profile folder), and whether the setting is its own. */
+  /** Whether the packs in force (the workspace's own, else the node's) offer the browser pack. */
+  function offersBrowser(settings: WorkspaceSettings): boolean {
+    const { enabled } = resolveSettings(settings, node.workspaceDefaults).packs
+    return enabled === null || enabled.includes('browser')
+  }
+
   /**
    * The one key of the browser a workspace's settings reach, used by the set-time refusal and the per-call holder check
    * alike, so another spelling of one Chrome or one folder is the same key (cdpEndpointKey, profileFolderKey). It is
