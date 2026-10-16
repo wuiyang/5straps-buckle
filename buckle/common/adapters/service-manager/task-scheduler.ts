@@ -6,12 +6,11 @@ import { realPathOf } from '../../runtime/config.js'
 import type { ProcessRunner } from '../../types/ports/process-runner.js'
 import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../../types/ports/service-manager.js'
 import { replaceFile } from '../json-file-store.js'
+import { taskDefinitionCopy } from '../../services/node-service/serve-record.js'
 
 /** The one Buckle task a machine has (Phase 3, Q4, D73 experimental), in a folder of its own in Task Scheduler. */
 export const TASK_NAME = '\\5straps\\Buckle'
 const QUICK_MS = 30_000
-/** The task's definition as Buckle wrote it, kept in the state directory, where no agent tool reads or writes it. */
-const TASK_COPY = join('service', 'task.xml')
 const SOURCE_PREFIX = '5straps Buckle sha256:'
 
 /**
@@ -201,7 +200,7 @@ export function taskFileText(bytes: Buffer): string {
  */
 export function createTaskSchedulerManager(input: { environment: NodeJS.ProcessEnv; run: ProcessRunner; location: NodeLocation }): ServiceManager {
   const environment = buildChildEnvironment({ parent: input.environment, extra: {}, platform: 'win32' })
-  const copy = join(input.location.stateDirectory, TASK_COPY)
+  const copy = taskDefinitionCopy(input.location.stateDirectory)
 
   async function schtasks(args: string[]): Promise<{ exitCode: number | null; stdout: string }> {
     const program = schtasksPath(input.environment)

@@ -20,6 +20,7 @@ import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-settings.js'
 import { redeemPairingCode } from './pairing.js'
 import { createNamed } from './workspace.js'
+import { serviceInstalled } from '../common/services/node-service/installed.js'
 
 export interface CliResult {
   exitCode: number
@@ -151,7 +152,7 @@ ${describePrograms({ node, folder, platform, search: options.programSearch ?? {}
 
 Next:
 ${hintStep('  1. Start the node:', serveCommand(out, process.env, platform))}
-${served.token ? `  2. Give an agent this workspace's token, shown once; it reaches /mcp and /v1 at http://127.0.0.1:${nodePort}:
+${platform === 'linux' || platform === 'win32' ? `${hintStep('     Or at every login:', serveCommand(out, process.env, platform, 'buckle service install --now'))}\n` : ''}${served.token ? `  2. Give an agent this workspace's token, shown once; it reaches /mcp and /v1 at http://127.0.0.1:${nodePort}:
        agent token        ${served.token.token}
 ` : ''}${adminToken ? `     The node's admin credential, for Rings and the experimental /setup face:
        admin credential   ${adminToken}
@@ -164,7 +165,7 @@ switch it on: buckle settings set experimental-admin-http on
     if (!values.pair) return { exitCode: 0 }
     const token = served.token ?? await workspaces.addToken(served.id, { label: 'Rings' })
     const { runtime } = await workspaces.resolve(served.id)
-    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName })
+    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, serviceInstalled: serviceInstalled(node.stateDirectory) })
   } catch (error) {
     if (error instanceof WorkspaceError) return fail(error.message)
     throw error
@@ -241,9 +242,9 @@ function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mou
 }
 
 /** Re-pairs or pairs the node, sending the workspace's token and its manifest (BUCKLE-D08). */
-async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string }): Promise<CliResult> {
+async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; serviceInstalled: boolean }): Promise<CliResult> {
   const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
-  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, ...(input.home ? { home: input.home } : {}) })
+  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, serviceInstalled: input.serviceInstalled, ...(input.home ? { home: input.home } : {}) })
   process.stdout.write(`\n${result.message}\n`)
   if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}. ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform), { column: 'Start it with: '.length, indent: '  ' })}\n`)
   return { exitCode: result.ok ? 0 : 1 }
@@ -346,21 +347,21 @@ ${input.allowedHosts ? `BUCKLE_ALLOWED_HOSTS=${input.allowedHosts}` : '# BUCKLE_
 export interface ShellForm { shell: string | null; lines: string[] }
 
 /**
- * How `buckle serve` finds the file just written: on its own from the default state directory, with
+ * How `buckle serve`, or `command`, finds the file just written: on its own from the default state directory, with
  * the state directory named when BUCKLE_STATE_DIR moved it, and by name for any other file. The
  * variable is set as the platform's shell sets one: before the command on Linux and macOS, and on
  * Windows in PowerShell's form and in cmd's, each its own; cmd's is quoted whole, or the space before
  * `&&` would end the value.
  */
-export function serveCommand(out: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): ShellForm[] {
+export function serveCommand(out: string, environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform, command = 'buckle serve'): ShellForm[] {
   const setting = out !== defaultEnvironmentFile(environment) ? { name: 'BUCKLE_ENV_FILE', value: out }
     : environment.BUCKLE_STATE_DIR ? { name: 'BUCKLE_STATE_DIR', value: dirname(out) } : null
-  if (!setting) return [{ shell: null, lines: ['buckle serve'] }]
+  if (!setting) return [{ shell: null, lines: [command] }]
   const { name, value } = setting
-  if (platform !== 'win32') return [{ shell: null, lines: [`${name}=${value} buckle serve`] }]
+  if (platform !== 'win32') return [{ shell: null, lines: [`${name}=${value} ${command}`] }]
   return [
-    { shell: 'PowerShell', lines: [`$env:${name} = '${value.replaceAll("'", "''")}'; buckle serve`] },
-    { shell: 'cmd', lines: [`set "${name}=${value}" && buckle serve`] },
+    { shell: 'PowerShell', lines: [`$env:${name} = '${value.replaceAll("'", "''")}'; ${command}`] },
+    { shell: 'cmd', lines: [`set "${name}=${value}" && ${command}`] },
   ]
 }
 

@@ -9,6 +9,7 @@ import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { credentialLikeName, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { nodeSettingRefusal } from './node-settings.js'
+import { serviceInstalled } from '../common/services/node-service/installed.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
 import { formatMount, parseMountSpec } from '../common/domain/mount-table.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
@@ -290,7 +291,7 @@ async function set(context: Context): Promise<CliResult> {
     process.stdout.write(`Workspace ${workspace.name}'s commands see ${name}.\n`)
     return { exitCode: 0, detail: `set ${workspace.name} env.${name}` }
   }
-  const setting = settingKey(key)
+  const setting = settingKey(key, context)
   if (typeof setting === 'string') return fail(setting)
   await context.workspaces.updateSettings(workspace.id, settings => setting.set(settings, value))
   process.stdout.write(`Workspace ${workspace.name}: ${key} is set.\n`)
@@ -310,7 +311,7 @@ async function unset(context: Context): Promise<CliResult> {
     process.stdout.write(`Workspace ${workspace.name}'s commands no longer see ${name}.\n`)
     return { exitCode: 0, detail: `unset ${workspace.name} env.${name}` }
   }
-  const setting = settingKey(key)
+  const setting = settingKey(key, context)
   if (typeof setting === 'string') return fail(setting)
   await context.workspaces.updateSettings(workspace.id, settings => setting.unset(settings))
   process.stdout.write(`Workspace ${workspace.name}: ${key} is unset, so the node's value applies, else Buckle's default.\n`)
@@ -318,9 +319,11 @@ async function unset(context: Context): Promise<CliResult> {
 }
 
 /** The key `set` and `unset` change, or why none is. A node setting is refused, naming the command that changes it (D85, Q3). */
-function settingKey(key: string): SettingKey | string {
+function settingKey(key: string, context: Pick<Context, 'config'>): SettingKey | string {
   if (key === 'mounts') return 'mounts change with buckle workspace mount add <local>:<sandbox>[:ro] and buckle workspace mount remove <sandbox>'
-  return SETTING_KEYS.find(item => item.key === key) ?? nodeSettingRefusal(key) ?? `${key} is no workspace setting; buckle workspace show lists them`
+  // Phase 3, item 7: where a service runs the node, the restart is buckle service restart.
+  const restart = serviceInstalled(context.config.stateDirectory) ? 'run buckle service restart' : 'restart buckle serve'
+  return SETTING_KEYS.find(item => item.key === key) ?? nodeSettingRefusal(key, restart) ?? `${key} is no workspace setting; buckle workspace show lists them`
 }
 
 /**

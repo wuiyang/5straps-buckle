@@ -206,6 +206,11 @@ describe('the command init prints to start the node', () => {
     ])
   })
 
+  it('offers no service on macOS, where Buckle drives none yet', async () => {
+    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'darwin')
+    expect(printed).not.toContain('buckle service install')
+  })
+
   it('names no variable for the file in the default state directory, on any platform', () => {
     for (const platform of ['linux', 'win32'] as const) expect(serveCommand(defaultEnvironmentFile({}), {}, platform)).toEqual([{ shell: null, lines: ['buckle serve'] }])
   })
@@ -216,6 +221,11 @@ describe('the command init prints to start the node', () => {
       '  1. Start the node:',
       `       PowerShell   $env:BUCKLE_ENV_FILE = '${out}'; buckle serve`,
       `       cmd          set "BUCKLE_ENV_FILE=${out}" && buckle serve`,
+    ].join('\n'))
+    expect(printed).toContain([
+      '     Or at every login:',
+      `       PowerShell   $env:BUCKLE_ENV_FILE = '${out}'; buckle service install --now`,
+      `       cmd          set "BUCKLE_ENV_FILE=${out}" && buckle service install --now`,
     ].join('\n'))
     expect(printed).toContain([
       '  3. Restrict it:',
@@ -229,6 +239,8 @@ describe('the command init prints to start the node', () => {
   it('keeps one form on the step\'s own line on Linux', async () => {
     const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'linux')
     expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n`)
+    // Phase 3, item 7: init offers the service on Linux and Windows.
+    expect(printed).toContain(`     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
     expect(printed).toContain("  3. Restrict it:               buckle policy allow-command 'pnpm {build,test} *'\n                                buckle policy allow-url localhost:3000\n")
   })
 })

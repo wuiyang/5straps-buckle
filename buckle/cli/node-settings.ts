@@ -84,13 +84,13 @@ const NODE_ONLY_WORDS: ReadonlyMap<string, string> = new Map([
  * Why `buckle workspace set` or `unset` refuses a key that names a node setting, or null: a node-only setting is the
  * same for every workspace and changes with `buckle settings set`; a workspace default names the workspace's own key.
  */
-export function nodeSettingRefusal(key: string): string | null {
+export function nodeSettingRefusal(key: string, restart = 'restart buckle serve'): string | null {
   const named = key.toUpperCase().startsWith('BUCKLE_') ? key.toUpperCase() : NODE_ONLY_WORDS.get(key)
   const setting = NODE_SETTINGS.find(item => item.key === named || item.alias === key)
   if (setting?.workspace) return `${key} is the node's default for every workspace (${setting.key}); buckle settings set ${setting.alias} <value> changes it there. This workspace's own is ${setting.workspace.key}: ${setting.workspace.change}.`
   if (setting) return `${key} is a node setting (${setting.key}), the same for every workspace, so no workspace sets it: buckle settings set ${setting.alias} <value> changes it.`
   if (named === undefined) return null
-  return `${key} is a node setting (${named}), the same for every workspace, so no workspace sets it. buckle settings set does not write it: change it in the node's buckle.env, and restart buckle serve.`
+  return `${key} is a node setting (${named}), the same for every workspace, so no workspace sets it. buckle settings set does not write it: change it in the node's buckle.env, and ${restart}.`
 }
 
 const TRUE_WORDS = new Set(['true', 'on', 'yes', '1'])

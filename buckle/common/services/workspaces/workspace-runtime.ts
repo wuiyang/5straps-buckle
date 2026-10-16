@@ -1,5 +1,6 @@
 import { mountSourceState, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
 import { protectedStateRoots } from '../../runtime/config.js'
+import { serviceInstalled } from '../node-service/installed.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
 import { spawnPtyProcess } from '../../adapters/pty-process.js'
@@ -686,6 +687,7 @@ async function buildPacks(input: {
     browserIdleTimeoutMs: input.config.browserIdleTimeoutMs,
     browserSettingNames: input.config.browserSettingNames,
     ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
+    serviceInstalled: () => serviceInstalled(input.config.nodeStateDirectory ?? input.config.stateDirectory),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
     reachableTools: input.reachableTools,

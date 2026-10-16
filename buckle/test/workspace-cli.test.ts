@@ -804,6 +804,18 @@ describe('buckle workspace set and unset', () => {
   beforeEach(async () => { await init(alpha) })
   const set = (...words: string[]) => buckle(['set', ...words], { cwd: alpha })
 
+  // Phase 3, item 7: where a service runs the node, a node setting's restart is buckle service restart.
+  it('names buckle service restart for a node setting where a service runs this node, and buckle serve otherwise', async () => {
+    expect((await set('host', '0.0.0.0')).err).toContain('change it in the node\'s buckle.env, and restart buckle serve.')
+    const config = join(base, 'config')
+    mkdirSync(join(config, 'systemd', 'user'), { recursive: true })
+    writeFileSync(join(config, 'systemd', 'user', 'buckle.service'), `[Service]\nExecStart="/usr/bin/node" "/opt/main.js" serve --service systemd --state-dir "${state}"\n`)
+    vi.stubEnv('XDG_CONFIG_HOME', config)
+    try {
+      expect((await set('host', '0.0.0.0')).err).toContain(process.platform === 'linux' ? 'change it in the node\'s buckle.env, and run buckle service restart.' : 'and restart buckle serve.')
+    } finally { vi.unstubAllEnvs() }
+  })
+
   it('changes one setting in workspace.json, a revision at a time, and unset takes it out', async () => {
     const before = settings(alpha).revision
     expect((await set('packs.shell', 'off')).exitCode).toBe(0)

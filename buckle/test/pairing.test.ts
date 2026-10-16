@@ -114,6 +114,19 @@ describe('buckle init --pair', () => {
     expect(process.argv.join(' ')).not.toContain(reportToken)
   })
 
+  // Phase 3, item 7: where a service runs the node, the restart that loads the credential is buckle service restart.
+  it.skipIf(process.platform !== 'linux')('names buckle service restart for the new credential where a service runs this node', async () => {
+    ringsMinting('service-report-token-fixture')
+    const config = join(root, 'config')
+    mkdirSync(join(config, 'systemd', 'user'), { recursive: true })
+    writeFileSync(join(config, 'systemd', 'user', 'buckle.service'), `[Service]\nExecStart="/usr/bin/node" "/opt/main.js" serve --service systemd --state-dir "${join(root, 'state')}"\n`)
+    vi.stubEnv('XDG_CONFIG_HOME', config)
+    const result = await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])
+    expect(result.exitCode).toBe(0)
+    expect(result.printed).toContain('Restart the node with buckle service restart to load the new credential.')
+    expect(result.printed).not.toContain('Restart any running Buckle service')
+  })
+
   it('takes the rotated credential when a configured node pairs again, and keeps its own two', async () => {
     ringsMinting('first-report-token-fixture-value')
     await initSilently(['--pair', 'ABCD-EFGH-JKMN', '--rings', 'http://rings.test:3001'])

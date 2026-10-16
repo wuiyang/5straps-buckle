@@ -94,6 +94,8 @@ export interface BrowserPackOptions {
    * workspace at a time), or null where it is this workspace's; never asked where absent.
    */
   heldBy?: () => string | null
+  /** Whether a service runs this node, read when a restart hint is logged, so it names buckle service restart (Phase 3, item 7). */
+  serviceInstalled?: () => boolean
 }
 
 /** The node's own default for the longest call, when the pack is built without one. */
@@ -226,7 +228,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               state.writers[key] = process.pid
               return { session: state.sessions[key]!, relaunchedFrom: stale ? recorded : undefined, replaced, sibling: false }
             })
-            if (sibling) logSiblingSettings()
+            if (sibling) logSiblingSettings(options.serviceInstalled?.() === true)
             if (replaced !== null) {
               opened.delete(replaced)
               const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
@@ -390,10 +392,10 @@ function processAlive(pid: number): boolean {
 let loggedSibling = false
 
 /** Once per process: fixed text naming the settings, never their values. */
-function logSiblingSettings(): void {
+function logSiblingSettings(serviceInstalled: boolean): void {
   if (loggedSibling) return
   loggedSibling = true
-  logger.warn('Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process on the node after changing them')
+  logger.warn(`Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process on the node after changing them${serviceInstalled ? ': buckle service restart for the service, and each buckle mcp through its client' : ''}`)
 }
 
 const loggedLoosened = new Set<string>()

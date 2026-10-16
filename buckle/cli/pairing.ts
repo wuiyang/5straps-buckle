@@ -24,6 +24,8 @@ export interface PairingRequest {
   environmentFile: string
   /** The node's name, which Rings shows. */
   name: string
+  /** Whether a service runs this node, so the restart the new credential needs names buckle service restart (Phase 3, item 7). */
+  serviceInstalled?: boolean
   /** The workspace's agent token Rings calls /mcp and /v1 with, which serve that workspace (D83). */
   authToken: string
   /** The node's admin credential, for Rings' setup face; absent where the node has none. */
@@ -98,7 +100,7 @@ export async function redeemPairingCode(input: PairingRequest): Promise<PairingR
  * Rings stored the new credential and key before it answered, so a file that is not written
  * leaves the pair unable to talk: that is a failed pairing, and the owner is told to pair again.
  */
-async function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null; home?: string }): Promise<PairingResult> {
+async function recordReportCredential(input: { environmentFile: string; ringsUrl: string; reportToken: string; approvalKey: string | null; home?: string; serviceInstalled?: boolean }): Promise<PairingResult> {
   const settings = [
     { name: 'BUCKLE_REPORT_URL', value: new URL(REPORT_PATH, input.ringsUrl).toString() },
     { name: 'BUCKLE_REPORT_TOKEN', value: input.reportToken },
@@ -119,7 +121,7 @@ async function recordReportCredential(input: { environmentFile: string; ringsUrl
     logger.error('Could not write the report credential Rings minted', { message: error instanceof Error ? error.message : 'Unknown error' })
     return { ok: false, message: `${unsaved} ${input.environmentFile} could not be written. Once it is writable, ${REPAIR}.` }
   }
-  return { ok: true, message: `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}. Restart any running Buckle service to load the new credential.` }
+  return { ok: true, message: `Its action log and pending approvals now report to Rings under this node's own credential, written to ${input.environmentFile}. ${input.serviceInstalled ? 'Restart the node with buckle service restart to load the new credential.' : 'Restart any running Buckle service to load the new credential.'}` }
 }
 
 async function errorText(response: Response): Promise<string> {
