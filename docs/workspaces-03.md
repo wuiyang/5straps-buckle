@@ -54,8 +54,6 @@ sandbox mode, logging, request and timeout caps, history and isolation budgets, 
 admin face, where programs such as `agent-browser` are, the toolchains every sandbox binds
 (`BUCKLE_MOUNT_READ_ONLY`), and the pairing with [Rings](rings.md) (the 5straps control plane for
 agents). Each workspace also takes the node's skill folders and `BUCKLE_STRICT_WRITES`.
-`BUCKLE_MOUNTS` and `BUCKLE_BROWSER_*` are defaults too, set by hand in `buckle.env`: the node's
-[mounts](mounts.md#the-nodes-mounts) and its browser.
 
 `buckle settings show` lists the node's settings, then the workspace defaults, each with its
 value and where it comes from. `buckle settings set <key> <value>` and `unset <key>` change one,
@@ -71,10 +69,14 @@ checked as a workspace's own would be:
 | `command-deny` (`BUCKLE_COMMAND_DENY`) | the command deny list, for every workspace |
 | `command-destructive` (`BUCKLE_COMMAND_DESTRUCTIVE`) | the destructive list, for every workspace |
 | `network-allow` (`BUCKLE_NETWORK_ALLOW`) and `allowed-hosts` (`BUCKLE_ALLOWED_HOSTS`) | the approved hosts and URLs, the two lists as one |
-| `scratch-roots` (`BUCKLE_SCRATCH_ROOTS`) | the mounts, as folders writable without asking |
+| `mounts` (`BUCKLE_MOUNTS`) and `scratch-roots` (`BUCKLE_SCRATCH_ROOTS`) | the [mounts](mounts.md#the-nodes-mounts), read-only entries and folders writable without asking |
+| `browser-cdp`, `browser-profile`, `browser-args`, and `browser-headed` (`BUCKLE_BROWSER_*`) | the `browser.*` settings |
 | `shell-network` and `shell-isolation` (`BUCKLE_SHELL_*`) | `shell.network` and `shell.isolation` |
 | `allowed-interpreters` (`BUCKLE_ALLOWED_INTERPRETERS`) | the allowed interpreters |
 
 Lists are comma separated; command globs, which hold commas, are separated by `;;`, such as
-`buckle settings set command-deny 'curl *;;wget *'`. `buckle init --force`, which writes
-`buckle.env` again, keeps these defaults from the file it replaces.
+`buckle settings set command-deny 'curl *;;wget *'`; `mounts` takes the JSON list. The browser
+keys are checked as the node reads them together: an attached Chrome (`browser-cdp`) stands
+alone, so one beside a profile, arguments, or a window is refused, naming the variables. The
+audit log records a browser setting's key, never its value. `buckle init --force`, which writes
+`buckle.env` again, keeps these defaults from the file it replaces, every one of them.

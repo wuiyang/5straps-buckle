@@ -12,7 +12,7 @@ import { acquireFileLock } from '@5straps/runtime/sqlite'
 import { editEnvironmentVariable, environmentLockPath } from '../common/adapters/environment-file.js'
 import { NODE_SETTINGS } from '../cli/node-settings.js'
 import { settingsCommand } from '../cli/settings.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { loadConfig, WORKSPACE_DEFAULT_KEYS } from '../common/runtime/config.js'
 import { defaultSettings, resolveSettings } from '../common/services/workspaces/workspace-settings.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
@@ -172,7 +172,16 @@ describe('buckle settings set', () => {
     ['command-allow', 'pnpm {build,test} * ;; git status', 'BUCKLE_COMMAND_ALLOW', 'pnpm {build,test} *;;git status'],
     ['command-deny', 'curl *', 'BUCKLE_COMMAND_DENY', 'curl *'],
     ['command-destructive', 'make deploy*', 'BUCKLE_COMMAND_DESTRUCTIVE', 'make deploy*'],
-  ])('takes %s as the node\'s default for every workspace, as the node reads it', async (key, value, variable, written) => {
+    // The node's mounts and browser were hand edits; they are set and unset here now, written as the node reads them.
+    ['mounts', () => `[ ${JSON.stringify({ source: workspace, target: '/tmp/home/.config', readOnly: true })} ]`, 'BUCKLE_MOUNTS', () => JSON.stringify([{ source: workspace, target: '/tmp/home/.config', readOnly: true }])],
+    ['browser-cdp', 'wss://chrome.example.com/devtools/browser/abc', 'BUCKLE_BROWSER_CDP', 'wss://chrome.example.com/devtools/browser/abc'],
+    ['BUCKLE_BROWSER_CDP', '9222', 'BUCKLE_BROWSER_CDP', '9222'],
+    ['browser-profile', () => join(root, 'chrome-profile'), 'BUCKLE_BROWSER_PROFILE', () => join(root, 'chrome-profile')],
+    ['browser-args', '--lang=en', 'BUCKLE_BROWSER_ARGS', '--lang=en'],
+    ['browser-headed', 'on', 'BUCKLE_BROWSER_HEADED', 'true'],
+  ])('takes %s as the node\'s default for every workspace, as the node reads it', async (key, given, variable, expected) => {
+    const value = typeof given === 'function' ? given() : given
+    const written = typeof expected === 'function' ? expected() : expected
     const result = await settings(['set', key, value])
 
     expect(result.exitCode).toBe(0)
@@ -193,8 +202,10 @@ describe('buckle settings set', () => {
 
   // Every workspace key a 0.1 node kept here is a node default now, listed with the others (D85, Q3).
   it('lists every workspace key a 0.1 node kept here among the workspace defaults, and removes each line', async () => {
-    const keys = ['BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP', 'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS']
+    const keys = ['BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP', 'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS', 'BUCKLE_MOUNTS', 'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED']
     expect(NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key).sort()).toEqual([...keys].sort())
+    // The node reads these from its file alone (WORKSPACE_DEFAULT_KEYS), and buckle settings writes every one of them.
+    expect([...WORKSPACE_DEFAULT_KEYS].sort()).toEqual([...keys].sort())
     const shown = await settings(['show'])
     const defaults = shown.out.slice(shown.out.indexOf('Workspace defaults'))
     for (const key of keys) expect(defaults).toContain(key)
@@ -230,6 +241,70 @@ describe('buckle settings set', () => {
     const entries = createFileActionLog(join(state, 'actions.jsonl')).read(10)
     expect(entries.at(-1)).toMatchObject({ tool: 'cli_settings', outcome: 'ok', detail: 'BUCKLE_ALLOWED_HOSTS=db.internal,*.internal.test' })
     expect(JSON.stringify(entries)).not.toContain(SECRET)
+  })
+
+  // A DevTools URL can carry a token and Chromium arguments a proxy password: the audit log and the confirmation name the key alone.
+  it('audits the node\'s browser endpoint, profile, and arguments by key, never by value', async () => {
+    const cdp = 'wss://chrome.example.com/devtools/browser/abc?token=settings-devtools-token'
+    const args = '--proxy-server=http://user:settings-proxy-pass@proxy.example:8080'
+    const profile = join(root, 'settings-profile-folder')
+    const sets = [await settings(['set', 'browser-cdp', cdp]), await settings(['unset', 'browser-cdp']), await settings(['set', 'browser-args', args]), await settings(['set', 'browser-profile', profile]), await settings(['set', 'browser-headed', 'on'])]
+    expect(sets.map(result => result.exitCode)).toEqual([0, 0, 0, 0, 0])
+    for (const secret of ['settings-devtools-token', 'settings-proxy-pass', 'settings-profile-folder']) {
+      expect(JSON.stringify(createFileActionLog(join(state, 'actions.jsonl')).read(50))).not.toContain(secret)
+      expect(sets.map(result => result.printed).join('')).not.toContain(secret)
+    }
+    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(50).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
+    expect(entries.map(entry => entry.detail)).toEqual(['BUCKLE_BROWSER_CDP set', 'BUCKLE_BROWSER_CDP unset', 'BUCKLE_BROWSER_ARGS set', 'BUCKLE_BROWSER_PROFILE set', 'BUCKLE_BROWSER_HEADED=true'])
+    expect(sets[0]!.out).toContain('Set BUCKLE_BROWSER_CDP in')
+  })
+
+  // The node reads buckle.env's browser keys as one block at start (parseBrowserSettings), so a value that cannot stand beside the file's others is refused.
+  it.each([
+    [['set', 'mounts', 'not json'], 'BUCKLE_MOUNTS must be a JSON array'],
+    [['set', 'mounts', '[]'], 'BUCKLE_MOUNTS needs at least one mount'],
+    [['set', 'mounts', JSON.stringify([{ source: 'relative', target: '/x' }])], 'BUCKLE_MOUNTS must be a JSON array'],
+    [['set', 'browser-cdp', 'chrome'], 'Invalid BUCKLE_BROWSER_CDP'],
+    [['set', 'browser-profile', 'profiles/mine'], 'BUCKLE_BROWSER_PROFILE must be an absolute path'],
+    [['set', 'browser-args', '--user-data-dir=/somewhere'], 'BUCKLE_BROWSER_ARGS may not pass --user-data-dir'],
+    [['set', 'browser-headed', 'maybe'], 'BUCKLE_BROWSER_HEADED is on or off'],
+  ])('refuses %j, saying why, and writes nothing', async (argv, reason) => {
+    const result = await settings(argv)
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toContain(reason)
+    expect(readFileSync(file, 'utf8')).toBe(original)
+  })
+
+  it('refuses an attached Chrome beside a profile, arguments, or a window in the file, and the reverse, naming the variables and no value', async () => {
+    writeFileSync(file, `${original}BUCKLE_BROWSER_CDP=9222\n`)
+    for (const [key, value, name] of [['browser-profile', join(root, 'p'), 'BUCKLE_BROWSER_PROFILE'], ['browser-args', '--lang=en', 'BUCKLE_BROWSER_ARGS'], ['browser-headed', 'on', 'BUCKLE_BROWSER_HEADED']] as const) {
+      const result = await settings(['set', key, value])
+      expect(result.exitCode).toBe(1)
+      expect(result.err).toContain(`BUCKLE_BROWSER_CDP cannot be set with ${name}`)
+      expect(result.err).not.toContain('9222')
+    }
+    writeFileSync(file, `${original}BUCKLE_BROWSER_HEADED=true\n`)
+    const reverse = await settings(['set', 'browser-cdp', '9333'])
+    expect(reverse.exitCode).toBe(1)
+    expect(reverse.err).toContain('BUCKLE_BROWSER_CDP cannot be set with BUCKLE_BROWSER_HEADED')
+    expect(readFileSync(file, 'utf8')).toBe(`${original}BUCKLE_BROWSER_HEADED=true\n`)
+    // Turning the window off is no conflict, and a block of profile and arguments is one the node loads.
+    expect((await settings(['set', 'browser-headed', 'off'])).exitCode).toBe(0)
+    expect((await settings(['set', 'browser-cdp', '9333'])).exitCode).toBe(0)
+  })
+
+  it('shows the node\'s browser and mounts among the workspace defaults, and removes each line', async () => {
+    const mounts = JSON.stringify([{ source: workspace, target: '/tmp/home/.config', readOnly: true }])
+    writeFileSync(file, `${original}BUCKLE_MOUNTS=${mounts}\nBUCKLE_BROWSER_PROFILE=${join(root, 'shown-profile')}\n`)
+    const shown = (await settings(['show'])).out
+    const defaults = shown.slice(shown.indexOf('Workspace defaults'))
+    expect(defaults).toMatch(/mounts\s+BUCKLE_MOUNTS\s+\[\{"source"/)
+    expect(defaults).toMatch(/browser-profile\s+BUCKLE_BROWSER_PROFILE\s+\S+shown-profile\s+environment file/)
+    expect(defaults).toMatch(/browser-headed\s+BUCKLE_BROWSER_HEADED\s+false\s+default/)
+    expect(shown.slice(shown.indexOf('Also in the file, not shown here'))).not.toMatch(/BUCKLE_MOUNTS|BUCKLE_BROWSER/)
+    expect((await settings(['unset', 'mounts'])).exitCode).toBe(0)
+    expect((await settings(['unset', 'BUCKLE_BROWSER_PROFILE'])).exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toBe(original)
   })
 
   it('switches the experimental admin HTTP layer, off by default, and audits the change (owner decision D8)', async () => {

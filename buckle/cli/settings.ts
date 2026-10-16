@@ -111,7 +111,7 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   const root = name === ROOT_SETTING.key || name === ROOT_SETTING.alias
   // The 0.1 folder line is read once, when the node moves onto workspaces; `unset` removes it, as the move's notice asks.
   if (root && raw !== null) return fail(`${ROOT_SETTING.key} is read only when a node set up before workspaces moves onto them. Serve a folder with ${ROOT_SETTING.replacement}.`)
-  const setting: Pick<NodeSetting, 'key' | 'fallback'> | undefined = findNodeSetting(name) ?? (root ? { key: ROOT_SETTING.key, fallback: '(no folder: buckle mcp serves the workspace holding the directory it starts in)' } : undefined)
+  const setting: Pick<NodeSetting, 'key' | 'fallback' | 'logsValue'> | undefined = findNodeSetting(name) ?? (root ? { key: ROOT_SETTING.key, fallback: '(no folder: buckle mcp serves the workspace holding the directory it starts in)' } : undefined)
   if (!setting) return fail(`${name} is not a node setting buckle settings writes. Edit ${context.file} by hand for it.\nSettings: ${NODE_SETTINGS.map(item => item.alias).join(', ')}`)
   if (context.fileText === null) return fail(`${context.file} does not exist. Run buckle init first, or point BUCKLE_ENV_FILE at the node's environment file.`)
 
@@ -130,9 +130,11 @@ async function write(context: SettingsContext, name: string, raw: string | null)
   }
   if (!edit.ok) return fail(`${edit.reason} in ${context.file}`)
 
+  // A value that can hold a credential is neither echoed nor audited, as buckle workspace set keeps one out of its own.
+  const shown = setting.logsValue === false ? setting.key : `${setting.key}=${next}`
   process.stdout.write(next === null
     ? `Removed ${setting.key} from ${context.file}; the default applies: ${setting.fallback}\n`
-    : `Set ${setting.key}=${next} in ${context.file}\n`)
+    : `Set ${shown} in ${context.file}\n`)
   const workspace = findNodeSetting(name)?.workspace
   if (context.environment[setting.key] !== undefined) {
     process.stdout.write(workspace
@@ -143,14 +145,14 @@ async function write(context: SettingsContext, name: string, raw: string | null)
     ? `It applies to every workspace, over each one's own ${workspace.key}.\n`
     : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)
   process.stdout.write('Restart buckle serve for the change to take effect.\n')
-  return { exitCode: 0, detail: next === null ? `${setting.key} unset` : `${setting.key}=${next}` }
+  return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
 }
 
 /** The node's deny-type lists, a floor over every workspace's own (D85, Q14). */
 const FLOOR_KEYS = new Set(['BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE'])
 
 function normalise(setting: NodeSetting, raw: string, context: SettingsContext) {
-  return normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory(), environment: context.merged })
+  return normaliseSetting({ setting, raw, cwd: context.cwd, isDirectory: path => existsSync(path) && statSync(path).isDirectory(), environment: context.merged, fileValues: buckleVariables(context.fileText) })
 }
 
 /** The BUCKLE_* variables the node would read from the file, as `buckle serve` loads them. */

@@ -860,6 +860,10 @@ describe('buckle workspace set and unset', () => {
     [['experimental-admin-http', 'on'], 'experimental-admin-http is a node setting (BUCKLE_EXPERIMENTAL_ADMIN_HTTP), the same for every workspace, so no workspace sets it: buckle settings set experimental-admin-http <value> changes it.'],
     [['BUCKLE_ALLOW_SHELL', 'off'], 'BUCKLE_ALLOW_SHELL is the node\'s default for every workspace (BUCKLE_ALLOW_SHELL); buckle settings set shell <value> changes it there. This workspace\'s own is packs.shell: buckle workspace set packs.shell on|off.'],
     [['command-deny', 'curl *'], 'This workspace\'s own is policy.commands.deny: buckle policy deny-command <glob>, which adds to the node\'s.'],
+    // The node's mounts and browser are workspace defaults too, each naming the workspace's own key, not "no workspace sets it".
+    [['BUCKLE_BROWSER_CDP', '9222'], 'BUCKLE_BROWSER_CDP is the node\'s default for every workspace (BUCKLE_BROWSER_CDP); buckle settings set browser-cdp <value> changes it there. This workspace\'s own is browser.cdp: buckle workspace set browser.cdp <port or URL>.'],
+    [['BUCKLE_BROWSER_HEADED', 'on'], 'This workspace\'s own is browser.headed: buckle workspace set browser.headed on|off.'],
+    [['BUCKLE_MOUNTS', '[]'], 'This workspace\'s own is mounts: buckle workspace mount add <local>:<sandbox>[:ro].'],
     [['mount', '/usr/project'], 'Cannot mount the workspace under /usr'],
     [['packs.shell'], 'Usage: buckle workspace set <key> <value>'],
   ])('refuses %j, saying why, and writes nothing', async (words, reason) => {

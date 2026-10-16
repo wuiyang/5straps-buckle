@@ -3,7 +3,8 @@ import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { compilePolicy, PolicyError, refusedNetworkEntries } from '../common/domain/policy.js'
 import { compileHostPattern, UrlPatternError } from '../common/domain/url-pattern.js'
-import { parseApprovalTimeout } from '../common/runtime/config.js'
+import { parseSandboxMounts } from '../common/domain/sandbox-mounts.js'
+import { browserBlockRefusal, parseApprovalTimeout, parseBrowserArgs, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
 
 /**
@@ -15,9 +16,11 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
+  /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
+  logsValue?: false
   /**
    * For a workspace default (D85, Q3): the setting in each workspace's own settings that wins over it, and how that one
    * changes. Absent for a node-only setting, which no workspace sets.
@@ -46,6 +49,13 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   // The shell's network and isolation (Phase 2 item 4): every workspace's defaults where its own settings hold none.
   { key: 'BUCKLE_SHELL_NETWORK', alias: 'shell-network', kind: 'boolean', fallback: 'false', workspace: { key: 'shell.network', change: 'buckle workspace set shell.network on|off' } },
   { key: 'BUCKLE_SHELL_ISOLATION', alias: 'shell-isolation', kind: 'boolean', fallback: 'true', workspace: { key: 'shell.isolation', change: 'buckle workspace set shell.isolation on|off' } },
+  // The node's mounts, read-only (Phase 2 item 1): a JSON list the page on mounts shows, kept as the file holds it.
+  { key: 'BUCKLE_MOUNTS', alias: 'mounts', kind: 'mounts', fallback: '(none)', workspace: { key: 'mounts', change: 'buckle workspace mount add <local>:<sandbox>[:ro]' } },
+  // The browser (Phase 2 item 6): the owner's Chrome to attach to, or the profile, arguments, and window of the one Buckle launches.
+  { key: 'BUCKLE_BROWSER_CDP', alias: 'browser-cdp', kind: 'browser-cdp', fallback: '(none)', logsValue: false, workspace: { key: 'browser.cdp', change: 'buckle workspace set browser.cdp <port or URL>' } },
+  { key: 'BUCKLE_BROWSER_PROFILE', alias: 'browser-profile', kind: 'browser-profile', fallback: '(none: a fresh browser)', logsValue: false, workspace: { key: 'browser.profile', change: 'buckle workspace set browser.profile <absolute folder>' } },
+  { key: 'BUCKLE_BROWSER_ARGS', alias: 'browser-args', kind: 'browser-args', fallback: '(none)', logsValue: false, workspace: { key: 'browser.args', change: 'buckle workspace set browser.args <arguments>' } },
+  { key: 'BUCKLE_BROWSER_HEADED', alias: 'browser-headed', kind: 'boolean', fallback: 'false', workspace: { key: 'browser.headed', change: 'buckle workspace set browser.headed on|off' } },
   { key: 'BUCKLE_ALLOW_HOST_LSP', alias: 'host-lsp', kind: 'boolean', fallback: 'false', workspace: { key: 'packs.hostLsp', change: 'buckle workspace set packs.hostLsp on|off' } },
   { key: 'BUCKLE_COMMAND_ALLOW', alias: 'command-allow', kind: 'command-list', fallback: '(none: no allow list)', workspace: { key: 'policy.commands.allow', change: 'buckle policy allow-command <glob>' } },
   { key: 'BUCKLE_COMMAND_DENY', alias: 'command-deny', kind: 'command-list', fallback: '(none)', workspace: { key: 'policy.commands.deny', change: 'buckle policy deny-command <glob>, which adds to the node\'s' } },
@@ -97,9 +107,32 @@ export type SettingValue = { ok: true; value: string } | { ok: false; reason: st
  * The value as the environment file will hold it, or why it is refused. Lists are written comma
  * separated with no spaces, booleans as `true` or `false`, directories as absolute paths.
  */
-export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean; environment?: NodeJS.ProcessEnv }): SettingValue {
+export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean; environment?: NodeJS.ProcessEnv; fileValues?: Readonly<Record<string, string | undefined>> }): SettingValue {
+  const value = normaliseValue(input)
+  if (!value.ok || !(input.setting.key in BROWSER_SETTING_FIELDS)) return value
+  // The file is read as one browser block at start, so a value that cannot stand beside the others stops the node there: refused here, before it is written.
+  const refusal = browserBlockRefusal(browserBlockWith(input.fileValues ?? {}, input.setting.key, value.value), process.platform)
+  return refusal === null ? value : refuse(refusal)
+}
+
+/** The browser variables and the field of a browser block each sets. */
+const BROWSER_SETTING_FIELDS: Readonly<Record<string, 'cdp' | 'profile' | 'args' | 'headed'>> = { BUCKLE_BROWSER_CDP: 'cdp', BUCKLE_BROWSER_PROFILE: 'profile', BUCKLE_BROWSER_ARGS: 'args', BUCKLE_BROWSER_HEADED: 'headed' }
+
+/** The browser block the file would hold with `key` set to `value`. */
+function browserBlockWith(file: Readonly<Record<string, string | undefined>>, key: string, value: string): { cdp?: string; profile?: string; args?: string; headed?: boolean } {
+  const held = { ...file, [key]: value }
+  return {
+    ...(held.BUCKLE_BROWSER_CDP ? { cdp: held.BUCKLE_BROWSER_CDP } : {}),
+    ...(held.BUCKLE_BROWSER_PROFILE ? { profile: held.BUCKLE_BROWSER_PROFILE } : {}),
+    ...(held.BUCKLE_BROWSER_ARGS ? { args: held.BUCKLE_BROWSER_ARGS } : {}),
+    headed: held.BUCKLE_BROWSER_HEADED === 'true',
+  }
+}
+
+function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string; isDirectory: (path: string) => boolean; environment?: NodeJS.ProcessEnv }): SettingValue {
   const raw = input.raw.trim()
-  if (/[\r\n\0"]/.test(raw)) return refuse(`${input.setting.key} cannot hold a newline or a double quote`)
+  // A list of mounts is JSON, which holds double quotes.
+  if (/[\r\n\0]/.test(raw) || (input.setting.kind !== 'mounts' && raw.includes('"'))) return refuse(`${input.setting.key} cannot hold a newline${input.setting.kind === 'mounts' ? '' : ' or a double quote'}`)
   switch (input.setting.kind) {
     case 'boolean': {
       const word = raw.toLowerCase()
@@ -155,10 +188,31 @@ export function normaliseSetting(input: { setting: NodeSetting; raw: string; cwd
       if (globs.length === 0) return refuse(`${input.setting.key} needs at least one glob, separated by ;;; unset it to clear the list`)
       return compiled(() => compilePolicy({ ...emptyWorkspacePolicy(), commands: { allow: globs, deny: [] } }), globs.join(';;'))
     }
+    case 'mounts': {
+      let mounts: ReturnType<typeof parseSandboxMounts>
+      try { mounts = parseSandboxMounts(raw) } catch (error) { return refuse(error instanceof Error ? error.message : String(error)) }
+      if (mounts.length === 0) return refuse(`${input.setting.key} needs at least one mount; unset it to clear the list`)
+      // As the file holds it, `~/` unexpanded: the node expands it where it reads the list.
+      return { ok: true, value: JSON.stringify(JSON.parse(raw)) }
+    }
+    case 'browser-cdp': return parsed(input.setting, raw, () => parseBrowserCdp(raw))
+    case 'browser-profile': return parsed(input.setting, raw, () => parseBrowserProfile(raw, process.platform))
+    case 'browser-args': return parsed(input.setting, raw, () => parseBrowserArgs(raw, process.platform))
     case 'name':
       if (!raw) return refuse(`${input.setting.key} cannot be empty; unset it for the default`)
       if (raw.length > MAX_NAME_LENGTH) return refuse(`${input.setting.key} is at most ${MAX_NAME_LENGTH} characters`)
       return { ok: true, value: raw }
+  }
+}
+
+/** A browser value read as the node reads it at start; a refusal names the variable, never the value. */
+function parsed(setting: NodeSetting, raw: string, read: () => string | undefined): SettingValue {
+  if (!raw) return refuse(`${setting.key} needs a value; unset it for the default`)
+  try {
+    const value = read()
+    return value === undefined ? refuse(`${setting.key} needs a value; unset it for the default`) : { ok: true, value }
+  } catch (error) {
+    return refuse(error instanceof Error ? error.message : String(error))
   }
 }
 

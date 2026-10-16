@@ -714,7 +714,7 @@ export function browserBlockRefusal(block: { cdp?: string | undefined; profile?:
  * A DevTools port, or a ws://, wss://, http://, or https:// URL, as agent-browser's `--cdp` takes them. agent-browser
  * reads the scheme in lower case only and quotes the whole value when it cannot, so the scheme is lowered here.
  */
-function parseBrowserCdp(value: string | undefined): string | undefined {
+export function parseBrowserCdp(value: string | undefined): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
   const port = /^\d{1,5}$/.test(raw) ? Number(raw) : NaN
@@ -725,7 +725,7 @@ function parseBrowserCdp(value: string | undefined): string | undefined {
 }
 
 /** Absolute, so it names one folder whatever directory a command starts in. Where it lies is judged when the pack is built. */
-function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platform): string | undefined {
+export function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platform): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
   // On Windows a path rooted at a slash alone names whichever drive is current, so it is no absolute path either.
@@ -738,7 +738,7 @@ function parseBrowserProfile(value: string | undefined, platform: NodeJS.Platfor
 }
 
 /** Passed whole as agent-browser's `--args`, once nothing in it is refused (browserArgumentsRefusal). */
-function parseBrowserArgs(value: string | undefined, platform: NodeJS.Platform): string | undefined {
+export function parseBrowserArgs(value: string | undefined, platform: NodeJS.Platform): string | undefined {
   const raw = value?.trim()
   if (!raw) return undefined
   const refusal = browserArgumentsRefusal(raw, platform)
