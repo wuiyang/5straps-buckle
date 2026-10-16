@@ -21,8 +21,9 @@ directory, and refuses to start otherwise, naming the variable. A command starte
 defaults set to another value says at start that it is not read. The move from 0.1 refuses
 instead where the command deny or destructive list is set otherwise in its environment, as 0.1
 applied that list, and on a node with no `buckle.env` where either is set there at all: put it in
-`buckle.env` with `buckle settings set`, after `buckle init` where there is no file, or remove it
-from that environment. `buckle settings show` names a default a shell sets as not read. A change
+`buckle.env` with `buckle settings set`, or remove it from that environment. On a node with no file,
+`buckle init` writes the lists, the agent token, and `BUCKLE_WORKSPACE_ROOT` its environment holds
+into the file it makes, says which, and the move runs from there. `buckle settings show` names a default a shell sets as not read. A change
 to `buckle.env` applies when the node restarts: `buckle service restart` where a service runs it.
 
 ## The policy lists

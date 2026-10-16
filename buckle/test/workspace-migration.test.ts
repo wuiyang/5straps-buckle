@@ -293,7 +293,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(refused).toBeInstanceOf(MigrationError)
       const message = (refused as Error).message
       expect(message).toContain(`${keys.join(', ')} ${keys.length === 1 ? 'is' : 'are'} set in this command's environment, but this node has no environment file, buckle.env`)
-      expect(message).toContain(`Run buckle init to write the file, then ${keys.map(key => `buckle settings set ${key} '<globs separated by ;;>'`).join(' and ')}, or remove`)
+      expect(message).toContain(`Run buckle init, which writes ${keys.length === 1 ? 'it' : 'them'} into the file it makes, or remove`)
       for (const value of ['curl', 'wget', 'make deploy', input.root]) expect(message).not.toContain(value)
       expect(registry(input)).toBe(before)
       expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)

@@ -1,9 +1,10 @@
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, cpSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { parseEnv } from 'node:util'
 import { CLOSE_STAGES } from '@5straps/runtime'
 import { generateSigningKey, keyIdOf, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
 import { afterAll, describe, expect, inject, it, vi } from 'vitest'
@@ -393,10 +394,33 @@ describe('a node with no buckle.env (built dist)', () => {
     const refused = spawnSync(process.execPath, [entry, 'workspace', 'init', '--name', 'site'], { encoding: 'utf8', env, cwd: project, timeout: 30_000 })
     expect(refused.status).not.toBe(0)
     expect(refused.stderr).toContain('BUCKLE_COMMAND_DENY is set in this command\'s environment, but this node has no environment file, buckle.env')
-    expect(refused.stderr).toContain('Run buckle init to write the file, then buckle settings set BUCKLE_COMMAND_DENY')
+    expect(refused.stderr).toContain('Run buckle init, which writes it into the file it makes')
     expect(refused.stderr).not.toContain('curl-secret-fixture')
     expect(existsSync(join(node.state, 'workspaces.json'))).toBe(false)
   }, 60_000)
+
+  // Fix brief 6, item 9 (finding 24 of recheck 4): following that advice, buckle init wrote buckle.env without the token,
+  // the folder, or the list, then the move refused with "Nothing was changed." It now writes them into the file it
+  // makes, says which it carried, naming no value, and the move runs from the file, keeping the token and the list.
+  it('lets buckle init carry the token, folder, and deny list such a node\'s environment holds into its file, and move it', async () => {
+    const node = await prepareNode()
+    const env = { ...node.env, BUCKLE_ADMIN_TOKEN: 'no-file-admin-fixture', BUCKLE_COMMAND_DENY: 'curl-secret-fixture *' }
+    const project = join(node.root, 'project')
+    mkdirSync(project)
+    expect(spawnSync(process.execPath, [entry, 'workspace', 'list'], { encoding: 'utf8', env, cwd: project, timeout: 30_000 }).status).not.toBe(0)
+    const init = spawnSync(process.execPath, [entry, 'init', '--yes'], { encoding: 'utf8', env, cwd: project, timeout: 60_000 })
+    expect(init.stderr).not.toContain('Nothing was changed')
+    expect(init.status).toBe(0)
+    expect(init.stdout).toContain('Carried     BUCKLE_AUTH_TOKEN, BUCKLE_WORKSPACE_ROOT, and BUCKLE_COMMAND_DENY, from this command\'s environment')
+    for (const value of ['curl-secret-fixture', 'bootstrap-agent-token']) expect(`${init.stdout}${init.stderr}`).not.toContain(value)
+    const registry = JSON.parse(readFileSync(join(node.state, 'workspaces.json'), 'utf8')) as { version: number; workspaces: Array<{ dir: string; tokens: Array<{ id: string }> }> }
+    expect(registry.version).toBe(2)
+    expect(registry.workspaces).toContainEqual(expect.objectContaining({ dir: realpathSync(node.workspace), tokens: [expect.objectContaining({ id: 'node' })] }))
+    const file = parseEnv(readFileSync(join(node.state, 'buckle.env'), 'utf8'))
+    expect(file.BUCKLE_COMMAND_DENY).toBe('curl-secret-fixture *')
+    // The move took the token into the registry as its digest, and out of the file.
+    expect(file.BUCKLE_AUTH_TOKEN).toBeUndefined()
+  }, 90_000)
 })
 
 describe('an environment file other users can read (review M4, warn only)', () => {

@@ -546,7 +546,8 @@ function refuseDroppedFloor(keys: readonly string[], file: string | null): void 
   const one = keys.length === 1
   const repairs = keys.map(key => `buckle settings set ${key} '<globs separated by ;;>'`).join(' and ')
   const held = file === null ? ', but this node has no environment file, buckle.env' : ' to other entries than the node\'s environment file holds'
-  const repair = file === null ? `Run buckle init to write the file, then ${repairs}` : `Put ${one ? 'the list' : 'each list'} in the file with ${repairs}`
+  // buckle init writes the environment's lists into the file it makes on such a node (fix brief 6, item 9).
+  const repair = file === null ? `Run buckle init, which writes ${one ? 'it' : 'them'} into the file it makes` : `Put ${one ? 'the list' : 'each list'} in the file with ${repairs}`
   throw new MigrationError(`${keys.join(', ')} ${one ? 'is' : 'are'} set in this command's environment${held}. Before the workspace model the environment's list applied; from the move on the node reads ${one ? 'it' : 'them'} from the file alone, so moving now would drop entries the node enforced. ${repair}, or remove ${one ? 'the variable' : 'the variables'} from the environment this command runs in, then start Buckle again. Nothing was changed.`)
 }
 
