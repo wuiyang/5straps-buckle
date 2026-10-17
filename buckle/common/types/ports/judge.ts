@@ -2,7 +2,8 @@
  * The decision AI (D91): a standard model the node asks to rate one interpreter invocation that the owner's policy
  * admitted but Buckle cannot read as shell. It sees what this input holds and nothing else: the command as an approver
  * sees it, the code it runs from the workspace's own files, the workspace's lists in force, where the command runs as
- * the sandbox names it, and the mounts it can reach. No environment value, host path, or credential is part of it.
+ * the sandbox names it, the mounts it can reach, and the variables the call itself sets. No value of the node's own
+ * environment, host path, or credential is part of it.
  * The SDK that asks a provider is one adapter (adapters/judge/ai-sdk.ts), and each provider one file beside it.
  */
 export interface Judge {
@@ -49,6 +50,11 @@ export interface JudgeInput {
   interpreters: string[]
   /** The code the command line hands the interpreter itself (`-c`, `-e`), or null. */
   inline: string | null
+  /**
+   * The variables the call sets for the command, sorted by name, each value as the agent gave it with a secret's hidden
+   * (fix brief 1, item 14). A call setting one that changes what code runs (CODE_LOADING_VARIABLES) is never rated.
+   */
+  env: Array<{ name: string; value: string }>
   /** The scripts the command names and every local file they import, transitively, each read once. */
   files: JudgeFile[]
   /** The third-party packages the code imports, each with the version installed where Buckle finds one and Socket's view of it: their code is not read. */

@@ -1,0 +1,153 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { BuckleConfig } from '../common/runtime/config.js'
+import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, shownVariables } from '../common/services/judge/call-env.js'
+import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
+import type { QuickJudge } from '../common/types/ports/quick-judge.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+
+// The variables a call sets for its command (D91, fix brief 1 item 14): one that changes what code runs means no rating,
+// so the call asks a person, and under scope all nothing is screened; every other variable reaches both stages, its value
+// as the agent gave it with a secret's hidden, and is part of the cache key, so a verdict never covers a call it did not see.
+
+const roots: string[] = []
+const runtimes: BuckleRuntime[] = []
+afterEach(async () => {
+  vi.restoreAllMocks()
+  for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-judge-env-'))
+  const state = mkdtempSync(join(tmpdir(), 'buckle-judge-env-state-'))
+  roots.push(root, state)
+  writeFileSync(join(root, 'build.js'), "require('fs').writeFileSync('built.txt', 'ok')\n")
+  writeFileSync(join(root, 'evil.js'), "require('fs').writeFileSync('pwned.txt', 'ok')\n")
+  return configFromEnvironment({
+    BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state,
+    BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '60000',
+    BUCKLE_APPROVAL_JUDGE: 'automated',
+    ...environment,
+  })
+}
+
+const SAFE: JudgeResult = { kind: 'verdict', level: 'safe', confidence: 0.95, reasoning: 'Builds the project.', model: 'gpt-6-luna', latencyMs: 40, promptDigest: 'd'.repeat(64) }
+
+function fakeJudge(answer: JudgeResult = SAFE): Judge & { shown: JudgeInput[] } {
+  const shown: JudgeInput[] = []
+  return { shown, judge: vi.fn(async (input: JudgeInput) => { shown.push(input); return answer }) }
+}
+
+async function runtimeOf(config: BuckleConfig, judges: { judge?: Judge; quickJudge?: QuickJudge }): Promise<BuckleRuntime> {
+  const runtime = await createRuntime({ config, ...judges })
+  runtimes.push(runtime)
+  return runtime
+}
+
+/** One shell_exec call (`node build.js` unless named) with the arguments given, through the real permission pipeline; nothing runs. */
+async function call(runtime: BuckleRuntime, args: JsonObject = {}, command = ['node', 'build.js']) {
+  const execute = vi.fn(async () => 'executed')
+  const [program = '', ...words] = command
+  const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: program, args: words }], execute })
+  const requestId = `env-${Math.random()}`
+  try {
+    const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'shell_exec', args: { command: program, args: words, ...args } }, sessionId: 'env', approvalWait: { mode: 'none' } })
+    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    return { response, entry, ran: execute.mock.calls.length > 0 }
+  } finally { prepare.mockRestore() }
+}
+
+describe('the variables that change what code runs', () => {
+  it('are the names and prefixes fix brief 1 lists', () => {
+    expect(CODE_LOADING_VARIABLES).toEqual({
+      names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT'],
+      prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_'],
+    })
+  })
+
+  it('are found by name or prefix, as Windows reads a name, and named without their value', () => {
+    const named = (env: Record<string, string>) => codeLoadingVariable(callVariables({ env }))
+    for (const name of ['NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PERL5OPT', 'RUBYOPT', 'BASH_ENV', 'Path', 'GEM_HOME', 'BUN_INSTALL']) expect(named({ FOO: '1', [name]: 'x' })).toBe(name)
+    expect(named({ FOO: '1', CI: 'true', NODEJS_HOME: 'x' })).toBeUndefined()
+    expect(codeLoadingReason('NODE_OPTIONS')).toBe('the call sets NODE_OPTIONS, which changes what code runs; the decision AI does not rate it')
+    expect(codeLoadingReason('LD_\u001b[2J')).toBe('the call sets "LD_\\u001b[2J", which changes what code runs; the decision AI does not rate it')
+  })
+
+  it('are shown to no stage: the call asks, and never takes the safe verdict kept for the plain command', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    expect((await call(runtime)).ran).toBe(true)
+    const { response, entry, ran } = await call(runtime, { env: { NODE_OPTIONS: '--require ./evil.js' } })
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(judge.judge).toHaveBeenCalledTimes(1)
+    expect(entry.judge).toMatchObject({ unavailable: 'the call sets NODE_OPTIONS, which changes what code runs; the decision AI does not rate it', passed: false })
+    expect(JSON.stringify(entry)).not.toContain('evil')
+    expect(JSON.stringify(response)).not.toContain('evil')
+  })
+
+  it('leave an allowed command to run as before under scope all, with nothing screened', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'danger' as const, confidence: 0.99, probabilities: { safe: 0, warning: 0.01, danger: 0.99 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'all' }), { quickJudge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['cat *'], deny: [] } })
+    const { ran, entry } = await call(runtime, { env: { LD_PRELOAD: './evil.so' } }, ['cat', 'build.js'])
+    expect(ran).toBe(true)
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+    expect(entry.judge).toMatchObject({ quick: { unavailable: 'the call sets LD_PRELOAD, which changes what code runs; the decision AI does not rate it' }, passed: false, screened: true })
+  })
+})
+
+describe('every other variable the call sets', () => {
+  it('reaches the stage as the agent gave it, and gets a key of its own', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await call(runtime)
+    expect(judge.shown[0]!.env).toEqual([])
+    await call(runtime, { env: { FOO: '1' } })
+    expect(judge.judge).toHaveBeenCalledTimes(2)
+    expect(judge.shown[1]!.env).toEqual([{ name: 'FOO', value: '1' }])
+    expect((await call(runtime, { env: { FOO: '1' } })).ran).toBe(true)
+    expect(judge.judge).toHaveBeenCalledTimes(2)
+    await call(runtime, { env: { FOO: '2' } })
+    expect(judge.judge).toHaveBeenCalledTimes(3)
+  })
+
+  it('stays out of the audit entry and the approver\'s judge line', async () => {
+    const judge = fakeJudge({ ...SAFE, level: 'danger', reasoning: 'It writes a file.' })
+    const runtime = await runtimeOf(node(), { judge })
+    const { response, entry } = await call(runtime, { env: { MARKER: 'env-value-7f3a' } })
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(judge.shown[0]!.env).toEqual([{ name: 'MARKER', value: 'env-value-7f3a' }])
+    expect(JSON.stringify(entry)).not.toContain('env-value-7f3a')
+    expect(JSON.stringify(runtime.approvalService.listing()[0]!.call?.judge)).not.toContain('env-value-7f3a')
+  })
+
+  it('is sent with a secret\'s value hidden, and a credential in a URL hidden', () => {
+    expect(shownVariables(callVariables({ env: { API_TOKEN: 'abc', DATABASE_URL: 'postgres://me:hunter2@db.example/app', MODE: 'fast' } }))).toEqual([
+      { name: 'API_TOKEN', value: '[redacted]' },
+      { name: 'DATABASE_URL', value: 'postgres://me:[redacted]@db.example/app' },
+      { name: 'MODE', value: 'fast' },
+    ])
+  })
+})
+
+describe('the cache key', () => {
+  const input = (overrides: Partial<JudgeInput> = {}): JudgeInput => ({
+    command: 'node build.js', argv: ['node', 'build.js'], interpreters: ['node'], inline: null, env: [], files: [], packages: [], packagesTruncated: false, truncated: false,
+    standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] }, cwd: '/workspace', mounts: [], description: 'Run "node build.js"', reason: null, ...overrides,
+  })
+  const key = (asked: JudgeInput) => judgeCacheKey({ provider: 'openai-compatible', model: 'gpt-6-luna', policyUpdatedAt: null, asked })
+
+  it('holds the variables, by name in any order, and the summary that names network access', () => {
+    const base = key(input())
+    expect(key(input({ env: [{ name: 'FOO', value: '1' }] }))).not.toBe(base)
+    expect(key(input({ env: [{ name: 'A', value: '1' }, { name: 'B', value: '2' }] }))).toBe(key(input({ env: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] })))
+    expect(key(input({ description: 'Run "node build.js", with network access' }))).not.toBe(base)
+  })
+})

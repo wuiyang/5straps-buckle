@@ -29,6 +29,8 @@ It reads only what the agent itself could read without asking, through the agent
 the checks the file tools make. No stage is asked, and the call goes on as if the decision AI
 were off, where:
 
+- the call sets a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,
+  `LD_PRELOAD`, or `PYTHONPATH` (the audit entry names it, never its value);
 - the code runs past 50 files or 512 KiB in all, the command line's own code included;
 - an argument lands outside every mount, or the code reaches a credential file, a hidden path,
   Buckle's state, or a link leaving the workspace;
@@ -58,11 +60,13 @@ package URLs alone, such as `pkg:npm/lodash@4.17.21`, with the key as HTTP basic
 
 One request per stage and rating, to the endpoint the node names, holding one JSON document: the
 command as an approver sees it, with the credentials the display hides hidden, and its words; the
-interpreters named; the inline code; each file read, with its path inside the sandbox
+interpreters named; the inline code; the variables the call sets for the command, each value as
+the agent gave it with a secret's hidden; each file read, with its path inside the sandbox
 (`/workspace/...`), its sha256, its size, and its content; the packages with their versions and
 Socket's view; whether it is a standard script; the workspace's command lists; the working
 directory and the mounts as the sandbox names them; and Buckle's own summary of the call. So the
-content of the workspace's own scripts leaves the machine. Never: an environment value, a file the
+content of the workspace's own scripts leaves the machine. Never: a value from the node's own
+environment, a file the
 agent could not read, a token, or a key in the body (each key goes in its `Authorization`
 header). A workspace shown at its real path is named `/workspace`; a host path the agent typed
 into the command itself stays in the command.

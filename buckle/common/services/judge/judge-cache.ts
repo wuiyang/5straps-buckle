@@ -38,16 +38,18 @@ export function judgeCachePath(stateDirectory: string): string {
 /**
  * What a verdict is kept under (D91, addendum B): the provider and model that gave it, so the two stages never share a key, the policy as it stood (its
  * updatedAt and the lists the judge was shown), the command as shown, its inline code, each file it ran as its sandbox
- * path paired with its sha, sorted, every package with the version installed, whether it was a standard script, and where
- * it ran. One byte changed in any file the code reads, or two files swapping contents, is a new key, so all of the code is
- * rated again; the order the reader found the files in is not part of it.
+ * path paired with its sha, sorted, every package with the version installed, whether it was a standard script, where
+ * it ran, the variables the call sets as the stage saw them, and the node's summary of the call (its network access and
+ * the files it declares among them). One byte changed in any file the code reads, or two files swapping contents, is a
+ * new key, so all of the code is rated again; the order the reader found the files in is not part of it.
  */
 export function judgeCacheKey(input: { provider: string; model: string; policyUpdatedAt: string | null; asked: JudgeInput }): string {
   const { asked } = input
   // The path decides which code runs, so a sha is kept with the file that holds it, never alone.
   const files = asked.files.map(file => `${file.path}\0${file.sha256}`).sort()
   const packages = asked.packages.map(item => `${item.name}@${item.version ?? ''}`).sort()
-  return createHash('sha256').update(JSON.stringify([input.provider, input.model, input.policyUpdatedAt, asked.policy, asked.command, asked.inline, files, packages, asked.standardScript, asked.cwd])).digest('hex')
+  const env = asked.env.map(item => `${item.name}\0${item.value}`).sort()
+  return createHash('sha256').update(JSON.stringify([input.provider, input.model, input.policyUpdatedAt, asked.policy, asked.command, asked.inline, files, packages, asked.standardScript, asked.cwd, env, asked.description])).digest('hex')
 }
 
 /**

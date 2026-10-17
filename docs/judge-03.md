@@ -8,7 +8,8 @@ runtime on this machine) runs with the node's own keys, keeps and shows. Its two
 
 Each stage's verdict is kept under that stage's provider and model, the policy (its `updatedAt`
 and its lists), the command, its inline code, each file read as its path with its sha256, each
-package with its version, whether it was a standard script, and the working directory. One byte
+package with its version, whether it was a standard script, the working directory, the variables
+the call sets, and Buckle's summary of the call, which names its network access. One byte
 changed in any file it reads, two files swapping contents, or a package upgraded, makes a new key,
 so all of the code is rated again. A verdict is
 kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state directory, readable

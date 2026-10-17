@@ -22,7 +22,7 @@ function scratch(): string {
 
 const verdict = (reasoning = 'Reads a file.'): JudgeVerdict => ({ kind: 'verdict', level: 'safe', confidence: 0.9, reasoning, model: 'claude-opus-5-5', latencyMs: 812, promptDigest: 'c'.repeat(64) })
 const input = (overrides: Partial<JudgeInput> = {}): JudgeInput => ({
-  command: 'python3 job.py', argv: ['python3', 'job.py'], interpreters: ['python3'], inline: null,
+  command: 'python3 job.py', argv: ['python3', 'job.py'], interpreters: ['python3'], inline: null, env: [],
   files: [{ path: '/workspace/job.py', sha256: 'a'.repeat(64), bytes: 10, content: 'print(1)\n' }, { path: '/workspace/lib.py', sha256: 'b'.repeat(64), bytes: 5, content: 'x=1\n' }],
   packages: [{ name: 'requests', version: '2.32.0', socket: null }], packagesTruncated: false, truncated: false, standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
   cwd: '/workspace', mounts: [{ target: '/workspace', access: 'read-write' }], description: null, reason: null, ...overrides,

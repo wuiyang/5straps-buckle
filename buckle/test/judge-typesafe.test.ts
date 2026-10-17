@@ -14,7 +14,7 @@ import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 const KEY = 'ts_quick-judge-fixture-0123456789'
 const MODEL = 'jev-latest'
 const INPUT: JudgeInput = {
-  command: 'node job.js', argv: ['node', 'job.js'], interpreters: ['node'], inline: null,
+  command: 'node job.js', argv: ['node', 'job.js'], interpreters: ['node'], inline: null, env: [],
   files: [{ path: '/workspace/job.js', sha256: 'a'.repeat(64), bytes: 21, content: 'console.log("hello")\n' }],
   packages: [], packagesTruncated: false, truncated: false, standardScript: false,
   policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },

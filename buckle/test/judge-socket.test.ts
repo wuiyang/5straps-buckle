@@ -125,7 +125,7 @@ describe('the Socket cache', () => {
 })
 
 const INPUT: JudgeInput = {
-  command: 'node job.js', argv: ['node', 'job.js'], interpreters: ['node'], inline: null, files: [],
+  command: 'node job.js', argv: ['node', 'job.js'], interpreters: ['node'], inline: null, env: [], files: [],
   packages: [{ name: 'left-pad', version: '1.3.0', socket: null }, { name: 'requests', version: null, socket: null }],
   packagesTruncated: false, truncated: false, standardScript: false,
   policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] }, cwd: '/workspace', mounts: [], description: null, reason: null,

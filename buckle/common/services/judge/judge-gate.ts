@@ -15,6 +15,7 @@ import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
 import type { Judge, JudgeInput, JudgeMode, JudgeProvider, JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
+import { callVariables, codeLoadingReason, codeLoadingVariable, shownVariables } from './call-env.js'
 import { readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
@@ -129,9 +130,12 @@ export function createJudgeGate(input: {
   /**
    * What a stage is shown of one command: for an ask, the code of each interpreter the policy does not allow; for an
    * allowed command (`allowed`), the code of every interpreter it runs. A reason in place of it where the code cannot be
-   * read whole.
+   * read whole, or where the call sets a variable that changes what code runs, which no stage could see run.
    */
   function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null): JudgeInput | string {
+    const variables = callVariables(call.args)
+    const loading = codeLoadingVariable(variables)
+    if (loading !== undefined) return codeLoadingReason(loading)
     const forms = commandFormsOf(effect)
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
@@ -149,6 +153,7 @@ export function createJudgeGate(input: {
       argv: shownWords(effect.command, effect.args),
       interpreters,
       ...code.reading,
+      env: shownVariables(variables),
       packagesTruncated: false,
       truncated: false,
       standardScript,
