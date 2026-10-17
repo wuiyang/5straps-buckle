@@ -93,6 +93,17 @@ describe('an answer Jev cannot give', () => {
     expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: 'the answer held no verdict' })
   })
 
+  it.each([
+    ['an empty object', () => Response.json({})],
+    ['answers that are null', () => Response.json({ model: 'jev-1.13.0', answers: null })],
+    ['an HTML page', () => new Response('<!doctype html><html><body>Bad gateway</body></html>', { headers: { 'content-type': 'text/html' } })],
+    ['a JSON string', () => Response.json('a plain string')],
+    ['an empty body', () => new Response('', { status: 200 })],
+  ])('is unavailable, and throws nothing, when a 200 holds %s', async (_, body) => {
+    const { fetch } = fakeFetch(body)
+    expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: 'the answer held no verdict' })
+  })
+
   it('is unavailable at a 400, without trying again', async () => {
     const { fetch, calls } = fakeFetch(() => Response.json({ detail: `too long for ${KEY}` }, { status: 400 }))
     expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: 'the API answered HTTP 400' })

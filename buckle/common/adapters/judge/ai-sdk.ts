@@ -1,5 +1,5 @@
 import { APICallError, generateText, NoObjectGeneratedError, NoOutputGeneratedError, Output, RetryError, type LanguageModel } from 'ai'
-import type { Judge } from '../../types/ports/judge.js'
+import type { Judge, JudgeInput, JudgeOptions, JudgeResult } from '../../types/ports/judge.js'
 import { JUDGE_MAX_RETRIES, JUDGE_SYSTEM_PROMPT, JUDGE_TIMEOUT_MS, judgePrompt, unavailable, verdictOf, VerdictSchema } from './verdict.js'
 
 /**
@@ -16,27 +16,31 @@ export type ProviderModel = Exclude<LanguageModel, string>
  * SDK or a provider touches this file and providers/ alone, never the port.
  */
 export function createAiSdkJudge(input: { model: (modelId: string) => ProviderModel; timeoutMs?: number }): Judge {
+  async function rate(asked: JudgeInput, { model, signal }: JudgeOptions): Promise<JudgeResult> {
+    const { user, digest } = judgePrompt(asked, model)
+    const startedAt = performance.now()
+    const timeout = AbortSignal.timeout(input.timeoutMs ?? JUDGE_TIMEOUT_MS)
+    try {
+      const result = await generateText({
+        model: input.model(model),
+        instructions: JUDGE_SYSTEM_PROMPT,
+        prompt: user,
+        output: Output.object({ schema: VerdictSchema, name: 'verdict' }),
+        abortSignal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+        maxRetries: JUDGE_MAX_RETRIES,
+      })
+      if (result.finishReason === 'content-filter') return unavailable('the model declined to rate the command')
+      return verdictOf({ parsed: result.output, asked, model, startedAt, digest })
+    } catch (error) {
+      if (signal?.aborted) return unavailable('the call was cancelled while the judge rated it')
+      if (timeout.aborted) return unavailable('the request timed out')
+      return unavailable(failureOf(error))
+    }
+  }
   return {
-    async judge(asked, { model, signal }) {
-      const { user, digest } = judgePrompt(asked, model)
-      const startedAt = performance.now()
-      const timeout = AbortSignal.timeout(input.timeoutMs ?? JUDGE_TIMEOUT_MS)
-      try {
-        const result = await generateText({
-          model: input.model(model),
-          instructions: JUDGE_SYSTEM_PROMPT,
-          prompt: user,
-          output: Output.object({ schema: VerdictSchema, name: 'verdict' }),
-          abortSignal: signal ? AbortSignal.any([signal, timeout]) : timeout,
-          maxRetries: JUDGE_MAX_RETRIES,
-        })
-        if (result.finishReason === 'content-filter') return unavailable('the model declined to rate the command')
-        return verdictOf({ parsed: result.output, asked, model, startedAt, digest })
-      } catch (error) {
-        if (signal?.aborted) return unavailable('the call was cancelled while the judge rated it')
-        if (timeout.aborted) return unavailable('the request timed out')
-        return unavailable(failureOf(error))
-      }
+    async judge(asked, options) {
+      // The last resort: whatever throws, even reading an answer, the rating is unavailable and the call asks as before.
+      try { return await rate(asked, options) } catch { return unavailable('the request failed') }
     },
   }
 }

@@ -1,6 +1,6 @@
 import { APIConnectionError, APIError, APITimeoutError, APIUserAbortError, choice, TypeSafeClient, type ContentValue } from '@typesafe-ai/sdk'
 import { z } from 'zod'
-import { JUDGE_LEVELS } from '../../types/ports/judge.js'
+import { JUDGE_LEVELS, type JudgeInput } from '../../types/ports/judge.js'
 import type { QuickJudge, QuickResult } from '../../types/ports/quick-judge.js'
 import { LEVEL_DEFINITIONS } from './verdict.js'
 
@@ -45,24 +45,34 @@ export function createTypeSafeQuickJudge(options: { apiKey: string; baseUrl?: st
     retry: { maxRetries: QUICK_MAX_RETRIES, respectRetryAfter: false },
     ...(options.fetch ? { fetch: options.fetch } : {}),
   })
+  async function rate(input: JudgeInput, { model, signal }: { model: string; signal?: AbortSignal }): Promise<QuickResult> {
+    const startedAt = performance.now()
+    let body: unknown
+    try {
+      body = await client.systemOne({ state: input as unknown as { [key: string]: ContentValue }, model, questions: { safety: choice(QUICK_INSTRUCTIONS, LEVEL_DEFINITIONS) } }, signal ? { signal } : {})
+    } catch (error) {
+      return { kind: 'unavailable', reason: failureOf(error) }
+    }
+    // A 200 is parsed as whatever its body holds: an HTML page or a bare string arrives as text, an empty body as nothing.
+    const parsed = AnswerSchema.safeParse(answersOf(body)?.safety)
+    if (!parsed.success) return { kind: 'unavailable', reason: 'the answer held no verdict' }
+    const { choice: level, confidence, probabilities } = parsed.data
+    const answered = (body as { model?: unknown }).model
+    return { kind: 'verdict', level, confidence, probabilities, model: typeof answered === 'string' && answered ? answered : model, latencyMs: Math.round(performance.now() - startedAt) }
+  }
   return {
-    async quick(input, { model, signal }): Promise<QuickResult> {
-      const startedAt = performance.now()
-      let answers: Record<string, unknown>
-      let answered: string
-      try {
-        const result = await client.systemOne({ state: input as unknown as { [key: string]: ContentValue }, model, questions: { safety: choice(QUICK_INSTRUCTIONS, LEVEL_DEFINITIONS) } }, signal ? { signal } : {})
-        answers = result.answers
-        answered = result.model
-      } catch (error) {
-        return { kind: 'unavailable', reason: failureOf(error) }
-      }
-      const parsed = AnswerSchema.safeParse(answers.safety)
-      if (!parsed.success) return { kind: 'unavailable', reason: 'the answer held no verdict' }
-      const { choice: level, confidence, probabilities } = parsed.data
-      return { kind: 'verdict', level, confidence, probabilities, model: typeof answered === 'string' && answered ? answered : model, latencyMs: Math.round(performance.now() - startedAt) }
+    async quick(input, options): Promise<QuickResult> {
+      // The last resort: whatever throws, the rating is unavailable, and the call goes on as the routing says.
+      try { return await rate(input, options) } catch { return { kind: 'unavailable', reason: 'the request failed' } }
     },
   }
+}
+
+/** The answers a body holds, keyed by question name, or null where it is no object holding them. */
+function answersOf(body: unknown): Record<string, unknown> | null {
+  if (body === null || typeof body !== 'object') return null
+  const { answers } = body as { answers?: unknown }
+  return answers !== null && typeof answers === 'object' && !Array.isArray(answers) ? answers as Record<string, unknown> : null
 }
 
 /** Why a request failed, in Buckle's words: the SDK's own message can quote the server's answer, so it is never passed on. */

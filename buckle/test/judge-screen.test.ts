@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createTypeSafeQuickJudge } from '../common/adapters/judge/typesafe.js'
 import { QUICK_FLAG_REASON } from '../common/domain/permission/judged.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -91,6 +92,17 @@ describe('an allowed command, with the quick stage on for all', () => {
     expect(ran).toBe(true)
     expect(entry.judge).toMatchObject({ passed: false, screened: true })
     expect(entry.judge).not.toHaveProperty('flagged')
+  })
+
+  it('runs as before when Jev\'s 200 answer is an HTML page, through the real quick adapter', async () => {
+    const fetch = vi.fn(async () => new Response('<!doctype html><html><body>Bad gateway</body></html>', { headers: { 'content-type': 'text/html' } }))
+    const quickJudge = createTypeSafeQuickJudge({ apiKey: 'ts_quick-judge-fixture-0123456789', fetch: fetch as unknown as typeof globalThis.fetch })
+    const runtime = await runtimeOf(node(), { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
+    const { response, entry, ran } = await call(runtime, 'cat', ['notes.txt'])
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(ran).toBe(true)
+    expect(fetch).toHaveBeenCalledTimes(1)
+    expect(entry.judge).toMatchObject({ quick: { unavailable: 'the answer held no verdict' }, passed: false, screened: true })
   })
 
   it('rates npm run dev, which never asks on its own, as a standard script on its command line alone', async () => {

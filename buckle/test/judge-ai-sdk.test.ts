@@ -158,6 +158,13 @@ describe('a rating the AI SDK judge cannot give', () => {
     expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: 'the answer held no verdict' })
   })
 
+  it('is unavailable, and throws nothing, whatever fails outside the request, such as an input that cannot be written', async () => {
+    const { fetch, calls } = fakeFetch(answer(SAFE))
+    const unwritable = { ...INPUT, toJSON: () => { throw new Error('cannot be written') } } as unknown as JudgeInput
+    expect(await judgeOf(fetch).judge(unwritable, { model: MODEL })).toEqual({ kind: 'unavailable', reason: 'the request failed' })
+    expect(calls()).toBe(0)
+  })
+
   it('is unavailable when the answer echoes another command', async () => {
     const { fetch } = fakeFetch(answer({ ...SAFE, command_echo: 'node other.js' }))
     expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: 'the answer named another command than the one asked about' })
