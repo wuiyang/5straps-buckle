@@ -104,6 +104,8 @@ export function createJudgeGate(input: {
   view: CodeView
   cache: JudgeCache
   scanner: PackageScanner
+  /** False while the dangerously-allow switch is on: the owner asked for no asks, so no allowed command is screened. */
+  screening?: boolean
 }): JudgeGate {
   const { settings, paths } = input
   const thoroughReady = settings.mode !== 'off' && input.judge !== null
@@ -115,6 +117,7 @@ export function createJudgeGate(input: {
   }
   const shownRoot = paths.mount ?? '/workspace'
   const covers = (ask: Ask) => (thoroughReady && judgeable(ask)) || (quickReady && quickCovers(settings.quick, ask))
+  const screens = settings.mode === 'automated' && quickReady && settings.quick === 'all' && input.screening !== false
 
   /** A real folder as the sandbox names it: the workspace's view, a named mount's, or the workspace when neither holds it. */
   const sandboxName = (real: string): string => {
@@ -228,7 +231,7 @@ export function createJudgeGate(input: {
   return {
     mode: settings.mode,
     ready: thoroughReady || quickReady,
-    screens: settings.mode === 'automated' && quickReady && settings.quick === 'all',
+    screens,
     covers,
     async rate(call) {
       const chosen = new Map<string, Ask>()
@@ -239,7 +242,7 @@ export function createJudgeGate(input: {
       }))
     },
     async screen(call) {
-      if (settings.mode !== 'automated' || !quickReady || settings.quick !== 'all') return []
+      if (!screens) return []
       const commands = new Map<string, Exec>()
       for (const effect of call.effects) {
         if (effect.kind !== 'exec') continue

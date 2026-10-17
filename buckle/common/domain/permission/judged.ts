@@ -1,6 +1,6 @@
 import type { JudgeResult } from '../../types/ports/judge.js'
 import type { QuickJudgeScope, QuickResult } from '../../types/ports/quick-judge.js'
-import type { AskCause, PermissionDecision } from './decision.js'
+import type { AskCause, GrantLookup, PermissionDecision } from './decision.js'
 import type { PermissionOutcome } from './engine.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -44,6 +44,25 @@ export function ratedDanger(result: JudgeResult | QuickResult): boolean {
 /** What a stage's pass is kept under: the cause and the subject of the ask it rated, so it lifts that ask and no other. */
 export function passKey(ask: { cause?: AskCause | undefined; subject: string }): string {
   return `${ask.cause ?? 'none'}:${ask.subject}`
+}
+
+/** What an allowed command the quick stage rated danger asks with (D91, addendum 2 B): the level alone, never a reasoning. */
+export const QUICK_FLAG_REASON = 'The decision AI\'s quick stage rated this command danger, so a person decides; nothing it says refuses a command'
+
+/**
+ * The outcome with an ask for each allowed command the quick stage rated danger at 0.8 or above (`flagged`, scope all),
+ * unless a grant already answers it, as the destructive floor's own grants do: a `once` or `session` for that subject. A
+ * deny stays a deny; nothing the decision AI says refuses a call.
+ */
+export function withFlagged(outcome: PermissionOutcome, flagged: readonly Ask[], grants: GrantLookup): PermissionOutcome {
+  if (outcome.kind === 'deny' || flagged.length === 0) return outcome
+  const granted = new Set(grants.subjectsFor('destructive_command'))
+  const relied = flagged.filter(item => granted.has(item.subject)).map(item => `destructive_command:${item.subject}`)
+  const asked = new Set(outcome.kind === 'ask' ? outcome.asks.map(item => `${item.rule}:${item.subject}`) : [])
+  const open = flagged.filter(item => !granted.has(item.subject) && !asked.has(`destructive_command:${item.subject}`))
+  const allowedBy = [...(outcome.kind === 'allow' ? outcome.allowedBy : outcome.allowedBy ?? []), ...relied]
+  if (outcome.kind === 'ask') return { ...outcome, asks: [...outcome.asks, ...open], allowedBy }
+  return open.length === 0 ? { kind: 'allow', allowedBy } : { kind: 'ask', asks: open, allowedBy }
 }
 
 /**

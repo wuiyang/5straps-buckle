@@ -649,6 +649,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       view: createCodeView({ paths: settled.paths, canRead, protectedRoots: protectedStateRoots(config) }),
       cache: settled.cache,
       scanner: packageScanner,
+      screening: !dangerouslyAllowed(),
     })
   }
 

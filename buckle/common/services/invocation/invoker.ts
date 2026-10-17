@@ -12,7 +12,7 @@ import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import { passKey, withJudged } from '../../domain/permission/judged.js'
+import { passKey, QUICK_FLAG_REASON, withFlagged, withJudged } from '../../domain/permission/judged.js'
 import { judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
@@ -541,6 +541,8 @@ async function clearPermissions(input: {
   // The asks a stage of the decision AI passed (D91), taken out at every check once it rated them, so an answer to the
   // call's other asks never asks about them again.
   let passed: ReadonlySet<string> = new Set()
+  // The allowed commands the quick stage rated danger at 0.8 or above (approval.quickJudge all), each an ask at every check.
+  let flagged: Array<Extract<PermissionOutcome, { kind: 'ask' }>['asks'][number]> = []
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
     spent: (deciders) => { decidedBy = deciders },
@@ -548,7 +550,8 @@ async function clearPermissions(input: {
       // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
       approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
-      return withJudged(options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) }), passed)
+      const grants = buildLookup({ grants: options.grants, sessionId, consumed: subjects })
+      return withJudged(withFlagged(options.permissions.evaluate({ tool: request.tool, effects, grants }), flagged, grants), passed)
     },
     admit: () => {
       held.claim = options.executions.claim(input.key)
@@ -558,13 +561,24 @@ async function clearPermissions(input: {
   const cleared = (outcome: Extract<PermissionOutcome, { kind: 'allow' }>, asked: string[]): GateOutcome => held.claim?.kind === 'owner'
     ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed, decidedBy }
     : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
+  const judging = options.judge?.mode === 'automated' && options.judge.ready ? options.judge : undefined
+  // Scope all (D91, addendum 2 B): before the first check, which admits an allowed call, the quick stage rates each command
+  // no ask names; a danger at 0.8 or above makes it an ask, and anything else, no verdict included, lets it run as before.
+  // Never past a deny; the gate screens nothing while the dangerously-allow switch is on.
+  if (judging?.screens) {
+    const before = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }) })
+    if (before.kind !== 'deny') {
+      const asked = new Set(before.kind === 'ask' ? before.asks.filter(item => item.rule === 'destructive_command').map(item => item.subject) : [])
+      input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })
+      flagged = input.judgment.judged.filter(item => item.flagged).map(item => ({ kind: 'ask' as const, rule: 'destructive_command' as const, subject: item.subject, reason: QUICK_FLAG_REASON, offeredScopes: ['once' as const, 'session' as const], cause: 'judge' as const }))
+    }
+  }
   let outcome = await evaluate(request.approvalTokens)
   // In automated mode the decision AI rates the command asks its stages cover, once per call and outside every lock
   // (D91 and its addenda): a deny returned above, and the dangerously-allow switch already turned what it covers. What a
   // stage passes, the check above takes out, so the call is checked again with them gone.
-  const judging = options.judge?.mode === 'automated' && options.judge.ready ? options.judge : undefined
   if (judging && outcome.kind === 'ask' && outcome.asks.some(ask => judging.covers(ask))) {
-    input.judgment.judged = await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })
+    input.judgment.judged = [...input.judgment.judged, ...await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })]
     passed = new Set(input.judgment.judged.filter(item => item.passedBy !== undefined).map(passKey))
     if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
   }
