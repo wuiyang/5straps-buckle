@@ -257,6 +257,19 @@ describe('the verdict cache', () => {
     expect(judge.judge).toHaveBeenCalledTimes(3)
   })
 
+  it('rates two files again once they swap contents, though every sha is the same', async () => {
+    const config = node()
+    const judge = fakeJudge()
+    writeFileSync(join(config.cwd, 'a.py'), 'import sys\nprint(sys.argv[1])\n')
+    writeFileSync(join(config.cwd, 'b.py'), 'import shutil\nshutil.rmtree("/data")\n')
+    const runtime = await runtimeOf(config, judge)
+    expect((await call(runtime, 'python3', ['a.py', 'b.py'])).ran).toBe(true)
+    writeFileSync(join(config.cwd, 'a.py'), 'import shutil\nshutil.rmtree("/data")\n')
+    writeFileSync(join(config.cwd, 'b.py'), 'import sys\nprint(sys.argv[1])\n')
+    await call(runtime, 'python3', ['a.py', 'b.py'])
+    expect(judge.judge).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps no unavailable rating', async () => {
     let answer: JudgeResult = { kind: 'unavailable', reason: 'the network failed' }
     const judge = fakeJudge(() => answer)

@@ -46,6 +46,14 @@ describe('a verdict\'s cache key', () => {
     ]
     expect(new Set([base, ...changed]).size).toBe(changed.length + 1)
   })
+
+  it('pairs each sha with its file: two files swapping contents, or one moving, is a new key; another discovery order is not', () => {
+    const [job, lib] = input().files as [JudgeInput['files'][number], JudgeInput['files'][number]]
+    const base = key(input({ files: [job, lib] }))
+    expect(key(input({ files: [lib, job] }))).toBe(base)
+    expect(key(input({ files: [{ ...job, sha256: lib.sha256, content: lib.content }, { ...lib, sha256: job.sha256, content: job.content }] }))).not.toBe(base)
+    expect(key(input({ files: [{ ...job, path: '/workspace/other.py' }, lib] }))).not.toBe(base)
+  })
 })
 
 describe('the judge cache file', () => {

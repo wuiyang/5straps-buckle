@@ -7,9 +7,10 @@ runtime on this machine) runs with the node's own keys, keeps and shows. Its two
 ## The cache
 
 Each stage's verdict is kept under that stage's provider and model, the policy (its `updatedAt`
-and its lists), the command, its inline code, the sha256 of every file read, each package with its
-version, whether it was a standard script, and the working directory. One byte changed in any file
-it reads, or a package upgraded, makes a new key, so all of the code is rated again. A verdict is
+and its lists), the command, its inline code, each file read as its path with its sha256, each
+package with its version, whether it was a standard script, and the working directory. One byte
+changed in any file it reads, two files swapping contents, or a package upgraded, makes a new key,
+so all of the code is rated again. A verdict is
 kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state directory, readable
 by the owner alone, at most 1,000 with the oldest dropped, so a restart keeps them. A policy change
 empties it, and no failure is kept.
