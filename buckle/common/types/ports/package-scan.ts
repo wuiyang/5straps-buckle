@@ -16,6 +16,16 @@ export interface PackageScanner {
   scan(purls: readonly string[], signal?: AbortSignal): Promise<Map<string, SocketSummary | null>>
 }
 
+/** The most packages one rating looks up at Socket (D91, addendum 2 C); past it the rest keep no summary. */
+export const PACKAGE_SCAN_LIMIT = 50
+
+/** An npm package version's package URL as the purl spec writes it: `pkg:npm/%40scope/name@1.2.3`. */
+export function npmPackageUrl(name: string, version: string): string {
+  const slash = name.startsWith('@') ? name.indexOf('/') : -1
+  const namespace = slash > 0 ? `${encodeURIComponent(name.slice(0, slash))}/` : ''
+  return `pkg:npm/${namespace}${encodeURIComponent(slash > 0 ? name.slice(slash + 1) : name)}@${encodeURIComponent(version)}`
+}
+
 /** The scanner of a node with no Socket key: every package is answered with null. */
 export const nullPackageScanner: PackageScanner = {
   scan: purls => Promise.resolve(new Map(purls.map(purl => [purl, null]))),

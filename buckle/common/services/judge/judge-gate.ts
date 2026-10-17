@@ -15,6 +15,8 @@ import type { JudgeNote } from '../../domain/approval-instruction.js'
 import type { Judge, JudgeInput, JudgeMode, JudgeProvider, JudgeResult } from '../../types/ports/judge.js'
 import { readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
+import { withSocket } from './socket-view.js'
+import type { PackageScanner } from '../../types/ports/package-scan.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
@@ -59,6 +61,7 @@ export function createJudgeGate(input: {
   paths: PathView
   view: CodeView
   cache: JudgeCache
+  scanner: PackageScanner
 }): JudgeGate {
   const { settings, paths } = input
   const missing = settings.mode !== 'off' && input.judge === null ? 'BUCKLE_JUDGE_API_KEY' : null
@@ -121,9 +124,10 @@ export function createJudgeGate(input: {
         const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked })
         const kept = input.cache.get(key)
         if (kept) return { subject, provider, model, input: asked, result: kept }
-        const result = await input.judge.judge(asked, { model, ...(call.signal ? { signal: call.signal } : {}) })
+        const shownInput = await withSocket(asked, input.scanner, call.signal)
+        const result = await input.judge.judge(shownInput, { model, ...(call.signal ? { signal: call.signal } : {}) })
         if (result.kind === 'verdict') await input.cache.set(key, result)
-        return { subject, provider, model, input: asked, result }
+        return { subject, provider, model, input: shownInput, result }
       }))
     },
   }

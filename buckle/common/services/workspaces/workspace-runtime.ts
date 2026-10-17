@@ -49,6 +49,9 @@ import { createProviderJudge } from '../../adapters/judge/providers.js'
 import type { Judge, JudgeProvider } from '../../types/ports/judge.js'
 import { createCodeView } from '../judge/code-reader.js'
 import { judgeCachePath, openJudgeCache, type JudgeCache } from '../judge/judge-cache.js'
+import { openSocketCache, socketCachePath } from '../judge/socket-cache.js'
+import { createSocketScanner } from '../../adapters/package-scan/socket.js'
+import { nullPackageScanner, type PackageScanner } from '../../types/ports/package-scan.js'
 import { createJudgeGate, JUDGE_OFF, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { judgeable } from '../../domain/permission/judged.js'
 import { resolveEffects } from '../invocation/resolve-effects.js'
@@ -224,6 +227,8 @@ interface RuntimeInput {
   browserHeldBy?: () => string | null
   /** The decision AI, for a test; absent, each provider's is built from the node's key (BUCKLE_JUDGE_API_KEY) at its first use. */
   judge?: Judge
+  /** Socket's view of packages, for a test; absent, built from the node's BUCKLE_SOCKET_API_KEY, else none. */
+  packageScanner?: PackageScanner
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -299,6 +304,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     : nullReporter)
   // The decision AI's kept verdicts (D91), in this workspace's own state directory, and one judge per provider named.
   const judgeCache = openJudgeCache({ filePath: judgeCachePath(config.stateDirectory), lockDeadlineMs })
+  // Socket's view of the packages the code imports, kept a day beside the verdicts (D91, addendum 2 C).
+  const socketScanner = input.packageScanner ?? (config.socketApiKey ? createSocketScanner({ apiKey: config.socketApiKey, ...(config.socketBaseUrl ? { baseUrl: config.socketBaseUrl } : {}) }) : nullPackageScanner)
+  const packageScanner = openSocketCache({ scanner: socketScanner, filePath: socketCachePath(config.stateDirectory), lockDeadlineMs })
   const providerJudges = new Map<JudgeProvider, Judge>()
   const judgeOf = (provider: JudgeProvider): Judge | null => {
     if (input.judge) return input.judge
@@ -625,6 +633,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       policy: settled.compiled.policy, allowedInterpreters: settled.compiled.commands.allowedInterpreters, paths: settled.paths,
       view: createCodeView({ paths: settled.paths, canRead, protectedRoots: protectedStateRoots(config) }),
       cache: settled.cache,
+      scanner: packageScanner,
     })
   }
 

@@ -114,7 +114,7 @@ describe('buckle workspace judge-cache clear', () => {
     await openJudgeCache({ filePath }).set('e'.repeat(64), verdict())
     out = ''
     expect((await buckle(['judge-cache', 'clear'])).exitCode).toBe(0)
-    expect(out).toContain('Workspace site: the decision AI\'s 1 kept verdict is cleared, so each call is rated again.')
+    expect(out).toContain('Workspace site: the decision AI\'s 1 kept verdict is cleared, so each call is rated again; 0 kept Socket summaries are cleared too.')
     expect(openJudgeCache({ filePath }).get('e'.repeat(64))).toBeUndefined()
     expect((await buckle(['judge-cache', 'empty'])).exitCode).toBe(1)
     await manager.close()

@@ -82,6 +82,13 @@ export interface NodeConfig {
    */
   judgeBaseUrl?: string
   /**
+   * The key the node asks Socket with about the third-party packages the decision AI is shown (D91, addendum 2 C), and
+   * Socket's API root for a test: the node's alone, never a workspace's, never printed, never passed to a program it runs.
+   * Absent, every package's Socket summary is null and the rating runs.
+   */
+  socketApiKey?: string
+  socketBaseUrl?: string
+  /**
    * The owner's forge credential. Absent withholds the forge pack, naming the variable, rather
    * than failing partway through a commit-push-review sequence.
    */
@@ -245,7 +252,9 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
     judgeApiKey: environment.BUCKLE_JUDGE_API_KEY || undefined,
-    judgeBaseUrl: parseJudgeBaseUrl(environment.BUCKLE_JUDGE_BASE_URL),
+    judgeBaseUrl: parseNodeUrl('BUCKLE_JUDGE_BASE_URL', environment.BUCKLE_JUDGE_BASE_URL),
+    socketApiKey: environment.BUCKLE_SOCKET_API_KEY || undefined,
+    socketBaseUrl: parseNodeUrl('BUCKLE_SOCKET_BASE_URL', environment.BUCKLE_SOCKET_BASE_URL),
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
@@ -453,12 +462,12 @@ function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approva
   }
 }
 
-/** BUCKLE_JUDGE_BASE_URL: an http or https URL, as the operator's configuration, never one a tool supplies. */
-function parseJudgeBaseUrl(value: string | undefined): string | undefined {
+/** A base URL the node asks a service at (BUCKLE_JUDGE_BASE_URL and its kin): http or https, the operator's, never one a tool supplies. */
+function parseNodeUrl(name: string, value: string | undefined): string | undefined {
   if (!value) return undefined
   let url: URL
-  try { url = new URL(value) } catch { throw new Error('Invalid BUCKLE_JUDGE_BASE_URL: an http or https URL') }
-  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Invalid BUCKLE_JUDGE_BASE_URL: an http or https URL')
+  try { url = new URL(value) } catch { throw new Error(`Invalid ${name}: an http or https URL`) }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error(`Invalid ${name}: an http or https URL`)
   return value
 }
 

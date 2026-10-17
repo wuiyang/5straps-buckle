@@ -1,4 +1,4 @@
-import { linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -113,6 +113,38 @@ describe('code a here-string hands the interpreter', () => {
     await withPolicy(runtime, { allow: ['bash -c *'] })
     expect((await call(runtime, 'bash', ['-c', "python3 <<< 'import helper'"])).response).toMatchObject({ outcome: 'ok' })
     expect(judge.shown[0]).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+  })
+})
+
+describe('the packages the code imports', () => {
+  const SUMMARY = { score: { overall: 0.8, supplyChain: 0.9, quality: 0.7, maintenance: 0.6, vulnerability: 1, license: 1 }, alerts: [{ type: 'unmaintained', severity: 'low' }] }
+  function withPackage(config: BuckleConfig) {
+    writeFileSync(join(config.cwd, 'job.js'), "const pad = require('left-pad')\n")
+    mkdirSync(join(config.cwd, 'node_modules', 'left-pad'), { recursive: true })
+    writeFileSync(join(config.cwd, 'node_modules', 'left-pad', 'package.json'), '{"version":"1.3.0"}')
+  }
+
+  it('are shown to the judge with the version installed and Socket\'s summary of it', async () => {
+    const config = node()
+    withPackage(config)
+    const judge = fakeJudge()
+    const scanner = { scan: vi.fn(async (purls: readonly string[]) => new Map(purls.map(purl => [purl, SUMMARY]))) }
+    const runtime = await createRuntime({ config, judge, packageScanner: scanner })
+    runtimes.push(runtime)
+    await call(runtime, 'node', ['job.js'])
+    expect(scanner.scan.mock.calls[0]![0]).toEqual(['pkg:npm/left-pad@1.3.0'])
+    expect(judge.shown[0]!.packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: SUMMARY }])
+  })
+
+  it('carry no Socket summary where the node has no Socket key, and the rating still runs', async () => {
+    const config = node()
+    withPackage(config)
+    const judge = fakeJudge()
+    const fetch = vi.spyOn(globalThis, 'fetch')
+    const runtime = await runtimeOf(config, judge)
+    expect((await call(runtime, 'node', ['job.js'])).response).toMatchObject({ outcome: 'ok' })
+    expect(judge.shown[0]!.packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: null }])
+    expect(fetch).not.toHaveBeenCalled()
   })
 })
 

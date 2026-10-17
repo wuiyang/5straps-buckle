@@ -86,6 +86,7 @@ const NODE_ONLY_WORDS: ReadonlyMap<string, string> = new Map([
   ['state-dir', 'BUCKLE_STATE_DIR'], ['stateDir', 'BUCKLE_STATE_DIR'], ['server-id', 'BUCKLE_SERVER_ID'], ['serverId', 'BUCKLE_SERVER_ID'],
   ['server-name', 'BUCKLE_SERVER_NAME'], ['serverName', 'BUCKLE_SERVER_NAME'], ['sandbox', 'BUCKLE_SANDBOX'], ['log-level', 'BUCKLE_LOG_LEVEL'],
   ['judge-api-key', 'BUCKLE_JUDGE_API_KEY'], ['judgeApiKey', 'BUCKLE_JUDGE_API_KEY'], ['judge-base-url', 'BUCKLE_JUDGE_BASE_URL'], ['judgeBaseUrl', 'BUCKLE_JUDGE_BASE_URL'],
+  ['socket-api-key', 'BUCKLE_SOCKET_API_KEY'], ['socketApiKey', 'BUCKLE_SOCKET_API_KEY'], ['socket-base-url', 'BUCKLE_SOCKET_BASE_URL'], ['socketBaseUrl', 'BUCKLE_SOCKET_BASE_URL'],
 ])
 
 /**

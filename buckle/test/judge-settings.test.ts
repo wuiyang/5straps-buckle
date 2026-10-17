@@ -16,6 +16,7 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 // or settings listing shows.
 
 const KEY = 'sk-judge-settings-fixture-0123456789'
+const SOCKET_KEY = 'sktsec_judge-settings-socket-0123456789'
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); configureRootLogger({}); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
@@ -128,6 +129,18 @@ describe('buckle workspace set approval.*', () => {
     await manager.close()
   })
 
+  it('refuse the Socket key and base URL as node settings, and a variable holding the key, never echoing it', async () => {
+    const { buckle, output, manager } = await workspace({ BUCKLE_SOCKET_API_KEY: SOCKET_KEY })
+    expect((await buckle(['set', 'socket-api-key', SOCKET_KEY])).exitCode).toBe(1)
+    expect(output.err()).toContain('socket-api-key is a node setting (BUCKLE_SOCKET_API_KEY)')
+    expect((await buckle(['set', 'socket-base-url', 'http://127.0.0.1:9'])).exitCode).toBe(1)
+    expect(output.err()).toContain('socket-base-url is a node setting (BUCKLE_SOCKET_BASE_URL)')
+    expect((await buckle(['set', 'env.SOCKET', SOCKET_KEY])).exitCode).toBe(1)
+    expect(output.err()).toContain('That value holds one of this node\'s credentials')
+    expect(output.out() + output.err()).not.toContain(SOCKET_KEY)
+    await manager.close()
+  })
+
   it('refuse a variable holding the judge\'s base URL, which can carry a credential of its own', async () => {
     const baseUrl = 'https://gateway.test/v1?key=gateway-secret-0123'
     const { buckle, output, manager } = await workspace({ BUCKLE_JUDGE_BASE_URL: baseUrl })
@@ -142,7 +155,7 @@ describe('the node\'s decision AI settings in buckle settings', () => {
   function node() {
     const root = scratch()
     const file = join(root, 'buckle.env')
-    writeFileSync(file, `BUCKLE_STATE_DIR=${join(root, 'state')}\nBUCKLE_JUDGE_API_KEY=${KEY}\nBUCKLE_JUDGE_BASE_URL=https://gateway.test/v1?key=${KEY}\n`, { mode: 0o600 })
+    writeFileSync(file, `BUCKLE_STATE_DIR=${join(root, 'state')}\nBUCKLE_JUDGE_API_KEY=${KEY}\nBUCKLE_JUDGE_BASE_URL=https://gateway.test/v1?key=${KEY}\nBUCKLE_SOCKET_API_KEY=${SOCKET_KEY}\n`, { mode: 0o600 })
     const settings = async (argv: string[]) => {
       const output = captured()
       const result = await settingsCommand({ argv, environment: {}, environmentFile: file, cwd: root, home: root })
@@ -162,7 +175,9 @@ describe('the node\'s decision AI settings in buckle settings', () => {
     expect(defaults).toContain('BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS')
     expect(shown.out).toContain('BUCKLE_JUDGE_API_KEY (set, hidden)')
     expect(shown.out).toContain('BUCKLE_JUDGE_BASE_URL (set, hidden)')
+    expect(shown.out).toContain('BUCKLE_SOCKET_API_KEY (set, hidden)')
     expect(shown.printed).not.toContain(KEY)
+    expect(shown.printed).not.toContain(SOCKET_KEY)
   })
 
   it('writes the mode, provider, model, and standard scripts, refusing a value outside them, and leaves the key to a hand edit', async () => {
@@ -182,16 +197,20 @@ describe('the node\'s decision AI settings in buckle settings', () => {
 })
 
 describe('the judge key and base URL', () => {
-  it('are read from the node\'s environment alone', () => {
+  it('are read from the node\'s environment alone, with Socket\'s', () => {
+    expect(loadConfig({ BUCKLE_SOCKET_API_KEY: SOCKET_KEY, BUCKLE_SOCKET_BASE_URL: 'http://127.0.0.1:9' })).toMatchObject({ socketApiKey: SOCKET_KEY, socketBaseUrl: 'http://127.0.0.1:9' })
+    expect(() => loadConfig({ BUCKLE_SOCKET_BASE_URL: 'ftp://socket.test' })).toThrow('Invalid BUCKLE_SOCKET_BASE_URL: an http or https URL')
     expect(loadConfig({ BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: 'http://127.0.0.1:11434/v1' })).toMatchObject({ judgeApiKey: KEY, judgeBaseUrl: 'http://127.0.0.1:11434/v1' })
     expect(loadConfig({ ANTHROPIC_API_KEY: KEY, OPENAI_API_KEY: KEY, OPENAI_BASE_URL: 'https://proxy.invalid' })).toMatchObject({ judgeApiKey: undefined, judgeBaseUrl: undefined })
   })
 
   it('never reach a program Buckle runs', () => {
     for (const platform of ['linux', 'darwin', 'win32'] as const) {
-      const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: 'https://gateway.test/v1' }, extra: {}, platform })
+      const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: 'https://gateway.test/v1', BUCKLE_SOCKET_API_KEY: SOCKET_KEY, BUCKLE_SOCKET_BASE_URL: 'http://127.0.0.1:9' }, extra: {}, platform })
       expect(child).not.toHaveProperty('BUCKLE_JUDGE_API_KEY')
       expect(child).not.toHaveProperty('BUCKLE_JUDGE_BASE_URL')
+      expect(child).not.toHaveProperty('BUCKLE_SOCKET_API_KEY')
+      expect(child).not.toHaveProperty('BUCKLE_SOCKET_BASE_URL')
     }
   })
 
@@ -199,10 +218,11 @@ describe('the judge key and base URL', () => {
     let text = ''
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { text += String(chunk); return true })
     try {
-      logger.warn('judge configured', { BUCKLE_JUDGE_API_KEY: KEY, judgeApiKey: KEY })
+      logger.warn('judge configured', { BUCKLE_JUDGE_API_KEY: KEY, judgeApiKey: KEY, BUCKLE_SOCKET_API_KEY: SOCKET_KEY, socketApiKey: SOCKET_KEY })
       await flushLogs()
     } finally { spy.mockRestore() }
     expect(text).toContain('judge configured')
     expect(text).not.toContain(KEY)
+    expect(text).not.toContain(SOCKET_KEY)
   })
 })
