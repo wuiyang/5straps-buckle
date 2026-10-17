@@ -2,7 +2,8 @@ import type { AddressInfo } from 'node:net'
 import type { Logger } from '@5straps/runtime'
 import type { NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
-import type { WorkspaceDescriptor } from '../common/services/workspaces/workspace-manager.js'
+import type { WorkspaceDescriptor, WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { judgeSetupNotice } from '../common/services/judge/judge-setup.js'
 import { describeOnline, watchOnline } from './roster.js'
 import { createHttpServer, type BuckleServer } from './setup-server.js'
 
@@ -35,7 +36,16 @@ export async function serveHttp(input: ServeHttpInput): Promise<void> {
   const write = input.write ?? ((text: string) => void process.stderr.write(text))
   write(await describeOnline(workspaces))
   common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write, watchPath: config.stateDirectory }))
+  const judgeNotice = judgeSetupNotice({ config, workspaces: judgedWorkspaces(workspaces) })
+  if (judgeNotice) input.logger.warn(judgeNotice)
   if (config.experimentalAdminHttp) input.logger.warn('The admin HTTP face is on, as an experiment (BUCKLE_EXPERIMENTAL_ADMIN_HTTP): /setup answers the admin credential and signed requests of enrolled keys', { adminCredential: config.adminToken ? 'set' : 'unset' })
+}
+
+/** The online workspaces with their settings, for the decision AI's notice; one whose settings will not read is left to its own report. */
+function judgedWorkspaces(workspaces: WorkspaceManager): Array<{ name: string; settings: ReturnType<WorkspaceManager['settings']> }> {
+  return workspaces.list().filter(workspace => workspace.online).flatMap((workspace) => {
+    try { return [{ name: workspace.name, settings: workspaces.settings(workspace.id) }] } catch { return [] }
+  })
 }
 
 function logListening(input: { logger: Logger; config: NodeConfig; workspaces: WorkspaceDescriptor[]; address: AddressInfo }): void {
