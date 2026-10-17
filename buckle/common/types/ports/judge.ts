@@ -9,6 +9,10 @@ export interface Judge {
   judge(input: JudgeInput, options: JudgeOptions): Promise<JudgeResult>
 }
 
+/** The providers a workspace's judge may name (approval.judgeProvider), each an adapter of this port. */
+export const JUDGE_PROVIDERS = ['anthropic', 'openai'] as const
+export type JudgeProvider = typeof JUDGE_PROVIDERS[number]
+
 /** How one rating is asked: the model the workspace names (approval.judgeModel), and the caller's signal. */
 export interface JudgeOptions {
   model: string

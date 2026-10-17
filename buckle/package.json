@@ -64,6 +64,7 @@
     "@earendil-works/pi-codemode": "1.2.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "h3": "2.0.1-rc.32",
+    "openai": "7.36.0",
     "pathe": "2.0.3",
     "zod": "4.4.3"
   },
