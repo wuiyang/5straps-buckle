@@ -127,6 +127,15 @@ describe('buckle workspace set approval.*', () => {
     expect(output.out() + output.err()).not.toContain(KEY)
     await manager.close()
   })
+
+  it('refuse a variable holding the judge\'s base URL, which can carry a credential of its own', async () => {
+    const baseUrl = 'https://gateway.test/v1?key=gateway-secret-0123'
+    const { buckle, output, manager } = await workspace({ BUCKLE_JUDGE_BASE_URL: baseUrl })
+    expect((await buckle(['set', 'env.GATEWAY', baseUrl])).exitCode).toBe(1)
+    expect(output.err()).toContain('That value holds one of this node\'s credentials')
+    expect(output.out() + output.err()).not.toContain('gateway-secret-0123')
+    await manager.close()
+  })
 })
 
 describe('the node\'s decision AI settings in buckle settings', () => {

@@ -352,13 +352,13 @@ async function settingKey(key: string, context: Pick<Context, 'config'>): Promis
 
 /**
  * A value holding one of this node's secrets never becomes a variable a command reads (no secret reaches a child
- * process): the admin and agent tokens, the forge token, the Brave key, the judge key, the Rings report token and pairing key, and the
+ * process): the admin and agent tokens, the forge token, the Brave key, the judge key and base URL, the Rings report token and pairing key, and the
  * approval webhook's URL, anywhere in the value, and a workspace's agent token as a word of it, which only its digest
  * can recognise (finding 26 of the Phase 1 review).
  */
 function credentialValueRefusal(context: Context, value: string): string | null {
   const { config } = context
-  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.judgeApiKey, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
+  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.judgeApiKey, config.judgeBaseUrl, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
     .flatMap(secret => (secret?.trim() ? [secret.trim()] : []))
   const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
   const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)
