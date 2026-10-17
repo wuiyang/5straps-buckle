@@ -250,10 +250,7 @@ async function start(context: ServiceContext): Promise<CliResult> {
 
 async function stop(context: ServiceContext): Promise<CliResult> {
   const running = await runningNode(context.location.stateDirectory)
-  if (running === null) {
-    context.out('Buckle is not running.\n')
-    return { exitCode: 0 }
-  }
+  if (running === null) return stopDefinition(context)
   // A serve at a terminal stops there: Buckle asks nothing of it (fix brief 6, item 1).
   if (running.record?.manager === 'terminal') return fail(context.err, `${atTerminal(running)}.`)
   const { manager } = context
@@ -267,6 +264,23 @@ async function stop(context: ServiceContext): Promise<CliResult> {
   if (refusal !== null) return fail(context.err, refusal)
   context.out(`Stopped Buckle${pidOf(running)}.\n`)
   return { exitCode: 0, detail: `stop ${running.record!.manager}` }
+}
+
+/**
+ * No node holds the serve lock. A definition for this node whose node fails at every start holds it only while that node
+ * runs, and the manager starts it again after each failure, so stopping the definition is what ends the tries. A manager
+ * with no stop of its own (Task Scheduler), and a definition for another state directory or one that names none, are
+ * left alone: there is nothing running to stop.
+ */
+async function stopDefinition(context: ServiceContext): Promise<CliResult> {
+  const { manager } = context
+  if (manager?.stop && (await manager.installed())?.thisNode === true) {
+    await manager.stop()
+    context.out(`Stopped the Buckle service (${manager.label}); no node was running.\n`)
+    return { exitCode: 0, detail: `stop ${manager.kind}` }
+  }
+  context.out('Buckle is not running.\n')
+  return { exitCode: 0 }
 }
 
 /**

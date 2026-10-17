@@ -282,6 +282,21 @@ describe.skipIf(process.platform === 'win32')('buckle service on Linux, with sys
     expect(refused.err).not.toContain(fake.root)
   })
 
+  // Fix brief 7, item 1: a node that fails at every start holds the serve lock only while it runs, and the unit starts it
+  // again five seconds after each failure, so stop acts on the unit installed for this node whether a node holds the lock or not.
+  it('stops this node\'s unit when no node runs, as between the restarts of a node that fails at every start, and not another node\'s', async () => {
+    const fake = fakeSystemd()
+    const { main } = node(fake)
+    await run(fake, main, ['install'])
+    expect(await run(fake, main, ['stop'])).toMatchObject({ exitCode: 0, out: 'Stopped the Buckle service (the systemd user unit buckle.service); no node was running.\n', err: '' })
+    const stops = () => fake.calls().filter(call => call.startsWith('--user stop'))
+    expect(stops()).toEqual(['--user stop buckle.service'])
+    const other = { ...fake, environment: { ...fake.environment, BUCKLE_STATE_DIR: join(fake.root, 'other-state') } }
+    mkdirSync(join(fake.root, 'other-state'), { mode: 0o700 })
+    expect(await run(other, main, ['stop'])).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n', err: '' })
+    expect(stops()).toEqual(['--user stop buckle.service'])
+  })
+
   it('refuses where no systemd user session answers, pointing at buckle serve --background', async () => {
     const fake = fakeSystemd({ show: 1 })
     const { main } = node(fake)

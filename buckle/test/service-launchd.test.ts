@@ -420,6 +420,42 @@ describe.skipIf(process.platform === 'win32')('buckle service on macOS, with lau
     await service(fake, ['stop'])
   })
 
+  // Fix brief 7, item 1: a node that fails at every start holds the serve lock only while it runs, and launchd starts it
+  // again five seconds after each failure, so stop acts on the agent installed for this node whether a node holds the lock or not.
+  it('unloads this node\'s agent when no node runs, as between the failed starts launchd repeats, and touches no other agent', async () => {
+    const fake = fakeLaunchd()
+    await service(fake, ['install'])
+    fake.mark('loaded')
+    const before = fake.calls().length
+    expect(await service(fake, ['stop'])).toMatchObject({ exitCode: 0, out: 'Stopped the Buckle service (the launchd agent com.5straps.buckle); no node was running.\n', err: '' })
+    expect(fake.calls().slice(before)).toEqual(['print-disabled gui/501', `bootout ${SERVICE}`, `print ${SERVICE}`])
+    expect(existsSync(join(fake.root, 'loaded'))).toBe(false)
+    const entries = readFileSync(join(fake.state, 'actions.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { tool: string; event: string; outcome: string; detail?: string })
+    expect(entries).toContainEqual(expect.objectContaining({ tool: 'cli_service', event: 'result', outcome: 'ok', detail: 'stop launchd' }))
+
+    // Another state directory's agent, and an agent that does not say which, are not this node's to unload.
+    for (const plist of [renderAgent({ ...DEFINITION, stateDirectory: join(fake.root, 'other-state') }), '<plist><dict><key>Label</key><string>com.5straps.buckle</string></dict></plist>']) {
+      const other = fakeLaunchd()
+      mkdirSync(join(other.home, 'Library', 'LaunchAgents'), { recursive: true })
+      writeFileSync(AGENT(other), plist)
+      other.mark('loaded')
+      expect(await service(other, ['stop'])).toMatchObject({ exitCode: 0, out: 'Buckle is not running.\n', err: '' })
+      expect(other.calls().filter(call => /^(bootout|bootstrap|kickstart|enable)/.test(call))).toEqual([])
+      expect(existsSync(join(other.root, 'loaded'))).toBe(true)
+    }
+
+    // A node that holds the lock and has not published its record yet is still starting: stop asks nothing of the agent.
+    const starting = fakeLaunchd()
+    await service(starting, ['install'])
+    starting.mark('loaded')
+    const owner = createRuntimeOwner({ name: 'starting-node', services: [] })
+    await holdServe({ stateDirectory: starting.state, owner })
+    try {
+      expect(await service(starting, ['stop'])).toMatchObject({ exitCode: 1, out: '', err: 'Buckle is still starting; run buckle service stop again in a moment.\n' })
+      expect(starting.calls().filter(call => call.startsWith('bootout'))).toEqual([])
+    } finally { await owner.close() }
+  })
+
   it('refuses to install with no buckle.env, beside another node\'s agent, beside a serve at a terminal, and with no login session', async () => {
     const fresh = fakeLaunchd()
     rmSync(join(fresh.state, 'buckle.env'))

@@ -346,6 +346,21 @@ describe('buckle service start, stop, restart, and uninstall', () => {
     expect((await service(target, ['restart'], manager)).err).toBe(reason)
     expect(calls).toEqual([])
   })
+
+  // Fix brief 7, item 1: with no node running, stop ends the tries of a definition for this node, and acts on nothing else.
+  it('stops the definition for this node when no node runs, and says Buckle is not running where it is another\'s, names none, or the manager cannot stop', async () => {
+    const target = node()
+    const installed = { node: process.execPath, main: target.main, enabled: true }
+    const own = fakeManager(target.state, { installed: { ...installed, thisNode: true } })
+    expect(await service(target, ['stop'], own.manager)).toEqual({ exitCode: 0, detail: 'stop systemd', out: 'Stopped the Buckle service (the imitated definition); no node was running.\n', err: '' })
+    expect(own.calls).toEqual([['stop']])
+    expect(audited(target.state)).toContainEqual(expect.objectContaining({ tool: 'cli_service', event: 'result', outcome: 'ok', detail: 'stop systemd' }))
+    for (const options of [{ installed: { ...installed, thisNode: false } }, { installed: { ...installed, thisNode: null } }, { installed: null }, { installed: { ...installed, thisNode: true }, signals: false, kind: 'task-scheduler' as const }]) {
+      const { manager, calls } = fakeManager(target.state, options)
+      expect(await service(target, ['stop'], manager)).toEqual({ exitCode: 0, out: 'Buckle is not running.\n', err: '' })
+      expect(calls).toEqual([])
+    }
+  })
 })
 
 describe('buckle service status', () => {
