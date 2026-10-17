@@ -60,11 +60,11 @@
   "dependencies": {
     "@5straps/protocol": "workspace:*",
     "@5straps/runtime": "workspace:*",
-    "@anthropic-ai/sdk": "0.135.0",
+    "@ai-sdk/openai-compatible": "3.0.71",
     "@earendil-works/pi-codemode": "1.2.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "ai": "7.0.143",
     "h3": "2.0.1-rc.32",
-    "openai": "7.36.0",
     "pathe": "2.0.3",
     "zod": "4.4.3"
   },

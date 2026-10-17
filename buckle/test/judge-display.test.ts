@@ -32,7 +32,7 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: root, BUCKLE_STATE_DIR: state,
     BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '60000',
-    BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'anthropic', BUCKLE_APPROVAL_JUDGE_MODEL: 'claude-opus-5-5',
+    BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'claude-opus-5-5',
     ...environment,
   })
 }

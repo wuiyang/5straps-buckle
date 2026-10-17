@@ -53,7 +53,7 @@ async function node(input: { url: string; judge?: string }) {
   const config = loadConfig({
     BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ADMIN_TOKEN: 'on-request-admin-credential', BUCKLE_SANDBOX: 'none',
     BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
-    BUCKLE_APPROVAL_JUDGE: input.judge ?? 'on-request', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna',
+    BUCKLE_APPROVAL_JUDGE: input.judge ?? 'on-request', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna',
     BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: input.url,
   })
   let out = ''
@@ -103,11 +103,11 @@ describe('buckle approvals judge', () => {
     expect(runtime.approvalService.waitingAsk(token)).toBeUndefined()
     // The command is audited with what the judge said, and the call it approved names the judge as who decided.
     const audited = runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
-    expect(audited?.judge).toMatchObject({ provider: 'openai', model: 'GPT-6-luna', level: 'safe', confidence: 0.91, passed: true })
+    expect(audited?.judge).toMatchObject({ provider: 'openai-compatible', model: 'GPT-6-luna', level: 'safe', confidence: 0.91, passed: true })
     const ran = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
     expect(ran.outcome).not.toBe('approval_required')
     const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
-    expect(result?.decidedBy).toEqual(['judge:openai:GPT-6-luna'])
+    expect(result?.decidedBy).toEqual(['judge:openai-compatible:GPT-6-luna'])
     expect(shown.out + approved.out).not.toContain(KEY)
     await manager.close()
   })

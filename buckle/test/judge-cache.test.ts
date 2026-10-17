@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { JUDGE_CACHE_LIMIT, judgeCacheKey, judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
-import type { JudgeInput, JudgeVerdict } from '../common/types/ports/judge.js'
+import type { JudgeInput, JudgeProvider, JudgeVerdict } from '../common/types/ports/judge.js'
 import { runCli } from './support/cli.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
 
@@ -27,7 +27,7 @@ const input = (overrides: Partial<JudgeInput> = {}): JudgeInput => ({
   packages: [], truncated: false, standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
   cwd: '/workspace', mounts: [{ target: '/workspace', access: 'read-write' }], description: null, ...overrides,
 })
-const key = (asked: JudgeInput, overrides: { provider?: 'anthropic' | 'openai'; model?: string; policyUpdatedAt?: string | null } = {}) => judgeCacheKey({ provider: 'anthropic', model: 'claude-opus-5-5', policyUpdatedAt: '2026-10-17T00:00:00.000Z', asked, ...overrides })
+const key = (asked: JudgeInput, overrides: { provider?: JudgeProvider; model?: string; policyUpdatedAt?: string | null } = {}) => judgeCacheKey({ provider: 'openai-compatible', model: 'claude-opus-5-5', policyUpdatedAt: '2026-10-17T00:00:00.000Z', asked, ...overrides })
 
 describe('a verdict\'s cache key', () => {
   it('is the same for the same code in any order, and new after one byte of one file, or another command, inline code, policy, provider, or model', () => {
@@ -40,7 +40,7 @@ describe('a verdict\'s cache key', () => {
       key(input({ policy: { allow: [], deny: [], destructive: ['rm *'], allowedInterpreters: [] } })),
       key(input({ standardScript: true })),
       key(input(), { policyUpdatedAt: '2026-10-18T00:00:00.000Z' }),
-      key(input(), { provider: 'openai' }),
+      key(input(), { provider: 'another-provider' as JudgeProvider }),
       key(input(), { model: 'claude-sonnet-5-5' }),
     ]
     expect(new Set([base, ...changed]).size).toBe(changed.length + 1)

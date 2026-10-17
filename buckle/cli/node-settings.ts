@@ -42,7 +42,7 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   // The decision AI (D91): every workspace's defaults where its own settings hold none. Its key and base URL are the node's
   // alone, left to a hand edit, and never listed here.
   { key: 'BUCKLE_APPROVAL_JUDGE', alias: 'approval-judge', kind: 'judge-mode', fallback: 'off', workspace: { key: 'approval.judge', change: 'buckle workspace set approval.judge off|on-request|automated' } },
-  { key: 'BUCKLE_APPROVAL_JUDGE_PROVIDER', alias: 'approval-judge-provider', kind: 'judge-provider', fallback: '(none: the judge stays off)', workspace: { key: 'approval.judgeProvider', change: 'buckle workspace set approval.judgeProvider anthropic|openai' } },
+  { key: 'BUCKLE_APPROVAL_JUDGE_PROVIDER', alias: 'approval-judge-provider', kind: 'judge-provider', fallback: '(none: the judge stays off)', workspace: { key: 'approval.judgeProvider', change: 'buckle workspace set approval.judgeProvider openai-compatible' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_MODEL', alias: 'approval-judge-model', kind: 'judge-model', fallback: '(none: the judge stays off)', workspace: { key: 'approval.judgeModel', change: 'buckle workspace set approval.judgeModel <model>' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS', alias: 'approval-judge-standard-scripts', kind: 'command-list', fallback: '(the built-in list: npm run *, pnpm dev, npx vitest *, and the rest)', workspace: { key: 'approval.judgeStandardScripts', change: 'buckle workspace set approval.judgeStandardScripts <globs separated by ;;>' } },
   // Every workspace's mounts where its own table holds none (Phase 2 item 1): writable without asking, at their own path.

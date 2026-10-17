@@ -3,14 +3,14 @@
  * admitted but Buckle cannot read as shell. It sees what this input holds and nothing else: the command as an approver
  * sees it, the code it runs from the workspace's own files, the workspace's lists in force, where the command runs as
  * the sandbox names it, and the mounts it can reach. No environment value, host path, or credential is part of it.
- * Each provider is an adapter (adapters/judge/): Anthropic's API, or an OpenAI-compatible one.
+ * The SDK that asks a provider is one adapter (adapters/judge/ai-sdk.ts), and each provider one file beside it.
  */
 export interface Judge {
   judge(input: JudgeInput, options: JudgeOptions): Promise<JudgeResult>
 }
 
 /** The providers a workspace's judge may name (approval.judgeProvider), each an adapter of this port. */
-export const JUDGE_PROVIDERS = ['anthropic', 'openai'] as const
+export const JUDGE_PROVIDERS = ['openai-compatible'] as const
 export type JudgeProvider = typeof JUDGE_PROVIDERS[number]
 
 /**

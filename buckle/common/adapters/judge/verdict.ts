@@ -32,7 +32,6 @@ export type Verdict = z.infer<typeof VerdictSchema>
 /** How long a provider's request may take, and how often it is tried again: the same for every provider. */
 export const JUDGE_TIMEOUT_MS = 20_000
 export const JUDGE_MAX_RETRIES = 1
-export const JUDGE_MAX_TOKENS = 4_096
 
 /** One rating's user turn, and the digest of everything the model was asked, which the audit keeps in place of the prompt. */
 export function judgePrompt(input: JudgeInput, model: string): { user: string; digest: string } {

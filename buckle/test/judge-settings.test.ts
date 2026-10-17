@@ -40,11 +40,11 @@ describe('a workspace\'s decision AI settings', () => {
     expect(builtIn.sources).toMatchObject({ 'approval.judge': 'built-in', 'approval.judgeProvider': 'built-in', 'approval.judgeModel': 'built-in', 'approval.judgeStandardScripts': 'built-in' })
     expect(STANDARD_SCRIPTS).toEqual(expect.arrayContaining(['npm run *', 'pnpm dev', 'npx vitest *', 'bunx tsc *']))
 
-    const node = loadConfig({ BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna', BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS: 'npm test;;make *' }).workspaceDefaults
-    expect(resolveSettings(unset, node)).toMatchObject({ approval: { judge: 'automated', judgeProvider: 'openai', judgeModel: 'GPT-6-luna', judgeStandardScripts: ['npm test', 'make *'] }, sources: { 'approval.judge': 'node', 'approval.judgeProvider': 'node', 'approval.judgeModel': 'node', 'approval.judgeStandardScripts': 'node' } })
+    const node = loadConfig({ BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna', BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS: 'npm test;;make *' }).workspaceDefaults
+    expect(resolveSettings(unset, node)).toMatchObject({ approval: { judge: 'automated', judgeProvider: 'openai-compatible', judgeModel: 'GPT-6-luna', judgeStandardScripts: ['npm test', 'make *'] }, sources: { 'approval.judge': 'node', 'approval.judgeProvider': 'node', 'approval.judgeModel': 'node', 'approval.judgeStandardScripts': 'node' } })
 
-    const own = WorkspaceSettingsSchema.parse({ version: 1, approval: { judge: 'on-request', judgeProvider: 'anthropic', judgeModel: 'claude-opus-5-5', judgeStandardScripts: [] } })
-    expect(resolveSettings(own, node)).toMatchObject({ approval: { judge: 'on-request', judgeProvider: 'anthropic', judgeModel: 'claude-opus-5-5', judgeStandardScripts: [] }, sources: { 'approval.judge': 'workspace', 'approval.judgeProvider': 'workspace', 'approval.judgeModel': 'workspace', 'approval.judgeStandardScripts': 'workspace' } })
+    const own = WorkspaceSettingsSchema.parse({ version: 1, approval: { judge: 'on-request', judgeProvider: 'openai-compatible', judgeModel: 'claude-opus-5-5', judgeStandardScripts: [] } })
+    expect(resolveSettings(own, node)).toMatchObject({ approval: { judge: 'on-request', judgeProvider: 'openai-compatible', judgeModel: 'claude-opus-5-5', judgeStandardScripts: [] }, sources: { 'approval.judge': 'workspace', 'approval.judgeProvider': 'workspace', 'approval.judgeModel': 'workspace', 'approval.judgeStandardScripts': 'workspace' } })
   })
 
   it('hold no mode outside the three, no provider outside the two, no model with a blank, no glob Buckle cannot read, and no other key', () => {
@@ -54,12 +54,12 @@ describe('a workspace\'s decision AI settings', () => {
   })
 
   it('come from the node\'s environment file alone, and a value the node refuses stops it, naming the variable', () => {
-    const caller = { BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'anthropic', BUCKLE_APPROVAL_JUDGE_MODEL: 'claude-opus-5-5', BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS: 'npm test' }
+    const caller = { BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'claude-opus-5-5', BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS: 'npm test' }
     const layers = { file: { path: '/state/buckle.env', values: {} }, caller }
     expect(loadConfig({ ...caller }, process.platform, layers).workspaceDefaults.approval).toEqual({})
     expect(unreadWorkspaceDefaults(layers)).toEqual(['BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS'])
     expect(() => loadConfig({ BUCKLE_APPROVAL_JUDGE: 'interpreters' })).toThrow('Invalid BUCKLE_APPROVAL_JUDGE: off, on-request, automated')
-    expect(() => loadConfig({ BUCKLE_APPROVAL_JUDGE_PROVIDER: 'mistral' })).toThrow('Invalid BUCKLE_APPROVAL_JUDGE_PROVIDER: anthropic or openai')
+    expect(() => loadConfig({ BUCKLE_APPROVAL_JUDGE_PROVIDER: 'mistral' })).toThrow('Invalid BUCKLE_APPROVAL_JUDGE_PROVIDER: openai-compatible')
     expect(() => loadConfig({ BUCKLE_APPROVAL_JUDGE_MODEL: 'claude opus' })).toThrow('Invalid BUCKLE_APPROVAL_JUDGE_MODEL')
     expect(() => loadConfig({ BUCKLE_JUDGE_BASE_URL: 'file:///etc/passwd' })).toThrow('Invalid BUCKLE_JUDGE_BASE_URL: an http or https URL')
   })
@@ -86,10 +86,10 @@ describe('buckle workspace set approval.*', () => {
     expect(output.out()).toMatch(/approval\.judge +off +built-in/)
     expect(output.out()).toMatch(/approval\.judgeProvider +\(none: the judge stays off\) +built-in/)
     expect(output.out()).toMatch(/approval\.judgeModel +\(none: the judge stays off\) +built-in/)
-    for (const [key, value] of [['approval.judge', 'On-Request'], ['approval.judgeProvider', 'openai'], ['approval.judgeModel', 'GPT-6-luna'], ['approval.judgeStandardScripts', 'npm test ;; npx vitest *']] as const) {
+    for (const [key, value] of [['approval.judge', 'On-Request'], ['approval.judgeProvider', 'openai-compatible'], ['approval.judgeModel', 'GPT-6-luna'], ['approval.judgeStandardScripts', 'npm test ;; npx vitest *']] as const) {
       expect((await buckle(['set', key, value])).exitCode, key).toBe(0)
     }
-    expect(stored()).toEqual({ judge: 'on-request', judgeProvider: 'openai', judgeModel: 'GPT-6-luna', judgeStandardScripts: ['npm test', 'npx vitest *'] })
+    expect(stored()).toEqual({ judge: 'on-request', judgeProvider: 'openai-compatible', judgeModel: 'GPT-6-luna', judgeStandardScripts: ['npm test', 'npx vitest *'] })
     output.clear()
     await buckle(['show'])
     expect(output.out()).toMatch(/approval\.judge +on-request +workspace/)
@@ -105,7 +105,7 @@ describe('buckle workspace set approval.*', () => {
 
   it.each([
     ['approval.judge', 'interpreters', 'approval.judge is off, on-request, automated'],
-    ['approval.judgeProvider', 'mistral', 'approval.judgeProvider is anthropic or openai'],
+    ['approval.judgeProvider', 'mistral', 'approval.judgeProvider is openai-compatible'],
     ['approval.judgeModel', 'claude opus', 'approval.judgeModel is a model name, with no blank'],
     ['approval.judgeStandardScripts', 'npm run [', 'approval.judgeStandardScripts:'],
   ])('refuse %s %s, writing nothing', async (key, value, refusal) => {
@@ -167,10 +167,10 @@ describe('the node\'s decision AI settings in buckle settings', () => {
 
   it('writes the mode, provider, model, and standard scripts, refusing a value outside them, and leaves the key to a hand edit', async () => {
     const { file, settings } = node()
-    for (const [alias, value] of [['approval-judge', 'automated'], ['approval-judge-provider', 'anthropic'], ['approval-judge-model', 'claude-opus-5-5'], ['approval-judge-standard-scripts', 'npm test;;npx vitest *']]) {
+    for (const [alias, value] of [['approval-judge', 'automated'], ['approval-judge-provider', 'openai-compatible'], ['approval-judge-model', 'claude-opus-5-5'], ['approval-judge-standard-scripts', 'npm test;;npx vitest *']]) {
       expect((await settings(['set', alias!, value!])).exitCode, alias).toBe(0)
     }
-    expect(readFileSync(file, 'utf8')).toContain('BUCKLE_APPROVAL_JUDGE=automated\nBUCKLE_APPROVAL_JUDGE_PROVIDER=anthropic\nBUCKLE_APPROVAL_JUDGE_MODEL=claude-opus-5-5\nBUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS=npm test;;npx vitest *\n')
+    expect(readFileSync(file, 'utf8')).toContain('BUCKLE_APPROVAL_JUDGE=automated\nBUCKLE_APPROVAL_JUDGE_PROVIDER=openai-compatible\nBUCKLE_APPROVAL_JUDGE_MODEL=claude-opus-5-5\nBUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS=npm test;;npx vitest *\n')
     const refused = await settings(['set', 'approval-judge', 'interpreters'])
     expect(refused.exitCode).toBe(1)
     expect(refused.printed).toContain('BUCKLE_APPROVAL_JUDGE is off, on-request, automated')
