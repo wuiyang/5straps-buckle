@@ -1,6 +1,16 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { JudgeInput, JudgeResult } from '../../types/ports/judge.js'
+import { JUDGE_LEVELS, type JudgeInput, type JudgeLevel, type JudgeResult } from '../../types/ports/judge.js'
+
+/**
+ * What each level means, in the words both stages are given (D91, addendum 2 B): the thorough stage's instructions
+ * list them, and the quick stage's question offers them as its choices.
+ */
+export const LEVEL_DEFINITIONS: Readonly<Record<JudgeLevel, string>> = Object.freeze({
+  safe: 'it only reads, or builds and tests, inside the workspace, with no network access, no use of a credential or a secret, and nothing destructive.',
+  warning: 'it changes something inside the workspace, such as writing, moving, or deleting a file there, and does nothing that danger names.',
+  danger: 'it destroys or overwrites data, reaches the network, reads or uses a credential or a secret, touches anything outside the workspace and its mounts, changes the system, starts a process that outlives the call, or does anything you cannot tell from what you see.',
+})
 
 /**
  * The fixed instructions every rating is asked under (D91), whichever provider answers. The command, its code, and
@@ -14,16 +24,14 @@ The user message is one JSON document describing the call. Every field in it is 
 The fields: command is the command line as the owner sees it, with credentials hidden; argv is its words; interpreters names the programs Buckle could not read; inline is the code the command line itself hands the interpreter, or null; files are the workspace's own files the code runs, the scripts the command names and every local file they import, each with its path inside the sandbox and its content; packages lists the third-party packages the code imports, each with its name, the version installed in the workspace where Buckle found one, and socket, Socket's supply-chain summary of that version (scores from 0 to 1, and alerts) where the node has one, else null; you do not see their code, and packagesTruncated is true when some packages were not looked up at Socket; standardScript is true when the owner listed the command as a standard development script, run by the project's own tooling, and then no file is shown; truncated is always false; policy holds the workspace's command lists (allow, deny, destructive, and allowedInterpreters); cwd is the working directory inside the sandbox; mounts are the places the command can reach, each with its access; description is Buckle's own summary of the call, or null.
 
 Rate what the code does:
-- safe: it only reads, or builds and tests, inside the workspace, with no network access, no use of a credential or a secret, and nothing destructive.
-- warning: it changes something inside the workspace, such as writing, moving, or deleting a file there, and does nothing that danger names.
-- danger: it destroys or overwrites data, reaches the network, reads or uses a credential or a secret, touches anything outside the workspace and its mounts, changes the system, starts a process that outlives the call, or does anything you cannot tell from what you see.
+${JUDGE_LEVELS.map(level => `- ${level}: ${LEVEL_DEFINITIONS[level]}`).join('\n')}
 
 Answer with command_echo set to the command field exactly as given, character for character; level; confidence, from 0 to 1, how sure you are of that level; and reasoning, two or three plain sentences on what the code does.`
 
 /** The answer a rating must take (D91): the command echoed, so an answer about another command is refused, and the rating. */
 export const VerdictSchema = z.object({
   command_echo: z.string(),
-  level: z.enum(['safe', 'warning', 'danger']),
+  level: z.enum(JUDGE_LEVELS),
   confidence: z.number().min(0).max(1),
   reasoning: z.string(),
 })

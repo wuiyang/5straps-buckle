@@ -80,7 +80,9 @@ export interface JudgePackage {
   socket: SocketSummary | null
 }
 
-export type JudgeLevel = 'safe' | 'warning' | 'danger'
+/** The three levels every rating answers in, from both stages. */
+export const JUDGE_LEVELS = ['safe', 'warning', 'danger'] as const
+export type JudgeLevel = typeof JUDGE_LEVELS[number]
 
 export type JudgeResult =
   | { kind: 'verdict'; level: JudgeLevel; confidence: number; reasoning: string; model: string; latencyMs: number; promptDigest: string }

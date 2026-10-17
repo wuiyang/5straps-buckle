@@ -63,6 +63,7 @@
     "@ai-sdk/openai-compatible": "3.0.71",
     "@earendil-works/pi-codemode": "1.2.0",
     "@modelcontextprotocol/server": "^2.0.0",
+    "@typesafe-ai/sdk": "0.7.0",
     "ai": "7.0.143",
     "h3": "2.0.1-rc.32",
     "pathe": "2.0.3",
