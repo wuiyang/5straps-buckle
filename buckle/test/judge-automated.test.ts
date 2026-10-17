@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { judgeCachePath } from '../common/services/judge/judge-cache.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
+import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The decision AI in automated mode (D91, brief item 2 and addendum C): an interpreter call the destructive floor asks
@@ -103,6 +103,27 @@ describe('any other answer', () => {
     expect(response).toMatchObject({ outcome: 'approval_required' })
     expect(ran).toBe(false)
     expect(entry.judge).toMatchObject({ provider: 'openai-compatible', model: 'claude-opus-5-5', passed: false, ...(answer.kind === 'verdict' ? { level: answer.level } : { unavailable: 'the request timed out' }) })
+  })
+})
+
+describe('a reasoning far longer than an audit entry holds', () => {
+  const long = 'It reads the build folder. '.repeat(2_600)
+
+  it('is clipped, so a safe pass writes its result entry and a danger answer asks, each entry under the cap', async () => {
+    expect(long.length).toBeGreaterThan(70_000)
+    const passing = await runtimeOf(node(), fakeJudge(() => ({ ...verdict('safe', 0.95), reasoning: long })))
+    const passed = await call(passing, 'python3', ['job.py'])
+    expect(passed.ran).toBe(true)
+    expect(passed.entry).toBeDefined()
+    expect(passed.entry.judge).toMatchObject({ passed: true, reasoning: expect.stringMatching(/ \[cut\]$/) })
+    expect((passed.entry.judge as { reasoning: string }).reasoning).toHaveLength(JUDGE_REASONING_LIMIT)
+    expect(Buffer.byteLength(JSON.stringify(passed.entry))).toBeLessThan(65_536)
+
+    const asking = await runtimeOf(node(), fakeJudge(() => ({ ...verdict('danger', 0.95), reasoning: long })))
+    const asked = await call(asking, 'python3', ['job.py'])
+    expect(asked.response).toMatchObject({ outcome: 'approval_required' })
+    expect(Buffer.byteLength(JSON.stringify(asked.entry))).toBeLessThan(65_536)
+    expect(asking.approvalService.listing()[0]!.call?.judge?.[0]).toMatchObject({ reasoning: expect.stringMatching(/ \[cut\]$/) })
   })
 })
 

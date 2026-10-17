@@ -99,6 +99,26 @@ export type JudgeResult =
 
 export type JudgeVerdict = Extract<JudgeResult, { kind: 'verdict' }>
 
+/**
+ * The most of a thorough verdict's reasoning Buckle keeps or shows, in characters (fix brief 1, items 18 and 23), so a
+ * result entry stays inside the audit log's 64 KiB: the audit entry, the approver's line, the webhook, the cache, and
+ * `buckle approvals judge` all read it clipped.
+ */
+export const JUDGE_REASONING_LIMIT = 2_000
+const CUT = ' [cut]'
+
+/** A reasoning at most JUDGE_REASONING_LIMIT characters long, a longer one cut to end in ` [cut]`. */
+export function clippedReasoning(reasoning: string): string {
+  if (reasoning.length <= JUDGE_REASONING_LIMIT) return reasoning
+  const characters = Array.from(reasoning)
+  return characters.length <= JUDGE_REASONING_LIMIT ? reasoning : `${characters.slice(0, JUDGE_REASONING_LIMIT - CUT.length).join('')}${CUT}`
+}
+
+/** A rating with its reasoning clipped (clippedReasoning); no verdict as it came. */
+export function clippedResult(result: JudgeResult): JudgeResult {
+  return result.kind === 'verdict' && result.reasoning.length > JUDGE_REASONING_LIMIT ? { ...result, reasoning: clippedReasoning(result.reasoning) } : result
+}
+
 /** The judge of a node with none: every rating is unavailable. */
 export const nullJudge: Judge = {
   judge: () => Promise.resolve({ kind: 'unavailable', reason: 'the judge is off' }),

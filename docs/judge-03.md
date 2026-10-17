@@ -45,8 +45,9 @@ naming the stage, and names `judge` among what allowed it. One a stage rated and
 carries the same with `passed: false`, or `unavailable` in place of a verdict; Jev's verdict alone
 stands where the thorough model was not asked. `flagged: true` marks an allowed command Jev turned
 into an ask, and `screened: true` one it rated and let run. `promptDigest` is the sha256 of the
-model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, with
-the credentials the display hides hidden. The report to Rings, the 5straps agent control plane,
+model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, cut
+to 2,000 characters (ending `[cut]`) wherever it is kept or shown, with the credentials the
+display hides hidden. The report to Rings, the 5straps agent control plane,
 does not carry the verdict yet.
 
 ## Cost

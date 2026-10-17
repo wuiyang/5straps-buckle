@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import { JUDGE_LEVELS, type JudgeInput, type JudgeLevel, type JudgeResult } from '../../types/ports/judge.js'
+import { clippedReasoning, JUDGE_LEVELS, type JudgeInput, type JudgeLevel, type JudgeResult } from '../../types/ports/judge.js'
 
 /**
  * What each level means, in the words both stages are given (D91, addendum 2 B): the thorough stage's instructions
@@ -52,7 +52,7 @@ export function verdictOf(input: { parsed: Verdict | null | undefined; asked: Ju
   const { parsed } = input
   if (!parsed) return unavailable('the answer held no verdict')
   if (parsed.command_echo !== input.asked.command) return unavailable('the answer named another command than the one asked about')
-  return { kind: 'verdict', level: parsed.level, confidence: parsed.confidence, reasoning: parsed.reasoning, model: input.model, latencyMs: Math.round(performance.now() - input.startedAt), promptDigest: input.digest }
+  return { kind: 'verdict', level: parsed.level, confidence: parsed.confidence, reasoning: clippedReasoning(parsed.reasoning), model: input.model, latencyMs: Math.round(performance.now() - input.startedAt), promptDigest: input.digest }
 }
 
 export function unavailable(reason: string): JudgeResult {

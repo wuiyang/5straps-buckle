@@ -12,7 +12,7 @@ import type { AskCause, PermissionDecision } from '../../domain/permission/decis
 import { judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
 import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
-import type { Judge, JudgeInput, JudgeMode, JudgeProvider, JudgeResult } from '../../types/ports/judge.js'
+import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, shownVariables } from './call-env.js'
@@ -189,8 +189,9 @@ export function createJudgeGate(input: {
     const { provider, model } = settings
     const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked: command.asked })
     const kept = input.cache.get(key)
-    if (kept && 'reasoning' in kept) return { provider, model, result: kept }
-    const result = await input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) })
+    if (kept && 'reasoning' in kept) return { provider, model, result: clippedResult(kept) }
+    // Clipped whichever adapter answered, before it is kept, so every reader downstream sees the same bounded text.
+    const result = clippedResult(await input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) }))
     if (result.kind === 'verdict') await input.cache.set(key, result)
     return { provider, model, result }
   }

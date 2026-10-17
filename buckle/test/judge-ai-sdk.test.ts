@@ -6,7 +6,7 @@ import { createAiSdkJudge } from '../common/adapters/judge/ai-sdk.js'
 import { createProviderJudge } from '../common/adapters/judge/providers.js'
 import { openAiCompatibleModels } from '../common/adapters/judge/providers/openai-compatible.js'
 import { JUDGE_SYSTEM_PROMPT } from '../common/adapters/judge/verdict.js'
-import type { JudgeInput } from '../common/types/ports/judge.js'
+import { JUDGE_REASONING_LIMIT, type JudgeInput } from '../common/types/ports/judge.js'
 import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
 // The decision AI through the AI SDK (D91, addendum 2 A): one adapter on `ai`'s generateText with a structured output,
@@ -163,6 +163,12 @@ describe('a rating the AI SDK judge cannot give', () => {
     const unwritable = { ...INPUT, toJSON: () => { throw new Error('cannot be written') } } as unknown as JudgeInput
     expect(await judgeOf(fetch).judge(unwritable, { model: MODEL })).toEqual({ kind: 'unavailable', reason: 'the request failed' })
     expect(calls()).toBe(0)
+  })
+
+  it('clips a reasoning longer than Buckle keeps, ending it in [cut]', async () => {
+    const { fetch } = fakeFetch(answer({ ...SAFE, reasoning: 'x'.repeat(70_000) }))
+    const result = await rate(fetch)
+    expect(result).toMatchObject({ kind: 'verdict', reasoning: `${'x'.repeat(JUDGE_REASONING_LIMIT - 6)} [cut]` })
   })
 
   it('is unavailable when the answer echoes another command', async () => {
