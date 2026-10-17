@@ -185,4 +185,12 @@ describe('the reader\'s caps', () => {
     expect(workspace({ 'a.mjs': `import './b.mjs'\n${half}`, 'b.mjs': half }).read(['node', 'a.mjs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
     expect(reading(workspace({ 'a.mjs': half.slice(20) }).read(['node', 'a.mjs'])).files).toHaveLength(1)
   })
+
+  it(`counts inline code toward the ${CODE_LIMITS.bytes} bytes`, () => {
+    const half = 'x'.repeat(CODE_LIMITS.bytes / 2)
+    const { read } = workspace({ 'b.mjs': half })
+    expect(read(['node', '-e', `// ${'y'.repeat(CODE_LIMITS.bytes)}`])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
+    expect(read(['node', '-e', `import './b.mjs'\n// ${half}`])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
+    expect(reading(read(['node', '-e', `import './b.mjs'\n// ${half.slice(40)}`])).files).toHaveLength(1)
+  })
 })

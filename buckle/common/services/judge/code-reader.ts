@@ -107,7 +107,9 @@ function readCode(input: CodeInput): CodeRead {
   }
   const files: JudgeFile[] = []
   const seen = new Set<string>()
-  let bytes = 0
+  // The code the command line hands the interpreter is sent too, so it counts toward what the judge reads.
+  let bytes = inline.reduce((total, code) => total + Buffer.byteLength(code), 0)
+  if (bytes > CODE_LIMITS.bytes) return refused(CODE_REFUSALS.truncated, true)
   while (queue.length > 0) {
     const next = queue.shift()!
     if (seen.has(next.real)) continue
