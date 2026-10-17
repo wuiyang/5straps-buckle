@@ -16,16 +16,18 @@ state directory, restarts five seconds after a failure, and stops on SIGTERM, wh
 Ctrl-C does. A node that finds another one serving the state directory exits 0 there, so launchd
 does not start it again every five seconds.
 
-Each command runs `/bin/launchctl`, by that path, on `gui/<uid>/com.5straps.buckle`, the agent in
-your login session:
+These commands run `/bin/launchctl`, by that path, in your login session's domain, `gui/<uid>`,
+and `buckle service logs` runs none. The verbs, command by command:
 
 | Command | What launchctl does |
 |---|---|
-| `install` | `print gui/<uid>`, to find your login session, then `enable`; with `--now`, `bootout` where it is loaded, then `bootstrap` |
-| `start`, `restart` | `bootout` where it is loaded, then `bootstrap`, so the file as installed is what runs |
-| `stop` | `bootout`, which unloads it until the next login or `buckle service start` |
+| `install` | `print gui/<uid>`, to find your login session, then `enable`; with `--now`, `bootout` where it is loaded, then `bootstrap`. A re-run also reads `print-disabled` |
+| `start`, `restart` | `print-disabled`, then `bootout` where it is loaded, then `bootstrap`, so the file as installed is what runs. A disabled agent is refused before the `bootout`, naming `buckle service install`, which enables it again |
+| `stop` | `bootout` on this node's agent, whether or not a node is running, which unloads it until the next login or `buckle service start`; with no node running, `print-disabled` runs first, while Buckle checks that the agent is this node's. Where no agent is installed for this node and no node runs, it says "Buckle is not running" and unloads nothing |
 | `status` | `print-disabled`, which says whether it starts at login |
-| `uninstall` | `bootout`, then the file is removed |
+| `uninstall` | `print-disabled`, then `bootout`; the file is removed |
+
+Every `bootout` is followed by `print gui/<uid>/com.5straps.buckle`, polled until the agent is gone.
 
 It starts when you log in, not at boot. An agent belongs to a login session, which is also what
 lets it open a visible browser window or your own Chrome. A start before anyone logs in would need a
