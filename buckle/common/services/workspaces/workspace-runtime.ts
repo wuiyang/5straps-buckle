@@ -49,7 +49,10 @@ import { createProviderJudge } from '../../adapters/judge/providers.js'
 import type { Judge, JudgeProvider } from '../../types/ports/judge.js'
 import { createCodeView } from '../judge/code-reader.js'
 import { judgeCachePath, openJudgeCache, type JudgeCache } from '../judge/judge-cache.js'
-import { createJudgeGate, JUDGE_OFF, type JudgeGate } from '../judge/judge-gate.js'
+import { createJudgeGate, JUDGE_OFF, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
+import { judgeable } from '../../domain/permission/judged.js'
+import { resolveEffects } from '../invocation/resolve-effects.js'
+import type { PendingAsk } from '../approvals/approval-registry.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
 import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
@@ -86,8 +89,14 @@ interface InForce {
   judge: JudgeGate
 }
 
+/** A waiting ask the decision AI rated at its owner's request, or why it rated nothing. */
+export type JudgeAskResult = { kind: 'rated'; ask: PendingAsk; judged: JudgedAsk } | { kind: 'refused'; reason: string }
+
 /** A read the code reader asks the rules about is judged with no grant: only what the policy lets anyone read is read. */
 const NO_GRANTS: GrantLookup = { subjectsFor: () => [] }
+
+/** Why the decision AI rates no ask but an interpreter one at the destructive floor (D91). */
+const NOT_JUDGEABLE = 'The decision AI rates an ask about running code with an interpreter the policy does not allow, and this ask is about something else'
 
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
@@ -176,6 +185,12 @@ export interface BuckleRuntime {
   reporter: Reporter
   /** The code mode script that stopped at the ask `token`, kept with its journal for the approver; null when none is (owner decision D82). */
   scriptOfAsk(token: string): string | null
+  /**
+   * Has the decision AI rate one waiting ask at the owner's request (D91, addendum C): the call it came from is prepared
+   * again from its kept arguments and judged as a new call would be, its code read afresh. Refused, naming why, where
+   * nothing by that token waits, the ask is not about an interpreter the policy does not allow, or the judge is off or not set up.
+   */
+  judgeAsk(token: string, options?: { signal?: AbortSignal }): Promise<JudgeAskResult>
   invoke(input: InvokeInput): Promise<InvokeResponse>
   /**
    * Shutdown's in-flight tool calls step (B19): cancels every call still running here, a shell among
@@ -437,6 +452,27 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
+
+    async judgeAsk(token, options = {}) {
+      const refused = (reason: string): JudgeAskResult => ({ kind: 'refused', reason })
+      const ask = approvalService.waitingAsk(token)
+      if (!ask) return refused(`Nothing named ${token} is waiting for a decision in workspace ${config.serverName}`)
+      const settled = inForce()
+      if (settled.judge.mode === 'off') return refused(`The decision AI is off in workspace ${config.serverName}: buckle workspace set approval.judge on-request turns it on`)
+      if (settled.judge.missing !== null) return refused(`The decision AI is not set up in workspace ${config.serverName}: ${settled.judge.missing} is missing`)
+      const call = ask.call
+      const args = call?.complete && call.arguments !== null && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : null
+      if (ask.request.rule !== 'destructive_command' || args === null || !settled.registry.has(ask.request.tool)) return refused(NOT_JUDGEABLE)
+      // Prepared again from the arguments the ask kept, as an approver saw them, and judged as a new call would be.
+      let effects
+      try { effects = await resolveEffects({ effects: settled.registry.get(ask.request.tool).prepare(args).effects, paths: settled.paths }) } catch { return refused(NOT_JUDGEABLE) }
+      const outcome = settled.permissions.evaluate({ tool: ask.request.tool, effects, grants: NO_GRANTS })
+      const asks = outcome.kind === 'ask' ? outcome.asks.filter(judgeable) : []
+      const chosen = asks.find(item => item.subject === ask.request.subject) ?? asks[0]
+      if (!chosen) return refused(NOT_JUDGEABLE)
+      const [judged] = await settled.judge.rate({ asks: [chosen], effects, tool: ask.request.tool, args, ...(options.signal ? { signal: options.signal } : {}) })
+      return judged ? { kind: 'rated', ask, judged } : refused(NOT_JUDGEABLE)
+    },
 
     async invoke(call) {
       try {

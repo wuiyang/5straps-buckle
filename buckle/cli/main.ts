@@ -9,14 +9,17 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel, type JudgeNote } from '../common/domain/approval-instruction.js'
+import { judgePasses } from '../common/domain/permission/judged.js'
+import { judgeAuditOf, type JudgedAsk } from '../common/services/judge/judge-gate.js'
+import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { CheckpointSummary } from '../common/services/history/journal.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
-import { withOperationScope } from '@5straps/runtime'
+import { redactCredentials, withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
 import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
@@ -41,6 +44,8 @@ export interface CliResult {
   exitCode: number
   /** For the command's audit entry: what a widened approval covers. */
   detail?: string
+  /** For the command's audit entry: what the decision AI said at the owner's request (D91). */
+  judge?: JudgeAudit
 }
 
 /**
@@ -250,7 +255,7 @@ async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: Works
     if (!AUDITED_COMMANDS.includes(command)) return await dispatchRuntimeCommand(context)
     // A check that answers denied or asks has still succeeded; only bad input failed.
     const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
-    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail,
+    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
       operation: () => dispatchRuntimeCommand(context),
     })
   } finally {
@@ -311,6 +316,9 @@ function printUsage(): CliResult {
   buckle approvals --watch [--workspace <name> | --all]    Ask about each request as it arrives
   buckle approvals show <token> [--json] [--workspace <name>]
                                    One request whole, and the code_run script that made it
+  buckle approvals judge <token> [--approve-if-safe] [--workspace <name>]
+                                   The decision AI's verdict on one interpreter request, beside its whole action;
+                                   --approve-if-safe approves it once where the verdict is safe at 0.8 or above
   buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
@@ -416,10 +424,10 @@ interface CommandInput {
  * terminal when a prompt was on screen there, so without this the tokens waiting on a node were
  * readable through the admin API alone.
  */
-const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name> | --all], or buckle approvals show <token> [--json] [--workspace <name> | --all]'
+const APPROVALS_USAGE = 'Usage: buckle approvals [--json] [--watch] [--workspace <name> | --all], buckle approvals show <token> [--json] [--workspace <name> | --all], or buckle approvals judge <token> [--approve-if-safe] [--workspace <name> | --all]'
 
 function approvalsArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { json: { type: 'boolean' }, watch: { type: 'boolean' }, 'approve-if-safe': { type: 'boolean' } }, allowPositionals: true })
 }
 
 /**
@@ -440,7 +448,9 @@ function refusedArguments(command: string, argv: string[]): string | null {
 /** Why the arguments name no listing, no watch and no single ask, or null. */
 function approvalsRefusal({ values, positionals }: ReturnType<typeof approvalsArguments>): string | null {
   const [action, token, ...extra] = positionals
-  if (action !== undefined && (action !== 'show' || token === undefined || extra.length > 0 || values.watch)) return APPROVALS_USAGE
+  if (action !== undefined && ((action !== 'show' && action !== 'judge') || token === undefined || extra.length > 0 || values.watch)) return APPROVALS_USAGE
+  if (values['approve-if-safe'] && action !== 'judge') return '--approve-if-safe is for buckle approvals judge <token>'
+  if (action === 'judge' && values.json) return APPROVALS_USAGE
   if (values.watch && values.json) return '--watch asks in the terminal, so it takes no --json'
   return null
 }
@@ -451,8 +461,9 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   const parsed = approvalsArguments(input.argv)
   const refusal = approvalsRefusal(parsed)
   if (refusal) return fail(refusal)
-  const { values, positionals: [, token] } = parsed
+  const { values, positionals: [action, token] } = parsed
   const { runtime } = input
+  if (action === 'judge' && token !== undefined) return judgeWaitingAsk({ runtime, token, approveIfSafe: values['approve-if-safe'] === true, node: input.config.serverId })
   if (token !== undefined) return showAsk({ runtime, token, json: values.json === true, node: input.config.serverId })
   if (values.watch) return watch({ runtimes: async () => [runtime], pinned: runtime.workspaceName() })
   if (values.json) return print(listingOf(runtime))
@@ -545,6 +556,49 @@ function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; 
   if (script !== null) process.stdout.write(`\nThe code_run script that made this call:\n${script.split('\n').map(printable).join('\n')}\n`)
   else if (ask.call?.description?.startsWith(SCRIPT_CALL_NOTE)) process.stdout.write('\nA code_run script made this call. Its text is kept for ten minutes once the script stops at this ask; while the call still waits inside the script, it is not kept yet.\n')
   return { exitCode: 0 }
+}
+
+/**
+ * `buckle approvals judge <token> [--approve-if-safe]` (D91, addendum C): the decision AI rates one waiting interpreter
+ * ask at the owner's request, its code read afresh, and the whole action is printed with the verdict beside it, as
+ * `buckle approvals show` prints it. With --approve-if-safe, a safe verdict at 0.8 or above approves the ask once, the
+ * judge named as who decided it; anything else approves nothing. Exit 1 where it gave no verdict.
+ */
+async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; approveIfSafe: boolean; node: string }): Promise<CliResult> {
+  const { runtime, token } = input
+  const rated = await runtime.judgeAsk(token)
+  if (rated.kind === 'refused') return fail(printable(rated.reason))
+  const { ask, judged } = rated
+  const note = judgeNoteOf(judged)
+  const line = judgeLine(note, { token, ...named(runtime) })
+  process.stdout.write(`${token}\n${describeAsk({ ...ask.request, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), node: input.node, ...(ask.call?.complete ? { call: ask.call } : {}), judge: line }).join('\n')}\n`)
+  const { result } = judged
+  if (result.kind === 'unavailable') {
+    process.stdout.write(`The decision AI gave no verdict, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
+    return { exitCode: 1, detail: `judge ${token} no verdict`, ...judgeAuditField([judged]) }
+  }
+  if (!input.approveIfSafe || !judgePasses(result)) {
+    process.stdout.write(`${input.approveIfSafe ? 'Not safe at 0.8 or above, so nothing is approved' : 'Nothing is approved'}; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
+    return { exitCode: 0, detail: `judge ${token} ${result.level}`, ...judgeAuditField([judged]) }
+  }
+  const decidedBy = `judge:${judged.provider ?? 'none'}:${judged.model ?? result.model}`.slice(0, 200)
+  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', decidedBy })
+  if (!answered.ok) return { ...fail(`${answered.reason} in workspace ${runtime.workspaceName()}`), ...judgeAuditField([judged]) }
+  process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's safe verdict, as you asked.\n`)
+  return { exitCode: 0, detail: `judge ${token} safe, approved once`, ...judgeAuditField([judged], true) }
+}
+
+/** What the command's audit entry keeps of the rating; `approved` where it approved the ask. */
+function judgeAuditField(judged: JudgedAsk[], approved = false): { judge?: JudgeAudit } {
+  const audit = judgeAuditOf(judged)
+  if (!audit) return {}
+  return { judge: 'level' in audit ? { ...audit, passed: approved } : audit }
+}
+
+/** A rating as the note an approver reads beside the action. */
+function judgeNoteOf(judged: JudgedAsk): JudgeNote {
+  const { subject, result } = judged
+  return result.kind === 'verdict' ? { subject, level: result.level, confidence: result.confidence, model: judged.model ?? result.model, reasoning: redactCredentials(result.reasoning, 'text') } : { subject, unavailable: result.reason }
 }
 
 /**
