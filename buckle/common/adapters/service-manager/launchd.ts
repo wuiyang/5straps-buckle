@@ -95,6 +95,15 @@ export function createLaunchdManager(input: { environment: NodeJS.ProcessEnv; ru
     await required(['kickstart', service])
   }
 
+  /**
+   * load() for start and restart. launchd will not load a disabled agent, and only install enables one, so a disabled
+   * agent is refused before the unload: restart would otherwise end the running node and then fail to load another.
+   */
+  async function loadEnabled(): Promise<void> {
+    if (await disabled()) throw new ServiceManagerError(`the launchd agent ${LAUNCHD_LABEL} is disabled, so launchd will not load it; buckle service install enables it again, and with --now starts it`)
+    await load()
+  }
+
   /** The agent written owner-only through a temporary file, in a folder made where missing (an existing one keeps its mode). */
   async function writeAgent(text: string): Promise<void> {
     mkdirSync(launchdAgentDirectory(home), { recursive: true, mode: 0o700 })
@@ -134,9 +143,9 @@ export function createLaunchdManager(input: { environment: NodeJS.ProcessEnv; ru
       await bootout()
       rmSync(agent, { force: true })
     },
-    start: load,
+    start: loadEnabled,
     // Unloads it until the next login or start, as systemctl stop leaves an enabled unit.
     stop: bootout,
-    restart: load,
+    restart: loadEnabled,
   }
 }

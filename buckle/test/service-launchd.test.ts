@@ -149,8 +149,8 @@ interface FakeLaunchd {
 
 /**
  * A launchctl at a path of the test's own that records its words and environment and answers as launchd would: the
- * owner's login session (gui/501), the agent loaded or not, disabled or not, a bootstrap of a loaded agent refused as
- * already loaded, and, with the `slow` mark, a bootout that answers in progress (36) while two more prints still find it.
+ * owner's login session (gui/501), the agent loaded or not, disabled or not (a disabled agent is not loaded until
+ * enabled again), a bootstrap of a loaded agent refused as already loaded, and, with the `slow` mark, a bootout that answers in progress (36) while two more prints still find it.
  */
 function fakeLaunchd(options: { fail?: string } = {}): FakeLaunchd {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-launchd-')))
@@ -191,6 +191,7 @@ case "$1" in
     echo '}'; exit 0 ;;
   enable) rm -f ${marker('disabled')}; exit 0 ;;
   bootstrap)
+    if test -f ${marker('disabled')}; then echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5; fi
     if test -f ${marker('loaded')} || test -f ${marker('loaded-by-another')}; then rm -f ${marker('loaded-by-another')}; touch ${marker('loaded')}; echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5; fi
     touch ${marker('loaded')}; exit 0 ;;
   bootout)
@@ -314,12 +315,31 @@ describe.skipIf(process.platform === 'win32')('launchctl, imitated at an injecte
     expect(existsSync(AGENT(fake))).toBe(false)
     expect(fake.calls()).toEqual([
       `enable ${SERVICE}`,
-      `bootout ${SERVICE}`, `print ${SERVICE}`, `bootstrap gui/501 ${AGENT(fake)}`,
-      `bootout ${SERVICE}`, `print ${SERVICE}`, `bootstrap gui/501 ${AGENT(fake)}`,
+      'print-disabled gui/501', `bootout ${SERVICE}`, `print ${SERVICE}`, `bootstrap gui/501 ${AGENT(fake)}`,
+      'print-disabled gui/501', `bootout ${SERVICE}`, `print ${SERVICE}`, `bootstrap gui/501 ${AGENT(fake)}`,
       `bootout ${SERVICE}`, `print ${SERVICE}`,
       `bootout ${SERVICE}`, `print ${SERVICE}`,
     ])
     expect(launchd.beforeLogin).toBeUndefined()
+  })
+
+  // Fix brief 7, item 2: launchd will not load a disabled agent, so start and restart refuse it before any unload, which
+  // would end the running node and leave nothing; install enables it again before it loads.
+  it('refuses to start or restart a disabled agent before any unload, leaving the node it runs, and loads it once install enables it', async () => {
+    const fake = fakeLaunchd()
+    const launchd = fake.manager()
+    await launchd.install({ ...DEFINITION, stateDirectory: fake.state }, { now: true })
+    const running = fake.node()!.pid
+    fake.mark('disabled')
+    const before = fake.calls().length
+    const reason = new ServiceManagerError('the launchd agent com.5straps.buckle is disabled, so launchd will not load it; buckle service install enables it again, and with --now starts it')
+    await expect(launchd.restart!()).rejects.toThrow(reason)
+    await expect(launchd.start()).rejects.toThrow(reason)
+    expect(fake.calls().slice(before)).toEqual(['print-disabled gui/501', 'print-disabled gui/501'])
+    expect(fake.node()!.pid).toBe(running)
+    await launchd.install({ ...DEFINITION, stateDirectory: fake.state }, { now: true })
+    expect(fake.node()!.pid).not.toBe(running)
+    await fake.node()?.close()
   })
 
   it('waits for an unload launchctl answered before the node ended, and starts a loaded agent where launchd answers it is already loaded', async () => {
@@ -491,6 +511,27 @@ describe.skipIf(process.platform === 'win32')('buckle service on macOS, with lau
     expect((await service(fake, ['status'])).out).toContain('Service    the launchd agent com.5straps.buckle, disabled\n')
     await service(fake, ['install'])
     expect((await service(fake, ['status'])).out).toContain('Service    the launchd agent com.5straps.buckle, starts at login\n')
+  })
+
+  // Fix brief 7, item 2: restart on a disabled agent used to end the running node and then fail to load another.
+  it('refuses start and restart on a disabled agent with the reason, leaving a running node, and install --now enables and starts it again', async () => {
+    const fake = fakeLaunchd()
+    await service(fake, ['install', '--now'])
+    const running = fake.node()!.pid
+    fake.mark('disabled')
+    const reason = 'the launchd agent com.5straps.buckle is disabled, so launchd will not load it; buckle service install enables it again, and with --now starts it\n'
+    const before = fake.calls().length
+    expect(await service(fake, ['restart'])).toMatchObject({ exitCode: 1, out: '', err: reason })
+    expect(fake.node()!.pid).toBe(running)
+    expect(fake.calls().slice(before).filter(call => /^(bootout|bootstrap|kickstart)/.test(call))).toEqual([])
+    expect(await service(fake, ['stop'])).toMatchObject({ exitCode: 0, out: `Stopped Buckle (pid ${running}).\n` })
+    const stopped = fake.calls().length
+    expect(await service(fake, ['start'])).toMatchObject({ exitCode: 1, out: '', err: reason })
+    expect(fake.calls().slice(stopped).filter(call => /^(bootout|bootstrap|kickstart)/.test(call))).toEqual([])
+    expect(fake.node()).toBeNull()
+    expect(await service(fake, ['install', '--now'])).toMatchObject({ exitCode: 0, err: '' })
+    expect(fake.node()).not.toBeNull()
+    await service(fake, ['stop'])
   })
 })
 
