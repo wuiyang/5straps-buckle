@@ -82,7 +82,7 @@ export function createJudgeGate(input: {
     const running = allForms(forms).filter(([command = '']) => interpreters.includes(command) || interpreters.includes(baseCommand(command)))
     const standardScript = running.length > 0 && running.every(form => standard.some(glob => glob.matchesLine(form)))
     const cwd = workingDirectory(call.args)
-    const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, cwd, view: input.view })
+    const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
     return {

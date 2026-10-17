@@ -106,6 +106,16 @@ describe('any other answer', () => {
   })
 })
 
+describe('code a here-string hands the interpreter', () => {
+  it('is read as inline code from bash text, with what it imports', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), judge)
+    await withPolicy(runtime, { allow: ['bash -c *'] })
+    expect((await call(runtime, 'bash', ['-c', "python3 <<< 'import helper'"])).response).toMatchObject({ outcome: 'ok' })
+    expect(judge.shown[0]).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+  })
+})
+
 describe('code the judge cannot read', () => {
   it('asks, naming no path, where reading it throws, as at a hard link on the disk that holds Buckle\'s state', async () => {
     const judge = fakeJudge()

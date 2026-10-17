@@ -26,7 +26,7 @@ function workspace(files: Record<string, string | Buffer>, options: { mount?: st
   // The rules' answer with no grant: inside the folder, and never a credential file.
   const view = createCodeView({ paths, canRead: real => isInside(root, real) && basename(real) !== '.env', protectedRoots: [] })
   const read = (...forms: string[][]): CodeRead => readInterpreterCode({ forms, cwd: root, view })
-  return { base, root, read }
+  return { base, root, read, view }
 }
 
 function reading(result: CodeRead) {
@@ -98,6 +98,18 @@ describe('the code a Python call runs', () => {
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
+  })
+})
+
+describe('the code a here-string hands an interpreter', () => {
+  it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and nothing a shell without them runs', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    const read = (shell: string, text: string, program = 'python3') => readInterpreterCode({ forms: [[program]], shellForms: [[shell, '-c', text]], cwd: root, view })
+    expect(reading(read('bash', "python3 <<< 'import helper'"))).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+    expect(reading(read('/usr/bin/zsh', 'FOO=1 node 0<<<"console.log(1)"', 'node'))).toMatchObject({ inline: 'console.log(1)', files: [] })
+    expect(reading(read('ksh', 'cd x && python3 - <<<"$CODE"'))).toMatchObject({ inline: '$CODE' })
+    expect(reading(read('sh', "python3 <<< 'print(1)'")).inline).toBeNull()
+    expect(reading(read('bash', "cat <<< 'print(1)' | python3")).inline).toBeNull()
   })
 })
 

@@ -3,7 +3,8 @@ import { createHash } from 'node:crypto'
 import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
-import { baseCommand } from '../../domain/argv.js'
+import { baseCommand, shellScriptOperand, shellStatementList, shellTokens } from '../../domain/argv.js'
+import { READ_BUDGET } from '../../domain/command-forms.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile } from '../../types/ports/judge.js'
@@ -49,20 +50,26 @@ type Language = 'js' | 'python' | 'shell' | null
 
 /**
  * The code an interpreter call runs, read for the judge (D91, addendum B): the code its command line hands the
- * interpreter (`-c`, `-e`), every argument naming a regular file the agent may read, and every local file those import,
+ * interpreter (`-c`, `-e`, or a here-string in the text of a shell that has them), every argument naming a regular file the agent may read, and every local file those import,
  * transitively, each read once by its real path. JavaScript and TypeScript `import`, `export from`, `import()`, and
  * `require()` of a path; Python `import` and `from import` of a module beside the file or under the working directory;
  * shell `source` and `.`. A bare specifier is a third-party package, named and never read. Refused, so the call asks,
  * past CODE_LIMITS, at an argument or a file beyond every place the agent's view reaches, at a file the agent may not
  * read or the sandbox does not name, at one that is not text, and at a local import naming nothing.
  */
-export function readInterpreterCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+export function readInterpreterCode(input: CodeInput): CodeRead {
   // A file that vanished, one nobody may open, or a hard link onto Buckle's state throws, naming a host path: the judge
   // rates nothing then, and the reason names no path.
   try { return readCode(input) } catch { return refused(CODE_REFUSALS.failed) }
 }
 
-function readCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+/**
+ * What the reader is handed: the interpreter invocations to read (`forms`), every form of the call (`shellForms`), in
+ * which shell text may feed one of them a here-string, the real working directory, and the agent's view.
+ */
+export interface CodeInput { forms: readonly string[][]; shellForms?: readonly string[][]; cwd: string; view: CodeView }
+
+function readCode(input: CodeInput): CodeRead {
   const { view, cwd } = input
   const inline: string[] = []
   const packages = new Set<string>()
@@ -92,6 +99,12 @@ function readCode(input: { forms: readonly string[][]; cwd: string; view: CodeVi
       queue.push(...found)
     }
   }
+  for (const { program, code } of hereStringsOf(input.shellForms ?? [], input.forms)) {
+    inline.push(code)
+    const found = importsOf(languageOfProgram(program), code, { file: null, cwd, view, packages })
+    if (typeof found === 'string') return refused(found)
+    queue.push(...found)
+  }
   const files: JudgeFile[] = []
   const seen = new Set<string>()
   let bytes = 0
@@ -115,6 +128,54 @@ function readCode(input: { forms: readonly string[][]; cwd: string; view: CodeVi
     queue.push(...found)
   }
   return { kind: 'read', reading: { inline: inline.length > 0 ? inline.join('\n') : null, files, packages: [...packages].sort() } }
+}
+
+/** The shells whose text may feed a command a here-string (`<<<`): bash, and the shells that share ksh's syntax for it. */
+const HERE_STRING_SHELLS = new Set(['bash', 'rbash', 'zsh', 'ksh', 'mksh', 'yash'])
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+const REDIRECTION = /^\d*[<>]/
+const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
+const HERE_STRING = /^0?<<</
+
+/**
+ * The code a here-string hands an interpreter (D91, addendum 2 F3): in the `-c` text of each form run by a shell that has
+ * here-strings, each statement whose command is one of the interpreters being read and whose input a `<<<` word feeds,
+ * that word as the statement passes it, an expansion in it as written. A here-string fed to another command, which
+ * pipes it on, is not the interpreter's code.
+ */
+function hereStringsOf(shellForms: readonly string[][], forms: readonly string[][]): Array<{ program: string; code: string }> {
+  const running = new Set(forms.map(([command = '']) => programOf(command)))
+  const found: Array<{ program: string; code: string }> = []
+  for (const [command = '', ...args] of shellForms) {
+    if (!HERE_STRING_SHELLS.has(baseCommand(command))) continue
+    const { source, operand } = shellScriptOperand(args)
+    if (source !== 'command' || operand === undefined) continue
+    for (const statement of shellStatementList(operand, { characters: READ_BUDGET.characters }).statements) {
+      const tokens = shellTokens(statement)
+      const program = commandWord(tokens)
+      if (program === null || !running.has(programOf(program))) continue
+      for (let index = 0; index < tokens.length; index++) {
+        const { raw, word } = tokens[index]!
+        if (!HERE_STRING.test(raw)) continue
+        const code = BARE_REDIRECTION.test(raw) ? tokens[index + 1]?.word : word.replace(HERE_STRING, '')
+        if (code !== undefined) found.push({ program: programOf(program), code })
+      }
+    }
+  }
+  return found.filter((item, index) => found.findIndex(other => other.program === item.program && other.code === item.code) === index)
+}
+
+/** A statement's command word: the first word that is neither an assignment nor a redirection or its target. */
+function commandWord(tokens: ReadonlyArray<{ raw: string; word: string }>): string | null {
+  for (let index = 0; index < tokens.length; index++) {
+    const { raw, word } = tokens[index]!
+    if (REDIRECTION.test(raw)) {
+      if (BARE_REDIRECTION.test(raw)) index++
+      continue
+    }
+    if (!ASSIGNMENT.test(raw)) return word
+  }
+  return null
 }
 
 function refused(reason: string, truncated = false): CodeRead {
