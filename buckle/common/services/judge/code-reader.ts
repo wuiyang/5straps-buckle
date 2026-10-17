@@ -66,6 +66,12 @@ export function readInterpreterCode(input: { forms: readonly string[][]; cwd: st
     inline.push(...read.inline)
     for (const name of read.packages) packages.add(name)
     const language = languageOfProgram(program)
+    // `python -m a.b`: the module's file under the working directory, with its package's __main__.py, else a package.
+    for (const module of read.modules) {
+      const files = pythonModule({ module, roots: [cwd], view, main: true })
+      if (files.length === 0) packages.add(module.split('.')[0]!)
+      queue.push(...files)
+    }
     // A word naming no file the view reaches is no script: the sandbox does not have it either.
     for (const name of read.candidates) {
       const located = view.locate(name, cwd)
@@ -128,9 +134,10 @@ const RUNNERS = new Set(['npx', 'pnpx', 'bunx'])
  * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
  * each a name that may be a file.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; candidates: string[] } {
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; candidates: string[] } {
   const inline: string[] = []
   const packages: string[] = []
+  const modules: string[] = []
   const candidates: string[] = []
   const flags = INLINE_FLAGS[program] ?? []
   const awkProgramFile = AWKS.has(program) && args.some(arg => arg === '-f' || arg.startsWith('-f'))
@@ -146,6 +153,12 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
     if (equals > 0 && flags.includes(word.slice(0, equals))) {
       inline.push(word.slice(equals + 1))
       continue
+    }
+    if (program === 'python' && word === '-m' && index + 1 < args.length) {
+      modules.push(args[++index]!)
+      // What follows the module is its own arguments, each a name that may be a file.
+      candidates.push(...args.slice(index + 1))
+      break
     }
     if (program === 'deno' && word === 'eval' && index + 1 < args.length) {
       inline.push(args[++index]!)
@@ -165,7 +178,7 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
-  return { inline, packages, candidates }
+  return { inline, packages, modules, candidates }
 }
 
 /** A package as its name: `@scope/name` or `name`, without a version, a subpath, or a `node:` builtin's prefix kept apart. */
@@ -281,8 +294,11 @@ function pythonImports(code: string, place: { file: string | null; cwd: string; 
   return found
 }
 
-/** A dotted module's file under the first root that holds it, with every package `__init__.py` above it that runs on import. */
-function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView }): Found {
+/**
+ * A dotted module's file under the first root that holds it, with every package `__init__.py` above it that runs on
+ * import; with `main`, as `python -m` runs it, a package's `__main__.py` too.
+ */
+function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; main?: boolean }): Found {
   const parts = input.module.split('.').filter(Boolean)
   for (const root of input.roots) {
     const path = join(...parts)
@@ -292,7 +308,8 @@ function pythonModule(input: { module: string; roots: readonly string[]; view: C
       const init = fileAt(input.view, `./${join(...parts.slice(0, index + 1))}/__init__.py`, root)
       return init ? [init] : []
     })
-    return [...packages, module].map(real => ({ real, language: 'python' as const }))
+    const main = input.main && module.endsWith('__init__.py') ? fileAt(input.view, `./${path}/__main__.py`, root) : null
+    return [...packages, module, ...(main ? [main] : [])].map(real => ({ real, language: 'python' as const }))
   }
   return []
 }

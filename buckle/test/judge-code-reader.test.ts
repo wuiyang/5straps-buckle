@@ -88,6 +88,13 @@ describe('the code a Python call runs', () => {
     expect(reading(read(['python3', '-c', 'import tools; tools.run()']))).toMatchObject({ inline: 'import tools; tools.run()', files: [{ path: '/workspace/tools.py' }] })
   })
 
+  it('reads the module python -m runs, with its package\'s __main__.py, and names one it cannot find as a package', () => {
+    const { read } = workspace({ 'tools/__init__.py': '', 'tools/gen.py': 'import os\n', 'app/__init__.py': '', 'app/__main__.py': 'import json\n', 'data.txt': 'x\n' })
+    expect(reading(read(['python3', '-m', 'tools.gen']))).toMatchObject({ files: [{ path: '/workspace/tools/__init__.py' }, { path: '/workspace/tools/gen.py' }], packages: ['os'] })
+    expect(reading(read(['python3', '-m', 'app'])).files.map(file => file.path)).toEqual(['/workspace/app/__init__.py', '/workspace/app/__main__.py'])
+    expect(reading(read(['python3', '-m', 'pytest', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: ['pytest'] })
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
