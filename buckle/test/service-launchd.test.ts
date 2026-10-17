@@ -103,6 +103,13 @@ describe('the launchd agent', () => {
     expect(() => renderAgent({ ...DEFINITION, path: '/usr/bin\u007f' })).toThrow(ServiceManagerError)
   })
 
+  // Fix brief 7, item 4: each of the five paths is guarded; a \r reads back as \n, and a C0 character is illegal in XML 1.0.
+  it.each(['node', 'main', 'environmentFile'] as const)('refuses a control character in the %s path', field => {
+    for (const character of ['\u0001', '\t', '\r']) {
+      expect(() => renderAgent({ ...DEFINITION, [field]: `/srv/x${character}y` }), JSON.stringify(character)).toThrow(new ServiceManagerError('A path the service would name holds a control character, so Buckle writes no agent for it'))
+    }
+  })
+
   it('reads an agent that does not say where its node lives as naming nothing, and numeric references as their characters', () => {
     expect(readAgent('<plist><dict><key>ProgramArguments</key><array><string>/usr/bin/node</string><string>/srv/main.js</string><string>serve</string></array></dict></plist>')).toEqual({ node: '/usr/bin/node', main: '/srv/main.js', stateDirectory: null, skipsOwnerOnlyCheck: false })
     expect(readAgent('<plist><dict><key>Label</key><string>com.5straps.buckle</string></dict></plist>')).toEqual({ node: null, main: null, stateDirectory: null, skipsOwnerOnlyCheck: false })
