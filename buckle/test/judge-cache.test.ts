@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
-import { JUDGE_CACHE_LIMIT, judgeCacheKey, judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
+import { JUDGE_CACHE_LIMIT, JUDGE_CACHE_TTL_MS, judgeCacheKey, judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import type { JudgeInput, JudgeProvider, JudgeVerdict } from '../common/types/ports/judge.js'
 import { runCli } from './support/cli.js'
@@ -66,6 +66,22 @@ describe('the judge cache file', () => {
     expect(held.entries[0]!.key).toBe(keys[1])
     expect(cache.get(keys[0]!)).toBeUndefined()
     expect(cache.get(keys.at(-1)!)).toMatchObject({ reasoning: 'newest' })
+  })
+
+  it('forgets a verdict 24 hours after it was given, and drops an expired one from the file', async () => {
+    const filePath = judgeCachePath(scratch())
+    let clock = Date.parse('2026-10-18T00:00:00.000Z')
+    const cache = openJudgeCache({ filePath, now: () => clock })
+    await cache.set('e'.repeat(64), verdict())
+    clock += JUDGE_CACHE_TTL_MS - 1
+    expect(cache.get('e'.repeat(64))).toEqual(verdict())
+    expect(openJudgeCache({ filePath, now: () => clock }).get('e'.repeat(64))).toEqual(verdict())
+    clock += 1
+    expect(cache.get('e'.repeat(64))).toBeUndefined()
+    expect(openJudgeCache({ filePath, now: () => clock }).get('e'.repeat(64))).toBeUndefined()
+    await cache.set('f'.repeat(64), verdict('later'))
+    const held = JSON.parse(readFileSync(filePath, 'utf8')) as { entries: Array<{ key: string }> }
+    expect(held.entries.map(entry => entry.key)).toEqual(['f'.repeat(64)])
   })
 
   it('reads a clear another process made, and a damaged file fails no call', async () => {

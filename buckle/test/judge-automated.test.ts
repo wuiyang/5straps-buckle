@@ -174,7 +174,7 @@ describe('a standard development script', () => {
 })
 
 describe('the verdict cache', () => {
-  it('answers the same command and code again without a request, until a file changes, the policy changes, or never across a restart', async () => {
+  it('answers the same command and code again without a request, until a file changes or the policy changes, and across a restart', async () => {
     const config = node()
     const judge = fakeJudge()
     const runtime = await runtimeOf(config, judge)

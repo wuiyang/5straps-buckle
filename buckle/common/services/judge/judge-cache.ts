@@ -8,6 +8,9 @@ import type { JudgeInput, JudgeProvider, JudgeVerdict } from '../../types/ports/
 /** The most verdicts a workspace keeps; past it the oldest is dropped (D91, addendum B). */
 export const JUDGE_CACHE_LIMIT = 1_000
 
+/** How long a verdict is kept (D91, addendum 2 D): an older one is a miss, and the file drops it at its next write. */
+export const JUDGE_CACHE_TTL_MS = 24 * 60 * 60 * 1_000
+
 const VerdictSchema = z.object({
   kind: z.literal('verdict'), level: z.enum(['safe', 'warning', 'danger']), confidence: z.number().min(0).max(1),
   reasoning: z.string(), model: z.string(), latencyMs: z.number().nonnegative(), promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
@@ -34,9 +37,9 @@ export function judgeCacheKey(input: { provider: JudgeProvider; model: string; p
 }
 
 /**
- * A workspace's kept verdicts, in memory and in judge-cache.json, so a restart keeps them; the file is read again
- * whenever another process changed it (`buckle workspace judge-cache clear`). Only a verdict is kept, never an
- * unavailable rating. A cache that cannot be read or written fails no call: the judge is asked again, and the owner's
+ * A workspace's kept verdicts, in memory and in judge-cache.json, so a restart keeps them, each for JUDGE_CACHE_TTL_MS
+ * from when it was given; the file is read again whenever another process changed it (`buckle workspace judge-cache
+ * clear`). Only a verdict is kept, never an unavailable rating. A cache that cannot be read or written fails no call: the judge is asked again, and the owner's
  * log says why once.
  */
 export interface JudgeCache {
@@ -46,15 +49,17 @@ export interface JudgeCache {
   clear(): Promise<number>
 }
 
-export function openJudgeCache(input: { filePath: string; lockDeadlineMs?: number }): JudgeCache {
+export function openJudgeCache(input: { filePath: string; lockDeadlineMs?: number; now?: () => number }): JudgeCache {
+  const now = input.now ?? Date.now
+  const fresh = (at: number) => now() - at < JUDGE_CACHE_TTL_MS
   const store = createJsonFileStore<CacheFile>({ filePath: input.filePath, schema: CacheFileSchema, fallback: { version: 1, entries: [] }, ...(input.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: input.lockDeadlineMs }) })
   let loadedVersion: string | undefined
-  let memory = new Map<string, JudgeVerdict>()
-  const load = (): Map<string, JudgeVerdict> => {
+  let memory = new Map<string, { verdict: JudgeVerdict; at: number }>()
+  const load = (): Map<string, { verdict: JudgeVerdict; at: number }> => {
     const version = fileVersion(input.filePath)
     if (version === loadedVersion) return memory
     try {
-      memory = new Map(store.read().entries.map(entry => [entry.key, entry.verdict]))
+      memory = new Map(store.read().entries.map(entry => [entry.key, { verdict: entry.verdict, at: Date.parse(entry.at) }] as const).filter(([, kept]) => fresh(kept.at)))
     } catch {
       memory = new Map()
     }
@@ -62,13 +67,17 @@ export function openJudgeCache(input: { filePath: string; lockDeadlineMs?: numbe
     return memory
   }
   return {
-    get: key => load().get(key),
+    get(key) {
+      const kept = load().get(key)
+      return kept && fresh(kept.at) ? kept.verdict : undefined
+    },
     async set(key, verdict) {
+      const at = now()
       try {
         await store.update((state) => {
-          state.entries = [...state.entries.filter(entry => entry.key !== key), { key, at: new Date().toISOString(), verdict }].slice(-JUDGE_CACHE_LIMIT)
+          state.entries = [...state.entries.filter(entry => entry.key !== key && fresh(Date.parse(entry.at))), { key, at: new Date(at).toISOString(), verdict }].slice(-JUDGE_CACHE_LIMIT)
         })
-        load().set(key, verdict)
+        load().set(key, { verdict, at })
       } catch (error) {
         logger.warn('The decision AI\'s verdict could not be kept; it is asked again next time', { error })
       }
