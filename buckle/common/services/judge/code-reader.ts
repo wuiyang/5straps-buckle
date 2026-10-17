@@ -1,0 +1,357 @@
+import { isUtf8 } from 'node:buffer'
+import { createHash } from 'node:crypto'
+import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
+import { dirname, join, relative } from 'pathe'
+import { withFileBeneath } from '../../adapters/beneath.js'
+import { baseCommand } from '../../domain/argv.js'
+import type { PathView } from '../../domain/path-view.js'
+import { isInside } from '../../domain/paths.js'
+import type { JudgeFile } from '../../types/ports/judge.js'
+import { resolveTarget } from '../invocation/real-path.js'
+
+/** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
+export const CODE_LIMITS = Object.freeze({ files: 50, bytes: 512 * 1_024 })
+
+/** Why the judge rates nothing: the code ran past CODE_LIMITS, or it runs a file nobody may read for it. */
+export const CODE_REFUSALS = Object.freeze({
+  truncated: 'the code closure exceeds what the judge reads',
+  unreadable: 'the code runs a file the agent cannot read without asking',
+  unnamed: 'the code runs a file the sandbox does not name',
+  binary: 'the code runs a file that is not text',
+  missing: 'the code imports a file that does not exist',
+})
+
+export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: string[] }
+export type CodeRead = { kind: 'read'; reading: CodeReading } | { kind: 'refused'; reason: string; truncated: boolean }
+
+/**
+ * How the reader reaches files: through the agent's own view and the checks its file tools make, so it reads nothing an
+ * agent could not read without asking, follows no link out of the workspace, and names every file as the sandbox does.
+ */
+export interface CodeView {
+  /**
+   * Where a name lands, a relative one from `base` (a real folder): the real regular file, `none` where it names no
+   * regular file, or `outside` where it lands beyond every place the agent's view reaches.
+   */
+  locate(name: string, base: string): Located
+  /** Whether the agent may read the real file without asking. */
+  readable(real: string): boolean
+  /** The file's bytes, opened beneath its parent and never through a link; null where it holds more than `limit` bytes. */
+  read(real: string, limit: number): Buffer | null
+  /** The file as the judge is shown it, or null where only a host path would name it. */
+  shown(real: string): string | null
+}
+
+export type Located = { real: string } | 'none' | 'outside'
+
+type Language = 'js' | 'python' | 'shell' | null
+
+/**
+ * The code an interpreter call runs, read for the judge (D91, addendum B): the code its command line hands the
+ * interpreter (`-c`, `-e`), every argument naming a regular file the agent may read, and every local file those import,
+ * transitively, each read once by its real path. JavaScript and TypeScript `import`, `export from`, `import()`, and
+ * `require()` of a path; Python `import` and `from import` of a module beside the file or under the working directory;
+ * shell `source` and `.`. A bare specifier is a third-party package, named and never read. Refused, so the call asks,
+ * past CODE_LIMITS, at a file the agent may not read or the sandbox does not name, at one that is not text, and at a
+ * local import naming nothing.
+ */
+export function readInterpreterCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+  const { view, cwd } = input
+  const inline: string[] = []
+  const packages = new Set<string>()
+  const queue: Array<{ real: string; language: Language }> = []
+  for (const [command = '', ...args] of input.forms) {
+    const program = programOf(command)
+    const read = argumentsOf(program, args)
+    inline.push(...read.inline)
+    for (const name of read.packages) packages.add(name)
+    const language = languageOfProgram(program)
+    // A word naming no file the view reaches is no script: the sandbox does not have it either.
+    for (const name of read.candidates) {
+      const located = view.locate(name, cwd)
+      if (typeof located === 'object') queue.push({ real: located.real, language })
+    }
+    for (const code of read.inline) {
+      const found = importsOf(language, code, { file: null, cwd, view, packages })
+      if (typeof found === 'string') return refused(found)
+      queue.push(...found)
+    }
+  }
+  const files: JudgeFile[] = []
+  const seen = new Set<string>()
+  let bytes = 0
+  while (queue.length > 0) {
+    const next = queue.shift()!
+    if (seen.has(next.real)) continue
+    seen.add(next.real)
+    if (files.length >= CODE_LIMITS.files) return refused(CODE_REFUSALS.truncated, true)
+    if (!view.readable(next.real)) return refused(CODE_REFUSALS.unreadable)
+    const path = view.shown(next.real)
+    if (path === null) return refused(CODE_REFUSALS.unnamed)
+    const buffer = view.read(next.real, CODE_LIMITS.bytes - bytes)
+    if (buffer === null) return refused(CODE_REFUSALS.truncated, true)
+    if (!isUtf8(buffer)) return refused(CODE_REFUSALS.binary)
+    bytes += buffer.length
+    const content = buffer.toString('utf8')
+    files.push({ path, sha256: createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length, content })
+    const language = languageOfFile(next.real, content) ?? next.language
+    const found = importsOf(language, content, { file: next.real, cwd, view, packages })
+    if (typeof found === 'string') return refused(found)
+    queue.push(...found)
+  }
+  return { kind: 'read', reading: { inline: inline.length > 0 ? inline.join('\n') : null, files, packages: [...packages].sort() } }
+}
+
+function refused(reason: string, truncated = false): CodeRead {
+  return { kind: 'refused', reason, truncated }
+}
+
+/** An interpreter's program, its version and build dropped: `python3.12` is python, `nodejs` node. */
+function programOf(command: string): string {
+  const name = baseCommand(command)
+  const match = /^(python|pypy|node|nodejs|deno|bun|perl|ruby|php|awk|gawk|mawk|nawk|lua|luajit|pwsh|powershell|tsx|ts-node|npx|pnpx|bunx|tcsh|csh|busybox|toybox)/.exec(name)
+  const program = match?.[1] ?? name
+  return program === 'nodejs' ? 'node' : program === 'pypy' ? 'python' : program
+}
+
+/** The flags after which the next word is code, by program; a `--flag=code` spelling counts too. */
+const INLINE_FLAGS: Readonly<Record<string, readonly string[]>> = {
+  python: ['-c'], node: ['-e', '--eval', '-p', '--print'], bun: ['-e', '--eval', '-p', '--print'], tsx: ['-e', '--eval', '-p', '--print'],
+  'ts-node': ['-e', '--eval', '-p', '--print'], deno: [], perl: ['-e', '-E'], ruby: ['-e'], php: ['-r'], lua: ['-e'], luajit: ['-e'],
+  pwsh: ['-c', '-Command', '-command'], powershell: ['-c', '-Command', '-command'], tcsh: ['-c'], csh: ['-c'], busybox: ['-c'], toybox: ['-c'],
+}
+const AWKS = new Set(['awk', 'gawk', 'mawk', 'nawk'])
+const RUNNERS = new Set(['npx', 'pnpx', 'bunx'])
+
+/**
+ * One interpreter invocation's words, read for the code they hand it: the code after an inline flag (and an awk
+ * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
+ * each a name that may be a file.
+ */
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; candidates: string[] } {
+  const inline: string[] = []
+  const packages: string[] = []
+  const candidates: string[] = []
+  const flags = INLINE_FLAGS[program] ?? []
+  const awkProgramFile = AWKS.has(program) && args.some(arg => arg === '-f' || arg.startsWith('-f'))
+  let awkProgram = AWKS.has(program) && !awkProgramFile
+  let runnerPackage = RUNNERS.has(program)
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1
+    if (flags.includes(word) && index + 1 < args.length) {
+      inline.push(args[++index]!)
+      continue
+    }
+    if (equals > 0 && flags.includes(word.slice(0, equals))) {
+      inline.push(word.slice(equals + 1))
+      continue
+    }
+    if (program === 'deno' && word === 'eval' && index + 1 < args.length) {
+      inline.push(args[++index]!)
+      continue
+    }
+    const positional = !word.startsWith('-')
+    if (awkProgram && positional) {
+      inline.push(word)
+      awkProgram = false
+      continue
+    }
+    if (runnerPackage && positional) {
+      packages.push(packageName(word))
+      runnerPackage = false
+      continue
+    }
+    candidates.push(word)
+    if (equals > 0) candidates.push(word.slice(equals + 1))
+  }
+  return { inline, packages, candidates }
+}
+
+/** A package as its name: `@scope/name` or `name`, without a version, a subpath, or a `node:` builtin's prefix kept apart. */
+function packageName(specifier: string): string {
+  const unversioned = specifier.replace(/^(@?[^@]+)@.*$/, '$1')
+  const parts = unversioned.split('/')
+  return unversioned.startsWith('@') ? parts.slice(0, 2).join('/') : parts[0]!
+}
+
+function languageOfProgram(program: string): Language {
+  if (program === 'python') return 'python'
+  if (['node', 'deno', 'bun', 'tsx', 'ts-node', 'npx', 'pnpx', 'bunx'].includes(program)) return 'js'
+  if (['tcsh', 'csh', 'busybox', 'toybox'].includes(program)) return 'shell'
+  return null
+}
+
+/** A file's language by its extension, else its shebang; null where neither names one. */
+function languageOfFile(real: string, content: string): Language {
+  if (/\.(?:[cm]?[jt]sx?)$/.test(real)) return 'js'
+  if (real.endsWith('.py')) return 'python'
+  if (/\.(?:sh|bash|zsh|ksh)$/.test(real)) return 'shell'
+  if (real.endsWith('.json')) return null
+  const shebang = /^#!.*?\b(python|node|bash|zsh|ksh|dash|sh)\b/.exec(content)
+  if (!shebang) return null
+  return shebang[1] === 'python' ? 'python' : shebang[1] === 'node' ? 'js' : 'shell'
+}
+
+type Found = Array<{ real: string; language: Language }>
+
+/**
+ * The local files one piece of code imports, by its language, each with the language it is read as; the bare
+ * specifiers are added to `packages`. A string where an import names a local file that does not exist.
+ */
+function importsOf(language: Language, code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+  if (language === 'js') return jsImports(code, place)
+  if (language === 'python') return pythonImports(code, place)
+  if (language === 'shell') return shellSources(code, place)
+  return []
+}
+
+const JS_SPECIFIERS = [
+  /\bimport\s+(?:[\w*{}\s,$]+?\s+from\s+)?['"]([^'"\n]+)['"]/g,
+  /\bexport\s+[\w*{}\s,$]+?\s+from\s+['"]([^'"\n]+)['"]/g,
+  /\bimport\(\s*['"]([^'"\n]+)['"]\s*\)/g,
+  /\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g,
+]
+const JS_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.json']
+/** A TypeScript project imports `./a.js` for the `./a.ts` it compiles to it. */
+const TS_SOURCES: Readonly<Record<string, readonly string[]>> = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] }
+
+function jsImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+  const found: Found = []
+  const base = place.file === null ? place.cwd : dirname(place.file)
+  for (const pattern of JS_SPECIFIERS) {
+    for (const [, specifier = ''] of code.matchAll(pattern)) {
+      if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
+        place.packages.add(packageName(specifier))
+        continue
+      }
+      const located = jsCandidates(specifier).map(name => place.view.locate(name, base))
+      const file = located.find(item => typeof item === 'object')
+      if (file) found.push({ real: file.real, language: null })
+      else return located.includes('outside') ? CODE_REFUSALS.unreadable : CODE_REFUSALS.missing
+    }
+  }
+  return found
+}
+
+function jsCandidates(specifier: string): string[] {
+  const extension = /\.[cm]?js$/.exec(specifier)?.[0]
+  const swapped = extension ? (TS_SOURCES[extension] ?? []).map(source => specifier.slice(0, -extension.length) + source) : []
+  return [specifier, ...swapped, ...JS_EXTENSIONS.map(ext => `${specifier}${ext}`), ...JS_EXTENSIONS.map(ext => `${specifier}/index${ext}`)]
+}
+
+const PYTHON_IMPORT = /^[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
+const PYTHON_FROM = /^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+\(?([\w\t ,*]+)/gm
+
+function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+  const found: Found = []
+  const beside = place.file === null ? place.cwd : dirname(place.file)
+  for (const [, list = ''] of code.matchAll(PYTHON_IMPORT)) {
+    for (const module of list.split(',').map(item => item.trim().split(/\s+/)[0]!).filter(Boolean)) {
+      const files = pythonModule({ module, roots: [beside, place.cwd], view: place.view })
+      if (files.length === 0) place.packages.add(module.split('.')[0]!)
+      found.push(...files)
+    }
+  }
+  for (const [, dots = '', module = '', names = ''] of code.matchAll(PYTHON_FROM)) {
+    const imported = names.split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
+    let roots = [beside, place.cwd]
+    if (dots.length > 0) {
+      let root = beside
+      for (let level = 1; level < dots.length; level++) root = dirname(root)
+      roots = [root]
+      // `from . import a`: each name is a module of the package; `from .m import a`: m is, and a may be one too.
+      for (const name of module === '' ? imported : [module]) {
+        const files = pythonModule({ module: name, roots, view: place.view })
+        if (files.length === 0) return CODE_REFUSALS.missing
+        found.push(...files)
+      }
+      if (module === '') continue
+    } else {
+      const files = pythonModule({ module, roots, view: place.view })
+      if (files.length === 0) {
+        place.packages.add(module.split('.')[0]!)
+        continue
+      }
+      found.push(...files)
+    }
+    // A name imported from a package may be a module of it, which runs on import too.
+    for (const name of imported) found.push(...pythonModule({ module: `${module}.${name}`, roots, view: place.view }))
+  }
+  return found
+}
+
+/** A dotted module's file under the first root that holds it, with every package `__init__.py` above it that runs on import. */
+function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView }): Found {
+  const parts = input.module.split('.').filter(Boolean)
+  for (const root of input.roots) {
+    const path = join(...parts)
+    const module = fileAt(input.view, `./${path}.py`, root) ?? fileAt(input.view, `./${path}/__init__.py`, root)
+    if (!module) continue
+    const packages = parts.slice(0, -1).flatMap((_, index) => {
+      const init = fileAt(input.view, `./${join(...parts.slice(0, index + 1))}/__init__.py`, root)
+      return init ? [init] : []
+    })
+    return [...packages, module].map(real => ({ real, language: 'python' as const }))
+  }
+  return []
+}
+
+const SHELL_SOURCE = /(?:^|[\n;&|(]|\bthen|\bdo|\belse)[ \t]*(?:source|\.)[ \t]+(['"]?)([^\s'";&|)]+)\1/g
+
+function shellSources(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+  const found: Found = []
+  for (const [, , name = ''] of code.matchAll(SHELL_SOURCE)) {
+    // A name an expansion supplies exists only once the shell runs; the judge reads the line that names it.
+    if (name.includes('$') || name.includes('`')) continue
+    const located = [place.view.locate(name, place.cwd), ...(place.file === null ? [] : [place.view.locate(name, dirname(place.file))])]
+    const file = located.find(item => typeof item === 'object')
+    if (file) found.push({ real: file.real, language: 'shell' })
+    else return located.includes('outside') ? CODE_REFUSALS.unreadable : CODE_REFUSALS.missing
+  }
+  return found
+}
+
+/** The real file a name lands on, or null where it lands on none. */
+function fileAt(view: CodeView, name: string, base: string): string | null {
+  const located = view.locate(name, base)
+  return typeof located === 'object' ? located.real : null
+}
+
+/**
+ * The reader's view through a workspace's paths: a name lands where the agent's own view resolves it, followed to the
+ * file it reaches as a file tool's would be; `canRead` is the permission rules' answer for a read there with no grant,
+ * and the bytes are read beneath their folder, never through a link, refusing a hard link onto Buckle's state.
+ */
+export function createCodeView(input: { paths: PathView; canRead: (real: string) => boolean; protectedRoots: readonly string[] }): CodeView {
+  const { paths } = input
+  return {
+    locate(name, base) {
+      let named: string
+      try { named = name.startsWith('/') ? paths.resolve(name) : paths.resolve(join(base, name)) } catch { return 'outside' }
+      try {
+        const real = resolveTarget(named, { shares: paths.shares })
+        return statSync(real).isFile() ? { real } : 'none'
+      } catch {
+        return 'none'
+      }
+    },
+    readable: input.canRead,
+    read(real, limit) {
+      return withFileBeneath(real, { flags: constants.O_RDONLY, protectedRoots: input.protectedRoots, roots: paths.reachableRoots }, (descriptor) => {
+        if (fstatSync(descriptor).size > limit) return null
+        return readFileSync(descriptor)
+      })
+    },
+    shown(real) {
+      if (isInside(paths.root, real)) return joinShown(paths.mount ?? '/workspace', relative(paths.root, real))
+      const mount = paths.mountOf(real)
+      if (!mount || mount.target === mount.source) return null
+      return joinShown(mount.target, relative(mount.source, real))
+    },
+  }
+}
+
+function joinShown(target: string, rest: string): string {
+  return rest === '' ? target : `${target.replace(/\/$/, '')}/${rest}`
+}
