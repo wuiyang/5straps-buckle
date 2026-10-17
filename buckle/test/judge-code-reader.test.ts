@@ -119,10 +119,11 @@ describe('what the reader never reads', () => {
     expect(read(['node', 'app.mjs'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.unreadable })
   })
 
-  it('ignores a name outside the mount, which the sandbox does not have, and refuses a file the agent may not read without asking', () => {
+  it('refuses a script argument beyond every mount, and a file the agent may not read without asking', () => {
     const { base, read } = workspace({ '.env': 'TOKEN=x\n', 'app.mjs': "import './.env'\n" })
     writeFileSync(join(base, 'elsewhere.mjs'), 'export {}\n')
-    expect(reading(read(['node', join(base, 'elsewhere.mjs')])).files).toEqual([])
+    expect(read(['node', join(base, 'elsewhere.mjs')])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    expect(read(['python3', '../elsewhere.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
     expect(read(['node', 'app.mjs'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.unreadable })
   })
 

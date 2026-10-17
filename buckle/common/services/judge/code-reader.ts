@@ -52,8 +52,8 @@ type Language = 'js' | 'python' | 'shell' | null
  * transitively, each read once by its real path. JavaScript and TypeScript `import`, `export from`, `import()`, and
  * `require()` of a path; Python `import` and `from import` of a module beside the file or under the working directory;
  * shell `source` and `.`. A bare specifier is a third-party package, named and never read. Refused, so the call asks,
- * past CODE_LIMITS, at a file the agent may not read or the sandbox does not name, at one that is not text, and at a
- * local import naming nothing.
+ * past CODE_LIMITS, at an argument or a file beyond every place the agent's view reaches, at a file the agent may not
+ * read or the sandbox does not name, at one that is not text, and at a local import naming nothing.
  */
 export function readInterpreterCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
   const { view, cwd } = input
@@ -72,9 +72,11 @@ export function readInterpreterCode(input: { forms: readonly string[][]; cwd: st
       if (files.length === 0) packages.add(module.split('.')[0]!)
       queue.push(...files)
     }
-    // A word naming no file the view reaches is no script: the sandbox does not have it either.
+    // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
+    // judge cannot see, so the call asks.
     for (const name of read.candidates) {
       const located = view.locate(name, cwd)
+      if (located === 'outside') return refused(CODE_REFUSALS.unreadable)
       if (typeof located === 'object') queue.push({ real: located.real, language })
     }
     for (const code of read.inline) {
