@@ -2,7 +2,7 @@ import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
 import { sealForRings } from '../../services/approvals/approval-envelope.js'
 import { shownCall, type AskedCall } from '../../services/approvals/approval-registry.js'
-import { approveCommand, reviewCommand, workspaceLabel } from '../../domain/approval-instruction.js'
+import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel, type JudgeNote } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
@@ -39,7 +39,7 @@ export function createWebhookNotifier(options: WebhookNotifierOptions) {
   return async (requests: ApprovalRequest[], recorded?: AskedCall): Promise<void> => {
     // Owner default D19: only the paired Rings key receives the whole call.
     const call = options.approvalKey ? shownCall(recorded) : undefined
-    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options)), ...(recorded?.description === null || recorded?.description === undefined ? {} : { description: recorded.description }), ...(call ? { call } : {}) })
+    const response = await postSealed(options, { approvals: requests.map(request => describe(request, options, recorded?.judge)), ...(recorded?.description === null || recorded?.description === undefined ? {} : { description: recorded.description }), ...(call ? { call } : {}) })
     if (!response.ok) logger.warn('Approval webhook refused the notification', { status: response.status })
   }
 }
@@ -77,8 +77,9 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
  * One ask as a relay is told of it. `reviewCommand` comes before `approveCommand`: a person reads the whole
  * action with `buckle approvals` first, and `buckle approve` shows it again before it decides (owner decision D17).
  */
-function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions, 'workspaceId' | 'workspaceName'>) {
+function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions, 'workspaceId' | 'workspaceName'>, notes: readonly JudgeNote[] | undefined) {
   const { workspaceId, workspaceName } = options
+  const judge = judgeOf({ request, notes, workspaceId, ...(workspaceName ? { workspaceName } : {}) })
   return {
     token: request.token,
     tool: request.tool,
@@ -92,5 +93,18 @@ function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions
     workspace: workspaceLabel(workspaceId, workspaceName),
     reviewCommand: reviewCommand({ workspaceId, ...(workspaceName ? { workspaceName } : {}) }),
     approveCommand: approveCommand({ request, workspaceId, ...(workspaceName ? { workspaceName } : {}) }),
+    ...(judge === undefined ? {} : { judge }),
   }
+}
+
+/**
+ * What the decision AI said of one ask's command, as a relay is told it (D91): the verdict, why there is none, or, where
+ * the judge rates on request, the command that asks it. A field of Buckle's own beside the protocol's request.
+ */
+function judgeOf(input: { request: ApprovalRequest; notes: readonly JudgeNote[] | undefined; workspaceId: string; workspaceName?: string }) {
+  const note = judgeNoteFor(input.notes, input.request)
+  if (note === undefined) return undefined
+  if ('level' in note) return { level: note.level, confidence: note.confidence, model: note.model, reasoning: note.reasoning }
+  if ('unavailable' in note) return { unavailable: note.unavailable }
+  return { onRequest: true, command: judgeCommand(input) }
 }

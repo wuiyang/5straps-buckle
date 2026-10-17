@@ -9,7 +9,7 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
 import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -524,7 +524,7 @@ function printWaiting(input: { runtime: BuckleRuntime; waiting: PendingAsk[]; no
       ? [`  ${RECORDED_BEFORE_NOTE}`]
       : earlier !== undefined
         ? [`  ${sameCallNote(earlier)}`]
-        : describeAction({ node: input.node, workspace: workspaceLabel(runtime.workspaceId, runtime.workspaceName()), rule: request.rule, subject: request.subject, reason: request.reason, ...shown })
+        : describeAction({ node: input.node, workspace: workspaceLabel(runtime.workspaceId, runtime.workspaceName()), rule: request.rule, subject: request.subject, reason: request.reason, ...shown, ...judgeOfAsk({ call, request, runtime }) })
     if (shown && callRef !== undefined && earlier === undefined) shownWith.set(callRef, request.token)
     process.stdout.write(`${action.map(line => `  ${line}`).join('\n')}\n`)
   }
@@ -613,6 +613,12 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   }
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}\n`)
   return { exitCode: 0 }
+}
+
+/** The decision AI's line for a waiting ask, where its call carries a note about its command (D91). */
+function judgeOfAsk(input: { call: PendingAsk['call']; request: PendingAsk['request']; runtime: BuckleRuntime }): { judge?: string } {
+  const note = judgeNoteFor(input.call?.judge, input.request)
+  return note === undefined ? {} : { judge: judgeLine(note, { token: input.request.token, ...named(input.runtime) }) }
 }
 
 /** The workspace a printed command names: by its name (D85, Q15), beside the id the listing carries. */

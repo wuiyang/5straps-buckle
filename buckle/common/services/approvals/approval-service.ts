@@ -5,7 +5,7 @@ import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
-import { approveCommand } from '../../domain/approval-instruction.js'
+import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { logger, withoutCause } from '../../runtime/log.js'
@@ -700,11 +700,18 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
         ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
         approve: approveCommand({ request: approval, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
         ...(input.node === undefined ? {} : { node: input.node }),
+        ...judgeDetail({ approval, call, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
         ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),
       },
     },
     wait: questionWait(approval.expiresAt),
   }
+}
+
+/** The decision AI's line for one question (D91), where the call it came from carries a note about its command. */
+function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string }): { judge?: string } {
+  const note = judgeNoteFor(input.call?.judge, input.approval)
+  return note === undefined ? {} : { judge: judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }) }
 }
 
 /** A question lasts as long as its request: a terminal someone sits at, not the call's grace period. */

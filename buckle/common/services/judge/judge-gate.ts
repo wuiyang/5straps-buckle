@@ -11,6 +11,7 @@ import { isInside } from '../../domain/paths.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import { judgeable, judgePasses } from '../../domain/permission/judged.js'
 import type { JudgeAudit } from '../../types/ports/action-log.js'
+import type { JudgeNote } from '../../domain/approval-instruction.js'
 import type { Judge, JudgeInput, JudgeMode, JudgeProvider, JudgeResult } from '../../types/ports/judge.js'
 import { readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
@@ -129,6 +130,31 @@ export function createJudgeGate(input: {
       }))
     },
   }
+}
+
+/**
+ * The notes an ask's call keeps for its approvers (D91): in automated mode what the judge said of each command it rated
+ * and did not pass; on request, that each interpreter ask may be rated; nothing otherwise.
+ */
+export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly Ask[]; judged: readonly JudgedAsk[] }): JudgeNote[] {
+  const { gate } = input
+  if (!gate || gate.missing !== null) return []
+  const subjects = [...new Set(input.asks.filter(judgeable).map(ask => ask.subject))]
+  if (gate.mode === 'on-request') return subjects.map(subject => ({ subject, onRequest: true as const }))
+  if (gate.mode !== 'automated') return []
+  return input.judged.filter(item => subjects.includes(item.subject)).map(({ subject, result, model }): JudgeNote => result.kind === 'verdict'
+    ? { subject, level: result.level, confidence: result.confidence, model: model ?? result.model, reasoning: redactCredentials(result.reasoning, 'text') }
+    : { subject, unavailable: result.reason })
+}
+
+/**
+ * An ask as the agent is told of it once the judge rated its command and did not pass it (D91): its reason, then the
+ * level alone, or that there was no verdict; never the reasoning, which would show an agent how to steer the next rating.
+ */
+export function withJudgeReason(ask: Ask, judged: readonly JudgedAsk[]): Ask {
+  const rating = judgeable(ask) ? judged.find(item => item.subject === ask.subject) : undefined
+  if (!rating) return ask
+  return { ...ask, reason: `${ask.reason}; ${rating.result.kind === 'verdict' ? `the decision AI rated it ${rating.result.level}` : 'the decision AI gave no verdict'}` }
 }
 
 /** A gate for a workspace whose judge is off: it rates nothing, and reads no setting, file, or cache. */

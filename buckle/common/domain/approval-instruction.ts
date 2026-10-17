@@ -71,6 +71,39 @@ export function reviewCommand(input: NamedWorkspace): string {
 }
 
 /**
+ * The command that has the decision AI rate one waiting ask at the owner's request (D91, addendum C), in the workspace it
+ * waits in; with --approve-if-safe it approves the ask once where the verdict is safe at 0.8 or above.
+ */
+export function judgeCommand(input: NamedWorkspace & { request: { token: string } }): string {
+  return `buckle approvals judge ${input.request.token}${workspaceFlag(input)}`
+}
+
+/**
+ * What the decision AI said of an ask's command (D91), kept with the call the ask came from: a verdict, why it gave none,
+ * or, in a workspace whose judge rates on request, that it was not asked yet. The reasoning is the model's, with the
+ * credentials the display hides hidden.
+ */
+export type JudgeNote =
+  | { subject: string; level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; reasoning: string }
+  | { subject: string; unavailable: string }
+  | { subject: string; onRequest: true }
+
+/** The note about one ask, which only an interpreter ask at the destructive floor carries. */
+export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rule: string; subject: string }): JudgeNote | undefined {
+  return ask.rule === 'destructive_command' ? notes?.find(note => note.subject === ask.subject) : undefined
+}
+
+/**
+ * A note as one line beside the whole action (D91, brief item 4): `danger (0.92, claude-opus-5-5): <reasoning>`, why
+ * there is no verdict, or the command that asks for one. Every route passes it through printable() as it does the rest.
+ */
+export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
+  if ('level' in note) return `${note.level} (${note.confidence.toFixed(2)}, ${note.model}): ${note.reasoning}`
+  if ('unavailable' in note) return `no verdict: ${note.unavailable}`
+  return input.token === undefined ? 'not asked; the decision AI rates it on request' : `not asked; ${judgeCommand({ ...input, request: { token: input.token } })} asks it, and with --approve-if-safe approves a safe verdict once`
+}
+
+/**
  * What a person is told about a request that is waiting: what it wants, where it is waiting, how
  * long it stays answerable, the command that shows its whole action, and only then the command that
  * answers it (owner decision D17: a relayed line never stands in for the action). One home, because the
@@ -121,6 +154,8 @@ export interface ShownAction {
   cwd: string | null
   effects: readonly string[] | null
   arguments: JsonValue | null
+  /** What the decision AI said of the command, as judgeLine puts it (D91). */
+  judge?: string
 }
 
 /** A call as an approver shows it: the one the ask recorded whole (owner decision D17). */
@@ -129,6 +164,8 @@ export interface ShownCall {
   cwd: string
   description: string | null
   effects?: readonly string[]
+  /** What the decision AI said of the call's interpreter asks (D91). */
+  judge?: readonly JudgeNote[]
 }
 
 /** One waiting ask as an approver shows it: the request, and the whole call it recorded when there is one. */
@@ -144,6 +181,10 @@ export interface ShownAsk {
   node?: string
   /** Absent for an ask recorded before this build: it is shown with RECORDED_BEFORE_NOTE and never approved. */
   call?: ShownCall
+  /** Its token, which the command asking the decision AI names. */
+  token?: string
+  /** The decision AI's line, where a route has it already put (the serve terminal's question); else read from the call. */
+  judge?: string
 }
 
 /**
@@ -155,9 +196,11 @@ export function describeAsk(ask: ShownAsk): string[] {
   const { call } = ask
   if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
   const workspace = ask.workspaceId === undefined && ask.workspaceName === undefined ? undefined : workspaceLabel(ask.workspaceId ?? '', ask.workspaceName)
+  const note = judgeNoteFor(call.judge, ask)
+  const judge = ask.judge ?? (note === undefined ? undefined : judgeLine(note, ask))
   return [...head, ...describeAction({
     ...(ask.node === undefined ? {} : { node: ask.node }), ...(workspace === undefined ? {} : { workspace }), rule: ask.rule, subject: ask.subject, reason: ask.reason,
-    description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments,
+    description: call.description, cwd: call.cwd, effects: call.effects ?? null, arguments: call.arguments, ...(judge === undefined ? {} : { judge }),
   })]
 }
 
@@ -205,6 +248,7 @@ export function describeAction(action: ShownAction): string[] {
     `  rule:     ${printable(action.rule)}`,
     `  subject:  ${printable(action.subject)}`,
     `  reason:   ${printable(action.reason)}`,
+    ...(action.judge === undefined ? [] : [`  judge:    ${printable(action.judge)}`]),
     `  in:       ${action.cwd === null ? 'not recorded' : printable(action.cwd)}`,
     ...(action.effects === null ? ['  effects:  not recorded'] : action.effects.length === 0 ? ['  effects:  none'] : action.effects.map((effect, index) => `${index === 0 ? '  effects:  ' : '            '}${printable(effect)}`)),
     ...(shown === null ? ['  arguments: not recorded'] : ['  arguments:', ...shown.split('\n').map(line => `    ${printable(line)}`)]),

@@ -59,9 +59,16 @@ const fingerprint = { fingerprint: z.string().optional() }
 // arguments, the directory they resolve against, what it does in the node's words and the effects the rules
 // judged. `complete` marks a call recorded whole; an ask recorded before this build (with `truncated`, and
 // perhaps cut arguments) has none, so it is denied or joined by a re-send that records the whole call.
+// judge: what the decision AI said of the call's interpreter asks (D91), shown beside the action and never part of its digest.
+const judgeNoteSchema = z.union([
+  z.object({ subject: z.string(), level: z.enum(['safe', 'warning', 'danger']), confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string() }).strict(),
+  z.object({ subject: z.string(), unavailable: z.string() }).strict(),
+  z.object({ subject: z.string(), onRequest: z.literal(true) }).strict(),
+])
 const callSchema = z.object({
   arguments: JsonValueSchema, cwd: z.string(), description: z.string().nullable().default(null),
   effects: z.array(z.string()).optional(), complete: z.literal(true).optional(), truncated: z.boolean().optional(),
+  judge: z.array(judgeNoteSchema).optional(),
 })
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }

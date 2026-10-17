@@ -68,6 +68,7 @@ const QuestionDetailsSchema = z.object({
   scopes: z.string().transform(value => value.split(',')).pipe(z.array(GrantScopeSchema).min(1)),
   expiresAt: z.string(), workspace: z.string().optional(), workspaceName: z.string().optional(), node: z.string().optional(),
   arguments: jsonText(JsonValueSchema).optional(), cwd: z.string().optional(), description: z.string().optional(), effects: jsonText(z.array(z.string())).optional(),
+  judge: z.string().optional(),
 })
 
 /**
@@ -154,6 +155,7 @@ function approvalQuestion(request: CliRequest): ApprovalQuestion {
   return {
     tool: details.tool, rule: details.rule, subject: details.subject, reason: details.reason, offeredScopes: details.scopes, expiresAt: details.expiresAt,
     ...(details.workspace ? { workspaceId: details.workspace } : {}), ...(details.workspaceName ? { workspaceName: details.workspaceName } : {}), ...(details.node ? { node: details.node } : {}), ...(call ? { call } : {}),
+    ...(details.judge === undefined ? {} : { judge: details.judge }),
   }
 }
 

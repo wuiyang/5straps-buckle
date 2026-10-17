@@ -13,7 +13,7 @@ import { redactAuditArguments, reviewableArguments } from '../../domain/redact.j
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { judgeable, judgePasses, withJudged } from '../../domain/permission/judged.js'
-import { judgeAuditOf, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
+import { judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { CODE_REPLAY_DIVERGED, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
@@ -591,9 +591,11 @@ async function clearPermissions(input: {
   // The whole call as a person decides on it (owner decision D17): every argument, the directory, the node's
   // summary and the effects the rules judged, redacted and never cut. One too large is refused whole.
   // A script's call says so, and names the stage the audit log groups the script's calls under (owner decision D82).
-  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const }
+  // What the decision AI said, or that it rates on request, beside the whole action, and its level in the reason an agent reads (D91).
+  const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
+  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   const waited = await options.approvalService.request({
-    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks, signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
+    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withJudgeReason(ask, input.judgment.judged)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), fingerprint: input.key.fingerprint, call,
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
