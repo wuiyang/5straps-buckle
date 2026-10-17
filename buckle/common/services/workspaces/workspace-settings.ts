@@ -10,6 +10,7 @@ import { compilePolicy, PolicyError } from '../../domain/policy.js'
 import { browserBlockRefusal, DEFAULT_APPROVAL_WAIT_MS, type BrowserSettingNames, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
 import { compileCommandGlob } from '../../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../../types/ports/judge.js'
+import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../../types/ports/quick-judge.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
@@ -89,13 +90,18 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
 /**
  * Its decision AI (D91): `judge` says when it rates an interpreter call (off, on-request, or automated), `judgeProvider`
  * and `judgeModel` which model rates it (Buckle's own: an OpenAI-compatible endpoint and gpt-6-luna), and `judgeStandardScripts` the commands rated on
- * their command line alone. None holds a credential: the key and a base URL are the node's alone.
+ * their command line alone; `quickJudge` which calls the optional quick stage rates (off, interpreters, asks, or all),
+ * with `quickJudgeProvider` and `quickJudgeModel` (Buckle's own: TypeSafe's jev-latest). None holds a credential: the
+ * keys and base URLs are the node's alone.
  */
 const ApprovalSchema = z.object({
   judge: z.enum(JUDGE_MODES).optional(),
   judgeProvider: z.enum(JUDGE_PROVIDERS).optional(),
   judgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
   judgeStandardScripts: z.array(StandardScriptSchema).max(200).optional(),
+  quickJudge: z.enum(QUICK_JUDGE_SCOPES).optional(),
+  quickJudgeProvider: z.enum(QUICK_JUDGE_PROVIDERS).optional(),
+  quickJudgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
 }).strict()
 
 /**
@@ -264,7 +270,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
-  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS }),
+  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -290,6 +296,9 @@ export interface ResolvedApproval {
   judgeProvider: JudgeProvider
   judgeModel: string
   judgeStandardScripts: readonly string[]
+  quickJudge: QuickJudgeScope
+  quickJudgeProvider: QuickJudgeProvider
+  quickJudgeModel: string
 }
 
 /** A deny-type list in force, entry by entry: the node's floor, and the workspace's own beside it. */
@@ -374,6 +383,9 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
       judgeProvider: pick('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, BUILT_IN_SETTINGS.approval.judgeProvider),
       judgeModel: pick('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, BUILT_IN_SETTINGS.approval.judgeModel),
       judgeStandardScripts: pick('approval.judgeStandardScripts', stored.approval.judgeStandardScripts, node.approval.judgeStandardScripts, BUILT_IN_SETTINGS.approval.judgeStandardScripts),
+      quickJudge: pick('approval.quickJudge', stored.approval.quickJudge, node.approval.quickJudge, BUILT_IN_SETTINGS.approval.quickJudge),
+      quickJudgeProvider: pick('approval.quickJudgeProvider', stored.approval.quickJudgeProvider, undefined, BUILT_IN_SETTINGS.approval.quickJudgeProvider),
+      quickJudgeModel: pick('approval.quickJudgeModel', stored.approval.quickJudgeModel, node.approval.quickJudgeModel, BUILT_IN_SETTINGS.approval.quickJudgeModel),
     },
     env: { ...node.env, ...stored.env },
     sources,

@@ -222,6 +222,9 @@ function show(context: Context): CliResult {
     ['approval.judgeProvider', inForce.approval.judgeProvider, inForce.sources['approval.judgeProvider']!],
     ['approval.judgeModel', inForce.approval.judgeModel, inForce.sources['approval.judgeModel']!],
     ['approval.judgeStandardScripts', inForce.approval.judgeStandardScripts.length === 0 ? '(none)' : inForce.approval.judgeStandardScripts.join(';;'), inForce.sources['approval.judgeStandardScripts']!],
+    ['approval.quickJudge', inForce.approval.quickJudge, inForce.sources['approval.quickJudge']!],
+    ['approval.quickJudgeProvider', inForce.approval.quickJudgeProvider, inForce.sources['approval.quickJudgeProvider']!],
+    ['approval.quickJudgeModel', inForce.approval.quickJudgeModel, inForce.sources['approval.quickJudgeModel']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]
   process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
@@ -354,13 +357,13 @@ async function settingKey(key: string, context: Pick<Context, 'config'>): Promis
 
 /**
  * A value holding one of this node's secrets never becomes a variable a command reads (no secret reaches a child
- * process): the admin and agent tokens, the forge token, the Brave key, the judge key and base URL, the Socket key and base URL, the Rings report token and pairing key, and the
+ * process): the admin and agent tokens, the forge token, the Brave key, the judge's and the quick stage's keys and base URLs, the Socket key and base URL, the Rings report token and pairing key, and the
  * approval webhook's URL, anywhere in the value, and a workspace's agent token as a word of it, which only its digest
  * can recognise (finding 26 of the Phase 1 review).
  */
 function credentialValueRefusal(context: Context, value: string): string | null {
   const { config } = context
-  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.judgeApiKey, config.judgeBaseUrl, config.socketApiKey, config.socketBaseUrl, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
+  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.judgeApiKey, config.judgeBaseUrl, config.socketApiKey, config.socketBaseUrl, config.quickJudgeApiKey, config.quickJudgeBaseUrl, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
     .flatMap(secret => (secret?.trim() ? [secret.trim()] : []))
   const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
   const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)

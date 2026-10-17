@@ -17,6 +17,7 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 
 const KEY = 'sk-judge-settings-fixture-0123456789'
 const SOCKET_KEY = 'sktsec_judge-settings-socket-0123456789'
+const QUICK_KEY = 'ts_judge-settings-quick-0123456789'
 const roots: string[] = []
 afterEach(() => { vi.restoreAllMocks(); configureRootLogger({}); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
@@ -37,7 +38,7 @@ describe('a workspace\'s decision AI settings', () => {
   it('are its own, else the node\'s, else off with an OpenAI-compatible endpoint, gpt-6-luna, and the built-in standard scripts, naming where each came from', () => {
     const unset = WorkspaceSettingsSchema.parse({ version: 1 })
     const builtIn = resolveSettings(unset, loadConfig({}).workspaceDefaults)
-    expect(builtIn.approval).toEqual({ judge: 'off', judgeProvider: 'openai-compatible', judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS })
+    expect(builtIn.approval).toEqual({ judge: 'off', judgeProvider: 'openai-compatible', judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off', quickJudgeProvider: 'typesafe', quickJudgeModel: 'jev-latest' })
     expect(builtIn.sources).toMatchObject({ 'approval.judge': 'built-in', 'approval.judgeProvider': 'built-in', 'approval.judgeModel': 'built-in', 'approval.judgeStandardScripts': 'built-in' })
     expect(STANDARD_SCRIPTS).toEqual(expect.arrayContaining(['npm run *', 'pnpm dev', 'npx vitest *', 'bunx tsc *']))
 
@@ -149,6 +150,20 @@ describe('buckle workspace set approval.*', () => {
     expect(output.out() + output.err()).not.toContain('gateway-secret-0123')
     await manager.close()
   })
+
+  it('are set per workspace, refusing a scope outside the four, and the quick key and base URL are the node\'s alone', async () => {
+    const { buckle, output, stored, manager } = await workspace({ BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY })
+    expect((await buckle(['set', 'approval.quickJudge', 'Asks'])).exitCode).toBe(0)
+    expect((await buckle(['set', 'approval.quickJudgeModel', 'jev-preview'])).exitCode).toBe(0)
+    expect(stored()).toEqual({ quickJudge: 'asks', quickJudgeModel: 'jev-preview' })
+    expect((await buckle(['set', 'approval.quickJudge', 'everything'])).exitCode).toBe(1)
+    expect(output.err()).toContain('approval.quickJudge is off, interpreters, asks, all')
+    expect((await buckle(['set', 'quick-judge-api-key', QUICK_KEY])).exitCode).toBe(1)
+    expect(output.err()).toContain('quick-judge-api-key is a node setting (BUCKLE_QUICK_JUDGE_API_KEY)')
+    expect((await buckle(['set', 'env.JEV', QUICK_KEY])).exitCode).toBe(1)
+    expect(output.out() + output.err()).not.toContain(QUICK_KEY)
+    await manager.close()
+  })
 })
 
 describe('the node\'s decision AI settings in buckle settings', () => {
@@ -196,6 +211,19 @@ describe('the node\'s decision AI settings in buckle settings', () => {
   })
 })
 
+describe('the quick stage\'s settings', () => {
+  it('are its own, else the node\'s, else off with TypeSafe\'s jev-latest, naming where each came from', () => {
+    const unset = WorkspaceSettingsSchema.parse({ version: 1 })
+    const node = loadConfig({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks', BUCKLE_APPROVAL_QUICK_JUDGE_MODEL: 'jev-preview' }).workspaceDefaults
+    expect(resolveSettings(unset, node)).toMatchObject({ approval: { quickJudge: 'asks', quickJudgeProvider: 'typesafe', quickJudgeModel: 'jev-preview' }, sources: { 'approval.quickJudge': 'node', 'approval.quickJudgeProvider': 'built-in', 'approval.quickJudgeModel': 'node' } })
+    const own = WorkspaceSettingsSchema.parse({ version: 1, approval: { quickJudge: 'all', quickJudgeProvider: 'typesafe', quickJudgeModel: 'jev-1.13.0' } })
+    expect(resolveSettings(own, node)).toMatchObject({ approval: { quickJudge: 'all', quickJudgeModel: 'jev-1.13.0' }, sources: { 'approval.quickJudge': 'workspace', 'approval.quickJudgeProvider': 'workspace', 'approval.quickJudgeModel': 'workspace' } })
+    expect(() => loadConfig({ BUCKLE_APPROVAL_QUICK_JUDGE: 'everything' })).toThrow('Invalid BUCKLE_APPROVAL_QUICK_JUDGE: off, interpreters, asks, all')
+    expect(() => WorkspaceSettingsSchema.parse({ version: 1, approval: { quickJudge: 'some' } })).toThrow()
+  })
+
+})
+
 describe('the judge key and base URL', () => {
   it('are read from the node\'s environment alone, with Socket\'s', () => {
     expect(loadConfig({ BUCKLE_SOCKET_API_KEY: SOCKET_KEY, BUCKLE_SOCKET_BASE_URL: 'http://127.0.0.1:9' })).toMatchObject({ socketApiKey: SOCKET_KEY, socketBaseUrl: 'http://127.0.0.1:9' })
@@ -206,7 +234,9 @@ describe('the judge key and base URL', () => {
 
   it('never reach a program Buckle runs', () => {
     for (const platform of ['linux', 'darwin', 'win32'] as const) {
-      const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: 'https://gateway.test/v1', BUCKLE_SOCKET_API_KEY: SOCKET_KEY, BUCKLE_SOCKET_BASE_URL: 'http://127.0.0.1:9' }, extra: {}, platform })
+      const child = buildChildEnvironment({ parent: { PATH: '/usr/bin', BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: 'https://gateway.test/v1', BUCKLE_SOCKET_API_KEY: SOCKET_KEY, BUCKLE_SOCKET_BASE_URL: 'http://127.0.0.1:9', BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, BUCKLE_QUICK_JUDGE_BASE_URL: 'https://typesafe.test' }, extra: {}, platform })
+      expect(child).not.toHaveProperty('BUCKLE_QUICK_JUDGE_API_KEY')
+      expect(child).not.toHaveProperty('BUCKLE_QUICK_JUDGE_BASE_URL')
       expect(child).not.toHaveProperty('BUCKLE_JUDGE_API_KEY')
       expect(child).not.toHaveProperty('BUCKLE_JUDGE_BASE_URL')
       expect(child).not.toHaveProperty('BUCKLE_SOCKET_API_KEY')
@@ -218,11 +248,12 @@ describe('the judge key and base URL', () => {
     let text = ''
     const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { text += String(chunk); return true })
     try {
-      logger.warn('judge configured', { BUCKLE_JUDGE_API_KEY: KEY, judgeApiKey: KEY, BUCKLE_SOCKET_API_KEY: SOCKET_KEY, socketApiKey: SOCKET_KEY })
+      logger.warn('judge configured', { BUCKLE_JUDGE_API_KEY: KEY, judgeApiKey: KEY, BUCKLE_SOCKET_API_KEY: SOCKET_KEY, socketApiKey: SOCKET_KEY, BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, quickJudgeApiKey: QUICK_KEY })
       await flushLogs()
     } finally { spy.mockRestore() }
     expect(text).toContain('judge configured')
     expect(text).not.toContain(KEY)
     expect(text).not.toContain(SOCKET_KEY)
+    expect(text).not.toContain(QUICK_KEY)
   })
 })

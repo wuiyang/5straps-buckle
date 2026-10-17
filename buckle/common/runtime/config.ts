@@ -14,6 +14,7 @@ import { launchdGuardedPaths } from '../domain/launchd-agent.js'
 import { systemdGuardedPaths } from '../domain/systemd-unit.js'
 import { compileCommandGlob, CommandGlobError } from '../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../types/ports/judge.js'
+import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -89,6 +90,12 @@ export interface NodeConfig {
   socketApiKey?: string
   socketBaseUrl?: string
   /**
+   * The key and base URL the node asks the decision AI's quick stage with (D91, addendum 2 B): the node's alone. Absent
+   * key, the quick stage stays off in every workspace whatever approval.quickJudge says.
+   */
+  quickJudgeApiKey?: string
+  quickJudgeBaseUrl?: string
+  /**
    * The owner's forge credential. Absent withholds the forge pack, naming the variable, rather
    * than failing partway through a commit-push-review sequence.
    */
@@ -156,6 +163,10 @@ export interface BuckleConfig extends NodeConfig {
   approvalJudgeProvider: JudgeProvider
   approvalJudgeModel: string
   approvalJudgeStandardScripts: readonly string[]
+  /** Which calls the quick stage rates (approval.quickJudge), and the provider and model that rate them. */
+  approvalQuickJudge: QuickJudgeScope
+  approvalQuickJudgeProvider: QuickJudgeProvider
+  approvalQuickJudgeModel: string
   /**
    * Its browser (Phase 2 item 6, Q10): the owner's own Chrome over its DevTools port (browser.cdp), a profile folder kept
    * across launches (browser.profile, as the disk names it), Chromium arguments for a browser Buckle launches
@@ -255,6 +266,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     judgeBaseUrl: parseNodeUrl('BUCKLE_JUDGE_BASE_URL', environment.BUCKLE_JUDGE_BASE_URL),
     socketApiKey: environment.BUCKLE_SOCKET_API_KEY || undefined,
     socketBaseUrl: parseNodeUrl('BUCKLE_SOCKET_BASE_URL', environment.BUCKLE_SOCKET_BASE_URL),
+    quickJudgeApiKey: environment.BUCKLE_QUICK_JUDGE_API_KEY || undefined,
+    quickJudgeBaseUrl: parseNodeUrl('BUCKLE_QUICK_JUDGE_BASE_URL', environment.BUCKLE_QUICK_JUDGE_BASE_URL),
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
@@ -280,6 +293,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
+  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -364,7 +378,7 @@ export interface WorkspaceScope {
    */
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Its decision AI (D91). */
-  approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[] }
+  approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -393,8 +407,8 @@ export interface NodeDefaults {
   /** BUCKLE_SHELL_NETWORK and BUCKLE_SHELL_ISOLATION, where buckle.env names them. */
   shell: { network?: boolean; isolation?: boolean }
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
-  /** BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, where buckle.env names them (D91). */
-  approval: { judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[] }
+  /** BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, and BUCKLE_APPROVAL_QUICK_JUDGE and its _MODEL, where buckle.env names them (D91). */
+  approval: { judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
   env: Readonly<Record<string, string>>
 }
 
@@ -449,6 +463,10 @@ function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approva
   if (judge !== undefined && !(JUDGE_MODES as readonly string[]).includes(judge)) throw new Error(`Invalid BUCKLE_APPROVAL_JUDGE: ${JUDGE_MODES.join(', ')}`)
   if (judgeProvider !== undefined && !(JUDGE_PROVIDERS as readonly string[]).includes(judgeProvider)) throw new Error(`Invalid BUCKLE_APPROVAL_JUDGE_PROVIDER: ${JUDGE_PROVIDERS.join(' or ')}`)
   if (judgeModel !== undefined && !JUDGE_MODEL_NAME.test(judgeModel)) throw new Error('Invalid BUCKLE_APPROVAL_JUDGE_MODEL: a model name, with no blank')
+  const quickJudge = environment.BUCKLE_APPROVAL_QUICK_JUDGE || undefined
+  const quickJudgeModel = environment.BUCKLE_APPROVAL_QUICK_JUDGE_MODEL || undefined
+  if (quickJudge !== undefined && !(QUICK_JUDGE_SCOPES as readonly string[]).includes(quickJudge)) throw new Error(`Invalid BUCKLE_APPROVAL_QUICK_JUDGE: ${QUICK_JUDGE_SCOPES.join(', ')}`)
+  if (quickJudgeModel !== undefined && !JUDGE_MODEL_NAME.test(quickJudgeModel)) throw new Error('Invalid BUCKLE_APPROVAL_QUICK_JUDGE_MODEL: a model name, with no blank')
   const scripts = environment.BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS === undefined ? undefined : parsePatterns(environment.BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS)
   for (const glob of scripts ?? []) {
     try { compileCommandGlob(glob) } catch (error) {
@@ -459,6 +477,7 @@ function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approva
   return {
     ...defined('judge', judge as JudgeMode | undefined), ...defined('judgeProvider', judgeProvider as JudgeProvider | undefined),
     ...defined('judgeModel', judgeModel), ...defined('judgeStandardScripts', scripts),
+    ...defined('quickJudge', quickJudge as QuickJudgeScope | undefined), ...defined('quickJudgeModel', quickJudgeModel),
   }
 }
 
@@ -518,7 +537,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'env'>): WorkspaceFields {
   return {
@@ -530,6 +549,9 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     approvalJudgeProvider: scope.approval.judgeProvider,
     approvalJudgeModel: scope.approval.judgeModel,
     approvalJudgeStandardScripts: [...scope.approval.judgeStandardScripts],
+    approvalQuickJudge: scope.approval.quickJudge,
+    approvalQuickJudgeProvider: scope.approval.quickJudgeProvider,
+    approvalQuickJudgeModel: scope.approval.quickJudgeModel,
     // Each set, or unset, so a value the workspace takes away is gone from the next call's settings too.
     browserCdp: scope.browser.cdp,
     browserProfile: scope.browser.profile,

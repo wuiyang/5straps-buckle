@@ -864,7 +864,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
-    approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts] },
+    approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts], quickJudge: config.approvalQuickJudge, quickJudgeProvider: config.approvalQuickJudgeProvider, quickJudgeModel: config.approvalQuickJudgeModel },
     env: config.commandEnvironment,
   })
 }

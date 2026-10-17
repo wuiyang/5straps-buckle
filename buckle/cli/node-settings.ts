@@ -7,6 +7,7 @@ import { parseSandboxMounts } from '../common/domain/sandbox-mounts.js'
 import { browserBlockRefusal, parseApprovalTimeout, parseBrowserArgs, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
+import { QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 
 /**
  * The node settings `BUCKLE-D19` names: what the owner changes with `buckle settings` or answers in
@@ -17,7 +18,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
   /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
@@ -44,6 +45,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_APPROVAL_JUDGE', alias: 'approval-judge', kind: 'judge-mode', fallback: 'off', workspace: { key: 'approval.judge', change: 'buckle workspace set approval.judge off|on-request|automated' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_PROVIDER', alias: 'approval-judge-provider', kind: 'judge-provider', fallback: 'openai-compatible', workspace: { key: 'approval.judgeProvider', change: 'buckle workspace set approval.judgeProvider openai-compatible' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_MODEL', alias: 'approval-judge-model', kind: 'judge-model', fallback: 'gpt-6-luna', workspace: { key: 'approval.judgeModel', change: 'buckle workspace set approval.judgeModel <model>' } },
+  { key: 'BUCKLE_APPROVAL_QUICK_JUDGE', alias: 'approval-quick-judge', kind: 'quick-scope', fallback: 'off', workspace: { key: 'approval.quickJudge', change: 'buckle workspace set approval.quickJudge off|interpreters|asks|all' } },
+  { key: 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', alias: 'approval-quick-judge-model', kind: 'judge-model', fallback: 'jev-latest', workspace: { key: 'approval.quickJudgeModel', change: 'buckle workspace set approval.quickJudgeModel <model>' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS', alias: 'approval-judge-standard-scripts', kind: 'command-list', fallback: '(the built-in list: npm run *, pnpm dev, npx vitest *, and the rest)', workspace: { key: 'approval.judgeStandardScripts', change: 'buckle workspace set approval.judgeStandardScripts <globs separated by ;;>' } },
   // Every workspace's mounts where its own table holds none (Phase 2 item 1): writable without asking, at their own path.
   { key: 'BUCKLE_SCRATCH_ROOTS', alias: 'scratch-roots', kind: 'directory-list', fallback: '(none)', workspace: { key: 'mounts', change: 'buckle workspace mount add <folder>:<sandbox-path>' } },
@@ -86,6 +89,7 @@ const NODE_ONLY_WORDS: ReadonlyMap<string, string> = new Map([
   ['state-dir', 'BUCKLE_STATE_DIR'], ['stateDir', 'BUCKLE_STATE_DIR'], ['server-id', 'BUCKLE_SERVER_ID'], ['serverId', 'BUCKLE_SERVER_ID'],
   ['server-name', 'BUCKLE_SERVER_NAME'], ['serverName', 'BUCKLE_SERVER_NAME'], ['sandbox', 'BUCKLE_SANDBOX'], ['log-level', 'BUCKLE_LOG_LEVEL'],
   ['judge-api-key', 'BUCKLE_JUDGE_API_KEY'], ['judgeApiKey', 'BUCKLE_JUDGE_API_KEY'], ['judge-base-url', 'BUCKLE_JUDGE_BASE_URL'], ['judgeBaseUrl', 'BUCKLE_JUDGE_BASE_URL'],
+  ['quick-judge-api-key', 'BUCKLE_QUICK_JUDGE_API_KEY'], ['quickJudgeApiKey', 'BUCKLE_QUICK_JUDGE_API_KEY'], ['quick-judge-base-url', 'BUCKLE_QUICK_JUDGE_BASE_URL'], ['quickJudgeBaseUrl', 'BUCKLE_QUICK_JUDGE_BASE_URL'],
   ['socket-api-key', 'BUCKLE_SOCKET_API_KEY'], ['socketApiKey', 'BUCKLE_SOCKET_API_KEY'], ['socket-base-url', 'BUCKLE_SOCKET_BASE_URL'], ['socketBaseUrl', 'BUCKLE_SOCKET_BASE_URL'],
 ])
 
@@ -208,6 +212,8 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
       return (JUDGE_MODES as readonly string[]).includes(raw.toLowerCase()) ? { ok: true, value: raw.toLowerCase() } : refuse(`${input.setting.key} is ${JUDGE_MODES.join(', ')}`)
     case 'judge-provider':
       return (JUDGE_PROVIDERS as readonly string[]).includes(raw.toLowerCase()) ? { ok: true, value: raw.toLowerCase() } : refuse(`${input.setting.key} is ${JUDGE_PROVIDERS.join(' or ')}`)
+    case 'quick-scope':
+      return (QUICK_JUDGE_SCOPES as readonly string[]).includes(raw.toLowerCase()) ? { ok: true, value: raw.toLowerCase() } : refuse(`${input.setting.key} is ${QUICK_JUDGE_SCOPES.join(', ')}`)
     case 'judge-model':
       return JUDGE_MODEL_NAME.test(raw) ? { ok: true, value: raw } : refuse(`${input.setting.key} is a model name, with no blank, such as gpt-6-luna`)
     case 'browser-cdp': return parsed(input.setting, raw, () => parseBrowserCdp(raw))

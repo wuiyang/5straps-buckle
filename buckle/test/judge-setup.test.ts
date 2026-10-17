@@ -12,6 +12,7 @@ import { idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 // key it lacks, and never a value. The provider and model have built-in values (addendum 2 A).
 
 const KEY = 'sk-judge-setup-fixture-0123456789'
+const QUICK_KEY = 'ts-judge-setup-fixture-0123456789'
 const workspace = (name: string, approval: Record<string, unknown> = {}) => ({ name, settings: WorkspaceSettingsSchema.parse({ version: 1, approval }) })
 
 describe('the decision AI notice at start', () => {
@@ -26,7 +27,10 @@ describe('the decision AI notice at start', () => {
       config: loadConfig({ BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible' }),
       workspaces: [workspace('alpha', { judge: 'automated' }), workspace('beta', { judge: 'on-request', judgeModel: 'GPT-6-luna' }), workspace('gamma')],
     })
-    expect(notice).toBe('The decision AI is on but stays off until the node holds its key, in workspaces alpha (BUCKLE_JUDGE_API_KEY); beta (BUCKLE_JUDGE_API_KEY): the key goes in buckle.env by hand')
+    expect(notice).toBe('The decision AI is on, but a stage of it stays off until the node holds its key, in workspaces alpha (BUCKLE_JUDGE_API_KEY); beta (BUCKLE_JUDGE_API_KEY): each key goes in buckle.env by hand')
+    const quick = judgeSetupNotice({ config: loadConfig({ BUCKLE_JUDGE_API_KEY: KEY }), workspaces: [workspace('alpha', { judge: 'automated', quickJudge: 'asks' }), workspace('beta', { judge: 'off', quickJudge: 'all' })] })
+    expect(quick).toBe('The decision AI is on, but a stage of it stays off until the node holds its key, in workspace alpha (BUCKLE_QUICK_JUDGE_API_KEY): each key goes in buckle.env by hand')
+    expect(judgeSetupNotice({ config: loadConfig({ BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY }), workspaces: [workspace('alpha', { judge: 'automated', quickJudge: 'asks' })] })).toBeNull()
   })
 })
 
@@ -44,7 +48,7 @@ describe('buckle serve at start', () => {
     try {
       await serveHttp({ config, common: common as never, logger: logger as never, server: { middleware: (_request: unknown, response: { end(): void }) => response.end() } as never, write: () => {} })
       expect(logger.warn).toHaveBeenCalledTimes(1)
-      expect(logger.warn).toHaveBeenCalledWith('The decision AI is on but stays off until the node holds its key, in workspace alpha (BUCKLE_JUDGE_API_KEY): the key goes in buckle.env by hand')
+      expect(logger.warn).toHaveBeenCalledWith('The decision AI is on, but a stage of it stays off until the node holds its key, in workspace alpha (BUCKLE_JUDGE_API_KEY): each key goes in buckle.env by hand')
     } finally {
       for (const close of closers.reverse()) await close()
       await manager.close()

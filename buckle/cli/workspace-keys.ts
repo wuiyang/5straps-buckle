@@ -4,6 +4,7 @@ import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { compileCommandGlob, CommandGlobError } from '../common/domain/command-glob.js'
 import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
+import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 
 /**
  * A setting `buckle workspace set` and `unset` change, by its path in workspace.json. `set` gives the workspace a value
@@ -103,7 +104,7 @@ const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   unset: settings => withoutShell(settings, name),
 })
 
-type ApprovalKey = 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts'
+type ApprovalKey = 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts' | 'quickJudge' | 'quickJudgeProvider' | 'quickJudgeModel'
 
 /** The approval block with `name` taken out: unset, so the node's value stands for it. */
 function withoutApproval(settings: WorkspaceSettings, name: ApprovalKey): WorkspaceSettings {
@@ -165,6 +166,12 @@ export const SETTING_KEYS: readonly SettingKey[] = [
     return raw.trim()
   }),
   approval('judgeStandardScripts', 'command globs separated by ;;, rated on their command line alone; empty for none (the node\'s, else the built-in list)', standardScripts),
+  approval('quickJudge', `off, interpreters, asks, or all: which calls the quick stage rates first (the node's, else ${BUILT_IN_SETTINGS.approval.quickJudge})`, raw => oneOf('approval.quickJudge', QUICK_JUDGE_SCOPES, raw)),
+  approval('quickJudgeProvider', `typesafe: who rates them, with the node's quick key (Buckle's ${BUILT_IN_SETTINGS.approval.quickJudgeProvider})`, raw => oneOf('approval.quickJudgeProvider', QUICK_JUDGE_PROVIDERS, raw)),
+  approval('quickJudgeModel', `the quick stage's model (the node's, else ${BUILT_IN_SETTINGS.approval.quickJudgeModel})`, (raw) => {
+    if (!JUDGE_MODEL_NAME.test(raw.trim())) throw new SettingValueError('approval.quickJudgeModel is a model name, with no blank, such as jev-latest')
+    return raw.trim()
+  }),
   browser('idleTimeoutMs', `milliseconds an idle browser lives, ${BROWSER_IDLE_BOUNDS.min} to ${BROWSER_IDLE_BOUNDS.max} (Buckle's ${BUILT_IN_SETTINGS.browser.idleTimeoutMs})`, idleTimeout),
   browser('cdp', 'the DevTools port or URL of the owner\'s own Chrome to attach to (the node\'s BUCKLE_BROWSER_CDP, else none)', normalised(parseBrowserCdp), false),
   browser('profile', 'an absolute path to a profile folder kept across launches (the node\'s BUCKLE_BROWSER_PROFILE, else a fresh browser)', normalised(raw => parseBrowserProfile(raw, process.platform)), false),
