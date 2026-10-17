@@ -60,6 +60,7 @@
   "dependencies": {
     "@5straps/protocol": "workspace:*",
     "@5straps/runtime": "workspace:*",
+    "@anthropic-ai/sdk": "0.135.0",
     "@earendil-works/pi-codemode": "1.2.0",
     "@modelcontextprotocol/server": "^2.0.0",
     "h3": "2.0.1-rc.32",

@@ -1,0 +1,66 @@
+/**
+ * The decision AI (D91): a standard model the node asks to rate one interpreter invocation that the owner's policy
+ * admitted but Buckle cannot read as shell. It sees what this input holds and nothing else: the command as an approver
+ * sees it, the code it runs from the workspace's own files, the workspace's lists in force, where the command runs as
+ * the sandbox names it, and the mounts it can reach. No environment value, host path, or credential is part of it.
+ * Each provider is an adapter (adapters/judge/): Anthropic's API, or an OpenAI-compatible one.
+ */
+export interface Judge {
+  judge(input: JudgeInput, options: JudgeOptions): Promise<JudgeResult>
+}
+
+/** How one rating is asked: the model the workspace names (approval.judgeModel), and the caller's signal. */
+export interface JudgeOptions {
+  model: string
+  signal?: AbortSignal
+}
+
+/** One of the workspace's own files the code runs: a script the command names, or a local file one imports. */
+export interface JudgeFile {
+  /** As the sandbox names it, never a host path. */
+  path: string
+  sha256: string
+  bytes: number
+  content: string
+}
+
+export interface JudgeInput {
+  /** The command as an approver sees it: whole, quoted, and with the credentials the display hides hidden. */
+  command: string
+  /** Its words, each as the shown command shows it. */
+  argv: string[]
+  /** The interpreters the reading limit named: the programs the policy does not allow. */
+  interpreters: string[]
+  /** The code the command line hands the interpreter itself (`-c`, `-e`), or null. */
+  inline: string | null
+  /** The scripts the command names and every local file they import, transitively, each read once. */
+  files: JudgeFile[]
+  /** The third-party packages the code imports, by name alone: their code is not read. */
+  packages: string[]
+  /** Whether the code ran past what is read; a call whose code does is never rated, so a rated input says false. */
+  truncated: boolean
+  /** Whether the command is one of the owner's standard development scripts, rated on its command line alone. */
+  standardScript: boolean
+  /** The workspace's command lists in force, the node's floor included. */
+  policy: { allow: string[]; deny: string[]; destructive: string[]; allowedInterpreters: string[] }
+  /** The working directory as the sandbox names it: `/workspace`, or a folder inside it, never a host path. */
+  cwd: string
+  /** The places the command can reach, each as the sandbox names it, with its access. */
+  mounts: Array<{ target: string; access: 'read-write' | 'read-only' }>
+  /** The node's own summary of the call, as an approver reads it, when there is one. */
+  description: string | null
+}
+
+export type JudgeLevel = 'safe' | 'warning' | 'danger'
+
+export type JudgeResult =
+  | { kind: 'verdict'; level: JudgeLevel; confidence: number; reasoning: string; model: string; latencyMs: number; promptDigest: string }
+  /** No verdict: a timeout, the network, a refusal, an answer that is no verdict, an echo of another command, code past what is read, or no key. Never names a host path or a key. */
+  | { kind: 'unavailable'; reason: string }
+
+export type JudgeVerdict = Extract<JudgeResult, { kind: 'verdict' }>
+
+/** The judge of a node with none: every rating is unavailable. */
+export const nullJudge: Judge = {
+  judge: () => Promise.resolve({ kind: 'unavailable', reason: 'the judge is off' }),
+}
