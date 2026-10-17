@@ -33,10 +33,10 @@ function captured() {
 }
 
 describe('a workspace\'s decision AI settings', () => {
-  it('are its own, else the node\'s, else off with no provider or model and the built-in standard scripts, naming where each came from', () => {
+  it('are its own, else the node\'s, else off with an OpenAI-compatible endpoint, gpt-6-luna, and the built-in standard scripts, naming where each came from', () => {
     const unset = WorkspaceSettingsSchema.parse({ version: 1 })
     const builtIn = resolveSettings(unset, loadConfig({}).workspaceDefaults)
-    expect(builtIn.approval).toEqual({ judge: 'off', judgeStandardScripts: STANDARD_SCRIPTS })
+    expect(builtIn.approval).toEqual({ judge: 'off', judgeProvider: 'openai-compatible', judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS })
     expect(builtIn.sources).toMatchObject({ 'approval.judge': 'built-in', 'approval.judgeProvider': 'built-in', 'approval.judgeModel': 'built-in', 'approval.judgeStandardScripts': 'built-in' })
     expect(STANDARD_SCRIPTS).toEqual(expect.arrayContaining(['npm run *', 'pnpm dev', 'npx vitest *', 'bunx tsc *']))
 
@@ -84,8 +84,8 @@ describe('buckle workspace set approval.*', () => {
     const { buckle, output, stored, manager } = await workspace()
     await buckle(['show'])
     expect(output.out()).toMatch(/approval\.judge +off +built-in/)
-    expect(output.out()).toMatch(/approval\.judgeProvider +\(none: the judge stays off\) +built-in/)
-    expect(output.out()).toMatch(/approval\.judgeModel +\(none: the judge stays off\) +built-in/)
+    expect(output.out()).toMatch(/approval\.judgeProvider +openai-compatible +built-in/)
+    expect(output.out()).toMatch(/approval\.judgeModel +gpt-6-luna +built-in/)
     for (const [key, value] of [['approval.judge', 'On-Request'], ['approval.judgeProvider', 'openai-compatible'], ['approval.judgeModel', 'GPT-6-luna'], ['approval.judgeStandardScripts', 'npm test ;; npx vitest *']] as const) {
       expect((await buckle(['set', key, value])).exitCode, key).toBe(0)
     }
@@ -157,8 +157,8 @@ describe('the node\'s decision AI settings in buckle settings', () => {
     const shown = await settings(['show'])
     const defaults = shown.out.slice(shown.out.indexOf('Workspace defaults'))
     expect(defaults).toMatch(/approval-judge\s+BUCKLE_APPROVAL_JUDGE\s+off\s+default/)
-    expect(defaults).toMatch(/approval-judge-provider\s+BUCKLE_APPROVAL_JUDGE_PROVIDER\s+\(none: the judge stays off\)\s+default/)
-    expect(defaults).toMatch(/approval-judge-model\s+BUCKLE_APPROVAL_JUDGE_MODEL\s+\(none: the judge stays off\)\s+default/)
+    expect(defaults).toMatch(/approval-judge-provider\s+BUCKLE_APPROVAL_JUDGE_PROVIDER\s+openai-compatible\s+default/)
+    expect(defaults).toMatch(/approval-judge-model\s+BUCKLE_APPROVAL_JUDGE_MODEL\s+gpt-6-luna\s+default/)
     expect(defaults).toContain('BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS')
     expect(shown.out).toContain('BUCKLE_JUDGE_API_KEY (set, hidden)')
     expect(shown.out).toContain('BUCKLE_JUDGE_BASE_URL (set, hidden)')

@@ -138,19 +138,17 @@ describe('what the judge never rates', () => {
     expect(judge.judge).not.toHaveBeenCalled()
   })
 
-  it('anything in a workspace whose judge is on-request, or misses its provider, model, or key', async () => {
-    for (const environment of [{ BUCKLE_APPROVAL_JUDGE: 'on-request' }, { BUCKLE_APPROVAL_JUDGE_PROVIDER: '' }, { BUCKLE_APPROVAL_JUDGE_MODEL: '' }]) {
-      const judge = fakeJudge()
-      const runtime = await runtimeOf(node(environment), judge)
-      const { response, entry } = await call(runtime, 'python3', ['job.py'])
-      expect(response, JSON.stringify(environment)).toMatchObject({ outcome: 'approval_required' })
-      expect(judge.judge).not.toHaveBeenCalled()
-      expect(entry.judge).toBeUndefined()
-    }
+  it('anything in a workspace whose judge is on-request, or whose node holds no key', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_JUDGE: 'on-request' }), judge)
+    const { response, entry } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(entry.judge).toBeUndefined()
     // No key and no judge handed in: nothing is asked of any provider.
     const fetch = vi.spyOn(globalThis, 'fetch')
-    const runtime = await runtimeOf(node())
-    expect((await call(runtime, 'python3', ['job.py'])).response).toMatchObject({ outcome: 'approval_required' })
+    const keyless = await runtimeOf(node())
+    expect((await call(keyless, 'python3', ['job.py'])).response).toMatchObject({ outcome: 'approval_required' })
     expect(fetch).not.toHaveBeenCalled()
   })
 

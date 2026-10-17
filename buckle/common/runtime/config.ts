@@ -146,8 +146,8 @@ export interface BuckleConfig extends NodeConfig {
    * no default of Buckle's own, and the commands it rates on their command line alone (approval.judgeStandardScripts).
    */
   approvalJudge: JudgeMode
-  approvalJudgeProvider?: JudgeProvider | undefined
-  approvalJudgeModel?: string | undefined
+  approvalJudgeProvider: JudgeProvider
+  approvalJudgeModel: string
   approvalJudgeStandardScripts: readonly string[]
   /**
    * Its browser (Phase 2 item 6, Q10): the owner's own Chrome over its DevTools port (browser.cdp), a profile folder kept
@@ -355,7 +355,7 @@ export interface WorkspaceScope {
    */
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Its decision AI (D91). */
-  approval: { judge: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts: readonly string[] }
+  approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[] }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -517,7 +517,6 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     mounts: scope.mounts.map(mount => ({ ...mount })),
     shellNetwork: scope.shell.network,
     isolateShell: scope.shell.isolation,
-    // Each set, or unset, so a provider or model the workspace takes away is gone from the next call's settings too.
     approvalJudge: scope.approval.judge,
     approvalJudgeProvider: scope.approval.judgeProvider,
     approvalJudgeModel: scope.approval.judgeModel,

@@ -159,9 +159,9 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
   // The decision AI (D91): the node's BUCKLE_APPROVAL_JUDGE and its kin stand where these are unset.
   approval('judge', `off, on-request, or automated: whether the decision AI rates an interpreter call, when the owner asks or at each call (the node's, else ${BUILT_IN_SETTINGS.approval.judge})`, raw => oneOf('approval.judge', JUDGE_MODES, raw)),
-  approval('judgeProvider', 'openai-compatible: who rates it, with the node\'s key (the node\'s, else none: the judge stays off)', raw => oneOf('approval.judgeProvider', JUDGE_PROVIDERS, raw)),
-  approval('judgeModel', 'the model that rates it, such as claude-opus-5-5 (the node\'s, else none: the judge stays off)', (raw) => {
-    if (!JUDGE_MODEL_NAME.test(raw.trim())) throw new SettingValueError('approval.judgeModel is a model name, with no blank, such as claude-opus-5-5')
+  approval('judgeProvider', `openai-compatible: who rates it, with the node's key (the node's, else ${BUILT_IN_SETTINGS.approval.judgeProvider})`, raw => oneOf('approval.judgeProvider', JUDGE_PROVIDERS, raw)),
+  approval('judgeModel', `the model that rates it, as the endpoint names it (the node's, else ${BUILT_IN_SETTINGS.approval.judgeModel})`, (raw) => {
+    if (!JUDGE_MODEL_NAME.test(raw.trim())) throw new SettingValueError('approval.judgeModel is a model name, with no blank, such as gpt-6-luna')
     return raw.trim()
   }),
   approval('judgeStandardScripts', 'command globs separated by ;;, rated on their command line alone; empty for none (the node\'s, else the built-in list)', standardScripts),

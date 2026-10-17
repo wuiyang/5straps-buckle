@@ -88,7 +88,7 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
 
 /**
  * Its decision AI (D91): `judge` says when it rates an interpreter call (off, on-request, or automated), `judgeProvider`
- * and `judgeModel` which model rates it, with no default of Buckle's own, and `judgeStandardScripts` the commands rated on
+ * and `judgeModel` which model rates it (Buckle's own: an OpenAI-compatible endpoint and gpt-6-luna), and `judgeStandardScripts` the commands rated on
  * their command line alone. None holds a credential: the key and a base URL are the node's alone.
  */
 const ApprovalSchema = z.object({
@@ -264,7 +264,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
-  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeStandardScripts: STANDARD_SCRIPTS }),
+  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -284,11 +284,11 @@ export interface ResolvedSettings {
   sources: Readonly<Record<string, SettingSource>>
 }
 
-/** A workspace's decision AI in force (D91): no provider or model of Buckle's own, so the judge is off until both are named. */
+/** A workspace's decision AI in force (D91): Buckle's own provider and model stand where neither the workspace nor the node names one. */
 export interface ResolvedApproval {
   judge: JudgeMode
-  judgeProvider?: JudgeProvider
-  judgeModel?: string
+  judgeProvider: JudgeProvider
+  judgeModel: string
   judgeStandardScripts: readonly string[]
 }
 
@@ -371,8 +371,8 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     browser,
     approval: {
       judge: pick('approval.judge', stored.approval.judge, node.approval.judge, BUILT_IN_SETTINGS.approval.judge),
-      ...defined('judgeProvider', pick<JudgeProvider | undefined>('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, undefined)),
-      ...defined('judgeModel', pick<string | undefined>('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, undefined)),
+      judgeProvider: pick('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, BUILT_IN_SETTINGS.approval.judgeProvider),
+      judgeModel: pick('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, BUILT_IN_SETTINGS.approval.judgeModel),
       judgeStandardScripts: pick('approval.judgeStandardScripts', stored.approval.judgeStandardScripts, node.approval.judgeStandardScripts, BUILT_IN_SETTINGS.approval.judgeStandardScripts),
     },
     env: { ...node.env, ...stored.env },

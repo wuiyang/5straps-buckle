@@ -300,9 +300,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // The decision AI's kept verdicts (D91), in this workspace's own state directory, and one judge per provider named.
   const judgeCache = openJudgeCache({ filePath: judgeCachePath(config.stateDirectory), lockDeadlineMs })
   const providerJudges = new Map<JudgeProvider, Judge>()
-  const judgeOf = (provider: JudgeProvider | undefined): Judge | null => {
+  const judgeOf = (provider: JudgeProvider): Judge | null => {
     if (input.judge) return input.judge
-    if (provider === undefined || !config.judgeApiKey) return null
+    if (!config.judgeApiKey) return null
     const known = providerJudges.get(provider) ?? createProviderJudge({ provider, apiKey: config.judgeApiKey, ...(config.judgeBaseUrl ? { baseUrl: config.judgeBaseUrl } : {}) })
     providerJudges.set(provider, known)
     return known
@@ -855,7 +855,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
-    approval: { judge: config.approvalJudge, ...(config.approvalJudgeProvider ? { judgeProvider: config.approvalJudgeProvider } : {}), ...(config.approvalJudgeModel ? { judgeModel: config.approvalJudgeModel } : {}), judgeStandardScripts: [...config.approvalJudgeStandardScripts] },
+    approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts] },
     env: config.commandEnvironment,
   })
 }

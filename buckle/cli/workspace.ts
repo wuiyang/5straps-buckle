@@ -217,8 +217,8 @@ function show(context: Context): CliResult {
     ['browser.args', inForce.browser.args ?? '(none)', inForce.sources['browser.args']!],
     ['browser.headed', onOff(inForce.browser.headed), inForce.sources['browser.headed']!],
     ['approval.judge', inForce.approval.judge, inForce.sources['approval.judge']!],
-    ['approval.judgeProvider', inForce.approval.judgeProvider ?? '(none: the judge stays off)', inForce.sources['approval.judgeProvider']!],
-    ['approval.judgeModel', inForce.approval.judgeModel ?? '(none: the judge stays off)', inForce.sources['approval.judgeModel']!],
+    ['approval.judgeProvider', inForce.approval.judgeProvider, inForce.sources['approval.judgeProvider']!],
+    ['approval.judgeModel', inForce.approval.judgeModel, inForce.sources['approval.judgeModel']!],
     ['approval.judgeStandardScripts', inForce.approval.judgeStandardScripts.length === 0 ? '(none)' : inForce.approval.judgeStandardScripts.join(';;'), inForce.sources['approval.judgeStandardScripts']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]

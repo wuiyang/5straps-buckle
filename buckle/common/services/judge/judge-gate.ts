@@ -38,8 +38,8 @@ export interface JudgeGate {
 
 export interface JudgeSettings {
   mode: JudgeMode
-  provider?: JudgeProvider | undefined
-  model?: string | undefined
+  provider: JudgeProvider
+  model: string
   standardScripts: readonly string[]
 }
 
@@ -61,10 +61,7 @@ export function createJudgeGate(input: {
   cache: JudgeCache
 }): JudgeGate {
   const { settings, paths } = input
-  const missing = settings.mode === 'off' ? null
-    : settings.provider === undefined ? 'approval.judgeProvider'
-      : settings.model === undefined ? 'approval.judgeModel'
-        : input.judge === null ? 'BUCKLE_JUDGE_API_KEY' : null
+  const missing = settings.mode !== 'off' && input.judge === null ? 'BUCKLE_JUDGE_API_KEY' : null
   const standard = settings.standardScripts.map(glob => compileCommandGlob(glob))
   const lists = {
     allow: [...input.policy.commands.allow], deny: [...input.policy.commands.deny],
@@ -113,10 +110,9 @@ export function createJudgeGate(input: {
     async rate(call) {
       const subjects = [...new Set(call.asks.filter(judgeable).map(ask => ask.subject))]
       return Promise.all(subjects.map(async (subject): Promise<JudgedAsk> => {
-        const provider = settings.provider ?? null
-        const model = settings.model ?? null
+        const { provider, model } = settings
         const unavailable = (reason: string, shownInput: JudgeInput | null = null): JudgedAsk => ({ subject, provider, model, input: shownInput, result: { kind: 'unavailable', reason } })
-        if (missing !== null || provider === null || model === null || input.judge === null) return unavailable(`the judge is not set up: ${missing ?? 'approval.judge'} is missing`)
+        if (missing !== null || input.judge === null) return unavailable(`the judge is not set up: ${missing ?? 'approval.judge'} is missing`)
         const effect = call.effects.find((item): item is Extract<ResolvedEffect, { kind: 'exec' }> => item.kind === 'exec' && commandSubject(item.command, item.args) === subject)
         if (!effect) return unavailable('the command was not found in the call')
         const asked = shown(effect, call)
