@@ -3,7 +3,9 @@
 The build of `@5straps/buckle` bundles code from the packages below into its `.output` server.
 Each is published under the MIT License, whose text follows the list. Every other dependency
 is installed from npm and is not copied into this package. Each carries its own license file,
-except the code mode packages named below, whose notices this file keeps.
+except the code mode packages named below, whose notices this file keeps, and
+@ai-sdk/provider-utils 5.0.62, which the decision AI's AI SDK installs: its package.json declares the
+Apache License 2.0 (the Vercel AI SDK, github.com/vercel/ai) but its npm package ships no license file.
 
 | Package | Version | License | Copyright |
 |---|---|---|---|

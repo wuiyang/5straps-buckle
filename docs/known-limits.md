@@ -4,8 +4,9 @@ What Buckle, the approval and sandbox runtime on this machine, does not yet read
 handle, each with an example. [What stays unread](policy-03.md) covers reading commands in more
 depth, [part two](known-limits-02.md) the programs it starts itself,
 [part three](known-limits-03.md) code mode, the command line, and workspaces,
-[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser, and
-[part five](known-limits-05.md) running Buckle as a service.
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser,
+[part five](known-limits-05.md) running Buckle as a service, and [part six](known-limits-06.md) the
+decision AI.
 
 ## Reading commands
 
@@ -76,24 +77,3 @@ decision binds the whole call, whatever the display hides.
 - On Windows, a whole drive such as `D:\`, or a link to one, cannot be the workspace root, a
   scratch root, the state directory, or the client directory: `buckle init` run in `D:\`
   refuses.
-
-## The decision AI
-
-The [decision AI](judge.md), a model call the node makes with its own key, rates interpreter calls.
-
-- Its verdict is a model's judgement and can be wrong; in automated mode a `safe` at 0.8 runs
-  the call.
-- Prompt injection through the command, a comment, or a file it reads is bounded, not ruled out:
-  deny rules, the built-in floor, and the destructive list are never the judge's, and an answer
-  must echo the command exactly.
-- Third-party packages are named, never read: code in `node_modules` or `site-packages` runs
-  unseen.
-- Imports are read by their text: a computed `require(name)`, an `importlib` call, and the
-  imports of Perl, Ruby, PHP, or Lua code are not followed. Past 50 files or 512 KiB, the call asks.
-- Code a pipe or a here-string hands the interpreter is not read, as in `cat job.py | python3`: the
-  judge reads the shell text alone.
-- `npm`, `pnpm`, `yarn`, and `bun run` are not interpreters, so most standard scripts never reach it.
-- A kept verdict outlives a change to the model behind the same name until the cache is cleared.
-- No local model ships with Buckle: point an OpenAI-compatible base URL at one.
-- No Rings view of the verdict yet: the report to Rings, the 5straps agent control plane,
-  carries none.

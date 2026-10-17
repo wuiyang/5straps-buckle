@@ -59,8 +59,8 @@ Each name is allowed separately: `python`, `python3`, and `python3.12` are three
 `node` and `nodejs`, and `buckle policy remove-interpreter <name>` takes one back. `script_run`
 with the `python` runtime runs `python3`, and with `node` it runs `node`. Version and help calls
 stay ordinary, such as `python3 --version`, `python3 -VV`, `perl -V`, `ruby -v`, and `deno -v`.
-Where a workspace turns on the [decision AI](judge.md), a model call the node makes with its own
-key, a model rates such a call and the code it runs: at the owner's request, or at each call,
+Where a workspace turns on the [decision AI](judge.md), an optional model check the node runs with
+its own keys, a model rates such a call and the code it runs: at the owner's request, or at each call,
 running one it rates safe.
 
 A workspace's list is its own where it has one, used alone; else it is the node's
