@@ -1,7 +1,7 @@
 import type { JsonObject, WorkspacePolicy } from '@5straps/protocol'
 import { redactCredentials } from '@5straps/runtime'
 import { relative } from 'pathe'
-import { baseCommand, commandSubject, shownCommand, shownWords } from '../../domain/argv.js'
+import { baseCommand, commandSubject, parseArgv, shownCommand, shownWords } from '../../domain/argv.js'
 import { compileCommandGlob } from '../../domain/command-glob.js'
 import { allForms, commandFormsOf } from '../../domain/command-forms.js'
 import { describeCall } from '../../domain/describe-call.js'
@@ -136,7 +136,10 @@ export function createJudgeGate(input: {
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
     const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
-    const standardScript = running.length > 0 && running.every(form => standard.some(glob => glob.matchesLine(form)))
+    // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
+    // npm runs no interpreter Buckle names; or, inside shell text, where every interpreter form it runs is one.
+    const typed = [parseArgv(effect.command, effect.args).command, ...effect.args]
+    const standardScript = standard.some(glob => glob.matchesLine(typed)) || (running.length > 0 && running.every(form => standard.some(glob => glob.matchesLine(form))))
     const cwd = workingDirectory(call.args)
     const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
     if (code.kind === 'refused') return code.reason

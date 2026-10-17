@@ -138,6 +138,19 @@ describe('an interpreter ask, with the quick stage on', () => {
   })
 })
 
+describe('a standard development script', () => {
+  it('reaches each stage as a standard script, on its command line alone, for npm, pnpm, and yarn as for npx', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9), thorough: thorough('safe', 0.95) })
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), fakes)
+    await withPolicy(runtime, { destructive: ['npm run *', 'pnpm dev', 'yarn build'] })
+    for (const [command, args] of [['npm', ['run', 'dev']], ['pnpm', ['dev']], ['yarn', ['build']]] as const) {
+      expect((await call(runtime, command, [...args])).response, command).toMatchObject({ outcome: 'ok' })
+    }
+    expect(fakes.shownQuick.map(item => [item.command, item.standardScript, item.files])).toEqual([['npm run dev', true, []], ['pnpm dev', true, []], ['yarn build', true, []]])
+    expect(fakes.shownThorough.map(item => item.standardScript)).toEqual([true, true, true])
+  })
+})
+
 describe('the quick stage\'s scope', () => {
   it('interpreters: an ask the built-in floor makes is left to a person', async () => {
     const fakes = judges({ quick: quick('safe', 0.99), thorough: thorough('safe', 0.99) })
