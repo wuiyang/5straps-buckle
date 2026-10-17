@@ -29,6 +29,8 @@ export interface JudgeOptions {
   signal?: AbortSignal
 }
 
+import type { SocketSummary } from './package-scan.js'
+
 /** One of the workspace's own files the code runs: a script the command names, or a local file one imports. */
 export interface JudgeFile {
   /** As the sandbox names it, never a host path. */
@@ -49,8 +51,10 @@ export interface JudgeInput {
   inline: string | null
   /** The scripts the command names and every local file they import, transitively, each read once. */
   files: JudgeFile[]
-  /** The third-party packages the code imports, by name alone: their code is not read. */
-  packages: string[]
+  /** The third-party packages the code imports, each with the version installed where Buckle finds one and Socket's view of it: their code is not read. */
+  packages: JudgePackage[]
+  /** Whether more packages carried a version than Socket was asked about (PACKAGE_SCAN_LIMIT), so some keep no summary. */
+  packagesTruncated: boolean
   /** Whether the code ran past what is read; a call whose code does is never rated, so a rated input says false. */
   truncated: boolean
   /** Whether the command is one of the owner's standard development scripts, rated on its command line alone. */
@@ -63,6 +67,17 @@ export interface JudgeInput {
   mounts: Array<{ target: string; access: 'read-write' | 'read-only' }>
   /** The node's own summary of the call, as an approver reads it, when there is one. */
   description: string | null
+}
+
+/**
+ * A third-party package the code imports (D91, addendum 2 C): its name, its version from the nearest
+ * `node_modules/<name>/package.json` inside the workspace or its mount (null where none is found, and always for Python),
+ * and Socket's summary of that version where the node has one.
+ */
+export interface JudgePackage {
+  name: string
+  version: string | null
+  socket: SocketSummary | null
 }
 
 export type JudgeLevel = 'safe' | 'warning' | 'danger'

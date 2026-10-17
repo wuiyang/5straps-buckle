@@ -90,6 +90,7 @@ export function createJudgeGate(input: {
       argv: shownWords(effect.command, effect.args),
       interpreters,
       ...code.reading,
+      packagesTruncated: false,
       truncated: false,
       standardScript,
       policy: lists,

@@ -24,13 +24,13 @@ const verdict = (reasoning = 'Reads a file.'): JudgeVerdict => ({ kind: 'verdict
 const input = (overrides: Partial<JudgeInput> = {}): JudgeInput => ({
   command: 'python3 job.py', argv: ['python3', 'job.py'], interpreters: ['python3'], inline: null,
   files: [{ path: '/workspace/job.py', sha256: 'a'.repeat(64), bytes: 10, content: 'print(1)\n' }, { path: '/workspace/lib.py', sha256: 'b'.repeat(64), bytes: 5, content: 'x=1\n' }],
-  packages: [], truncated: false, standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
+  packages: [{ name: 'requests', version: '2.32.0', socket: null }], packagesTruncated: false, truncated: false, standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
   cwd: '/workspace', mounts: [{ target: '/workspace', access: 'read-write' }], description: null, ...overrides,
 })
 const key = (asked: JudgeInput, overrides: { provider?: JudgeProvider; model?: string; policyUpdatedAt?: string | null } = {}) => judgeCacheKey({ provider: 'openai-compatible', model: 'claude-opus-5-5', policyUpdatedAt: '2026-10-17T00:00:00.000Z', asked, ...overrides })
 
 describe('a verdict\'s cache key', () => {
-  it('is the same for the same code in any order, and new after one byte of one file, or another command, inline code, policy, provider, or model', () => {
+  it('is the same for the same code in any order, and new after one byte of one file, or another command, inline code, package version, policy, provider, or model', () => {
     const base = key(input())
     expect(key(input({ files: [...input().files].reverse() }))).toBe(base)
     const changed = [
@@ -39,6 +39,7 @@ describe('a verdict\'s cache key', () => {
       key(input({ inline: 'print(2)' })),
       key(input({ policy: { allow: [], deny: [], destructive: ['rm *'], allowedInterpreters: [] } })),
       key(input({ standardScript: true })),
+      key(input({ packages: [{ name: 'requests', version: '2.32.1', socket: null }] })),
       key(input(), { policyUpdatedAt: '2026-10-18T00:00:00.000Z' }),
       key(input(), { provider: 'another-provider' as JudgeProvider }),
       key(input(), { model: 'claude-sonnet-5-5' }),

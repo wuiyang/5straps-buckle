@@ -7,7 +7,7 @@ import { baseCommand, shellScriptOperand, shellStatementList, shellTokens } from
 import { READ_BUDGET } from '../../domain/command-forms.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
-import type { JudgeFile } from '../../types/ports/judge.js'
+import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
 
 /** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
@@ -23,7 +23,7 @@ export const CODE_REFUSALS = Object.freeze({
   failed: 'the code could not be read',
 })
 
-export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: string[] }
+export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
 export type CodeRead = { kind: 'read'; reading: CodeReading } | { kind: 'refused'; reason: string; truncated: boolean }
 
 /**
@@ -42,6 +42,8 @@ export interface CodeView {
   read(real: string, limit: number): Buffer | null
   /** The file as the judge is shown it, or null where only a host path would name it. */
   shown(real: string): string | null
+  /** The real root of the workspace or the mount holding a real path, or null where neither does. */
+  rootOf(real: string): string | null
 }
 
 export type Located = { real: string } | 'none' | 'outside'
@@ -72,18 +74,19 @@ export interface CodeInput { forms: readonly string[][]; shellForms?: readonly s
 function readCode(input: CodeInput): CodeRead {
   const { view, cwd } = input
   const inline: string[] = []
-  const packages = new Set<string>()
+  // Each package by name, with the real folder its version is looked up from (the first importer's), or null for none.
+  const packages: Packages = new Map()
   const queue: Array<{ real: string; language: Language }> = []
   for (const [command = '', ...args] of input.forms) {
     const program = programOf(command)
     const read = argumentsOf(program, args)
     inline.push(...read.inline)
-    for (const name of read.packages) packages.add(name)
+    for (const name of read.packages) named(packages, name, cwd)
     const language = languageOfProgram(program)
     // `python -m a.b`: the module's file under the working directory, with its package's __main__.py, else a package.
     for (const module of read.modules) {
       const files = pythonModule({ module, roots: [cwd], view, main: true })
-      if (files.length === 0) packages.add(module.split('.')[0]!)
+      if (files.length === 0) named(packages, module.split('.')[0]!, null)
       queue.push(...files)
     }
     // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
@@ -129,7 +132,7 @@ function readCode(input: CodeInput): CodeRead {
     if (typeof found === 'string') return refused(found)
     queue.push(...found)
   }
-  return { kind: 'read', reading: { inline: inline.length > 0 ? inline.join('\n') : null, files, packages: [...packages].sort() } }
+  return { kind: 'read', reading: { inline: inline.length > 0 ? inline.join('\n') : null, files, packages: installed(packages, view) } }
 }
 
 /** The shells whose text may feed a command a here-string (`<<<`): bash, and the shells that share ksh's syntax for it. */
@@ -279,12 +282,57 @@ function languageOfFile(real: string, content: string): Language {
 }
 
 type Found = Array<{ real: string; language: Language }>
+type Packages = Map<string, string | null>
+
+/** A package imported, kept with the folder its first importer reads from; null where no version is looked up (Python). */
+function named(packages: Packages, name: string, from: string | null): void {
+  if (!packages.has(name)) packages.set(name, from)
+}
+
+/** An npm package name, scoped or not: anything else (a `node:` builtin, a stray word) has no node_modules folder. */
+const NPM_NAME = /^(?:@[a-z0-9][\w.~-]*\/)?[a-z0-9][\w.~-]*$/i
+const VERSION = /^[\w.+-]{1,64}$/
+/** What of a package.json is read for its version at most. */
+const MANIFEST_LIMIT = 64 * 1_024
+
+/** Each package by name, sorted, with the version installed for its importer; no Socket summary yet. */
+function installed(packages: Packages, view: CodeView): JudgePackage[] {
+  return [...packages].sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0)).map(([name, from]) => ({ name, version: from === null ? null : installedVersion(name, from, view), socket: null }))
+}
+
+/**
+ * The version of `name` an importer in `from` gets (D91, addendum 2 C): the `version` of the nearest
+ * `node_modules/<name>/package.json`, walking up from `from` and stopping at the workspace root or the mount root, read
+ * with the same checks as the code. Null where none is found, where a link leaves for a place the agent may not read,
+ * and where the manifest holds no version.
+ */
+function installedVersion(name: string, from: string, view: CodeView): string | null {
+  const root = view.rootOf(from)
+  if (!NPM_NAME.test(name) || root === null) return null
+  for (let folder = from; isInside(root, folder); folder = dirname(folder)) {
+    const located = view.locate(`./node_modules/${name}/package.json`, folder)
+    if (typeof located === 'object') return manifestVersion(located.real, view)
+    if (located === 'outside' || folder === root || dirname(folder) === folder) return null
+  }
+  return null
+}
+
+function manifestVersion(real: string, view: CodeView): string | null {
+  try {
+    if (!view.readable(real)) return null
+    const buffer = view.read(real, MANIFEST_LIMIT)
+    const version = buffer === null ? undefined : (JSON.parse(buffer.toString('utf8')) as { version?: unknown }).version
+    return typeof version === 'string' && VERSION.test(version) ? version : null
+  } catch {
+    return null
+  }
+}
 
 /**
  * The local files one piece of code imports, by its language, each with the language it is read as; the bare
  * specifiers are added to `packages`. A string where an import names a local file that does not exist.
  */
-function importsOf(language: Language, code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+function importsOf(language: Language, code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   if (language === 'js') return jsImports(code, place)
   if (language === 'python') return pythonImports(code, place)
   if (language === 'shell') return shellSources(code, place)
@@ -301,13 +349,13 @@ const JS_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.json']
 /** A TypeScript project imports `./a.js` for the `./a.ts` it compiles to it. */
 const TS_SOURCES: Readonly<Record<string, readonly string[]>> = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] }
 
-function jsImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+function jsImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   const found: Found = []
   const base = place.file === null ? place.cwd : dirname(place.file)
   for (const pattern of JS_SPECIFIERS) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
-        place.packages.add(packageName(specifier))
+        named(place.packages, packageName(specifier), base)
         continue
       }
       const located = jsCandidates(specifier).map(name => place.view.locate(name, base))
@@ -328,13 +376,13 @@ function jsCandidates(specifier: string): string[] {
 const PYTHON_IMPORT = /^[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
 const PYTHON_FROM = /^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+\(?([\w\t ,*]+)/gm
 
-function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   const found: Found = []
   const beside = place.file === null ? place.cwd : dirname(place.file)
   for (const [, list = ''] of code.matchAll(PYTHON_IMPORT)) {
     for (const module of list.split(',').map(item => item.trim().split(/\s+/)[0]!).filter(Boolean)) {
       const files = pythonModule({ module, roots: [beside, place.cwd], view: place.view })
-      if (files.length === 0) place.packages.add(module.split('.')[0]!)
+      if (files.length === 0) named(place.packages, module.split('.')[0]!, null)
       found.push(...files)
     }
   }
@@ -355,7 +403,7 @@ function pythonImports(code: string, place: { file: string | null; cwd: string; 
     } else {
       const files = pythonModule({ module, roots, view: place.view })
       if (files.length === 0) {
-        place.packages.add(module.split('.')[0]!)
+        named(place.packages, module.split('.')[0]!, null)
         continue
       }
       found.push(...files)
@@ -388,7 +436,7 @@ function pythonModule(input: { module: string; roots: readonly string[]; view: C
 
 const SHELL_SOURCE = /(?:^|[\n;&|(]|\bthen|\bdo|\belse)[ \t]*(?:source|\.)[ \t]+(['"]?)([^\s'";&|)]+)\1/g
 
-function shellSources(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Set<string> }): Found | string {
+function shellSources(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   const found: Found = []
   for (const [, , name = ''] of code.matchAll(SHELL_SOURCE)) {
     // A name an expansion supplies exists only once the shell runs; the judge reads the line that names it.
@@ -437,6 +485,10 @@ export function createCodeView(input: { paths: PathView; canRead: (real: string)
       const mount = paths.mountOf(real)
       if (!mount || mount.target === mount.source) return null
       return joinShown(mount.target, relative(mount.source, real))
+    },
+    rootOf(real) {
+      if (isInside(paths.root, real)) return paths.root
+      return paths.mountOf(real)?.source ?? null
     },
   }
 }

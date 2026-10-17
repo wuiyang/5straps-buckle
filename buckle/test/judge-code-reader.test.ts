@@ -45,7 +45,7 @@ describe('the code a JavaScript or TypeScript call runs', () => {
     })
     const code = reading(read(['node', 'app.mjs']))
     expect(code.files.map(file => file.path)).toEqual(['/workspace/app.mjs', '/workspace/lib/util.ts', '/workspace/late.mjs', '/workspace/data.json', '/workspace/deep/index.ts'])
-    expect(code.packages).toEqual(['@scope/pkg', 'lodash', 'node:fs'])
+    expect(code.packages.map(item => item.name)).toEqual(['@scope/pkg', 'lodash', 'node:fs'])
     expect(code.inline).toBeNull()
     expect(code.files[0]).toMatchObject({ bytes: expect.any(Number), sha256: expect.stringMatching(/^[0-9a-f]{64}$/), content: expect.stringContaining("from './lib/util.js'") })
   })
@@ -58,12 +58,42 @@ describe('the code a JavaScript or TypeScript call runs', () => {
   it('reads inline code\'s imports from the working directory, and the script a runner runs after naming its package', () => {
     const { read } = workspace({ 'helper.cjs': 'module.exports = 1\n', 'scripts/gen.ts': "import './shared.ts'\n", 'scripts/shared.ts': 'export {}\n' })
     expect(reading(read(['node', '-e', "require('./helper.cjs')"]))).toMatchObject({ inline: "require('./helper.cjs')", files: [{ path: '/workspace/helper.cjs' }] })
-    expect(reading(read(['npx', 'tsx', 'scripts/gen.ts']))).toMatchObject({ packages: ['tsx'], files: [{ path: '/workspace/scripts/gen.ts' }, { path: '/workspace/scripts/shared.ts' }] })
+    expect(reading(read(['npx', 'tsx', 'scripts/gen.ts']))).toMatchObject({ packages: [{ name: 'tsx', version: null, socket: null }], files: [{ path: '/workspace/scripts/gen.ts' }, { path: '/workspace/scripts/shared.ts' }] })
   })
 
   it('refuses an import naming no file, so the call asks', () => {
     const { read } = workspace({ 'app.mjs': "import './missing.js'\n" })
     expect(read(['node', 'app.mjs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.missing, truncated: false })
+  })
+})
+
+describe('the packages the code imports', () => {
+  it('names each with the version installed for its importer, scoped names included, and null where none is installed', () => {
+    const { read } = workspace({
+      'app.mjs': "import _ from 'lodash'\nimport x from '@scope/pkg/sub'\nimport 'missing-pkg'\nimport fs from 'node:fs'\n",
+      'node_modules/lodash/package.json': '{"name":"lodash","version":"4.17.21"}',
+      'node_modules/@scope/pkg/package.json': '{"name":"@scope/pkg","version":"1.2.3"}',
+      'sub/node_modules/lodash/package.json': '{"version":"3.0.0"}',
+      'sub/b.mjs': "import 'lodash'\n",
+    })
+    expect(reading(read(['node', 'app.mjs'])).packages).toEqual([
+      { name: '@scope/pkg', version: '1.2.3', socket: null },
+      { name: 'lodash', version: '4.17.21', socket: null },
+      { name: 'missing-pkg', version: null, socket: null },
+      { name: 'node:fs', version: null, socket: null },
+    ])
+    expect(reading(read(['node', 'sub/b.mjs'])).packages).toEqual([{ name: 'lodash', version: '3.0.0', socket: null }])
+  })
+
+  it('never reads a node_modules folder outside the workspace, nor one a link takes out of it', () => {
+    const { base, root, read } = workspace({ 'app.mjs': "import 'outer'\nimport 'linked'\n" })
+    mkdirSync(join(base, 'node_modules', 'outer'), { recursive: true })
+    writeFileSync(join(base, 'node_modules', 'outer', 'package.json'), '{"version":"9.9.9"}')
+    mkdirSync(join(base, 'elsewhere'))
+    writeFileSync(join(base, 'elsewhere', 'package.json'), '{"version":"6.6.6"}')
+    mkdirSync(join(root, 'node_modules'))
+    symlinkSync(join(base, 'elsewhere'), join(root, 'node_modules', 'linked'))
+    expect(reading(read(['node', 'app.mjs'])).packages).toEqual([{ name: 'linked', version: null, socket: null }, { name: 'outer', version: null, socket: null }])
   })
 })
 
@@ -80,7 +110,7 @@ describe('the code a Python call runs', () => {
     })
     const code = reading(read(['python3', 'tools/main.py']))
     expect(code.files.map(file => file.path).sort()).toEqual(['/workspace/helpers/__init__.py', '/workspace/helpers/text.py', '/workspace/pkg/__init__.py', '/workspace/pkg/inner.py', '/workspace/pkg/mod.py', '/workspace/tools/main.py', '/workspace/tools/sibling.py'])
-    expect(code.packages).toEqual(['json', 'os', 're'])
+    expect(code.packages).toEqual(['json', 'os', 're'].map(name => ({ name, version: null, socket: null })))
   })
 
   it('takes -c text as inline code and reads what it imports', () => {
@@ -90,9 +120,9 @@ describe('the code a Python call runs', () => {
 
   it('reads the module python -m runs, with its package\'s __main__.py, and names one it cannot find as a package', () => {
     const { read } = workspace({ 'tools/__init__.py': '', 'tools/gen.py': 'import os\n', 'app/__init__.py': '', 'app/__main__.py': 'import json\n', 'data.txt': 'x\n' })
-    expect(reading(read(['python3', '-m', 'tools.gen']))).toMatchObject({ files: [{ path: '/workspace/tools/__init__.py' }, { path: '/workspace/tools/gen.py' }], packages: ['os'] })
+    expect(reading(read(['python3', '-m', 'tools.gen']))).toMatchObject({ files: [{ path: '/workspace/tools/__init__.py' }, { path: '/workspace/tools/gen.py' }], packages: [{ name: 'os', version: null }] })
     expect(reading(read(['python3', '-m', 'app'])).files.map(file => file.path)).toEqual(['/workspace/app/__init__.py', '/workspace/app/__main__.py'])
-    expect(reading(read(['python3', '-m', 'pytest', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: ['pytest'] })
+    expect(reading(read(['python3', '-m', 'pytest', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: [{ name: 'pytest', version: null }] })
   })
 
   it('refuses a relative import naming no module', () => {

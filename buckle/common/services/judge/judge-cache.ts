@@ -27,13 +27,14 @@ export function judgeCachePath(stateDirectory: string): string {
 /**
  * What a verdict is kept under (D91, addendum B): the provider and model that gave it, the policy as it stood (its
  * updatedAt and the lists the judge was shown), the command as shown, its inline code, the sha of every file it ran,
- * sorted, whether it was a standard script, and where it ran. One byte changed in any file the code reads is a new key,
+ * sorted, every package with the version installed, whether it was a standard script, and where it ran. One byte changed in any file the code reads is a new key,
  * so all of the code is rated again.
  */
 export function judgeCacheKey(input: { provider: JudgeProvider; model: string; policyUpdatedAt: string | null; asked: JudgeInput }): string {
   const { asked } = input
   const shas = asked.files.map(file => file.sha256).sort()
-  return createHash('sha256').update(JSON.stringify([input.provider, input.model, input.policyUpdatedAt, asked.policy, asked.command, asked.inline, shas, asked.standardScript, asked.cwd])).digest('hex')
+  const packages = asked.packages.map(item => `${item.name}@${item.version ?? ''}`).sort()
+  return createHash('sha256').update(JSON.stringify([input.provider, input.model, input.policyUpdatedAt, asked.policy, asked.command, asked.inline, shas, packages, asked.standardScript, asked.cwd])).digest('hex')
 }
 
 /**

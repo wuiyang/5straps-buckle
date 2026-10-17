@@ -22,6 +22,7 @@ const INPUT: JudgeInput = {
   inline: null,
   files: [{ path: '/workspace/job.js', sha256: 'a'.repeat(64), bytes: 21, content: 'console.log("hello")\n' }],
   packages: [],
+  packagesTruncated: false,
   truncated: false,
   standardScript: false,
   policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
@@ -181,6 +182,6 @@ describe('the judge a provider names', () => {
 
 describe('the fixed instructions', () => {
   it('are pinned, so a change to what every rating is asked under is a reviewed one', () => {
-    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('488e6a76dee1690365491468028e38ae24a8d568871bb692568b773c4aa571cc')
+    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('95b1c26290a2141bf136ecc63e23b37a18bcff29e8ca8c726652eb8a6de15ceb')
   })
 })
