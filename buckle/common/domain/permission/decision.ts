@@ -9,9 +9,11 @@ export type PermissionDecision =
 /**
  * Why the destructive floor asked (D91), set by that rule alone and never sent anywhere: a built-in floor reason or
  * another reading limit (`floor`), an interpreter the policy does not allow and nothing else (`interpreter`), or the
- * workspace's destructive list (`destructive-list`). Only an `interpreter` ask is one the decision AI may answer.
+ * workspace's destructive list (`destructive-list`); or set by the decision AI's gate, an allowed command its quick stage
+ * rated danger, which a person now decides (`judge`). The thorough stage answers an `interpreter` ask; the quick stage, by
+ * its scope, any but a `judge` one (domain/permission/judged.ts).
  */
-export type AskCause = 'floor' | 'interpreter' | 'destructive-list'
+export type AskCause = 'floor' | 'interpreter' | 'destructive-list' | 'judge'
 
 /** The standing grant a rule relied on, so the action log can say why a call was permitted. */
 export interface GrantReference {

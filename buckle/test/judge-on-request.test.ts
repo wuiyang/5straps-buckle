@@ -16,6 +16,7 @@ import { byName, idOf, workspacesOf } from './support/workspaces.js'
 // ask once where the owner asked for that, with the judge named as who decided.
 
 const KEY = 'sk-on-request-fixture-0123456789'
+const QUICK_KEY = 'ts-on-request-fixture-0123456789'
 const roots: string[] = []
 const servers: Server[] = []
 afterEach(async () => {
@@ -44,7 +45,25 @@ async function standIn(answer: { level: string; confidence: number } | { status:
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`, seen }
 }
 
-async function node(input: { url: string; judge?: string }) {
+/** A TypeSafe System One endpoint that answers the safety question as `answer` says, with the versioned model that answered. */
+async function quickStandIn(answer: { choice: 'safe' | 'warning' | 'danger'; confidence: number }) {
+  const seen: Array<{ authorization: string | undefined; body: { model: string; state: { command: string } } }> = []
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk: Buffer) => { body += chunk.toString('utf8') })
+    request.on('end', () => {
+      seen.push({ authorization: request.headers.authorization, body: JSON.parse(body) as typeof seen[number]['body'] })
+      const rest = (1 - answer.confidence) / 2
+      const probabilities = { safe: rest, warning: rest, danger: rest, [answer.choice]: answer.confidence }
+      response.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ model: 'jev-1.13.0', answers: { safety: { type: 'choice', choice: answer.choice, confidence: answer.confidence, probabilities } }, usage: { input_tokens: 100, output_tokens: 1 } }))
+    })
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  servers.push(server)
+  return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen }
+}
+
+async function node(input: { url: string; judge?: string; quickUrl?: string }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-on-request-')))
   roots.push(root)
   const folder = join(root, 'site')
@@ -55,6 +74,7 @@ async function node(input: { url: string; judge?: string }) {
     BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     BUCKLE_APPROVAL_JUDGE: input.judge ?? 'on-request', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna',
     BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: input.url,
+    ...(input.quickUrl ? { BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters', BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, BUCKLE_QUICK_JUDGE_BASE_URL: input.quickUrl } : {}),
   })
   let out = ''
   let err = ''
@@ -91,7 +111,7 @@ describe('buckle approvals judge', () => {
 
     const shown = await buckle(['approvals', 'judge', token])
     expect(shown.exitCode).toBe(0)
-    expect(shown.out).toContain('  judge:    safe (0.91, GPT-6-luna): It prints a number.')
+    expect(shown.out).toMatch(/ {2}judge: {4}safe \(0\.91, GPT-6-luna, \d+ ms\): It prints a number\./)
     expect(shown.out).toMatch(/does: +Run "python3 job.py"/)
     expect(shown.out).toContain(`Nothing is approved; ${token} is still waiting`)
     expect(judge.seen[0]).toMatchObject({ authorization: `Bearer ${KEY}`, user: { command: 'python3 job.py', files: [{ path: '/workspace/job.py', content: 'print(1)\n' }] } })
@@ -107,8 +127,32 @@ describe('buckle approvals judge', () => {
     const ran = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
     expect(ran.outcome).not.toBe('approval_required')
     const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
-    expect(result?.decidedBy).toEqual(['judge:openai-compatible:GPT-6-luna'])
+    expect(result?.decidedBy).toEqual(['judge:thorough:openai-compatible:GPT-6-luna'])
     expect(shown.out + approved.out).not.toContain(KEY)
+    await manager.close()
+  })
+
+  it('runs both stages the settings name, prints both verdicts, and approves on either stage\'s safe verdict, naming the stage', async () => {
+    const judge = await standIn({ level: 'danger', confidence: 0.95 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.92 })
+    const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url })
+    const { request, token } = await ask(runtime)
+
+    const shown = await buckle(['approvals', 'judge', token])
+    expect(shown.exitCode).toBe(0)
+    expect(shown.out).toMatch(/ {2}judge: {4}quick: safe \(0\.92, jev-1\.13\.0, \d+ ms\); thorough: danger \(0\.95, GPT-6-luna, \d+ ms\): It prints a number\./)
+    expect(jev.seen[0]).toMatchObject({ authorization: `Bearer ${QUICK_KEY}`, body: { model: 'jev-latest', state: { command: 'python3 job.py' } } })
+    expect(judge.seen).toHaveLength(1)
+
+    const approved = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
+    expect(approved.exitCode).toBe(0)
+    expect(approved.out).toContain(`Approved ${token} once in workspace site, on the decision AI's quick stage's safe verdict`)
+    const audited = runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
+    expect(audited?.judge).toMatchObject({ level: 'danger', passed: true, passedBy: 'quick', quick: { provider: 'typesafe', model: 'jev-1.13.0', level: 'safe' } })
+    await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
+    const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
+    expect(result?.decidedBy).toEqual(['judge:quick:typesafe:jev-1.13.0'])
+    expect(shown.out + approved.out).not.toContain(QUICK_KEY)
     await manager.close()
   })
 
@@ -118,7 +162,7 @@ describe('buckle approvals judge', () => {
     const { token } = await ask(first.runtime)
     const refused = await first.buckle(['approvals', 'judge', token, '--approve-if-safe'])
     expect(refused.exitCode).toBe(0)
-    expect(refused.out).toContain('  judge:    danger (0.97, GPT-6-luna): It prints a number.')
+    expect(refused.out).toMatch(/ {2}judge: {4}danger \(0\.97, GPT-6-luna, \d+ ms\): It prints a number\./)
     expect(refused.out).toContain(`Not safe at 0.8 or above, so nothing is approved; ${token} is still waiting`)
     expect(first.runtime.approvalService.waitingAsk(token)).toBeDefined()
     await first.manager.close()
@@ -149,7 +193,7 @@ describe('buckle approvals judge', () => {
     if (floor.outcome !== 'approval_required') throw new Error(`expected an ask, got ${floor.outcome}`)
     const other = await on.buckle(['approvals', 'judge', floor.approvals.find(approval => approval.rule === 'destructive_command')!.token])
     expect(other.exitCode).toBe(1)
-    expect(other.err).toContain('The decision AI rates an ask about running code with an interpreter the policy does not allow')
+    expect(other.err).toContain('The decision AI rates an ask about running a command, an interpreter the policy does not allow or one the quick stage\'s scope covers')
     expect(judge.seen).toHaveLength(0)
     expect((await on.buckle(['approvals', 'show', 'x', '--approve-if-safe'])).err).toContain('--approve-if-safe is for buckle approvals judge <token>')
     await on.manager.close()

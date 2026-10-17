@@ -18,7 +18,7 @@ const INPUT: JudgeInput = {
   files: [{ path: '/workspace/job.js', sha256: 'a'.repeat(64), bytes: 21, content: 'console.log("hello")\n' }],
   packages: [], packagesTruncated: false, truncated: false, standardScript: false,
   policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] },
-  cwd: '/workspace', mounts: [{ target: '/workspace', access: 'read-write' }], description: null,
+  cwd: '/workspace', mounts: [{ target: '/workspace', access: 'read-write' }], description: null, reason: null,
 }
 const CHOICE = { type: 'choice', choice: 'safe', confidence: 0.93, probabilities: { safe: 0.93, warning: 0.05, danger: 0.02 } }
 

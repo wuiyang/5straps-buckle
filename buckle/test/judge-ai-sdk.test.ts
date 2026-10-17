@@ -29,6 +29,7 @@ const INPUT: JudgeInput = {
   cwd: '/workspace',
   mounts: [{ target: '/workspace', access: 'read-write' }],
   description: null,
+  reason: null,
 }
 
 interface Sent { url: string; headers: Headers; body: Record<string, unknown>; text: string }
@@ -182,6 +183,6 @@ describe('the judge a provider names', () => {
 
 describe('the fixed instructions', () => {
   it('are pinned, so a change to what every rating is asked under is a reviewed one', () => {
-    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('95b1c26290a2141bf136ecc63e23b37a18bcff29e8ca8c726652eb8a6de15ceb')
+    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('769b231552ad1c8dd6489edb869efd61306ee3f245b1eda40a827a053f3e35aa')
   })
 })

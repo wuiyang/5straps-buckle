@@ -46,6 +46,8 @@ import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import { createProviderJudge } from '../../adapters/judge/providers.js'
+import { createProviderQuickJudge } from '../../adapters/judge/quick-providers.js'
+import type { QuickJudge, QuickJudgeProvider } from '../../types/ports/quick-judge.js'
 import type { Judge, JudgeProvider } from '../../types/ports/judge.js'
 import { createCodeView } from '../judge/code-reader.js'
 import { judgeCachePath, openJudgeCache, type JudgeCache } from '../judge/judge-cache.js'
@@ -53,7 +55,6 @@ import { openSocketCache, socketCachePath } from '../judge/socket-cache.js'
 import { createSocketScanner } from '../../adapters/package-scan/socket.js'
 import { nullPackageScanner, type PackageScanner } from '../../types/ports/package-scan.js'
 import { createJudgeGate, JUDGE_OFF, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
-import { judgeable } from '../../domain/permission/judged.js'
 import { resolveEffects } from '../invocation/resolve-effects.js'
 import type { PendingAsk } from '../approvals/approval-registry.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
@@ -98,8 +99,8 @@ export type JudgeAskResult = { kind: 'rated'; ask: PendingAsk; judged: JudgedAsk
 /** A read the code reader asks the rules about is judged with no grant: only what the policy lets anyone read is read. */
 const NO_GRANTS: GrantLookup = { subjectsFor: () => [] }
 
-/** Why the decision AI rates no ask but an interpreter one at the destructive floor (D91). */
-const NOT_JUDGEABLE = 'The decision AI rates an ask about running code with an interpreter the policy does not allow, and this ask is about something else'
+/** Why the decision AI rates no ask its stages do not cover (D91). */
+const NOT_JUDGEABLE = 'The decision AI rates an ask about running a command, an interpreter the policy does not allow or one the quick stage\'s scope covers, and this ask is about something else'
 
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
@@ -229,6 +230,8 @@ interface RuntimeInput {
   judge?: Judge
   /** Socket's view of packages, for a test; absent, built from the node's BUCKLE_SOCKET_API_KEY, else none. */
   packageScanner?: PackageScanner
+  /** The decision AI's quick stage, for a test; absent, each provider's is built from the node's BUCKLE_QUICK_JUDGE_API_KEY. */
+  quickJudge?: QuickJudge
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -313,6 +316,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (!config.judgeApiKey) return null
     const known = providerJudges.get(provider) ?? createProviderJudge({ provider, apiKey: config.judgeApiKey, ...(config.judgeBaseUrl ? { baseUrl: config.judgeBaseUrl } : {}) })
     providerJudges.set(provider, known)
+    return known
+  }
+  const providerQuickJudges = new Map<QuickJudgeProvider, QuickJudge>()
+  const quickJudgeOf = (provider: QuickJudgeProvider): QuickJudge | null => {
+    if (input.quickJudge) return input.quickJudge
+    if (!config.quickJudgeApiKey) return null
+    const known = providerQuickJudges.get(provider) ?? createProviderQuickJudge({ provider, apiKey: config.quickJudgeApiKey, ...(config.quickJudgeBaseUrl ? { baseUrl: config.quickJudgeBaseUrl } : {}) })
+    providerQuickJudges.set(provider, known)
     return known
   }
   const plugins = createPluginRegistry({
@@ -467,7 +478,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (!ask) return refused(`Nothing named ${token} is waiting for a decision in workspace ${config.serverName}`)
       const settled = inForce()
       if (settled.judge.mode === 'off') return refused(`The decision AI is off in workspace ${config.serverName}: buckle workspace set approval.judge on-request turns it on`)
-      if (settled.judge.missing !== null) return refused(`The decision AI is not set up in workspace ${config.serverName}: ${settled.judge.missing} is missing`)
+      if (!settled.judge.ready) return refused(`The decision AI is not set up in workspace ${config.serverName}: the node holds no key for a stage its settings use (BUCKLE_JUDGE_API_KEY, or BUCKLE_QUICK_JUDGE_API_KEY with approval.quickJudge on)`)
       const call = ask.call
       const args = call?.complete && call.arguments !== null && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : null
       if (ask.request.rule !== 'destructive_command' || args === null || !settled.registry.has(ask.request.tool)) return refused(NOT_JUDGEABLE)
@@ -475,10 +486,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       let effects
       try { effects = await resolveEffects({ effects: settled.registry.get(ask.request.tool).prepare(args).effects, paths: settled.paths }) } catch { return refused(NOT_JUDGEABLE) }
       const outcome = settled.permissions.evaluate({ tool: ask.request.tool, effects, grants: NO_GRANTS })
-      const asks = outcome.kind === 'ask' ? outcome.asks.filter(judgeable) : []
-      const chosen = asks.find(item => item.subject === ask.request.subject) ?? asks[0]
-      if (!chosen) return refused(NOT_JUDGEABLE)
-      const [judged] = await settled.judge.rate({ asks: [chosen], effects, tool: ask.request.tool, args, ...(options.signal ? { signal: options.signal } : {}) })
+      const asks = outcome.kind === 'ask' ? outcome.asks.filter(item => settled.judge.covers(item)) : []
+      // The ask the token names; an allowed command the quick stage flagged is no rule's ask, and is rated as one.
+      const chosen = asks.find(item => item.subject === ask.request.subject) ?? null
+      const judged = await settled.judge.rateOnRequest({ subject: ask.request.subject, ask: chosen, effects, tool: ask.request.tool, args, ...(options.signal ? { signal: options.signal } : {}) })
       return judged ? { kind: 'rated', ask, judged } : refused(NOT_JUDGEABLE)
     },
 
@@ -621,7 +632,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   }
 
   /**
-   * The decision AI for a call (D91): the workspace's mode, provider, model, and standard scripts as they stand, the
+   * The decision AI for a call (D91): the workspace's mode, each stage's provider and model, the quick stage's scope, and the standard scripts as they stand, the
    * policy and view it started under, and a code reader that reads only what the rules let anyone read.
    */
   function judgeGate(settled: { compiled: CompiledPolicy; paths: PathView; permissions: PermissionEngine; cache: JudgeCache }): JudgeGate {
@@ -629,7 +640,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const canRead = (real: string) => settled.permissions.evaluate({ tool: 'fs_read', effects: [{ kind: 'read_path', path: real, directory: dirname(real) }], grants: NO_GRANTS }).kind === 'allow'
     return createJudgeGate({
       judge: judgeOf(config.approvalJudgeProvider),
-      settings: { mode: config.approvalJudge, provider: config.approvalJudgeProvider, model: config.approvalJudgeModel, standardScripts: config.approvalJudgeStandardScripts },
+      quickJudge: config.approvalQuickJudge === 'off' ? null : quickJudgeOf(config.approvalQuickJudgeProvider),
+      settings: {
+        mode: config.approvalJudge, provider: config.approvalJudgeProvider, model: config.approvalJudgeModel, standardScripts: config.approvalJudgeStandardScripts,
+        quick: config.approvalQuickJudge, quickProvider: config.approvalQuickJudgeProvider, quickModel: config.approvalQuickJudgeModel,
+      },
       policy: settled.compiled.policy, allowedInterpreters: settled.compiled.commands.allowedInterpreters, paths: settled.paths,
       view: createCodeView({ paths: settled.paths, canRead, protectedRoots: protectedStateRoots(config) }),
       cache: settled.cache,

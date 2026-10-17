@@ -59,11 +59,17 @@ const fingerprint = { fingerprint: z.string().optional() }
 // arguments, the directory they resolve against, what it does in the node's words and the effects the rules
 // judged. `complete` marks a call recorded whole; an ask recorded before this build (with `truncated`, and
 // perhaps cut arguments) has none, so it is denied or joined by a re-send that records the whole call.
-// judge: what the decision AI said of the call's interpreter asks (D91), shown beside the action and never part of its digest.
+// judge: what the decision AI's stages said of the call's command asks (D91), shown beside the action and never part of its digest.
+const levelSchema = z.enum(['safe', 'warning', 'danger'])
+const quickNoteSchema = z.union([
+  z.object({ level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), latencyMs: z.number().nonnegative() }).strict(),
+  z.object({ unavailable: z.string() }).strict(),
+])
 const judgeNoteSchema = z.union([
-  z.object({ subject: z.string(), level: z.enum(['safe', 'warning', 'danger']), confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string() }).strict(),
-  z.object({ subject: z.string(), unavailable: z.string() }).strict(),
+  z.object({ subject: z.string(), level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string(), latencyMs: z.number().nonnegative().optional(), quick: quickNoteSchema.optional() }).strict(),
+  z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional() }).strict(),
   z.object({ subject: z.string(), onRequest: z.literal(true) }).strict(),
+  z.object({ subject: z.string(), quick: quickNoteSchema }).strict(),
 ])
 const callSchema = z.object({
   arguments: JsonValueSchema, cwd: z.string(), description: z.string().nullable().default(null),

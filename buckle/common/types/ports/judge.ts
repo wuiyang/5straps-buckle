@@ -67,6 +67,8 @@ export interface JudgeInput {
   mounts: Array<{ target: string; access: 'read-write' | 'read-only' }>
   /** The node's own summary of the call, as an approver reads it, when there is one. */
   description: string | null
+  /** Why Buckle asked about the command, as an approver reads it; null for an allowed command the quick stage screens. */
+  reason: string | null
 }
 
 /**

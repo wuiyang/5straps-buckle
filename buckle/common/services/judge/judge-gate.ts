@@ -8,34 +8,67 @@ import { describeCall } from '../../domain/describe-call.js'
 import type { ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
-import type { PermissionDecision } from '../../domain/permission/decision.js'
-import { judgeable, judgePasses } from '../../domain/permission/judged.js'
-import type { JudgeAudit } from '../../types/ports/action-log.js'
-import type { JudgeNote } from '../../domain/approval-instruction.js'
+import type { AskCause, PermissionDecision } from '../../domain/permission/decision.js'
+import { judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
+import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
+import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
 import type { Judge, JudgeInput, JudgeMode, JudgeProvider, JudgeResult } from '../../types/ports/judge.js'
+import type { PackageScanner } from '../../types/ports/package-scan.js'
+import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
-import type { PackageScanner } from '../../types/ports/package-scan.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
+type Exec = Extract<ResolvedEffect, { kind: 'exec' }>
 
-/** One rating of one ask's command: what the judge was shown (absent where it was shown nothing), and its answer. */
+/** What one stage said of one command: the provider and model it was asked under, and its answer. */
+export interface StageRating<R> {
+  provider: string
+  model: string
+  result: R
+}
+
+/**
+ * What the decision AI said of one command (D91, addendum 2 B): what it was shown (null where its code could not be read
+ * whole), each stage that answered, and what that did: the stage whose safe verdict ran the call, an allowed command the
+ * quick stage turned into an ask, or one it rated and let run.
+ */
 export interface JudgedAsk {
   subject: string
-  provider: JudgeProvider | null
-  model: string | null
+  /** Why the destructive floor asked, where a stage rated an ask: a pass lifts that ask alone (passKey). */
+  cause?: AskCause
   input: JudgeInput | null
-  result: JudgeResult
+  quick?: StageRating<QuickResult>
+  thorough?: StageRating<JudgeResult>
+  passedBy?: 'quick' | 'thorough'
+  flagged?: true
+  screened?: true
+}
+
+/** The part of a call the decision AI reads: its effects, the tool and arguments, and the caller's signal. */
+interface CallView {
+  effects: readonly ResolvedEffect[]
+  tool: string
+  args: JsonObject
+  signal?: AbortSignal
 }
 
 /** A workspace's decision AI as one call meets it, built from the settings in force when the call started. */
 export interface JudgeGate {
   readonly mode: JudgeMode
-  /** Why the judge cannot rate in this workspace (a setting or the key missing), or null where it can. */
-  readonly missing: string | null
-  /** Rates each interpreter ask the judge may answer, once per distinct subject, from the cache where it holds the verdict. */
-  rate(input: { asks: readonly Ask[]; effects: readonly ResolvedEffect[]; tool: string; args: JsonObject; signal?: AbortSignal }): Promise<JudgedAsk[]>
+  /** Whether any stage can rate here: the decision AI is on and the node holds a key for a stage the settings use. */
+  readonly ready: boolean
+  /** Whether the quick stage screens allowed commands too (approval.quickJudge all, with its key, in automated mode). */
+  readonly screens: boolean
+  /** Whether a stage rates this ask: an interpreter ask for the thorough stage, or a command ask the quick stage's scope covers. */
+  covers(ask: Ask): boolean
+  /** Automated mode: each ask it covers, once per distinct subject, by the routing of addendum 2 B. */
+  rate(call: CallView & { asks: readonly Ask[] }): Promise<JudgedAsk[]>
+  /** Automated mode, scope all: each command of the call no ask names, by the quick stage alone; a danger verdict flags it. */
+  screen(call: CallView & { asked: ReadonlySet<string> }): Promise<JudgedAsk[]>
+  /** On the owner's request: every stage that applies to one waiting ask, or to an allowed command flagged earlier (`ask` null). */
+  rateOnRequest(call: CallView & { subject: string; ask: Ask | null }): Promise<JudgedAsk | null>
 }
 
 export interface JudgeSettings {
@@ -43,18 +76,27 @@ export interface JudgeSettings {
   provider: JudgeProvider
   model: string
   standardScripts: readonly string[]
+  quick: QuickJudgeScope
+  quickProvider: QuickJudgeProvider
+  quickModel: string
 }
 
+/** Why the quick stage was not asked about a call larger than it reads (QUICK_STATE_BUDGET_BYTES). */
+export const QUICK_OVER_BUDGET = 'the call is larger than the quick stage reads'
+
 /**
- * The decision AI's gate for one workspace (D91 and its addendum): what it is shown of a call, built from the command as
- * the approver sees it, the code the interpreter runs read through the agent's own view (code-reader.ts), the lists in
- * force, and the sandbox's names for the working directory and the mounts; then the verdict, from the workspace's cache
- * where the same command, code, policy, and model were rated before, else from the judge, which is kept. A standard
- * development script is rated on its command line alone. Where the code cannot be read whole, or a setting or the key
- * is missing, the rating is unavailable without a request, so the call asks as before.
+ * The decision AI's gate for one workspace (D91 and its addenda): what it is shown of a call, built from the command as
+ * the approver sees it, the code the interpreter runs read through the agent's own view (code-reader.ts), the packages
+ * with their versions and Socket's view, the lists in force, and the sandbox's names for the working directory and the
+ * mounts; then each stage's verdict, from the workspace's cache where the same command, code, packages, policy, provider,
+ * and model were rated in the last day, else from the stage, which is kept. Routing, in automated mode: the quick stage
+ * first where its scope covers the ask, whose safe verdict at 0.8 or above runs the call and whose danger verdict at 0.8 or
+ * above goes to a person; anything else goes to the thorough stage for an interpreter ask or one the quick stage rated,
+ * and otherwise to a person. Nothing it says refuses a call.
  */
 export function createJudgeGate(input: {
   judge: Judge | null
+  quickJudge: QuickJudge | null
   settings: JudgeSettings
   policy: WorkspacePolicy
   allowedInterpreters: ReadonlySet<string>
@@ -64,13 +106,15 @@ export function createJudgeGate(input: {
   scanner: PackageScanner
 }): JudgeGate {
   const { settings, paths } = input
-  const missing = settings.mode !== 'off' && input.judge === null ? 'BUCKLE_JUDGE_API_KEY' : null
+  const thoroughReady = settings.mode !== 'off' && input.judge !== null
+  const quickReady = settings.mode !== 'off' && settings.quick !== 'off' && input.quickJudge !== null
   const standard = settings.standardScripts.map(glob => compileCommandGlob(glob))
   const lists = {
     allow: [...input.policy.commands.allow], deny: [...input.policy.commands.deny],
     destructive: [...input.policy.commands.destructive ?? []], allowedInterpreters: [...input.allowedInterpreters],
   }
   const shownRoot = paths.mount ?? '/workspace'
+  const covers = (ask: Ask) => (thoroughReady && judgeable(ask)) || (quickReady && quickCovers(settings.quick, ask))
 
   /** A real folder as the sandbox names it: the workspace's view, a named mount's, or the workspace when neither holds it. */
   const sandboxName = (real: string): string => {
@@ -79,10 +123,16 @@ export function createJudgeGate(input: {
     return mount && mount.target !== mount.source ? joined(mount.target, relative(mount.source, real)) : shownRoot
   }
 
-  function shown(effect: Extract<ResolvedEffect, { kind: 'exec' }>, call: { tool: string; args: JsonObject }): JudgeInput | string {
+  /**
+   * What a stage is shown of one command: for an ask, the code of each interpreter the policy does not allow; for an
+   * allowed command (`allowed`), the code of every interpreter it runs. A reason in place of it where the code cannot be
+   * read whole.
+   */
+  function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null): JudgeInput | string {
     const forms = commandFormsOf(effect)
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
-    const running = allForms(forms).filter(([command = '']) => interpreters.includes(command) || interpreters.includes(baseCommand(command)))
+    const reading = allowed ? forms.interpreters : interpreters
+    const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
     const standardScript = running.length > 0 && running.every(form => standard.some(glob => glob.matchesLine(form)))
     const cwd = workingDirectory(call.args)
     const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
@@ -100,6 +150,7 @@ export function createJudgeGate(input: {
       cwd: shownCwd,
       mounts: [{ target: shownRoot, access: 'read-write' }, ...paths.mounts.filter(mount => !mount.scratch && mount.target !== mount.source).map(mount => ({ target: mount.target, access: mount.access === 'rw' ? 'read-write' as const : 'read-only' as const }))],
       description: describeCall({ tool: call.tool, args: call.args, cwd: shownCwd }),
+      reason,
     }
   }
 
@@ -108,70 +159,205 @@ export function createJudgeGate(input: {
     try { return paths.resolve(typeof args.cwd === 'string' ? args.cwd : '.') } catch { return paths.root }
   }
 
+  /** One command's input, with Socket's view added at most once and only when a stage is asked rather than its cache. */
+  function prepared(asked: JudgeInput, signal: AbortSignal | undefined) {
+    let enriched: Promise<JudgeInput> | undefined
+    let settled: JudgeInput | undefined
+    return {
+      asked,
+      sent: async () => {
+        enriched ??= withSocket(asked, input.scanner, signal).then(value => (settled = value))
+        return enriched
+      },
+      shown: () => settled ?? asked,
+    }
+  }
+  type Prepared = ReturnType<typeof prepared>
+
+  async function thorough(command: Prepared, signal: AbortSignal | undefined): Promise<StageRating<JudgeResult>> {
+    const { provider, model } = settings
+    const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked: command.asked })
+    const kept = input.cache.get(key)
+    if (kept && 'reasoning' in kept) return { provider, model, result: kept }
+    const result = await input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) })
+    if (result.kind === 'verdict') await input.cache.set(key, result)
+    return { provider, model, result }
+  }
+
+  async function quick(command: Prepared, signal: AbortSignal | undefined): Promise<StageRating<QuickResult>> {
+    const { quickProvider: provider, quickModel: model } = settings
+    const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked: command.asked })
+    const kept = input.cache.get(key)
+    if (kept && 'probabilities' in kept) return { provider, model, result: kept }
+    const state = await command.sent()
+    // Jev reads 64k tokens a request: past the budget it is not asked at all, and the routing goes on without it.
+    if (Buffer.byteLength(JSON.stringify(state)) > QUICK_STATE_BUDGET_BYTES) return { provider, model, result: { kind: 'unavailable', reason: QUICK_OVER_BUDGET } }
+    const result = await input.quickJudge!.quick(state, { model, ...(signal ? { signal } : {}) })
+    if (result.kind === 'verdict') await input.cache.set(key, result)
+    return { provider, model, result }
+  }
+
+  /** A command no stage was shown, its reason in the place of the first stage that would have rated it. */
+  function unread(subject: string, reason: string, stage: 'quick' | 'thorough'): JudgedAsk {
+    const result = { kind: 'unavailable' as const, reason }
+    return stage === 'quick'
+      ? { subject, input: null, quick: { provider: settings.quickProvider, model: settings.quickModel, result } }
+      : { subject, input: null, thorough: { provider: settings.provider, model: settings.model, result } }
+  }
+
+  /** The routing of addendum 2 B for one ask in automated mode. */
+  async function route(ask: Ask, effect: Exec, call: CallView): Promise<JudgedAsk> {
+    const quickFirst = quickReady && quickCovers(settings.quick, ask)
+    const asked = shown(effect, call, false, ask.reason)
+    if (typeof asked === 'string') return { ...unread(ask.subject, asked, quickFirst ? 'quick' : 'thorough'), ...(ask.cause ? { cause: ask.cause } : {}) }
+    const command = prepared(asked, call.signal)
+    const judged: JudgedAsk = { subject: ask.subject, ...(ask.cause ? { cause: ask.cause } : {}), input: asked }
+    if (quickFirst) {
+      judged.quick = await quick(command, call.signal)
+      if (judgePasses(judged.quick.result)) return { ...judged, input: command.shown(), passedBy: 'quick' }
+      if (ratedDanger(judged.quick.result)) return { ...judged, input: command.shown() }
+    }
+    // An interpreter ask goes on to the thorough stage; another the quick stage rated without settling it does too.
+    if (thoroughReady && (judgeable(ask) || judged.quick?.result.kind === 'verdict')) {
+      judged.thorough = await thorough(command, call.signal)
+      if (judgePasses(judged.thorough.result)) judged.passedBy = 'thorough'
+    }
+    return { ...judged, input: command.shown() }
+  }
+
   return {
     mode: settings.mode,
-    missing,
+    ready: thoroughReady || quickReady,
+    screens: settings.mode === 'automated' && quickReady && settings.quick === 'all',
+    covers,
     async rate(call) {
-      const subjects = [...new Set(call.asks.filter(judgeable).map(ask => ask.subject))]
-      return Promise.all(subjects.map(async (subject): Promise<JudgedAsk> => {
-        const { provider, model } = settings
-        const unavailable = (reason: string, shownInput: JudgeInput | null = null): JudgedAsk => ({ subject, provider, model, input: shownInput, result: { kind: 'unavailable', reason } })
-        if (missing !== null || input.judge === null) return unavailable(`the judge is not set up: ${missing ?? 'approval.judge'} is missing`)
-        const effect = call.effects.find((item): item is Extract<ResolvedEffect, { kind: 'exec' }> => item.kind === 'exec' && commandSubject(item.command, item.args) === subject)
-        if (!effect) return unavailable('the command was not found in the call')
-        const asked = shown(effect, call)
-        if (typeof asked === 'string') return unavailable(asked)
-        const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked })
-        const kept = input.cache.get(key)
-        if (kept) return { subject, provider, model, input: asked, result: kept }
-        const shownInput = await withSocket(asked, input.scanner, call.signal)
-        const result = await input.judge.judge(shownInput, { model, ...(call.signal ? { signal: call.signal } : {}) })
-        if (result.kind === 'verdict') await input.cache.set(key, result)
-        return { subject, provider, model, input: shownInput, result }
+      const chosen = new Map<string, Ask>()
+      for (const ask of call.asks) if (covers(ask) && !chosen.has(ask.subject)) chosen.set(ask.subject, ask)
+      return Promise.all([...chosen.values()].map((ask) => {
+        const effect = execOf(call.effects, ask.subject)
+        return effect ? route(ask, effect, call) : Promise.resolve(unread(ask.subject, 'the command was not found in the call', 'thorough'))
       }))
+    },
+    async screen(call) {
+      if (settings.mode !== 'automated' || !quickReady || settings.quick !== 'all') return []
+      const commands = new Map<string, Exec>()
+      for (const effect of call.effects) {
+        if (effect.kind !== 'exec') continue
+        const subject = commandSubject(effect.command, effect.args)
+        if (!call.asked.has(subject) && !commands.has(subject)) commands.set(subject, effect)
+      }
+      return Promise.all([...commands].map(async ([subject, effect]): Promise<JudgedAsk> => {
+        const asked = shown(effect, call, true, null)
+        if (typeof asked === 'string') return { ...unread(subject, asked, 'quick'), screened: true }
+        const command = prepared(asked, call.signal)
+        const rating = await quick(command, call.signal)
+        return { subject, input: command.shown(), quick: rating, screened: true, ...(ratedDanger(rating.result) ? { flagged: true as const } : {}) }
+      }))
+    },
+    async rateOnRequest(call) {
+      const effect = execOf(call.effects, call.subject)
+      if (!effect) return null
+      const quickApplies = quickReady && (call.ask ? quickCovers(settings.quick, call.ask) : settings.quick === 'all')
+      const thoroughApplies = thoroughReady && (call.ask ? judgeable(call.ask) || quickApplies : quickApplies)
+      if (!quickApplies && !thoroughApplies) return null
+      const asked = shown(effect, call, call.ask === null, call.ask?.reason ?? null)
+      if (typeof asked === 'string') return unread(call.subject, asked, thoroughApplies ? 'thorough' : 'quick')
+      const command = prepared(asked, call.signal)
+      // The owner asked, so every stage that applies rates it, and both verdicts are shown.
+      const [quickRating, thoroughRating] = await Promise.all([quickApplies ? quick(command, call.signal) : undefined, thoroughApplies ? thorough(command, call.signal) : undefined])
+      const passedBy = thoroughRating && judgePasses(thoroughRating.result) ? 'thorough' as const : quickRating && judgePasses(quickRating.result) ? 'quick' as const : undefined
+      return { subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: command.shown(), ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }
     },
   }
 }
 
+/** The command a subject names among a call's effects. */
+function execOf(effects: readonly ResolvedEffect[], subject: string): Exec | undefined {
+  return effects.find((item): item is Exec => item.kind === 'exec' && commandSubject(item.command, item.args) === subject)
+}
+
 /**
- * The notes an ask's call keeps for its approvers (D91): in automated mode what the judge said of each command it rated
- * and did not pass; on request, that each interpreter ask may be rated; nothing otherwise.
+ * The notes an ask's call keeps for its approvers (D91): in automated mode what each stage said of each command it rated
+ * and did not pass, a command the quick stage flagged among them; on request, that each ask a stage covers may be rated;
+ * nothing otherwise.
  */
 export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly Ask[]; judged: readonly JudgedAsk[] }): JudgeNote[] {
   const { gate } = input
-  if (!gate || gate.missing !== null) return []
-  const subjects = [...new Set(input.asks.filter(judgeable).map(ask => ask.subject))]
-  if (gate.mode === 'on-request') return subjects.map(subject => ({ subject, onRequest: true as const }))
+  if (!gate || !gate.ready) return []
+  const waiting = new Set(input.asks.filter(ask => gate.covers(ask) || ask.cause === 'judge').map(ask => ask.subject))
+  if (gate.mode === 'on-request') return [...waiting].map(subject => ({ subject, onRequest: true as const }))
   if (gate.mode !== 'automated') return []
-  return input.judged.filter(item => subjects.includes(item.subject)).map(({ subject, result, model }): JudgeNote => result.kind === 'verdict'
-    ? { subject, level: result.level, confidence: result.confidence, model: model ?? result.model, reasoning: redactCredentials(result.reasoning, 'text') }
-    : { subject, unavailable: result.reason })
+  return input.judged.filter(item => waiting.has(item.subject)).map(judgeNoteOf)
+}
+
+/** One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick stage's beside it. */
+export function judgeNoteOf(judged: JudgedAsk): JudgeNote {
+  const { subject } = judged
+  const quick = judged.quick ? quickNoteOf(judged.quick) : undefined
+  const beside = quick ? { quick } : {}
+  if (judged.thorough) {
+    const { result, model } = judged.thorough
+    return result.kind === 'verdict'
+      ? { subject, level: result.level, confidence: result.confidence, model, reasoning: redactCredentials(result.reasoning, 'text'), latencyMs: result.latencyMs, ...beside }
+      : { subject, unavailable: result.reason, ...beside }
+  }
+  return quick ? { subject, quick } : { subject, unavailable: 'no stage rated it' }
+}
+
+function quickNoteOf(rating: StageRating<QuickResult>): QuickNote {
+  const { result } = rating
+  return result.kind === 'verdict' ? { level: result.level, confidence: result.confidence, model: result.model, latencyMs: result.latencyMs } : { unavailable: result.reason }
 }
 
 /**
- * An ask as the agent is told of it once the judge rated its command and did not pass it (D91): its reason, then the
- * level alone, or that there was no verdict; never the reasoning, which would show an agent how to steer the next rating.
+ * An ask as the agent is told of it once the decision AI rated its command and did not pass it (D91): its reason, then the
+ * level alone, the thorough stage's where it ran, or that there was no verdict; never the reasoning, which would show an
+ * agent how to steer the next rating.
  */
 export function withJudgeReason(ask: Ask, judged: readonly JudgedAsk[]): Ask {
-  const rating = judgeable(ask) ? judged.find(item => item.subject === ask.subject) : undefined
+  const rating = ask.rule === 'destructive_command' && ask.cause !== 'judge' ? judged.find(item => item.subject === ask.subject && !item.screened) : undefined
   if (!rating) return ask
-  return { ...ask, reason: `${ask.reason}; ${rating.result.kind === 'verdict' ? `the decision AI rated it ${rating.result.level}` : 'the decision AI gave no verdict'}` }
+  const result = rating.thorough?.result ?? rating.quick?.result
+  if (!result) return ask
+  return { ...ask, reason: `${ask.reason}; ${result.kind === 'verdict' ? `the decision AI rated it ${result.level}` : 'the decision AI gave no verdict'}` }
 }
 
-/** A gate for a workspace whose judge is off: it rates nothing, and reads no setting, file, or cache. */
-export const JUDGE_OFF: JudgeGate = { mode: 'off', missing: null, rate: () => Promise.resolve([]) }
+/** A gate for a workspace whose decision AI is off: it rates nothing, and reads no setting, file, or cache. */
+export const JUDGE_OFF: JudgeGate = {
+  mode: 'off', ready: false, screens: false, covers: () => false,
+  rate: () => Promise.resolve([]), screen: () => Promise.resolve([]), rateOnRequest: () => Promise.resolve(null),
+}
 
 /**
- * What a call's audit entry keeps of its ratings (D91): the one that did not pass where any did not, else the one that
- * did, each with its provider and model; the reasoning with the credentials the display hides hidden.
+ * What a call's audit entry keeps of its ratings (D91): a command the quick stage flagged, else an ask none passed, else
+ * one a stage passed, else an allowed command the quick stage rated; each stage's verdict with its provider and model,
+ * the thorough reasoning with the credentials the display hides hidden.
  */
 export function judgeAuditOf(judged: readonly JudgedAsk[]): JudgeAudit | undefined {
-  const chosen = judged.find(item => !judgePasses(item.result)) ?? judged[0]
-  if (!chosen) return undefined
-  const named = { provider: chosen.provider ?? 'none', model: chosen.model ?? 'none' }
-  const { result } = chosen
-  if (result.kind === 'unavailable') return { ...named, unavailable: result.reason, passed: false }
-  return { ...named, level: result.level, confidence: result.confidence, reasoning: redactCredentials(result.reasoning, 'text'), latencyMs: result.latencyMs, promptDigest: result.promptDigest, passed: judgePasses(result) }
+  const asked = judged.filter(item => !item.screened)
+  const chosen = judged.find(item => item.flagged) ?? asked.find(item => item.passedBy === undefined) ?? asked[0] ?? judged[0]
+  return chosen ? auditOf(chosen) : undefined
+}
+
+/** One rating as an audit entry keeps it; `passed` says whether it ran or approved the call (on request: whether the owner's command approved it). */
+export function auditOf(item: JudgedAsk, passed = item.passedBy !== undefined): JudgeAudit {
+  const quick = item.quick ? quickAuditOf(item.quick) : undefined
+  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}) }
+  if (item.thorough) {
+    const { provider, model, result } = item.thorough
+    const beside = { ...(quick ? { quick } : {}), ...marks }
+    return result.kind === 'unavailable'
+      ? { provider, model, unavailable: result.reason, passed: false, ...beside }
+      : { provider, model, level: result.level, confidence: result.confidence, reasoning: redactCredentials(result.reasoning, 'text'), latencyMs: result.latencyMs, promptDigest: result.promptDigest, passed, ...beside }
+  }
+  return { quick: quick!, passed, ...marks }
+}
+
+function quickAuditOf(rating: StageRating<QuickResult>): QuickAudit {
+  const { provider, model, result } = rating
+  return result.kind === 'verdict'
+    ? { provider, model: result.model, level: result.level, confidence: result.confidence, probabilities: result.probabilities, latencyMs: result.latencyMs }
+    : { provider, model, unavailable: result.reason }
 }
 
 function joined(target: string, rest: string): string {

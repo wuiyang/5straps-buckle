@@ -79,14 +79,19 @@ export function judgeCommand(input: NamedWorkspace & { request: { token: string 
 }
 
 /**
- * What the decision AI said of an ask's command (D91), kept with the call the ask came from: a verdict, why it gave none,
- * or, in a workspace whose judge rates on request, that it was not asked yet. The reasoning is the model's, with the
+ * What the decision AI said of an ask's command (D91), kept with the call the ask came from: the thorough stage's verdict
+ * or why it gave none, with the quick stage's beside it; the quick stage's alone; or, in a workspace whose judge rates on
+ * request, that it was not asked yet. The reasoning is the model's, with the
  * credentials the display hides hidden.
  */
 export type JudgeNote =
-  | { subject: string; level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; reasoning: string }
-  | { subject: string; unavailable: string }
+  | { subject: string; level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; reasoning: string; latencyMs?: number; quick?: QuickNote }
+  | { subject: string; unavailable: string; quick?: QuickNote }
   | { subject: string; onRequest: true }
+  | { subject: string; quick: QuickNote }
+
+/** What the quick stage said beside the thorough stage's verdict, or alone (D91, addendum 2 B): Jev writes no reasoning. */
+export type QuickNote = { level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; latencyMs: number } | { unavailable: string }
 
 /** The note about one ask, which only an interpreter ask at the destructive floor carries. */
 export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rule: string; subject: string }): JudgeNote | undefined {
@@ -94,12 +99,20 @@ export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rul
 }
 
 /**
- * A note as one line beside the whole action (D91, brief item 4): `danger (0.92, claude-opus-5-5): <reasoning>`, why
- * there is no verdict, or the command that asks for one. Every route passes it through printable() as it does the rest.
+ * A note as one line beside the whole action (D91, brief item 4): `danger (0.92, gpt-6-luna, 900 ms): <reasoning>`, why
+ * there is no verdict, or the command that asks for one; with the quick stage's verdict first where it rated, as
+ * `quick: warning (0.90, jev-1.13.0, 120 ms); thorough: danger (0.92, gpt-6-luna, 900 ms): <reasoning>`. Every route passes it through printable() as it does the rest.
  */
 export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
-  if ('level' in note) return `${note.level} (${note.confidence.toFixed(2)}, ${note.model}): ${note.reasoning}`
-  if ('unavailable' in note) return `no verdict: ${note.unavailable}`
+  if ('onRequest' in note) return onRequestLine(input)
+  const quick = 'quick' in note && note.quick ? `quick: ${'level' in note.quick ? `${note.quick.level} (${note.quick.confidence.toFixed(2)}, ${note.quick.model}, ${note.quick.latencyMs} ms)` : `no verdict: ${note.quick.unavailable}`}` : null
+  const thorough = 'level' in note ? `${note.level} (${note.confidence.toFixed(2)}, ${note.model}${note.latencyMs === undefined ? '' : `, ${note.latencyMs} ms`}): ${note.reasoning}` : 'unavailable' in note ? `no verdict: ${note.unavailable}` : null
+  if (quick === null) return thorough ?? ''
+  return thorough === null ? quick : `${quick}; thorough: ${thorough}`
+}
+
+/** That a waiting ask's command was not rated yet, and the command that rates it on request. */
+function onRequestLine(input: NamedWorkspace & { token?: string | undefined }): string {
   return input.token === undefined ? 'not asked; the decision AI rates it on request' : `not asked; ${judgeCommand({ ...input, request: { token: input.token } })} asks it, and with --approve-if-safe approves a safe verdict once`
 }
 

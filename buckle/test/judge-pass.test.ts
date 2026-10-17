@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { compileCommandGlob } from '../common/domain/command-glob.js'
-import { judgeable, judgePasses, withJudged } from '../common/domain/permission/judged.js'
+import { judgeable, judgePasses, passKey, quickCovers, ratedDanger, withJudged } from '../common/domain/permission/judged.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import type { PermissionDecision } from '../common/domain/permission/decision.js'
 import type { JudgeResult } from '../common/types/ports/judge.js'
@@ -32,6 +32,27 @@ describe('why the destructive floor asks', () => {
   })
 })
 
+describe('what the quick stage\'s scope covers', () => {
+  it('interpreters: the interpreter asks alone; asks and all: every destructive floor ask; off: none', () => {
+    const interpreter = floorAsk('python3', ['job.py'])
+    const floor = floorAsk('sudo', ['ls'])
+    const listed = floorAsk('terraform', ['destroy', 'x'], ['terraform destroy *'])
+    const flagged: Ask = { ...floor, cause: 'judge' }
+    expect([interpreter, floor, listed, flagged].map(ask => quickCovers('interpreters', ask))).toEqual([true, false, false, false])
+    expect([interpreter, floor, listed, flagged].map(ask => quickCovers('asks', ask))).toEqual([true, true, true, false])
+    expect([interpreter, floor, listed, flagged].map(ask => quickCovers('all', ask))).toEqual([true, true, true, false])
+    expect([interpreter, floor, listed, flagged].map(ask => quickCovers('off', ask))).toEqual([false, false, false, false])
+  })
+
+  it('takes a danger at 0.8 or above as settled, and nothing less', () => {
+    const verdict = (level: 'safe' | 'warning' | 'danger', confidence: number) => ({ kind: 'verdict' as const, level, confidence, probabilities: { safe: 0, warning: 0, danger: 0 }, model: 'jev', latencyMs: 1 })
+    expect(ratedDanger(verdict('danger', 0.8))).toBe(true)
+    expect(ratedDanger(verdict('danger', 0.79))).toBe(false)
+    expect(ratedDanger(verdict('warning', 0.99))).toBe(false)
+    expect(judgePasses(verdict('safe', 0.8))).toBe(true)
+  })
+})
+
 describe('a verdict that passes a call', () => {
   const verdict = (level: 'safe' | 'warning' | 'danger', confidence: number): JudgeResult => ({ kind: 'verdict', level, confidence, reasoning: '', model: 'm', latencyMs: 1, promptDigest: '0'.repeat(64) })
 
@@ -47,10 +68,12 @@ describe('a verdict that passes a call', () => {
     const write: Ask = { kind: 'ask', rule: 'write_scope', subject: '/w', reason: 'write', offeredScopes: ['once'] }
     const outcome = { kind: 'ask' as const, asks: [interpreter, write], allowedBy: ['read_scope:/r'] }
     expect(withJudged(outcome, new Set())).toBe(outcome)
-    expect(withJudged(outcome, new Set([interpreter.subject]))).toEqual({ kind: 'ask', asks: [write], allowedBy: ['read_scope:/r'] })
-    expect(withJudged({ ...outcome, asks: [interpreter] }, new Set([interpreter.subject]))).toEqual({ kind: 'allow', allowedBy: ['read_scope:/r', `judge:destructive_command:${interpreter.subject}`] })
+    expect(withJudged(outcome, new Set([passKey(interpreter)]))).toEqual({ kind: 'ask', asks: [write], allowedBy: ['read_scope:/r'] })
+    expect(withJudged({ ...outcome, asks: [interpreter] }, new Set([passKey(interpreter)]))).toEqual({ kind: 'allow', allowedBy: ['read_scope:/r', `judge:destructive_command:${interpreter.subject}`] })
     // A subject passed for an interpreter never takes out the same subject's ask for another cause.
     const listed = floorAsk('python3', ['job.py'], ['python3 *'])
-    expect(withJudged({ kind: 'ask', asks: [listed] }, new Set([listed.subject]))).toEqual({ kind: 'ask', asks: [listed] })
+    expect(withJudged({ kind: 'ask', asks: [listed] }, new Set([passKey(interpreter)]))).toEqual({ kind: 'ask', asks: [listed] })
+    // The quick stage may pass a destructive-list ask, under its own key.
+    expect(withJudged({ kind: 'ask', asks: [listed] }, new Set([passKey(listed)]))).toEqual({ kind: 'allow', allowedBy: [`judge:destructive_command:${listed.subject}`] })
   })
 })

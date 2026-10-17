@@ -77,7 +77,7 @@ describe('a safe verdict at 0.8 or above', () => {
     expect(judge.judge).toHaveBeenCalledTimes(1)
     expect(judge.shown[0]).toMatchObject({ command: 'python3 job.py', interpreters: ['python3'], files: [{ path: '/workspace/job.py' }, { path: '/workspace/helper.py' }], standardScript: false, cwd: '/workspace' })
     expect(entry.approvedBy).toEqual(['judge'])
-    expect(entry.judge).toEqual({ provider: 'openai-compatible', model: 'claude-opus-5-5', level: 'safe', confidence: 0.93, reasoning: 'Rated safe.', latencyMs: 40, promptDigest: 'd'.repeat(64), passed: true })
+    expect(entry.judge).toEqual({ provider: 'openai-compatible', model: 'claude-opus-5-5', level: 'safe', confidence: 0.93, reasoning: 'Rated safe.', latencyMs: 40, promptDigest: 'd'.repeat(64), passed: true, passedBy: 'thorough' })
   })
 
   it('keeps the standing grants the rest of the call relied on beside the judge', async () => {

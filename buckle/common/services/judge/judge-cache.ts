@@ -3,7 +3,11 @@ import { join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, fileVersion } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
-import type { JudgeInput, JudgeProvider, JudgeVerdict } from '../../types/ports/judge.js'
+import { JUDGE_LEVELS, type JudgeInput, type JudgeVerdict } from '../../types/ports/judge.js'
+import type { QuickVerdict } from '../../types/ports/quick-judge.js'
+
+/** A verdict either stage gave: the thorough stage's carries reasoning, the quick stage's its probabilities. */
+export type KeptVerdict = JudgeVerdict | QuickVerdict
 
 /** The most verdicts a workspace keeps; past it the oldest is dropped (D91, addendum B). */
 export const JUDGE_CACHE_LIMIT = 1_000
@@ -11,10 +15,17 @@ export const JUDGE_CACHE_LIMIT = 1_000
 /** How long a verdict is kept (D91, addendum 2 D): an older one is a miss, and the file drops it at its next write. */
 export const JUDGE_CACHE_TTL_MS = 24 * 60 * 60 * 1_000
 
-const VerdictSchema = z.object({
-  kind: z.literal('verdict'), level: z.enum(['safe', 'warning', 'danger']), confidence: z.number().min(0).max(1),
-  reasoning: z.string(), model: z.string(), latencyMs: z.number().nonnegative(), promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
-})
+const Probability = z.number().min(0).max(1)
+const VerdictSchema = z.union([
+  z.object({
+    kind: z.literal('verdict'), level: z.enum(JUDGE_LEVELS), confidence: Probability,
+    reasoning: z.string(), model: z.string(), latencyMs: z.number().nonnegative(), promptDigest: z.string().regex(/^[0-9a-f]{64}$/),
+  }).strict(),
+  z.object({
+    kind: z.literal('verdict'), level: z.enum(JUDGE_LEVELS), confidence: Probability,
+    probabilities: z.object({ safe: Probability, warning: Probability, danger: Probability }).strict(), model: z.string(), latencyMs: z.number().nonnegative(),
+  }).strict(),
+])
 const EntrySchema = z.object({ key: z.string().regex(/^[0-9a-f]{64}$/), at: z.iso.datetime(), verdict: VerdictSchema })
 const CacheFileSchema = z.object({ version: z.literal(1), entries: z.array(EntrySchema).max(JUDGE_CACHE_LIMIT) })
 type CacheFile = z.infer<typeof CacheFileSchema>
@@ -25,12 +36,12 @@ export function judgeCachePath(stateDirectory: string): string {
 }
 
 /**
- * What a verdict is kept under (D91, addendum B): the provider and model that gave it, the policy as it stood (its
+ * What a verdict is kept under (D91, addendum B): the provider and model that gave it, so the two stages never share a key, the policy as it stood (its
  * updatedAt and the lists the judge was shown), the command as shown, its inline code, the sha of every file it ran,
  * sorted, every package with the version installed, whether it was a standard script, and where it ran. One byte changed in any file the code reads is a new key,
  * so all of the code is rated again.
  */
-export function judgeCacheKey(input: { provider: JudgeProvider; model: string; policyUpdatedAt: string | null; asked: JudgeInput }): string {
+export function judgeCacheKey(input: { provider: string; model: string; policyUpdatedAt: string | null; asked: JudgeInput }): string {
   const { asked } = input
   const shas = asked.files.map(file => file.sha256).sort()
   const packages = asked.packages.map(item => `${item.name}@${item.version ?? ''}`).sort()
@@ -44,8 +55,8 @@ export function judgeCacheKey(input: { provider: JudgeProvider; model: string; p
  * log says why once.
  */
 export interface JudgeCache {
-  get(key: string): JudgeVerdict | undefined
-  set(key: string, verdict: JudgeVerdict): Promise<void>
+  get(key: string): KeptVerdict | undefined
+  set(key: string, verdict: KeptVerdict): Promise<void>
   /** Empties it, returning how many verdicts it held. */
   clear(): Promise<number>
 }
@@ -55,8 +66,8 @@ export function openJudgeCache(input: { filePath: string; lockDeadlineMs?: numbe
   const fresh = (at: number) => now() - at < JUDGE_CACHE_TTL_MS
   const store = createJsonFileStore<CacheFile>({ filePath: input.filePath, schema: CacheFileSchema, fallback: { version: 1, entries: [] }, ...(input.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: input.lockDeadlineMs }) })
   let loadedVersion: string | undefined
-  let memory = new Map<string, { verdict: JudgeVerdict; at: number }>()
-  const load = (): Map<string, { verdict: JudgeVerdict; at: number }> => {
+  let memory = new Map<string, { verdict: KeptVerdict; at: number }>()
+  const load = (): Map<string, { verdict: KeptVerdict; at: number }> => {
     const version = fileVersion(input.filePath)
     if (version === loadedVersion) return memory
     try {

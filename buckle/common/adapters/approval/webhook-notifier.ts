@@ -98,13 +98,16 @@ function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions
 }
 
 /**
- * What the decision AI said of one ask's command, as a relay is told it (D91): the verdict, why there is none, or, where
- * the judge rates on request, the command that asks it. A field of Buckle's own beside the protocol's request.
+ * What the decision AI said of one ask's command, as a relay is told it (D91): the thorough stage's verdict or why there
+ * is none, with the quick stage's as `quick` where it rated; the quick stage's alone; or, where the judge rates on
+ * request, the command that asks it. A field of Buckle's own beside the protocol's request.
  */
 function judgeOf(input: { request: ApprovalRequest; notes: readonly JudgeNote[] | undefined; workspaceId: string; workspaceName?: string }) {
   const note = judgeNoteFor(input.notes, input.request)
   if (note === undefined) return undefined
-  if ('level' in note) return { level: note.level, confidence: note.confidence, model: note.model, reasoning: note.reasoning }
-  if ('unavailable' in note) return { unavailable: note.unavailable }
-  return { onRequest: true, command: judgeCommand(input) }
+  if ('onRequest' in note) return { onRequest: true, command: judgeCommand(input) }
+  const quick = note.quick ? { quick: note.quick } : {}
+  if ('level' in note) return { level: note.level, confidence: note.confidence, model: note.model, reasoning: note.reasoning, ...(note.latencyMs === undefined ? {} : { latencyMs: note.latencyMs }), ...quick }
+  if ('unavailable' in note) return { unavailable: note.unavailable, ...quick }
+  return quick
 }

@@ -7,13 +7,23 @@ export interface GrantUse {
   decidedBy?: string
 }
 
+/** What the decision AI's quick stage said (D91, addendum 2 B): its choice with the probabilities, or why it gave none. */
+export type QuickAudit =
+  | { provider: string; model: string; level: 'safe' | 'warning' | 'danger'; confidence: number; probabilities: Record<'safe' | 'warning' | 'danger', number>; latencyMs: number }
+  | { provider: string; model: string; unavailable: string }
+
+/** How a rating acted: the stage whose safe verdict ran the call, an allowed command the quick stage made ask, or one it let run. */
+interface JudgeMarks { passedBy?: 'quick' | 'thorough'; flagged?: true; screened?: true }
+
 /**
- * What the decision AI said of a call (D91): its verdict and whether it passed the call, or why it gave none. The
- * reasoning is the model's, with the credentials the display hides hidden; the prompt is kept as its digest alone.
+ * What the decision AI said of a call (D91): the thorough stage's verdict and whether a stage passed the call, or why it
+ * gave none, with the quick stage's beside it where it rated; or the quick stage's alone. The reasoning is the model's,
+ * with the credentials the display hides hidden; the prompt is kept as its digest alone.
  */
 export type JudgeAudit =
-  | { provider: string; model: string; level: 'safe' | 'warning' | 'danger'; confidence: number; reasoning: string; latencyMs: number; promptDigest: string; passed: boolean }
-  | { provider: string; model: string; unavailable: string; passed: false }
+  | ({ provider: string; model: string; level: 'safe' | 'warning' | 'danger'; confidence: number; reasoning: string; latencyMs: number; promptDigest: string; passed: boolean; quick?: QuickAudit } & JudgeMarks)
+  | ({ provider: string; model: string; unavailable: string; passed: false; quick?: QuickAudit } & JudgeMarks)
+  | ({ quick: QuickAudit; passed: boolean } & JudgeMarks)
 
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {

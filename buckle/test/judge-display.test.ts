@@ -60,8 +60,8 @@ async function asked(input: { answer?: JudgeResult; environment?: NodeJS.Process
 
 describe('an ask the decision AI rated and did not pass', () => {
   it.each([
-    ['a danger', verdict('danger', 0.92), 'danger (0.92, claude-opus-5-5): It deletes files. danger.', { level: 'danger', confidence: 0.92, model: 'claude-opus-5-5', reasoning: 'It deletes files. danger.' }, 'the decision AI rated it danger'],
-    ['a warning', verdict('warning', 0.85), 'warning (0.85, claude-opus-5-5): It deletes files. warning.', { level: 'warning', confidence: 0.85, model: 'claude-opus-5-5', reasoning: 'It deletes files. warning.' }, 'the decision AI rated it warning'],
+    ['a danger', verdict('danger', 0.92), 'danger (0.92, claude-opus-5-5, 30 ms): It deletes files. danger.', { level: 'danger', confidence: 0.92, model: 'claude-opus-5-5', reasoning: 'It deletes files. danger.', latencyMs: 30 }, 'the decision AI rated it danger'],
+    ['a warning', verdict('warning', 0.85), 'warning (0.85, claude-opus-5-5, 30 ms): It deletes files. warning.', { level: 'warning', confidence: 0.85, model: 'claude-opus-5-5', reasoning: 'It deletes files. warning.', latencyMs: 30 }, 'the decision AI rated it warning'],
     ['no verdict', { kind: 'unavailable', reason: 'the request timed out' } as JudgeResult, 'no verdict: the request timed out', { unavailable: 'the request timed out' }, 'the decision AI gave no verdict'],
   ])('shows %s beside the whole action at the terminal, in the webhook, and in the listing, and the agent the level alone', async (_, answer, line, posted, said) => {
     const { runtime, approval, question, posted: body } = await asked({ answer })

@@ -12,7 +12,7 @@ import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import { judgeable, judgePasses, withJudged } from '../../domain/permission/judged.js'
+import { passKey, withJudged } from '../../domain/permission/judged.js'
 import { judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
@@ -64,7 +64,7 @@ export interface InvokerOptions {
   checkFolder?: () => void
   actions: ActionLog
   reporter: Reporter
-  /** The workspace's decision AI as the call found it (D91): in automated mode it may pass an interpreter ask. */
+  /** The workspace's decision AI as the call found it (D91): in automated mode it may pass a command ask its stages cover. */
   judge?: JudgeGate
   paths: PathView
   serverId: string
@@ -150,7 +150,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const key = executionKey({ request, sessionId })
       // The key's one execution, once the gate claims it; settled below whatever happens after.
       const held: { claim?: ExecutionClaim } = {}
-      // What the decision AI said of the call's interpreter asks, for its audit entry (D91).
+      // What the decision AI said of the call's command asks, for its audit entry (D91).
       const judgment: { judged: JudgedAsk[] } = { judged: [] }
       let replayed = false
       let ran = false
@@ -538,8 +538,8 @@ async function clearPermissions(input: {
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
   let decidedBy: string[] = []
-  // The asks the decision AI passed (D91), taken out at every check once it rated them, so an answer to the call's
-  // other asks never asks about them again.
+  // The asks a stage of the decision AI passed (D91), taken out at every check once it rated them, so an answer to the
+  // call's other asks never asks about them again.
   let passed: ReadonlySet<string> = new Set()
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
@@ -559,13 +559,13 @@ async function clearPermissions(input: {
     ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed, decidedBy }
     : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
   let outcome = await evaluate(request.approvalTokens)
-  // In automated mode the decision AI rates the interpreter asks it may answer, once per call and outside every lock
-  // (D91): a deny returned above, and the dangerously-allow switch already turned what it covers. What it passes, the
-  // check above takes out, so the call is checked again with them gone.
-  const judging = options.judge?.mode === 'automated' && options.judge.missing === null ? options.judge : undefined
-  if (judging && outcome.kind === 'ask' && outcome.asks.some(judgeable)) {
+  // In automated mode the decision AI rates the command asks its stages cover, once per call and outside every lock
+  // (D91 and its addenda): a deny returned above, and the dangerously-allow switch already turned what it covers. What a
+  // stage passes, the check above takes out, so the call is checked again with them gone.
+  const judging = options.judge?.mode === 'automated' && options.judge.ready ? options.judge : undefined
+  if (judging && outcome.kind === 'ask' && outcome.asks.some(ask => judging.covers(ask))) {
     input.judgment.judged = await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })
-    passed = new Set(input.judgment.judged.filter(item => judgePasses(item.result)).map(item => item.subject))
+    passed = new Set(input.judgment.judged.filter(item => item.passedBy !== undefined).map(passKey))
     if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
   }
   if (outcome.kind === 'allow') return cleared(outcome, [])

@@ -1,5 +1,6 @@
 import type { JudgeResult } from '../../types/ports/judge.js'
-import type { PermissionDecision } from './decision.js'
+import type { QuickJudgeScope, QuickResult } from '../../types/ports/quick-judge.js'
+import type { AskCause, PermissionDecision } from './decision.js'
 import type { PermissionOutcome } from './engine.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -7,31 +8,53 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 /** How an ask the decision AI passed reads in allowedBy and approvedBy: `judge:destructive_command:<subject>` (D91). */
 export const JUDGE = 'judge'
 
-/** The confidence a `safe` verdict needs before it passes a call (D91); any other verdict asks as before. */
+/** The confidence a verdict needs before it acts (D91): a `safe` one passes a call, and a quick `danger` one goes straight to a person. */
 export const JUDGE_PASS_CONFIDENCE = 0.8
 
 /**
- * Whether the decision AI may answer an ask (D91): the destructive floor's ask about an interpreter the policy does not
- * allow, and nothing else. Never a deny, a built-in floor reason, another reading limit, or the workspace's destructive list.
+ * Whether the thorough stage answers an ask on its own (D91): the destructive floor's ask about an interpreter the policy
+ * does not allow, and nothing else. Never a deny, a built-in floor reason, another reading limit, or the workspace's
+ * destructive list, unless the quick stage rated it first (addendum 2 B).
  */
 export function judgeable(ask: Ask): boolean {
   return ask.rule === 'destructive_command' && ask.cause === 'interpreter'
 }
 
+/**
+ * Whether the quick stage's scope (approval.quickJudge) covers an ask (D91, addendum 2 B): `interpreters`, the asks the
+ * thorough stage answers; `asks` and `all`, every command ask a person would see, at the destructive floor for any reason.
+ * Never a deny, which is no ask, and never an ask the gate itself made of a quick danger verdict.
+ */
+export function quickCovers(scope: QuickJudgeScope, ask: Ask): boolean {
+  if (scope === 'off') return false
+  if (scope === 'interpreters') return judgeable(ask)
+  return ask.rule === 'destructive_command' && ask.cause !== undefined && ask.cause !== 'judge'
+}
+
 /** Whether a rating passes the call: `safe` at JUDGE_PASS_CONFIDENCE or above. A `warning` never runs without a person. */
-export function judgePasses(result: JudgeResult): boolean {
+export function judgePasses(result: JudgeResult | QuickResult): boolean {
   return result.kind === 'verdict' && result.level === 'safe' && result.confidence >= JUDGE_PASS_CONFIDENCE
 }
 
+/** Whether a rating is `danger` at JUDGE_PASS_CONFIDENCE or above: from the quick stage, that goes to a person with no thorough call. */
+export function ratedDanger(result: JudgeResult | QuickResult): boolean {
+  return result.kind === 'verdict' && result.level === 'danger' && result.confidence >= JUDGE_PASS_CONFIDENCE
+}
+
+/** What a stage's pass is kept under: the cause and the subject of the ask it rated, so it lifts that ask and no other. */
+export function passKey(ask: { cause?: AskCause | undefined; subject: string }): string {
+  return `${ask.cause ?? 'none'}:${ask.subject}`
+}
+
 /**
- * The outcome with every ask the decision AI passed (`passed`, by subject) taken out: an allow naming each as
+ * The outcome with every ask the decision AI passed (`passed`, by passKey) taken out: an allow naming each as
  * `judge:<rule>:<subject>` beside the grants the rest of the call relied on, once no ask is left; the asks left otherwise.
  * Applied to each check the approval registry makes, so a call cleared after a person answered its other asks is not
  * asked about the passed one again.
  */
 export function withJudged(outcome: PermissionOutcome, passed: ReadonlySet<string>): PermissionOutcome {
   if (outcome.kind !== 'ask' || passed.size === 0) return outcome
-  const left = outcome.asks.filter(ask => !(judgeable(ask) && passed.has(ask.subject)))
+  const left = outcome.asks.filter(ask => !(ask.rule === 'destructive_command' && ask.cause !== 'judge' && passed.has(passKey(ask))))
   if (left.length === outcome.asks.length) return outcome
   if (left.length > 0) return { ...outcome, asks: left }
   return { kind: 'allow', allowedBy: [...outcome.allowedBy ?? [], ...outcome.asks.map(ask => `${JUDGE}:${ask.rule}:${ask.subject}`)] }
