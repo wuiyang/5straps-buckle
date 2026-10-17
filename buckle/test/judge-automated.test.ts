@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -103,6 +103,21 @@ describe('any other answer', () => {
     expect(response).toMatchObject({ outcome: 'approval_required' })
     expect(ran).toBe(false)
     expect(entry.judge).toMatchObject({ provider: 'openai-compatible', model: 'claude-opus-5-5', passed: false, ...(answer.kind === 'verdict' ? { level: answer.level } : { unavailable: 'the request timed out' }) })
+  })
+})
+
+describe('code the judge cannot read', () => {
+  it('asks, naming no path, where reading it throws, as at a hard link on the disk that holds Buckle\'s state', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    linkSync(join(config.cwd, 'job.py'), join(config.cwd, 'job-link.py'))
+    const runtime = await runtimeOf(config, judge)
+    const { response, entry, ran } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(entry.judge).toMatchObject({ unavailable: 'the code could not be read', passed: false })
+    expect(JSON.stringify(response)).not.toContain(config.cwd)
   })
 })
 

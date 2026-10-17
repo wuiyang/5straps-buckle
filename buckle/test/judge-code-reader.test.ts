@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -125,6 +125,22 @@ describe('what the reader never reads', () => {
     expect(read(['node', join(base, 'elsewhere.mjs')])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
     expect(read(['python3', '../elsewhere.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
     expect(read(['node', 'app.mjs'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.unreadable })
+  })
+
+  it('rates nothing, naming no path, where reading a file throws', () => {
+    const { root } = workspace({ 'app.mjs': 'export {}\n' })
+    const paths = createPathView({ root, mount: '/workspace' })
+    const failing = createCodeView({ paths, canRead: () => true, protectedRoots: [] })
+    const view = { ...failing, read: () => { throw Object.assign(new Error(`EACCES: permission denied, open '${root}/app.mjs'`), { code: 'EACCES' }) } }
+    expect(readInterpreterCode({ forms: [['node', 'app.mjs']], cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.failed, truncated: false })
+  })
+
+  it('refuses a hard link on the disk that holds Buckle\'s state, rather than failing the call', () => {
+    const { root } = workspace({ 'app.mjs': 'export {}\n' })
+    linkSync(join(root, 'app.mjs'), join(root, 'other.mjs'))
+    const paths = createPathView({ root, mount: '/workspace' })
+    const view = createCodeView({ paths, canRead: () => true, protectedRoots: [root] })
+    expect(readInterpreterCode({ forms: [['node', 'app.mjs']], cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.failed, truncated: false })
   })
 
   it('refuses a file that is not text', () => {

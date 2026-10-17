@@ -19,6 +19,7 @@ export const CODE_REFUSALS = Object.freeze({
   unnamed: 'the code runs a file the sandbox does not name',
   binary: 'the code runs a file that is not text',
   missing: 'the code imports a file that does not exist',
+  failed: 'the code could not be read',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: string[] }
@@ -56,6 +57,12 @@ type Language = 'js' | 'python' | 'shell' | null
  * read or the sandbox does not name, at one that is not text, and at a local import naming nothing.
  */
 export function readInterpreterCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+  // A file that vanished, one nobody may open, or a hard link onto Buckle's state throws, naming a host path: the judge
+  // rates nothing then, and the reason names no path.
+  try { return readCode(input) } catch { return refused(CODE_REFUSALS.failed) }
+}
+
+function readCode(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
   const { view, cwd } = input
   const inline: string[] = []
   const packages = new Set<string>()
