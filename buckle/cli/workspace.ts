@@ -1,14 +1,15 @@
 import { createInterface } from 'node:readline/promises'
 import { parseArgs } from 'node:util'
 import { isAbsolute } from 'node:path'
-import { resolve } from 'pathe'
+import { dirname, resolve } from 'pathe'
 import { ZodError } from 'zod'
 import { scratchSources, type NodeConfig } from '../common/runtime/config.js'
 import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { credentialLikeName, resolveSettings, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, resolveSettings, settingsPath, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { restartRoute, restartSteps, restartSubject } from '../common/services/node-service/installed.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
@@ -51,6 +52,7 @@ the one whose folder holds --dir <path>, or else the current directory. <name> i
                                        Change one setting: name, env.<NAME>, or a key buckle workspace show lists
   buckle workspace token create [--label <text>] | list | revoke <token-id>
                                        Mint an agent token, shown once; list them; refuse one from now on
+  buckle workspace judge-cache clear   Forget the decision AI's kept verdicts, so each call is rated again
 
 A name that another workspace holds is asked about at a terminal; with --yes, or none, the command is refused.
 `
@@ -87,6 +89,7 @@ export async function workspaceRegistryCommand(input: { config: NodeConfig; work
       case 'unset': return await unset(context)
       case 'token': return await token(context)
       case 'mount': return await mount(context)
+      case 'judge-cache': return await judgeCache(context)
       case 'help': case '--help': case '-h':
         process.stdout.write(USAGE)
         return { exitCode: 0 }
@@ -360,6 +363,20 @@ function credentialValueRefusal(context: Context, value: string): string | null 
   const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
   const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)
   return held ? 'That value holds one of this node\'s credentials, and no secret reaches a command Buckle runs' : null
+}
+
+/**
+ * `buckle workspace judge-cache clear` (D91, addendum B): empties the workspace's judge-cache.json, in its own state
+ * directory, so the decision AI rates each call again; a running node reads the emptied file at its next rating.
+ */
+async function judgeCache(context: Context): Promise<CliResult> {
+  const [action, ...extra] = context.rest
+  if (action !== 'clear' || extra.length > 0) return fail('Usage: buckle workspace judge-cache clear [--workspace <name>]')
+  const workspace = targeted(context)
+  const cache = openJudgeCache({ filePath: judgeCachePath(dirname(settingsPath(context.config.stateDirectory, workspace.id))), ...(context.config.stateLockDeadlineMs === undefined ? {} : { lockDeadlineMs: context.config.stateLockDeadlineMs }) })
+  const held = await cache.clear()
+  process.stdout.write(`Workspace ${workspace.name}: the decision AI's ${held} kept verdict${held === 1 ? ' is' : 's are'} cleared, so each call is rated again.\n`)
+  return { exitCode: 0, detail: `judge-cache clear ${workspace.name}` }
 }
 
 const MOUNT_USAGE = 'Usage: buckle workspace mount add <local>:<sandbox>[:ro] [--read-only] | mount remove <sandbox> | mount list [--json]'
