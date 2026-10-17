@@ -157,7 +157,7 @@ function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr
   // D85, Q3: every workspace's defaults come from the file alone, so a shell's or an MCP config's env never lifts them.
   const unread = unreadWorkspaceDefaults(layers)
   const were = `${wordList(unread)} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment`
-  if (unread.length > 0) logging.logger.warn(`Not read: ${were}${environment.file === null ? ', but this node has no buckle.env' : ` to another value than ${environment.file} holds`}. A node takes every workspace's defaults from its environment file alone, so a shell's or an MCP config's env cannot change them; ${environment.file === null ? 'run buckle init to write the file, then set them' : 'change them'} with buckle settings set.`)
+  if (unread.length > 0) logging.logger.warn(`Not read: ${were}${environment.file === null ? ', but this node has no buckle.env' : ` to another value than ${environment.file} holds`}. A node takes every workspace's defaults, and the decision AI's keys and addresses, from its environment file alone, so a shell's or an MCP config's env cannot change them; ${environment.file === null ? 'run buckle init to write the file, then set them' : 'change them'} with buckle settings set, or a decision AI key or address in buckle.env by hand.`)
   return { config: loadConfig(process.env, process.platform, layers), logging }
 }
 

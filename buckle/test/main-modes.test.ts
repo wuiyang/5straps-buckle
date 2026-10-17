@@ -127,7 +127,7 @@ describe('main', () => {
     vi.stubEnv('BUCKLE_PACKS', 'fs')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual('Not read: BUCKLE_PACKS and BUCKLE_ALLOW_SHELL are set in this command\'s environment, but this node has no buckle.env. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; run buckle init to write the file, then set them with buckle settings set.')
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_PACKS and BUCKLE_ALLOW_SHELL are set in this command\'s environment, but this node has no buckle.env. A node takes every workspace\'s defaults, and the decision AI\'s keys and addresses, from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; run buckle init to write the file, then set them with buckle settings set, or a decision AI key or address in buckle.env by hand.')
       expect(entry.loadConfig).toHaveBeenLastCalledWith(process.env, process.platform, expect.objectContaining({ file: null, defaultsFromFileAlone: true }))
     } finally {
       vi.unstubAllEnvs()
@@ -155,7 +155,7 @@ describe('main', () => {
     vi.stubEnv('BUCKLE_COMMAND_DENY', '')
     try {
       expect(await main(['policy', 'show'])).toBe(5)
-      expect(entry.warnings).toContainEqual('Not read: BUCKLE_COMMAND_DENY and BUCKLE_ALLOW_SHELL are set in this command\'s environment to another value than /state/buckle.env holds. A node takes every workspace\'s defaults from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; change them with buckle settings set.')
+      expect(entry.warnings).toContainEqual('Not read: BUCKLE_COMMAND_DENY and BUCKLE_ALLOW_SHELL are set in this command\'s environment to another value than /state/buckle.env holds. A node takes every workspace\'s defaults, and the decision AI\'s keys and addresses, from its environment file alone, so a shell\'s or an MCP config\'s env cannot change them; change them with buckle settings set, or a decision AI key or address in buckle.env by hand.')
     } finally {
       vi.unstubAllEnvs()
     }

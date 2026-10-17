@@ -262,12 +262,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
-    judgeApiKey: environment.BUCKLE_JUDGE_API_KEY || undefined,
-    judgeBaseUrl: parseNodeUrl('BUCKLE_JUDGE_BASE_URL', environment.BUCKLE_JUDGE_BASE_URL),
-    socketApiKey: environment.BUCKLE_SOCKET_API_KEY || undefined,
-    socketBaseUrl: parseNodeUrl('BUCKLE_SOCKET_BASE_URL', environment.BUCKLE_SOCKET_BASE_URL),
-    quickJudgeApiKey: environment.BUCKLE_QUICK_JUDGE_API_KEY || undefined,
-    quickJudgeBaseUrl: parseNodeUrl('BUCKLE_QUICK_JUDGE_BASE_URL', environment.BUCKLE_QUICK_JUDGE_BASE_URL),
+    ...decisionAiEndpoints(layers.file?.values ?? (layers.defaultsFromFileAlone ? {} : environment)),
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
@@ -296,11 +291,36 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL',
 ])
 
-/** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
+/**
+ * The decision AI's keys and the addresses its stages and Socket are asked at (D91, fix brief 1 item 17), which a node
+ * reads from its environment file alone, as it reads every workspace's defaults: a shell's or an MCP config's env, which
+ * an agent may be able to write, could otherwise send the owner's keys to a host it names and have its answer run calls.
+ */
+export const DECISION_AI_FILE_KEYS: readonly string[] = Object.freeze([
+  'BUCKLE_JUDGE_API_KEY', 'BUCKLE_JUDGE_BASE_URL', 'BUCKLE_QUICK_JUDGE_API_KEY', 'BUCKLE_QUICK_JUDGE_BASE_URL', 'BUCKLE_SOCKET_API_KEY', 'BUCKLE_SOCKET_BASE_URL',
+])
+
+/** The decision AI's keys and addresses from `variables`: the environment file's, where the process entry reads its defaults from it alone. */
+function decisionAiEndpoints(variables: NodeJS.ProcessEnv): Pick<NodeConfig, 'judgeApiKey' | 'judgeBaseUrl' | 'socketApiKey' | 'socketBaseUrl' | 'quickJudgeApiKey' | 'quickJudgeBaseUrl'> {
+  return {
+    judgeApiKey: variables.BUCKLE_JUDGE_API_KEY || undefined,
+    judgeBaseUrl: parseNodeUrl('BUCKLE_JUDGE_BASE_URL', variables.BUCKLE_JUDGE_BASE_URL),
+    socketApiKey: variables.BUCKLE_SOCKET_API_KEY || undefined,
+    socketBaseUrl: parseNodeUrl('BUCKLE_SOCKET_BASE_URL', variables.BUCKLE_SOCKET_BASE_URL),
+    quickJudgeApiKey: variables.BUCKLE_QUICK_JUDGE_API_KEY || undefined,
+    quickJudgeBaseUrl: parseNodeUrl('BUCKLE_QUICK_JUDGE_BASE_URL', variables.BUCKLE_QUICK_JUDGE_BASE_URL),
+  }
+}
+
+/**
+ * The settings a node reads from its environment file alone (every workspace's defaults, and the decision AI's keys and
+ * addresses) that the caller's environment sets to another value than the file holds, which the node does not read; all
+ * it sets, where the node has no file. By name alone: a key's value is never part of the warning.
+ */
 export function unreadWorkspaceDefaults(layers: EnvironmentLayers): string[] {
   const file = layers.file
   if (file === null && layers.defaultsFromFileAlone !== true) return []
-  return WORKSPACE_DEFAULT_KEYS.filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file?.values[key])
+  return [...WORKSPACE_DEFAULT_KEYS, ...DECISION_AI_FILE_KEYS].filter(key => layers.caller[key] !== undefined && layers.caller[key] !== file?.values[key])
 }
 
 /**

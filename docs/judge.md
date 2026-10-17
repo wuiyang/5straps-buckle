@@ -83,7 +83,8 @@ Each is a workspace setting (`buckle workspace set <key> <value>`), else the nod
 | `approval.quickJudgeModel` | `BUCKLE_APPROVAL_QUICK_JUDGE_MODEL` | `jev-latest` |
 
 Set the model your gateway serves: it may name `gpt-6-luna` differently. The node alone holds, by
-hand in `buckle.env`, `BUCKLE_JUDGE_API_KEY` and `BUCKLE_JUDGE_BASE_URL` (unset:
+hand in `buckle.env` and read from that file alone, never from a shell's or an MCP config's env,
+`BUCKLE_JUDGE_API_KEY` and `BUCKLE_JUDGE_BASE_URL` (unset:
 `https://api.openai.com/v1`), `BUCKLE_QUICK_JUDGE_API_KEY` and `BUCKLE_QUICK_JUDGE_BASE_URL`
 (unset: `https://api.typesafe.ai`), and `BUCKLE_SOCKET_API_KEY` for
 [Socket](judge-02.md#packages-and-socket), a supply-chain security service. `buckle settings show` names them and never prints
