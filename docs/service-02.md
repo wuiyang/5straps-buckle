@@ -36,9 +36,10 @@ Run `install` from a terminal in your login session at the Mac. Over SSH (a remo
 nobody logged in at the Mac, no login session answers, and `install` refuses, naming
 `buckle serve --background`.
 
-What the node writes before it opens its own log, such as a crash at start, goes to
-`logs/launchd.log` in the state directory, owner-only, which `buckle service logs` does not show;
-nothing rotates it.
+What the node prints before its logger starts, such as an unknown option or a module that will not
+load, goes to `logs/launchd.log` in the state directory, owner-only, which `buckle service logs`
+does not show; nothing rotates it. A start that fails after that, such as a port already in use,
+is in `logs/buckle.log`, which `buckle service logs` shows.
 
 ## In the background, once
 
