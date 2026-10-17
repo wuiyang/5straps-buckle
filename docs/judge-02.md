@@ -75,7 +75,8 @@ header). A workspace shown at its real path is named `/workspace`; a host path t
 into the command itself stays in the command.
 
 Jev reads at most 64,000 tokens a request. Buckle sends it at most 160 KiB of JSON, about 40,000
-tokens; a larger call is not sent to Jev at all, and the routing goes on without it.
+tokens; a larger call is not sent to Jev at all, and the routing goes on without it. Each
+`<image:` in it is sent as `<image :`, as TypeSafe's SDK would refuse it as a picture reference.
 
 ## The fixed instructions
 

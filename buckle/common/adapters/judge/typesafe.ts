@@ -49,7 +49,7 @@ export function createTypeSafeQuickJudge(options: { apiKey: string; baseUrl?: st
     const startedAt = performance.now()
     let body: unknown
     try {
-      body = await client.systemOne({ state: input as unknown as { [key: string]: ContentValue }, model, questions: { safety: choice(QUICK_INSTRUCTIONS, LEVEL_DEFINITIONS) } }, signal ? { signal } : {})
+      body = await client.systemOne({ state: stateOf(input), model, questions: { safety: choice(QUICK_INSTRUCTIONS, LEVEL_DEFINITIONS) } }, signal ? { signal } : {})
     } catch (error) {
       return { kind: 'unavailable', reason: failureOf(error) }
     }
@@ -66,6 +66,16 @@ export function createTypeSafeQuickJudge(options: { apiKey: string; baseUrl?: st
       try { return await rate(input, options) } catch { return { kind: 'unavailable', reason: 'the request failed' } }
     },
   }
+}
+
+/**
+ * The call as Jev's state, every `<image:` written `<image :` with a plain space (fix brief 1, item 2). Before it sends,
+ * the SDK refuses a request whose text holds what reads as a reference to an image not attached (`<image:` and 32 hex
+ * digits), and 0.7.0 offers no escape for one, so a command holding one would make every quick rating unavailable, and
+ * under scope `all` would let it run unscreened. Buckle attaches no image, so each is the command's own text.
+ */
+function stateOf(input: JudgeInput): { [key: string]: ContentValue } {
+  return JSON.parse(JSON.stringify(input).replaceAll('<image:', '<image :')) as { [key: string]: ContentValue }
 }
 
 /** The answers a body holds, keyed by question name, or null where it is no object holding them. */

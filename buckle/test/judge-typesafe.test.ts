@@ -56,6 +56,16 @@ describe('the request Jev is asked with', () => {
     expect(sent[0]!.text).not.toContain(KEY)
   })
 
+  it('sends a command holding what the SDK reads as an image reference, written with a space, and uses the verdict', async () => {
+    const reference = `<image:${'a1'.repeat(16)}>`
+    const { fetch, sent } = fakeFetch(answer(CHOICE))
+    const asked = { ...INPUT, command: `node job.js ${reference}`, inline: `console.log("${reference}")`, description: reference }
+    expect(await createTypeSafeQuickJudge({ apiKey: KEY, fetch }).quick(asked, { model: MODEL })).toMatchObject({ kind: 'verdict', level: 'safe' })
+    expect(sent).toHaveLength(1)
+    expect(sent[0]!.text).not.toContain('<image:')
+    expect(JSON.parse(sent[0]!.text).state.command).toBe(`node job.js <image :${'a1'.repeat(16)}>`)
+  })
+
   it('takes nothing from the environment: no key, base URL, or model, and prints nothing at a debug log level', async () => {
     vi.stubEnv('TYPESAFE_API_KEY', 'ts-environment-key')
     vi.stubEnv('TYPESAFE_BASE_URL', 'https://proxy.invalid')
