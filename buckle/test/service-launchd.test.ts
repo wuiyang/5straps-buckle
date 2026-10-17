@@ -1,4 +1,4 @@
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
@@ -291,6 +291,34 @@ describe.skipIf(process.platform === 'win32')('launchctl, imitated at an injecte
     expect(readFileSync(launchdLogPath(fake.state), 'utf8')).toBe('an earlier line\n')
     expect(fake.calls()).toEqual([`enable ${SERVICE}`])
     expect(fake.node()).toBeNull()
+  })
+
+  // Fix brief 7, item 3: the agent is written through a temporary file and a rename, so what stood at its path is replaced.
+  it('replaces a link at the agent path with a regular file, and leaves the file it pointed to as it was', async () => {
+    const fake = fakeLaunchd()
+    mkdirSync(join(fake.home, 'Library', 'LaunchAgents'), { recursive: true })
+    const outside = join(fake.root, 'outside')
+    writeFileSync(outside, 'untouched', { mode: 0o644 })
+    chmodSync(outside, 0o644)
+    symlinkSync(outside, AGENT(fake))
+    const definition = { ...DEFINITION, stateDirectory: fake.state }
+    await fake.manager().install(definition, { now: false })
+    expect(lstatSync(AGENT(fake)).isSymbolicLink()).toBe(false)
+    expect(readFileSync(AGENT(fake), 'utf8')).toBe(renderAgent(definition))
+    expect(statSync(AGENT(fake)).mode & 0o777).toBe(0o600)
+    expect(readFileSync(outside, 'utf8')).toBe('untouched')
+    expect(statSync(outside).mode & 0o777).toBe(0o644)
+  })
+
+  it('writes the agent owner-only over an earlier one that anyone could read', async () => {
+    const fake = fakeLaunchd()
+    mkdirSync(join(fake.home, 'Library', 'LaunchAgents'), { recursive: true })
+    writeFileSync(AGENT(fake), 'an earlier agent', { mode: 0o644 })
+    chmodSync(AGENT(fake), 0o644)
+    const definition = { ...DEFINITION, stateDirectory: fake.state }
+    await fake.manager().install(definition, { now: false })
+    expect(statSync(AGENT(fake)).mode & 0o777).toBe(0o600)
+    expect(readFileSync(AGENT(fake), 'utf8')).toBe(renderAgent(definition))
   })
 
   it('reads the installed agent back, enabled unless print-disabled lists it, and tells this node\'s agent from another\'s', async () => {
