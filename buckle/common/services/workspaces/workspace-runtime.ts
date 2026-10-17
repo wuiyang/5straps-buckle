@@ -777,6 +777,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
+    approval: { judge: config.approvalJudge, ...(config.approvalJudgeProvider ? { judgeProvider: config.approvalJudgeProvider } : {}), ...(config.approvalJudgeModel ? { judgeModel: config.approvalJudgeModel } : {}), judgeStandardScripts: [...config.approvalJudgeStandardScripts] },
     env: config.commandEnvironment,
   })
 }

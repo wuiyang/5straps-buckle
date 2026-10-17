@@ -13,6 +13,16 @@ export interface Judge {
 export const JUDGE_PROVIDERS = ['anthropic', 'openai'] as const
 export type JudgeProvider = typeof JUDGE_PROVIDERS[number]
 
+/**
+ * When a workspace hands interpreter calls to the decision AI (approval.judge): never; when its owner asks
+ * (`buckle approvals judge <token>`); or at each call, where a safe rating runs the call without a person.
+ */
+export const JUDGE_MODES = ['off', 'on-request', 'automated'] as const
+export type JudgeMode = typeof JUDGE_MODES[number]
+
+/** A model name as approval.judgeModel holds it: no blank and no control character, at most 200 characters. */
+export const JUDGE_MODEL_NAME = /^[^\s\p{Cc}]{1,200}$/u
+
 /** How one rating is asked: the model the workspace names (approval.judgeModel), and the caller's signal. */
 export interface JudgeOptions {
   model: string

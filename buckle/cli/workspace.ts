@@ -213,20 +213,24 @@ function show(context: Context): CliResult {
     ['browser.profile', inForce.browser.profile ?? '(none: a fresh browser)', inForce.sources['browser.profile']!],
     ['browser.args', inForce.browser.args ?? '(none)', inForce.sources['browser.args']!],
     ['browser.headed', onOff(inForce.browser.headed), inForce.sources['browser.headed']!],
+    ['approval.judge', inForce.approval.judge, inForce.sources['approval.judge']!],
+    ['approval.judgeProvider', inForce.approval.judgeProvider ?? '(none: the judge stays off)', inForce.sources['approval.judgeProvider']!],
+    ['approval.judgeModel', inForce.approval.judgeModel ?? '(none: the judge stays off)', inForce.sources['approval.judgeModel']!],
+    ['approval.judgeStandardScripts', inForce.approval.judgeStandardScripts.length === 0 ? '(none)' : inForce.approval.judgeStandardScripts.join(';;'), inForce.sources['approval.judgeStandardScripts']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]
   process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}
 Folder    ${workspace.dir}
 
 Settings in force, each from the workspace's own workspace.json, the node's default in buckle.env, or Buckle's:
-${rows.map(([key, value, source]) => `  ${key.padEnd(24)}${value.padEnd(36)} ${SOURCE_LABELS[source]}`).join('\n')}
+${rows.map(([key, value, source]) => `  ${key.padEnd(23)} ${value.padEnd(36)} ${SOURCE_LABELS[source]}`).join('\n')}
 Its policy lists, each with where it comes from: buckle policy show --workspace ${named}.
 
 Change a setting with buckle workspace set <key> <value> --workspace ${named}, or take the workspace's own out with
 buckle workspace unset <key>, so the node's applies; the keys:
   name                    the workspace's name
   env.<NAME>              a variable its commands see; a credential-like name is taken with a warning
-${SETTING_KEYS.map(key => `  ${key.key.padEnd(24)}${key.takes}`).join('\n')}
+${SETTING_KEYS.map(key => `  ${key.key.padEnd(23)} ${key.takes}`).join('\n')}
 Its policy lists change with buckle policy --workspace ${named}.
 `)
   return { exitCode: 0 }
@@ -345,13 +349,13 @@ async function settingKey(key: string, context: Pick<Context, 'config'>): Promis
 
 /**
  * A value holding one of this node's secrets never becomes a variable a command reads (no secret reaches a child
- * process): the admin and agent tokens, the forge token, the Brave key, the Rings report token and pairing key, and the
+ * process): the admin and agent tokens, the forge token, the Brave key, the judge key, the Rings report token and pairing key, and the
  * approval webhook's URL, anywhere in the value, and a workspace's agent token as a word of it, which only its digest
  * can recognise (finding 26 of the Phase 1 review).
  */
 function credentialValueRefusal(context: Context, value: string): string | null {
   const { config } = context
-  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
+  const secrets = [config.adminToken, config.authToken, config.forgeGithubToken, config.braveSearchApiKey, config.judgeApiKey, config.reportToken, config.ringsApprovalKey?.secret.toString('base64url'), config.approvalWebhook]
     .flatMap(secret => (secret?.trim() ? [secret.trim()] : []))
   const words = [value.trim(), ...value.split(/[^A-Za-z0-9_-]+/)].filter(Boolean)
   const held = secrets.some(secret => value.includes(secret)) || words.some(word => context.workspaces.tokenOwner(`Bearer ${word}`) !== null)

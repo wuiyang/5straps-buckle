@@ -8,6 +8,8 @@ import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount, type TableMount 
 import { comparablePath, ignoresCase, isInside, pathRoot } from '../../domain/paths.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
 import { browserBlockRefusal, DEFAULT_APPROVAL_WAIT_MS, type BrowserSettingNames, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
+import { compileCommandGlob } from '../../domain/command-glob.js'
+import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../../types/ports/judge.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
@@ -67,6 +69,33 @@ const BROWSER_KEYS: ReadonlyArray<[string, string]> = [['BUCKLE_BROWSER_CDP', 'b
 const ShellSchema = z.object({
   network: z.boolean().optional(),
   isolation: z.boolean().optional(),
+}).strict()
+
+/**
+ * The commands the decision AI rates on their command line alone (D91, addendum D): the project's own tooling, whose
+ * code is its dependencies', so no file is read for them. `npm run dev` runs whatever package.json names: the owner's
+ * call, which is why the list is the owner's to change or empty.
+ */
+export const STANDARD_SCRIPTS: readonly string[] = Object.freeze([
+  'npm run *', 'npm test', 'npm start', 'pnpm run *', 'pnpm dev', 'pnpm build', 'pnpm test', 'yarn run *', 'yarn dev', 'yarn build', 'yarn test',
+  'bun run *', 'npx tsc *', 'npx vitest *', 'npx eslint *', 'npx prettier *', 'pnpx tsc *', 'pnpx vitest *', 'bunx tsc *', 'bunx vitest *',
+])
+
+/** A standard-scripts entry: a command glob in the allow list's syntax, refused where it does not compile. */
+const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
+  try { compileCommandGlob(glob); return true } catch { return false }
+}, { message: 'not a command glob Buckle reads' })
+
+/**
+ * Its decision AI (D91): `judge` says when it rates an interpreter call (off, on-request, or automated), `judgeProvider`
+ * and `judgeModel` which model rates it, with no default of Buckle's own, and `judgeStandardScripts` the commands rated on
+ * their command line alone. None holds a credential: the key and a base URL are the node's alone.
+ */
+const ApprovalSchema = z.object({
+  judge: z.enum(JUDGE_MODES).optional(),
+  judgeProvider: z.enum(JUDGE_PROVIDERS).optional(),
+  judgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
+  judgeStandardScripts: z.array(StandardScriptSchema).max(200).optional(),
 }).strict()
 
 /**
@@ -206,6 +235,7 @@ export const WorkspaceSettingsSchema = z.object({
   packs: PacksSchema.default({}),
   shell: ShellSchema.default({}),
   browser: BrowserSchema.default({}),
+  approval: ApprovalSchema.default({}),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
@@ -234,6 +264,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
+  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeStandardScripts: STANDARD_SCRIPTS }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -247,9 +278,18 @@ export interface ResolvedSettings {
   approvalWaitMs: number
   shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
+  approval: ResolvedApproval
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
   sources: Readonly<Record<string, SettingSource>>
+}
+
+/** A workspace's decision AI in force (D91): no provider or model of Buckle's own, so the judge is off until both are named. */
+export interface ResolvedApproval {
+  judge: JudgeMode
+  judgeProvider?: JudgeProvider
+  judgeModel?: string
+  judgeStandardScripts: readonly string[]
 }
 
 /** A deny-type list in force, entry by entry: the node's floor, and the workspace's own beside it. */
@@ -329,6 +369,12 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
       isolation: pick('shell.isolation', stored.shell.isolation, node.shell.isolation, BUILT_IN_SETTINGS.shell.isolation),
     },
     browser,
+    approval: {
+      judge: pick('approval.judge', stored.approval.judge, node.approval.judge, BUILT_IN_SETTINGS.approval.judge),
+      ...defined('judgeProvider', pick<JudgeProvider | undefined>('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, undefined)),
+      ...defined('judgeModel', pick<string | undefined>('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, undefined)),
+      judgeStandardScripts: pick('approval.judgeStandardScripts', stored.approval.judgeStandardScripts, node.approval.judgeStandardScripts, BUILT_IN_SETTINGS.approval.judgeStandardScripts),
+    },
     env: { ...node.env, ...stored.env },
     sources,
   }
@@ -460,9 +506,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

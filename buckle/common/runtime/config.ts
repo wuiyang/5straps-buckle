@@ -12,6 +12,8 @@ import { compileHostPattern, UrlPatternError } from '../domain/url-pattern.js'
 import { compilePolicy, PolicyError } from '../domain/policy.js'
 import { launchdGuardedPaths } from '../domain/launchd-agent.js'
 import { systemdGuardedPaths } from '../domain/systemd-unit.js'
+import { compileCommandGlob, CommandGlobError } from '../domain/command-glob.js'
+import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../types/ports/judge.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -69,6 +71,16 @@ export interface NodeConfig {
   isolationMaxBytes: number
   environmentValidator?: string
   braveSearchApiKey?: string
+  /**
+   * The key the node asks the decision AI with (D91): the node's alone, never a workspace's, never printed, and never
+   * passed to a program it runs. Absent, every workspace's judge stays off whatever approval.judge says.
+   */
+  judgeApiKey?: string
+  /**
+   * Where an OpenAI-compatible judge is asked, for a gateway or a local model (D91, addendum A): the node's alone, and
+   * never used for Anthropic, whose API is fixed. Absent, OpenAI's own.
+   */
+  judgeBaseUrl?: string
   /**
    * The owner's forge credential. Absent withholds the forge pack, naming the variable, rather
    * than failing partway through a commit-push-review sequence.
@@ -129,6 +141,14 @@ export interface BuckleConfig extends NodeConfig {
   shellNetwork: boolean
   /** Whether its shell runs on private copies of the folder (shell.isolation). */
   isolateShell: boolean
+  /**
+   * Its decision AI (D91): when it rates an interpreter call (approval.judge), the provider and model that rate it, with
+   * no default of Buckle's own, and the commands it rates on their command line alone (approval.judgeStandardScripts).
+   */
+  approvalJudge: JudgeMode
+  approvalJudgeProvider?: JudgeProvider | undefined
+  approvalJudgeModel?: string | undefined
+  approvalJudgeStandardScripts: readonly string[]
   /**
    * Its browser (Phase 2 item 6, Q10): the owner's own Chrome over its DevTools port (browser.cdp), a profile folder kept
    * across launches (browser.profile, as the disk names it), Chromium arguments for a browser Buckle launches
@@ -224,6 +244,8 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
     environmentValidator: environment.BUCKLE_ENV_VALIDATOR_COMMAND || undefined,
     braveSearchApiKey: environment.BUCKLE_BRAVE_SEARCH_API_KEY || undefined,
+    judgeApiKey: environment.BUCKLE_JUDGE_API_KEY || undefined,
+    judgeBaseUrl: parseJudgeBaseUrl(environment.BUCKLE_JUDGE_BASE_URL),
     forgeGithubToken: environment.BUCKLE_FORGE_GITHUB_TOKEN || undefined,
     forgeApiUrl: parseForgeApiUrl(environment.BUCKLE_FORGE_GITHUB_API_URL),
     forgeGitAuthor: parseGitAuthor(environment.BUCKLE_FORGE_GIT_AUTHOR),
@@ -248,6 +270,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
+  'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
 ])
 
 /** The workspace defaults the caller's environment sets to another value than the node's file holds, which the node does not read; all it sets, where the node has no file. */
@@ -331,6 +354,8 @@ export interface WorkspaceScope {
    * own by its key, the node's by its variable.
    */
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
+  /** Its decision AI (D91). */
+  approval: { judge: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts: readonly string[] }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -359,6 +384,8 @@ export interface NodeDefaults {
   /** BUCKLE_SHELL_NETWORK and BUCKLE_SHELL_ISOLATION, where buckle.env names them. */
   shell: { network?: boolean; isolation?: boolean }
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
+  /** BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, where buckle.env names them (D91). */
+  approval: { judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[] }
   env: Readonly<Record<string, string>>
 }
 
@@ -397,8 +424,42 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
     ...(approvalWait === undefined ? {} : { approvalWaitMs: approvalWait }),
     shell: { ...defined('network', flag('BUCKLE_SHELL_NETWORK', 'true')), ...(environment.BUCKLE_SHELL_ISOLATION ? { isolation: environment.BUCKLE_SHELL_ISOLATION !== 'false' } : {}) },
     browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
+    approval: approvalDefaults(environment),
     env: {},
   }
+}
+
+/**
+ * The node's decision AI defaults (D91), each checked as a workspace's own is, so a value Buckle refuses stops the node,
+ * naming the variable. The standard scripts are command globs separated by ;;, and an empty value names none.
+ */
+function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approval'] {
+  const judge = environment.BUCKLE_APPROVAL_JUDGE || undefined
+  const judgeProvider = environment.BUCKLE_APPROVAL_JUDGE_PROVIDER || undefined
+  const judgeModel = environment.BUCKLE_APPROVAL_JUDGE_MODEL || undefined
+  if (judge !== undefined && !(JUDGE_MODES as readonly string[]).includes(judge)) throw new Error(`Invalid BUCKLE_APPROVAL_JUDGE: ${JUDGE_MODES.join(', ')}`)
+  if (judgeProvider !== undefined && !(JUDGE_PROVIDERS as readonly string[]).includes(judgeProvider)) throw new Error(`Invalid BUCKLE_APPROVAL_JUDGE_PROVIDER: ${JUDGE_PROVIDERS.join(' or ')}`)
+  if (judgeModel !== undefined && !JUDGE_MODEL_NAME.test(judgeModel)) throw new Error('Invalid BUCKLE_APPROVAL_JUDGE_MODEL: a model name, with no blank')
+  const scripts = environment.BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS === undefined ? undefined : parsePatterns(environment.BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS)
+  for (const glob of scripts ?? []) {
+    try { compileCommandGlob(glob) } catch (error) {
+      if (error instanceof CommandGlobError) throw new Error(`Invalid BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS: ${error.message}`)
+      throw error
+    }
+  }
+  return {
+    ...defined('judge', judge as JudgeMode | undefined), ...defined('judgeProvider', judgeProvider as JudgeProvider | undefined),
+    ...defined('judgeModel', judgeModel), ...defined('judgeStandardScripts', scripts),
+  }
+}
+
+/** BUCKLE_JUDGE_BASE_URL: an http or https URL, as the operator's configuration, never one a tool supplies. */
+function parseJudgeBaseUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  let url: URL
+  try { url = new URL(value) } catch { throw new Error('Invalid BUCKLE_JUDGE_BASE_URL: an http or https URL') }
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Invalid BUCKLE_JUDGE_BASE_URL: an http or https URL')
+  return value
 }
 
 /**
@@ -448,14 +509,19 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'commandEnvironment'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
     shellNetwork: scope.shell.network,
     isolateShell: scope.shell.isolation,
+    // Each set, or unset, so a provider or model the workspace takes away is gone from the next call's settings too.
+    approvalJudge: scope.approval.judge,
+    approvalJudgeProvider: scope.approval.judgeProvider,
+    approvalJudgeModel: scope.approval.judgeModel,
+    approvalJudgeStandardScripts: [...scope.approval.judgeStandardScripts],
     // Each set, or unset, so a value the workspace takes away is gone from the next call's settings too.
     browserCdp: scope.browser.cdp,
     browserProfile: scope.browser.profile,

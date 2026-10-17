@@ -1,7 +1,9 @@
 import { MountPathSchema } from '@5straps/protocol'
 import { parseApprovalTimeout, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
+import { compileCommandGlob, CommandGlobError } from '../common/domain/command-glob.js'
 import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 
 /**
  * A setting `buckle workspace set` and `unset` change, by its path in workspace.json. `set` gives the workspace a value
@@ -101,6 +103,40 @@ const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   unset: settings => withoutShell(settings, name),
 })
 
+type ApprovalKey = 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts'
+
+/** The approval block with `name` taken out: unset, so the node's value stands for it. */
+function withoutApproval(settings: WorkspaceSettings, name: ApprovalKey): WorkspaceSettings {
+  const { [name]: _dropped, ...approval } = settings.approval
+  return { ...settings, approval }
+}
+
+/** One word of a fixed set, refused naming the set. */
+function oneOf<T extends string>(key: string, words: readonly T[], raw: string): T {
+  const word = words.find(item => item === raw.trim().toLowerCase())
+  if (word === undefined) throw new SettingValueError(`${key} is ${words.length === 2 ? words.join(' or ') : words.join(', ')}`)
+  return word
+}
+
+/** Command globs separated by ;;, as the node's command lists are; an empty value is an empty list, no standard script. */
+function standardScripts(raw: string): string[] {
+  const globs = [...new Set(raw.split(';;').map(item => item.trim()).filter(Boolean))]
+  for (const glob of globs) {
+    try { compileCommandGlob(glob) } catch (error) {
+      if (error instanceof CommandGlobError) throw new SettingValueError(`approval.judgeStandardScripts: ${error.message}`)
+      throw error
+    }
+  }
+  return globs
+}
+
+const approval = (name: ApprovalKey, takes: string, read: (raw: string) => WorkspaceSettings['approval'][ApprovalKey]): SettingKey => ({
+  key: `approval.${name}`,
+  takes,
+  set: (settings, raw) => ({ ...settings, approval: { ...settings.approval, [name]: read(raw) } }),
+  unset: settings => withoutApproval(settings, name),
+})
+
 export const SETTING_KEYS: readonly SettingKey[] = [
   {
     key: 'approvalWaitMs',
@@ -121,6 +157,14 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   pack('shell'), pack('code'), pack('hostGit'), pack('hostLsp'),
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
+  // The decision AI (D91): the node's BUCKLE_APPROVAL_JUDGE and its kin stand where these are unset.
+  approval('judge', `off, on-request, or automated: whether the decision AI rates an interpreter call, when the owner asks or at each call (the node's, else ${BUILT_IN_SETTINGS.approval.judge})`, raw => oneOf('approval.judge', JUDGE_MODES, raw)),
+  approval('judgeProvider', 'anthropic or openai: who rates it, with the node\'s key (the node\'s, else none: the judge stays off)', raw => oneOf('approval.judgeProvider', JUDGE_PROVIDERS, raw)),
+  approval('judgeModel', 'the model that rates it, such as claude-opus-5-5 (the node\'s, else none: the judge stays off)', (raw) => {
+    if (!JUDGE_MODEL_NAME.test(raw.trim())) throw new SettingValueError('approval.judgeModel is a model name, with no blank, such as claude-opus-5-5')
+    return raw.trim()
+  }),
+  approval('judgeStandardScripts', 'command globs separated by ;;, rated on their command line alone; empty for none (the node\'s, else the built-in list)', standardScripts),
   browser('idleTimeoutMs', `milliseconds an idle browser lives, ${BROWSER_IDLE_BOUNDS.min} to ${BROWSER_IDLE_BOUNDS.max} (Buckle's ${BUILT_IN_SETTINGS.browser.idleTimeoutMs})`, idleTimeout),
   browser('cdp', 'the DevTools port or URL of the owner\'s own Chrome to attach to (the node\'s BUCKLE_BROWSER_CDP, else none)', normalised(parseBrowserCdp), false),
   browser('profile', 'an absolute path to a profile folder kept across launches (the node\'s BUCKLE_BROWSER_PROFILE, else a fresh browser)', normalised(raw => parseBrowserProfile(raw, process.platform)), false),
