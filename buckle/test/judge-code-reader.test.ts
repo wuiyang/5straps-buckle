@@ -67,6 +67,52 @@ describe('the code a JavaScript or TypeScript call runs', () => {
   })
 })
 
+describe('the script an interpreter finds by its own rules', () => {
+  it('is found as node finds it: with an extension, a folder\'s package.json main, else its index file, and after a runner\'s package', () => {
+    const { read } = workspace({
+      'build.js': 'console.log(1)\n', 'tool/package.json': '{"main":"lib/start"}', 'tool/lib/start.ts': 'export {}\n', 'tool/index.js': 'nope\n',
+      'plain/index.mjs': 'export {}\n', 'package.json': '{"name":"site"}', 'index.js': "require('./build')\n", 'gen.ts': 'export {}\n',
+    })
+    expect(reading(read(['node', 'build'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/lib/start.ts', '/workspace/build.js'])
+    expect(reading(read(['node', 'plain'])).files.map(file => file.path)).toEqual(['/workspace/plain/index.mjs'])
+    expect(reading(read(['node', '.'])).files.map(file => file.path)).toEqual(['/workspace/index.js', '/workspace/build.js'])
+    expect(reading(read(['deno', 'run', '-A', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
+    expect(reading(read(['npx', 'tsx', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
+  })
+
+  it('is a folder\'s __main__.py for Python', () => {
+    const { read } = workspace({ 'tool/__main__.py': 'from . import helper\n', 'tool/helper.py': 'X = 1\n' })
+    expect(reading(read(['python3', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/__main__.py', '/workspace/tool/helper.py'])
+  })
+
+  it('is the file shell text redirects into the interpreter\'s input', () => {
+    const { root, view } = workspace({ 'evil.py': 'import helper\n', 'helper.py': 'X = 1\n', 'x.js': 'console.log(1)\n' })
+    const fed = (text: string, program: string) => readInterpreterCode({ forms: [[program]], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(reading(fed('python3 < evil.py', 'python3')).files.map(file => file.path)).toEqual(['/workspace/evil.py', '/workspace/helper.py'])
+    expect(reading(fed('cd . && node 0<x.js', 'node')).files.map(file => file.path)).toEqual(['/workspace/x.js'])
+    expect(fed('python3 < gone.py', 'python3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(fed('python3 < "$SCRIPT"', 'python3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(reading(fed('cat evil.py > out.txt; python3 -c 1', 'python3')).files).toEqual([])
+  })
+
+  it('refuses, so the call asks, where the script operand names nothing, rather than rating the command line alone', () => {
+    const { read } = workspace({ 'data.txt': 'x\n' })
+    for (const form of [['node', 'missing'], ['python3', 'missing'], ['python3', '-W', 'ignore', 'missing.py'], ['bun', 'run', 'missing'], ['npx', 'tsx', 'missing']]) {
+      expect(read(form)).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    }
+  })
+
+  it('keeps today\'s reading where no operand or inline code names a script', () => {
+    const { read } = workspace({ 'data.txt': 'x\n' })
+    expect(reading(read(['node', '--version']))).toMatchObject({ inline: null, files: [] })
+    expect(reading(read(['python3', '-m', 'pip', 'install', 'requests']))).toMatchObject({ files: [], packages: [{ name: 'pip' }] })
+    expect(reading(read(['node', '-e', '1', 'missing']))).toMatchObject({ inline: '1', files: [] })
+    expect(reading(read(['bun', 'test']))).toMatchObject({ files: [] })
+    expect(reading(read(['npx', 'eslint', 'missing']))).toMatchObject({ files: [], packages: [{ name: 'eslint' }] })
+  })
+})
+
 describe('the packages the code imports', () => {
   it('names each with the version installed for its importer, scoped names included, and null where none is installed', () => {
     const { read } = workspace({

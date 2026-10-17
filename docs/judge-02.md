@@ -11,7 +11,10 @@ For a command it rates, Buckle reads:
 
 - the code the command line hands an interpreter: `python3 -c`, `node -e`, `perl -e`, an `awk`
   program, `deno eval`, and a here-string (`python3 <<< '...'`) in bash, zsh, or ksh text;
-- every argument naming a regular file in the workspace or one of its mounts, and the module
+- the script, found as the interpreter finds it (`node build` reads `build.js`, else a folder's
+  `main` or index file; Python a folder's `__main__.py`), or a file redirected into its input
+  (`python3 < job.py`);
+- every other argument naming a regular file in the workspace or one of its mounts, and the module
   `python3 -m` runs;
 - every local file those import, transitively, each once: JavaScript and TypeScript `import`,
   `export ... from`, `import()`, and `require()` of a relative or absolute path, with the
@@ -34,7 +37,7 @@ were off, where:
 - the code runs past 50 files or 512 KiB in all, the command line's own code included;
 - an argument lands outside every mount, or the code reaches a credential file, a hidden path,
   Buckle's state, or a link leaving the workspace;
-- a local import names a file that does not exist, or a file is not text;
+- the script, or a local import, names a file that does not exist, or a file is not text;
 - reading a file fails, as for a file that vanished or a hard link on the disk that holds
   Buckle's state.
 

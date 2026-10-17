@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
-import { baseCommand, shellScriptOperand, shellStatementList, shellTokens } from '../../domain/argv.js'
+import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens } from '../../domain/argv.js'
 import { READ_BUDGET } from '../../domain/command-forms.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
@@ -21,6 +21,7 @@ export const CODE_REFUSALS = Object.freeze({
   binary: 'the code runs a file that is not text',
   missing: 'the code imports a file that does not exist',
   failed: 'the code could not be read',
+  notFound: 'the code the interpreter runs was not found',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -89,6 +90,14 @@ function readCode(input: CodeInput): CodeRead {
       if (files.length === 0) named(packages, module.split('.')[0]!, null)
       queue.push(...files)
     }
+    // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
+    // it, the code that runs is unknown, so the call asks.
+    if (read.operand !== null) {
+      const entry = scriptEntry(program, read.operand.name, cwd, view)
+      if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
+      if (typeof entry === 'object') queue.push({ real: entry.real, language })
+      else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return refused(CODE_REFUSALS.notFound)
+    }
     // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
     // judge cannot see, so the call asks.
     for (const name of read.candidates) {
@@ -102,11 +111,20 @@ function readCode(input: CodeInput): CodeRead {
       queue.push(...found)
     }
   }
-  for (const { program, code } of hereStringsOf(input.shellForms ?? [], input.forms)) {
+  const fed = fedInputsOf(input.shellForms ?? [], input.forms)
+  if (fed.unknown) return refused(CODE_REFUSALS.notFound)
+  for (const { program, code } of fed.inline) {
     inline.push(code)
     const found = importsOf(languageOfProgram(program), code, { file: null, cwd, view, packages })
     if (typeof found === 'string') return refused(found)
     queue.push(...found)
+  }
+  // A file redirected into an interpreter's input is its script (`python3 < job.py`).
+  for (const { program, name } of fed.scripts) {
+    const located = view.locate(name, cwd)
+    if (located === 'outside') return refused(CODE_REFUSALS.unreadable)
+    if (located === 'none') return refused(CODE_REFUSALS.notFound)
+    queue.push({ real: located.real, language: languageOfProgram(program) })
   }
   const files: JudgeFile[] = []
   const seen = new Set<string>()
@@ -141,33 +159,52 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const REDIRECTION = /^\d*[<>]/
 const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
 const HERE_STRING = /^0?<<</
+/** A file redirected into a statement's input: `<` or `0<`, never a heredoc, a descriptor, `<>`, or a process substitution. */
+const STDIN_FILE = /^0?<(?![<>&(])/
+const EXPANSION = /[$`]/
+
+/** What shell text feeds the interpreters being read: here-strings as inline code, files redirected into their input as scripts. */
+interface FedInputs {
+  inline: Array<{ program: string; code: string }>
+  scripts: Array<{ program: string; name: string }>
+  /** Whether a redirected file's name is built by an expansion, so which code runs is unknown. */
+  unknown: boolean
+}
 
 /**
- * The code a here-string hands an interpreter (D91, addendum 2 F3): in the `-c` text of each form run by a shell that has
- * here-strings, each statement whose command is one of the interpreters being read and whose input a `<<<` word feeds,
- * that word as the statement passes it, an expansion in it as written. A here-string fed to another command, which
- * pipes it on, is not the interpreter's code.
+ * What shell text feeds an interpreter's input (D91, addendum 2 F3, and fix brief 1 item 7): in the `-c` text of each
+ * form run by a shell, each statement whose command is one of the interpreters being read, the word a `<<<` feeds it
+ * (in a shell that has here-strings), an expansion in it as written, and the file a `<` redirects into it. A here-string
+ * or a file fed to another command, which pipes it on, is not the interpreter's code.
  */
-function hereStringsOf(shellForms: readonly string[][], forms: readonly string[][]): Array<{ program: string; code: string }> {
+function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]): FedInputs {
   const running = new Set(forms.map(([command = '']) => programOf(command)))
-  const found: Array<{ program: string; code: string }> = []
+  const fed: FedInputs = { inline: [], scripts: [], unknown: false }
   for (const [command = '', ...args] of shellForms) {
-    if (!HERE_STRING_SHELLS.has(baseCommand(command))) continue
+    const shell = baseCommand(command)
+    if (!SHELL_COMMANDS.has(shell)) continue
     const { source, operand } = shellScriptOperand(args)
     if (source !== 'command' || operand === undefined) continue
     for (const statement of shellStatementList(operand, { characters: READ_BUDGET.characters }).statements) {
       const tokens = shellTokens(statement)
-      const program = commandWord(tokens)
-      if (program === null || !running.has(programOf(program))) continue
+      const word = commandWord(tokens)
+      if (word === null || !running.has(programOf(word))) continue
+      const program = programOf(word)
       for (let index = 0; index < tokens.length; index++) {
-        const { raw, word } = tokens[index]!
-        if (!HERE_STRING.test(raw)) continue
-        const code = BARE_REDIRECTION.test(raw) ? tokens[index + 1]?.word : word.replace(HERE_STRING, '')
-        if (code !== undefined) found.push({ program: programOf(program), code })
+        const { raw, word: unquoted } = tokens[index]!
+        const bare = BARE_REDIRECTION.test(raw)
+        const target = bare ? tokens[index + 1] : { raw: raw.replace(/^0?<+/, ''), word: unquoted.replace(/^0?<+/, '') }
+        if (HERE_STRING.test(raw)) {
+          if (HERE_STRING_SHELLS.has(shell) && target !== undefined) fed.inline.push({ program, code: target.word })
+        } else if (STDIN_FILE.test(raw) && target !== undefined) {
+          if (EXPANSION.test(target.raw)) fed.unknown = true
+          else fed.scripts.push({ program, name: target.word })
+        }
       }
     }
   }
-  return found.filter((item, index) => found.findIndex(other => other.program === item.program && other.code === item.code) === index)
+  fed.inline = fed.inline.filter((item, index) => fed.inline.findIndex(other => other.program === item.program && other.code === item.code) === index)
+  return fed
 }
 
 /** A statement's command word: the first word that is neither an assignment nor a redirection or its target. */
@@ -203,13 +240,43 @@ const INLINE_FLAGS: Readonly<Record<string, readonly string[]>> = {
 }
 const AWKS = new Set(['awk', 'gawk', 'mawk', 'nawk'])
 const RUNNERS = new Set(['npx', 'pnpx', 'bunx'])
+/** The JavaScript runtimes whose script is found as node finds it: the name, its extensions, a folder's `main`, its index file. */
+const JS_RUNTIMES = new Set(['node', 'deno', 'bun', 'tsx', 'ts-node'])
+
+/**
+ * The options, by program, whose value is the next word, so it is no script operand (it is still read where it names a
+ * file, as `--require ./setup.js` does). One missing here makes its value the operand, which then names nothing and asks;
+ * one too many skips a script that is still read by its exact name.
+ */
+const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title', '--env-file', '--env-file-if-exists', '--inspect-port', '--run', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination'],
+  tsx: ['-r', '--require', '--import', '--loader', '-C', '--conditions', '--input-type', '--env-file', '--tsconfig'],
+  'ts-node': ['-r', '--require', '-P', '--project', '-O', '--compiler-options', '-C', '--compiler', '--cwd', '-I', '--ignore'],
+  bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--env-file', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F'],
+  deno: ['-c', '--config', '--import-map', '--lock', '--location', '--seed', '--cert', '--env-file', '--ext'],
+  python: ['-W', '-X', '--check-hash-based-pycs'],
+}
+
+/**
+ * A runtime's subcommands: after one of `script` the next operand is the script (`deno run main.ts`, `bun run build.ts`,
+ * `tsx watch app.ts`); after one of `other` no operand is a script the reader must find (`bun test`, `deno fmt`).
+ */
+const SUBCOMMANDS: Readonly<Record<string, { script: readonly string[]; other: readonly string[] }>> = {
+  deno: { script: ['run', 'serve'], other: ['test', 'bench', 'compile', 'check', 'task', 'fmt', 'lint', 'repl', 'info', 'doc', 'upgrade', 'cache', 'types', 'completions', 'coverage', 'init', 'jupyter', 'publish', 'add', 'remove', 'install', 'uninstall', 'outdated', 'clean', 'x', 'vendor', 'bundle', 'lsp', 'help'] },
+  bun: { script: ['run'], other: ['test', 'x', 'install', 'i', 'add', 'a', 'remove', 'rm', 'update', 'outdated', 'link', 'unlink', 'pm', 'build', 'init', 'create', 'c', 'upgrade', 'repl', 'exec', 'patch', 'publish', 'audit', 'info', 'why', 'help'] },
+  tsx: { script: ['watch'], other: [] },
+  node: { script: ['inspect'], other: [] },
+}
+
+/** The first positional word an interpreter takes as its script; `required` where naming nothing leaves the code unknown. */
+interface Operand { name: string; required: boolean }
 
 /**
  * One interpreter invocation's words, read for the code they hand it: the code after an inline flag (and an awk
  * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
  * each a name that may be a file.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; candidates: string[] } {
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; candidates: string[]; operand: Operand | null } {
   const inline: string[] = []
   const packages: string[] = []
   const modules: string[] = []
@@ -218,6 +285,12 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
   const awkProgramFile = AWKS.has(program) && args.some(arg => arg === '-f' || arg.startsWith('-f'))
   let awkProgram = AWKS.has(program) && !awkProgramFile
   let runnerPackage = RUNNERS.has(program)
+  // The script operand: for a runtime, its first positional word not after `--` and past a subcommand naming one; for
+  // a runner, the word after the package, which must name a file only where that package is itself a runtime.
+  let seeking = JS_RUNTIMES.has(program) || program === 'python'
+  let subcommand = false
+  let operand: Operand | null = null
+  const valueOptions = VALUE_OPTIONS[program] ?? []
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
     const equals = word.startsWith('--') ? word.indexOf('=') : -1
@@ -248,12 +321,70 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
     if (runnerPackage && positional) {
       packages.push(packageName(word))
       runnerPackage = false
+      seeking = true
       continue
+    }
+    if (word === '--') seeking = false
+    if (seeking) {
+      if (valueOptions.includes(word) && index + 1 < args.length) {
+        candidates.push(word, args[++index]!)
+        continue
+      }
+      if (positional) {
+        const named = SUBCOMMANDS[program]
+        if (!subcommand && named?.script.includes(word)) subcommand = true
+        else if (!subcommand && named?.other.includes(word)) seeking = false
+        else {
+          operand = { name: word, required: !RUNNERS.has(program) || JS_RUNTIMES.has(programOf(packages[0] ?? '')) }
+          seeking = false
+        }
+      }
     }
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
-  return { inline, packages, modules, candidates }
+  return { inline, packages, modules, candidates, operand }
+}
+
+/**
+ * Where an interpreter finds its script (fix brief 1, item 7): for a JavaScript runtime or a runner, the name, then with
+ * each extension, then a folder's package.json `main` (read through the view, as any manifest is), then its index file;
+ * for Python, the name, then a folder's `__main__.py`. `unreadable` where a folder's manifest is one the agent may not read.
+ */
+function scriptEntry(program: string, name: string, base: string, view: CodeView): Located | 'unreadable' {
+  if (program === 'python') return firstLocated(view, [name, `${name}/__main__.py`], base)
+  const candidates = jsCandidates(name)
+  const indexes = candidates.slice(-JS_EXTENSIONS.length)
+  const direct = firstLocated(view, candidates.slice(0, -JS_EXTENSIONS.length), base)
+  if (direct !== 'none') return direct
+  const main = packageMain(name, base, view)
+  if (main === 'unreadable') return main
+  if (main !== null) {
+    const entry = firstLocated(view, jsCandidates(join(name, main)), base)
+    if (entry !== 'none') return entry
+  }
+  return firstLocated(view, indexes, base)
+}
+
+/** The first name that lands on a regular file; `outside` where none does and one lands beyond the agent's view. */
+function firstLocated(view: CodeView, names: readonly string[], base: string): Located {
+  const located = names.map(name => view.locate(name, base))
+  return located.find(item => typeof item === 'object') ?? (located.includes('outside') ? 'outside' : 'none')
+}
+
+/** A folder's package.json `main`, or null where it has no manifest or the manifest names none. */
+function packageMain(folder: string, base: string, view: CodeView): string | null | 'unreadable' {
+  const located = view.locate(join(folder, 'package.json'), base)
+  if (typeof located !== 'object') return null
+  if (!view.readable(located.real)) return 'unreadable'
+  const buffer = view.read(located.real, MANIFEST_LIMIT)
+  if (buffer === null) return 'unreadable'
+  try {
+    const main = (JSON.parse(buffer.toString('utf8')) as { main?: unknown }).main
+    return typeof main === 'string' && main !== '' ? main : null
+  } catch {
+    return null
+  }
 }
 
 /** A package as its name: `@scope/name` or `name`, without a version, a subpath, or a `node:` builtin's prefix kept apart. */

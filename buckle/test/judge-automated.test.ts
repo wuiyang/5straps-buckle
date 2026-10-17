@@ -149,6 +149,16 @@ describe('the packages the code imports', () => {
 })
 
 describe('code the judge cannot read', () => {
+  it('asks, with no request, where the script the interpreter runs names nothing', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), judge)
+    const { response, entry, ran } = await call(runtime, 'python3', ['missing.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(entry.judge).toMatchObject({ unavailable: 'the code the interpreter runs was not found', passed: false })
+  })
+
   it('asks, naming no path, where reading it throws, as at a hard link on the disk that holds Buckle\'s state', async () => {
     const judge = fakeJudge()
     const config = node()
