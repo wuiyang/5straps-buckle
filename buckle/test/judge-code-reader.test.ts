@@ -171,6 +171,23 @@ describe('the code a Python call runs', () => {
     expect(reading(read(['python3', '-m', 'pytest', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: [{ name: 'pytest', version: null }] })
   })
 
+  it('reads imports after a semicolon or a compound statement\'s colon', () => {
+    const { read } = workspace({ 'helper.py': 'def run(): pass\n' })
+    expect(reading(read(['python3', '-c', 'import os; import helper']))).toMatchObject({ files: [{ path: '/workspace/helper.py' }], packages: [{ name: 'os' }] })
+    expect(reading(read(['python3', '-c', 'import os; from helper import run']))).toMatchObject({ files: [{ path: '/workspace/helper.py' }] })
+    expect(reading(read(['python3', '-c', 'try: import helper\nexcept ImportError: pass']))).toMatchObject({ files: [{ path: '/workspace/helper.py' }] })
+  })
+
+  it('reads parenthesised from-imports across lines, comments among the names', () => {
+    const { read } = workspace({
+      'helper.py': 'def run(): pass\n', 'pkg/__init__.py': '', 'pkg/mod.py': 'X = 1\n',
+      'main.py': 'from helper import (\n    run,  # the entry\n    other,\n)\nfrom pkg import (\n    mod,\n)\n',
+      'gone/__init__.py': 'from . import (\n    missing,\n)\n',
+    })
+    expect(reading(read(['python3', 'main.py'])).files.map(file => file.path).sort()).toEqual(['/workspace/helper.py', '/workspace/main.py', '/workspace/pkg/__init__.py', '/workspace/pkg/mod.py'])
+    expect(read(['python3', 'gone/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })

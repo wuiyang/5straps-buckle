@@ -504,8 +504,11 @@ function jsCandidates(specifier: string): string[] {
   return [specifier, ...swapped, ...JS_EXTENSIONS.map(ext => `${specifier}${ext}`), ...JS_EXTENSIONS.map(ext => `${specifier}/index${ext}`)]
 }
 
-const PYTHON_IMPORT = /^[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
-const PYTHON_FROM = /^[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+\(?([\w\t ,*]+)/gm
+// A statement starts a line, or follows `;` or a compound statement's `:` (`import os; import helper`, `try: import x`);
+// a from-import's names may sit in parentheses across lines, comments among them. A `;` or `:` inside a string can read
+// as one too, which fails closed: the name becomes a package, or a relative import names nothing and refuses.
+const PYTHON_IMPORT = /(?:^|[;:])[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
+const PYTHON_FROM = /(?:^|[;:])[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(?:\(([^)]*)\)|([\w\t ,*]+))/gm
 
 function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   const found: Found = []
@@ -517,8 +520,8 @@ function pythonImports(code: string, place: { file: string | null; cwd: string; 
       found.push(...files)
     }
   }
-  for (const [, dots = '', module = '', names = ''] of code.matchAll(PYTHON_FROM)) {
-    const imported = names.split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
+  for (const [, dots = '', module = '', grouped, plain] of code.matchAll(PYTHON_FROM)) {
+    const imported = (grouped ?? plain ?? '').replace(/#[^\n]*/g, '').split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
     let roots = [beside, place.cwd]
     if (dots.length > 0) {
       let root = beside
