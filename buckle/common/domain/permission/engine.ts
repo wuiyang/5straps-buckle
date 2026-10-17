@@ -4,7 +4,8 @@ import type { GrantLookup, PermissionDecision, PermissionRule } from './decision
 
 export type PermissionOutcome =
   | { kind: 'allow'; allowedBy: string[] }
-  | { kind: 'ask'; asks: Array<Extract<PermissionDecision, { kind: 'ask' }>> }
+  /** `allowedBy`: the grants the effects it does not ask about relied on, kept for a call whose asks are answered without a person (D91). */
+  | { kind: 'ask'; asks: Array<Extract<PermissionDecision, { kind: 'ask' }>>; allowedBy?: string[] }
   | { kind: 'deny'; denial: Extract<PermissionDecision, { kind: 'deny' }> }
 
 export interface PermissionEngine {
@@ -34,7 +35,7 @@ export function createPermissionEngine(rules: PermissionRule[]): PermissionEngin
         }
       }
 
-      if (asks.size > 0) return { kind: 'ask', asks: [...asks.values()] }
+      if (asks.size > 0) return { kind: 'ask', asks: [...asks.values()], allowedBy: [...allowedBy] }
       return { kind: 'allow', allowedBy: [...allowedBy] }
     },
   }

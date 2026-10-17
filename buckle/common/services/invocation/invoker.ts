@@ -12,6 +12,8 @@ import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
+import { judgeable, judgePasses, withJudged } from '../../domain/permission/judged.js'
+import { judgeAuditOf, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { CODE_REPLAY_DIVERGED, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
@@ -62,6 +64,8 @@ export interface InvokerOptions {
   checkFolder?: () => void
   actions: ActionLog
   reporter: Reporter
+  /** The workspace's decision AI as the call found it (D91): in automated mode it may pass an interpreter ask. */
+  judge?: JudgeGate
   paths: PathView
   serverId: string
   workspaceId: string
@@ -146,6 +150,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const key = executionKey({ request, sessionId })
       // The key's one execution, once the gate claims it; settled below whatever happens after.
       const held: { claim?: ExecutionClaim } = {}
+      // What the decision AI said of the call's interpreter asks, for its audit entry (D91).
+      const judgment: { judged: JudgedAsk[] } = { judged: [] }
       let replayed = false
       let ran = false
       // The caller leaving or the runtime shutting down: either stops a running tool.
@@ -180,7 +186,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdUntil, key, held, via })
+          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via })
           // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
           // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
           // finding deadline-announce invoker.ts:175).
@@ -258,6 +264,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         response,
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
+        judge: judgeAuditOf(judgment.judged),
       })
       const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
       // A call that ran answers with what it did even when its result cannot be written: refusing it
@@ -311,6 +318,7 @@ function buildEntry(input: {
   durationMs: number
   /** Answered with an earlier run's outcome: nothing ran for this attempt. */
   replayed: boolean
+  judge: ActionLogEntry['judge']
 }): ActionLogEntry {
   const { request, response, gate } = input
   const detail = input.replayed ? REPLAYED : describeDetail(response)
@@ -328,6 +336,7 @@ function buildEntry(input: {
     ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(decidedBy.length > 0 ? { decidedBy } : {}),
     ...(input.grantUses.length > 0 ? { grantUses: input.grantUses } : {}),
+    ...(input.judge ? { judge: input.judge } : {}),
     ...(detail ? { detail } : {}),
   }
 }
@@ -522,12 +531,16 @@ async function clearPermissions(input: {
   holdUntil?: number
   key: ExecutionKey
   held: { claim?: ExecutionClaim }
+  judgment: { judged: JudgedAsk[] }
   via?: NestedOrigin
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects, held } = input
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
   let decidedBy: string[] = []
+  // The asks the decision AI passed (D91), taken out at every check once it rated them, so an answer to the call's
+  // other asks never asks about them again.
+  let passed: ReadonlySet<string> = new Set()
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
     spent: (deciders) => { decidedBy = deciders },
@@ -535,7 +548,7 @@ async function clearPermissions(input: {
       // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
       approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
-      return options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) })
+      return withJudged(options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: subjects }) }), passed)
     },
     admit: () => {
       held.claim = options.executions.claim(input.key)
@@ -545,7 +558,16 @@ async function clearPermissions(input: {
   const cleared = (outcome: Extract<PermissionOutcome, { kind: 'allow' }>, asked: string[]): GateOutcome => held.claim?.kind === 'owner'
     ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed, decidedBy }
     : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
-  const outcome = await evaluate(request.approvalTokens)
+  let outcome = await evaluate(request.approvalTokens)
+  // In automated mode the decision AI rates the interpreter asks it may answer, once per call and outside every lock
+  // (D91): a deny returned above, and the dangerously-allow switch already turned what it covers. What it passes, the
+  // check above takes out, so the call is checked again with them gone.
+  const judging = options.judge?.mode === 'automated' && options.judge.missing === null ? options.judge : undefined
+  if (judging && outcome.kind === 'ask' && outcome.asks.some(judgeable)) {
+    input.judgment.judged = await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })
+    passed = new Set(input.judgment.judged.filter(item => judgePasses(item.result)).map(item => item.subject))
+    if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
+  }
   if (outcome.kind === 'allow') return cleared(outcome, [])
   if (outcome.kind === 'deny') {
     return {

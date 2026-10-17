@@ -3,8 +3,15 @@ import type { ResolvedEffect } from '../effect.js'
 
 export type PermissionDecision =
   | { kind: 'allow'; via?: GrantReference }
-  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[] }
+  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause }
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
+
+/**
+ * Why the destructive floor asked (D91), set by that rule alone and never sent anywhere: a built-in floor reason or
+ * another reading limit (`floor`), an interpreter the policy does not allow and nothing else (`interpreter`), or the
+ * workspace's destructive list (`destructive-list`). Only an `interpreter` ask is one the decision AI may answer.
+ */
+export type AskCause = 'floor' | 'interpreter' | 'destructive-list'
 
 /** The standing grant a rule relied on, so the action log can say why a call was permitted. */
 export interface GrantReference {
@@ -37,8 +44,9 @@ export function ask(
   subject: string,
   reason: string,
   offeredScopes: GrantScope[] = ['once', 'session', 'always'],
+  cause?: AskCause,
 ): PermissionDecision {
-  return { kind: 'ask', rule, subject, reason, offeredScopes }
+  return { kind: 'ask', rule, subject, reason, offeredScopes, ...(cause === undefined ? {} : { cause }) }
 }
 
 export function deny(rule: PermissionRuleId, subject: string, reason: string): PermissionDecision {

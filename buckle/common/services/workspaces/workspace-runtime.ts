@@ -44,6 +44,12 @@ import { createToolRegistry, type ToolRegistry } from '../../domain/tool-registr
 import type { UrlMatcher } from '../../domain/url-pattern.js'
 import type { PermissionRule } from '../../domain/permission/decision.js'
 import { workspaceStateKey } from '../../domain/workspace-key.js'
+import type { GrantLookup } from '../../domain/permission/decision.js'
+import { createProviderJudge } from '../../adapters/judge/providers.js'
+import type { Judge, JudgeProvider } from '../../types/ports/judge.js'
+import { createCodeView } from '../judge/code-reader.js'
+import { judgeCachePath, openJudgeCache, type JudgeCache } from '../judge/judge-cache.js'
+import { createJudgeGate, JUDGE_OFF, type JudgeGate } from '../judge/judge-gate.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
 import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
@@ -76,7 +82,12 @@ interface InForce {
   permissions: PermissionEngine
   paths: PathView
   toolDenial(tool: string): string | null
+  /** The decision AI as the call found the settings (D91). */
+  judge: JudgeGate
 }
+
+/** A read the code reader asks the rules about is judged with no grant: only what the policy lets anyone read is read. */
+const NO_GRANTS: GrantLookup = { subjectsFor: () => [] }
 
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
@@ -196,6 +207,8 @@ interface RuntimeInput {
   nodeRoots?: NodeRoots
   /** The name of another workspace holding this one's profile folder or attached Chrome, read at each browser call (Q10). */
   browserHeldBy?: () => string | null
+  /** The decision AI, for a test; absent, each provider's is built from the node's key (BUCKLE_JUDGE_API_KEY) at its first use. */
+  judge?: Judge
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -269,6 +282,16 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
     : nullReporter)
+  // The decision AI's kept verdicts (D91), in this workspace's own state directory, and one judge per provider named.
+  const judgeCache = openJudgeCache({ filePath: judgeCachePath(config.stateDirectory), lockDeadlineMs })
+  const providerJudges = new Map<JudgeProvider, Judge>()
+  const judgeOf = (provider: JudgeProvider | undefined): Judge | null => {
+    if (input.judge) return input.judge
+    if (provider === undefined || !config.judgeApiKey) return null
+    const known = providerJudges.get(provider) ?? createProviderJudge({ provider, apiKey: config.judgeApiKey, ...(config.judgeBaseUrl ? { baseUrl: config.judgeBaseUrl } : {}) })
+    providerJudges.set(provider, known)
+    return known
+  }
   const plugins = createPluginRegistry({
     filePath: pluginsPath(config),
     packOptions: { cwd: config.cwd, sandboxMode: sandbox.sandbox.mode },
@@ -529,6 +552,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
+    // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
+    if (policyMoved) await judgeCache.clear().catch((error: unknown) => { logger.warn('The decision AI\'s kept verdicts could not be cleared after a policy change', { workspaceId, error }) })
     Object.assign(config, fields)
     applied = input.settings
     appliedVersion = input.version
@@ -548,7 +573,23 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED) }
+    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }) }
+  }
+
+  /**
+   * The decision AI for a call (D91): the workspace's mode, provider, model, and standard scripts as they stand, the
+   * policy and view it started under, and a code reader that reads only what the rules let anyone read.
+   */
+  function judgeGate(settled: { compiled: CompiledPolicy; paths: PathView; permissions: PermissionEngine; cache: JudgeCache }): JudgeGate {
+    if (config.approvalJudge === 'off') return JUDGE_OFF
+    const canRead = (real: string) => settled.permissions.evaluate({ tool: 'fs_read', effects: [{ kind: 'read_path', path: real, directory: dirname(real) }], grants: NO_GRANTS }).kind === 'allow'
+    return createJudgeGate({
+      judge: judgeOf(config.approvalJudgeProvider),
+      settings: { mode: config.approvalJudge, provider: config.approvalJudgeProvider, model: config.approvalJudgeModel, standardScripts: config.approvalJudgeStandardScripts },
+      policy: settled.compiled.policy, allowedInterpreters: settled.compiled.commands.allowedInterpreters, paths: settled.paths,
+      view: createCodeView({ paths: settled.paths, canRead, protectedRoots: protectedStateRoots(config) }),
+      cache: settled.cache,
+    })
   }
 
   /**
@@ -577,6 +618,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         defaultTimeoutMs: config.defaultTimeoutMs,
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial: settled.toolDenial,
+        judge: settled.judge,
         shutdown: stopping.signal,
         // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
         nested: nestedCall => invokeNow(nestedCall, settled),

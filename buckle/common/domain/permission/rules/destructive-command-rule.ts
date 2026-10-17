@@ -2,7 +2,7 @@ import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
 import { allForms, commandFormsOf, readLimitOf, readLimitReason } from '../../command-forms.js'
-import type { PermissionRule } from '../decision.js'
+import type { AskCause, PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
@@ -42,15 +42,20 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       if (effect.kind !== 'exec') return null
       const forms = commandFormsOf(effect)
       const limit = readLimitOf(forms, allowed)
-      const reason = firstReason(allForms(forms)) ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? classifyAdded({ added, forms: allForms(forms) })
+      const floor = firstReason(allForms(forms))
+      const listed = floor === null ? classifyAdded({ added, forms: allForms(forms) }) : null
+      const reason = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed
       if (!reason) return null
+      // What the decision AI may answer (D91): an unknown interpreter alone, never a built-in reason, another reading
+      // limit, or a call the owner's destructive list names, whichever reason the ask shows.
+      const cause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : 'interpreter'
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
       // credential the display redacts; a grant made before this form matches nothing.
       const subject = subjectOf(effect)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
-      return ask('destructive_command', subject, reason, ['once', 'session'])
+      return ask('destructive_command', subject, reason, ['once', 'session'], cause)
     },
   }
 }

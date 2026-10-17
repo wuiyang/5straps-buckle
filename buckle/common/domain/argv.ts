@@ -147,9 +147,14 @@ export function argvIdentity(command: string, args: readonly string[]): string {
  * so its boundaries show (`rm -f 'a b'` is not `rm -f a b`). Display only: the grant matches on argvIdentity.
  */
 export function shownCommand(command: string, args: readonly string[]): string {
+  return shownWords(command, args).map((word, index) => shellQuote(word, index === 0)).join(' ')
+}
+
+/** A command's words as shownCommand shows each, before quoting: what the decision AI is sent as argv (D91). */
+export function shownWords(command: string, args: readonly string[]): string[] {
   const words = [command, ...args]
   const bodies = shellBodyIndexes(words)
-  return words.map((word, index) => shellQuote(bodies.has(index) ? word : redactCredentials(word, 'value'), index === 0)).join(' ')
+  return words.map((word, index) => (bodies.has(index) ? word : redactCredentials(word, 'value')))
 }
 
 /** Shell options before the script that take the next word as their value (`-o pipefail`, `--rcfile <file>`). */

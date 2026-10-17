@@ -7,6 +7,14 @@ export interface GrantUse {
   decidedBy?: string
 }
 
+/**
+ * What the decision AI said of a call (D91): its verdict and whether it passed the call, or why it gave none. The
+ * reasoning is the model's, with the credentials the display hides hidden; the prompt is kept as its digest alone.
+ */
+export type JudgeAudit =
+  | { provider: string; model: string; level: 'safe' | 'warning' | 'danger'; confidence: number; reasoning: string; latencyMs: number; promptDigest: string; passed: boolean }
+  | { provider: string; model: string; unavailable: string; passed: false }
+
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {
   auditId?: string
@@ -58,6 +66,8 @@ export interface ActionLogEntry {
    * identity and scope; review M4 of the second proof-of-possession re-review). Never a subject.
    */
   grantUses?: GrantUse[]
+  /** Where the decision AI rated the call (D91): what it said, and whether that ran the call. */
+  judge?: JudgeAudit
   detail?: string
 }
 

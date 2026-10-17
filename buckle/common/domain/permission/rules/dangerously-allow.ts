@@ -32,7 +32,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { enabled:
       if (outcome.kind !== 'ask' || !input.enabled()) return outcome
       const root = input.root()
       const outside = outcome.asks.filter(ask => !covers(ask, root))
-      if (outside.length > 0) return { kind: 'ask', asks: outside }
+      if (outside.length > 0) return { ...outcome, asks: outside }
       return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${ask.rule}:${ask.subject}`) }
     },
   }
