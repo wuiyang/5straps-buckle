@@ -7,7 +7,8 @@ import { describeQuestion } from '../cli/terminal-consumer.js'
 import { describeAsk } from '../common/domain/approval-instruction.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import type { Judge, JudgeResult } from '../common/types/ports/judge.js'
+import type { Judge, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
+import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -40,14 +41,14 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
 const verdict = (level: 'safe' | 'warning' | 'danger', confidence: number): JudgeResult => ({ kind: 'verdict', level, confidence, reasoning: `It deletes files. ${level}.`, model: 'claude-opus-5-5', latencyMs: 30, promptDigest: 'e'.repeat(64) })
 
 /** A runtime whose terminal questions and webhook posts are kept; one call asks about python3 job.py. */
-async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv }) {
+async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv; quickJudge?: QuickJudge }) {
   const webhook = await captureWebhook()
   closing.push(() => webhook.close())
   const questions: CliRequest[] = []
   const requestCli = vi.fn(async (request: CliRequest) => { questions.push(request); return { status: 'unavailable' as const, requestId: request.id, reason: 'no_consumer' as const } })
   const judge: Judge = { judge: vi.fn(async () => input.answer ?? verdict('danger', 0.92)) }
   const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, ...input.environment })
-  const runtime: BuckleRuntime = await createRuntime({ config, judge, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+  const runtime: BuckleRuntime = await createRuntime({ config, judge, ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
   closing.push(async () => { await runtime.approvalService.close(); await runtime.history.close() })
   vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['job.py'] }], execute: vi.fn(async () => 'executed') })
   const response = await runtime.invoke({ request: { requestId: `shown-${Math.random()}`, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'shown', approvalWait: { mode: 'none' } })
@@ -73,6 +74,26 @@ describe('an ask the decision AI rated and did not pass', () => {
     // The line every approver route reads: the serve terminal's question, and an ask read with its kept call.
     const waiting = runtime.approvalService.waitingAsk(approval.token)!
     expect(describeAsk({ ...waiting.request, workspaceName: runtime.workspaceName(), call: waiting.call! })).toContain(`  judge:    ${line}`)
+  })
+})
+
+describe('the quick stage\'s verdict beside the action', () => {
+  const quick = (level: JudgeLevel, confidence: number): QuickJudge => ({ quick: vi.fn(async (): Promise<QuickResult> => ({ kind: 'verdict', level, confidence, probabilities: { safe: 0, warning: 0, danger: 0, [level]: confidence } as Record<JudgeLevel, number>, model: 'jev-1.13.0', latencyMs: 120 })) })
+
+  it('rides in the webhook\'s judge object as quick, beside the thorough verdict that followed it', async () => {
+    const { runtime, approval, question, posted: body } = await asked({ answer: verdict('danger', 0.97), quickJudge: quick('warning', 0.9), environment: { BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters' } })
+    const judged = { level: 'danger', confidence: 0.97, model: 'claude-opus-5-5', reasoning: 'It deletes files. danger.', latencyMs: 30, quick: { level: 'warning', confidence: 0.9, model: 'jev-1.13.0', latencyMs: 120 } }
+    expect(body.approvals[0]!.judge).toEqual(judged)
+    expect(runtime.approvalService.listing()[0]!.call?.judge).toEqual([{ subject: approval.subject, ...judged }])
+    expect(question.action.details?.judge).toBe('quick: warning (0.90, jev-1.13.0, 120 ms); thorough: danger (0.97, claude-opus-5-5, 30 ms): It deletes files. danger.')
+  })
+
+  it('rides alone where Jev\'s danger sent the ask to a person with no thorough call', async () => {
+    const { runtime, judge, approval, question, posted: body } = await asked({ quickJudge: quick('danger', 0.95), environment: { BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters' } })
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(body.approvals[0]!.judge).toEqual({ quick: { level: 'danger', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 } })
+    expect(runtime.approvalService.listing()[0]!.call?.judge).toEqual([{ subject: approval.subject, quick: { level: 'danger', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 } }])
+    expect(question.action.details?.judge).toBe('quick: danger (0.95, jev-1.13.0, 120 ms)')
   })
 })
 
