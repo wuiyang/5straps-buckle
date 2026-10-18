@@ -359,6 +359,18 @@ const FLAG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
 const OPTION_CHECKED = new Set(['node', 'python', 'perl', 'ruby', 'php', 'lua', 'bun', 'deno', 'tsx', 'ts-node'])
 /** A word that marks an interpreter's script as coming from its standard input, so the redirected file is the script (fix brief 3, R7). */
 const STDIN_SCRIPT_MARKER = new Set(['-', '/dev/stdin'])
+/** The C shells, whose options cluster from a known set of letters (fix brief 4, R7c). */
+const C_SHELLS = new Set(['csh', 'tcsh'])
+const C_SHELL_CLUSTER = /^-[bcdefilmnqstvVxX]+$/
+
+/**
+ * Whether a word marks the script as the interpreter's standard input: `-` or `/dev/stdin` for any interpreter that
+ * seeks a script but php, which takes `-` as a file's name and `--` as its marker (fix brief 4, R7a).
+ */
+function stdinMarker(program: string, word: string): boolean {
+  if (program === 'php') return word === '--' || word === '/dev/stdin'
+  return STDIN_SCRIPT_MARKER.has(word)
+}
 /** Python's short options that take no value, so a cluster of only these is a known flag; a value letter (W, X) or code letter (c, m) in a cluster fails closed. */
 const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
 
@@ -458,6 +470,8 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   let unknownOption = false
   // An interactive flag, which runs standard input as code after the script or inline code (fix brief 4, G2).
   let interactive = false
+  // A C shell's `-c` in a cluster of its options (fix brief 4, R7c).
+  let cShellText = false
   // The program files awk runs (`-f prog.awk`), each of which must name a file.
   const programFiles: string[] = []
   const modules: string[] = []
@@ -510,10 +524,27 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
       continue
     }
     // The script comes from standard input, so the redirected file is the script and the words after here are its
-    // arguments, never candidates (fix brief 3, R7): a lone `-` or `/dev/stdin` for any seeking interpreter, php's `--`,
-    // or csh/tcsh `-s`.
-    if (seeking && (STDIN_SCRIPT_MARKER.has(word) || (program === 'php' && word === '--') || ((program === 'csh' || program === 'tcsh') && word === '-s'))) {
+    // arguments, never candidates (fix brief 3, R7): a stdin marker (stdinMarker).
+    if (seeking && stdinMarker(program, word)) {
       stdinScript = true
+      seeking = false
+      break
+    }
+    // php takes a lone `-` as a file of that name, not its input (fix brief 4, R7a).
+    if (seeking && program === 'php' && word === '-') {
+      operand = operandOf(word)
+      seeking = false
+      continue
+    }
+    // A C shell's options cluster (fix brief 4, R7c): `c` takes text the reader never rates, `s`, `i`, or `t` reads the
+    // script from its input, `b` ends the options so the next word is the script, and a letter outside the known set refuses.
+    if (seeking && C_SHELLS.has(program) && word.startsWith('-') && word !== '-' && word !== '--') {
+      candidates.push(word)
+      if (!C_SHELL_CLUSTER.test(word)) unknownOption = true
+      else if (word.includes('c')) cShellText = true
+      else if (/[sit]/.test(word)) stdinScript = true
+      else if (word.includes('b') && index + 1 < args.length) operand = operandOf(args[++index]!)
+      else continue
       seeking = false
       break
     }
@@ -527,9 +558,14 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
       // node and python take the word after a leading `--` as their script, as a runtime does after its package.
       if (seeking && index + 1 < args.length) {
         const next = args[++index]!
+        seeking = false
+        // A stdin marker after the `--` is still one, for every interpreter that has one (fix brief 4, R7b).
+        if (STDIN_SCRIPT_MARKER.has(next)) {
+          stdinScript = true
+          break
+        }
         operand = operandOf(next)
         candidates.push(word, next)
-        seeking = false
         continue
       }
       seeking = false
@@ -569,7 +605,7 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   // shells (fix brief 4, P).
   // node ignores -i past a script, but runs its input after inline code, or alone; python, lua, and php always do.
   const interactiveRuns = interactive && (program !== 'node' || inline.length > 0 || operand === null)
-  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : interactiveRuns ? CODE_REFUSALS.interactive : TEXT_SHELL_INTERPRETERS.has(program) && inline.length > 0 ? SHELL_TEXT_REFUSAL : null
+  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : interactiveRuns ? CODE_REFUSALS.interactive : TEXT_SHELL_INTERPRETERS.has(program) && (inline.length > 0 || cShellText) ? SHELL_TEXT_REFUSAL : null
   return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, refusal }
 }
 

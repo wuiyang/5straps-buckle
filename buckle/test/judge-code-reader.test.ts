@@ -265,6 +265,27 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(shell('python3 - job.py < gone.py')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
+  it('reads a stdin marker after a leading --, never a planted file named -, and php\'s lone - as that file (fix brief 4, R7)', () => {
+    const { shell } = workspace({ '-': 'planted\n', 'other.py': 'print(1)\n', 'other.js': 'console.log(1)\n', 'other.pl': '1;\n', 'other.rb': 'p 1\n', 'data.php': '<?php echo 1;\n' })
+    expect(paths(shell('python3 -- - < other.py'))).toEqual(['/workspace/other.py'])
+    expect(paths(shell('node -- - < other.js'))).toEqual(['/workspace/other.js'])
+    expect(paths(shell('perl -- - < other.pl'))).toEqual(['/workspace/other.pl'])
+    expect(paths(shell('ruby -- - < other.rb'))).toEqual(['/workspace/other.rb'])
+    // php opens a lone - as a file of that name, so the redirected file is data.
+    expect(paths(shell('php - x < data.php'))).toEqual(['/workspace/-'])
+    expect(workspace({ 'data.php': '<?php echo 1;\n' }).shell('php - x < data.php')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+  })
+
+  it('reads a C shell\'s options as clusters: s, i, or t reads the script from its input, b ends the options, c is text never rated (fix brief 4, R7)', () => {
+    const { read, shell } = workspace({ 'other.csh': 'echo 1\n', 'x': 'echo 2\n', '-x.csh': 'echo 3\n' })
+    expect(paths(shell('tcsh -fs x < other.csh'))).toEqual(['/workspace/other.csh'])
+    expect(paths(shell('csh -sf x < other.csh'))).toEqual(['/workspace/other.csh'])
+    expect(paths(shell('tcsh -fi < other.csh'))).toEqual(['/workspace/other.csh'])
+    expect(paths(read(['tcsh', '-fb', '-x.csh']))).toEqual(['/workspace/-x.csh'])
+    expect(read(['tcsh', '-fz', 'x'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
+    expect(read(['tcsh', '-fc', 'echo 1'])).toEqual(shellRefusal)
+  })
+
   it('refuses an interpreter option the reader does not model, and reads the redirect past a value option it does (fix brief 3, R7)', () => {
     const { read, shell } = workspace({ 'build.js': 'console.log(1)\n', 'from-stdin.js': 'console.log(2)\n', 'job.py': 'print(1)\n' })
     // --run runs a package.json script the reader cannot follow, so it is left out of node's tables and refuses.
