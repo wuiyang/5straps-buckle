@@ -48,6 +48,13 @@ describe('the request Jev is asked with', () => {
     expect(sent[0]!.headers.get('content-encoding')).toBeNull()
   })
 
+  it('keeps the answered model only where it reads as a model name, else the one asked (fix brief 2, H12)', async () => {
+    for (const model of ['j'.repeat(100 * 1_024), 'jev 1.13', 'jev\u001b[2J', '']) {
+      const { fetch } = fakeFetch(() => Response.json({ model, answers: { safety: CHOICE } }))
+      expect(await rate(fetch), JSON.stringify(model.slice(0, 20))).toMatchObject({ kind: 'verdict', model: MODEL })
+    }
+  })
+
   it('sends the key as a bearer alone, and asks the base URL the node names', async () => {
     const { fetch, sent } = fakeFetch(answer(CHOICE))
     await rate(fetch, { baseUrl: 'http://127.0.0.1:9/typesafe/' })

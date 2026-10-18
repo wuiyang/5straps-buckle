@@ -1,6 +1,6 @@
 import { APIConnectionError, APIError, APITimeoutError, APIUserAbortError, choice, TypeSafeClient, type ContentValue } from '@typesafe-ai/sdk'
 import { z } from 'zod'
-import { JUDGE_LEVELS, type JudgeInput } from '../../types/ports/judge.js'
+import { JUDGE_LEVELS, JUDGE_MODEL_NAME, type JudgeInput } from '../../types/ports/judge.js'
 import type { QuickJudge, QuickResult } from '../../types/ports/quick-judge.js'
 import { LEVEL_DEFINITIONS } from './verdict.js'
 
@@ -57,8 +57,10 @@ export function createTypeSafeQuickJudge(options: { apiKey: string; baseUrl?: st
     const parsed = AnswerSchema.safeParse(answersOf(body)?.safety)
     if (!parsed.success) return { kind: 'unavailable', reason: 'the answer held no verdict' }
     const { choice: level, confidence, probabilities } = parsed.data
+    // The versioned model that answered, kept only where it reads as a model name; else the one asked (fix brief 2, H12),
+    // so no answer can grow the audit entry, the cache, or the pass line past their bounds.
     const answered = (body as { model?: unknown }).model
-    return { kind: 'verdict', level, confidence, probabilities, model: typeof answered === 'string' && answered ? answered : model, latencyMs: Math.round(performance.now() - startedAt) }
+    return { kind: 'verdict', level, confidence, probabilities, model: typeof answered === 'string' && JUDGE_MODEL_NAME.test(answered) ? answered : model, latencyMs: Math.round(performance.now() - startedAt) }
   }
   return {
     async quick(input, options): Promise<QuickResult> {
