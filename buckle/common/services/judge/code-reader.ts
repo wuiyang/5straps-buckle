@@ -1,3 +1,8 @@
+// The reader fails closed (fix brief 3). It exists so a model is shown the code that will run, so wherever the code it
+// would show could differ from the code that runs, it refuses rather than guesses: an option it does not know, a marker
+// it does not understand, a budget it ran out of, a list or config it could not parse whole, a file it cannot place or
+// read. Each refusal is a short reason in place of a rating, so the ask goes to a person; under approval.quickJudge all
+// an allowed command then runs unscreened, as the docs say. Add a case only with a test that it reads the code that runs.
 import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
