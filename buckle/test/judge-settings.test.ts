@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { parseEnv } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { settingsCommand } from '../cli/settings.js'
 import { buildChildEnvironment } from '../common/domain/environment.js'
@@ -193,6 +194,19 @@ describe('the node\'s decision AI settings in buckle settings', () => {
     expect(shown.out).toContain('BUCKLE_SOCKET_API_KEY (set, hidden)')
     expect(shown.printed).not.toContain(KEY)
     expect(shown.printed).not.toContain(SOCKET_KEY)
+  })
+
+  it('empties the node\'s standard scripts with an empty value, which unset brings back to the built-in list', async () => {
+    const { file, settings } = node()
+    const resolved = () => resolveSettings(WorkspaceSettingsSchema.parse({ version: 1 }), loadConfig(parseEnv(readFileSync(file, 'utf8'))).workspaceDefaults)
+    expect((await settings(['set', 'approval-judge-standard-scripts', ''])).exitCode).toBe(0)
+    expect(readFileSync(file, 'utf8')).toContain('BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS=\n')
+    expect(resolved()).toMatchObject({ approval: { judgeStandardScripts: [] }, sources: { 'approval.judgeStandardScripts': 'node' } })
+    const refused = await settings(['set', 'approval-judge-standard-scripts', '^pnpm (build|test)\\b'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.printed).toContain('set it empty for none; unset it for the built-in list')
+    expect((await settings(['unset', 'approval-judge-standard-scripts'])).exitCode).toBe(0)
+    expect(resolved()).toMatchObject({ approval: { judgeStandardScripts: STANDARD_SCRIPTS }, sources: { 'approval.judgeStandardScripts': 'built-in' } })
   })
 
   it('writes the mode, provider, model, and standard scripts, refusing a value outside them, and leaves the key to a hand edit', async () => {

@@ -248,8 +248,10 @@ async function moveFromOwnFile(out: string, platform: NodeJS.Platform, askName?:
 function carriedDefaults(out: string, answered: string[]): { keys: string[]; into: (text: string) => string } | CliResult {
   const values = Object.fromEntries(buckleVariables(readFileSync(out, 'utf8')))
   const keys = [...new Set([...NODE_SETTINGS.filter(setting => setting.workspace).map(setting => setting.key), ...WORKSPACE_DEFAULT_KEYS])]
-  const kept = keys.filter(key => values[key]?.trim() && !answered.includes(key))
-    .map(key => ({ key, value: findNodeSetting(key)?.kind === 'command-list' ? commandList(values[key]!) : values[key]!.trim() }))
+  // An empty standard-scripts list names none, where unset brings back Buckle's built-in list, so it is kept empty.
+  const emptyKept = (key: string) => findNodeSetting(key)?.kind === 'script-list' && values[key] !== undefined
+  const kept = keys.filter(key => (values[key]?.trim() || emptyKept(key)) && !answered.includes(key))
+    .map(key => ({ key, value: ['command-list', 'script-list'].includes(findNodeSetting(key)?.kind ?? '') ? commandList(values[key]!) : values[key]!.trim() }))
   return carriedInto({ kept, heading: 'Every workspace\'s defaults, kept from the file this one replaced (buckle settings show lists them).',
     refusal: reason => `buckle init --force keeps the node's workspace defaults, and cannot carry one as ${out} writes it: ${reason}. Set it with buckle settings set, then run buckle init --force again.` })
 }

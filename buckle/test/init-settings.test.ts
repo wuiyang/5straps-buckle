@@ -181,6 +181,16 @@ describe('buckle init on a node set up already', () => {
     expect(readFileSync(join(state, 'workspaces.json'), 'utf8')).toBe(before)
   })
 
+  it('keeps an empty standard-scripts list under --force, which names none where unset would bring back the built-in list', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    writeFileSync(out, `${readFileSync(out, 'utf8')}BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS=\n`, { mode: 0o600 })
+    const again = await init(scripted([], false), ['--dir', workspace, '--force'])
+
+    expect(again.exitCode).toBe(0)
+    expect(parseEnv(again.written).BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS).toBe('')
+    expect(loadConfig(parseEnv(again.written)).workspaceDefaults.approval.judgeStandardScripts).toEqual([])
+  })
+
   it('writes the node\'s file again under --force, with a new admin credential, keeping the workspaces', async () => {
     const first = await init(scripted([], false), ['--dir', workspace])
     const again = await init(scripted([], false), ['--dir', workspace, '--force'])

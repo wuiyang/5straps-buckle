@@ -102,4 +102,6 @@ is read like `bun <file>`, and no call with `sudo` or another privilege wrapper 
 script. `bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations, so they ask on their own; `npm`, `pnpm`, and `yarn` never ask on their
 own, so they reach a stage under `approval.quickJudge all`, or when the destructive list names
 them. `npm run dev` runs whatever `package.json` names, so the list is the owner's call: set your
-own, separated by `;;`, or empty it with `buckle workspace set approval.judgeStandardScripts ''`.
+own, separated by `;;`, or empty it with `buckle workspace set approval.judgeStandardScripts ''`,
+or the node's with `buckle settings set approval-judge-standard-scripts ''` (unset brings back the
+built-in list).

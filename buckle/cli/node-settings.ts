@@ -18,7 +18,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
   /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
@@ -47,7 +47,7 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_APPROVAL_JUDGE_MODEL', alias: 'approval-judge-model', kind: 'judge-model', fallback: 'gpt-6-luna', workspace: { key: 'approval.judgeModel', change: 'buckle workspace set approval.judgeModel <model>' } },
   { key: 'BUCKLE_APPROVAL_QUICK_JUDGE', alias: 'approval-quick-judge', kind: 'quick-scope', fallback: 'off', workspace: { key: 'approval.quickJudge', change: 'buckle workspace set approval.quickJudge off|interpreters|asks|all' } },
   { key: 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', alias: 'approval-quick-judge-model', kind: 'judge-model', fallback: 'jev-latest', workspace: { key: 'approval.quickJudgeModel', change: 'buckle workspace set approval.quickJudgeModel <model>' } },
-  { key: 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS', alias: 'approval-judge-standard-scripts', kind: 'command-list', fallback: '(the built-in list: npm run *, pnpm dev, npx vitest *, and the rest)', workspace: { key: 'approval.judgeStandardScripts', change: 'buckle workspace set approval.judgeStandardScripts <globs separated by ;;>' } },
+  { key: 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS', alias: 'approval-judge-standard-scripts', kind: 'script-list', fallback: '(the built-in list: npm run *, pnpm dev, npx vitest *, and the rest)', workspace: { key: 'approval.judgeStandardScripts', change: 'buckle workspace set approval.judgeStandardScripts <globs separated by ;;>' } },
   // Every workspace's mounts where its own table holds none (Phase 2 item 1): writable without asking, at their own path.
   { key: 'BUCKLE_SCRATCH_ROOTS', alias: 'scratch-roots', kind: 'directory-list', fallback: '(none)', workspace: { key: 'mounts', change: 'buckle workspace mount add <folder>:<sandbox-path>' } },
   { key: 'BUCKLE_WORKSPACE_MOUNT', alias: 'mount', kind: 'mount', fallback: '(none: the real path shows through)', workspace: { key: 'mount', change: 'buckle workspace set mount <path>' } },
@@ -200,6 +200,13 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
       const globs = [...new Set(raw.split(';;').map(item => item.trim()).filter(Boolean))]
       if (globs.length === 0) return refuse(`${input.setting.key} needs at least one glob, separated by ;;; unset it to clear the list`)
       return compiled(() => compilePolicy({ ...emptyWorkspacePolicy(), commands: { allow: globs, deny: [] } }), globs.join(';;'))
+    }
+    case 'script-list': {
+      // The standard scripts (fix brief 1, item 19): unset is Buckle's built-in list, so an empty value is kept as none.
+      const globs = [...new Set(raw.split(';;').map(item => item.trim()).filter(Boolean))]
+      if (globs.length === 0) return { ok: true, value: '' }
+      const value = compiled(() => compilePolicy({ ...emptyWorkspacePolicy(), commands: { allow: globs, deny: [] } }), globs.join(';;'))
+      return value.ok ? value : refuse(`${value.reason}; set it empty for none; unset it for the built-in list`)
     }
     case 'mounts': {
       let mounts: ReturnType<typeof parseSandboxMounts>
