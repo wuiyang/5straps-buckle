@@ -262,6 +262,11 @@ describe('the script an interpreter finds by its own rules', () => {
       expect(files(config), config).toBe(CODE_REFUSALS.config)
     }
     expect(files('preload = ["./gone.ts"]\n')).toBe(CODE_REFUSALS.notFound)
+    // An inline table is its table: its preload is read, nested ones too, and one holding anything else refuses (fix brief 4, G9).
+    expect(files('test = { preload = "./pre.ts" }\n')).toEqual(['/workspace/pre.ts', '/workspace/run.ts'])
+    expect(files('run = { preload = ["./second.ts"], smol = true }\n')).toEqual(['/workspace/second.ts', '/workspace/run.ts'])
+    expect(files('test = { coverage = { enabled = true } }\n')).toEqual(['/workspace/run.ts'])
+    expect(files('test = { preload = 1 }\n')).toBe(CODE_REFUSALS.config)
   })
 
   it('is a folder\'s __main__.py for Python', () => {

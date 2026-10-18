@@ -955,11 +955,7 @@ function bunfigPreloads(text: string): string[] | null {
     const lineEnd = /^[ \t]*(?:#[^\n]*)?(?:\r?\n|$)/.exec(source.slice(scanned.end))
     if (!lineEnd) return null
     const path = [table, tomlPath(key[0])].filter(Boolean).join('.').split('.')
-    if (path.at(-1) === 'preload' && BUNFIG_PRELOAD_TABLES.has(path.slice(0, -1).join('.'))) {
-      if (typeof scanned.value === 'string') preloads.push(scanned.value)
-      else if (Array.isArray(scanned.value)) preloads.push(...scanned.value)
-      else return null
-    }
+    if (!preloadsAt(path, scanned.value, preloads)) return null
     at = skipToml(source, scanned.end + lineEnd[0].length, true)
   }
   return preloads
@@ -984,11 +980,29 @@ function skipToml(source: string, from: number, lines: boolean): number {
   return at
 }
 
-/** A TOML value the reader delimits but does not keep: a number, a boolean, a date, a table, a multi-line string, or an array holding one. */
-const TOML_OTHER: unique symbol = Symbol('a TOML value that is no string')
-type TomlValue = string | string[] | typeof TOML_OTHER
+/**
+ * The preloads a TOML value at a key path holds (fix brief 4, G9): at a `preload` key of a table bun reads, a string or
+ * an array of strings, and anything else fails; inside an inline table, each entry at its own path, as TOML defines
+ * `test = { preload = ... }` to be `[test]`'s preload. False where a preload holds what the reader does not take.
+ */
+function preloadsAt(path: readonly string[], value: TomlValue, into: string[]): boolean {
+  if (path.at(-1) === 'preload' && BUNFIG_PRELOAD_TABLES.has(path.slice(0, -1).join('.'))) {
+    if (typeof value === 'string') into.push(value)
+    else if (Array.isArray(value)) into.push(...value)
+    else return false
+    return true
+  }
+  if (typeof value === 'object' && !Array.isArray(value)) return value.entries.every(entry => preloadsAt([...path, ...entry.key.split('.')], entry.value, into))
+  return true
+}
 
-/** One TOML value from `from`: a string, an array of strings, or TOML_OTHER for anything else the reader can delimit; null for what it cannot. */
+/** A TOML value the reader delimits but does not keep: a number, a boolean, a date, a multi-line string, or an array holding one that is no string. */
+const TOML_OTHER: unique symbol = Symbol('a TOML value that is no string')
+/** An inline table's entries, each by its dotted key, quotes dropped. */
+interface TomlTable { entries: Array<{ key: string; value: TomlValue }> }
+type TomlValue = string | string[] | TomlTable | typeof TOML_OTHER
+
+/** One TOML value from `from`: a string, an array of strings, an inline table, or TOML_OTHER for anything else the reader can delimit; null for what it cannot. */
 function tomlValue(source: string, from: number): { value: TomlValue; end: number } | null {
   const character = source[from]
   if (source.startsWith('"""', from) || source.startsWith("'''", from)) {
@@ -1021,24 +1035,28 @@ function tomlValue(source: string, from: number): { value: TomlValue; end: numbe
   if (character === '[' || character === '{') {
     const close = character === '[' ? ']' : '}'
     const items: TomlValue[] = []
+    const entries: TomlTable['entries'] = []
     let at = skipToml(source, from + 1, true)
     while (source[at] !== close) {
       if (at >= source.length) return null
+      let named: string | null = null
       if (character === '{') {
         const key = TOML_KEY.exec(source.slice(at, at + 1_024))
         const equals = key ? /^[ \t]*=[ \t]*/.exec(source.slice(at + key[0].length, at + key[0].length + 64)) : null
         if (!key || !equals) return null
+        named = tomlPath(key[0])
         at += key[0].length + equals[0].length
       }
       const item = tomlValue(source, at)
       if (item === null) return null
-      items.push(item.value)
+      if (named === null) items.push(item.value)
+      else entries.push({ key: named, value: item.value })
       at = skipToml(source, item.end, true)
       if (source[at] === ',') at = skipToml(source, at + 1, true)
       else if (source[at] !== close) return null
     }
-    const strings = character === '[' && items.every(item => typeof item === 'string')
-    return { value: strings ? items as string[] : TOML_OTHER, end: at + 1 }
+    if (character === '{') return { value: { entries }, end: at + 1 }
+    return { value: items.every(item => typeof item === 'string') ? items as string[] : TOML_OTHER, end: at + 1 }
   }
   const bare = TOML_BARE.exec(source.slice(from, from + 256))
   return bare ? { value: TOML_OTHER, end: from + bare[0].length } : null
