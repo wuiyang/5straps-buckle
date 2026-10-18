@@ -75,8 +75,8 @@ describe('the script an interpreter finds by its own rules', () => {
       'plain/index.mjs': 'export {}\n', 'package.json': '{"name":"site"}', 'index.js': "require('./build')\n", 'gen.ts': 'export {}\n',
     })
     expect(reading(read(['node', 'build'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
-    // node tries no TypeScript sibling of main: it runs the folder's index.js.
-    expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/index.js', '/workspace/build.js'])
+    // node tries no TypeScript sibling of main: it runs the folder's index.js, after the module it requires first.
+    expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/build.js', '/workspace/tool/index.js'])
     expect(reading(read(['tsx', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/lib/start.ts'])
     expect(reading(read(['tsx', 'plain'])).files.map(file => file.path)).toEqual(['/workspace/plain/index.mjs'])
     expect(reading(read(['node', '.'])).files.map(file => file.path)).toEqual(['/workspace/index.js', '/workspace/build.js'])
@@ -128,6 +128,17 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['python3', '--', 'missing.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
     expect(reading(read(['node', 'build.js', '--', 'missing'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
     expect(reading(read(['python3', '-m', 'pytest']))).toMatchObject({ files: [], packages: [{ name: 'pytest' }] })
+  })
+
+  it('finds each preload as the script is found, names a bare one as a package, and refuses one naming nothing (fix brief 2, H7)', () => {
+    const { read } = workspace({ 'build.js': 'console.log(1)\n', 'setup.js': "require('./lib')\n", 'lib/index.js': 'evil()\n', 'pre.ts': 'export {}\n' })
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    expect(files(['node', '-r', './setup', 'build.js'])).toEqual(['/workspace/setup.js', '/workspace/build.js', '/workspace/lib/index.js'])
+    expect(files(['node', '--require=./setup', 'build.js'])).toEqual(['/workspace/setup.js', '/workspace/build.js', '/workspace/lib/index.js'])
+    expect(reading(read(['node', '-r', 'dotenv/config', 'build.js']))).toMatchObject({ files: [{ path: '/workspace/build.js' }], packages: [{ name: 'dotenv' }] })
+    expect(files(['bun', '--preload', './pre', 'build.js'])).toEqual(['/workspace/pre.ts', '/workspace/build.js'])
+    expect(read(['node', '--import', './missing.mjs', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(read(['node', '--import', 'data:text/javascript,evil()', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
   it('is a folder\'s __main__.py for Python', () => {

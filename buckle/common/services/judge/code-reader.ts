@@ -90,6 +90,11 @@ function readCode(input: CodeInput): CodeRead {
       if (files.length === 0) named(packages, module.split('.')[0]!, null)
       queue.push(...files)
     }
+    for (const preload of read.preloads) {
+      const found = preloadOf(program, preload, { cwd, view, packages })
+      if (typeof found === 'string') return refused(found)
+      if (found !== null) queue.push({ real: found.real, language: 'js' })
+    }
     // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
     // it, the code that runs is unknown, so the call asks.
     if (read.operand !== null) {
@@ -285,8 +290,8 @@ const JS_RUNTIMES = new Set(['node', 'deno', 'bun', 'tsx', 'ts-node'])
 
 /**
  * The options, by program, whose value is the next word, so it is no script operand (it is still read where it names a
- * file, as `--require ./setup.js` does). One missing here makes its value the operand, which then names nothing and asks;
- * one too many skips a script that is still read by its exact name.
+ * file; a preload among them is found as the script is, PRELOAD_OPTIONS). One missing here makes its value the operand,
+ * which then names nothing and asks; one too many skips a script that is still read by its exact name.
  */
 const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title', '--env-file', '--env-file-if-exists', '--inspect-port', '--run', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination'],
@@ -296,6 +301,19 @@ const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   deno: ['-c', '--config', '--import-map', '--lock', '--location', '--seed', '--cert', '--env-file', '--ext'],
   python: ['-W', '-X', '--check-hash-based-pycs'],
 }
+
+/**
+ * The options, by program, whose value is code that runs before the script: a module node, tsx, or ts-node requires or
+ * imports first, or one bun preloads (fix brief 2, H7). Each is found as the script is, or named as a package.
+ */
+const PRELOAD_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  node: ['-r', '--require', '--import', '--loader', '--experimental-loader'],
+  tsx: ['-r', '--require', '--import', '--loader', '--experimental-loader'],
+  'ts-node': ['-r', '--require', '--import', '--loader', '--experimental-loader'],
+  bun: ['-r', '--preload', '--require', '--import'],
+}
+/** A preload a URL names (`data:`, `file:`, `http:`), whose code no file in the view holds. */
+const URL_SPECIFIER = /^(?:data|file|https?):/i
 
 /**
  * A runtime's subcommands: after one of `script` the next operand is the script (`deno run main.ts`, `bun run build.ts`,
@@ -319,8 +337,9 @@ interface Operand { name: string; required: boolean; runtime: string }
  * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
  * each a name that may be a file.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; candidates: string[]; operand: Operand | null } {
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; candidates: string[]; operand: Operand | null } {
   const inline: string[] = []
+  const preloads: string[] = []
   const packages: string[] = []
   const modules: string[] = []
   const candidates: string[] = []
@@ -335,6 +354,7 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
   let subcommand = false
   let operand: Operand | null = null
   const valueOptions = VALUE_OPTIONS[program] ?? []
+  const preloading = PRELOAD_OPTIONS[program] ?? []
   const operandOf = (name: string): Operand => {
     const runtime = RUNNERS.has(program) ? programOf(packages[0] ?? '') : program
     return { name, required: !RUNNERS.has(program) || JS_RUNTIMES.has(runtime), runtime }
@@ -384,6 +404,15 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       seeking = false
     }
     if (seeking) {
+      // A preload runs before the script, so it is found as the entry is (fix brief 2, H7).
+      if (preloading.includes(word) && index + 1 < args.length) {
+        preloads.push(args[++index]!)
+        continue
+      }
+      if (equals > 0 && preloading.includes(word.slice(0, equals))) {
+        preloads.push(word.slice(equals + 1))
+        continue
+      }
       if (valueOptions.includes(word) && index + 1 < args.length) {
         candidates.push(word, args[++index]!)
         continue
@@ -401,7 +430,7 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
-  return { inline, packages, modules, candidates, operand }
+  return { inline, packages, modules, preloads, candidates, operand }
 }
 
 /**
@@ -464,6 +493,22 @@ function typeScriptEntry(name: string, base: string, view: CodeView): Located | 
 function firstLocated(view: CodeView, names: readonly string[], base: string): Located {
   const located = names.map(name => view.locate(name, base))
   return located.find(item => typeof item === 'object') ?? (located.includes('outside') ? 'outside' : 'none')
+}
+
+/**
+ * The file a preload names (fix brief 2, H7): a relative or absolute path, found as the runtime finds its script; a bare
+ * specifier is a package, named by its package (`dotenv/config` is dotenv) and never read. A refusal where a path names
+ * nothing, lands beyond the agent's view, or a URL names the code.
+ */
+function preloadOf(runtime: string, specifier: string, place: { cwd: string; view: CodeView; packages: Packages }): { real: string } | null | string {
+  if (URL_SPECIFIER.test(specifier)) return CODE_REFUSALS.notFound
+  if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
+    named(place.packages, packageName(specifier), place.cwd)
+    return null
+  }
+  const entry = scriptEntry(runtime, specifier, place.cwd, place.view)
+  if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
+  return entry === 'none' ? CODE_REFUSALS.notFound : entry
 }
 
 /** A folder's package.json `main`, or null where it has no manifest or the manifest names none. */
