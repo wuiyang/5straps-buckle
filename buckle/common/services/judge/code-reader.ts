@@ -1223,6 +1223,8 @@ const PYTHON_IMPORT = /(?:^|[;:])[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?
 const PYTHON_FROM = /(?:^|[;:])[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\()?([\w\t ,*]*)/gm
 /** The most lines a parenthesised from-import's names are read across (fix brief 3, R8). */
 const GROUP_LINES = 200
+/** A group the reader could not read whole: no string, so no name a group holds (`from pkg import (unparsed)`) is taken for it (fix brief 4, R8). */
+const UNPARSED: unique symbol = Symbol('a parenthesised import list the reader could not parse')
 /** A line that starts another statement or a string, so an open `(` before it was no from-import's (a docstring's, a comment's). */
 const GROUP_BREAK = /^[ \t]*(?:from |import |def |class |"""|\'\'\')/
 
@@ -1230,10 +1232,10 @@ const GROUP_BREAK = /^[ \t]*(?:from |import |def |class |"""|\'\'\')/
  * The names of a parenthesised from-import, from just after its `(` to the first `)` outside a comment (fix brief 2,
  * R8). Null, so the import reads as its first line alone, where a line inside starts another statement or a string,
  * which no name of an import can, so an unclosed `(` in a docstring never swallows the real imports after it.
- * `unparsed`, so the reading refuses, where no `)` closes it within GROUP_LINES lines or before the code ends: the
+ * UNPARSED, so the reading refuses, where no `)` closes it within GROUP_LINES lines or before the code ends: the
  * reader never guesses at a list it could not read whole (fix brief 3, R8).
  */
-function groupedNames(code: string, from: number): string | null | 'unparsed' {
+function groupedNames(code: string, from: number): string | null | typeof UNPARSED {
   const parts: string[] = []
   let at = from
   for (let line = 0; line < GROUP_LINES; line++) {
@@ -1243,10 +1245,10 @@ function groupedNames(code: string, from: number): string | null | 'unparsed' {
     const close = text.indexOf(')')
     if (close >= 0) return [...parts, text.slice(0, close)].join(',')
     parts.push(text)
-    if (end < 0) return 'unparsed'
+    if (end < 0) return UNPARSED
     at = end + 1
   }
-  return 'unparsed'
+  return UNPARSED
 }
 
 function pythonImports(code: string, place: Place): Found | string {
@@ -1263,7 +1265,7 @@ function pythonImports(code: string, place: Place): Found | string {
   for (const match of code.matchAll(PYTHON_FROM)) {
     const [whole, dots = '', module = '', open, plain = ''] = match
     const grouped = open ? groupedNames(code, match.index + whole.length - plain.length) : null
-    if (grouped === 'unparsed') return CODE_REFUSALS.importList
+    if (grouped === UNPARSED) return CODE_REFUSALS.importList
     const imported = (grouped ?? plain).split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
     let roots = [beside, place.cwd]
     if (dots.length > 0) {

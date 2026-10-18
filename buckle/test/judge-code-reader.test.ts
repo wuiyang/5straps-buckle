@@ -602,6 +602,11 @@ describe('the code a Python call runs', () => {
     expect(paths(read(['python3', 'uses.py']))).toEqual(['/workspace/uses.py', '/workspace/pkg/__init__.py'])
   })
 
+  it('reads a one-name group that spells the word unparsed, the refusal being no string (fix brief 4, R8)', () => {
+    const { read } = workspace({ 's.py': 'from pkg import (unparsed)\n', 'pkg/__init__.py': '', 'pkg/unparsed.py': 'X = 1\n' })
+    expect(paths(read(['python3', 's.py']))).toEqual(['/workspace/s.py', '/workspace/pkg/__init__.py', '/workspace/pkg/unparsed.py'])
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
