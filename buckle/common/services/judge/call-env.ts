@@ -35,9 +35,18 @@ export function codeLoadingVariable(variables: ReadonlyArray<{ name: string }>):
   })?.name
 }
 
-/** Why a call that sets a code-loading variable is not rated: its name alone, quoted where it is not a plain name, never its value. */
+/** The most of a variable's name a reason shows, in characters (fix brief 3, F4). */
+export const SHOWN_NAME_LIMIT = 256
+
+/**
+ * Why a call that sets a code-loading variable is not rated: its name alone, the part before any `=` so no value is
+ * quoted, clipped to SHOWN_NAME_LIMIT characters with ` [cut]` (fix brief 3, F4), and quoted where it is not a plain name.
+ */
 export function codeLoadingReason(name: string): string {
-  return `the call sets ${/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : JSON.stringify(name)}, which changes what code runs; the decision AI does not rate it`
+  const characters = Array.from(name.split('=')[0]!)
+  const part = characters.slice(0, SHOWN_NAME_LIMIT).join('')
+  const shown = /^[A-Za-z_][A-Za-z0-9_]*$/.test(part) ? part : JSON.stringify(part)
+  return `the call sets ${shown}${characters.length > SHOWN_NAME_LIMIT ? ' [cut]' : ''}, which changes what code runs; the decision AI does not rate it`
 }
 
 /**

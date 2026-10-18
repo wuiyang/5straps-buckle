@@ -266,3 +266,24 @@ describe('a call whose runtime loads variables from a file (fix brief 3, F2)', (
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
+
+describe('a long variable name in the reason (fix brief 3, F4)', () => {
+  it('names only the part before any =, clipped, so a 90,000-character name gives a short reason and a bounded audit entry', async () => {
+    expect(codeLoadingReason('LD_PRELOAD=/opt/lib.so')).toBe('the call sets LD_PRELOAD, which changes what code runs; the decision AI does not rate it')
+    const name = `LD_PRELOAD${'A'.repeat(90_000)}`
+    expect(codeLoadingReason(name)).toBe(`the call sets ${name.slice(0, 256)} [cut], which changes what code runs; the decision AI does not rate it`)
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const { response, entry, ran } = await call(runtime, {}, ['bash', '-c', `export ${name}=1; python3 job.py`])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    const reason = (entry.judge as { unavailable: string }).unavailable
+    expect(reason.length).toBeLessThanOrEqual(500)
+    expect(reason).toContain(' [cut]')
+    expect(Buffer.byteLength(JSON.stringify(entry))).toBeLessThan(64 * 1_024)
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})

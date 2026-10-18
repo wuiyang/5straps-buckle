@@ -253,9 +253,12 @@ export function createJudgeGate(input: {
     return { provider, model, result }
   }
 
-  /** A command no stage was shown, its reason in the place of the first stage that would have rated it. */
+  /**
+   * A command no stage was shown, its reason in the place of the first stage that would have rated it, clipped once here
+   * (UNREAD_REASON_LIMIT) so the audit entry, the approver note, the terminal line, and the webhook stay bounded.
+   */
   function unread(subject: string, reason: string, stage: 'quick' | 'thorough'): JudgedAsk {
-    const result = { kind: 'unavailable' as const, reason }
+    const result = { kind: 'unavailable' as const, reason: clippedReason(reason) }
     return stage === 'quick'
       ? { subject, input: null, quick: { provider: settings.quickProvider, model: settings.quickModel, result } }
       : { subject, input: null, thorough: { provider: settings.provider, model: settings.model, result } }
@@ -325,6 +328,16 @@ export function createJudgeGate(input: {
       return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }, command)
     },
   }
+}
+
+/** The most of a reason no stage rated that Buckle keeps or shows, in characters (fix brief 3, F4). */
+export const UNREAD_REASON_LIMIT = 500
+
+/** A reason at most UNREAD_REASON_LIMIT characters long, a longer one cut to end in ` [cut]`. */
+export function clippedReason(reason: string): string {
+  if (reason.length <= UNREAD_REASON_LIMIT) return reason
+  const characters = Array.from(reason)
+  return characters.length <= UNREAD_REASON_LIMIT ? reason : `${characters.slice(0, UNREAD_REASON_LIMIT - ' [cut]'.length).join('')} [cut]`
 }
 
 /** The index of the first operand from `from` on, past options and the value of each that takes one, or after a `--`; -1 for none. */
