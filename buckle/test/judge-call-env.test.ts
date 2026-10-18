@@ -5,7 +5,8 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, shownVariables } from '../common/services/judge/call-env.js'
-import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
+import { commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
@@ -190,5 +191,50 @@ describe('a call that changes its working directory before its code runs (fix br
     expect(ran).toBe(true)
     expect(quickJudge.quick).not.toHaveBeenCalled()
     expect(entry.judge).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, screened: true })
+  })
+})
+
+describe('a variable the call\'s own words or shell text set (fix brief 2, H3)', () => {
+  const reason = (name: string) => `the call sets ${name}, which changes what code runs; the decision AI does not rate it`
+
+  it('is checked as the env argument is: one that changes what code runs means no stage is asked, and the call asks', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    const env = await call(runtime, {}, ['env', 'NODE_OPTIONS=--require ./evil.js', 'node', 'build.js'])
+    expect(env.response).toMatchObject({ outcome: 'approval_required' })
+    expect(env.entry.judge).toMatchObject({ unavailable: reason('NODE_OPTIONS'), passed: false })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    for (const [text, name] of [['NODE_OPTIONS="--require ./evil.js" node build.js', 'NODE_OPTIONS'], ['export PYTHONPATH=/tmp/x; python3 job.py', 'PYTHONPATH'], ['declare -x LD_PRELOAD=./evil.so; node build.js', 'LD_PRELOAD']] as const) {
+      const { response, entry, ran } = await call(runtime, {}, ['bash', '-c', text])
+      expect(response, text).toMatchObject({ outcome: 'approval_required' })
+      expect(ran).toBe(false)
+      expect(entry.judge, text).toMatchObject({ unavailable: reason(name), passed: false })
+      expect(JSON.stringify(entry.judge)).not.toContain('evil')
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+
+  it('reaches the stage beside the env argument where it changes no code, so the call is still rated', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    expect((await call(runtime, { env: { MODE: 'fast' } }, ['env', 'FOO=1', 'node', 'build.js'])).ran).toBe(true)
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    expect((await call(runtime, {}, ['bash', '-c', 'FOO=1 node build.js'])).ran).toBe(true)
+    expect(judge.shown.map(input => input.env)).toEqual([[{ name: 'FOO', value: '1' }, { name: 'MODE', value: 'fast' }], [{ name: 'FOO', value: '1' }]])
+  })
+
+  it('is read in each form a shell sets one: export, declare, typeset, a heredoc body, a slash in the value, setenv and set in C shell text', () => {
+    const names = (command: string, args: string[]) => {
+      const effect = { command, args }
+      return assignedVariables(effect, commandFormsOf(effect)).variables.map(item => item.name.toUpperCase())
+    }
+    expect(names('bash', ['-c', 'typeset -x PERL5OPT=-Mevil; perl x.pl'])).toContain('PERL5OPT')
+    expect(names('bash', ['-c', 'GCONV_PATH=/tmp/x/y node build.js'])).toContain('GCONV_PATH')
+    expect(names('bash', ['-c', 'bash <<EOF\nRUBYOPT=-r./evil ruby x.rb\nEOF'])).toContain('RUBYOPT')
+    expect(names('bash', ['-c', 'set -a; NODE_OPTIONS=--require=./evil.js; node build.js'])).toContain('NODE_OPTIONS')
+    expect(names('tcsh', ['-c', 'setenv PATH /tmp/bin; node build.js'])).toContain('PATH')
+    expect(names('csh', ['-c', 'set path=(/tmp/bin $path); node build.js'])).toContain('PATH')
+    expect(names('sudo', ['LD_LIBRARY_PATH=/tmp', 'node', 'build.js'])).toContain('LD_LIBRARY_PATH')
+    expect(names('env', ['node', 'build.js', 'PATH=x'])).toEqual([])
   })
 })

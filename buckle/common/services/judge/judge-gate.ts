@@ -16,9 +16,9 @@ import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
 import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
-import { callVariables, codeLoadingReason, codeLoadingVariable, shownVariables } from './call-env.js'
-import { CHANGES_DIRECTORY, changesDirectory } from './call-forms.js'
-import { readInterpreterCode, type CodeView } from './code-reader.js'
+import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, shownVariables } from './call-env.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from './call-forms.js'
+import { CODE_REFUSALS, readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -141,10 +141,13 @@ export function createJudgeGate(input: {
    * changes its working directory before the code runs, so the code read at its own may not be the code that runs.
    */
   function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null): JudgeInput | string {
-    const variables = callVariables(call.args)
-    const loading = codeLoadingVariable(variables)
-    if (loading !== undefined) return codeLoadingReason(loading)
+    // The call's env argument, and every assignment its own words and shell text make (fix brief 2, H3).
     const forms = commandFormsOf(effect)
+    const assigned = assignedVariables(effect, forms)
+    const variables = callVariables(call.args)
+    const loading = codeLoadingVariable([...variables, ...assigned.variables])
+    if (loading !== undefined) return codeLoadingReason(loading)
+    if (assigned.unread) return CODE_REFUSALS.truncated
     if (changesDirectory(forms)) return CHANGES_DIRECTORY
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
@@ -168,7 +171,7 @@ export function createJudgeGate(input: {
       argv: shownWords(program, effect.args),
       interpreters,
       ...code.reading,
-      env: shownVariables(variables),
+      env: shownVariables(joinedVariables(variables, assigned.variables)),
       packagesTruncated: false,
       truncated: false,
       standardScript,

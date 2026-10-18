@@ -27,7 +27,7 @@ export function callVariables(args: JsonObject): CallVariable[] {
 }
 
 /** The first variable, by name, that changes what code runs, or undefined where the call sets none. */
-export function codeLoadingVariable(variables: readonly CallVariable[]): string | undefined {
+export function codeLoadingVariable(variables: ReadonlyArray<{ name: string }>): string | undefined {
   return variables.find(({ name }) => {
     const upper = name.toUpperCase()
     return CODE_LOADING_VARIABLES.names.includes(upper) || CODE_LOADING_VARIABLES.prefixes.some(prefix => upper.startsWith(prefix))
@@ -37,6 +37,16 @@ export function codeLoadingVariable(variables: readonly CallVariable[]): string 
 /** Why a call that sets a code-loading variable is not rated: its name alone, quoted where it is not a plain name, never its value. */
 export function codeLoadingReason(name: string): string {
   return `the call sets ${/^[A-Za-z_][A-Za-z0-9_]*$/.test(name) ? name : JSON.stringify(name)}, which changes what code runs; the decision AI does not rate it`
+}
+
+/**
+ * Every variable the call sets with a value, as the stages are shown them (fix brief 2, H3): its `env` argument, then
+ * the values its own words and shell text assign, each once, sorted by name and then value.
+ */
+export function joinedVariables(env: readonly CallVariable[], assigned: ReadonlyArray<{ name: string; value: string | null }>): CallVariable[] {
+  const all = [...env, ...assigned.flatMap(({ name, value }) => (value === null ? [] : [{ name, value }]))]
+  const order = (item: CallVariable) => `${item.name}\0${item.value}`
+  return all.filter((item, index) => all.findIndex(other => order(other) === order(item)) === index).sort((one, other) => (order(one) < order(other) ? -1 : order(one) > order(other) ? 1 : 0))
 }
 
 /**

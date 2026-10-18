@@ -1,5 +1,5 @@
-import { baseCommand } from '../../domain/argv.js'
-import { allForms, type CommandForms } from '../../domain/command-forms.js'
+import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens, type ShellToken } from '../../domain/argv.js'
+import { allForms, type CommandForms, READ_BUDGET } from '../../domain/command-forms.js'
 
 /** Why a call whose working directory changes before its code runs is not rated (fix brief 2, H2). */
 export const CHANGES_DIRECTORY = 'the call changes its working directory before the code runs'
@@ -60,4 +60,113 @@ function namesOption(word: string, short: string, long: string): boolean {
     return typed.length > 0 && long.startsWith(typed)
   }
   return word.startsWith('-') && word.slice(1).includes(short)
+}
+
+/** A shell assignment word: a name, an optional array index, an optional `+`, then `=`. */
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/
+/** A variable's name alone, as `export NAME` or `declare -x NAME` gives it. */
+const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
+/** The builtins that declare or export the variable each operand names (`export NODE_OPTIONS=...`, `declare -x PATH`). */
+const DECLARING = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
+/** The C shells, whose text sets a variable with `setenv NAME value`, or `set path=(...)`, which sets PATH too. */
+const C_SHELLS = new Set(['csh', 'tcsh'])
+/** The busybox and toybox applets that are a shell, whose `-c` text follows the applet's name. */
+const SHELL_APPLETS = new Set(['sh', 'ash', 'hush', 'bash', 'toysh'])
+const REDIRECTION = /^\d*[<>]/
+const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
+
+/** A variable a call's words or shell text set: its name, and its value as written, or null where none is given or its spelling is lost. */
+export interface AssignedVariable { name: string; value: string | null }
+
+/**
+ * The variables a call's own words set (fix brief 2, H3), beside its `env` argument: a statement's leading NAME=value
+ * words, in the call as typed, in every form of it, and in the raw text of every shell it runs, where a value holding a
+ * slash, which a form's command word loses, is still read; the NAME=value words env and sudo read before their command;
+ * the operands of `export`, `declare`, `typeset`, `local`, and `readonly`; and `setenv` and `set` in C shell text. An
+ * assignment statement counts whether or not `set -a` exports it, as a variable already exported keeps a value given
+ * later. A heredoc's body in shell text is read as statements too, which reads more, never less. `unread` where shell
+ * text ran past READ_BUDGET, so a variable may be set unseen.
+ */
+export function assignedVariables(effect: { command: string; args: readonly string[] }, forms: CommandForms): { variables: AssignedVariable[]; unread: boolean } {
+  const variables: AssignedVariable[] = []
+  let unread = false
+  const all = allForms(forms)
+  leadingAssignments([effect.command, ...effect.args], variables, true)
+  all.forEach((form, index) => {
+    // A form's command word is its basename, lower-cased, so its spelling counts toward the rule alone.
+    leadingAssignments(form, variables, false)
+    const program = baseCommand(form[0] ?? '')
+    if (program === 'env' || program === 'sudo') {
+      for (const word of wrapperWords(all, index)) assignment(word, variables)
+    }
+    declared(program, form.slice(1).map(word => ({ raw: word, word })), variables)
+    const text = shellText(form)
+    if (text === null) return
+    const listed = shellStatementList(text, { characters: READ_BUDGET.characters })
+    unread ||= listed.overBudget
+    for (const statement of listed.statements) statementAssignments(shellTokens(statement), C_SHELLS.has(program), variables)
+  })
+  return { variables, unread }
+}
+
+/** The `-c` text a form hands a shell, a C shell, or a busybox or toybox shell applet; null for any other form. */
+function shellText(form: readonly string[]): string | null {
+  const program = baseCommand(form[0] ?? '')
+  const applet = (program === 'busybox' || program === 'toybox') && SHELL_APPLETS.has(baseCommand(form[1] ?? ''))
+  const args = applet ? form.slice(2) : form.slice(1)
+  if (C_SHELLS.has(program)) {
+    const at = args.indexOf('-c')
+    return at >= 0 && at + 1 < args.length ? args[at + 1]! : null
+  }
+  if (!SHELL_COMMANDS.has(program) && !applet) return null
+  const { source, operand } = shellScriptOperand(args)
+  return source === 'command' && operand !== undefined ? operand : null
+}
+
+function leadingAssignments(words: readonly string[], into: AssignedVariable[], typed: boolean): void {
+  for (let index = 0; index < words.length && ASSIGNMENT.test(words[index]!); index++) {
+    const word = words[index]!
+    into.push({ name: ASSIGNMENT.exec(word)![1]!, value: typed || index > 0 ? word.slice(word.indexOf('=') + 1) : null })
+  }
+}
+
+function assignment(word: string, into: AssignedVariable[]): void {
+  const match = ASSIGNMENT.exec(word)
+  if (match) into.push({ name: match[1]!, value: word.slice(word.indexOf('=') + 1) })
+}
+
+/** One statement of shell text: its leading assignments, then what its command declares. */
+function statementAssignments(tokens: readonly ShellToken[], cShell: boolean, into: AssignedVariable[]): void {
+  let index = 0
+  for (; index < tokens.length; index++) {
+    const { raw, word } = tokens[index]!
+    if (REDIRECTION.test(raw)) {
+      if (BARE_REDIRECTION.test(raw)) index++
+      continue
+    }
+    const match = ASSIGNMENT.exec(raw)
+    if (!match) break
+    into.push({ name: match[1]!, value: word.slice(word.indexOf('=') + 1) })
+  }
+  const command = tokens[index]?.word
+  if (command === undefined) return
+  const rest = tokens.slice(index + 1)
+  if (command === 'setenv') {
+    if (rest[0] !== undefined) into.push({ name: rest[0].word, value: rest[1]?.word ?? null })
+  } else if (command === 'set' && cShell) {
+    for (const token of rest) assignment(token.word, into)
+  } else {
+    declared(command, rest, into)
+  }
+}
+
+/** The variables `export`, `declare`, `typeset`, `local`, or `readonly` names, each with its value where one is given. */
+function declared(command: string, operands: readonly ShellToken[], into: AssignedVariable[]): void {
+  if (!DECLARING.has(command)) return
+  for (const { raw, word } of operands) {
+    if (raw.startsWith('-') || raw.startsWith('+')) continue
+    const match = ASSIGNMENT.exec(raw)
+    if (match) into.push({ name: match[1]!, value: word.slice(word.indexOf('=') + 1) })
+    else if (NAME.test(word)) into.push({ name: word, value: null })
+  }
 }

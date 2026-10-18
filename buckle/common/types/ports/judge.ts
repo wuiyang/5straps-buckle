@@ -51,8 +51,9 @@ export interface JudgeInput {
   /** The code the command line hands the interpreter itself (`-c`, `-e`), or null. */
   inline: string | null
   /**
-   * The variables the call sets for the command, sorted by name, each value as the agent gave it with a secret's hidden
-   * (fix brief 1, item 14). A call setting one that changes what code runs (CODE_LOADING_VARIABLES) is never rated.
+   * The variables the call sets: its `env` argument and the values its own words and shell text assign (fix brief 2,
+   * H3), sorted by name, each value as the agent gave it with a secret's hidden (fix brief 1, item 14). A call setting
+   * one that changes what code runs (CODE_LOADING_VARIABLES), wherever it sets it, is never rated.
    */
   env: Array<{ name: string; value: string }>
   /** The scripts the command names and every local file they import, transitively, each read once. */
