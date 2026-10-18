@@ -23,6 +23,7 @@ export const CODE_REFUSALS = Object.freeze({
   failed: 'the code could not be read',
   notFound: 'the code the interpreter runs was not found',
   fromCommand: 'the code the interpreter runs comes from another command',
+  unknownOption: 'an option the reader does not know',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -82,6 +83,9 @@ function readCode(input: CodeInput): CodeRead {
   for (const [command = '', ...args] of input.forms) {
     const program = programOf(command)
     const read = argumentsOf(program, args)
+    // An option the reader does not model could change which word is the script, so the call asks rather than rate code
+    // that may not be the code that runs (fix brief 3, R7).
+    if (read.unknownOption) return refused(CODE_REFUSALS.unknownOption)
     inline.push(...read.inline)
     for (const name of read.packages) named(packages, name, cwd)
     const language = languageOfProgram(program)
@@ -228,7 +232,7 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
       // A file on its input is the script only where the interpreter names none, or names `-`; past a script operand,
       // inline code, or a module, its input is data (fix brief 2, R7).
       const own = argumentsOf(program, form.slice(1))
-      const inputIsScript = own.operand === null && own.inline.length === 0 && own.modules.length === 0
+      const inputIsScript = own.stdinScript || (own.operand === null && own.inline.length === 0 && own.modules.length === 0)
       for (let index = 0; index < tokens.length; index++) {
         const { raw, word: unquoted } = tokens[index]!
         const bare = BARE_REDIRECTION.test(raw)
@@ -375,7 +379,10 @@ const SCRIPT_INTERPRETERS = new Set(['perl', 'ruby', 'php', 'lua', 'luajit', 'tc
  * which then names nothing and asks; one too many skips a script that is still read by its exact name.
  */
 const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
-  node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title', '--env-file', '--env-file-if-exists', '--inspect-port', '--run', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination'],
+  // node's value options are every String, StringList, Integer, UInteger, and HostPort option `node --help` lists under
+  // Node 24 (probes/node-options.txt), less the ones left out so they fail closed (OPTIONS_REFUSED). A V8 option takes
+  // its value only with `=`, so it is a flag here. `--env-file` is left out: F2 refuses it at the gate.
+  node: ['--allow-fs-read', '--allow-fs-write', '--conditions', '--cpu-prof-dir', '--cpu-prof-interval', '--cpu-prof-name', '--debug-port', '--diagnostic-dir', '--disable-proto', '--disable-warning', '--dns-result-order', '--eval', '--experimental-loader', '--experimental-sea-config', '--experimental-test-isolation', '--experimental-test-tag-filter', '--heap-prof-dir', '--heap-prof-interval', '--heap-prof-name', '--heapsnapshot-near-heap-limit', '--heapsnapshot-signal', '--icu-data-dir', '--import', '--input-type', '--inspect-port', '--inspect-publish-uid', '--loader', '--localstorage-file', '--max-http-header-size', '--max-old-space-size-percentage', '--network-family-autoselection-attempt-timeout', '--redirect-warnings', '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--require', '--secure-heap', '--secure-heap-min', '--security-revert', '--stack-trace-limit', '--test-concurrency', '--test-coverage-branches', '--test-coverage-exclude', '--test-coverage-functions', '--test-coverage-include', '--test-coverage-lines', '--test-isolation', '--test-name-pattern', '--test-random-seed', '--test-reporter-destination', '--test-rerun-failures', '--test-shard', '--test-skip-pattern', '--test-timeout', '--title', '--tls-cipher-list', '--tls-keylog', '--trace-event-categories', '--trace-event-file-pattern', '--trace-require-module', '--unhandled-rejections', '--use-largepages', '--v8-pool-size', '--watch-kill-signal', '--watch-path', '-C', '-r'],
   tsx: ['-r', '--require', '--import', '--loader', '-C', '--conditions', '--input-type', '--env-file', '--tsconfig'],
   'ts-node': ['-r', '--require', '-P', '--project', '-O', '--compiler-options', '-C', '--compiler', '--cwd', '-I', '--ignore'],
   bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--env-file', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F', '--port', '--main-fields', '--extension-order', '--jsx-factory', '--jsx-fragment', '--jsx-import-source', '--jsx-runtime', '--elide-lines', '--shell', '--title', '--user-agent', '--console-depth', '--unhandled-rejections'],
@@ -391,6 +398,58 @@ const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
 /** The options of a program whose value is the next word (VALUE_OPTIONS), so a reader of its words skips that value. */
 export function valueOptionsOf(program: string): readonly string[] {
   return VALUE_OPTIONS[program] ?? []
+}
+
+/**
+ * The options, by program, that take no value: everything an interpreter documents that is neither a value option nor an
+ * inline flag, so a word that is in none of these tables is one the reader does not model and the reading fails closed
+ * (fix brief 3, R7). node's are every Boolean, NoOp, and V8 option `node --help` lists under Node 24, less the ones left
+ * out so they refuse (OPTIONS_REFUSED); node also takes `--no-<boolean>` and underscores for dashes, handled below. The
+ * tables for bun, deno, tsx, and ts-node, which are not installed here, are built from each one's published options and
+ * stay deliberately narrow, so an option not listed refuses rather than hiding the script that runs. python's short
+ * options cluster, so they are matched by shape (knownOption), not listed here.
+ */
+const FLAG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
+  node: ['--abort-on-uncaught-exception', '--addons', '--allow-addons', '--allow-child-process', '--allow-inspector', '--allow-openssl-store', '--allow-wasi', '--allow-worker', '--async-context-frame', '--build-snapshot', '--check', '--completion-bash', '--cpu-prof', '--debug', '--debug-arraybuffer-allocations', '--debug-brk', '--deprecation', '--disable-sigusr1', '--disable-wasm-trap-handler', '--disallow-code-generation-from-strings', '--enable-etw-stack-walking', '--enable-fips', '--enable-source-maps', '--experimental-abortcontroller', '--experimental-addon-modules', '--experimental-detect-module', '--experimental-eventsource', '--experimental-fetch', '--experimental-global-customevent', '--experimental-global-navigator', '--experimental-global-webcrypto', '--experimental-import-meta-resolve', '--experimental-import-text', '--experimental-inspector-network-resource', '--experimental-json-modules', '--experimental-modules', '--experimental-network-inspection', '--experimental-print-required-tla', '--experimental-quic', '--experimental-repl-await', '--experimental-report', '--experimental-require-module', '--experimental-shadow-realm', '--experimental-specifier-resolution', '--experimental-sqlite', '--experimental-storage-inspection', '--experimental-stream-iter', '--experimental-test-coverage', '--experimental-test-module-mocks', '--experimental-test-snapshots', '--experimental-top-level-await', '--experimental-transform-types', '--experimental-vm-modules', '--experimental-wasi-unstable-preview1', '--experimental-wasm-modules', '--experimental-websocket', '--experimental-webstorage', '--experimental-worker', '--experimental-worker-inspection', '--expose-gc', '--expose-internals', '--extra-info-on-fatal-exception', '--force-async-hooks-checks', '--force-context-aware', '--force-fips', '--force-node-api-uncaught-exceptions-policy', '--frozen-intrinsics', '--global-search-paths', '--harmony-shadow-realm', '--heap-prof', '--help', '--http-parser', '--insecure-http-parser', '--inspect', '--inspect-brk', '--inspect-brk-node', '--inspect-wait', '--interactive', '--interpreted-frames-native-stack', '--jitless', '--max-heap-size', '--max-old-space-size', '--max-semi-space-size', '--napi-modules', '--network-family-autoselection', '--node-memory-debug', '--node-snapshot', '--openssl-legacy-provider', '--openssl-shared-config', '--pending-deprecation', '--perf-basic-prof', '--perf-basic-prof-only-functions', '--perf-prof', '--perf-prof-unwinding-info', '--permission', '--permission-audit', '--preserve-symlinks-main', '--print', '--prof', '--report-compact', '--report-exclude-env', '--report-exclude-network', '--report-on-fatalerror', '--report-on-signal', '--report-uncaught-exception', '--require-module', '--strip-types', '--test-force-exit', '--test-only', '--test-randomize', '--test-udp-no-try-send', '--test-update-snapshots', '--throw-deprecation', '--tls-max-v1.2', '--tls-max-v1.3', '--tls-min-v1.0', '--tls-min-v1.1', '--tls-min-v1.2', '--tls-min-v1.3', '--trace-deprecation', '--trace-env', '--trace-env-js-stack', '--trace-env-native-stack', '--trace-exit', '--trace-promises', '--trace-sigint', '--trace-sync-io', '--trace-tls', '--trace-uncaught', '--trace-warnings', '--track-heap-objects', '--use-bundled-ca', '--use-env-proxy', '--use-openssl-ca', '--use-system-ca', '--v8-options', '--verify-base-objects', '--version', '--warnings', '--watch', '--watch-preserve-output', '--zero-fill-buffers', '-c', '-h', '-i', '-v'],
+  perl: ['-a', '-c', '-C', '-l', '-n', '-p', '-s', '-t', '-T', '-u', '-U', '-v', '-V', '-w', '-W', '-0', '-g', '-G'],
+  ruby: ['-a', '-c', '-d', '--debug', '-l', '-n', '-p', '-s', '-U', '-v', '-w', '-W', '-h', '--version', '--verbose', '--copyright', '--jit', '--yjit', '--frozen-string-literal', '--help'],
+  php: ['-a', '-e', '-h', '-l', '-n', '-q', '-s', '-v', '-w', '--version', '--interactive', '--no-php-ini', '--syntax-check'],
+  lua: ['-i', '-v', '-E', '-W'],
+  bun: ['--bun', '--smol', '--watch', '--hot', '--no-clear-screen', '--no-install', '--prefer-offline', '--prefer-latest', '--no-summary', '--silent', '--version', '-v', '--help', '-h', '-b', '--no-macros', '--no-addons'],
+  deno: ['-A', '--allow-all', '--allow-read', '--allow-write', '--allow-net', '--allow-env', '--allow-run', '--allow-ffi', '--allow-sys', '--allow-hrtime', '--allow-import', '--allow-scripts', '--deny-read', '--deny-write', '--deny-net', '--deny-env', '--deny-run', '--deny-ffi', '--deny-sys', '-W', '-R', '-N', '-E', '-S', '-I', '--no-check', '--no-npm', '--no-remote', '--no-config', '--no-lock', '--no-prompt', '--cached-only', '--reload', '-r', '--watch', '--watch-hmr', '--unstable', '--inspect', '--inspect-brk', '--inspect-wait', '--quiet', '-q', '--frozen', '--version', '-V', '--help', '-h'],
+  tsx: ['--watch', '--no-cache', '--cjs-interop', '--no-warnings', '--version', '-v', '--help', '-h'],
+  'ts-node': ['-T', '--transpile-only', '--type-check', '-H', '--compiler-host', '--esm', '--files', '--pretty', '--skip-project', '--skip-ignore', '--emit', '--log-error', '--show-config', '--scope', '--version', '-v', '--help', '-h'],
+}
+
+/** The interpreters whose options the reader models, so an unmodelled one refuses; a runner's package options are not checked here. */
+const OPTION_CHECKED = new Set(['node', 'python', 'perl', 'ruby', 'php', 'lua', 'bun', 'deno', 'tsx', 'ts-node'])
+/** A word that marks an interpreter's script as coming from its standard input, so the redirected file is the script (fix brief 3, R7). */
+const STDIN_SCRIPT_MARKER = new Set(['-', '/dev/stdin'])
+/** Python's short options that take no value, so a cluster of only these is a known flag; a value letter (W, X) or code letter (c, m) in a cluster fails closed. */
+const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
+
+/**
+ * Whether an interpreter option is one the reader models (fix brief 3, R7): an inline flag, a value option, a preload,
+ * or a flag the interpreter documents. node also takes `--no-<boolean>` and underscores for dashes; python's short
+ * options cluster, so an all-flag cluster is known and a cluster carrying a value or code letter is not. A `--opt=value`
+ * long option is self-contained, so it is matched by the part before `=`. Anything else is unknown, and the reading
+ * fails closed rather than guess which word is the script.
+ */
+function knownOption(program: string, word: string): boolean {
+  if (program === 'python') {
+    if (word === '-W' || word === '-X') return true
+    if (PYTHON_FLAG_CLUSTER.test(word)) return true
+    const head = word.split('=')[0]!
+    return head === '--help' || head === '--version' || head === '--check-hash-based-pycs'
+  }
+  let core = word.startsWith('--') ? word.split('=')[0]! : word
+  if (program === 'node') core = core.replace(/_/g, '-')
+  if (program === 'node' && core.startsWith('--no-')) return FLAG_OPTIONS.node!.includes(`--${core.slice(5)}`)
+  const inline = INLINE_FLAGS[program] ?? []
+  const preloading = PRELOAD_OPTIONS[program] ?? []
+  const values = VALUE_OPTIONS[program] ?? []
+  const flags = FLAG_OPTIONS[program] ?? []
+  return inline.includes(core) || preloading.includes(core) || values.includes(core) || flags.includes(core)
 }
 
 /**
@@ -428,9 +487,13 @@ interface Operand { name: string; required: boolean; runtime: string }
  * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
  * each a name that may be a file.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; programFiles: string[]; candidates: string[]; operand: Operand | null } {
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; programFiles: string[]; candidates: string[]; operand: Operand | null; stdinScript: boolean; unknownOption: boolean } {
   const inline: string[] = []
   const preloads: string[] = []
+  // Whether the interpreter's script comes from its standard input (a `-`, `/dev/stdin`, php `--`, or csh/tcsh `-s`),
+  // and whether a word is an option the reader does not model, so the reading fails closed (fix brief 3, R7).
+  let stdinScript = false
+  let unknownOption = false
   // The program files awk runs (`-f prog.awk`), each of which must name a file.
   const programFiles: string[] = []
   const packages: string[] = []
@@ -487,6 +550,14 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       inline.push(args[++index]!)
       continue
     }
+    // The script comes from standard input, so the redirected file is the script and the words after here are its
+    // arguments, never candidates (fix brief 3, R7): a lone `-` or `/dev/stdin` for any seeking interpreter, php's `--`,
+    // or csh/tcsh `-s`.
+    if (seeking && (STDIN_SCRIPT_MARKER.has(word) || (program === 'php' && word === '--') || ((program === 'csh' || program === 'tcsh') && word === '-s'))) {
+      stdinScript = true
+      seeking = false
+      break
+    }
     const positional = !word.startsWith('-')
     if (awkProgram && positional) {
       inline.push(word)
@@ -534,10 +605,13 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
         }
       }
     }
+    // While seeking the script, an option in none of the interpreter's tables could take the next word as its value and
+    // hide the script that runs, so the reading fails closed (fix brief 3, R7). A runner's package options are not checked.
+    if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, word)) unknownOption = true
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
-  return { inline, packages, modules, preloads, programFiles, candidates, operand }
+  return { inline, packages, modules, preloads, programFiles, candidates, operand, stdinScript, unknownOption }
 }
 
 /**

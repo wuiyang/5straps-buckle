@@ -181,6 +181,37 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(fed('python3 - < evil.py', ['python3', '-'])).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
   })
 
+  it('reads the redirected file where a stdin marker names the script, and names the words after it arguments (fix brief 3, R7)', () => {
+    const { root, view } = workspace({ 'from-stdin.py': 'import helper\n', 'from-stdin.js': 'console.log(1)\n', 'second.pl': '1;\n', 'other.php': "<?php echo 1;\n", 'other.csh': 'echo 1\n', 'helper.py': 'X = 1\n', 'job.py': 'print(1)\n', 'build.js': 'console.log(1)\n', 'notes.txt': 'x\n' })
+    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
+    const files = (text: string, form: string[]) => reading(fed(text, form)).files.map(file => file.path)
+    // A lone `-`, `/dev/stdin`, php's `--`, and csh/tcsh `-s` each make the `<` file the script; the operand after it is an argument, not a file the reader reads.
+    expect(files('python3 - job.py < from-stdin.py', ['python3', '-', 'job.py'])).toEqual(['/workspace/from-stdin.py', '/workspace/helper.py'])
+    expect(files('node - build.js < from-stdin.js', ['node', '-', 'build.js'])).toEqual(['/workspace/from-stdin.js'])
+    expect(files('node /dev/stdin < from-stdin.js', ['node', '/dev/stdin'])).toEqual(['/workspace/from-stdin.js'])
+    expect(files('perl - notes.txt < second.pl', ['perl', '-', 'notes.txt'])).toEqual(['/workspace/second.pl'])
+    expect(files('php -- data.txt < other.php', ['php', '--', 'data.txt'])).toEqual(['/workspace/other.php'])
+    expect(files('tcsh -s x < other.csh', ['tcsh', '-s', 'x'])).toEqual(['/workspace/other.csh'])
+    // A missing redirected file refuses, since the script is required.
+    expect(fed('python3 - job.py < gone.py', ['python3', '-', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+  })
+
+  it('refuses an interpreter option the reader does not model, and reads the redirect past a value option it does (fix brief 3, R7)', () => {
+    const { root, view } = workspace({ 'build.js': 'console.log(1)\n', 'from-stdin.js': 'console.log(2)\n', 'job.py': 'print(1)\n' })
+    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
+    const read = (...forms: string[][]): CodeRead => readInterpreterCode({ forms, cwd: root, view })
+    // --run runs a package.json script the reader cannot follow, so it is left out of node's tables and refuses.
+    expect(read(['node', '--run', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
+    expect(read(['node', '--env-file=.env', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
+    expect(read(['python3', '-Zzz', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
+    // --redirect-warnings takes a value, so its value is not the script; the redirected file is.
+    expect(reading(fed('node --redirect-warnings notes.txt < from-stdin.js', ['node', '--redirect-warnings', 'notes.txt'])).files.map(file => file.path)).toEqual(['/workspace/from-stdin.js'])
+    // A known flag and a self-contained --opt=value are read, not refused.
+    expect(reading(read(['node', '--enable-source-maps', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    expect(reading(read(['node', '--input-type=module', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    expect(reading(read(['python3', '-B', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
+  })
+
   it('refuses, so the call asks, where the script operand names nothing, rather than rating the command line alone', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     for (const form of [['node', 'missing'], ['python3', 'missing'], ['python3', '-W', 'ignore', 'missing.py'], ['bun', 'run', 'missing'], ['npx', 'tsx', 'missing']]) {
