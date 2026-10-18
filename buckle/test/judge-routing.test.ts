@@ -75,6 +75,36 @@ async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePol
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 
+describe('a standard script', () => {
+  /** What the quick stage was shown of each call, under scope asks, which rates the floor's asks too. */
+  async function shown(calls: Array<[string, string[]]>) {
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'deploy.ts'), 'export {}\n')
+    const fakes = judges({ quick: quick('danger', 0.95) })
+    const runtime = await runtimeOf(config, fakes)
+    for (const [command, args] of calls) await call(runtime, command, args)
+    return fakes.shownQuick.map(input => [input.command, input.standardScript, input.files.map(file => file.path)])
+  }
+
+  it('is never bun run naming a file: its code is read as bun <file>\'s is', async () => {
+    expect(await shown([['bun', ['run', './deploy.ts']], ['bun', ['run', 'deploy.ts']]])).toEqual([
+      ['bun run ./deploy.ts', false, ['/workspace/deploy.ts']],
+      ['bun run deploy.ts', false, ['/workspace/deploy.ts']],
+    ])
+  })
+
+  it('is never a call behind a privilege wrapper, whatever its inner form matches', async () => {
+    expect(await shown([['sudo', ['npx', 'vitest', 'run']], ['sudo', ['bun', 'run', './deploy.ts']]])).toEqual([
+      ['sudo npx vitest run', false, []],
+      ['sudo bun run ./deploy.ts', false, ['/workspace/deploy.ts']],
+    ])
+  })
+
+  it('still matches on the inner form behind a wrapper that runs as the same user', async () => {
+    expect(await shown([['timeout', ['60', 'bun', 'run', 'dev']]])).toEqual([['timeout 60 bun run dev', true, []]])
+  })
+})
+
 describe('an interpreter ask, with the quick stage on', () => {
   it('runs on Jev\'s safe at 0.8 or above, with no thorough call, naming the quick stage in the audit entry', async () => {
     const fakes = judges({ quick: quick('safe', 0.93) })

@@ -82,6 +82,11 @@ export interface JudgeSettings {
   quickModel: string
 }
 
+/** The programs that run a command as another user: a call with one in it is never a standard script. */
+const PRIVILEGE_WRAPPERS = new Set(['sudo', 'doas', 'su', 'pkexec', 'runas'])
+/** The extensions of a script `bun run` may name in place of a package.json script. */
+const SCRIPT_EXTENSION = /\.(?:[cm]?[jt]sx?)$/i
+
 /** Why the quick stage was not asked about a call larger than it reads (QUICK_STATE_BUDGET_BYTES). */
 export const QUICK_OVER_BUDGET = 'the call is larger than the quick stage reads'
 
@@ -140,11 +145,15 @@ export function createJudgeGate(input: {
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
     const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
-    // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
-    // npm runs no interpreter Buckle names; or, inside shell text, where every interpreter form it runs is one.
-    const typed = [parseArgv(effect.command, effect.args).command, ...effect.args]
-    const standardScript = standard.some(glob => glob.matchesLine(typed)) || (running.length > 0 && running.every(form => standard.some(glob => glob.matchesLine(form))))
     const cwd = workingDirectory(call.args)
+    // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
+    // npm runs no interpreter Buckle names; or, inside shell text or behind a wrapper, where every interpreter form it runs
+    // is one. Never `bun run <file>`, which runs the workspace's own file and is read as `bun <file>` is, and never a call
+    // with a privilege wrapper anywhere in it (fix brief 1, item 15).
+    const standardForm = (form: string[]) => standard.some(glob => glob.matchesLine(form)) && !runsFile(form, cwd)
+    const privileged = allForms(forms).some(([command = '']) => PRIVILEGE_WRAPPERS.has(baseCommand(command)))
+    const typed = [parseArgv(effect.command, effect.args).command, ...effect.args]
+    const standardScript = !privileged && (standardForm(typed) || (running.length > 0 && running.every(standardForm)))
     const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
@@ -163,6 +172,20 @@ export function createJudgeGate(input: {
       description: describeCall({ tool: call.tool, args: call.args, cwd: shownCwd }),
       reason,
     }
+  }
+
+  /**
+   * Whether a form is `bun run` naming a file rather than a package.json script: its first operand after `run` and its
+   * flags holds a slash, ends in a script extension, or names a file in the agent's view.
+   */
+  function runsFile(form: readonly string[], cwd: string): boolean {
+    const [command = '', ...args] = form
+    if (baseCommand(command) !== 'bun') return false
+    const run = args.findIndex(word => !word.startsWith('-'))
+    if (args[run] !== 'run') return false
+    const operand = args.slice(run + 1).find(word => !word.startsWith('-'))
+    if (operand === undefined) return false
+    return /[/\\]/.test(operand) || SCRIPT_EXTENSION.test(operand) || typeof input.view.locate(operand, cwd) === 'object'
   }
 
   /** The real working directory a call names, its own `cwd` argument resolved in the view, else the workspace. */
