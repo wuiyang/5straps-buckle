@@ -78,8 +78,8 @@ export interface NodeConfig {
    */
   judgeApiKey?: string
   /**
-   * Where an OpenAI-compatible judge is asked, for a gateway or a local model (D91, addendum A): the node's alone, and
-   * never used for Anthropic, whose API is fixed. Absent, OpenAI's own.
+   * Where the OpenAI-compatible thorough stage is asked, for a gateway or a local model (D91, addenda A and 2 A): the
+   * node's alone, read from its environment file alone (fix brief 1, item 17). Absent, https://api.openai.com/v1.
    */
   judgeBaseUrl?: string
   /**
@@ -156,8 +156,9 @@ export interface BuckleConfig extends NodeConfig {
   /** Whether its shell runs on private copies of the folder (shell.isolation). */
   isolateShell: boolean
   /**
-   * Its decision AI (D91): when it rates an interpreter call (approval.judge), the provider and model that rate it, with
-   * no default of Buckle's own, and the commands it rates on their command line alone (approval.judgeStandardScripts).
+   * Its decision AI (D91): when it rates an interpreter call (approval.judge), the provider and model that rate it,
+   * each with Buckle's built-in default (openai-compatible, gpt-6-luna), and the commands it rates on their command
+   * line alone (approval.judgeStandardScripts).
    */
   approvalJudge: JudgeMode
   approvalJudgeProvider: JudgeProvider

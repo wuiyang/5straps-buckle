@@ -30,7 +30,7 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   heredoc only on the interpreter's own statement, with no other heredoc before it on its line.
 - A call over 160 KiB of JSON is not sent to Jev; the thorough model may still rate it.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
-  under `approval.quickJudge all`, or when the destructive list names them.
+  under `approval.quickJudge all` in automated mode, or when the destructive list names them.
 
 ## Elsewhere
 
@@ -39,3 +39,9 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 - No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
 - No Rings view of the verdict yet: the report to Rings, the 5straps agent control plane, carries
   none.
+- `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason:
+  a signed challenge carries no verdict yet.
+- No live call has been made yet to a real AI gateway, TypeSafe, or Socket: the built-in model name
+  `gpt-6-luna` (a gateway may name it differently), Jev's answers, and Socket's organization route
+  follow the published documentation and the tests' imitations. A failure of any of them is no
+  verdict, so a call asks as before.

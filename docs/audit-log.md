@@ -45,7 +45,8 @@ dangerously-allow switch (`policy_dangerously_allowed`), and each change of it
 | `requestId`, `sessionId`, `workspaceId`, `workspaceName` | which call, session, and workspace, the workspace by its id and by the name it had when the entry was written |
 | `tool`, `outcome`, `event` | the tool, the outcome, and `attempt` or `result` |
 | `effects` | the kinds of effect the call declared: `read_path`, `write_path`, `exec`, `network`, `process_probe` |
-| `asked`, `approvedBy` | the rules that stopped the call, and the rules whose grants let it through |
+| `asked`, `approvedBy` | the rules that stopped the call, and the rules whose grants let it through, or `judge` where the decision AI passed an ask |
+| `judge` | where the [decision AI](judge.md) rated the call: each stage's level, confidence, and model, the thorough model's reasoning in its own words, clipped at 2,000 characters with credentials hidden, and `passed` ([what it keeps](judge-03.md#the-audit-entry)) |
 | `detail` | an error code, or what an owner command changed; a workspace variable's value and the value of `browser.cdp`, `browser.profile`, or `browser.args` (a DevTools URL, a profile folder, Chromium arguments) are never in it, only the key; `browser.headed`'s value is |
 | `args` | the arguments' shape, trimmed as below |
 | `actorId` | who the transport authenticated, such as `local-owner` for the CLI or `agent:<token id>` over HTTP |
@@ -63,6 +64,9 @@ The log keeps the shape of a call, not its content:
 - effects keep their kind, and `asked` and `approvedBy` keep the rule name, without the path,
   host, or command;
 - identifiers are cut to 200 characters.
+
+The one exception is `judge`: the thorough model's reasoning about the command and its code is
+kept as it wrote it, clipped at 2,000 characters, with credentials hidden.
 
 So the log says that `fs_write` wrote something and which gate asked, not what it wrote or
 where. Approvers see the whole call when they decide; the log does not keep it.

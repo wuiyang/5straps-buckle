@@ -25,12 +25,12 @@ For a command it rates, Buckle reads:
   `source` and `.`.
 
 For an ask, it reads the interpreters the policy does not allow; for an allowed command under
-`approval.quickJudge all`, every interpreter it runs. A standard development script is shown on
-its command line alone. A name an expansion builds, or an import a string computes, is not
-followed: the stage reads the line that names it.
+`approval.quickJudge all` in automated mode, every interpreter it runs. A standard development
+script is shown on its command line alone. A name an expansion builds, or an import a string
+computes, is not followed: the stage reads the line that names it.
 
-It reads only what the agent itself could read without asking, through the agent's own view and
-the checks the file tools make. No stage is asked, and the call goes on as if the decision AI
+It reads only what the agent itself could read without asking, through its own view and the
+file tools' checks. No stage is asked, and the call goes on as if the decision AI
 were off, where:
 
 - the call sets a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,

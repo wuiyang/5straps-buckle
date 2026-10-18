@@ -9,8 +9,8 @@ approval and sandbox runtime on this machine, asks one or two models with the no
   AI gateway (one address that forwards to many model providers).
 
 Both answer `safe`, `warning`, or `danger` with a confidence from 0 to 1. Everything is off until
-the owner turns it on. [What it reads and sends](judge-02.md) and [what it keeps and shows](judge-03.md)
-continue on the next pages.
+the owner turns it on. [What it reads and sends](judge-02.md) and [what it keeps and
+shows](judge-03.md) continue on the next pages.
 
 ## Modes
 
@@ -33,7 +33,7 @@ settling. `approval.quickJudge` sets what Jev rates:
 | `off` | Nothing: the default. |
 | `interpreters` | The interpreter asks the thorough model rates. |
 | `asks` | Every command ask a person would see at the [destructive floor](approvals.md#the-destructive-floor): an interpreter, the built-in floor (`sudo`, `rm -rf`), and the workspace's destructive list. |
-| `all` | Every command, allowed ones too. An allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask. |
+| `all` | Every command, allowed ones too, in automated mode only. An allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask. |
 
 Under `asks` and `all`, a Jev `safe` at 0.8 or above can run a call the built-in floor or the
 destructive list asks about, such as `sudo apt update`: choose it knowing that. A deny is never
@@ -84,12 +84,12 @@ Each is a workspace setting (`buckle workspace set <key> <value>`), else the nod
 
 Set the model your gateway serves: it may name `gpt-6-luna` differently. The node alone holds, by
 hand in `buckle.env` and read from that file alone, never from a shell's or an MCP config's env,
-`BUCKLE_JUDGE_API_KEY` and `BUCKLE_JUDGE_BASE_URL` (unset:
-`https://api.openai.com/v1`), `BUCKLE_QUICK_JUDGE_API_KEY` and `BUCKLE_QUICK_JUDGE_BASE_URL`
-(unset: `https://api.typesafe.ai`), and `BUCKLE_SOCKET_API_KEY` for
-[Socket](judge-02.md#packages-and-socket), a supply-chain security service. `buckle settings show` names them and never prints
-them, no workspace sets them, and no command Buckle runs receives them. A stage whose key is
-missing stays off, and `buckle serve` says once at start which key, by name.
+`BUCKLE_JUDGE_API_KEY` and `BUCKLE_JUDGE_BASE_URL` (unset: `https://api.openai.com/v1`),
+`BUCKLE_QUICK_JUDGE_API_KEY` and `BUCKLE_QUICK_JUDGE_BASE_URL` (unset: `https://api.typesafe.ai`),
+and `BUCKLE_SOCKET_API_KEY` and `BUCKLE_SOCKET_BASE_URL` (unset: `https://api.socket.dev`) for
+[Socket](judge-02.md#packages-and-socket), a supply-chain security service. `buckle settings show`
+names them and never prints them, no workspace sets them, and no command Buckle runs receives them.
+A stage whose key is missing stays off, and `buckle serve` says once at start which key, by name.
 
 ## Standard development scripts
 
@@ -99,9 +99,9 @@ file: by default `npm run *`, `npm test`, `npm start`, `pnpm run *`, `pnpm dev`,
 `npx vitest *`, `npx eslint *`, `npx prettier *`, `pnpx tsc *`, `pnpx vitest *`, `bunx tsc *`, and
 `bunx vitest *`, in the allow list's glob syntax. `bun run` naming a file (`bun run ./deploy.ts`)
 is read like `bun <file>`, and no call with `sudo` or another privilege wrapper in it is a standard
-script. `bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations, so they ask on their own; `npm`, `pnpm`, and `yarn` never ask on their
-own, so they reach a stage under `approval.quickJudge all`, or when the destructive list names
-them. `npm run dev` runs whatever `package.json` names, so the list is the owner's call: set your
-own, separated by `;;`, or empty it with `buckle workspace set approval.judgeStandardScripts ''`,
-or the node's with `buckle settings set approval-judge-standard-scripts ''` (unset brings back the
-built-in list).
+script. `bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations, so they ask on their own;
+`npm`, `pnpm`, and `yarn` never ask on their own, so they reach a stage under
+`approval.quickJudge all` in automated mode, or when the destructive list names them. `npm run dev`
+runs whatever `package.json` names, so the list is the owner's call: set your own, separated by
+`;;`, or empty it with `buckle workspace set approval.judgeStandardScripts ''`, or the node's with
+`buckle settings set approval-judge-standard-scripts ''` (unset brings back the built-in list).
