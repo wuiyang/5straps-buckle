@@ -188,6 +188,24 @@ describe('the script an interpreter finds by its own rules', () => {
     }
   })
 
+  it('requires the script of perl, ruby, php, lua, luajit, tcsh, csh, and awk -f, past the values their options take (fix brief 2, H8)', () => {
+    const { read } = workspace({ 'x.pl': '1;\n', 'x.rb': 'p 1\n', 'x.php': '<?php echo 1;\n', 'x.lua': 'print(1)\n', 'x.csh': 'echo 1\n', 'prog.awk': '{print}\n', 'data.txt': 'a\n' })
+    for (const program of ['perl', 'ruby', 'php', 'lua', 'luajit', 'tcsh', 'csh']) {
+      expect(read([program, 'missing']), program).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    }
+    expect(read(['php', '-f', 'missing.php'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(read(['awk', '-f', 'missing.awk', 'data.txt'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    expect(files(['perl', '-I', 'lib', 'x.pl'])).toEqual(['/workspace/x.pl'])
+    expect(files(['ruby', '-r', 'json', 'x.rb'])).toEqual(['/workspace/x.rb'])
+    expect(files(['php', '-d', 'memory_limit=1G', 'x.php'])).toEqual(['/workspace/x.php'])
+    expect(files(['php', '-f', 'x.php'])).toEqual(['/workspace/x.php'])
+    expect(files(['lua', '-l', 'socket', 'x.lua'])).toEqual(['/workspace/x.lua'])
+    expect(files(['tcsh', 'x.csh'])).toEqual(['/workspace/x.csh'])
+    expect(files(['awk', '-f', 'prog.awk', 'data.txt'])).toEqual(['/workspace/prog.awk', '/workspace/data.txt'])
+    expect(reading(read(['perl', '-e', 'print 1', 'missing']))).toMatchObject({ inline: 'print 1', files: [] })
+  })
+
   it('keeps today\'s reading where no operand or inline code names a script', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     expect(reading(read(['node', '--version']))).toMatchObject({ inline: null, files: [] })

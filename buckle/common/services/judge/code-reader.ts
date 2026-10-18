@@ -98,6 +98,12 @@ function readCode(input: CodeInput): CodeRead {
     }
     // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
     // it, the code that runs is unknown, so the call asks.
+    for (const name of read.programFiles) {
+      const entry = scriptEntry(program, name, cwd, view)
+      if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
+      if (entry === 'none') return refused(CODE_REFUSALS.notFound)
+      queue.push({ real: entry.real, language })
+    }
     if (read.operand !== null) {
       const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
       if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
@@ -360,6 +366,8 @@ const AWKS = new Set(['awk', 'gawk', 'mawk', 'nawk'])
 const RUNNERS = new Set(['npx', 'pnpx', 'bunx'])
 /** The JavaScript runtimes, whose script operand must name a file; each finds it by its own rules (scriptEntry). */
 const JS_RUNTIMES = new Set(['node', 'deno', 'bun', 'tsx', 'ts-node'])
+/** The other interpreters whose first operand is their script, which must name a file, read by its exact name (fix brief 2, H8). */
+const SCRIPT_INTERPRETERS = new Set(['perl', 'ruby', 'php', 'lua', 'luajit', 'tcsh', 'csh'])
 
 /**
  * The options, by program, whose value is the next word, so it is no script operand (it is still read where it names a
@@ -373,6 +381,11 @@ const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--env-file', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F', '--port', '--main-fields', '--extension-order', '--jsx-factory', '--jsx-fragment', '--jsx-import-source', '--jsx-runtime', '--elide-lines', '--shell', '--title', '--user-agent', '--console-depth', '--unhandled-rejections'],
   deno: ['-c', '--config', '--import-map', '--lock', '--location', '--seed', '--cert', '--env-file', '--ext'],
   python: ['-W', '-X', '--check-hash-based-pycs'],
+  perl: ['-I', '-M', '-m'],
+  ruby: ['-I', '-r', '-C', '-X', '-E', '--encoding'],
+  php: ['-d', '-c', '-z', '-S', '-t'],
+  lua: ['-l'],
+  luajit: ['-l', '-j'],
 }
 
 /** The options of a program whose value is the next word (VALUE_OPTIONS), so a reader of its words skips that value. */
@@ -415,9 +428,11 @@ interface Operand { name: string; required: boolean; runtime: string }
  * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
  * each a name that may be a file.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; candidates: string[]; operand: Operand | null } {
+function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; programFiles: string[]; candidates: string[]; operand: Operand | null } {
   const inline: string[] = []
   const preloads: string[] = []
+  // The program files awk runs (`-f prog.awk`), each of which must name a file.
+  const programFiles: string[] = []
   const packages: string[] = []
   const modules: string[] = []
   const candidates: string[] = []
@@ -428,7 +443,7 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
   // The script operand: for a runtime, its first positional word, or the word after a `--` that comes before one (fix
   // brief 2, H5), past a subcommand naming one; for a runner, the word after the package, which must name a file only
   // where that package is itself a runtime.
-  let seeking = JS_RUNTIMES.has(program) || program === 'python'
+  let seeking = JS_RUNTIMES.has(program) || program === 'python' || SCRIPT_INTERPRETERS.has(program)
   let subcommand = false
   let operand: Operand | null = null
   const valueOptions = VALUE_OPTIONS[program] ?? []
@@ -453,6 +468,20 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       // What follows the module is its own arguments, each a name that may be a file.
       candidates.push(...args.slice(index + 1))
       break
+    }
+    if (AWKS.has(program) && (word === '-f' || word === '--file') && index + 1 < args.length) {
+      programFiles.push(args[++index]!)
+      continue
+    }
+    if (AWKS.has(program) && (/^-f./.test(word) || word.startsWith('--file='))) {
+      programFiles.push(word.startsWith('--') ? word.slice('--file='.length) : word.slice(2))
+      continue
+    }
+    // php -f names its script as an option's value.
+    if (program === 'php' && seeking && word === '-f' && index + 1 < args.length) {
+      operand = operandOf(args[++index]!)
+      seeking = false
+      continue
     }
     if (program === 'deno' && word === 'eval' && index + 1 < args.length) {
       inline.push(args[++index]!)
@@ -508,17 +537,20 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
-  return { inline, packages, modules, preloads, candidates, operand }
+  return { inline, packages, modules, preloads, programFiles, candidates, operand }
 }
 
 /**
- * Where an interpreter finds its script (fix brief 1, item 7; fix brief 2, H1), by the rules of the runtime that runs it
- * (`runtime`, the package for a runner): node's own (nodeEntry), Python's (the name, then a folder's `__main__.py`), or
- * the TypeScript runners' (typeScriptEntry). `unreadable` where a folder's manifest is one the agent may not read.
+ * Where an interpreter finds its script (fix brief 1, item 7; fix brief 2, H1 and H8), by the rules of the runtime that
+ * runs it (`runtime`, the package for a runner): node's own (nodeEntry), Python's (the name, then a folder's
+ * `__main__.py`), the exact name for perl, ruby, php, lua, the C shells, and awk, or the TypeScript runners'
+ * (typeScriptEntry). `unreadable` where a folder's manifest is one the agent may not read.
  */
 function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Located | 'unreadable' {
   if (runtime === 'python') return firstLocated(view, [name, `${name}/__main__.py`], base)
   if (runtime === 'node') return nodeEntry(name, base, view)
+  // perl, ruby, php, lua, the C shells, and awk try no extension and no folder: the name as written.
+  if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return firstLocated(view, [name], base)
   return typeScriptEntry(name, base, view)
 }
 
