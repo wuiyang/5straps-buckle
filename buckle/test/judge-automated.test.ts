@@ -196,6 +196,26 @@ describe('the packages the code imports', () => {
     expect(judge.judge).toHaveBeenCalledTimes(2)
   })
 
+  it('keep no quick verdict reached while Socket was unreachable, under scope asks, so the next call is rated again (fix brief 3, F5)', async () => {
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    withPackage(config)
+    const judge = fakeJudge()
+    const quickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    const ALERT = { ...SUMMARY, alerts: [{ type: 'malware', severity: 'critical' }] }
+    let lookups = 0
+    const scanner = { scan: vi.fn(async (purls: readonly string[]) => (++lookups === 1 ? { summaries: new Map(purls.map(purl => [purl, null])), failed: true } : { summaries: new Map(purls.map(purl => [purl, ALERT])), failed: false })) }
+    const runtime = await createRuntime({ config, judge, quickJudge, packageScanner: scanner })
+    runtimes.push(runtime)
+    const first = await call(runtime, 'node', ['job.js'])
+    expect(first.entry.judge).toMatchObject({ passedBy: 'quick', socket: 'unavailable' })
+    await call(runtime, 'node', ['job.js'])
+    expect(quickJudge.quick).toHaveBeenCalledTimes(2)
+    // With Socket's answer, the quick verdict is kept: a third call is served from the cache.
+    await call(runtime, 'node', ['job.js'])
+    expect(quickJudge.quick).toHaveBeenCalledTimes(2)
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+
   it('carry no Socket summary where the node has no Socket key, and the rating still runs', async () => {
     const config = node()
     withPackage(config)

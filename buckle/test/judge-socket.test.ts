@@ -85,6 +85,16 @@ describe('the Socket scanner', () => {
     expect(await createSocketScanner({ apiKey: KEY, fetch: hanging.fetch, timeoutMs: 50 }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: true })
     expect(performance.now() - started).toBeLessThan(5_000)
   })
+
+  it('counts a batch post with no usable answer as failed: a 5xx twice, or a 403 (fix brief 3, F5)', async () => {
+    let posts = 0
+    const busy = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : (posts++, new Response('down', { status: 503 }))))
+    expect(await createSocketScanner({ apiKey: KEY, fetch: busy.fetch }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: true })
+    expect(posts).toBe(2)
+    const forbidden = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : new Response('no', { status: 403 })))
+    expect(await createSocketScanner({ apiKey: KEY, fetch: forbidden.fetch }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: true })
+    expect(forbidden.sent.filter(item => item.method === 'POST')).toHaveLength(1)
+  })
 })
 
 const fakeScanner = (summary: SocketSummary | null = SUMMARY) => {
