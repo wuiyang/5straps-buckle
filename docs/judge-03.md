@@ -8,13 +8,13 @@ runtime on this machine) runs with the node's own keys, keeps and shows. Its two
 
 Each stage's verdict is kept under that stage's provider and model, the policy (its `updatedAt`
 and its lists), the command, its inline code, each file read as its path with its sha256, each
-package with its version, whether it was a standard script, the working directory, the variables
-the call sets, and Buckle's summary of the call, which names its network access. One byte
-changed in any file it reads, two files swapping contents, or a package upgraded, makes a new key,
-so all of the code is rated again. A verdict is
-kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state directory, readable
-by the owner alone, at most 1,000 with the oldest dropped, so a restart keeps them. A policy change
-empties it, and no failure is kept.
+package with its version, whether it was a standard script, the working directory, the mounts
+with their access, the variables the call sets, and Buckle's summary of the call, which names its
+network access. One byte changed in any file it reads, two files swapping contents, a package
+upgraded, or a mount added or made writable, makes a new key, so all of the code is rated again.
+A verdict is kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state
+directory, readable by the owner alone, at most 1,000 with the oldest dropped, so a restart keeps
+them. A policy change empties it, and no failure is kept.
 
 Socket's summaries are kept the same way, by package URL, for 24 hours, in `socket-cache.json`
 beside it, at most 2,000. `buckle workspace judge-cache clear` empties both by hand.

@@ -47,6 +47,14 @@ describe('a verdict\'s cache key', () => {
     expect(new Set([base, ...changed]).size).toBe(changed.length + 1)
   })
 
+  it('holds the mounts with their access: one made writable, or one added, is a new key; another order is not', () => {
+    const mounts: JudgeInput['mounts'] = [{ target: '/workspace', access: 'read-write' }, { target: '/data', access: 'read-only' }]
+    const base = key(input({ mounts }))
+    expect(key(input({ mounts: [...mounts].reverse() }))).toBe(base)
+    expect(key(input({ mounts: [mounts[0]!, { target: '/data', access: 'read-write' }] }))).not.toBe(base)
+    expect(key(input({ mounts: [...mounts, { target: '/secrets', access: 'read-only' }] }))).not.toBe(base)
+  })
+
   it('pairs each sha with its file: two files swapping contents, or one moving, is a new key; another discovery order is not', () => {
     const [job, lib] = input().files as [JudgeInput['files'][number], JudgeInput['files'][number]]
     const base = key(input({ files: [job, lib] }))
