@@ -324,6 +324,27 @@ describe('the code a here-string hands an interpreter', () => {
   })
 })
 
+describe('heredocs in a long text (fix brief 2, R9)', () => {
+  it('reads 4,000 repeated heredoc statements in one pass, well inside 200 ms', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    const text = 'python3 <<E\nE\n'.repeat(4_000)
+    const started = performance.now()
+    const result = readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(performance.now() - started).toBeLessThan(200)
+    expect(reading(result).inline).toBe('')
+  })
+
+  it('refuses, marking the reading truncated, once the bodies walked run past the read budget', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    // 6,000 heredocs left open: each body runs to the end of the text, about 216 million characters in all, far past
+    // READ_BUDGET, so the walk stops at the budget rather than reading every body.
+    const text = 'python3 <<E\n'.repeat(6_000)
+    const started = performance.now()
+    expect(readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
+    expect(performance.now() - started).toBeLessThan(1_000)
+  })
+})
+
 describe('the code a shell applet or awk runs', () => {
   it('follows source and . in shell code, and takes an awk program as inline code', () => {
     const { read } = workspace({ 'build.sh': '#!/bin/sh\nsource ./lib.sh\n. "$HOME/.profile"\n', 'lib.sh': 'echo lib\n', 'env.sh': 'X=1\n', 'data.txt': 'a b\n' })

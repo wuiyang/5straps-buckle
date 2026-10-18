@@ -117,6 +117,7 @@ function readCode(input: CodeInput): CodeRead {
     }
   }
   const fed = fedInputsOf(input.shellForms ?? [], input.forms)
+  if (fed.overBudget) return refused(CODE_REFUSALS.truncated, true)
   if (fed.unknown) return refused(CODE_REFUSALS.notFound)
   for (const { program, code } of fed.inline) {
     inline.push(code)
@@ -178,6 +179,8 @@ interface FedInputs {
   scripts: Array<{ program: string; name: string }>
   /** Whether a redirected file's name is built by an expansion, so which code runs is unknown. */
   unknown: boolean
+  /** Whether reading the text and its heredoc bodies ran past READ_BUDGET, so some code was left unread. */
+  overBudget: boolean
 }
 
 /**
@@ -188,13 +191,16 @@ interface FedInputs {
  */
 function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]): FedInputs {
   const running = new Set(forms.map(([command = '']) => programOf(command)))
-  const fed: FedInputs = { inline: [], scripts: [], unknown: false }
+  const fed: FedInputs = { inline: [], scripts: [], unknown: false, overBudget: false }
+  // One budget for every text and every heredoc body walked, so no text costs more than READ_BUDGET in all (fix brief 2, R9).
+  const meter = { characters: READ_BUDGET.characters }
   for (const [command = '', ...args] of shellForms) {
     const shell = baseCommand(command)
     if (!SHELL_COMMANDS.has(shell)) continue
     const { source, operand } = shellScriptOperand(args)
     if (source !== 'command' || operand === undefined) continue
-    for (const statement of shellStatementList(operand, { characters: READ_BUDGET.characters }).statements) {
+    const heredocs = heredocIndex(operand, meter)
+    for (const statement of shellStatementList(operand, meter).statements) {
       const tokens = shellTokens(statement)
       const form = statementCommand(tokens)
       if (form === null || !running.has(programOf(form[0]!))) continue
@@ -211,8 +217,9 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
           if (HERE_STRING_SHELLS.has(shell) && target !== undefined) fed.inline.push({ program, code: target.word })
         } else if (STDIN_HEREDOC.test(raw)) {
           const delimiter = bare ? target?.word : unquoted.replace(/^0?<<-?/, '')
-          const bodies = delimiter === undefined ? null : heredocBodies(operand, statement, { delimiter, tabs: raw.includes('<<-') })
-          if (bodies === null || tokens.filter(token => ANY_HEREDOC.test(token.raw)).length > 1) fed.unknown = true
+          const bodies = delimiter === undefined ? null : heredocs.bodies(statement, { delimiter, tabs: raw.includes('<<-') })
+          if (bodies === 'overBudget') fed.overBudget = true
+          else if (bodies === null || tokens.filter(token => ANY_HEREDOC.test(token.raw)).length > 1) fed.unknown = true
           else fed.inline.push(...bodies.map(code => ({ program, code })))
         } else if (STDIN_FILE.test(raw) && target !== undefined && inputIsScript) {
           if (EXPANSION.test(target.raw)) fed.unknown = true
@@ -221,7 +228,11 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
       }
     }
   }
-  fed.inline = fed.inline.filter((item, index) => fed.inline.findIndex(other => other.program === item.program && other.code === item.code) === index)
+  const kept = new Set<string>()
+  fed.inline = fed.inline.filter((item) => {
+    const key = `${item.program}\0${item.code}`
+    return kept.has(key) ? false : (kept.add(key), true)
+  })
   return fed
 }
 
@@ -248,26 +259,64 @@ function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>):
 }
 
 /**
- * The body of the heredoc a statement feeds its command, at every place the statement stands in the text: the lines
- * after the statement's own, up to its delimiter line (leading tabs dropped for `<<-`), or to the end of the text, as a
- * shell reads one left open. Null, so the code is unknown, where the statement is not found as written, has no line
- * after it, or follows another heredoc on its line, whose body would come first.
+ * The heredoc bodies of one shell text (fix brief 2, R9), read in one pass: each statement's places in the text are found
+ * once, and each body is read by walking lines from its own statement's line to its delimiter, every character walked
+ * charged to the shared READ_BUDGET meter, so a text with many heredocs, or one left open, costs at most the budget and
+ * then refuses (`overBudget`).
  */
-function heredocBodies(text: string, statement: string, heredoc: { delimiter: string; tabs: boolean }): string[] | null {
-  const bodies: string[] = []
-  for (let at = text.indexOf(statement); at >= 0; at = text.indexOf(statement, at + 1)) {
-    const lineStart = text.lastIndexOf('\n', at) + 1
-    if (ANY_HEREDOC_IN_TEXT.test(text.slice(lineStart, at))) return null
-    const newline = text.indexOf('\n', at + statement.length)
-    if (newline < 0) return null
-    const lines: string[] = []
-    for (const line of text.slice(newline + 1).split('\n')) {
-      if ((heredoc.tabs ? line.replace(/^\t+/, '') : line) === heredoc.delimiter) break
-      lines.push(heredoc.tabs ? line.replace(/^\t+/, '') : line)
+function heredocIndex(text: string, meter: { characters: number }) {
+  const places = new Map<string, number[]>()
+  /** Every place a statement stands in the text, found once. */
+  const placesOf = (statement: string): number[] | null => {
+    const known = places.get(statement)
+    if (known) return known
+    const found: number[] = []
+    let from = 0
+    for (let at = text.indexOf(statement); at >= 0; at = text.indexOf(statement, at + 1)) {
+      meter.characters -= at - from + 1
+      from = at + 1
+      if (meter.characters < 0) return null
+      found.push(at)
     }
-    bodies.push(lines.join('\n'))
+    meter.characters -= text.length - from
+    places.set(statement, found)
+    return meter.characters < 0 ? null : found
   }
-  return bodies.length === 0 ? null : bodies
+  return {
+    /**
+     * The body of the heredoc a statement feeds its command, at every place the statement stands in the text: the lines
+     * after the statement's own, up to its delimiter line (leading tabs dropped for `<<-`), or to the end of the text, as
+     * a shell reads one left open. Null, so the code is unknown, where the statement is not found as written, has no line
+     * after it, or follows another heredoc on its line, whose body would come first.
+     */
+    bodies(statement: string, heredoc: { delimiter: string; tabs: boolean }): string[] | null | 'overBudget' {
+      const at = placesOf(statement)
+      if (at === null) return 'overBudget'
+      const bodies: string[] = []
+      for (const place of at) {
+        const lineStart = text.lastIndexOf('\n', place) + 1
+        meter.characters -= place - lineStart
+        if (ANY_HEREDOC_IN_TEXT.test(text.slice(lineStart, place))) return null
+        const newline = text.indexOf('\n', place + statement.length)
+        if (newline < 0) return null
+        meter.characters -= newline - place
+        const lines: string[] = []
+        for (let start = newline + 1; ;) {
+          const end = text.indexOf('\n', start)
+          const raw = text.slice(start, end < 0 ? text.length : end)
+          meter.characters -= raw.length + 1
+          if (meter.characters < 0) return 'overBudget'
+          const line = heredoc.tabs ? raw.replace(/^\t+/, '') : raw
+          if (line === heredoc.delimiter) break
+          lines.push(line)
+          if (end < 0) break
+          start = end + 1
+        }
+        bodies.push(lines.join('\n'))
+      }
+      return bodies.length === 0 ? null : bodies
+    },
+  }
 }
 
 function refused(reason: string, truncated = false): CodeRead {
