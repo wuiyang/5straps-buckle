@@ -168,7 +168,7 @@ describe('a rating the AI SDK judge cannot give', () => {
   it('clips a reasoning longer than Buckle keeps, ending it in [cut]', async () => {
     const { fetch } = fakeFetch(answer({ ...SAFE, reasoning: 'x'.repeat(70_000) }))
     const result = await rate(fetch)
-    expect(result).toMatchObject({ kind: 'verdict', reasoning: `${'x'.repeat(JUDGE_REASONING_LIMIT - 6)} [cut]` })
+    expect(result).toMatchObject({ kind: 'verdict', reasoning: `${'x'.repeat(JUDGE_REASONING_LIMIT - 6)}\n[cut]` })
   })
 
   it('is unavailable when the answer echoes another command', async () => {

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { describeAsk } from '../common/domain/approval-instruction.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { judgeCachePath } from '../common/services/judge/judge-cache.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
@@ -116,7 +117,7 @@ describe('a reasoning far longer than an audit entry holds', () => {
     const passed = await call(passing, 'python3', ['job.py'])
     expect(passed.ran).toBe(true)
     expect(passed.entry).toBeDefined()
-    expect(passed.entry.judge).toMatchObject({ passed: true, reasoning: expect.stringMatching(/ \[cut\]$/) })
+    expect(passed.entry.judge).toMatchObject({ passed: true, reasoning: expect.stringMatching(/\n\[cut\]$/) })
     expect((passed.entry.judge as { reasoning: string }).reasoning).toHaveLength(JUDGE_REASONING_LIMIT)
     expect(Buffer.byteLength(JSON.stringify(passed.entry))).toBeLessThan(65_536)
 
@@ -124,7 +125,24 @@ describe('a reasoning far longer than an audit entry holds', () => {
     const asked = await call(asking, 'python3', ['job.py'])
     expect(asked.response).toMatchObject({ outcome: 'approval_required' })
     expect(Buffer.byteLength(JSON.stringify(asked.entry))).toBeLessThan(65_536)
-    expect(asking.approvalService.listing()[0]!.call?.judge?.[0]).toMatchObject({ reasoning: expect.stringMatching(/ \[cut\]$/) })
+    expect(asking.approvalService.listing()[0]!.call?.judge?.[0]).toMatchObject({ reasoning: expect.stringMatching(/\n\[cut\]$/) })
+  })
+})
+
+describe('a long reasoning holding a credential (fix brief 2, R18)', () => {
+  it.each([
+    ['ending its line', `${'x'.repeat(1_960)}\nDB_PASSWORD=supersecretvalue1234567890ABCDEFGHIJ\n${'y'.repeat(200)}`],
+    ['with words after it', `${'x'.repeat(1_960)}\nDB_PASSWORD=supersecretvalue1234567890ABCDEFGHIJ and the rest of the line\n${'y'.repeat(200)}`],
+  ])('shows no part of the value where the cut lands inside it, %s', async (_, reasoning) => {
+    const runtime = await runtimeOf(node(), fakeJudge(() => ({ ...verdict('danger', 0.95), reasoning })))
+    const { response, entry } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    const waiting = runtime.approvalService.listing()[0]!
+    const line = describeAsk({ ...runtime.approvalService.waitingAsk(waiting.token)!.request, workspaceName: runtime.workspaceName(), call: waiting.call! }).join('\n')
+    for (const shown of [JSON.stringify(entry), JSON.stringify(waiting.call?.judge), line]) {
+      expect(shown).not.toContain('supersecret')
+      expect(shown).toContain('DB_PASSWORD=')
+    }
   })
 })
 
