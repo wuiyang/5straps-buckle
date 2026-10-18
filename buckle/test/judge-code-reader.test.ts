@@ -273,6 +273,21 @@ describe('the code a Python call runs', () => {
     expect(read(['python3', 'gone/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
   })
 
+  it('never reads a parenthesised group across a docstring, a comment, or a string, and reads past a ) in a comment (fix brief 2, R8)', () => {
+    const { read } = workspace({
+      'helper.py': 'def run(): pass\n', 'pkg/__init__.py': '', 'pkg/mod.py': 'X = 1\n', 'pkg/other.py': 'Y = 2\n',
+      'doc.py': '"""Usage:\n    from mylib import (\n"""\nfrom helper import run\nrun()\n',
+      'note.py': '# Old style was: from compat import (\nfrom helper import run\nrun()\n',
+      'list.py': 'from pkg import (\n    mod,  # see run()\n    other,\n)\n',
+      'open.py': 'from pkg import (mod,\n' + 'x = 1\n'.repeat(70) + ')\nimport helper\n',
+    })
+    const files = (script: string) => reading(read(['python3', script])).files.map(file => file.path).sort()
+    expect(files('doc.py')).toEqual(['/workspace/doc.py', '/workspace/helper.py'])
+    expect(files('note.py')).toEqual(['/workspace/helper.py', '/workspace/note.py'])
+    expect(files('list.py')).toEqual(['/workspace/list.py', '/workspace/pkg/__init__.py', '/workspace/pkg/mod.py', '/workspace/pkg/other.py'])
+    expect(files('open.py')).toEqual(['/workspace/helper.py', '/workspace/open.py', '/workspace/pkg/__init__.py', '/workspace/pkg/mod.py'])
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })

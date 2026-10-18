@@ -656,10 +656,36 @@ function jsCandidates(specifier: string): string[] {
 }
 
 // A statement starts a line, or follows `;` or a compound statement's `:` (`import os; import helper`, `try: import x`);
-// a from-import's names may sit in parentheses across lines, comments among them. A `;` or `:` inside a string can read
-// as one too, which fails closed: the name becomes a package, or a relative import names nothing and refuses.
+// a from-import's names may sit in parentheses across lines, comments among them (groupedNames). A `;` or `:` inside a
+// string can read as one too, which fails closed: the name becomes a package, or a relative import names nothing and refuses.
 const PYTHON_IMPORT = /(?:^|[;:])[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
-const PYTHON_FROM = /(?:^|[;:])[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(?:\(([^)]*)\)|([\w\t ,*]+))/gm
+const PYTHON_FROM = /(?:^|[;:])[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\()?([\w\t ,*]*)/gm
+/** The most lines a parenthesised from-import's names are read across. */
+const GROUP_LINES = 60
+/** A line that starts another statement or a string, so an open `(` before it was no from-import's (a docstring's, a comment's). */
+const GROUP_BREAK = /^[ \t]*(?:from |import |def |class |"""|\'\'\')/
+
+/**
+ * The names of a parenthesised from-import, from just after its `(` to the first `)` outside a comment (fix brief 2,
+ * R8): at most GROUP_LINES lines, and null, so the import reads as its first line alone, where none closes it in time or
+ * a line inside starts another statement or a string. So an unclosed `(` in a docstring or a comment never swallows the
+ * real imports after it.
+ */
+function groupedNames(code: string, from: number): string | null {
+  const parts: string[] = []
+  let at = from
+  for (let line = 0; line < GROUP_LINES; line++) {
+    const end = code.indexOf('\n', at)
+    const text = code.slice(at, end < 0 ? code.length : end).replace(/#.*/, '')
+    if (line > 0 && GROUP_BREAK.test(text)) return null
+    const close = text.indexOf(')')
+    if (close >= 0) return [...parts, text.slice(0, close)].join(',')
+    parts.push(text)
+    if (end < 0) return null
+    at = end + 1
+  }
+  return null
+}
 
 function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
   const found: Found = []
@@ -671,8 +697,10 @@ function pythonImports(code: string, place: { file: string | null; cwd: string; 
       found.push(...files)
     }
   }
-  for (const [, dots = '', module = '', grouped, plain] of code.matchAll(PYTHON_FROM)) {
-    const imported = (grouped ?? plain ?? '').replace(/#[^\n]*/g, '').split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
+  for (const match of code.matchAll(PYTHON_FROM)) {
+    const [whole, dots = '', module = '', open, plain = ''] = match
+    const grouped = open ? groupedNames(code, match.index + whole.length - plain.length) : null
+    const imported = (grouped ?? plain).split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
     let roots = [beside, place.cwd]
     if (dots.length > 0) {
       let root = beside
