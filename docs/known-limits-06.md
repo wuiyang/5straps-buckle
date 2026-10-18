@@ -29,8 +29,13 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   shell text alone. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text, and a
   heredoc only on the interpreter's own statement, with no other heredoc before it on its line.
 - A call over 160 KiB of JSON is not sent to Jev; the thorough model may still rate it.
-- A call that changes its working directory first (`cd`, `env -C`, `sudo -D`, or `--cwd`), or
-  sets a variable that changes what code runs anywhere in it, is not rated: it asks a person.
+- A call that changes its working directory anywhere in it (`cd`, `pushd`, `env -C`, `sudo -D`,
+  or `--cwd`), or sets a variable that changes what code runs, is not rated: an ask goes to a
+  person, and an allowed command under `approval.quickJudge all` runs unscreened.
+- The reader fails closed on what it does not model, with the same result: an interpreter option it
+  does not know, a runtime that loads variables from a file (`--env-file`), more than 256 variables
+  set, a bunfig.toml it cannot parse, or a parenthesised import list over 200 lines. bun's global
+  config file is not read.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
   under `approval.quickJudge all` in automated mode, or when the destructive list names them.
 

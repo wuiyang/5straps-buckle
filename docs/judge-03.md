@@ -53,14 +53,14 @@ A call a stage ran carries `judge` with the thorough model's `provider`, `model`
 `confidence`, `reasoning`, `latencyMs`, and `promptDigest`, Jev's verdict as `quick` (`provider`,
 `model`, `level`, `confidence`, `probabilities`, and `latencyMs`), `passed: true`, and `passedBy`
 naming the stage, and names `judge` among what allowed it. One a stage rated and did not pass
-carries the same with `passed: false`, or `unavailable` in place of a verdict; Jev's verdict alone
-stands where the thorough model was not asked. `flagged: true` marks an allowed command Jev turned
-into an ask, and `screened: true` one it rated and let run, recorded
+carries the same with `passed: false`, or `unavailable` in place of a verdict, its reason cut to 500
+characters; Jev's verdict alone stands where the thorough model was not asked. `flagged: true` marks
+an allowed command Jev turned into an ask, and `screened: true` one it rated and let run, recorded
 `passed: false, screened: true` because no ask was passed. `socket: 'unavailable'` marks a rating
 made while the Socket lookup failed, whose verdict was not kept. `promptDigest` is the sha256 of the
-model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, cut to
-2,000 characters (ending `[cut]` on a line of its own) wherever it is kept or shown, with the
-credentials the display hides hidden, before the cut too. The report to Rings does not carry the
+model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, with the
+credentials the display hides hidden wherever it is kept or shown, the cache included, then cut to
+2,000 characters (ending `[cut]` on a line of its own). The report to Rings does not carry the
 verdict yet.
 
 ## Cost

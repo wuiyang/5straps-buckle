@@ -93,14 +93,14 @@ A stage whose key is missing stays off, and `buckle serve` says once at start wh
 
 ## Standard development scripts
 
-These run the project's own tooling, so a stage rates them on the command line alone, shown no
-file: by default `npm run *`, `npm test`, `npm start`, `pnpm run *`, `pnpm dev`, `pnpm build`,
-`pnpm test`, `yarn run *`, `yarn dev`, `yarn build`, `yarn test`, `bun run *`, `npx tsc *`,
-`npx vitest *`, `npx eslint *`, `npx prettier *`, `pnpx tsc *`, `pnpx vitest *`, `bunx tsc *`, and
-`bunx vitest *`, in the allow list's glob syntax. `bun run` naming a file (`bun run ./deploy.ts`)
-is read like `bun <file>`, and no call with `sudo` or another privilege wrapper in it is a standard
-script. `bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations, so they ask on their own;
-`npm`, `pnpm`, and `yarn` never ask on their own, so they reach a stage under
+These run the project's own tooling, so a stage rates them on the command line alone, shown no file
+but what bun preloads first: by default `npm run *`, `npm test`, `npm start`, `pnpm run *`, `pnpm
+dev`, `pnpm build`, `pnpm test`, `yarn run *`, `yarn dev`, `yarn build`, `yarn test`, `bun run *`,
+`npx tsc *`, `npx vitest *`, `npx eslint *`, `npx prettier *`, `pnpx tsc *`, `pnpx vitest *`, `bunx
+tsc *`, and `bunx vitest *`, in the allow list's glob syntax. `bun run` naming a file (`bun run
+./deploy.ts`) is read like `bun <file>`, and no call with `sudo` or another privilege wrapper in it
+is a standard script. `bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations, so they ask
+on their own; `npm`, `pnpm`, and `yarn` never ask on their own, so they reach a stage under
 `approval.quickJudge all` in automated mode, or when the destructive list names them. `npm run dev`
 runs whatever `package.json` names, so the list is the owner's call: set your own, separated by
 `;;`, or empty it with `buckle workspace set approval.judgeStandardScripts ''`, or the node's with

@@ -13,27 +13,29 @@ For a command it rates, Buckle reads:
   yash text, and a heredoc's body (`python3 - <<'EOF'`), behind a wrapper such as `env` too;
 - the script, found as the interpreter finds it (node in node's own order: `node build` reads
   `build.js`, else a folder's `main` or index file; Python a folder's `__main__.py`), also after a
-  leading `--`; each module `-r`, `--require`, `--import`, or `--preload` loads first; and a file
-  redirected into an interpreter that names no script (`python3 < job.py`);
+  leading `--`; each module `-r`, `--require`, `--import`, `--preload`, or a bunfig.toml loads
+  first; and a file redirected into an interpreter that names no script, or names `-`
+  (`python3 < job.py`);
 - every other argument naming a regular file in the workspace or a mount, and the module
   `python3 -m` runs, a namespace package's `__main__.py` included;
 - every local file those import, transitively, each once: JavaScript and TypeScript `import`,
-  `export ... from`, `import()`, and `require()` of a relative or absolute path, with the usual
-  extensions, index files, and the `.ts` behind a `.js`; Python `import` and `from ... import` of
-  a module beside the file or under the working directory, with each package's `__init__.py`; and
-  shell `source` and `.`.
+  `export ... from`, `import()`, and `require()` of a relative or absolute path, by node's own
+  rules under node (an `import` names the file exactly), else with the usual extensions, index
+  files, and the `.ts` behind a `.js`; Python `import` and `from ... import` of a module beside
+  the file or under the working directory, with each package's `__init__.py`; and shell `source`
+  and `.`.
 
 For an ask, it reads the interpreters the policy does not allow; for an allowed command under
 `approval.quickJudge all` in automated mode, every interpreter it runs. A standard development
-script is shown on its command line alone. An import a string computes, or a `source` an expansion
-names, is not followed: the stage reads the line.
+script's own code is not read, only what bun preloads. An import a string computes, or a `source`
+an expansion names, is not followed: the stage reads the line.
 
 It reads only what the agent could read without asking, through the file tools' checks. No stage is
 asked, and the call goes on as if the decision AI were off, where:
 
 - the call sets a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,
   `LD_PRELOAD`, or `PYTHONPATH`, anywhere in it (the audit entry names it, never its value);
-- the call changes its working directory first: `cd`, `pushd`, `env -C`, `sudo -D`, or `--cwd`;
+- the call changes its working directory anywhere: `cd`, `pushd`, `env -C`, `sudo -D`, or `--cwd`;
 - the code runs past 50 files or 512 KiB in all, the command line's own code included;
 - an argument lands outside every mount, or the code reaches a credential file, a hidden path,
   Buckle's state, or a link leaving the workspace;
@@ -70,11 +72,10 @@ directory and the mounts as the sandbox names them; and Buckle's own summary of 
 content of the workspace's own scripts leaves the machine. Never: a value from the node's own
 environment, a file the agent could not read, a token, or a key in the body (each key goes in its
 `Authorization` header). A workspace shown at its real path is named `/workspace`, and Buckle's own
-programs, such as its node, by name alone; a host path the agent typed stays in the command.
+programs by name alone; a host path the agent typed stays in the command.
 
-Buckle sends Jev at most 160 KiB of JSON, about 40,000 of the 64,000 tokens it reads a request; a
-larger call is not sent to Jev, and the routing goes on without it. Each `<image:` in it is sent as
-`<image :`, as TypeSafe's SDK would refuse it as a picture reference.
+Buckle sends Jev at most 160 KiB of JSON; a larger call is not sent to Jev, and the routing goes on
+without it. Each `<image:` in it is sent as `<image :`, which TypeSafe's SDK would refuse.
 
 ## The fixed instructions
 
