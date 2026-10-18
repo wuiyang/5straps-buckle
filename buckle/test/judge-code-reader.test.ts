@@ -197,7 +197,26 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(read(['node', '-r', 'dotenv/config', 'build.js']))).toMatchObject({ files: [{ path: '/workspace/build.js' }], packages: [{ name: 'dotenv' }] })
     expect(files(['bun', '--preload', './pre', 'build.js'])).toEqual(['/workspace/pre.ts', '/workspace/build.js'])
     expect(read(['node', '--import', './missing.mjs', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
-    expect(read(['node', '--import', 'data:text/javascript,evil()', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(read(['node', '--import', 'data:text/javascript,evil()', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unmodelledImport, truncated: false })
+  })
+
+  it('refuses an import the reader does not model under every runtime, and resolves node\'s --import and loaders as ES modules (fix brief 4, F1 and G5)', () => {
+    const decoys = { 'target.mjs': 'evil()\n', 'target.mjs?v=1': 'export {}\n', '%74arget.mjs': 'export {}\n', 'target.mjs#frag': 'export {}\n', 'build.js': 'console.log(1)\n', 'dir/index.js': 'module.exports = 1\n' }
+    const unmodelled = { kind: 'refused', reason: CODE_REFUSALS.unmodelledImport, truncated: false }
+    for (const statement of ["import './target.mjs?v=1'", "export * from './%74arget.mjs'", "await import('./target.mjs#frag')", "import 'file:///workspace/target.mjs'", "require('./target.mjs?v=1')"]) {
+      const { read } = workspace({ ...decoys, 'a.mjs': `${statement}\n` })
+      expect(read(['node', 'a.mjs']), statement).toEqual(unmodelled)
+      expect(read(['tsx', 'a.mjs']), statement).toEqual(unmodelled)
+    }
+    const { read } = workspace({ ...decoys, 'b.mjs': "import 'node:fs'\nimport { test } from 'bun:test'\n" })
+    expect(reading(read(['node', 'b.mjs'])).packages.map(item => item.name)).toEqual(['bun:test', 'node:fs'])
+    for (const option of ['--import', '--loader', '--experimental-loader']) {
+      expect(read(['node', option, './target.mjs?v=1', 'build.js']), option).toEqual(unmodelled)
+      // node's ES module resolver tries no folder index, as require does.
+      expect(read(['node', option, './dir', 'build.js']), option).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    }
+    expect(paths(read(['node', '-r', './dir', 'build.js']))).toEqual(['/workspace/dir/index.js', '/workspace/build.js'])
+    expect(paths(read(['node', '--import=./target.mjs', 'build.js']))).toEqual(['/workspace/target.mjs', '/workspace/build.js'])
   })
 
   it('reads each preload bunfig.toml lists for bun, and refuses a config the reader cannot parse (fix brief 3, R15)', () => {

@@ -32,6 +32,7 @@ export const CODE_REFUSALS = Object.freeze({
   importList: 'an import list the reader could not parse',
   compiledPython: 'the code runs compiled Python the reader cannot show',
   interactive: 'an interactive flag reads standard input as code',
+  unmodelledImport: 'an import the reader does not model',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -188,7 +189,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     enqueue(files, runtime)
   }
   for (const preload of read.preloads) {
-    const found = preloadOf(program, preload, { cwd, view, packages })
+    const found = preloadOf(runtime, preload, { cwd, view, packages })
     if (typeof found === 'string') return found
     if (found !== null) queue.push({ real: found.real, language: 'js', runtime })
   }
@@ -422,8 +423,23 @@ const PRELOAD_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   'ts-node': ['-r', '--require', '--import', '--loader', '--experimental-loader'],
   bun: ['-r', '--preload', '--require', '--import'],
 }
-/** A preload a URL names (`data:`, `file:`, `http:`), whose code no file in the view holds. */
-const URL_SPECIFIER = /^(?:data|file|https?):/i
+/** A preload node loads through its ES module resolver rather than require: `--import` and the loaders (fix brief 4, F1). */
+const ESM_PRELOAD_OPTIONS = new Set(['--import', '--loader', '--experimental-loader'])
+/** A preload as an option names it, and whether node resolves it as an ES module. */
+interface Preload { specifier: string; esm: boolean }
+/** A specifier carrying a URL scheme; node's and bun's builtin namespaces (`node:fs`, `bun:test`) are named as packages. */
+const URL_SCHEME = /^[A-Za-z][A-Za-z0-9+.-]+:/
+const BUILTIN_SCHEME = /^(?:node|bun):/
+
+/**
+ * Whether an import names code by rules the reader does not model, under any runtime (fix brief 4, F1 and G5): a URL
+ * (`file:`, `data:`, `http:`, and every other scheme but the builtin namespaces), or a relative or absolute specifier
+ * holding `?`, `#`, or `%`, which an ES module loader reads as a query, a fragment, or a percent escape.
+ */
+function unmodelledSpecifier(specifier: string): boolean {
+  if (URL_SCHEME.test(specifier)) return !BUILTIN_SCHEME.test(specifier)
+  return (specifier.startsWith('.') || specifier.startsWith('/')) && /[?#%]/.test(specifier)
+}
 
 /**
  * A runtime's subcommands: after one of `script` the next operand is the script (`deno run main.ts`, `bun run build.ts`,
@@ -452,7 +468,7 @@ interface Arguments {
   inline: string[]
   packages: string[]
   modules: string[]
-  preloads: string[]
+  preloads: Preload[]
   programFiles: string[]
   candidates: string[]
   operand: Operand | null
@@ -463,7 +479,7 @@ interface Arguments {
 function argumentsOf(program: string, args: readonly string[]): Arguments {
   if (RUNNERS.has(program)) return runnerArguments(args)
   const inline: string[] = []
-  const preloads: string[] = []
+  const preloads: Preload[] = []
   // Whether the interpreter's script comes from its standard input (a `-`, `/dev/stdin`, php `--`, or csh/tcsh `-s`),
   // and whether a word is an option the reader does not model, so the reading fails closed (fix brief 3, R7).
   let stdinScript = false
@@ -573,11 +589,11 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     if (seeking) {
       // A preload runs before the script, so it is found as the entry is (fix brief 2, H7).
       if (preloading.includes(key) && value === null && index + 1 < args.length) {
-        preloads.push(args[++index]!)
+        preloads.push({ specifier: args[++index]!, esm: ESM_PRELOAD_OPTIONS.has(key) })
         continue
       }
       if (value !== null && preloading.includes(key)) {
-        preloads.push(value)
+        preloads.push({ specifier: value, esm: ESM_PRELOAD_OPTIONS.has(key) })
         continue
       }
       if (valueOptions.includes(key) && value === null && index + 1 < args.length) {
@@ -706,17 +722,19 @@ function firstLocated(view: CodeView, names: readonly string[], base: string): L
 }
 
 /**
- * The file a preload names (fix brief 2, H7): a relative or absolute path, found as the runtime finds its script; a bare
- * specifier is a package, named by its package (`dotenv/config` is dotenv) and never read. A refusal where a path names
- * nothing, lands beyond the agent's view, or a URL names the code.
+ * The file a preload names (fix brief 2, H7): a relative or absolute path, found as the runtime finds its script, and
+ * under node an `--import` or a loader by its exact name, as node's ES module resolver takes it (fix brief 4, F1); a
+ * bare specifier is a package, named by its package (`dotenv/config` is dotenv) and never read. A refusal where a path
+ * names nothing or lands beyond the agent's view, and where the specifier is one the reader does not model.
  */
-function preloadOf(runtime: string, specifier: string, place: { cwd: string; view: CodeView; packages: Packages }): { real: string } | null | string {
-  if (URL_SPECIFIER.test(specifier)) return CODE_REFUSALS.notFound
+function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view: CodeView; packages: Packages }): { real: string } | null | string {
+  const { specifier } = preload
+  if (unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
   if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
     named(place.packages, packageName(specifier), place.cwd)
     return null
   }
-  const entry = scriptEntry(runtime, specifier, place.cwd, place.view)
+  const entry = runtime === 'node' && preload.esm ? entryOf(place.view.locate(specifier, place.cwd)) : scriptEntry(runtime, specifier, place.cwd, place.view)
   if (entry === 'none') return CODE_REFUSALS.notFound
   return 'refused' in entry ? entry.refused : entry
 }
@@ -740,7 +758,7 @@ export function readBunScriptPreloads(input: { forms: readonly string[][]; chain
     for (const { form: [, ...args] } of plan) {
       const { preloads, configs } = bunOptions(args)
       for (const specifier of preloads) {
-        const found = preloadOf('bun', specifier, { cwd: input.cwd, view: input.view, packages: gathered.packages })
+        const found = preloadOf('bun', { specifier, esm: false }, { cwd: input.cwd, view: input.view, packages: gathered.packages })
         if (typeof found === 'string') return refused(found)
         if (found !== null) gathered.queue.push({ real: found.real, language: 'js', runtime: 'bun' })
       }
@@ -758,7 +776,7 @@ function gatherBunfig(configs: readonly string[], into: Gathered, place: Pick<Co
   const listed = bunfigPreloadsOf(configs, place.cwd, place.view)
   if (typeof listed === 'string') return listed
   for (const { specifier, base } of listed) {
-    const found = preloadOf('bun', specifier, { cwd: base, view: place.view, packages: into.packages })
+    const found = preloadOf('bun', { specifier, esm: false }, { cwd: base, view: place.view, packages: into.packages })
     if (typeof found === 'string') return found
     if (found !== null) into.queue.push({ real: found.real, language: 'js', runtime: 'bun' })
   }
@@ -1092,6 +1110,7 @@ function jsImports(code: string, place: Place): Found | string {
   ]
   for (const { pattern, resolve } of statements) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
+      if (unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
         named(place.packages, packageName(specifier), base)
         continue
