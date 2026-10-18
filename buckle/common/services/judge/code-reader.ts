@@ -4,7 +4,7 @@ import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
 import { dirname, join, relative } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens } from '../../domain/argv.js'
-import { READ_BUDGET } from '../../domain/command-forms.js'
+import { commandFormsOf, READ_BUDGET } from '../../domain/command-forms.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
@@ -159,6 +159,10 @@ const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const REDIRECTION = /^\d*[<>]/
 const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
 const HERE_STRING = /^0?<<</
+/** A heredoc on a statement's input (`<<EOF`, `0<<'EOF'`, `<<-EOF`), and one on any descriptor. */
+const STDIN_HEREDOC = /^0?<<(?!<)/
+const ANY_HEREDOC = /^\d*<<(?!<)/
+const ANY_HEREDOC_IN_TEXT = /<<(?!<)/
 /** A file redirected into a statement's input: `<` or `0<`, never a heredoc, a descriptor, `<>`, or a process substitution. */
 const STDIN_FILE = /^0?<(?![<>&(])/
 const EXPANSION = /[$`]/
@@ -187,7 +191,7 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
     if (source !== 'command' || operand === undefined) continue
     for (const statement of shellStatementList(operand, { characters: READ_BUDGET.characters }).statements) {
       const tokens = shellTokens(statement)
-      const word = commandWord(tokens)
+      const word = statementCommand(tokens)
       if (word === null || !running.has(programOf(word))) continue
       const program = programOf(word)
       for (let index = 0; index < tokens.length; index++) {
@@ -196,6 +200,11 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
         const target = bare ? tokens[index + 1] : { raw: raw.replace(/^0?<+/, ''), word: unquoted.replace(/^0?<+/, '') }
         if (HERE_STRING.test(raw)) {
           if (HERE_STRING_SHELLS.has(shell) && target !== undefined) fed.inline.push({ program, code: target.word })
+        } else if (STDIN_HEREDOC.test(raw)) {
+          const delimiter = bare ? target?.word : unquoted.replace(/^0?<<-?/, '')
+          const bodies = delimiter === undefined ? null : heredocBodies(operand, statement, { delimiter, tabs: raw.includes('<<-') })
+          if (bodies === null || tokens.filter(token => ANY_HEREDOC.test(token.raw)).length > 1) fed.unknown = true
+          else fed.inline.push(...bodies.map(code => ({ program, code })))
         } else if (STDIN_FILE.test(raw) && target !== undefined) {
           if (EXPANSION.test(target.raw)) fed.unknown = true
           else fed.scripts.push({ program, name: target.word })
@@ -207,17 +216,48 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
   return fed
 }
 
-/** A statement's command word: the first word that is neither an assignment nor a redirection or its target. */
-function commandWord(tokens: ReadonlyArray<{ raw: string; word: string }>): string | null {
+/**
+ * The command a statement runs: its words without assignments before them and without redirections or their targets,
+ * then through the wrappers command-forms reads (env, timeout, nice, exec, command, nohup, stdbuf, and the rest), so
+ * `env python3 <<<` and `timeout 5 python3 <<<` name python3 (fix brief 1, item 9).
+ */
+function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>): string | null {
+  const words: string[] = []
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (REDIRECTION.test(raw)) {
       if (BARE_REDIRECTION.test(raw)) index++
       continue
     }
-    if (!ASSIGNMENT.test(raw)) return word
+    if (words.length === 0 && ASSIGNMENT.test(raw)) continue
+    words.push(word)
   }
-  return null
+  const [command, ...args] = words
+  if (command === undefined) return null
+  return commandFormsOf({ command, args }).chain.at(-1)?.[0] ?? command
+}
+
+/**
+ * The body of the heredoc a statement feeds its command, at every place the statement stands in the text: the lines
+ * after the statement's own, up to its delimiter line (leading tabs dropped for `<<-`), or to the end of the text, as a
+ * shell reads one left open. Null, so the code is unknown, where the statement is not found as written, has no line
+ * after it, or follows another heredoc on its line, whose body would come first.
+ */
+function heredocBodies(text: string, statement: string, heredoc: { delimiter: string; tabs: boolean }): string[] | null {
+  const bodies: string[] = []
+  for (let at = text.indexOf(statement); at >= 0; at = text.indexOf(statement, at + 1)) {
+    const lineStart = text.lastIndexOf('\n', at) + 1
+    if (ANY_HEREDOC_IN_TEXT.test(text.slice(lineStart, at))) return null
+    const newline = text.indexOf('\n', at + statement.length)
+    if (newline < 0) return null
+    const lines: string[] = []
+    for (const line of text.slice(newline + 1).split('\n')) {
+      if ((heredoc.tabs ? line.replace(/^\t+/, '') : line) === heredoc.delimiter) break
+      lines.push(heredoc.tabs ? line.replace(/^\t+/, '') : line)
+    }
+    bodies.push(lines.join('\n'))
+  }
+  return bodies.length === 0 ? null : bodies
 }
 
 function refused(reason: string, truncated = false): CodeRead {

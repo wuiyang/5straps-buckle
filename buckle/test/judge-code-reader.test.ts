@@ -204,6 +204,24 @@ describe('the code a here-string hands an interpreter', () => {
     expect(reading(read('sh', "python3 <<< 'print(1)'")).inline).toBeNull()
     expect(reading(read('bash', "cat <<< 'print(1)' | python3")).inline).toBeNull()
   })
+
+  it('finds the interpreter behind a wrapper, as env, timeout, and exec name it', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    const read = (text: string) => readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
+    for (const text of ["env python3 <<< 'import helper'", "timeout 5 python3 <<< 'import helper'", "exec python3 <<< 'import helper'", "FOO=1 env -i nice -n 5 python3 - <<< 'import helper'"]) {
+      expect(reading(read(text)), text).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+    }
+  })
+
+  it('reads a heredoc\'s body as inline code, each time the statement stands in the text, and refuses one it cannot place', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    const read = (text: string, program = 'python3') => readInterpreterCode({ forms: [[program]], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(reading(read("python3 - <<'EOF'\nimport helper\nprint(1)\nEOF\necho done"))).toMatchObject({ inline: 'import helper\nprint(1)', files: [{ path: '/workspace/helper.py' }] })
+    expect(reading(read('cd . && node <<EOF\nconsole.log(1)\nEOF', 'node')).inline).toBe('console.log(1)')
+    expect(reading(read('python3 <<-EOF\n\timport helper\n\tEOF')).inline).toBe('import helper')
+    expect(reading(read('python3 <<EOF\nprint(1)\nEOF\npython3 <<EOF\nimport shutil\nEOF')).inline).toBe('print(1)\nimport shutil')
+    expect(read('cat <<A; python3 <<B\nB\nA\nimport shutil\nB')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+  })
 })
 
 describe('the code a shell applet or awk runs', () => {

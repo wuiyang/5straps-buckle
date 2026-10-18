@@ -10,7 +10,8 @@ the same thing.
 For a command it rates, Buckle reads:
 
 - the code the command line hands an interpreter: `python3 -c`, `node -e`, `perl -e`, an `awk`
-  program, `deno eval`, and a here-string (`python3 <<< '...'`) in bash, zsh, or ksh text;
+  program, `deno eval`, a here-string (`python3 <<< '...'`) in bash, rbash, zsh, ksh, mksh, or
+  yash text, and a heredoc's body (`python3 - <<'EOF'`), behind a wrapper such as `env` too;
 - the script, found as the interpreter finds it (`node build` reads `build.js`, else a folder's
   `main` or index file; Python a folder's `__main__.py`), or a file redirected into its input
   (`python3 < job.py`);

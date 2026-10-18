@@ -26,7 +26,8 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 - Imports are read by their text: a computed `require(name)`, an `importlib` call, and the imports
   of Perl, Ruby, PHP, or Lua code are not followed. Past 50 files or 512 KiB, no stage is asked.
 - Code a pipe hands the interpreter is not read, as in `cat job.py | python3`: a stage reads the
-  shell text alone. A here-string is read only in bash, zsh, and ksh text.
+  shell text alone. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text, and a
+  heredoc only on the interpreter's own statement, with no other heredoc before it on its line.
 - A call over 160 KiB of JSON is not sent to Jev; the thorough model may still rate it.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
   under `approval.quickJudge all`, or when the destructive list names them.
