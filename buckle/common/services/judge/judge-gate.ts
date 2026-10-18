@@ -347,15 +347,24 @@ export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly 
 }
 
 /**
- * The serve terminal's line for a command a stage passed (fix brief 1, item 22): the stage, the model that answered,
- * the level and confidence, and the command subject as the approver display shows it, credentials hidden. It carries no
- * env value and no key, and the webhook is not called for a pass.
+ * The serve terminal's line for a command a stage passed (fix brief 1, item 22), once the call is checked again (fix
+ * brief 2, H9 and H13): the stage, the model that answered, the level and confidence, and the command subject as the
+ * approver display shows it, credentials hidden. Where the call now runs, it says so; where other asks remain
+ * (`waitingFor`, their rule kinds), it says the call still waits for them, naming no subject, env value, or key. The
+ * webhook is not called for a pass.
  */
-export function announcePass(judged: JudgedAsk): void {
+export function announcePass(judged: JudgedAsk, waitingFor: readonly string[]): void {
   const rating = judged.passedBy === 'quick' ? judged.quick : judged.passedBy === 'thorough' ? judged.thorough : undefined
   if (rating?.result.kind !== 'verdict') return
   const { level, confidence, model } = rating.result
-  logger.info(`The decision AI's ${judged.passedBy} stage rated a command ${level}, so it runs without asking`, { stage: judged.passedBy, model, level, confidence, subject: judged.subject })
+  const rules = [...new Set(waitingFor)]
+  const then = rules.length === 0 ? 'so it runs without asking' : `and the call still waits for ${listed(rules)}`
+  logger.info(`The decision AI's ${judged.passedBy} stage rated a command ${level}, ${then}`, { stage: judged.passedBy, model, level, confidence, subject: judged.subject })
+}
+
+/** Names in prose: `a`, `a and b`, `a, b, and c`. */
+function listed(names: readonly string[]): string {
+  return names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`
 }
 
 /** One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick stage's beside it. */

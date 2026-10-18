@@ -580,8 +580,12 @@ async function clearPermissions(input: {
   if (judging && outcome.kind === 'ask' && outcome.asks.some(ask => judging.covers(ask))) {
     input.judgment.judged = [...input.judgment.judged, ...await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })]
     passed = new Set(input.judgment.judged.filter(item => item.passedBy !== undefined).map(passKey))
-    for (const item of input.judgment.judged) if (item.passedBy !== undefined) announcePass(item)
     if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
+    // Announced once the call is checked again, so the line says whether it now runs or still waits (fix brief 2, H9).
+    if (outcome.kind !== 'deny') {
+      const waitingFor = outcome.kind === 'ask' ? outcome.asks.map(ask => ask.rule) : []
+      for (const item of input.judgment.judged) if (item.passedBy !== undefined) announcePass(item, waitingFor)
+    }
   }
   if (outcome.kind === 'allow') return cleared(outcome, [])
   if (outcome.kind === 'deny') {

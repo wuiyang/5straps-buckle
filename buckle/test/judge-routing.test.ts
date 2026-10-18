@@ -92,6 +92,19 @@ describe('a call a stage passed', () => {
     await call(await runtimeOf(node(), judges({ quick: quick('danger', 0.95) })), 'python3', args)
     expect(passes()).toEqual([])
   })
+
+  it('says the call still waits, naming the rules left, where another ask remains (fix brief 2, H9 and H13)', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const passes = () => info.mock.calls.filter(([message]) => String(message).startsWith('The decision AI')).map(([message]) => message)
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'off' }), judges({ thorough: thorough('safe', 0.95) }))
+    const execute = vi.fn(async () => 'executed')
+    const effects = [{ kind: 'exec' as const, command: 'python3', args: ['job.py'] }, { kind: 'write_path' as const, path: 'out/result.txt' }, { kind: 'exec' as const, command: 'rm', args: ['-rf', 'build'] }]
+    vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects, execute })
+    const response = await runtime.invoke({ request: { requestId: 'waits', approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'route', approvalWait: { mode: 'none' } })
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(execute).not.toHaveBeenCalled()
+    expect(passes()).toEqual(['The decision AI\'s thorough stage rated a command safe, and the call still waits for destructive_command and write_scope'])
+  })
 })
 
 describe('a standard script', () => {
