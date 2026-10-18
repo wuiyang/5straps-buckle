@@ -328,12 +328,17 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
   const awkProgramFile = AWKS.has(program) && args.some(arg => arg === '-f' || arg.startsWith('-f'))
   let awkProgram = AWKS.has(program) && !awkProgramFile
   let runnerPackage = RUNNERS.has(program)
-  // The script operand: for a runtime, its first positional word not after `--` and past a subcommand naming one; for
-  // a runner, the word after the package, which must name a file only where that package is itself a runtime.
+  // The script operand: for a runtime, its first positional word, or the word after a `--` that comes before one (fix
+  // brief 2, H5), past a subcommand naming one; for a runner, the word after the package, which must name a file only
+  // where that package is itself a runtime.
   let seeking = JS_RUNTIMES.has(program) || program === 'python'
   let subcommand = false
   let operand: Operand | null = null
   const valueOptions = VALUE_OPTIONS[program] ?? []
+  const operandOf = (name: string): Operand => {
+    const runtime = RUNNERS.has(program) ? programOf(packages[0] ?? '') : program
+    return { name, required: !RUNNERS.has(program) || JS_RUNTIMES.has(runtime), runtime }
+  }
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
     const equals = word.startsWith('--') ? word.indexOf('=') : -1
@@ -367,7 +372,17 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       seeking = true
       continue
     }
-    if (word === '--') seeking = false
+    if (word === '--') {
+      // node and python take the word after a leading `--` as their script, as a runtime does after its package.
+      if (seeking && index + 1 < args.length) {
+        const next = args[++index]!
+        operand = operandOf(next)
+        candidates.push(word, next)
+        seeking = false
+        continue
+      }
+      seeking = false
+    }
     if (seeking) {
       if (valueOptions.includes(word) && index + 1 < args.length) {
         candidates.push(word, args[++index]!)
@@ -378,8 +393,7 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
         if (!subcommand && named?.script.includes(word)) subcommand = true
         else if (!subcommand && named?.other.includes(word)) seeking = false
         else {
-          const runtime = RUNNERS.has(program) ? programOf(packages[0] ?? '') : program
-          operand = { name: word, required: !RUNNERS.has(program) || JS_RUNTIMES.has(runtime), runtime }
+          operand = operandOf(word)
           seeking = false
         }
       }
@@ -637,20 +651,22 @@ function pythonImports(code: string, place: { file: string | null; cwd: string; 
 
 /**
  * A dotted module's file under the first root that holds it, with every package `__init__.py` above it that runs on
- * import; with `main`, as `python -m` runs it, a package's `__main__.py` too.
+ * import; with `main`, as `python -m` runs it, a package's `__main__.py` too, and a namespace package's, a folder with
+ * no `__init__.py` (fix brief 2, H5).
  */
 function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; main?: boolean }): Found {
   const parts = input.module.split('.').filter(Boolean)
   for (const root of input.roots) {
     const path = join(...parts)
     const module = fileAt(input.view, `./${path}.py`, root) ?? fileAt(input.view, `./${path}/__init__.py`, root)
-    if (!module) continue
+    const namespaceMain = !module && input.main ? fileAt(input.view, `./${path}/__main__.py`, root) : null
+    if (!module && !namespaceMain) continue
     const packages = parts.slice(0, -1).flatMap((_, index) => {
       const init = fileAt(input.view, `./${join(...parts.slice(0, index + 1))}/__init__.py`, root)
       return init ? [init] : []
     })
-    const main = input.main && module.endsWith('__init__.py') ? fileAt(input.view, `./${path}/__main__.py`, root) : null
-    return [...packages, module, ...(main ? [main] : [])].map(real => ({ real, language: 'python' as const }))
+    const main = namespaceMain ?? (input.main && module!.endsWith('__init__.py') ? fileAt(input.view, `./${path}/__main__.py`, root) : null)
+    return [...packages, ...(module ? [module] : []), ...(main ? [main] : [])].map(real => ({ real, language: 'python' as const }))
   }
   return []
 }

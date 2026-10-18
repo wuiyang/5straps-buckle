@@ -116,6 +116,20 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', 'addon'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.binary, truncated: false })
   })
 
+  it('is the word after a leading --, found the same way, and a namespace package\'s __main__.py for python -m (fix brief 2, H5)', () => {
+    const { read } = workspace({ 'build.js': 'evil()\n', 'tool/index.js': 'evil()\n', 'pkg/__main__.py': 'import os\n', 'tools/__main__.py': 'import json\n', 'deep/inner/__main__.py': 'import re\n' })
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    expect(files(['node', '--', 'build'])).toEqual(['/workspace/build.js'])
+    expect(files(['node', '--', 'tool'])).toEqual(['/workspace/tool/index.js'])
+    expect(files(['python3', '--', 'pkg'])).toEqual(['/workspace/pkg/__main__.py'])
+    expect(files(['python3', '-m', 'tools'])).toEqual(['/workspace/tools/__main__.py'])
+    expect(files(['python3', '-m', 'deep.inner'])).toEqual(['/workspace/deep/inner/__main__.py'])
+    expect(read(['node', '--', 'missing'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(read(['python3', '--', 'missing.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(reading(read(['node', 'build.js', '--', 'missing'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    expect(reading(read(['python3', '-m', 'pytest']))).toMatchObject({ files: [], packages: [{ name: 'pytest' }] })
+  })
+
   it('is a folder\'s __main__.py for Python', () => {
     const { read } = workspace({ 'tool/__main__.py': 'from . import helper\n', 'tool/helper.py': 'X = 1\n' })
     expect(reading(read(['python3', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/__main__.py', '/workspace/tool/helper.py'])
