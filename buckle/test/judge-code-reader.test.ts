@@ -75,11 +75,45 @@ describe('the script an interpreter finds by its own rules', () => {
       'plain/index.mjs': 'export {}\n', 'package.json': '{"name":"site"}', 'index.js': "require('./build')\n", 'gen.ts': 'export {}\n',
     })
     expect(reading(read(['node', 'build'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
-    expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/lib/start.ts', '/workspace/build.js'])
-    expect(reading(read(['node', 'plain'])).files.map(file => file.path)).toEqual(['/workspace/plain/index.mjs'])
+    // node tries no TypeScript sibling of main: it runs the folder's index.js.
+    expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/index.js', '/workspace/build.js'])
+    expect(reading(read(['tsx', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/lib/start.ts'])
+    expect(reading(read(['tsx', 'plain'])).files.map(file => file.path)).toEqual(['/workspace/plain/index.mjs'])
     expect(reading(read(['node', '.'])).files.map(file => file.path)).toEqual(['/workspace/index.js', '/workspace/build.js'])
     expect(reading(read(['deno', 'run', '-A', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
     expect(reading(read(['npx', 'tsx', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
+  })
+
+  it('follows node\'s own order for node, never a decoy it would not run (fix brief 2, H1)', () => {
+    const { read } = workspace({
+      'tool/package.json': '{"main":"start"}', 'tool/start.mjs': 'export {}\n', 'tool/start.ts': 'export {}\n', 'tool/index.js': 'evil()\n',
+      'exact/package.json': '{"main":"start.mjs"}', 'exact/start.mjs': 'export {}\n', 'exact/index.js': 'nope\n',
+      'gone/package.json': '{"main":"start.mjs"}', 'gone/index.js': 'evil()\n',
+      'bare/package.json': '{"main":"start.mjs"}', 'bare/index.mjs': 'export {}\n',
+      'build.ts': 'export {}\n', 'build.mjs': 'export {}\n', 'build/index.js': 'evil()\n',
+      'decoy/index.ts': 'export {}\n', 'decoy/index.js': 'evil()\n',
+      'nested/package.json': '{"main":"lib"}', 'nested/lib/index.js': 'evil()\n', 'nested/index.js': 'nope\n',
+      'abs/package.json': '{"main":"/workspace/lib/run.js"}', 'abs/index.js': 'nope\n', 'lib/run.js': 'evil()\n',
+    })
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    expect(files(['node', 'tool'])).toEqual(['/workspace/tool/index.js'])
+    expect(files(['node', 'exact'])).toEqual(['/workspace/exact/start.mjs'])
+    expect(files(['node', 'gone'])).toEqual(['/workspace/gone/index.js'])
+    expect(files(['node', 'build'])).toEqual(['/workspace/build/index.js'])
+    expect(files(['node', 'decoy'])).toEqual(['/workspace/decoy/index.js'])
+    expect(files(['node', 'nested'])).toEqual(['/workspace/nested/lib/index.js'])
+    expect(files(['npx', 'node', 'tool'])).toEqual(['/workspace/tool/index.js'])
+    // An absolute main is a path as written, here the sandbox's name for a file in the workspace.
+    expect(files(['node', 'abs'])).toEqual(['/workspace/lib/run.js'])
+    expect(read(['node', 'bare'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+  })
+
+  it('refuses an absolute main outside the workspace, and reads a .node addon as a file, which is no text', () => {
+    const { base, read } = workspace({ 'addon/package.json': '{"main":"build/addon.node"}', 'addon/build/addon.node': Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xff, 0x00]), 'addon/index.js': 'nope\n', 'abs/index.js': 'nope\n' })
+    writeFileSync(join(base, 'evil.js'), 'evil()\n')
+    writeFileSync(join(base, 'project', 'abs', 'package.json'), JSON.stringify({ main: join(base, 'evil.js') }))
+    expect(read(['node', 'abs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    expect(read(['node', 'addon'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.binary, truncated: false })
   })
 
   it('is a folder\'s __main__.py for Python', () => {

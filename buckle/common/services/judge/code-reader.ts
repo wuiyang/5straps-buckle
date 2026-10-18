@@ -93,7 +93,7 @@ function readCode(input: CodeInput): CodeRead {
     // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
     // it, the code that runs is unknown, so the call asks.
     if (read.operand !== null) {
-      const entry = scriptEntry(program, read.operand.name, cwd, view)
+      const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
       if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
       if (typeof entry === 'object') queue.push({ real: entry.real, language })
       else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return refused(CODE_REFUSALS.notFound)
@@ -280,7 +280,7 @@ const INLINE_FLAGS: Readonly<Record<string, readonly string[]>> = {
 }
 const AWKS = new Set(['awk', 'gawk', 'mawk', 'nawk'])
 const RUNNERS = new Set(['npx', 'pnpx', 'bunx'])
-/** The JavaScript runtimes whose script is found as node finds it: the name, its extensions, a folder's `main`, its index file. */
+/** The JavaScript runtimes, whose script operand must name a file; each finds it by its own rules (scriptEntry). */
 const JS_RUNTIMES = new Set(['node', 'deno', 'bun', 'tsx', 'ts-node'])
 
 /**
@@ -308,8 +308,11 @@ const SUBCOMMANDS: Readonly<Record<string, { script: readonly string[]; other: r
   node: { script: ['inspect'], other: [] },
 }
 
-/** The first positional word an interpreter takes as its script; `required` where naming nothing leaves the code unknown. */
-interface Operand { name: string; required: boolean }
+/**
+ * The first positional word an interpreter takes as its script; `required` where naming nothing leaves the code unknown,
+ * and `runtime` the program whose rules find it: the interpreter's own, or for a runner the package it runs.
+ */
+interface Operand { name: string; required: boolean; runtime: string }
 
 /**
  * One interpreter invocation's words, read for the code they hand it: the code after an inline flag (and an awk
@@ -375,7 +378,8 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
         if (!subcommand && named?.script.includes(word)) subcommand = true
         else if (!subcommand && named?.other.includes(word)) seeking = false
         else {
-          operand = { name: word, required: !RUNNERS.has(program) || JS_RUNTIMES.has(programOf(packages[0] ?? '')) }
+          const runtime = RUNNERS.has(program) ? programOf(packages[0] ?? '') : program
+          operand = { name: word, required: !RUNNERS.has(program) || JS_RUNTIMES.has(runtime), runtime }
           seeking = false
         }
       }
@@ -387,12 +391,48 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
 }
 
 /**
- * Where an interpreter finds its script (fix brief 1, item 7): for a JavaScript runtime or a runner, the name, then with
- * each extension, then a folder's package.json `main` (read through the view, as any manifest is), then its index file;
- * for Python, the name, then a folder's `__main__.py`. `unreadable` where a folder's manifest is one the agent may not read.
+ * Where an interpreter finds its script (fix brief 1, item 7; fix brief 2, H1), by the rules of the runtime that runs it
+ * (`runtime`, the package for a runner): node's own (nodeEntry), Python's (the name, then a folder's `__main__.py`), or
+ * the TypeScript runners' (typeScriptEntry). `unreadable` where a folder's manifest is one the agent may not read.
  */
-function scriptEntry(program: string, name: string, base: string, view: CodeView): Located | 'unreadable' {
-  if (program === 'python') return firstLocated(view, [name, `${name}/__main__.py`], base)
+function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Located | 'unreadable' {
+  if (runtime === 'python') return firstLocated(view, [name, `${name}/__main__.py`], base)
+  if (runtime === 'node') return nodeEntry(name, base, view)
+  return typeScriptEntry(name, base, view)
+}
+
+/** The extensions node's CommonJS loader tries, in its order (`require.extensions`); a `.node` addon is no text, so it refuses. */
+const NODE_EXTENSIONS = ['.js', '.json', '.node']
+
+/**
+ * The file node runs for `node <name>`, in node 24's own order (Module._findPath and tryPackage): the name as a file,
+ * then with `.js`, `.json`, `.node`; for a folder, its package.json `main` resolved as a path (an absolute one as written,
+ * so one outside every place the agent's view reaches refuses), as a file, with each extension, then as a folder's
+ * index file; and where `main` names nothing, or there is none, the folder's own index file. No ESM or TypeScript
+ * sibling is tried, as node tries none: `main: "start"` beside start.mjs runs index.js.
+ */
+function nodeEntry(name: string, base: string, view: CodeView): Located | 'unreadable' {
+  const withExtensions = (path: string) => [path, ...NODE_EXTENSIONS.map(extension => `${path}${extension}`)]
+  const indexes = (folder: string) => NODE_EXTENSIONS.map(extension => `${folder}/index${extension}`)
+  const direct = firstLocated(view, withExtensions(name), base)
+  if (direct !== 'none') return direct
+  const main = packageMain(name, base, view)
+  if (main === 'unreadable') return main
+  if (main !== null) {
+    const path = main.startsWith('/') ? main : join(name, main)
+    const entry = firstLocated(view, [...withExtensions(path), ...indexes(path)], base)
+    if (entry !== 'none') return entry
+  }
+  return firstLocated(view, indexes(name), base)
+}
+
+/**
+ * The file a TypeScript runner (tsx, ts-node, bun, deno, or a runner's package that is none of node or python) runs for
+ * a name: the name, then with each JavaScript and TypeScript extension and the `.ts` behind a `.js`, then a folder's
+ * package.json `main` the same way, then its index file. These runners resolve more widely than node does, so the
+ * reader tries the wider list.
+ */
+function typeScriptEntry(name: string, base: string, view: CodeView): Located | 'unreadable' {
   const candidates = jsCandidates(name)
   const indexes = candidates.slice(-JS_EXTENSIONS.length)
   const direct = firstLocated(view, candidates.slice(0, -JS_EXTENSIONS.length), base)
@@ -400,7 +440,7 @@ function scriptEntry(program: string, name: string, base: string, view: CodeView
   const main = packageMain(name, base, view)
   if (main === 'unreadable') return main
   if (main !== null) {
-    const entry = firstLocated(view, jsCandidates(join(name, main)), base)
+    const entry = firstLocated(view, jsCandidates(main.startsWith('/') ? main : join(name, main)), base)
     if (entry !== 'none') return entry
   }
   return firstLocated(view, indexes, base)
