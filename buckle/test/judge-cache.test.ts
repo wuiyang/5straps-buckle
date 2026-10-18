@@ -101,6 +101,12 @@ describe('the judge cache file', () => {
     expect(held.entries.map(entry => entry.key)).toEqual(['f'.repeat(64)])
   })
 
+  it('takes no verdict dated in the future, as from a file another clock wrote', async () => {
+    const filePath = judgeCachePath(scratch())
+    writeFileSync(filePath, JSON.stringify({ version: 1, entries: [{ key: 'e'.repeat(64), at: '2099-01-01T00:00:00.000Z', verdict: verdict() }] }), { mode: 0o600 })
+    expect(openJudgeCache({ filePath }).get('e'.repeat(64))).toBeUndefined()
+  })
+
   it('reads a clear another process made, and a damaged file fails no call', async () => {
     const filePath = judgeCachePath(scratch())
     const serving = openJudgeCache({ filePath })

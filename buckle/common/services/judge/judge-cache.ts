@@ -69,7 +69,8 @@ export interface JudgeCache {
 
 export function openJudgeCache(input: { filePath: string; lockDeadlineMs?: number; now?: () => number }): JudgeCache {
   const now = input.now ?? Date.now
-  const fresh = (at: number) => now() - at < JUDGE_CACHE_TTL_MS
+  // An entry dated ahead of the clock is no fresher than one dated now: a future `at` is a miss, never a verdict for good.
+  const fresh = (at: number) => { const age = now() - at; return age >= 0 && age < JUDGE_CACHE_TTL_MS }
   const store = createJsonFileStore<CacheFile>({ filePath: input.filePath, schema: CacheFileSchema, fallback: { version: 1, entries: [] }, ...(input.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: input.lockDeadlineMs }) })
   let loadedVersion: string | undefined
   let memory = new Map<string, { verdict: KeptVerdict; at: number }>()

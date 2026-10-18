@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -106,6 +106,14 @@ describe('the Socket cache', () => {
     clock += 1
     await cached.scan([LEFT_PAD])
     expect(asked).toHaveLength(2)
+  })
+
+  it('takes no summary dated in the future', async () => {
+    const filePath = socketCachePath(scratch())
+    writeFileSync(filePath, JSON.stringify({ version: 1, entries: [{ purl: LEFT_PAD, at: '2099-01-01T00:00:00.000Z', summary: SUMMARY }] }), { mode: 0o600 })
+    const { scanner, asked } = fakeScanner()
+    await openSocketCache({ scanner, filePath }).scan([LEFT_PAD])
+    expect(asked).toHaveLength(1)
   })
 
   it('keeps no package Socket answered nothing for, and holds at most its limit', async () => {

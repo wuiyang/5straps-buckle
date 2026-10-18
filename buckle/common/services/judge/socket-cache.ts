@@ -36,7 +36,8 @@ export interface CachedScanner extends PackageScanner {
  */
 export function openSocketCache(input: { scanner: PackageScanner; filePath: string; lockDeadlineMs?: number; now?: () => number }): CachedScanner {
   const now = input.now ?? Date.now
-  const fresh = (at: number) => now() - at < SOCKET_CACHE_TTL_MS
+  // A summary dated ahead of the clock is a miss, never one kept for good.
+  const fresh = (at: number) => { const age = now() - at; return age >= 0 && age < SOCKET_CACHE_TTL_MS }
   const store = createJsonFileStore<CacheFile>({ filePath: input.filePath, schema: CacheFileSchema, fallback: { version: 1, entries: [] }, ...(input.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: input.lockDeadlineMs }) })
   let loadedVersion: string | undefined
   let memory = new Map<string, { summary: SocketSummary; at: number }>()
