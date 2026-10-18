@@ -5,7 +5,7 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
-import { assignedVariables, CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from '../common/services/judge/call-forms.js'
 import { commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
@@ -161,10 +161,11 @@ describe('a call that changes its working directory before its code runs (fix br
   it('is shown to no stage, and asks, wherever the change is written', async () => {
     const judge = fakeJudge()
     const runtime = await runtimeOf(node(), { judge })
-    const shellText = [['bash', '-c', 'cd sub && node build.js'], ['bash', '-c', 'pushd sub; node build.js']]
+    // dash, zsh, and tcsh take chdir as cd (fix brief 4, G10).
+    const shellText = [['bash', '-c', 'cd sub && node build.js'], ['bash', '-c', 'pushd sub; node build.js'], ['sh', '-c', 'chdir sub && node build.js'], ['zsh', '-c', 'chdir sub && node build.js']]
     for (const command of [['env', '-C', 'sub', 'node', 'build.js'], ['env', '--chdir=sub', 'node', 'build.js'], ['bun', '--cwd', 'sub', 'run.ts'], ...shellText]) {
       // A shell wrapper needs an allow rule of its own before it may ask.
-      if (command === shellText[0]) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'cd *', 'pushd *'], deny: [] } })
+      if (command === shellText[0]) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'sh -c *', 'zsh -c *', 'cd *', 'pushd *', 'chdir *'], deny: [] } })
       const { response, entry, ran } = await call(runtime, {}, command)
       expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
       expect(ran).toBe(false)
@@ -172,6 +173,13 @@ describe('a call that changes its working directory before its code runs (fix br
     }
     expect(judge.judge).not.toHaveBeenCalled()
     expect(CHANGES_DIRECTORY).toBe('the call changes its working directory before the code runs')
+  })
+
+  it('counts every builtin that changes the directory: cd, chdir, pushd, popd, and fish\'s prevd, nextd, and cdh (fix brief 4, G10)', () => {
+    for (const builtin of ['cd sub', 'chdir sub', 'pushd sub', 'popd', 'prevd', 'nextd', 'cdh']) {
+      expect(changesDirectory(commandFormsOf({ command: 'sh', args: ['-c', `${builtin} && python3 job.py`] })), builtin).toBe(true)
+    }
+    expect(changesDirectory(commandFormsOf({ command: 'sh', args: ['-c', 'python3 job.py'] }))).toBe(false)
   })
 
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {

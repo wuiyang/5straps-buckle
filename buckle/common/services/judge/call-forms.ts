@@ -29,8 +29,12 @@ export function loadsEnvFile(forms: CommandForms): boolean {
   })
 }
 
-/** The shell builtins that change the working directory of every statement after them. */
-const DIRECTORY_COMMANDS = new Set(['cd', 'pushd', 'popd'])
+/**
+ * The shell builtins that change the working directory of every statement after them: `cd`, `pushd`, and `popd`, and
+ * `chdir`, which dash, zsh, mksh, busybox ash, and tcsh take as `cd`, and fish's `prevd`, `nextd`, and `cdh` (fix brief
+ * 4, G10).
+ */
+const DIRECTORY_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'prevd', 'nextd', 'cdh'])
 
 /**
  * The options, by program, that run a command or a script from another folder: env's and sudo's (read among the
@@ -46,7 +50,7 @@ const PROGRAM_CHDIR: Readonly<Record<string, readonly string[]>> = {
 
 /**
  * Whether a call moves to another folder before its code runs (fix brief 2, H2), so the code read at the call's own
- * working directory may not be the code that runs: a `cd`, `pushd`, or `popd` anywhere in it, `env -C` or `--chdir`,
+ * working directory may not be the code that runs: a builtin of DIRECTORY_COMMANDS anywhere in it, `env -C` or `--chdir`,
  * `sudo -D` or `--chdir`, `bun --cwd`, or a runner's or package manager's `-C`, `--prefix`, `--dir`, or `--cwd`.
  */
 export function changesDirectory(forms: CommandForms): boolean {
