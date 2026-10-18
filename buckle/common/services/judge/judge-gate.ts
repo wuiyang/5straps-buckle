@@ -17,6 +17,7 @@ import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeP
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, shownVariables } from './call-env.js'
+import { CHANGES_DIRECTORY, changesDirectory } from './call-forms.js'
 import { readInterpreterCode, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
@@ -136,13 +137,15 @@ export function createJudgeGate(input: {
   /**
    * What a stage is shown of one command: for an ask, the code of each interpreter the policy does not allow; for an
    * allowed command (`allowed`), the code of every interpreter it runs. A reason in place of it where the code cannot be
-   * read whole, or where the call sets a variable that changes what code runs, which no stage could see run.
+   * read whole, where the call sets a variable that changes what code runs, which no stage could see run, or where it
+   * changes its working directory before the code runs, so the code read at its own may not be the code that runs.
    */
   function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null): JudgeInput | string {
     const variables = callVariables(call.args)
     const loading = codeLoadingVariable(variables)
     if (loading !== undefined) return codeLoadingReason(loading)
     const forms = commandFormsOf(effect)
+    if (changesDirectory(forms)) return CHANGES_DIRECTORY
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
     const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))

@@ -5,6 +5,7 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, shownVariables } from '../common/services/judge/call-env.js'
+import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
@@ -149,5 +150,45 @@ describe('the cache key', () => {
     expect(key(input({ env: [{ name: 'FOO', value: '1' }] }))).not.toBe(base)
     expect(key(input({ env: [{ name: 'A', value: '1' }, { name: 'B', value: '2' }] }))).toBe(key(input({ env: [{ name: 'B', value: '2' }, { name: 'A', value: '1' }] })))
     expect(key(input({ description: 'Run "node build.js", with network access' }))).not.toBe(base)
+  })
+})
+
+describe('a call that changes its working directory before its code runs (fix brief 2, H2)', () => {
+  it('is shown to no stage, and asks, wherever the change is written', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    const shellText = [['bash', '-c', 'cd sub && node build.js'], ['bash', '-c', 'pushd sub; node build.js']]
+    for (const command of [['env', '-C', 'sub', 'node', 'build.js'], ['env', '--chdir=sub', 'node', 'build.js'], ['bun', '--cwd', 'sub', 'run.ts'], ...shellText]) {
+      // A shell wrapper needs an allow rule of its own before it may ask.
+      if (command === shellText[0]) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'cd *', 'pushd *'], deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CHANGES_DIRECTORY, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(CHANGES_DIRECTORY).toBe('the call changes its working directory before the code runs')
+  })
+
+  it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { quickJudge, judge: fakeJudge() })
+    const sudo = await call(runtime, {}, ['sudo', '-D', 'sub', 'python3', 'job.py'])
+    expect(sudo.response).toMatchObject({ outcome: 'approval_required' })
+    expect(sudo.entry.judge).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+    expect((await call(runtime, {}, ['env', 'node', '-C', 'development', 'build.js'])).ran).toBe(true)
+  })
+
+  it('leaves an allowed command to run as before under scope all, with nothing screened', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'danger' as const, confidence: 0.99, probabilities: { safe: 0, warning: 0.01, danger: 0.99 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'all' }), { quickJudge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'cd *', 'cat *'], deny: [] } })
+    const { ran, entry } = await call(runtime, {}, ['bash', '-c', 'cd . && cat build.js'])
+    expect(ran).toBe(true)
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+    expect(entry.judge).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, screened: true })
   })
 })
