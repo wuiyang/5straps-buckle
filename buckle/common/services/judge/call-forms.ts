@@ -4,6 +4,31 @@ import { allForms, type CommandForms, READ_BUDGET } from '../../domain/command-f
 /** Why a call whose working directory changes before its code runs is not rated (fix brief 2, H2). */
 export const CHANGES_DIRECTORY = 'the call changes its working directory before the code runs'
 
+/** Why a call whose runtime loads variables from a file is not rated (fix brief 3, F2). */
+export const LOADS_ENV_FILE = 'the call loads variables from a file; the decision AI does not rate it'
+
+/** The runtimes that load variables from a file before the code runs, and the runners that start them. */
+const ENV_FILE_RUNTIMES = /^(?:node|nodejs|tsx|bun|bunx|deno|npx|pnpx)(?:[\d.-]|$)/
+/** The options that name such a file: node's and tsx's, and bun's and deno's `--env` too. */
+const ENV_FILE_OPTIONS = ['--env-file', '--env-file-if-exists']
+
+/**
+ * Whether a running node, tsx, bun, or deno form, or a runner starting one, loads variables from a file (fix brief 3,
+ * F2): `--env-file` or `--env-file-if-exists` (and `--env` for bun and deno) in either spelling, underscores read as
+ * dashes as node reads them. The file may set NODE_OPTIONS or another variable that changes what code runs, which the
+ * reader does not follow, so no stage rates the call. Read in every word before a `--`, which fails closed for a word
+ * that is the script's own argument.
+ */
+export function loadsEnvFile(forms: CommandForms): boolean {
+  return allForms(forms).some((form) => {
+    const program = baseCommand(form[0] ?? '')
+    if (!ENV_FILE_RUNTIMES.test(program)) return false
+    const options = program.startsWith('bun') || program.startsWith('deno') ? [...ENV_FILE_OPTIONS, '--env'] : ENV_FILE_OPTIONS
+    const end = form.indexOf('--')
+    return form.slice(1, end < 0 ? form.length : end).some(word => options.includes(word.split('=')[0]!.replace(/_/g, '-')))
+  })
+}
+
 /** The shell builtins that change the working directory of every statement after them. */
 const DIRECTORY_COMMANDS = new Set(['cd', 'pushd', 'popd'])
 

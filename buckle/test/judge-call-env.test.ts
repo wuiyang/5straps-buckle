@@ -240,3 +240,29 @@ describe('a variable the call\'s own words or shell text set (fix brief 2, H3)',
     expect(names('env', ['node', 'build.js', 'PATH=x'])).toEqual([])
   })
 })
+
+describe('a call whose runtime loads variables from a file (fix brief 3, F2)', () => {
+  const LOADS = 'the call loads variables from a file; the decision AI does not rate it'
+
+  it('is shown to no stage, and asks, for node and bun in either spelling and inside shell text', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'cfg.env'), 'MODE=fast\n')
+    writeFileSync(join(config.cwd, 'run.ts'), 'console.log(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const commands = [
+      ['node', '--env-file=cfg.env', 'build.js'], ['node', '--env-file', 'cfg.env', 'build.js'], ['node', '--env-file-if-exists=cfg.env', 'build.js'],
+      ['bun', '--env-file=cfg.env', 'run.ts'], ['bun', '--env-file', 'cfg.env', 'run.ts'], ['bun', 'run', '--env-file=cfg.env', 'run.ts'],
+      ['bash', '-c', 'node --env-file=cfg.env build.js'],
+    ]
+    for (const command of commands) {
+      // A shell wrapper needs an allow rule of its own before it may ask.
+      if (command[0] === 'bash') await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: LOADS, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
