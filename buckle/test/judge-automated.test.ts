@@ -144,6 +144,20 @@ describe('a long reasoning holding a credential (fix brief 2, R18)', () => {
       expect(shown).toContain('DB_PASSWORD=')
     }
   })
+
+  it('shows no fragment of a URL password the cut lands inside, which only the redaction before the cut hides (fix brief 3, F6)', async () => {
+    // Cut mid-password, `postgres://app:Sup3r` no longer reads as a URL with a password, so the display would show it raw.
+    const reasoning = `${'x'.repeat(1_960)}\nDATABASE_URL=postgres://app:Sup3rSecretPassw0rdXYZ@db.internal:5432/app\n${'y'.repeat(200)}`
+    const runtime = await runtimeOf(node(), fakeJudge(() => ({ ...verdict('danger', 0.95), reasoning })))
+    const { response, entry } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    const waiting = runtime.approvalService.listing()[0]!
+    const line = describeAsk({ ...runtime.approvalService.waitingAsk(waiting.token)!.request, workspaceName: runtime.workspaceName(), call: waiting.call! }).join('\n')
+    for (const shown of [JSON.stringify(entry), JSON.stringify(waiting.call?.judge), line]) {
+      expect(shown).not.toContain('Sup3r')
+      expect(shown).toContain('DATABASE_URL=postgres://app:')
+    }
+  })
 })
 
 describe('code a here-string hands the interpreter', () => {
