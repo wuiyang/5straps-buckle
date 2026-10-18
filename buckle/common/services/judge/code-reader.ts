@@ -222,7 +222,11 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
     const { source, operand } = shellScriptOperand(args)
     if (source !== 'command' || operand === undefined) continue
     const heredocs = heredocIndex(operand, meter)
-    for (const statement of shellStatementList(operand, meter).statements) {
+    // A listing the shared meter cut short holds fewer statements than the text runs, so the reading refuses rather
+    // than miss what they feed (fix brief 3, R9).
+    const listing = shellStatementList(operand, meter)
+    if (listing.overBudget) fed.overBudget = true
+    for (const statement of listing.statements) {
       const tokens = shellTokens(statement)
       const chain = statementCommand(tokens)
       const form = chain?.at(-1)
@@ -291,29 +295,66 @@ function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>):
   return chain.at(-1)?.[0] === undefined ? [words] : chain
 }
 
+/** The characters around a `<<` that bucket it (heredocIndex): at most this many before it, and from it on. */
+const OPERATOR_WINDOW = { before: 8, after: 12 }
+
 /**
- * The heredoc bodies of one shell text (fix brief 2, R9), read in one pass: each statement's places in the text are found
- * once, and each body is read by walking lines from its own statement's line to its delimiter, every character walked
- * charged to the shared READ_BUDGET meter, so a text with many heredocs, or one left open, costs at most the budget and
- * then refuses (`overBudget`).
+ * The heredoc bodies of one shell text (fix brief 2, R9; fix brief 3, R9), read in one pass. Every `<<` in the text is
+ * found once, and bucketed once per window shape by the characters around it; a statement's places are the operators
+ * whose window matches the statement's own around its first `<<`, each confirmed in full, so no statement costs a scan of
+ * the whole text. Each body is read by walking lines from its own statement's line to its delimiter. Every character
+ * scanned, bucketed, compared, or walked is charged to the shared READ_BUDGET meter, so a text with many heredocs, or one
+ * left open, costs at most the budget and then refuses (`overBudget`).
  */
 function heredocIndex(text: string, meter: { characters: number }) {
   const places = new Map<string, number[]>()
-  /** Every place a statement stands in the text, found once. */
+  let operators: number[] | null = null
+  const buckets = new Map<string, Map<string, number[]>>()
+  /** Every `<<` in the text, found once. */
+  const operatorsOf = (): number[] => {
+    if (operators) return operators
+    const found: number[] = []
+    for (let at = text.indexOf('<<'); at >= 0; at = text.indexOf('<<', at + 1)) found.push(at)
+    meter.characters -= text.length
+    return (operators = found)
+  }
+  /** The operators by the `before` characters ahead of each and the `after` from it on, bucketed once per shape. */
+  const bucketed = (before: number, after: number): Map<string, number[]> => {
+    const shape = `${before}:${after}`
+    const known = buckets.get(shape)
+    if (known) return known
+    const bucket = new Map<string, number[]>()
+    const all = operatorsOf()
+    meter.characters -= all.length * (before + after)
+    for (const at of all) {
+      if (at < before || at + after > text.length) continue
+      const key = text.slice(at - before, at + after)
+      const list = bucket.get(key)
+      if (list) list.push(at)
+      else bucket.set(key, [at])
+    }
+    buckets.set(shape, bucket)
+    return bucket
+  }
+  /** Every place a statement stands in the text, in order: the operators whose window matches its own, confirmed in full. */
   const placesOf = (statement: string): number[] | null => {
     const known = places.get(statement)
     if (known) return known
+    const operator = statement.indexOf('<<')
     const found: number[] = []
-    let from = 0
-    for (let at = text.indexOf(statement); at >= 0; at = text.indexOf(statement, at + 1)) {
-      meter.characters -= at - from + 1
-      from = at + 1
+    if (operator >= 0) {
+      const before = Math.min(operator, OPERATOR_WINDOW.before)
+      const after = Math.min(statement.length - operator, OPERATOR_WINDOW.after)
+      const bucket = bucketed(before, after)
       if (meter.characters < 0) return null
-      found.push(at)
+      for (const at of bucket.get(statement.slice(operator - before, operator + after)) ?? []) {
+        meter.characters -= statement.length
+        if (meter.characters < 0) return null
+        if (at >= operator && text.startsWith(statement, at - operator)) found.push(at - operator)
+      }
     }
-    meter.characters -= text.length - from
     places.set(statement, found)
-    return meter.characters < 0 ? null : found
+    return found
   }
   return {
     /**

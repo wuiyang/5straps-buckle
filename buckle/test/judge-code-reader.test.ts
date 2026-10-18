@@ -4,6 +4,7 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { isInside } from '../common/domain/paths.js'
+import { READ_BUDGET } from '../common/domain/command-forms.js'
 import { CODE_LIMITS, CODE_REFUSALS, createCodeView, readInterpreterCode, type CodeRead } from '../common/services/judge/code-reader.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 
@@ -423,6 +424,29 @@ describe('heredocs in a long text (fix brief 2, R9)', () => {
     const result = readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
     expect(performance.now() - started).toBeLessThan(200)
     expect(reading(result).inline).toBe('')
+  })
+
+  it('refuses where the shared meter cuts a later text\'s listing short, rather than read fewer statements (fix brief 3, R9)', () => {
+    const { root, view } = workspace({ 'from-stdin.py': 'import os\n' })
+    // The first text spends all but 200 characters of the budget, so the second text's listing stops before the statement
+    // that redirects a script into python3.
+    const first = `true ${'a'.repeat(READ_BUDGET.characters - 205)}`
+    const second = `${'true; '.repeat(60)}python3 < from-stdin.py`
+    const shellForms = [['bash', '-c', first], ['bash', '-c', second]]
+    expect(readInterpreterCode({ forms: [['python3']], shellForms, cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
+    // Read alone, the second text is read whole.
+    expect(reading(readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', second]], cwd: root, view })).files.map(file => file.path)).toEqual(['/workspace/from-stdin.py'])
+  })
+
+  it('places many distinct heredoc statements in a long text without a scan of the whole text for each (fix brief 3, R9)', () => {
+    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
+    // 2,000 distinct heredoc statements in a text of about 1 MB: each used to cost the whole text, past the budget.
+    const delimiter = (index: number) => `D${String(index).padStart(4, '0')}`
+    const text = Array.from({ length: 2_000 }, (_, index) => `python3 <<${delimiter(index)}\nimport helper\n${delimiter(index)}\n`).join('') + '#'.repeat(1_000_000)
+    const started = performance.now()
+    const result = readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    expect(reading(result).files.map(file => file.path)).toEqual(['/workspace/helper.py'])
   })
 
   it('refuses, marking the reading truncated, once the bodies walked run past the read budget', () => {
