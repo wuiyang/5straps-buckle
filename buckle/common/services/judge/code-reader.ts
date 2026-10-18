@@ -1,7 +1,7 @@
 import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
-import { dirname, join, relative } from 'pathe'
+import { dirname, join, normalize, relative } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens } from '../../domain/argv.js'
 import { commandFormsOf, READ_BUDGET } from '../../domain/command-forms.js'
@@ -702,7 +702,7 @@ function nodeEntry(name: string, base: string, view: CodeView): Located | 'unrea
   const main = packageMain(name, base, view)
   if (main === 'unreadable') return main
   if (main !== null) {
-    const path = main.startsWith('/') ? main : join(name, main)
+    const path = mainPath(name, main)
     const entry = firstLocated(view, [...withExtensions(path), ...indexes(path)], base)
     if (entry !== 'none') return entry
   }
@@ -723,10 +723,20 @@ function typeScriptEntry(name: string, base: string, view: CodeView): Located | 
   const main = packageMain(name, base, view)
   if (main === 'unreadable') return main
   if (main !== null) {
-    const entry = firstLocated(view, jsCandidates(main.startsWith('/') ? main : join(name, main)), base)
+    const entry = firstLocated(view, jsCandidates(mainPath(name, main)), base)
     if (entry !== 'none') return entry
   }
   return firstLocated(view, indexes, base)
+}
+
+/**
+ * A package.json `main` as node's `path.resolve` makes it (fix brief 3, H1): an absolute one as written, a relative one
+ * joined to its folder, each with `.` and `..` resolved and a trailing slash dropped, so `main: "lib/"` and `"./lib/."`
+ * name `lib`, whose `lib.js` node tries before `lib/index.js`, and `"../x"` names a file beside the folder.
+ */
+function mainPath(folder: string, main: string): string {
+  const path = main.startsWith('/') ? normalize(main) : join(folder, main)
+  return path.length > 1 ? path.replace(/\/+$/, '') : path
 }
 
 /** The first name that lands on a regular file; `outside` where none does and one lands beyond the agent's view. */

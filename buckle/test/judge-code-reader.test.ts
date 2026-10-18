@@ -136,6 +136,25 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', 'bare'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
+  it('resolves main as node\'s path.resolve does: a trailing slash or a final /. dropped, .. resolved (fix brief 3, H1)', () => {
+    const { base, read } = workspace({
+      'slash/package.json': '{"main":"lib/"}', 'slash/lib/index.js': 'module.exports = 1\n',
+      'dot/package.json': '{"main":"./lib/."}', 'dot/lib/index.js': 'module.exports = 1\n',
+      'sibling/package.json': '{"main":"lib/"}', 'sibling/lib.js': 'module.exports = 2\n', 'sibling/lib/index.js': 'module.exports = 1\n',
+      'sibling-dot/package.json': '{"main":"./lib/."}', 'sibling-dot/lib.js': 'module.exports = 2\n', 'sibling-dot/lib/index.js': 'module.exports = 1\n',
+      'package.json': '{"main":"../other"}', 'index.js': 'module.exports = 3\n',
+    })
+    writeFileSync(join(base, 'other.js'), 'module.exports = 4\n')
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    expect(files(['node', 'slash'])).toEqual(['/workspace/slash/lib/index.js'])
+    expect(files(['node', 'dot'])).toEqual(['/workspace/dot/lib/index.js'])
+    // node tries lib.js before the folder, so the sibling file is the one that runs.
+    expect(files(['node', 'sibling'])).toEqual(['/workspace/sibling/lib.js'])
+    expect(files(['node', 'sibling-dot'])).toEqual(['/workspace/sibling-dot/lib.js'])
+    // A main climbing out of the workspace lands beyond the agent's view, so the call asks.
+    expect(read(['node', '.'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+  })
+
   it('refuses an absolute main outside the workspace, and reads a .node addon as a file, which is no text', () => {
     const { base, read } = workspace({ 'addon/package.json': '{"main":"build/addon.node"}', 'addon/build/addon.node': Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0xff, 0x00]), 'addon/index.js': 'nope\n', 'abs/index.js': 'nope\n' })
     writeFileSync(join(base, 'evil.js'), 'evil()\n')
