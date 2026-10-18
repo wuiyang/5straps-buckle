@@ -47,6 +47,10 @@ describe('a verdict\'s cache key', () => {
     expect(new Set([base, ...changed]).size).toBe(changed.length + 1)
   })
 
+  it('holds the working directory: the same command run from another folder is a new key', () => {
+    expect(key(input({ cwd: '/workspace/sub' }))).not.toBe(key(input()))
+  })
+
   it('holds the mounts with their access: one made writable, or one added, is a new key; another order is not', () => {
     const mounts: JudgeInput['mounts'] = [{ target: '/workspace', access: 'read-write' }, { target: '/data', access: 'read-only' }]
     const base = key(input({ mounts }))
