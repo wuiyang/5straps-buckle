@@ -26,12 +26,15 @@ export function callVariables(args: JsonObject): CallVariable[] {
   return Object.entries(env).flatMap(([name, value]) => (typeof value === 'string' ? [{ name, value }] : [])).sort((one, other) => (one.name < other.name ? -1 : one.name > other.name ? 1 : 0))
 }
 
-/** The first variable, by name, that changes what code runs, or undefined where the call sets none. */
+const CODE_LOADING_NAMES: ReadonlySet<string> = new Set(CODE_LOADING_VARIABLES.names)
+
+/** The first variable, by name, that changes what code runs, or undefined where the call sets none; linear in the variables (fix brief 3, H3). */
 export function codeLoadingVariable(variables: ReadonlyArray<{ name: string }>): string | undefined {
   return variables.find(({ name }) => {
     // The child reads an entry up to its first `=`: `PATH=/w/bin` as a name sets PATH (fix brief 2, H4).
-    const upper = name.split('=')[0]!.toUpperCase()
-    return CODE_LOADING_VARIABLES.names.includes(upper) || CODE_LOADING_VARIABLES.prefixes.some(prefix => upper.startsWith(prefix))
+    const equals = name.indexOf('=')
+    const upper = (equals < 0 ? name : name.slice(0, equals)).toUpperCase()
+    return CODE_LOADING_NAMES.has(upper) || CODE_LOADING_VARIABLES.prefixes.some(prefix => upper.startsWith(prefix))
   })?.name
 }
 
@@ -49,14 +52,25 @@ export function codeLoadingReason(name: string): string {
   return `the call sets ${shown}${characters.length > SHOWN_NAME_LIMIT ? ' [cut]' : ''}, which changes what code runs; the decision AI does not rate it`
 }
 
+/** The most variables, the env argument's and the assignments' together, a call may send the stages (fix brief 3, H3). */
+export const MAX_SHOWN_VARIABLES = 256
+
 /**
  * Every variable the call sets with a value, as the stages are shown them (fix brief 2, H3): its `env` argument, then
- * the values its own words and shell text assign, each once, sorted by name and then value.
+ * the values its own words and shell text assign, each once by a key built once, sorted by name and then value. Null
+ * past `limit`, before any sort, so a call that sets more than the stages are sent is refused in linear time (fix brief
+ * 3, H3).
  */
-export function joinedVariables(env: readonly CallVariable[], assigned: ReadonlyArray<{ name: string; value: string | null }>): CallVariable[] {
-  const all = [...env, ...assigned.flatMap(({ name, value }) => (value === null ? [] : [{ name, value }]))]
-  const order = (item: CallVariable) => `${item.name}\0${item.value}`
-  return all.filter((item, index) => all.findIndex(other => order(other) === order(item)) === index).sort((one, other) => (order(one) < order(other) ? -1 : order(one) > order(other) ? 1 : 0))
+export function joinedVariables(env: readonly CallVariable[], assigned: ReadonlyArray<{ name: string; value: string | null }>, limit = Number.POSITIVE_INFINITY): CallVariable[] | null {
+  const unique = new Map<string, CallVariable>()
+  for (const item of [...env, ...assigned]) {
+    if (item.value === null) continue
+    const key = `${item.name}\0${item.value}`
+    if (unique.has(key)) continue
+    unique.set(key, { name: item.name, value: item.value })
+    if (unique.size > limit) return null
+  }
+  return [...unique].sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0)).map(([, item]) => item)
 }
 
 /**

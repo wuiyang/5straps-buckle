@@ -16,7 +16,7 @@ import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
 import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
-import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, shownVariables } from './call-env.js'
+import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile } from './call-forms.js'
 import { CODE_REFUSALS, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
@@ -148,6 +148,10 @@ export function createJudgeGate(input: {
     const forms = commandFormsOf(effect)
     const assigned = assignedVariables(effect, forms)
     const variables = callVariables(call.args)
+    // The env argument and the assignments together, at most MAX_SHOWN_VARIABLES, else the call is refused before any
+    // other check reads them all (fix brief 3, H3); either way no stage rates it.
+    const joined = joinedVariables(variables, assigned.variables, MAX_SHOWN_VARIABLES)
+    if (joined === null) return CODE_REFUSALS.truncated
     const loading = codeLoadingVariable([...variables, ...assigned.variables])
     if (loading !== undefined) return codeLoadingReason(loading)
     if (assigned.unread) return CODE_REFUSALS.truncated
@@ -176,7 +180,7 @@ export function createJudgeGate(input: {
       argv: shownWords(program, effect.args),
       interpreters,
       ...code.reading,
-      env: shownVariables(joinedVariables(variables, assigned.variables)),
+      env: shownVariables(joined),
       packagesTruncated: false,
       truncated: false,
       standardScript,

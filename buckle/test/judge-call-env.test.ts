@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
-import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, shownVariables } from '../common/services/judge/call-env.js'
+import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
@@ -285,5 +285,41 @@ describe('a long variable name in the reason (fix brief 3, F4)', () => {
     expect(reason).toContain(' [cut]')
     expect(Buffer.byteLength(JSON.stringify(entry))).toBeLessThan(64 * 1_024)
     expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a call that sets more variables than the stages are sent (fix brief 3, H3)', () => {
+  /** One script_run bash call, through the real tool and the real permission pipeline; nothing runs. */
+  async function script(runtime: BuckleRuntime, text: string) {
+    const requestId = `script-${Math.random()}`
+    const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'script_run', args: { runtime: 'bash', script: text } }, sessionId: 'env', approvalWait: { mode: 'none' } })
+    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    return { response, entry }
+  }
+
+  const assignments = (count: number) => `${Array.from({ length: count }, (_, index) => `a${index}=${index}`).join('\n')}\nnode build.js`
+
+  it('reads 50,000 unique assignments and refuses them within 200 ms, where the old dedupe was quadratic', () => {
+    const effect = { command: 'bash', args: ['-c', assignments(50_000)] }
+    // The command's forms are the permission pipeline's own reading, shared with every rule, so they are not the gate's cost.
+    const forms = commandFormsOf(effect)
+    const started = performance.now()
+    const joined = joinedVariables([], assignedVariables(effect, forms).variables, MAX_SHOWN_VARIABLES)
+    expect(performance.now() - started).toBeLessThan(200)
+    expect(joined).toBeNull()
+  })
+
+  it('refuses a script_run call past 256 variables as truncated, and rates 200 with them in env', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const many = await script(runtime, assignments(50_000))
+    expect(many.response).toMatchObject({ outcome: 'approval_required' })
+    expect(many.entry.judge).toMatchObject({ unavailable: 'the code closure exceeds what the judge reads', passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+    const few = await script(runtime, assignments(200))
+    expect(few.entry.judge).toMatchObject({ passed: true, passedBy: 'thorough' })
+    expect(judge.shown).toHaveLength(1)
+    expect(judge.shown[0]!.env).toHaveLength(200)
   })
 })
