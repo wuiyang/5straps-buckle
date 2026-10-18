@@ -279,6 +279,21 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(read(['python3', '-B', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
   })
 
+  it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
+    const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
+    const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
+    expect(read(['npx', 'tsx', '--experimental-default-config-file', 'job.ts'])).toEqual(unknown)
+    expect(read(['pnpx', 'tsx', '--experimental-default-config-file', 'job.ts'])).toEqual(unknown)
+    expect(read(['bunx', 'tsx', '--experimental-default-config-file', 'job.ts'])).toEqual(unknown)
+    expect(read(['npx', '--yes', 'tsx', 'job.ts'])).toEqual(unknown)
+    // A package naming no runtime takes no option before its operand.
+    expect(read(['npx', 'eslint', '--fix', 'src'])).toEqual(unknown)
+    expect(reading(read(['npx', 'eslint', 'src', '--fix']))).toMatchObject({ packages: [{ name: 'eslint' }] })
+    // node's value option takes its value, so the redirected file is the script.
+    expect(paths(shell('npx node --redirect-warnings x.txt < other.js'))).toEqual(['/workspace/x.txt', '/workspace/other.js'])
+    expect(paths(read(['npx', 'tsx', 'job.ts']))).toEqual(['/workspace/job.ts'])
+  })
+
   it('refuses, so the call asks, where the script operand names nothing, rather than rating the command line alone', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     for (const form of [['node', 'missing'], ['python3', 'missing'], ['python3', '-W', 'ignore', 'missing.py'], ['bun', 'run', 'missing'], ['npx', 'tsx', 'missing']]) {

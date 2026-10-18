@@ -165,9 +165,8 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   const program = programOf(command)
   const read = argumentsOf(program, args)
   // An option the reader does not model could change which word is the script, so the call asks rather than rate code
-  // that may not be the code that runs (fix brief 3, R7).
-  if (read.unknownOption) return CODE_REFUSALS.unknownOption
-  if (read.shellText) return SHELL_TEXT_REFUSAL
+  // that may not be the code that runs (fix brief 3, R7); so could a C shell's text (fix brief 4, P).
+  if (read.refusal !== null) return read.refusal
   inline.push(...read.inline)
   for (const name of read.packages) named(packages, name, cwd)
   const language = languageOfProgram(program)
@@ -278,7 +277,8 @@ function refused(reason: string): CodeRead {
 /** An interpreter's program, its version and build dropped: `python3.12` is python, `nodejs` node. */
 function programOf(command: string): string {
   const name = baseCommand(command)
-  const match = /^(python|pypy|node|nodejs|deno|bun|perl|ruby|php|awk|gawk|mawk|nawk|lua|luajit|pwsh|powershell|tsx|ts-node|npx|pnpx|bunx|tcsh|csh|busybox|toybox)/.exec(name)
+  // bunx before bun, so the runner is not read as the runtime (fix brief 4, G11).
+  const match = /^(python|pypy|node|nodejs|deno|bunx|bun|perl|ruby|php|awk|gawk|mawk|nawk|lua|luajit|pwsh|powershell|tsx|ts-node|npx|pnpx|tcsh|csh|busybox|toybox)/.exec(name)
   const program = match?.[1] ?? name
   return program === 'nodejs' ? 'node' : program === 'pypy' ? 'python' : program
 }
@@ -346,7 +346,7 @@ const FLAG_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   'ts-node': ['-T', '--transpile-only', '--type-check', '-H', '--compiler-host', '--esm', '--files', '--pretty', '--skip-project', '--skip-ignore', '--emit', '--log-error', '--show-config', '--scope', '--version', '-v', '--help', '-h'],
 }
 
-/** The interpreters whose options the reader models, so an unmodelled one refuses; a runner's package options are not checked here. */
+/** The interpreters whose options the reader models, so an unmodelled one refuses; a runner's are read with its package's (runnerArguments). */
 const OPTION_CHECKED = new Set(['node', 'python', 'perl', 'ruby', 'php', 'lua', 'bun', 'deno', 'tsx', 'ts-node'])
 /** A word that marks an interpreter's script as coming from its standard input, so the redirected file is the script (fix brief 3, R7). */
 const STDIN_SCRIPT_MARKER = new Set(['-', '/dev/stdin'])
@@ -409,10 +409,24 @@ interface Operand { name: string; required: boolean; runtime: string }
 
 /**
  * One interpreter invocation's words, read for the code they hand it: the code after an inline flag (and an awk
- * program, and `deno eval`'s text), the package a runner runs, which is named and never read, and every other word,
- * each a name that may be a file.
+ * program, and `deno eval`'s text), the package a runner runs, which is named and never read, the modules, preloads,
+ * program files, and script operand, and every other word, each a name that may be a file. `stdinScript` where the
+ * script comes from its standard input; `refusal` where the words cannot be read as the interpreter reads them.
  */
-function argumentsOf(program: string, args: readonly string[]): { inline: string[]; packages: string[]; modules: string[]; preloads: string[]; programFiles: string[]; candidates: string[]; operand: Operand | null; stdinScript: boolean; unknownOption: boolean; shellText: boolean } {
+interface Arguments {
+  inline: string[]
+  packages: string[]
+  modules: string[]
+  preloads: string[]
+  programFiles: string[]
+  candidates: string[]
+  operand: Operand | null
+  stdinScript: boolean
+  refusal: string | null
+}
+
+function argumentsOf(program: string, args: readonly string[]): Arguments {
+  if (RUNNERS.has(program)) return runnerArguments(args)
   const inline: string[] = []
   const preloads: string[] = []
   // Whether the interpreter's script comes from its standard input (a `-`, `/dev/stdin`, php `--`, or csh/tcsh `-s`),
@@ -421,25 +435,19 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
   let unknownOption = false
   // The program files awk runs (`-f prog.awk`), each of which must name a file.
   const programFiles: string[] = []
-  const packages: string[] = []
   const modules: string[] = []
   const candidates: string[] = []
   const flags = INLINE_FLAGS[program] ?? []
   const awkProgramFile = AWKS.has(program) && args.some(arg => arg === '-f' || arg.startsWith('-f'))
   let awkProgram = AWKS.has(program) && !awkProgramFile
-  let runnerPackage = RUNNERS.has(program)
   // The script operand: for a runtime, its first positional word, or the word after a `--` that comes before one (fix
-  // brief 2, H5), past a subcommand naming one; for a runner, the word after the package, which must name a file only
-  // where that package is itself a runtime.
+  // brief 2, H5), past a subcommand naming one.
   let seeking = JS_RUNTIMES.has(program) || program === 'python' || SCRIPT_INTERPRETERS.has(program)
   let subcommand = false
   let operand: Operand | null = null
   const valueOptions = VALUE_OPTIONS[program] ?? []
   const preloading = PRELOAD_OPTIONS[program] ?? []
-  const operandOf = (name: string): Operand => {
-    const runtime = RUNNERS.has(program) ? programOf(packages[0] ?? '') : program
-    return { name, required: !RUNNERS.has(program) || JS_RUNTIMES.has(runtime), runtime }
-  }
+  const operandOf = (name: string): Operand => ({ name, required: true, runtime: program })
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
     const equals = word.startsWith('--') ? word.indexOf('=') : -1
@@ -489,12 +497,6 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       awkProgram = false
       continue
     }
-    if (runnerPackage && positional) {
-      packages.push(packageName(word))
-      runnerPackage = false
-      seeking = true
-      continue
-    }
     if (word === '--') {
       // node and python take the word after a leading `--` as their script, as a runtime does after its package.
       if (seeking && index + 1 < args.length) {
@@ -531,15 +533,36 @@ function argumentsOf(program: string, args: readonly string[]): { inline: string
       }
     }
     // While seeking the script, an option in none of the interpreter's tables could take the next word as its value and
-    // hide the script that runs, so the reading fails closed (fix brief 3, R7). A runner's package options are not checked.
+    // hide the script that runs, so the reading fails closed (fix brief 3, R7).
     if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, word)) unknownOption = true
     candidates.push(word)
     if (equals > 0) candidates.push(word.slice(equals + 1))
   }
   // A C shell's `-c` text, and a busybox or toybox shell applet's, is never rated: the grammar is no parser of those
   // shells (fix brief 4, P).
-  const shellText = TEXT_SHELL_INTERPRETERS.has(program) && inline.length > 0
-  return { inline, packages, modules, preloads, programFiles, candidates, operand, stdinScript, unknownOption, shellText }
+  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : TEXT_SHELL_INTERPRETERS.has(program) && inline.length > 0 ? SHELL_TEXT_REFUSAL : null
+  return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, refusal }
+}
+
+/**
+ * A runner's words (npx, pnpx, bunx; fix brief 4, G11). An option before the package refuses. The package is named and
+ * never read. A package that is a JavaScript runtime has the words after it read as that runtime reads its own, with its
+ * tables; any other takes its first word as its operand, which need not name a file, and refuses an option before it.
+ */
+function runnerArguments(args: readonly string[]): Arguments {
+  const [first, ...rest] = args
+  const none: Arguments = { inline: [], packages: [], modules: [], preloads: [], programFiles: [], candidates: [], operand: null, stdinScript: false, refusal: null }
+  if (first === undefined) return { ...none, refusal: CODE_REFUSALS.notFound }
+  if (first.startsWith('-')) return { ...none, refusal: CODE_REFUSALS.unknownOption }
+  const name = packageName(first)
+  const runtime = programOf(name)
+  if (JS_RUNTIMES.has(runtime)) {
+    const inner = argumentsOf(runtime, rest)
+    return { ...inner, packages: [name, ...inner.packages] }
+  }
+  const at = rest.findIndex(word => !word.startsWith('-'))
+  if (at !== 0 && rest.length > 0) return { ...none, packages: [name], refusal: CODE_REFUSALS.unknownOption }
+  return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null }
 }
 
 /**
