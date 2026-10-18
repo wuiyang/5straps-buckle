@@ -34,6 +34,7 @@ export const CODE_REFUSALS = Object.freeze({
   interactive: 'an interactive flag reads standard input as code',
   unmodelledImport: 'an import the reader does not model',
   subcommand: 'a subcommand the reader does not model',
+  stdin: 'the code the interpreter runs comes from standard input the reader cannot place',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -230,9 +231,12 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     enqueue(found, runtime)
   }
   // The statement's input is the interpreter's code only where it names no script, inline code, module, or inert
-  // subcommand of its own, or names standard input (`-`); past one of those, its input is data (fix brief 2, R7).
+  // subcommand of its own, or names standard input (`-`); past one of those, its input is data (fix brief 2, R7). Code
+  // on an input nothing on the statement feeds, the call's own empty input included, is code the reader cannot place
+  // (fix brief 4, G4).
   const { feed } = planned
-  if (!read.inputIsCode || feed === null) return null
+  if (!read.inputIsCode) return null
+  if (feed === null) return CODE_REFUSALS.stdin
   if (feed.kind === 'file') {
     if (literalBackslash(feed.name)) return CODE_REFUSALS.unreadable
     const located = view.locate(feed.name, cwd)
@@ -650,8 +654,20 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
       : unmodelledSubcommand ? CODE_REFUSALS.subcommand
         : urlOperand ? CODE_REFUSALS.unmodelledImport
           : shellText ? SHELL_TEXT_REFUSAL : null
-  const inputIsCode = stdinScript || (!inert && operand === null && inline.length === 0 && modules.length === 0)
+  const inputIsCode = stdinScript || takesCodeOnInput(program, args, { inert, operand, inline, modules })
   return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, inputIsCode, refusal }
+}
+
+/**
+ * Whether an interpreter reads its code from its input with no marker (fix brief 4, G4): one that seeks a script and
+ * was given none, no inline code, module, or inert subcommand; awk never, whose program is inline or a file; PowerShell
+ * and a busybox or toybox shell applet where no inline code or word names a script, or `-Command -` does.
+ */
+function takesCodeOnInput(program: string, args: readonly string[], read: { inert: boolean; operand: Operand | null; inline: readonly string[]; modules: readonly string[] }): boolean {
+  if (AWKS.has(program)) return false
+  if (JS_RUNTIMES.has(program) || program === 'python' || SCRIPT_INTERPRETERS.has(program)) return !read.inert && read.operand === null && read.inline.length === 0 && read.modules.length === 0
+  const words = program === 'busybox' || program === 'toybox' ? args.slice(1) : args
+  return read.inline.includes('-') || (read.inline.length === 0 && words.every(word => word.startsWith('-')))
 }
 
 /**
@@ -672,7 +688,8 @@ function runnerArguments(args: readonly string[]): Arguments {
   }
   const at = rest.findIndex(word => !word.startsWith('-'))
   if (at !== 0 && rest.length > 0) return { ...none, packages: [name], refusal: CODE_REFUSALS.unknownOption }
-  return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null, inputIsCode: at !== 0 }
+  // A package that is no runtime reads its input as data, if at all.
+  return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null }
 }
 
 /**

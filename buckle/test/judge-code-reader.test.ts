@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { isInside } from '../common/domain/paths.js'
 import { baseCommand } from '../common/domain/argv.js'
-import { allForms, commandFormsOf, isInterpreter } from '../common/domain/command-forms.js'
+import { allForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { CODE_LIMITS, CODE_REFUSALS, createCodeView, readInterpreterCode, type CodeRead } from '../common/services/judge/code-reader.js'
 import { SHELL_TEXT_REFUSAL, simpleStatement } from '../common/services/judge/shell-statement.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
@@ -33,7 +33,7 @@ function workspace(files: Record<string, string | Buffer>, options: { mount?: st
   // A whole call as the gate reads it: its forms as the rules read them, the interpreter ones read, with its chain.
   const call = (command: string, ...args: string[]): CodeRead => {
     const forms = commandFormsOf({ command, args })
-    const running = allForms(forms).filter(([word = '']) => isInterpreter(baseCommand(word)))
+    const running = allForms(forms).filter(([word = '']) => forms.interpreters.includes(word) || forms.interpreters.includes(baseCommand(word)))
     return readInterpreterCode({ forms: running, chain: forms.chain, cwd: root, view })
   }
   const shell = (text: string, program = 'bash'): CodeRead => call(program, '-c', text)
@@ -429,12 +429,27 @@ describe('the script an interpreter finds by its own rules', () => {
   })
 
   it('keeps today\'s reading where no operand or inline code names a script', () => {
-    const { read } = workspace({ 'data.txt': 'x\n' })
-    expect(reading(read(['node', '--version']))).toMatchObject({ inline: null, files: [] })
+    const { call, read } = workspace({ 'data.txt': 'x\n' })
+    // A version call runs no code, so the rules hand the reader no form to read.
+    expect(reading(call('node', '--version'))).toMatchObject({ inline: null, files: [] })
     expect(reading(read(['python3', '-m', 'pip', 'install', 'requests']))).toMatchObject({ files: [], packages: [{ name: 'pip' }] })
     expect(reading(read(['node', '-e', '1', 'missing']))).toMatchObject({ inline: '1', files: [] })
     expect(reading(read(['bun', 'outdated']))).toMatchObject({ files: [] })
     expect(reading(read(['npx', 'eslint', 'missing']))).toMatchObject({ files: [], packages: [{ name: 'eslint' }] })
+  })
+
+  it('refuses where the interpreter runs code from an input nothing on its statement feeds (fix brief 4, G4)', () => {
+    const { read, shell } = workspace({ 'f.py': 'print(1)\n', 'data.txt': 'x\n' })
+    const stdin = { kind: 'refused', reason: CODE_REFUSALS.stdin, truncated: false }
+    for (const form of [['python3', '-'], ['node', '-'], ['python3', '-B'], ['perl', '-w'], ['npx', 'tsx'], ['deno', 'run'], ['pwsh', '-NoProfile']]) {
+      expect(read(form), form.join(' ')).toEqual(stdin)
+    }
+    expect(shell('python3 -')).toEqual(stdin)
+    expect(shell('python3 - 2>/dev/null')).toEqual(stdin)
+    expect(paths(shell('python3 - < f.py'))).toEqual(['/workspace/f.py'])
+    // awk's input, and a package's that is no runtime, is data.
+    expect(reading(read(['awk', '{print}']))).toMatchObject({ inline: '{print}', files: [] })
+    expect(reading(read(['npx', 'eslint']))).toMatchObject({ files: [], packages: [{ name: 'eslint' }] })
   })
 })
 
