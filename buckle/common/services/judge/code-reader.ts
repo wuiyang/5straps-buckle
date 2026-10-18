@@ -25,6 +25,7 @@ export const CODE_REFUSALS = Object.freeze({
   fromCommand: 'the code the interpreter runs comes from another command',
   unknownOption: 'an option the reader does not know',
   config: 'a config file the reader could not parse',
+  importList: 'an import list the reader could not parse',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -1116,18 +1117,19 @@ function jsCandidates(specifier: string): string[] {
 // string can read as one too, which fails closed: the name becomes a package, or a relative import names nothing and refuses.
 const PYTHON_IMPORT = /(?:^|[;:])[ \t]*import[ \t]+([\w.]+(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[\w.]+(?:[ \t]+as[ \t]+\w+)?)*)/gm
 const PYTHON_FROM = /(?:^|[;:])[ \t]*from[ \t]+(\.*)([\w.]*)[ \t]+import[ \t]+(\()?([\w\t ,*]*)/gm
-/** The most lines a parenthesised from-import's names are read across. */
-const GROUP_LINES = 60
+/** The most lines a parenthesised from-import's names are read across (fix brief 3, R8). */
+const GROUP_LINES = 200
 /** A line that starts another statement or a string, so an open `(` before it was no from-import's (a docstring's, a comment's). */
 const GROUP_BREAK = /^[ \t]*(?:from |import |def |class |"""|\'\'\')/
 
 /**
  * The names of a parenthesised from-import, from just after its `(` to the first `)` outside a comment (fix brief 2,
- * R8): at most GROUP_LINES lines, and null, so the import reads as its first line alone, where none closes it in time or
- * a line inside starts another statement or a string. So an unclosed `(` in a docstring or a comment never swallows the
- * real imports after it.
+ * R8). Null, so the import reads as its first line alone, where a line inside starts another statement or a string,
+ * which no name of an import can, so an unclosed `(` in a docstring never swallows the real imports after it.
+ * `unparsed`, so the reading refuses, where no `)` closes it within GROUP_LINES lines or before the code ends: the
+ * reader never guesses at a list it could not read whole (fix brief 3, R8).
  */
-function groupedNames(code: string, from: number): string | null {
+function groupedNames(code: string, from: number): string | null | 'unparsed' {
   const parts: string[] = []
   let at = from
   for (let line = 0; line < GROUP_LINES; line++) {
@@ -1137,10 +1139,10 @@ function groupedNames(code: string, from: number): string | null {
     const close = text.indexOf(')')
     if (close >= 0) return [...parts, text.slice(0, close)].join(',')
     parts.push(text)
-    if (end < 0) return null
+    if (end < 0) return 'unparsed'
     at = end + 1
   }
-  return null
+  return 'unparsed'
 }
 
 function pythonImports(code: string, place: Place): Found | string {
@@ -1156,6 +1158,7 @@ function pythonImports(code: string, place: Place): Found | string {
   for (const match of code.matchAll(PYTHON_FROM)) {
     const [whole, dots = '', module = '', open, plain = ''] = match
     const grouped = open ? groupedNames(code, match.index + whole.length - plain.length) : null
+    if (grouped === 'unparsed') return CODE_REFUSALS.importList
     const imported = (grouped ?? plain).split(',').map(name => name.trim().split(/\s+/)[0]!).filter(name => name && name !== '*')
     let roots = [beside, place.cwd]
     if (dots.length > 0) {

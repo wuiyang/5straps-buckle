@@ -417,6 +417,25 @@ describe('the code a Python call runs', () => {
     expect(files('open.py')).toEqual(['/workspace/helper.py', '/workspace/open.py', '/workspace/pkg/__init__.py', '/workspace/pkg/mod.py'])
   })
 
+  it('reads a parenthesised from-import across up to 200 lines, and refuses one it cannot close in that bound (fix brief 3, R8)', () => {
+    const submodules: Record<string, string> = {}
+    for (let index = 0; index < 70; index++) submodules[`big/m${index}.py`] = ''
+    const { read } = workspace({
+      'pkg/__init__.py': '', 'pkg/mod.py': 'X = 1\n', 'pkg/other.py': 'Y = 2\n', 'big/__init__.py': '', ...submodules,
+      'mid.py': `from pkg import (\n${'    mod,\n'.repeat(60)}    other,\n)\n`,
+      'long.py': `from pkg import (\n${'    mod,\n'.repeat(201)})\n`,
+      'unclosed.py': 'from pkg import (\n    mod,\n',
+      'many.py': `from big import (\n${Array.from({ length: 70 }, (_, index) => `    m${index},\n`).join('')})\n`,
+    })
+    // A 61-name group is read whole, every named module with it.
+    expect(reading(read(['python3', 'mid.py'])).files.map(file => file.path).sort()).toEqual(['/workspace/mid.py', '/workspace/pkg/__init__.py', '/workspace/pkg/mod.py', '/workspace/pkg/other.py'])
+    // Past the bound, or with no `)` before the code ends, the list is not guessed at: the call asks.
+    expect(read(['python3', 'long.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.importList, truncated: false })
+    expect(read(['python3', 'unclosed.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.importList, truncated: false })
+    // A group naming 70 local submodules runs past the 50-file cap, as before the bound.
+    expect(read(['python3', 'many.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
