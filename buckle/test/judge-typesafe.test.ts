@@ -120,10 +120,12 @@ describe('an answer Jev cannot give', () => {
     expect(calls()).toBe(1)
   })
 
-  it.each([429, 529])('is unavailable at a %i, after one retry', async (status) => {
-    const { fetch, calls } = fakeFetch(() => Response.json({ detail: 'busy' }, { status }))
+  it.each([429, 529])('is unavailable at a %i, after one retry that ignores the server\'s Retry-After', async (status) => {
+    const started: number[] = []
+    const { fetch, calls } = fakeFetch(() => { started.push(performance.now()); return Response.json({ detail: 'busy' }, { status, headers: { 'retry-after': '3' } }) })
     expect(await unavailable(fetch)).toEqual({ kind: 'unavailable', reason: `the API answered HTTP ${status}` })
     expect(calls()).toBe(2)
+    expect(started[1]! - started[0]!).toBeLessThan(2_000)
   })
 
   it('is unavailable when the request outlives its time', async () => {
