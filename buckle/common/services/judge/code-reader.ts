@@ -33,6 +33,7 @@ export const CODE_REFUSALS = Object.freeze({
   compiledPython: 'the code runs compiled Python the reader cannot show',
   interactive: 'an interactive flag reads standard input as code',
   unmodelledImport: 'an import the reader does not model',
+  subcommand: 'a subcommand the reader does not model',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -228,11 +229,10 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     if (typeof found === 'string') return found
     enqueue(found, runtime)
   }
-  // The statement's input is the interpreter's code only where it names no script, inline code, or module of its own, or
-  // names standard input (`-`); past one of those, its input is data (fix brief 2, R7).
-  const inputIsScript = read.stdinScript || (read.operand === null && read.inline.length === 0 && read.modules.length === 0)
+  // The statement's input is the interpreter's code only where it names no script, inline code, module, or inert
+  // subcommand of its own, or names standard input (`-`); past one of those, its input is data (fix brief 2, R7).
   const { feed } = planned
-  if (!inputIsScript || feed === null) return null
+  if (!read.inputIsCode || feed === null) return null
   if (feed.kind === 'file') {
     if (literalBackslash(feed.name)) return CODE_REFUSALS.unreadable
     const located = view.locate(feed.name, cwd)
@@ -445,14 +445,23 @@ function unmodelledSpecifier(specifier: string): boolean {
 }
 
 /**
- * A runtime's subcommands: after one of `script` the next operand is the script (`deno run main.ts`, `bun run build.ts`,
- * `tsx watch app.ts`); after one of `other` no operand is a script the reader must find (`bun test`, `deno fmt`).
+ * A runtime's subcommands (fix brief 4, G8): after one of `script` the next operand is the script (`deno run main.ts`,
+ * `bun run build.ts`, `tsx watch app.ts`); one of `inert` runs no workspace code (`deno fmt`, `bun outdated`); any other
+ * of `refused` runs code the reader does not follow (`bun test`, `deno task`, `bun x`), so the reading refuses.
  */
-const SUBCOMMANDS: Readonly<Record<string, { script: readonly string[]; other: readonly string[] }>> = {
-  deno: { script: ['run', 'serve'], other: ['test', 'bench', 'compile', 'check', 'task', 'fmt', 'lint', 'repl', 'info', 'doc', 'upgrade', 'cache', 'types', 'completions', 'coverage', 'init', 'jupyter', 'publish', 'add', 'remove', 'install', 'uninstall', 'outdated', 'clean', 'x', 'vendor', 'bundle', 'lsp', 'help'] },
-  bun: { script: ['run'], other: ['test', 'x', 'install', 'i', 'add', 'a', 'remove', 'rm', 'update', 'outdated', 'link', 'unlink', 'pm', 'build', 'init', 'create', 'c', 'upgrade', 'repl', 'exec', 'patch', 'publish', 'audit', 'info', 'why', 'help'] },
-  tsx: { script: ['watch'], other: [] },
-  node: { script: ['inspect'], other: [] },
+const SUBCOMMANDS: Readonly<Record<string, { script: readonly string[]; inert: readonly string[]; refused: readonly string[] }>> = {
+  deno: {
+    script: ['run', 'serve'],
+    inert: ['fmt', 'lint', 'info', 'doc', 'types', 'completions', 'check', 'compile', 'outdated', 'lsp', 'help', 'upgrade'],
+    refused: ['test', 'bench', 'task', 'repl', 'cache', 'coverage', 'init', 'jupyter', 'publish', 'add', 'remove', 'install', 'uninstall', 'clean', 'x', 'vendor', 'bundle'],
+  },
+  bun: {
+    script: ['run'],
+    inert: ['outdated', 'why', 'audit', 'info', 'help', 'upgrade', 'link', 'unlink'],
+    refused: ['test', 'x', 'install', 'i', 'add', 'a', 'remove', 'rm', 'update', 'pm', 'build', 'init', 'create', 'c', 'repl', 'exec', 'patch', 'publish'],
+  },
+  tsx: { script: ['watch'], inert: [], refused: [] },
+  node: { script: ['inspect'], inert: [], refused: [] },
 }
 
 /**
@@ -476,6 +485,8 @@ interface Arguments {
   candidates: string[]
   operand: Operand | null
   stdinScript: boolean
+  /** Whether the interpreter's standard input is its code: a stdin marker, or no script, inline code, module, or inert subcommand of its own. */
+  inputIsCode: boolean
   refusal: string | null
 }
 
@@ -502,6 +513,9 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   // brief 2, H5), past a subcommand naming one.
   let seeking = JS_RUNTIMES.has(program) || program === 'python' || SCRIPT_INTERPRETERS.has(program)
   let subcommand = false
+  // An inert subcommand runs no script, so its input is no code; one the reader does not model refuses (fix brief 4, G8).
+  let inert = false
+  let unmodelledSubcommand = false
   let operand: Operand | null = null
   const valueOptions = VALUE_OPTIONS[program] ?? []
   const preloading = PRELOAD_OPTIONS[program] ?? []
@@ -606,8 +620,13 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
       if (positional) {
         const named = SUBCOMMANDS[program]
         if (!subcommand && named?.script.includes(word)) subcommand = true
-        else if (!subcommand && named?.other.includes(word)) seeking = false
-        else {
+        else if (!subcommand && named?.inert.includes(word)) {
+          inert = true
+          seeking = false
+        } else if (!subcommand && named?.refused.includes(word)) {
+          unmodelledSubcommand = true
+          seeking = false
+        } else {
           operand = operandOf(word)
           seeking = false
         }
@@ -620,12 +639,19 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     candidates.push(word)
     if (value !== null) candidates.push(value)
   }
-  // A C shell's `-c` text, and a busybox or toybox shell applet's, is never rated: the grammar is no parser of those
-  // shells (fix brief 4, P).
   // node ignores -i past a script, but runs its input after inline code, or alone; python, lua, and php always do.
   const interactiveRuns = interactive && (program !== 'node' || inline.length > 0 || operand === null)
-  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : interactiveRuns ? CODE_REFUSALS.interactive : TEXT_SHELL_INTERPRETERS.has(program) && (inline.length > 0 || cShellText) ? SHELL_TEXT_REFUSAL : null
-  return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, refusal }
+  // A C shell's `-c` text, and a busybox or toybox shell applet's, is never rated: the grammar is no parser of those
+  // shells (fix brief 4, P). A script operand carrying a URL scheme names code no file holds (`deno run https://...`).
+  const shellText = TEXT_SHELL_INTERPRETERS.has(program) && (inline.length > 0 || cShellText)
+  const urlOperand = operand !== null && URL_SCHEME.test(operand.name)
+  const refusal = unknownOption ? CODE_REFUSALS.unknownOption
+    : interactiveRuns ? CODE_REFUSALS.interactive
+      : unmodelledSubcommand ? CODE_REFUSALS.subcommand
+        : urlOperand ? CODE_REFUSALS.unmodelledImport
+          : shellText ? SHELL_TEXT_REFUSAL : null
+  const inputIsCode = stdinScript || (!inert && operand === null && inline.length === 0 && modules.length === 0)
+  return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, inputIsCode, refusal }
 }
 
 /**
@@ -635,7 +661,7 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
  */
 function runnerArguments(args: readonly string[]): Arguments {
   const [first, ...rest] = args
-  const none: Arguments = { inline: [], packages: [], modules: [], preloads: [], programFiles: [], candidates: [], operand: null, stdinScript: false, refusal: null }
+  const none: Arguments = { inline: [], packages: [], modules: [], preloads: [], programFiles: [], candidates: [], operand: null, stdinScript: false, inputIsCode: false, refusal: null }
   if (first === undefined) return { ...none, refusal: CODE_REFUSALS.notFound }
   if (first.startsWith('-')) return { ...none, refusal: CODE_REFUSALS.unknownOption }
   const name = packageName(first)
@@ -646,7 +672,7 @@ function runnerArguments(args: readonly string[]): Arguments {
   }
   const at = rest.findIndex(word => !word.startsWith('-'))
   if (at !== 0 && rest.length > 0) return { ...none, packages: [name], refusal: CODE_REFUSALS.unknownOption }
-  return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null }
+  return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null, inputIsCode: at !== 0 }
 }
 
 /**

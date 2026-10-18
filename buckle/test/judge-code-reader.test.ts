@@ -417,12 +417,23 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(read(['perl', '-e', 'print 1', 'missing']))).toMatchObject({ inline: 'print 1', files: [] })
   })
 
+  it('refuses a subcommand that runs code the reader does not follow, and reads an inert one (fix brief 4, G8)', () => {
+    const { read } = workspace({ 'a.test.ts': 'import "./evil"\n', 'evil.ts': 'export {}\n', 'deno.json': '{"tasks":{"build":"deno run -A build.ts"}}' })
+    const subcommand = { kind: 'refused', reason: CODE_REFUSALS.subcommand, truncated: false }
+    for (const form of [['bun', 'test'], ['deno', 'test'], ['deno', 'task', 'build'], ['bun', 'x', 'cowsay'], ['deno', 'bench'], ['bun', 'install'], ['deno', 'jupyter']]) {
+      expect(read(form), form.join(' ')).toEqual(subcommand)
+    }
+    expect(read(['deno', 'run', 'https://example.com/x.ts'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unmodelledImport, truncated: false })
+    expect(reading(read(['deno', 'fmt']))).toMatchObject({ files: [] })
+    expect(reading(read(['bun', 'why', 'lodash']))).toMatchObject({ files: [] })
+  })
+
   it('keeps today\'s reading where no operand or inline code names a script', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     expect(reading(read(['node', '--version']))).toMatchObject({ inline: null, files: [] })
     expect(reading(read(['python3', '-m', 'pip', 'install', 'requests']))).toMatchObject({ files: [], packages: [{ name: 'pip' }] })
     expect(reading(read(['node', '-e', '1', 'missing']))).toMatchObject({ inline: '1', files: [] })
-    expect(reading(read(['bun', 'test']))).toMatchObject({ files: [] })
+    expect(reading(read(['bun', 'outdated']))).toMatchObject({ files: [] })
     expect(reading(read(['npx', 'eslint', 'missing']))).toMatchObject({ files: [], packages: [{ name: 'eslint' }] })
   })
 })
