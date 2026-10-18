@@ -29,7 +29,8 @@ export function callVariables(args: JsonObject): CallVariable[] {
 /** The first variable, by name, that changes what code runs, or undefined where the call sets none. */
 export function codeLoadingVariable(variables: ReadonlyArray<{ name: string }>): string | undefined {
   return variables.find(({ name }) => {
-    const upper = name.toUpperCase()
+    // The child reads an entry up to its first `=`: `PATH=/w/bin` as a name sets PATH (fix brief 2, H4).
+    const upper = name.split('=')[0]!.toUpperCase()
     return CODE_LOADING_VARIABLES.names.includes(upper) || CODE_LOADING_VARIABLES.prefixes.some(prefix => upper.startsWith(prefix))
   })?.name
 }

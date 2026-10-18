@@ -77,6 +77,8 @@ describe('the variables that change what code runs', () => {
     const named = (env: Record<string, string>) => codeLoadingVariable(callVariables({ env }))
     for (const name of ['NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PERL5OPT', 'RUBYOPT', 'BASH_ENV', 'Path', 'GEM_HOME', 'BUN_INSTALL']) expect(named({ FOO: '1', [name]: 'x' })).toBe(name)
     expect(named({ FOO: '1', CI: 'true', NODEJS_HOME: 'x' })).toBeUndefined()
+    // The child reads a name up to its first `=` (fix brief 2, H4).
+    for (const name of ['PATH=/w/bin:/usr/bin', 'ifs=x', 'BASH_ENV=./x']) expect(named({ [name]: 'x' })).toBe(name)
     expect(codeLoadingReason('NODE_OPTIONS')).toBe('the call sets NODE_OPTIONS, which changes what code runs; the decision AI does not rate it')
     expect(codeLoadingReason('LD_\u001b[2J')).toBe('the call sets "LD_\\u001b[2J", which changes what code runs; the decision AI does not rate it')
   })

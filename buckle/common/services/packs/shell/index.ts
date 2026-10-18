@@ -30,12 +30,16 @@ const sensitiveFilesInput = z.array(z.string().min(1)).max(32).default([]).descr
 /** How many variables a call may set, and how long a name may be: enough for any command, and too few to hold the node. */
 const MAX_ENV_ENTRIES = 256
 const MAX_ENV_NAME = 256
+/** Why a variable name is refused: a child's environment entry is `name=value`, so a name holding `=` sets another variable. */
+const ENV_NAME_REFUSAL = 'An env name must be non-empty and hold no "=" and no NUL character'
 /**
  * Variables the call sets for its command. Bounded, so no request spends the node's event loop on them: one with
- * 20,000 names held it for seconds while the environment was merged (re-check of 2026-10-14).
+ * 20,000 names held it for seconds while the environment was merged (re-check of 2026-10-14). A name holding `=` is
+ * refused: the child would read `PATH=/w/bin=x` as PATH (fix brief 2, H4).
  */
 const envInput = z.record(z.string().max(MAX_ENV_NAME), z.string())
   .refine(env => Object.keys(env).length <= MAX_ENV_ENTRIES, `env holds at most ${MAX_ENV_ENTRIES} variables`)
+  .refine(env => Object.keys(env).every(name => /^[^=\u0000]+$/.test(name)), ENV_NAME_REFUSAL)
   .default({})
 
 const execInput = z.object({

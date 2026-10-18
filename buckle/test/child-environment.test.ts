@@ -126,6 +126,10 @@ describe('a call that sets many variables', () => {
       expect(bounded({ [`N${'x'.repeat(255)}`]: 'x' })).not.toThrow()
       expect(bounded({ [`N${'x'.repeat(256)}`]: 'x' })).toThrow()
       for (const tool of pack.tools) expect(() => tool.prepare({ runtime: 'bash', script: 'true', command: 'true', env: entries(257) })).toThrow()
+      // A name holding `=` or NUL, or an empty one, would set another variable in the child (fix brief 2, H4).
+      for (const name of ['PATH=/w/bin:/usr/bin', 'IFS=x', 'A\u0000B', '']) {
+        for (const tool of pack.tools) expect(() => tool.prepare({ runtime: 'bash', script: 'true', command: 'true', env: { [name]: 'x' } }), JSON.stringify(name)).toThrow('An env name must be non-empty and hold no "=" and no NUL character')
+      }
     } finally { rmSync(workspace, { recursive: true, force: true }) }
   })
 })
