@@ -158,6 +158,18 @@ describe('a long reasoning holding a credential (fix brief 2, R18)', () => {
       expect(shown).toContain('DATABASE_URL=postgres://app:')
     }
   })
+
+  it('keeps a short reasoning quoting a credential line redacted, in judge-cache.json too (fix brief 3, F7)', async () => {
+    const config = node()
+    const reasoning = 'The script prints a credential it reads.\nDB_PASSWORD=supersecretvalue123\nIt sends the value nowhere at all.'
+    expect(reasoning.length).toBeLessThan(JUDGE_REASONING_LIMIT)
+    const runtime = await runtimeOf(config, fakeJudge(() => ({ ...verdict('danger', 0.95), reasoning })))
+    const { entry } = await call(runtime, 'python3', ['job.py'])
+    const kept = readFileSync(judgeCachePath(config.stateDirectory), 'utf8')
+    expect(kept).toContain('DB_PASSWORD=')
+    expect(kept).not.toContain('supersecretvalue123')
+    expect(JSON.stringify(entry)).not.toContain('supersecretvalue123')
+  })
 })
 
 describe('code a here-string hands the interpreter', () => {

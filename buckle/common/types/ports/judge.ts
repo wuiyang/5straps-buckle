@@ -110,19 +110,21 @@ export const JUDGE_REASONING_LIMIT = 2_000
 const CUT = '\n[cut]'
 
 /**
- * A reasoning at most JUDGE_REASONING_LIMIT characters long. A longer one has the credentials the display hides hidden
- * first, then is cut to end in `[cut]` on a line of its own (fix brief 2, R18), so a credential line cut inside its value
- * stays a NAME=value line the display's redaction still hides, and no part of the value shows.
+ * A reasoning with the credentials the display hides hidden, whatever its length (fix brief 3, F7), so none is kept raw,
+ * judge-cache.json included; then at most JUDGE_REASONING_LIMIT characters long, a longer one cut to end in `[cut]` on a
+ * line of its own (fix brief 2, R18), so a credential line cut inside its value stays a NAME=value line the display's
+ * redaction still hides, and no part of the value shows.
  */
 export function clippedReasoning(reasoning: string): string {
-  if (reasoning.length <= JUDGE_REASONING_LIMIT || Array.from(reasoning).length <= JUDGE_REASONING_LIMIT) return reasoning
-  const hidden = Array.from(redactCredentials(reasoning, 'text'))
-  return hidden.length <= JUDGE_REASONING_LIMIT ? hidden.join('') : `${hidden.slice(0, JUDGE_REASONING_LIMIT - CUT.length).join('')}${CUT}`
+  const hidden = redactCredentials(reasoning, 'text')
+  if (hidden.length <= JUDGE_REASONING_LIMIT) return hidden
+  const characters = Array.from(hidden)
+  return characters.length <= JUDGE_REASONING_LIMIT ? hidden : `${characters.slice(0, JUDGE_REASONING_LIMIT - CUT.length).join('')}${CUT}`
 }
 
-/** A rating with its reasoning clipped (clippedReasoning); no verdict as it came. */
+/** A rating with its reasoning redacted and clipped (clippedReasoning), before anything keeps or shows it; no verdict as it came. */
 export function clippedResult(result: JudgeResult): JudgeResult {
-  return result.kind === 'verdict' && result.reasoning.length > JUDGE_REASONING_LIMIT ? { ...result, reasoning: clippedReasoning(result.reasoning) } : result
+  return result.kind === 'verdict' ? { ...result, reasoning: clippedReasoning(result.reasoning) } : result
 }
 
 /** The judge of a node with none: every rating is unavailable. */
