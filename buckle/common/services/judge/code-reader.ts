@@ -31,6 +31,7 @@ export const CODE_REFUSALS = Object.freeze({
   config: 'a config file the reader could not parse',
   importList: 'an import list the reader could not parse',
   compiledPython: 'the code runs compiled Python the reader cannot show',
+  interactive: 'an interactive flag reads standard input as code',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -362,6 +363,18 @@ const STDIN_SCRIPT_MARKER = new Set(['-', '/dev/stdin'])
 const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
 
 /**
+ * Whether an option, by its key, makes the interpreter read its standard input as code once its script or inline code
+ * ran (fix brief 4, G2): python's `-i`, alone or in a cluster of flags, node's `-i` and `--interactive`, lua's `-i`,
+ * and php's `-a` and `--interactive`.
+ */
+function isInteractive(program: string, key: string): boolean {
+  if (program === 'python') return PYTHON_FLAG_CLUSTER.test(key) && key.includes('i')
+  if (program === 'node') return key === '-i' || key === '--interactive'
+  if (program === 'lua' || program === 'luajit') return key === '-i'
+  return program === 'php' && (key === '-a' || key === '--interactive')
+}
+
+/**
  * An option word as the interpreter matches it (fix brief 4, G1): a long option up to its `=`, node's underscores read
  * as dashes as node reads them (`--redirect_warnings` is `--redirect-warnings`), with the value after the `=`; any
  * other word as it is, with no value. Every table lookup uses this one key, so no spelling is known to one check and
@@ -443,6 +456,8 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   // and whether a word is an option the reader does not model, so the reading fails closed (fix brief 3, R7).
   let stdinScript = false
   let unknownOption = false
+  // An interactive flag, which runs standard input as code after the script or inline code (fix brief 4, G2).
+  let interactive = false
   // The program files awk runs (`-f prog.awk`), each of which must name a file.
   const programFiles: string[] = []
   const modules: string[] = []
@@ -546,12 +561,15 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     // While seeking the script, an option in none of the interpreter's tables could take the next word as its value and
     // hide the script that runs, so the reading fails closed (fix brief 3, R7).
     if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, key)) unknownOption = true
+    if (seeking && isInteractive(program, key)) interactive = true
     candidates.push(word)
     if (value !== null) candidates.push(value)
   }
   // A C shell's `-c` text, and a busybox or toybox shell applet's, is never rated: the grammar is no parser of those
   // shells (fix brief 4, P).
-  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : TEXT_SHELL_INTERPRETERS.has(program) && inline.length > 0 ? SHELL_TEXT_REFUSAL : null
+  // node ignores -i past a script, but runs its input after inline code, or alone; python, lua, and php always do.
+  const interactiveRuns = interactive && (program !== 'node' || inline.length > 0 || operand === null)
+  const refusal = unknownOption ? CODE_REFUSALS.unknownOption : interactiveRuns ? CODE_REFUSALS.interactive : TEXT_SHELL_INTERPRETERS.has(program) && inline.length > 0 ? SHELL_TEXT_REFUSAL : null
   return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, refusal }
 }
 

@@ -300,6 +300,20 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(workspace({ ...tool, 'tool/package.json': '{"name":"tool"}' }).read(['node', 'tool']))).toEqual(['/workspace/tool/index.js'])
   })
 
+  it('refuses an interactive flag, which runs standard input as code after the script or inline code (fix brief 4, G2)', () => {
+    const { read, shell } = workspace({ 'job.py': 'print(1)\n', 'second.py': 'print(2)\n', 'job.js': 'console.log(1)\n', 'second.js': 'console.log(2)\n', 'x.lua': 'print(1)\n', 'x.php': '<?php echo 1;\n' })
+    const interactive = { kind: 'refused', reason: CODE_REFUSALS.interactive, truncated: false }
+    for (const text of ['python3 -i job.py < second.py', 'python3 -iu job.py < second.py', 'python3 -i -c 1 < second.py', 'node -i -e 1 < second.js', 'node --interactive --eval 1 < second.js']) {
+      expect(shell(text), text).toEqual(interactive)
+    }
+    expect(read(['python3', '-i', '-m', 'json.tool'])).toEqual(interactive)
+    expect(read(['node', '-i'])).toEqual(interactive)
+    expect(read(['lua', '-i', 'x.lua'])).toEqual(interactive)
+    expect(read(['php', '-a'])).toEqual(interactive)
+    // node ignores -i once it has a script, so that script is the code that runs.
+    expect(paths(shell('node -i job.js < second.js'))).toEqual(['/workspace/job.js'])
+  })
+
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
     const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
