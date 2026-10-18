@@ -8,6 +8,7 @@ import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVa
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from '../common/services/judge/call-forms.js'
 import { commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
+import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
@@ -350,5 +351,36 @@ describe('shell text the reader does not rate whole (fix brief 4, P)', () => {
     const simple = await call(runtime, {}, ['bash', '-c', 'node build.js 2>err.log'])
     expect(simple.ran).toBe(true)
     expect(judge.shown.map(input => input.files.map(file => file.path))).toEqual([['/workspace/build.js']])
+  })
+})
+
+describe('the 500-character clip on a reason no stage rated (fix brief 4, G13)', () => {
+  it('keeps a reason of 499 or 500 characters, cuts one of 501 to 500 ending in [cut], counts code points, and never cuts inside an escape', () => {
+    expect(UNREAD_REASON_LIMIT).toBe(500)
+    expect(clippedReason('a'.repeat(499))).toBe('a'.repeat(499))
+    expect(clippedReason('a'.repeat(500))).toBe('a'.repeat(500))
+    expect(clippedReason('a'.repeat(501))).toBe(`${'a'.repeat(494)} [cut]`)
+    const astral = '\u{1F600}'
+    expect(clippedReason(astral.repeat(300))).toBe(astral.repeat(300))
+    expect(clippedReason(astral.repeat(501))).toBe(`${astral.repeat(494)} [cut]`)
+    // A cut landing inside an escape drops the open escape; an escaped backslash before the cut is whole.
+    expect(clippedReason(`${'x'.repeat(490)}\\u0001\\u0001`)).toBe(`${'x'.repeat(490)} [cut]`)
+    expect(clippedReason(`${'x'.repeat(492)}\\\\${'y'.repeat(10)}`)).toBe(`${'x'.repeat(492)}\\\\ [cut]`)
+  })
+
+  it('bounds the reason on the audit entry and the approver listing at exactly 500 characters', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    // A control character escapes to six characters once the name is quoted, so only the clip bounds this reason.
+    const name = `LD_${'A'.repeat(50)}${'\u0001'.repeat(203)}`
+    const { response, entry } = await call(runtime, { env: { [name]: '1' } }, ['python3', 'job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    const reason = (entry.judge as { unavailable: string }).unavailable
+    expect(reason).toHaveLength(500)
+    expect(reason.endsWith('\\u0001 [cut]')).toBe(true)
+    expect(runtime.approvalService.listing()[0]!.call?.judge?.[0]).toMatchObject({ unavailable: reason })
+    expect(judge.judge).not.toHaveBeenCalled()
   })
 })

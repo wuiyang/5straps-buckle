@@ -340,11 +340,28 @@ export function createJudgeGate(input: {
 /** The most of a reason no stage rated that Buckle keeps or shows, in characters (fix brief 3, F4). */
 export const UNREAD_REASON_LIMIT = 500
 
-/** A reason at most UNREAD_REASON_LIMIT characters long, a longer one cut to end in ` [cut]`. */
+/**
+ * A reason at most UNREAD_REASON_LIMIT characters long, counted by code point, a longer one cut to end in ` [cut]`, and
+ * never inside a JSON escape a quoted name holds (`\u00`), which would read as broken text (fix brief 4, G13).
+ */
 export function clippedReason(reason: string): string {
   if (reason.length <= UNREAD_REASON_LIMIT) return reason
   const characters = Array.from(reason)
-  return characters.length <= UNREAD_REASON_LIMIT ? reason : `${characters.slice(0, UNREAD_REASON_LIMIT - ' [cut]'.length).join('')} [cut]`
+  if (characters.length <= UNREAD_REASON_LIMIT) return reason
+  return `${withoutOpenEscape(characters.slice(0, UNREAD_REASON_LIMIT - ' [cut]'.length).join(''))} [cut]`
+}
+
+/** A cut text without the JSON escape its end leaves open: a last unescaped backslash whose escape is not whole. */
+function withoutOpenEscape(text: string): string {
+  const at = text.lastIndexOf('\\')
+  if (at < 0 || at < text.length - 6) return text
+  let run = 0
+  for (let index = at; index >= 0 && text[index] === '\\'; index--) run++
+  // An even run is escaped backslashes, each whole; an odd one leaves the last backslash starting an escape.
+  if (run % 2 === 0) return text
+  const escape = text.slice(at + 1)
+  const whole = escape.startsWith('u') ? /^u[0-9a-fA-F]{4}/.test(escape) : escape.length > 0
+  return whole ? text : text.slice(0, at)
 }
 
 /** The index of the first operand from `from` on, past options and the value of each that takes one, or after a `--`; -1 for none. */
