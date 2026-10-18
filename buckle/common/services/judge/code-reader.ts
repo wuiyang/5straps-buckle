@@ -6,7 +6,7 @@
 import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, dirname, join, normalize, relative } from 'pathe'
+import { basename, dirname, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand } from '../../domain/argv.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -217,6 +217,8 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
   // judge cannot see, so the call asks.
   for (const name of read.candidates) {
+    // A word with a backslash names a file pathe cannot name as the platform does; as data it is left unread.
+    if (literalBackslash(name)) continue
     const located = view.locate(name, cwd)
     if (located === 'outside') return CODE_REFUSALS.unreadable
     if (typeof located === 'object') queue.push({ real: located.real, language, runtime })
@@ -232,6 +234,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   const { feed } = planned
   if (!inputIsScript || feed === null) return null
   if (feed.kind === 'file') {
+    if (literalBackslash(feed.name)) return CODE_REFUSALS.unreadable
     const located = view.locate(feed.name, cwd)
     if (located === 'outside') return CODE_REFUSALS.unreadable
     if (located === 'none') return CODE_REFUSALS.notFound
@@ -654,7 +657,8 @@ function runnerArguments(args: readonly string[]): Arguments {
  */
 function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Entry {
   if (runtime === 'python') return entryOf(firstLocated(view, [name, `${name}/__main__.py`], base))
-  if (runtime === 'node') return nodeEntry(name, base, view)
+  if (literalBackslash(name)) return { refused: CODE_REFUSALS.unreadable }
+  if (runtime === 'node') return nodeEntry(name, base, view, 'entry')
   // perl, ruby, php, lua, the C shells, and awk try no extension and no folder: the name as written.
   if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return entryOf(firstLocated(view, [name], base))
   return typeScriptEntry(name, base, view)
@@ -663,26 +667,33 @@ function scriptEntry(runtime: string, name: string, base: string, view: CodeView
 /** The extensions node's CommonJS loader tries, in its order (`require.extensions`); a `.node` addon is no text, so it refuses. */
 const NODE_EXTENSIONS = ['.js', '.json', '.node']
 
+/** A require of a folder by its trailing slash or a final `.` or `..` segment, for which node tries no file (Module._findPath). */
+const DIRECTORY_REQUEST = /(?:^|\/)\.\.?$|\/$/
+
 /**
- * The file node runs for `node <name>`, in node 24's own order (Module._findPath and tryPackage): the name as a file,
- * then with `.js`, `.json`, `.node`; for a folder, its package.json `main` resolved as a path (an absolute one as written,
- * so one outside every place the agent's view reaches refuses), as a file, with each extension, then as a folder's
- * index file; and where `main` names nothing, or there is none, the folder's own index file. No ESM or TypeScript
- * sibling is tried, as node tries none: `main: "start"` beside start.mjs runs index.js.
+ * The file node runs for a name, in node 24's own order (Module._findPath and tryPackage), the name resolved against its
+ * base as path.resolve does (fix brief 4, H1): the path as a file, then with `.js`, `.json`, `.node`; for a folder, its
+ * package.json `main` resolved against the folder (mainPath), as a file, with each extension, then as a folder's index
+ * file; and where `main` names nothing, or there is none, the folder's own index file. `node <name>` resolves the name
+ * first, so `node .` and `node lib/` try `<folder>.js` and `lib.js` as files; a `require` of a name ending in a slash or
+ * a dot segment (`require('.')`, `require('./lib/')`) tries no file and goes to the folder. No ESM or TypeScript sibling
+ * is tried, as node tries none: `main: "start"` beside start.mjs runs index.js.
  */
-function nodeEntry(name: string, base: string, view: CodeView): Entry {
+function nodeEntry(name: string, base: string, view: CodeView, lookup: 'entry' | 'require'): Entry {
+  if (literalBackslash(name)) return { refused: CODE_REFUSALS.unreadable }
   const withExtensions = (path: string) => [path, ...NODE_EXTENSIONS.map(extension => `${path}${extension}`)]
   const indexes = (folder: string) => NODE_EXTENSIONS.map(extension => `${folder}/index${extension}`)
-  const direct = firstLocated(view, withExtensions(name), base)
+  const path = resolve(base, name)
+  const direct = lookup === 'require' && DIRECTORY_REQUEST.test(name) ? 'none' : firstLocated(view, withExtensions(path), base)
   if (direct !== 'none') return entryOf(direct)
-  const main = packageMain(name, base, view)
+  const main = packageMain(path, base, view)
   if (main !== null && typeof main === 'object') return main
   if (main !== null) {
-    const path = mainPath(name, main)
-    const entry = firstLocated(view, [...withExtensions(path), ...indexes(path)], base)
+    const target = mainPath(path, main)
+    const entry = firstLocated(view, [...withExtensions(target), ...indexes(target)], base)
     if (entry !== 'none') return entryOf(entry)
   }
-  return entryOf(firstLocated(view, indexes(name), base))
+  return entryOf(firstLocated(view, indexes(path), base))
 }
 
 /**
@@ -696,29 +707,45 @@ function typeScriptEntry(name: string, base: string, view: CodeView): Entry {
   const indexes = candidates.slice(-JS_EXTENSIONS.length)
   const direct = firstLocated(view, candidates.slice(0, -JS_EXTENSIONS.length), base)
   if (direct !== 'none') return entryOf(direct)
-  const main = packageMain(name, base, view)
+  const folder = resolve(base, name)
+  const main = packageMain(folder, base, view)
   if (main !== null && typeof main === 'object') return main
   if (main !== null) {
-    const entry = firstLocated(view, jsCandidates(mainPath(name, main)), base)
+    const entry = firstLocated(view, jsCandidates(mainPath(folder, main)), base)
     if (entry !== 'none') return entryOf(entry)
   }
   return entryOf(firstLocated(view, indexes, base))
 }
 
 /**
- * A package.json `main` as node's `path.resolve` makes it (fix brief 3, H1): an absolute one as written, a relative one
- * joined to its folder, each with `.` and `..` resolved and a trailing slash dropped, so `main: "lib/"` and `"./lib/."`
- * name `lib`, whose `lib.js` node tries before `lib/index.js`, and `"../x"` names a file beside the folder.
+ * A package.json `main` as node's `path.resolve(folder, main)` makes it (fix brief 3 and 4, H1): resolved against the
+ * folder's absolute path, `.` and `..` resolved and a trailing slash dropped, so `main: "lib/"` names `lib`, whose
+ * `lib.js` node tries before `lib/index.js`, and `main: "."` or `".."` names the folder itself or its parent, whose
+ * `<folder>.js` node tries.
  */
 function mainPath(folder: string, main: string): string {
-  const path = main.startsWith('/') ? normalize(main) : join(folder, main)
+  const path = resolve(folder, main)
   return path.length > 1 ? path.replace(/\/+$/, '') : path
 }
 
-/** The first name that lands on a regular file; `outside` where none does and one lands beyond the agent's view. */
+/**
+ * Whether a name holds a backslash where the platform reads it as part of a file's name: pathe reads it as a separator,
+ * so the reader would show another file than the one that runs, and it refuses instead (fix brief 4, H1).
+ */
+function literalBackslash(name: string): boolean {
+  return process.platform !== 'win32' && name.includes('\\')
+}
+
+/**
+ * The first name, in the order the interpreter tries them, that lands on a regular file; `outside` where one before it
+ * lands beyond the agent's view, since the interpreter would run that one if it exists (fix brief 4, H1).
+ */
 function firstLocated(view: CodeView, names: readonly string[], base: string): Located {
-  const located = names.map(name => view.locate(name, base))
-  return located.find(item => typeof item === 'object') ?? (located.includes('outside') ? 'outside' : 'none')
+  for (const name of names) {
+    const located = view.locate(name, base)
+    if (located !== 'none') return located
+  }
+  return 'none'
 }
 
 /**
@@ -734,7 +761,9 @@ function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view
     named(place.packages, packageName(specifier), place.cwd)
     return null
   }
-  const entry = runtime === 'node' && preload.esm ? entryOf(place.view.locate(specifier, place.cwd)) : scriptEntry(runtime, specifier, place.cwd, place.view)
+  if (literalBackslash(specifier)) return CODE_REFUSALS.unreadable
+  // node's -r is a require from the working directory; --import and the loaders are ES module loads.
+  const entry = runtime !== 'node' ? scriptEntry(runtime, specifier, place.cwd, place.view) : preload.esm ? entryOf(place.view.locate(specifier, place.cwd)) : nodeEntry(specifier, place.cwd, place.view, 'require')
   if (entry === 'none') return CODE_REFUSALS.notFound
   return 'refused' in entry ? entry.refused : entry
 }
@@ -973,7 +1002,7 @@ function packageMain(folder: string, base: string, view: CodeView): string | nul
   if (buffer === null) return { refused: CODE_REFUSALS.unreadable }
   const main = parsedManifest(buffer)?.main
   if (main === undefined) return parsedManifest(buffer) === null ? { refused: CODE_REFUSALS.config } : null
-  if (typeof main !== 'string') return { refused: CODE_REFUSALS.config }
+  if (typeof main !== 'string' || literalBackslash(main)) return { refused: CODE_REFUSALS.config }
   return main === '' ? null : main
 }
 
@@ -1106,11 +1135,12 @@ function jsImports(code: string, place: Place): Found | string {
   const node = place.runtime === 'node'
   const statements: Array<{ pattern: RegExp; resolve: (specifier: string) => Entry }> = [
     ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
-    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view) : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
+    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view, 'require') : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
   ]
   for (const { pattern, resolve } of statements) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
       if (unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
+      if (literalBackslash(specifier)) return CODE_REFUSALS.unreadable
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
         named(place.packages, packageName(specifier), base)
         continue
@@ -1266,6 +1296,7 @@ function shellSources(code: string, place: Place): Found | string {
   for (const [, , name = ''] of code.matchAll(SHELL_SOURCE)) {
     // A name an expansion supplies exists only once the shell runs; the judge reads the line that names it.
     if (name.includes('$') || name.includes('`')) continue
+    if (literalBackslash(name)) return CODE_REFUSALS.unreadable
     const located = [place.view.locate(name, place.cwd), ...(place.file === null ? [] : [place.view.locate(name, dirname(place.file))])]
     const file = located.find(item => typeof item === 'object')
     if (file) found.push({ real: file.real, language: 'shell' })

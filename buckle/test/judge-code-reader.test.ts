@@ -119,9 +119,32 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(read(['node', '--require', './build.js', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/build.js', '/workspace/tool/index.js'])
     expect(reading(read(['tsx', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/lib/start.ts'])
     expect(reading(read(['tsx', 'plain'])).files.map(file => file.path)).toEqual(['/workspace/plain/index.mjs'])
-    expect(reading(read(['node', '.'])).files.map(file => file.path)).toEqual(['/workspace/index.js', '/workspace/build.js'])
+    // `node .` tries `<folder>.js` first, which at the workspace root lies beyond the view, so it refuses (fix brief 4, H1).
+    expect(read(['node', '.'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
     expect(reading(read(['deno', 'run', '-A', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
     expect(reading(read(['npx', 'tsx', 'gen'])).files.map(file => file.path)).toEqual(['/workspace/gen.ts'])
+  })
+
+  it('resolves a name and its main as node\'s path.resolve does, so a dot or a trailing slash names what node runs (fix brief 4, H1)', () => {
+    const { root, read, view } = workspace({
+      'tool.js': 'module.exports = 1\n', 'tool/package.json': '{"main":"."}', 'tool/index.js': 'nope\n', 'tool/a.js': "require('.')\n", 'tool/b.js': "require('./')\n",
+      'a.js': 'module.exports = 2\n', 'a/b/package.json': '{"main":".."}', 'a/b/index.js': 'nope\n', 'a/index.js': 'nope\n',
+      'lib2.js': 'module.exports = 3\n', 'lib2/index.js': 'module.exports = 4\n', 'lib2/.js': 'decoy\n', 'uses.js': "require('./lib2/')\n",
+      'bs/package.json': '{"main":"lib\\\\x"}', 'bs/index.js': 'nope\n', 'build.js': 'console.log(1)\n',
+    })
+    const at = (folder: string, form: string[]) => readInterpreterCode({ forms: [form], cwd: join(root, folder), view })
+    expect(paths(read(['node', 'tool/a.js']))).toEqual(['/workspace/tool/a.js', '/workspace/tool.js'])
+    expect(paths(read(['node', 'tool/b.js']))).toEqual(['/workspace/tool/b.js', '/workspace/tool.js'])
+    // `node .` resolves to the folder, so node tries the file beside it first, then the folder's main.
+    expect(paths(at('tool', ['node', '.']))).toEqual(['/workspace/tool.js'])
+    expect(paths(at('a/b', ['node', '.']))).toEqual(['/workspace/a.js'])
+    // The entry drops a trailing slash first; a require keeps it and goes to the folder.
+    expect(paths(read(['node', 'lib2/']))).toEqual(['/workspace/lib2.js'])
+    expect(paths(read(['node', 'uses.js']))).toEqual(['/workspace/uses.js', '/workspace/lib2/index.js'])
+    // A backslash is part of a file's name here, which pathe would read as a separator.
+    expect(read(['node', 'bs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.config, truncated: false })
+    expect(read(['node', 'tool\\a.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    expect(paths(read(['node', 'build.js', 'a\\b']))).toEqual(['/workspace/build.js'])
   })
 
   it('follows node\'s own order for node, never a decoy it would not run (fix brief 2, H1)', () => {
