@@ -5,8 +5,8 @@
 // an allowed command then runs unscreened, as the docs say. Add a case only with a test that it reads the code that runs.
 import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
-import { constants, fstatSync, readFileSync, statSync } from 'node:fs'
-import { dirname, join, normalize, relative } from 'pathe'
+import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { basename, dirname, join, normalize, relative } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand } from '../../domain/argv.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -30,6 +30,7 @@ export const CODE_REFUSALS = Object.freeze({
   unknownOption: 'an option the reader does not know',
   config: 'a config file the reader could not parse',
   importList: 'an import list the reader could not parse',
+  compiledPython: 'the code runs compiled Python the reader cannot show',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -53,6 +54,8 @@ export interface CodeView {
   shown(real: string): string | null
   /** The real root of the workspace or the mount holding a real path, or null where neither does. */
   rootOf(real: string): string | null
+  /** The names a real folder holds, or none where it holds none or is no folder. */
+  names(folder: string): readonly string[]
 }
 
 export type Located = { real: string } | 'none' | 'outside'
@@ -172,6 +175,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // `python -m a.b`: the module's file under the working directory, with its package's __main__.py, else a package.
   for (const module of read.modules) {
     const files = pythonModule({ module, roots: [cwd], view, main: true })
+    if (typeof files === 'string') return files
     if (files.length === 0) named(packages, module.split('.')[0]!, null)
     enqueue(files, runtime)
   }
@@ -196,6 +200,8 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   if (read.operand !== null) {
     const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
     if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
+    // A folder's __main__.py is imported, so its compiled form may run; the reader refuses that for a script too (fix brief 4, G12).
+    if (typeof entry === 'object' && read.operand.runtime === 'python' && compiledBeside(view, dirname(entry.real), pythonStem(entry.real))) return CODE_REFUSALS.compiledPython
     if (typeof entry === 'object') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
     else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return CODE_REFUSALS.notFound
   }
@@ -1042,6 +1048,7 @@ function pythonImports(code: string, place: Place): Found | string {
   for (const [, list = ''] of code.matchAll(PYTHON_IMPORT)) {
     for (const module of list.split(',').map(item => item.trim().split(/\s+/)[0]!).filter(Boolean)) {
       const files = pythonModule({ module, roots: [beside, place.cwd], view: place.view })
+      if (typeof files === 'string') return files
       if (files.length === 0) named(place.packages, module.split('.')[0]!, null)
       found.push(...files)
     }
@@ -1059,12 +1066,14 @@ function pythonImports(code: string, place: Place): Found | string {
       // `from . import a`: each name is a module of the package; `from .m import a`: m is, and a may be one too.
       for (const name of module === '' ? imported : [module]) {
         const files = pythonModule({ module: name, roots, view: place.view })
+        if (typeof files === 'string') return files
         if (files.length === 0) return CODE_REFUSALS.missing
         found.push(...files)
       }
       if (module === '') continue
     } else {
       const files = pythonModule({ module, roots, view: place.view })
+      if (typeof files === 'string') return files
       if (files.length === 0) {
         named(place.packages, module.split('.')[0]!, null)
         continue
@@ -1072,7 +1081,11 @@ function pythonImports(code: string, place: Place): Found | string {
       found.push(...files)
     }
     // A name imported from a package may be a module of it, which runs on import too.
-    for (const name of imported) found.push(...pythonModule({ module: `${module}.${name}`, roots, view: place.view }))
+    for (const name of imported) {
+      const files = pythonModule({ module: `${module}.${name}`, roots, view: place.view })
+      if (typeof files === 'string') return files
+      found.push(...files)
+    }
   }
   return found
 }
@@ -1080,13 +1093,20 @@ function pythonImports(code: string, place: Place): Found | string {
 /**
  * A dotted module's file under the first root that holds it, with every package `__init__.py` above it that runs on
  * import; with `main`, as `python -m` runs it, a package's `__main__.py` too, and a namespace package's, a folder with
- * no `__init__.py` (fix brief 2, H5).
+ * no `__init__.py` (fix brief 2, H5). A folder holding `__init__.py` comes before a module file of the same name, as
+ * Python's finder takes it. A refusal where compiled code may run in place of a source on the way (fix brief 4, G12):
+ * beside any part of the path in a root up to the one that holds the module, so a module whose only form is compiled
+ * refuses too, and beside every file shown.
  */
-function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; main?: boolean }): Found {
+function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; main?: boolean }): Found | string {
   const parts = input.module.split('.').filter(Boolean)
   for (const root of input.roots) {
+    for (let index = 0; index < parts.length; index++) {
+      const above = join(root, ...parts.slice(0, index))
+      if (compiledBeside(input.view, above, parts[index]!) || compiledBeside(input.view, join(above, parts[index]!), '__init__')) return CODE_REFUSALS.compiledPython
+    }
     const path = join(...parts)
-    const module = fileAt(input.view, `./${path}.py`, root) ?? fileAt(input.view, `./${path}/__init__.py`, root)
+    const module = fileAt(input.view, `./${path}/__init__.py`, root) ?? fileAt(input.view, `./${path}.py`, root)
     const namespaceMain = !module && input.main ? fileAt(input.view, `./${path}/__main__.py`, root) : null
     if (!module && !namespaceMain) continue
     const packages = parts.slice(0, -1).flatMap((_, index) => {
@@ -1094,9 +1114,28 @@ function pythonModule(input: { module: string; roots: readonly string[]; view: C
       return init ? [init] : []
     })
     const main = namespaceMain ?? (input.main && module!.endsWith('__init__.py') ? fileAt(input.view, `./${path}/__main__.py`, root) : null)
-    return [...packages, ...(module ? [module] : []), ...(main ? [main] : [])].map(real => ({ real, language: 'python' as const }))
+    const files = [...packages, ...(module ? [module] : []), ...(main ? [main] : [])]
+    if (files.some(real => compiledBeside(input.view, dirname(real), pythonStem(real)))) return CODE_REFUSALS.compiledPython
+    return files.map(real => ({ real, language: 'python' as const }))
   }
   return []
+}
+
+/** A Python file's module name: its file name without `.py`. */
+function pythonStem(real: string): string {
+  return basename(real).replace(/\.py$/, '')
+}
+
+/**
+ * Whether a folder holds a compiled form of a module, which Python may run in place of its source (fix brief 4, G12):
+ * a cached `__pycache__/<stem>.*.pyc`, used whenever its header matches the source or is never checked; a legacy
+ * `<stem>.pyc`, imported where no source stands beside it; or an extension module, `<stem>.so`, `<stem>.*.so`,
+ * `<stem>.pyd`, or `<stem>.*.pyd`, which the finder tries before the source.
+ */
+function compiledBeside(view: CodeView, folder: string, stem: string): boolean {
+  const extension = (name: string) => name === `${stem}.pyc` || name === `${stem}.so` || name === `${stem}.pyd` || (name.startsWith(`${stem}.`) && /\.(?:so|pyd)$/.test(name))
+  if (view.names(folder).some(extension)) return true
+  return view.names(join(folder, '__pycache__')).some(name => name.startsWith(`${stem}.`) && name.endsWith('.pyc'))
 }
 
 const SHELL_SOURCE = /(?:^|[\n;&|(]|\bthen|\bdo|\belse)[ \t]*(?:source|\.)[ \t]+(['"]?)([^\s'";&|)]+)\1/g
@@ -1154,6 +1193,9 @@ export function createCodeView(input: { paths: PathView; canRead: (real: string)
     rootOf(real) {
       if (isInside(paths.root, real)) return paths.root
       return paths.mountOf(real)?.source ?? null
+    },
+    names(folder) {
+      try { return readdirSync(folder) } catch { return [] }
     },
   }
 }

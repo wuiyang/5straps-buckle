@@ -438,6 +438,27 @@ describe('the code a Python call runs', () => {
     expect(read(['python3', 'many.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
   })
 
+  it('refuses where compiled Python may run in place of a source it would show (fix brief 4, G12)', () => {
+    const compiled = Buffer.from([0x00, 0x0d, 0x0d, 0x0a])
+    const tree = { 'job.py': 'import helper\n', 'helper.py': 'X = 1\n', 'uses.py': 'import pkg\n', 'pkg/__init__.py': '', 'tool/__init__.py': '', 'tool/__main__.py': 'print(1)\n' }
+    const refusal = { kind: 'refused', reason: CODE_REFUSALS.compiledPython, truncated: false }
+    // A clean tree reads, each module from its source.
+    expect(paths(workspace(tree).read(['python3', 'job.py']))).toEqual(['/workspace/job.py', '/workspace/helper.py'])
+    for (const name of ['__pycache__/helper.cpython-312.pyc', 'helper.pyc', 'helper.cpython-312-x86_64-linux-gnu.so', 'helper.so', 'helper.pyd']) {
+      expect(workspace({ ...tree, [name]: compiled }).read(['python3', 'job.py']), name).toEqual(refusal)
+    }
+    // A module whose only form is compiled, a package's __init__, a -m module's __main__, and the script itself.
+    expect(workspace({ 'job.py': 'import helper\n', 'helper.pyc': compiled }).read(['python3', 'job.py'])).toEqual(refusal)
+    expect(workspace({ ...tree, 'pkg/__pycache__/__init__.cpython-312.pyc': compiled }).read(['python3', 'uses.py'])).toEqual(refusal)
+    expect(workspace({ ...tree, 'tool/__pycache__/__main__.cpython-312.pyc': compiled }).read(['python3', '-m', 'tool'])).toEqual(refusal)
+    expect(workspace({ ...tree, '__pycache__/job.cpython-312.pyc': compiled }).read(['python3', 'job.py'])).toEqual(refusal)
+  })
+
+  it('takes a package folder before a module file of the same name, as Python\'s finder does', () => {
+    const { read } = workspace({ 'uses.py': 'import pkg\n', 'pkg/__init__.py': 'X = 1\n', 'pkg.py': 'Y = 2\n' })
+    expect(paths(read(['python3', 'uses.py']))).toEqual(['/workspace/uses.py', '/workspace/pkg/__init__.py'])
+  })
+
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
