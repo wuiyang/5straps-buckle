@@ -18,7 +18,7 @@ import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile } from './call-forms.js'
-import { CODE_REFUSALS, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -165,7 +165,8 @@ export function createJudgeGate(input: {
     const privileged = allForms(forms).some(([command = '']) => PRIVILEGE_WRAPPERS.has(baseCommand(command)))
     const typed = [parseArgv(effect.command, effect.args).command, ...effect.args]
     const standardScript = !privileged && (standardForm(typed) || (running.length > 0 && running.every(standardForm)))
-    const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
+    // A standard script's own code is not read, but what bun loads before it is: its preloads and its bunfig.toml's (fix brief 3, R15).
+    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), cwd, view: input.view }) : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.

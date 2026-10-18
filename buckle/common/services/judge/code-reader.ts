@@ -24,6 +24,7 @@ export const CODE_REFUSALS = Object.freeze({
   notFound: 'the code the interpreter runs was not found',
   fromCommand: 'the code the interpreter runs comes from another command',
   unknownOption: 'an option the reader does not know',
+  config: 'a config file the reader could not parse',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -103,6 +104,16 @@ function readCode(input: CodeInput): CodeRead {
       const found = preloadOf(program, preload, { cwd, view, packages })
       if (typeof found === 'string') return refused(found)
       if (found !== null) queue.push({ real: found.real, language: 'js', runtime })
+    }
+    // bun also runs each preload its bunfig.toml lists, the one `-c` names or else the working directory's (fix brief 3, R15).
+    if (program === 'bun') {
+      const listed = bunfigPreloadsOf(bunOptions(args).configs, cwd, view)
+      if (typeof listed === 'string') return refused(listed)
+      for (const { specifier, base } of listed) {
+        const found = preloadOf('bun', specifier, { cwd: base, view, packages })
+        if (typeof found === 'string') return refused(found)
+        if (found !== null) queue.push({ real: found.real, language: 'js', runtime: 'bun' })
+      }
     }
     // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
     // it, the code that runs is unknown, so the call asks.
@@ -738,6 +749,200 @@ function preloadOf(runtime: string, specifier: string, place: { cwd: string; vie
   const entry = scriptEntry(runtime, specifier, place.cwd, place.view)
   if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
   return entry === 'none' ? CODE_REFUSALS.notFound : entry
+}
+
+/** bun's options that name its config file in place of the working directory's bunfig.toml. */
+const BUN_CONFIG_OPTIONS = ['-c', '--config']
+
+/**
+ * The code a standard bun script loads before it runs (fix brief 3, R15): each preload its options name (`-r`,
+ * `--preload`, `--require`, `--import`, either spelling) and each its bunfig.toml lists, read with what each imports as
+ * any preload is. The script itself stays a standard script and is not read; a preload naming nothing refuses, as does a
+ * config file the reader cannot parse.
+ */
+export function readBunScriptPreloads(input: { forms: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+  const forms = input.forms.filter(([command = '']) => /^bun(?:[\d.-]|$)/.test(baseCommand(command))).map(([, ...args]) => {
+    const { preloads, configs } = bunOptions(args)
+    return ['bun', ...preloads.flatMap(preload => ['--preload', preload]), ...configs.flatMap(config => ['--config', config])]
+  })
+  if (forms.length === 0) return { kind: 'read', reading: { inline: null, files: [], packages: [] } }
+  return readInterpreterCode({ forms, cwd: input.cwd, view: input.view })
+}
+
+/**
+ * The preloads and config files a bun form names before its script or subcommand (`bun run -r ./setup.js dev`): each
+ * option in either spelling, every other value option's value skipped; past the first word that is neither an option nor
+ * `run`, the words are the script's own.
+ */
+function bunOptions(args: readonly string[]): { preloads: string[]; configs: string[] } {
+  const preloads: string[] = []
+  const configs: string[] = []
+  let run = false
+  for (let index = 0; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--') break
+    const equals = word.startsWith('--') ? word.indexOf('=') : -1
+    const head = equals > 0 ? word.slice(0, equals) : word
+    if (PRELOAD_OPTIONS.bun!.includes(head) || BUN_CONFIG_OPTIONS.includes(head)) {
+      const value = equals > 0 ? word.slice(equals + 1) : args[++index]
+      if (value !== undefined) (BUN_CONFIG_OPTIONS.includes(head) ? configs : preloads).push(value)
+      continue
+    }
+    if (VALUE_OPTIONS.bun!.includes(word)) {
+      index++
+      continue
+    }
+    if (word.startsWith('-')) continue
+    if (!run && word === 'run') {
+      run = true
+      continue
+    }
+    break
+  }
+  return { preloads, configs }
+}
+
+/**
+ * The preloads a bun call's config lists, each with the real folder it is resolved from (fix brief 3, R15): the last
+ * config `-c` or `--config` names, which must exist, else the working directory's bunfig.toml where there is one. A
+ * refusal where the config lands beyond the agent's view, may not be read, is not text, or holds what the reader cannot
+ * parse. bun's global config in the owner's home is beyond what the reader reads.
+ */
+function bunfigPreloadsOf(configs: readonly string[], cwd: string, view: CodeView): Array<{ specifier: string; base: string }> | string {
+  const named = configs.at(-1)
+  const located = view.locate(named ?? 'bunfig.toml', cwd)
+  if (located === 'outside') return CODE_REFUSALS.unreadable
+  if (located === 'none') return named === undefined ? [] : CODE_REFUSALS.notFound
+  if (!view.readable(located.real)) return CODE_REFUSALS.unreadable
+  const buffer = view.read(located.real, MANIFEST_LIMIT)
+  if (buffer === null || !isUtf8(buffer)) return CODE_REFUSALS.config
+  const listed = bunfigPreloads(buffer.toString('utf8'))
+  if (listed === null) return CODE_REFUSALS.config
+  return listed.map(specifier => ({ specifier, base: dirname(located.real) }))
+}
+
+/** The tables of a bunfig.toml whose `preload` runs before the code bun runs: the top level, [run], and [test]. */
+const BUNFIG_PRELOAD_TABLES = new Set(['', 'run', 'test'])
+const TOML_KEY = /^(?:[A-Za-z0-9_-]+|"[^"\\\n]*"|'[^'\n]*')(?:[ \t]*\.[ \t]*(?:[A-Za-z0-9_-]+|"[^"\\\n]*"|'[^'\n]*'))*/
+const TOML_BARE = /^[A-Za-z0-9_+\-.:]+/
+
+/**
+ * The preloads a bunfig.toml lists (fix brief 3, R15), read by a small TOML reader: comments, `[table]` headers, and
+ * `key = value` lines whose value is a string, an array, an inline table, or a bare word such as a number. A preload must
+ * be a string or an array of strings. Null, so the call asks, where any line is beyond that reader or a preload holds
+ * anything else.
+ */
+function bunfigPreloads(text: string): string[] | null {
+  const source = text.replace(/^\uFEFF/, '')
+  const preloads: string[] = []
+  let table = ''
+  let at = skipToml(source, 0, true)
+  while (at < source.length) {
+    if (source[at] === '[') {
+      const end = source.indexOf('\n', at)
+      const header = /^\[\[?[ \t]*([^\[\]#\n]+?)[ \t]*\]\]?[ \t]*(?:#.*)?\r?$/.exec(source.slice(at, end < 0 ? source.length : end))
+      if (!header || !TOML_KEY.test(header[1]!) || TOML_KEY.exec(header[1]!)![0] !== header[1]) return null
+      table = tomlPath(header[1]!)
+      at = skipToml(source, end < 0 ? source.length : end, true)
+      continue
+    }
+    const key = TOML_KEY.exec(source.slice(at, at + 1_024))
+    if (!key) return null
+    at += key[0].length
+    const equals = /^[ \t]*=[ \t]*/.exec(source.slice(at, at + 64))
+    if (!equals) return null
+    const scanned = tomlValue(source, at + equals[0].length)
+    if (scanned === null) return null
+    const lineEnd = /^[ \t]*(?:#[^\n]*)?(?:\r?\n|$)/.exec(source.slice(scanned.end))
+    if (!lineEnd) return null
+    const path = [table, tomlPath(key[0])].filter(Boolean).join('.').split('.')
+    if (path.at(-1) === 'preload' && BUNFIG_PRELOAD_TABLES.has(path.slice(0, -1).join('.'))) {
+      if (typeof scanned.value === 'string') preloads.push(scanned.value)
+      else if (Array.isArray(scanned.value)) preloads.push(...scanned.value)
+      else return null
+    }
+    at = skipToml(source, scanned.end + lineEnd[0].length, true)
+  }
+  return preloads
+}
+
+/** A TOML key or table name as its dotted path, quotes and the blanks around each dot dropped. */
+function tomlPath(key: string): string {
+  return key.split(/[ \t]*\.[ \t]*(?=(?:[^"']|"[^"]*"|'[^']*')*$)/).map(part => part.replace(/^["']|["']$/g, '')).join('.')
+}
+
+/** The index past blanks and comments, and newlines too where `lines` is true. */
+function skipToml(source: string, from: number, lines: boolean): number {
+  let at = from
+  while (at < source.length) {
+    const character = source[at]!
+    if (character === ' ' || character === '\t' || (lines && (character === '\n' || character === '\r'))) at++
+    else if (character === '#') {
+      const end = source.indexOf('\n', at)
+      at = end < 0 ? source.length : end
+    } else break
+  }
+  return at
+}
+
+/** A TOML value the reader delimits but does not keep: a number, a boolean, a date, a table, a multi-line string, or an array holding one. */
+const TOML_OTHER: unique symbol = Symbol('a TOML value that is no string')
+type TomlValue = string | string[] | typeof TOML_OTHER
+
+/** One TOML value from `from`: a string, an array of strings, or TOML_OTHER for anything else the reader can delimit; null for what it cannot. */
+function tomlValue(source: string, from: number): { value: TomlValue; end: number } | null {
+  const character = source[from]
+  if (source.startsWith('"""', from) || source.startsWith("'''", from)) {
+    const quote = source.slice(from, from + 3)
+    const end = source.indexOf(quote, from + 3)
+    return end < 0 ? null : { value: TOML_OTHER, end: end + 3 }
+  }
+  if (character === '"') {
+    let value = ''
+    for (let at = from + 1; at < source.length; at++) {
+      const next = source[at]!
+      if (next === '\n') return null
+      if (next === '"') return { value, end: at + 1 }
+      if (next !== '\\') {
+        value += next
+        continue
+      }
+      const escape = source[++at]
+      const simple: Record<string, string> = { '"': '"', '\\': '\\', n: '\n', t: '\t', r: '\r', b: '\b', f: '\f' }
+      if (escape !== undefined && escape in simple) value += simple[escape]
+      else return null
+    }
+    return null
+  }
+  if (character === "'") {
+    const end = source.indexOf("'", from + 1)
+    const newline = source.indexOf('\n', from + 1)
+    return end < 0 || (newline >= 0 && newline < end) ? null : { value: source.slice(from + 1, end), end: end + 1 }
+  }
+  if (character === '[' || character === '{') {
+    const close = character === '[' ? ']' : '}'
+    const items: TomlValue[] = []
+    let at = skipToml(source, from + 1, true)
+    while (source[at] !== close) {
+      if (at >= source.length) return null
+      if (character === '{') {
+        const key = TOML_KEY.exec(source.slice(at, at + 1_024))
+        const equals = key ? /^[ \t]*=[ \t]*/.exec(source.slice(at + key[0].length, at + key[0].length + 64)) : null
+        if (!key || !equals) return null
+        at += key[0].length + equals[0].length
+      }
+      const item = tomlValue(source, at)
+      if (item === null) return null
+      items.push(item.value)
+      at = skipToml(source, item.end, true)
+      if (source[at] === ',') at = skipToml(source, at + 1, true)
+      else if (source[at] !== close) return null
+    }
+    const strings = character === '[' && items.every(item => typeof item === 'string')
+    return { value: strings ? items as string[] : TOML_OTHER, end: at + 1 }
+  }
+  const bare = TOML_BARE.exec(source.slice(from, from + 256))
+  return bare ? { value: TOML_OTHER, end: from + bare[0].length } : null
 }
 
 /** A folder's package.json `main`, or null where it has no manifest or the manifest names none. */

@@ -180,6 +180,32 @@ describe('a standard script', () => {
     ])
   })
 
+  it('reads what bun loads before a standard script: its preload options and its bunfig.toml\'s, and refuses a missing one (fix brief 3, R15)', async () => {
+    const seenOf = async (files: Record<string, string>, calls: Array<[string, string[]]>) => {
+      const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+      for (const [name, content] of Object.entries(files)) writeFileSync(join(config.cwd, name), content)
+      const fakes = judges({ quick: quick('danger', 0.95) })
+      const runtime = await runtimeOf(config, fakes)
+      const seen: unknown[] = []
+      for (const [command, args] of calls) {
+        const before = fakes.shownQuick.length
+        const { entry } = await call(runtime, command, args)
+        const input = fakes.shownQuick[before]
+        const note = (entry?.judge as { quick?: { unavailable?: string } } | undefined)?.quick
+        seen.push(input ? [input.command, input.standardScript, input.files.map(file => file.path)] : [[command, ...args].join(' '), 'not shown', note?.unavailable])
+      }
+      return seen
+    }
+    expect(await seenOf({ 'setup.js': "require('./helper.js')\n", 'helper.js': 'module.exports = 1\n' }, [['bun', ['run', '-r', './setup.js', 'dev']], ['bun', ['run', '--preload=./setup.js', 'dev']], ['bun', ['run', '-r', './missing.js', 'dev']]])).toEqual([
+      ['bun run -r ./setup.js dev', true, ['/workspace/setup.js', '/workspace/helper.js']],
+      ['bun run --preload=./setup.js dev', true, ['/workspace/setup.js', '/workspace/helper.js']],
+      ['bun run -r ./missing.js dev', 'not shown', 'the code the interpreter runs was not found'],
+    ])
+    expect(await seenOf({ 'bunfig.toml': 'preload = ["./pre.ts"]\n', 'pre.ts': 'export {}\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', true, ['/workspace/pre.ts']]])
+    expect(await seenOf({ 'bunfig.toml': 'preload = ["./gone.ts"]\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', 'not shown', 'the code the interpreter runs was not found']])
+    expect(await seenOf({ 'bunfig.toml': 'preload = [1]\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', 'not shown', 'a config file the reader could not parse']])
+  })
+
   it('still matches on the inner form behind a wrapper that runs as the same user', async () => {
     expect(await shown([['timeout', ['60', 'bun', 'run', 'dev']]])).toEqual([['timeout 60 bun run dev', true, []]])
   })

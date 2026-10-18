@@ -169,6 +169,24 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', '--import', 'data:text/javascript,evil()', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
+  it('reads each preload bunfig.toml lists for bun, and refuses a config the reader cannot parse (fix brief 3, R15)', () => {
+    const files = (config: string, form: string[] = ['bun', 'run.ts']) => {
+      const { read } = workspace({ 'bunfig.toml': config, 'run.ts': 'export {}\n', 'pre.ts': 'export {}\n', 'second.ts': 'export {}\n', 'conf/bunfig.toml': 'preload = "./local.ts"\n', 'conf/local.ts': 'export {}\n' })
+      const result = read(form)
+      return result.kind === 'read' ? result.reading.files.map(file => file.path) : result.reason
+    }
+    expect(files('# runtime\npreload = [\n  "./pre.ts", # first\n  \'./second.ts\',\n]\nsmol = true\n')).toEqual(['/workspace/pre.ts', '/workspace/second.ts', '/workspace/run.ts'])
+    expect(files('[install]\nexact = true\n[run]\npreload = "./pre.ts"\n')).toEqual(['/workspace/pre.ts', '/workspace/run.ts'])
+    expect(files('[test]\npreload = ["./second.ts"]\ncoverage = { enabled = true }\n')).toEqual(['/workspace/second.ts', '/workspace/run.ts'])
+    expect(files('run.preload = ["./pre.ts"]\n')).toEqual(['/workspace/pre.ts', '/workspace/run.ts'])
+    // -c names the config, whose preloads resolve from its own folder; the config itself is read as data, as any value naming a file is.
+    expect(files('preload = ["./pre.ts"]\n', ['bun', '-c', 'conf/bunfig.toml', 'run.ts'])).toEqual(['/workspace/conf/local.ts', '/workspace/run.ts', '/workspace/conf/bunfig.toml'])
+    for (const config of ['preload = [1]\n', 'preload = { a = "./pre.ts" }\n', 'preload = """./pre.ts"""\n', 'preload = ["./pre.ts"\n', 'not toml at all\n', 'preload = "./pre.ts" trailing\n']) {
+      expect(files(config), config).toBe(CODE_REFUSALS.config)
+    }
+    expect(files('preload = ["./gone.ts"]\n')).toBe(CODE_REFUSALS.notFound)
+  })
+
   it('is a folder\'s __main__.py for Python', () => {
     const { read } = workspace({ 'tool/__main__.py': 'from . import helper\n', 'tool/helper.py': 'X = 1\n' })
     expect(reading(read(['python3', 'tool'])).files.map(file => file.path)).toEqual(['/workspace/tool/__main__.py', '/workspace/tool/helper.py'])
