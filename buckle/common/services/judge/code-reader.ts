@@ -183,8 +183,8 @@ interface FedInputs {
 /**
  * What shell text feeds an interpreter's input (D91, addendum 2 F3, and fix brief 1 item 7): in the `-c` text of each
  * form run by a shell, each statement whose command is one of the interpreters being read, the word a `<<<` feeds it
- * (in a shell that has here-strings), an expansion in it as written, and the file a `<` redirects into it. A here-string
- * or a file fed to another command, which pipes it on, is not the interpreter's code.
+ * (in a shell that has here-strings), an expansion in it as written, and the file a `<` redirects into it where it names
+ * no script of its own. A here-string or a file fed to another command, which pipes it on, is not the interpreter's code.
  */
 function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]): FedInputs {
   const running = new Set(forms.map(([command = '']) => programOf(command)))
@@ -196,9 +196,13 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
     if (source !== 'command' || operand === undefined) continue
     for (const statement of shellStatementList(operand, { characters: READ_BUDGET.characters }).statements) {
       const tokens = shellTokens(statement)
-      const word = statementCommand(tokens)
-      if (word === null || !running.has(programOf(word))) continue
-      const program = programOf(word)
+      const form = statementCommand(tokens)
+      if (form === null || !running.has(programOf(form[0]!))) continue
+      const program = programOf(form[0]!)
+      // A file on its input is the script only where the interpreter names none, or names `-`; past a script operand,
+      // inline code, or a module, its input is data (fix brief 2, R7).
+      const own = argumentsOf(program, form.slice(1))
+      const inputIsScript = own.operand === null && own.inline.length === 0 && own.modules.length === 0
       for (let index = 0; index < tokens.length; index++) {
         const { raw, word: unquoted } = tokens[index]!
         const bare = BARE_REDIRECTION.test(raw)
@@ -210,7 +214,7 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
           const bodies = delimiter === undefined ? null : heredocBodies(operand, statement, { delimiter, tabs: raw.includes('<<-') })
           if (bodies === null || tokens.filter(token => ANY_HEREDOC.test(token.raw)).length > 1) fed.unknown = true
           else fed.inline.push(...bodies.map(code => ({ program, code })))
-        } else if (STDIN_FILE.test(raw) && target !== undefined) {
+        } else if (STDIN_FILE.test(raw) && target !== undefined && inputIsScript) {
           if (EXPANSION.test(target.raw)) fed.unknown = true
           else fed.scripts.push({ program, name: target.word })
         }
@@ -222,11 +226,11 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
 }
 
 /**
- * The command a statement runs: its words without assignments before them and without redirections or their targets,
- * then through the wrappers command-forms reads (env, timeout, nice, exec, command, nohup, stdbuf, and the rest), so
- * `env python3 <<<` and `timeout 5 python3 <<<` name python3 (fix brief 1, item 9).
+ * The command a statement runs, with its words: its words without assignments before them and without redirections or
+ * their targets, then through the wrappers command-forms reads (env, timeout, nice, exec, command, nohup, stdbuf, and
+ * the rest), so `env python3 <<<` and `timeout 5 python3 <<<` name python3 (fix brief 1, item 9).
  */
-function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>): string | null {
+function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>): string[] | null {
   const words: string[] = []
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
@@ -239,7 +243,8 @@ function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>):
   }
   const [command, ...args] = words
   if (command === undefined) return null
-  return commandFormsOf({ command, args }).chain.at(-1)?.[0] ?? command
+  const last = commandFormsOf({ command, args }).chain.at(-1)
+  return last?.[0] === undefined ? words : last
 }
 
 /**

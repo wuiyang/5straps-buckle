@@ -156,6 +156,16 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(fed('cat evil.py > out.txt; python3 -c 1', 'python3')).files).toEqual([])
   })
 
+  it('takes the input as data where the interpreter names a script, inline code, or a module (fix brief 2, R7)', () => {
+    const { root, view } = workspace({ 'build.js': 'console.log(1)\n', 'job.py': 'print(1)\n', 'data.bin': Buffer.from([0xff, 0xfe, 0x00]), 'evil.py': 'import os\n' })
+    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(reading(fed('node build.js < /dev/null', ['node', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    expect(reading(fed('python3 job.py < data.bin', ['python3', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
+    expect(reading(fed('python3 job.py < "$IN"', ['python3', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
+    expect(reading(fed('python3 -c 1 < data.bin', ['python3', '-c', '1'])).files).toEqual([])
+    expect(reading(fed('python3 - < evil.py', ['python3', '-'])).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
+  })
+
   it('refuses, so the call asks, where the script operand names nothing, rather than rating the command line alone', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     for (const form of [['node', 'missing'], ['python3', 'missing'], ['python3', '-W', 'ignore', 'missing.py'], ['bun', 'run', 'missing'], ['npx', 'tsx', 'missing']]) {
