@@ -36,6 +36,10 @@ The approval webhook carries a `judge` object beside each ask: the thorough mode
 rated `danger` asks with the reason "The decision AI's quick stage rated this command danger, so a
 person decides; nothing it says refuses a command".
 
+A call a stage passed asks no one, and the webhook is not called: the serve terminal prints one
+info line naming the stage, the model, the level, the confidence, and the command as an approver
+would see it, credentials hidden.
+
 ## The audit entry
 
 A call a stage ran carries `judge` with the thorough model's `provider`, `model`, `level`,

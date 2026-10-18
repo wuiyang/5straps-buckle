@@ -8,6 +8,7 @@ import { describeCall } from '../../domain/describe-call.js'
 import type { ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
+import { logger } from '../../runtime/log.js'
 import type { AskCause, PermissionDecision } from '../../domain/permission/decision.js'
 import { judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
@@ -325,6 +326,18 @@ export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly 
   if (gate.mode === 'on-request') return [...waiting].map(subject => ({ subject, onRequest: true as const }))
   if (gate.mode !== 'automated') return []
   return input.judged.filter(item => waiting.has(item.subject)).map(judgeNoteOf)
+}
+
+/**
+ * The serve terminal's line for a command a stage passed (fix brief 1, item 22): the stage, the model that answered,
+ * the level and confidence, and the command subject as the approver display shows it, credentials hidden. It carries no
+ * env value and no key, and the webhook is not called for a pass.
+ */
+export function announcePass(judged: JudgedAsk): void {
+  const rating = judged.passedBy === 'quick' ? judged.quick : judged.passedBy === 'thorough' ? judged.thorough : undefined
+  if (rating?.result.kind !== 'verdict') return
+  const { level, confidence, model } = rating.result
+  logger.info(`The decision AI's ${judged.passedBy} stage rated a command ${level}, so it runs without asking`, { stage: judged.passedBy, model, level, confidence, subject: judged.subject })
 }
 
 /** One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick stage's beside it. */

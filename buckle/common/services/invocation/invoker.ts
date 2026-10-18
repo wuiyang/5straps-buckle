@@ -13,7 +13,7 @@ import { redactAuditArguments, reviewableArguments } from '../../domain/redact.j
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { passKey, QUICK_FLAG_REASON, withFlagged, withJudged } from '../../domain/permission/judged.js'
-import { judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
+import { announcePass, judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { CODE_REPLAY_DIVERGED, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
@@ -580,6 +580,7 @@ async function clearPermissions(input: {
   if (judging && outcome.kind === 'ask' && outcome.asks.some(ask => judging.covers(ask))) {
     input.judgment.judged = [...input.judgment.judged, ...await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })]
     passed = new Set(input.judgment.judged.filter(item => item.passedBy !== undefined).map(passKey))
+    for (const item of input.judgment.judged) if (item.passedBy !== undefined) announcePass(item)
     if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
   }
   if (outcome.kind === 'allow') return cleared(outcome, [])

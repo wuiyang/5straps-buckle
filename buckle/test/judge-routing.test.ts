@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickResult } from '../common/types/ports/quick-judge.js'
@@ -74,6 +75,24 @@ async function call(runtime: BuckleRuntime, command: string, args: string[]) {
 async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePolicy['commands']>) {
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
+
+describe('a call a stage passed', () => {
+  it('prints one info line naming the stage, the model, the level, the confidence, and the command as an approver sees it; none for an ask', async () => {
+    const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
+    const passes = () => info.mock.calls.filter(([message]) => String(message).startsWith('The decision AI'))
+    const args = ['job.py', 'https://me:hunter2@example.com/x']
+    await call(await runtimeOf(node(), judges({ quick: quick('safe', 0.93) })), 'python3', args)
+    await call(await runtimeOf(node(), judges({ thorough: thorough('safe', 0.9) })), 'python3', args)
+    expect(passes()).toEqual([
+      ['The decision AI\'s quick stage rated a command safe, so it runs without asking', { stage: 'quick', model: 'jev-1.13.0', level: 'safe', confidence: 0.93, subject: expect.stringMatching(/^python3 job\.py .*\[redacted\]/) }],
+      ['The decision AI\'s thorough stage rated a command safe, so it runs without asking', { stage: 'thorough', model: 'gpt-6-luna', level: 'safe', confidence: 0.9, subject: expect.stringMatching(/^python3 job\.py .*\[redacted\]/) }],
+    ])
+    expect(JSON.stringify(passes())).not.toContain('hunter2')
+    info.mockClear()
+    await call(await runtimeOf(node(), judges({ quick: quick('danger', 0.95) })), 'python3', args)
+    expect(passes()).toEqual([])
+  })
+})
 
 describe('a standard script', () => {
   /** What the quick stage was shown of each call, under scope asks, which rates the floor's asks too. */
