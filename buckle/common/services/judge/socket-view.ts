@@ -7,17 +7,18 @@ import { npmPackageUrl, PACKAGE_SCAN_LIMIT, type PackageScanner, type SocketSumm
  * Advisory: a scanner with no key, or one that fails, leaves every summary null and the rating runs.
  */
 export async function withSocket(asked: JudgeInput, scanner: PackageScanner, signal?: AbortSignal): Promise<JudgeInput> {
-  const versioned = asked.packages.flatMap(item => (item.version === null ? [] : [{ name: item.name, version: item.version }]))
-  const looked = new Map(versioned.slice(0, PACKAGE_SCAN_LIMIT).map(item => [item.name, npmPackageUrl(item.name, item.version)]))
+  // By package URL, so each version of a package gets its own summary (fix brief 1, item 10).
+  const versioned = [...new Set(asked.packages.flatMap(item => (item.version === null ? [] : [npmPackageUrl(item.name, item.version)])))]
+  const looked = new Set(versioned.slice(0, PACKAGE_SCAN_LIMIT))
   const packagesTruncated = versioned.length > PACKAGE_SCAN_LIMIT
   if (looked.size === 0) return { ...asked, packagesTruncated }
-  const summaries = await scanner.scan([...looked.values()], signal).catch(() => new Map<string, SocketSummary | null>())
+  const summaries = await scanner.scan([...looked], signal).catch(() => new Map<string, SocketSummary | null>())
   return {
     ...asked,
     packagesTruncated,
     packages: asked.packages.map((item) => {
-      const purl = looked.get(item.name)
-      return purl === undefined ? item : { ...item, socket: summaries.get(purl) ?? null }
+      const purl = item.version === null ? undefined : npmPackageUrl(item.name, item.version)
+      return purl === undefined || !looked.has(purl) ? item : { ...item, socket: summaries.get(purl) ?? null }
     }),
   }
 }

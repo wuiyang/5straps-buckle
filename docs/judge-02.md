@@ -46,8 +46,8 @@ were off, where:
 
 A third-party package, a bare specifier such as `lodash` or `requests`, and the package `npx`
 runs, is named with its version: the `version` in the nearest `node_modules/<name>/package.json`,
-looking up from the importing file and stopping at the workspace root or the mount root, read
-with the same checks. Scoped names such as `@types/node` work the same way. Python packages are
+looking up from each importing file and stopping at the workspace root or the mount root, read
+with the same checks, once per version found. Scoped names work the same way. Python packages are
 named alone. A package's code is never read: third-party code has no bound, and Socket covers
 that risk instead.
 

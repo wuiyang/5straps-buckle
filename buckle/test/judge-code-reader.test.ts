@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { isInside } from '../common/domain/paths.js'
 import { CODE_LIMITS, CODE_REFUSALS, createCodeView, readInterpreterCode, type CodeRead } from '../common/services/judge/code-reader.js'
+import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 
 // What the decision AI reads of an interpreter call (D91, addendum B): the code the command line hands the
 // interpreter, the scripts it names, and every local file they import, transitively, through the agent's own view.
@@ -129,6 +130,21 @@ describe('the packages the code imports', () => {
       { name: 'node:fs', version: null, socket: null },
     ])
     expect(reading(read(['node', 'sub/b.mjs'])).packages).toEqual([{ name: 'lodash', version: '3.0.0', socket: null }])
+  })
+
+  it('names a package once per version its importers get, so a nested copy of another version is shown and keyed too', () => {
+    const files = {
+      'app.mjs': "import _ from 'lodash'\nimport './sub/b.mjs'\n",
+      'node_modules/lodash/package.json': '{"version":"4.17.21"}',
+      'sub/node_modules/lodash/package.json': '{"version":"3.0.0"}',
+      'sub/b.mjs': "import 'lodash'\n",
+    }
+    const first = workspace(files)
+    const code = reading(first.read(['node', 'app.mjs']))
+    expect(code.packages).toEqual([{ name: 'lodash', version: '3.0.0', socket: null }, { name: 'lodash', version: '4.17.21', socket: null }])
+    const keyOf = (packages: typeof code.packages) => judgeCacheKey({ provider: 'p', model: 'm', policyUpdatedAt: null, asked: { command: 'node app.mjs', argv: [], interpreters: [], inline: null, env: [], files: code.files, packages, packagesTruncated: false, truncated: false, standardScript: false, policy: { allow: [], deny: [], destructive: [], allowedInterpreters: [] }, cwd: '/workspace', mounts: [], description: null, reason: null } })
+    const upgraded = reading(workspace({ ...files, 'sub/node_modules/lodash/package.json': '{"version":"3.1.0"}' }).read(['node', 'app.mjs']))
+    expect(keyOf(upgraded.packages)).not.toBe(keyOf(code.packages))
   })
 
   it('never reads a node_modules folder outside the workspace, nor one a link takes out of it', () => {

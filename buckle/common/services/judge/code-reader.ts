@@ -75,7 +75,7 @@ export interface CodeInput { forms: readonly string[][]; shellForms?: readonly s
 function readCode(input: CodeInput): CodeRead {
   const { view, cwd } = input
   const inline: string[] = []
-  // Each package by name, with the real folder its version is looked up from (the first importer's), or null for none.
+  // Each package by name, with every real folder an importer looks its version up from, or null for none (Python).
   const packages: Packages = new Map()
   const queue: Array<{ real: string; language: Language }> = []
   for (const [command = '', ...args] of input.forms) {
@@ -453,11 +453,13 @@ function languageOfFile(real: string, content: string): Language {
 }
 
 type Found = Array<{ real: string; language: Language }>
-type Packages = Map<string, string | null>
+type Packages = Map<string, Set<string | null>>
 
-/** A package imported, kept with the folder its first importer reads from; null where no version is looked up (Python). */
+/** A package imported, kept with each folder an importer reads it from; null where no version is looked up (Python). */
 function named(packages: Packages, name: string, from: string | null): void {
-  if (!packages.has(name)) packages.set(name, from)
+  const folders = packages.get(name) ?? new Set<string | null>()
+  folders.add(from)
+  packages.set(name, folders)
 }
 
 /** An npm package name, scoped or not: anything else (a `node:` builtin, a stray word) has no node_modules folder. */
@@ -466,9 +468,14 @@ const VERSION = /^[\w.+-]{1,64}$/
 /** What of a package.json is read for its version at most. */
 const MANIFEST_LIMIT = 64 * 1_024
 
-/** Each package by name, sorted, with the version installed for its importer; no Socket summary yet. */
+/**
+ * Each package once per version its importers get (fix brief 1, item 10), sorted by name and then version, so a nested
+ * copy of another version is shown, looked up at Socket, and part of the cache key too; no Socket summary yet.
+ */
 function installed(packages: Packages, view: CodeView): JudgePackage[] {
-  return [...packages].sort(([one], [other]) => (one < other ? -1 : one > other ? 1 : 0)).map(([name, from]) => ({ name, version: from === null ? null : installedVersion(name, from, view), socket: null }))
+  const entries = [...packages].flatMap(([name, folders]) => [...new Set([...folders].map(from => (from === null ? null : installedVersion(name, from, view))))].map(version => ({ name, version, socket: null })))
+  const order = (item: JudgePackage) => `${item.name}\0${item.version ?? ''}`
+  return entries.sort((one, other) => (order(one) < order(other) ? -1 : order(one) > order(other) ? 1 : 0))
 }
 
 /**

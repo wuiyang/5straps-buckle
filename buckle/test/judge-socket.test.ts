@@ -147,6 +147,14 @@ describe('what the judge is shown of Socket', () => {
     expect(shown.packages.filter(item => item.socket !== null)).toHaveLength(PACKAGE_SCAN_LIMIT)
   })
 
+  it('a summary for each version of a package, by its own package URL', async () => {
+    const summaries = new Map([[npmPackageUrl('lodash', '3.0.0'), { ...SUMMARY, alerts: [{ type: 'old', severity: 'high' }] }], [npmPackageUrl('lodash', '4.17.21'), SUMMARY]])
+    const scanner: PackageScanner = { scan: vi.fn(async () => summaries) }
+    const shown = await withSocket({ ...INPUT, packages: [{ name: 'lodash', version: '3.0.0', socket: null }, { name: 'lodash', version: '4.17.21', socket: null }] }, scanner)
+    expect(scanner.scan).toHaveBeenCalledWith([npmPackageUrl('lodash', '3.0.0'), npmPackageUrl('lodash', '4.17.21')], undefined)
+    expect(shown.packages.map(item => item.socket)).toEqual([summaries.get(npmPackageUrl('lodash', '3.0.0')), SUMMARY])
+  })
+
   it('nothing, and no error, where the scanner fails', async () => {
     const failing: PackageScanner = { scan: () => Promise.reject(new Error('down')) }
     expect((await withSocket(INPUT, failing)).packages.map(item => item.socket)).toEqual([null, null])
