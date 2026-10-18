@@ -4,8 +4,10 @@ import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { isInside } from '../common/domain/paths.js'
-import { READ_BUDGET } from '../common/domain/command-forms.js'
+import { baseCommand } from '../common/domain/argv.js'
+import { allForms, commandFormsOf, isInterpreter } from '../common/domain/command-forms.js'
 import { CODE_LIMITS, CODE_REFUSALS, createCodeView, readInterpreterCode, type CodeRead } from '../common/services/judge/code-reader.js'
+import { SHELL_TEXT_REFUSAL, simpleStatement } from '../common/services/judge/shell-statement.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 
 // What the decision AI reads of an interpreter call (D91, addendum B): the code the command line hands the
@@ -28,8 +30,18 @@ function workspace(files: Record<string, string | Buffer>, options: { mount?: st
   // The rules' answer with no grant: inside the folder, and never a credential file.
   const view = createCodeView({ paths, canRead: real => isInside(root, real) && basename(real) !== '.env', protectedRoots: [] })
   const read = (...forms: string[][]): CodeRead => readInterpreterCode({ forms, cwd: root, view })
-  return { base, root, read, view }
+  // A whole call as the gate reads it: its forms as the rules read them, the interpreter ones read, with its chain.
+  const call = (command: string, ...args: string[]): CodeRead => {
+    const forms = commandFormsOf({ command, args })
+    const running = allForms(forms).filter(([word = '']) => isInterpreter(baseCommand(word)))
+    return readInterpreterCode({ forms: running, chain: forms.chain, cwd: root, view })
+  }
+  const shell = (text: string, program = 'bash'): CodeRead => call(program, '-c', text)
+  return { base, root, read, call, shell, view }
 }
+
+const shellRefusal = { kind: 'refused', reason: SHELL_TEXT_REFUSAL, truncated: false }
+const paths = (result: CodeRead) => reading(result).files.map(file => file.path)
 
 function reading(result: CodeRead) {
   if (result.kind !== 'read') throw new Error(`expected a reading, got ${result.reason}`)
@@ -212,65 +224,55 @@ describe('the script an interpreter finds by its own rules', () => {
   })
 
   it('is the file shell text redirects into the interpreter\'s input', () => {
-    const { root, view } = workspace({ 'evil.py': 'import helper\n', 'helper.py': 'X = 1\n', 'x.js': 'console.log(1)\n' })
-    const fed = (text: string, program: string) => readInterpreterCode({ forms: [[program]], shellForms: [['bash', '-c', text]], cwd: root, view })
-    expect(reading(fed('python3 < evil.py', 'python3')).files.map(file => file.path)).toEqual(['/workspace/evil.py', '/workspace/helper.py'])
-    expect(reading(fed('cd . && node 0<x.js', 'node')).files.map(file => file.path)).toEqual(['/workspace/x.js'])
-    expect(fed('python3 < gone.py', 'python3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
-    expect(fed('python3 < "$SCRIPT"', 'python3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
-    expect(reading(fed('cat evil.py > out.txt; python3 -c 1', 'python3')).files).toEqual([])
+    const { shell } = workspace({ 'evil.py': 'import helper\n', 'helper.py': 'X = 1\n', 'x.js': 'console.log(1)\n' })
+    expect(paths(shell('python3 < evil.py'))).toEqual(['/workspace/evil.py', '/workspace/helper.py'])
+    expect(paths(shell('node 0<x.js'))).toEqual(['/workspace/x.js'])
+    expect(shell('python3 < gone.py')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    // An expansion, and a second statement, are text the grammar does not rate whole (fix brief 4, P).
+    expect(shell('python3 < "$SCRIPT"')).toEqual(shellRefusal)
+    expect(shell('cat evil.py > out.txt; python3 -c 1')).toEqual(shellRefusal)
   })
 
-  it('reads <> as <, and refuses a duplicated descriptor or input another command takes first (fix brief 2, H6)', () => {
-    const { root, view } = workspace({ 'evil.py': 'import os\n', 'build.js': 'console.log(1)\n', 'list.txt': 'evil.py\n' })
-    const fed = (text: string, form: string[] = ['python3']) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
-    expect(reading(fed('python3 <> evil.py')).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
-    expect(reading(fed('python3 0<>evil.py')).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
-    expect(fed('exec 3<evil.py; python3 <&3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
-    expect(fed('python3 0<&3 3<evil.py')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
-    expect(reading(fed('node build.js <&3', ['node', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
-    for (const text of ['xargs python3 <<< evil.py', 'xargs python3 < list.txt', 'xargs python3 <<EOF\nevil.py\nEOF']) {
-      expect(fed(text), text).toEqual({ kind: 'refused', reason: 'the code the interpreter runs comes from another command', truncated: false })
+  it('reads <> as <, and refuses a duplicated descriptor, an input on another descriptor, xargs, and a pipe (fix brief 2, H6; fix brief 4, P)', () => {
+    const { shell } = workspace({ 'evil.py': 'import os\n', 'build.js': 'console.log(1)\n', 'list.txt': 'evil.py\n' })
+    expect(paths(shell('python3 <> evil.py'))).toEqual(['/workspace/evil.py'])
+    expect(paths(shell('python3 0<>evil.py'))).toEqual(['/workspace/evil.py'])
+    for (const text of ['exec 3<evil.py; python3 <&3', 'python3 0<&3 3<evil.py', 'node build.js <&3', 'python3 3< evil.py', 'xargs python3 <<< evil.py', 'xargs python3 < list.txt', 'xargs python3 <<EOF\nevil.py\nEOF', 'cat evil.py | python3']) {
+      expect(shell(text), text).toEqual(shellRefusal)
     }
-    // A pipe stays the documented limit: the stage reads the shell text alone.
-    expect(reading(fed('cat evil.py | python3')).files).toEqual([])
   })
 
   it('takes the input as data where the interpreter names a script, inline code, or a module (fix brief 2, R7)', () => {
-    const { root, view } = workspace({ 'build.js': 'console.log(1)\n', 'job.py': 'print(1)\n', 'data.bin': Buffer.from([0xff, 0xfe, 0x00]), 'evil.py': 'import os\n' })
-    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
-    expect(reading(fed('node build.js < /dev/null', ['node', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
-    expect(reading(fed('python3 job.py < data.bin', ['python3', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
-    expect(reading(fed('python3 job.py < "$IN"', ['python3', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
-    expect(reading(fed('python3 -c 1 < data.bin', ['python3', '-c', '1'])).files).toEqual([])
-    expect(reading(fed('python3 - < evil.py', ['python3', '-'])).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
+    const { shell } = workspace({ 'build.js': 'console.log(1)\n', 'job.py': 'print(1)\n', 'data.bin': Buffer.from([0xff, 0xfe, 0x00]), 'evil.py': 'import os\n' })
+    expect(paths(shell('node build.js < /dev/null'))).toEqual(['/workspace/build.js'])
+    expect(paths(shell('python3 job.py < data.bin'))).toEqual(['/workspace/job.py'])
+    expect(shell('python3 job.py < "$IN"')).toEqual(shellRefusal)
+    expect(paths(shell('python3 -c 1 < data.bin'))).toEqual([])
+    expect(paths(shell('python3 - < evil.py'))).toEqual(['/workspace/evil.py'])
   })
 
   it('reads the redirected file where a stdin marker names the script, and names the words after it arguments (fix brief 3, R7)', () => {
-    const { root, view } = workspace({ 'from-stdin.py': 'import helper\n', 'from-stdin.js': 'console.log(1)\n', 'second.pl': '1;\n', 'other.php': "<?php echo 1;\n", 'other.csh': 'echo 1\n', 'helper.py': 'X = 1\n', 'job.py': 'print(1)\n', 'build.js': 'console.log(1)\n', 'notes.txt': 'x\n' })
-    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
-    const files = (text: string, form: string[]) => reading(fed(text, form)).files.map(file => file.path)
+    const { shell } = workspace({ 'from-stdin.py': 'import helper\n', 'from-stdin.js': 'console.log(1)\n', 'second.pl': '1;\n', 'other.php': "<?php echo 1;\n", 'other.csh': 'echo 1\n', 'helper.py': 'X = 1\n', 'job.py': 'print(1)\n', 'build.js': 'console.log(1)\n', 'notes.txt': 'x\n' })
+    const files = (text: string) => paths(shell(text))
     // A lone `-`, `/dev/stdin`, php's `--`, and csh/tcsh `-s` each make the `<` file the script; the operand after it is an argument, not a file the reader reads.
-    expect(files('python3 - job.py < from-stdin.py', ['python3', '-', 'job.py'])).toEqual(['/workspace/from-stdin.py', '/workspace/helper.py'])
-    expect(files('node - build.js < from-stdin.js', ['node', '-', 'build.js'])).toEqual(['/workspace/from-stdin.js'])
-    expect(files('node /dev/stdin < from-stdin.js', ['node', '/dev/stdin'])).toEqual(['/workspace/from-stdin.js'])
-    expect(files('perl - notes.txt < second.pl', ['perl', '-', 'notes.txt'])).toEqual(['/workspace/second.pl'])
-    expect(files('php -- data.txt < other.php', ['php', '--', 'data.txt'])).toEqual(['/workspace/other.php'])
-    expect(files('tcsh -s x < other.csh', ['tcsh', '-s', 'x'])).toEqual(['/workspace/other.csh'])
+    expect(files('python3 - job.py < from-stdin.py')).toEqual(['/workspace/from-stdin.py', '/workspace/helper.py'])
+    expect(files('node - build.js < from-stdin.js')).toEqual(['/workspace/from-stdin.js'])
+    expect(files('node /dev/stdin < from-stdin.js')).toEqual(['/workspace/from-stdin.js'])
+    expect(files('perl - notes.txt < second.pl')).toEqual(['/workspace/second.pl'])
+    expect(files('php -- data.txt < other.php')).toEqual(['/workspace/other.php'])
+    expect(files('tcsh -s x < other.csh')).toEqual(['/workspace/other.csh'])
     // A missing redirected file refuses, since the script is required.
-    expect(fed('python3 - job.py < gone.py', ['python3', '-', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(shell('python3 - job.py < gone.py')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
   it('refuses an interpreter option the reader does not model, and reads the redirect past a value option it does (fix brief 3, R7)', () => {
-    const { root, view } = workspace({ 'build.js': 'console.log(1)\n', 'from-stdin.js': 'console.log(2)\n', 'job.py': 'print(1)\n' })
-    const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
-    const read = (...forms: string[][]): CodeRead => readInterpreterCode({ forms, cwd: root, view })
+    const { read, shell } = workspace({ 'build.js': 'console.log(1)\n', 'from-stdin.js': 'console.log(2)\n', 'job.py': 'print(1)\n' })
     // --run runs a package.json script the reader cannot follow, so it is left out of node's tables and refuses.
     expect(read(['node', '--run', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
     expect(read(['node', '--env-file=.env', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
     expect(read(['python3', '-Zzz', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
     // --redirect-warnings takes a value, so its value is not the script; the redirected file is.
-    expect(reading(fed('node --redirect-warnings notes.txt < from-stdin.js', ['node', '--redirect-warnings', 'notes.txt'])).files.map(file => file.path)).toEqual(['/workspace/from-stdin.js'])
+    expect(paths(shell('node --redirect-warnings notes.txt < from-stdin.js'))).toEqual(['/workspace/from-stdin.js'])
     // A known flag and a self-contained --opt=value are read, not refused.
     expect(reading(read(['node', '--enable-source-maps', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
     expect(reading(read(['node', '--input-type=module', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
@@ -443,76 +445,76 @@ describe('the code a Python call runs', () => {
 })
 
 describe('the code a here-string hands an interpreter', () => {
-  it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and nothing a shell without them runs', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    const read = (shell: string, text: string, program = 'python3') => readInterpreterCode({ forms: [[program]], shellForms: [[shell, '-c', text]], cwd: root, view })
-    expect(reading(read('bash', "python3 <<< 'import helper'"))).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
-    expect(reading(read('/usr/bin/zsh', 'FOO=1 node 0<<<"console.log(1)"', 'node'))).toMatchObject({ inline: 'console.log(1)', files: [] })
-    expect(reading(read('ksh', 'cd x && python3 - <<<"$CODE"'))).toMatchObject({ inline: '$CODE' })
-    expect(reading(read('sh', "python3 <<< 'print(1)'")).inline).toBeNull()
-    expect(reading(read('bash', "cat <<< 'print(1)' | python3")).inline).toBeNull()
+  it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and refuses one a shell without them, or an expansion, would change', () => {
+    const { call } = workspace({ 'helper.py': 'X = 1\n' })
+    expect(reading(call('bash', '-c', "python3 <<< 'import helper'"))).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+    expect(reading(call('/usr/bin/zsh', '-c', 'FOO=1 node 0<<<"console.log(1)"'))).toMatchObject({ inline: 'console.log(1)', files: [] })
+    expect(call('ksh', '-c', 'python3 - <<<"$CODE"')).toEqual(shellRefusal)
+    expect(call('sh', '-c', "python3 <<< 'print(1)'")).toEqual(shellRefusal)
+    expect(call('bash', '-c', "cat <<< 'print(1)' | python3")).toEqual(shellRefusal)
   })
 
-  it('finds the interpreter behind a wrapper, as env, timeout, and exec name it', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    const read = (text: string) => readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
+  it('finds the interpreter behind a wrapper, as env, timeout, and exec name it, and no other', () => {
+    const { shell } = workspace({ 'helper.py': 'X = 1\n' })
     for (const text of ["env python3 <<< 'import helper'", "timeout 5 python3 <<< 'import helper'", "exec python3 <<< 'import helper'", "FOO=1 env -i nice -n 5 python3 - <<< 'import helper'"]) {
-      expect(reading(read(text)), text).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+      expect(reading(shell(text)), text).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
     }
+    expect(shell("sudo python3 <<< 'import helper'")).toEqual(shellRefusal)
   })
 
-  it('reads a heredoc\'s body as inline code, each time the statement stands in the text, and refuses one it cannot place', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    const read = (text: string, program = 'python3') => readInterpreterCode({ forms: [[program]], shellForms: [['bash', '-c', text]], cwd: root, view })
-    expect(reading(read("python3 - <<'EOF'\nimport helper\nprint(1)\nEOF\necho done"))).toMatchObject({ inline: 'import helper\nprint(1)', files: [{ path: '/workspace/helper.py' }] })
-    expect(reading(read('cd . && node <<EOF\nconsole.log(1)\nEOF', 'node')).inline).toBe('console.log(1)')
-    expect(reading(read('python3 <<-EOF\n\timport helper\n\tEOF')).inline).toBe('import helper')
-    expect(reading(read('python3 <<EOF\nprint(1)\nEOF\npython3 <<EOF\nimport shutil\nEOF')).inline).toBe('print(1)\nimport shutil')
-    expect(read('cat <<A; python3 <<B\nB\nA\nimport shutil\nB')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+  it('reads a heredoc\'s body as inline code, and refuses one a shell would expand, one left open, and a text with more than one statement', () => {
+    const { shell } = workspace({ 'helper.py': 'X = 1\n' })
+    expect(reading(shell("python3 - <<'EOF'\nimport helper\nprint(1)\nEOF\n"))).toMatchObject({ inline: 'import helper\nprint(1)', files: [{ path: '/workspace/helper.py' }] })
+    expect(reading(shell('node <<EOF\nconsole.log(1)\nEOF')).inline).toBe('console.log(1)')
+    expect(reading(shell('python3 <<-EOF\n\timport helper\n\tEOF')).inline).toBe('import helper')
+    for (const text of ["python3 - <<'EOF'\nimport helper\nEOF\necho done", 'python3 <<EOF\nprint("$HOME")\nEOF', 'python3 <<EOF\nprint(1)\n', 'python3 <<EOF\nprint(1)\nEOF\npython3 <<EOF\nimport shutil\nEOF', 'cat <<A; python3 <<B\nB\nA\nimport shutil\nB']) {
+      expect(shell(text), text).toEqual(shellRefusal)
+    }
   })
 })
 
-describe('heredocs in a long text (fix brief 2, R9)', () => {
-  it('reads 4,000 repeated heredoc statements in one pass, well inside 200 ms', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    const text = 'python3 <<E\nE\n'.repeat(4_000)
+describe('the single-statement grammar (fix brief 4, P)', () => {
+  it('refuses a list, a group, a pipe, a substitution, and a C shell\'s text, so a person decides', () => {
+    const { call, shell } = workspace({ 'a.py': 'print(1)\n', 'b.py': 'print(2)\n', 'other.py': 'print(3)\n', 'x.py': 'print(4)\n', 'sub/x.js': 'console.log(1)\n' })
+    for (const text of ['python3 a.py && python3 b.py', 'cd sub && node x.js', '{ python3 - a; } < other.py', 'cat a.py | python3', 'python3 $(echo a).py', 'python3 `echo a`.py', 'python3 a.py & python3 b.py', 'python3 a.py\npython3 b.py', '(python3 a.py)', 'python3 <(cat a.py)', 'python3 a.py # note', 'python3 *.py', 'python3 ~/a.py', 'python3 {a,b}.py', 'if true; then python3 a.py; fi']) {
+      expect(shell(text), text).toEqual(shellRefusal)
+    }
+    expect(call('tcsh', '-c', 'python3 x.py')).toEqual(shellRefusal)
+    expect(call('fish', '-c', 'python3 x.py')).toEqual(shellRefusal)
+    // A shell option that runs startup files or exports assignments anywhere is one the grammar does not model.
+    expect(call('bash', '-i', '-c', 'python3 x.py')).toEqual(shellRefusal)
+    expect(call('bash', '-k', '-c', 'python3 x.py')).toEqual(shellRefusal)
+  })
+
+  it('rates one simple command as its direct form: leading assignments, one feed, and any output redirections', () => {
+    const { call, shell } = workspace({ 'job.py': 'import helper\n', 'helper.py': 'X = 1\n', 'data.bin': 'x\n', 'build.js': 'console.log(1)\n', 'f.py': 'print(1)\n' })
+    expect(paths(shell('FOO=1 python3 job.py < data.bin'))).toEqual(['/workspace/job.py', '/workspace/helper.py'])
+    expect(reading(shell('timeout 5 python3 <<< "import helper"'))).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
+    expect(paths(shell('node build.js 2>err.log'))).toEqual(['/workspace/build.js'])
+    expect(paths(shell('python3 - >/dev/null 2>&1 < f.py'))).toEqual(['/workspace/f.py'])
+    expect(paths(shell('node build.js &> out.log'))).toEqual(['/workspace/build.js'])
+    expect(paths(call('bash', '-ec', 'python3 job.py\n'))).toEqual(['/workspace/job.py', '/workspace/helper.py'])
+    // dash reads `&>` as a background job, so its text with one is not one statement.
+    expect(call('dash', '-c', 'node build.js &> out.log')).toEqual(shellRefusal)
+  })
+
+  it('removes quotes as a shell does, and refuses an expansion inside double quotes', () => {
+    expect(simpleStatement(`python3 "my job.py" 'a b' c\\ d -c "print(\\"x\\")"`, 'bash')).toEqual({ words: ['python3', 'my job.py', 'a b', 'c d', '-c', 'print("x")'], feed: null })
+    expect(simpleStatement('A=1 B="x y" node build.js < in.txt', 'sh')).toEqual({ words: ['node', 'build.js'], feed: { kind: 'file', name: 'in.txt' } })
+    expect(simpleStatement('node "$X"', 'bash')).toBeNull()
+    expect(simpleStatement("node 'x", 'bash')).toBeNull()
+    expect(simpleStatement('python3 < a.py < b.py', 'bash')).toBeNull()
+  })
+})
+
+describe('long shell text (fix brief 4, P)', () => {
+  it('refuses 4,000 statements at once, and reads one statement with a long heredoc body', () => {
+    const { shell } = workspace({ 'helper.py': 'X = 1\n' })
     const started = performance.now()
-    const result = readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(shell('python3 <<E\nE\n'.repeat(4_000))).toEqual(shellRefusal)
     expect(performance.now() - started).toBeLessThan(200)
-    expect(reading(result).inline).toBe('')
-  })
-
-  it('refuses where the shared meter cuts a later text\'s listing short, rather than read fewer statements (fix brief 3, R9)', () => {
-    const { root, view } = workspace({ 'from-stdin.py': 'import os\n' })
-    // The first text spends all but 200 characters of the budget, so the second text's listing stops before the statement
-    // that redirects a script into python3.
-    const first = `true ${'a'.repeat(READ_BUDGET.characters - 205)}`
-    const second = `${'true; '.repeat(60)}python3 < from-stdin.py`
-    const shellForms = [['bash', '-c', first], ['bash', '-c', second]]
-    expect(readInterpreterCode({ forms: [['python3']], shellForms, cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
-    // Read alone, the second text is read whole.
-    expect(reading(readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', second]], cwd: root, view })).files.map(file => file.path)).toEqual(['/workspace/from-stdin.py'])
-  })
-
-  it('places many distinct heredoc statements in a long text without a scan of the whole text for each (fix brief 3, R9)', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    // 2,000 distinct heredoc statements in a text of about 1 MB: each used to cost the whole text, past the budget.
-    const delimiter = (index: number) => `D${String(index).padStart(4, '0')}`
-    const text = Array.from({ length: 2_000 }, (_, index) => `python3 <<${delimiter(index)}\nimport helper\n${delimiter(index)}\n`).join('') + '#'.repeat(1_000_000)
-    const started = performance.now()
-    const result = readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })
-    expect(performance.now() - started).toBeLessThan(1_000)
-    expect(reading(result).files.map(file => file.path)).toEqual(['/workspace/helper.py'])
-  })
-
-  it('refuses, marking the reading truncated, once the bodies walked run past the read budget', () => {
-    const { root, view } = workspace({ 'helper.py': 'X = 1\n' })
-    // 6,000 heredocs left open: each body runs to the end of the text, about 216 million characters in all, far past
-    // READ_BUDGET, so the walk stops at the budget rather than reading every body.
-    const text = 'python3 <<E\n'.repeat(6_000)
-    const started = performance.now()
-    expect(readInterpreterCode({ forms: [['python3']], shellForms: [['bash', '-c', text]], cwd: root, view })).toEqual({ kind: 'refused', reason: CODE_REFUSALS.truncated, truncated: true })
-    expect(performance.now() - started).toBeLessThan(1_000)
+    const body = `import helper\n${'x = 1\n'.repeat(20_000)}`
+    expect(reading(shell(`python3 <<'E'\n${body}E\n`)).files.map(file => file.path)).toEqual(['/workspace/helper.py'])
   })
 })
 
@@ -520,7 +522,8 @@ describe('the code a shell applet or awk runs', () => {
   it('follows source and . in shell code, and takes an awk program as inline code', () => {
     const { read } = workspace({ 'build.sh': '#!/bin/sh\nsource ./lib.sh\n. "$HOME/.profile"\n', 'lib.sh': 'echo lib\n', 'env.sh': 'X=1\n', 'data.txt': 'a b\n' })
     expect(reading(read(['busybox', 'sh', 'build.sh'])).files.map(file => file.path)).toEqual(['/workspace/build.sh', '/workspace/lib.sh'])
-    expect(reading(read(['busybox', 'sh', '-c', '. ./env.sh && run']))).toMatchObject({ inline: '. ./env.sh && run', files: [{ path: '/workspace/env.sh' }] })
+    // A busybox shell applet's -c text is never rated: the grammar reads POSIX-family shells only (fix brief 4, P).
+    expect(read(['busybox', 'sh', '-c', '. ./env.sh'])).toEqual(shellRefusal)
     expect(reading(read(['awk', '{print $1}', 'data.txt']))).toMatchObject({ inline: '{print $1}', files: [{ path: '/workspace/data.txt' }] })
   })
 })

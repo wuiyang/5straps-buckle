@@ -172,11 +172,13 @@ describe('a standard script', () => {
 
   it('is never standard behind any privilege wrapper: doas, su, pkexec, or runas (fix brief 2, H10)', async () => {
     const notFound = { provider: 'typesafe', model: 'jev-latest', unavailable: 'the code the interpreter runs was not found' }
+    const shellText = { provider: 'typesafe', model: 'jev-latest', unavailable: 'shell text the reader does not rate whole' }
     expect(await standardOf([['doas', ['bun', 'run', 'dev']], ['su', ['-c', 'bun run dev', 'root']]], [['bash', ['-c', 'bun run dev; pkexec true']], ['bash', ['-c', 'bun run dev; runas /user:admin true']]])).toEqual([
       ['doas bun run dev', 'not shown', notFound],
-      ['su -c bun run dev root', 'not shown', notFound],
-      ['bash -c bun run dev; pkexec true', 'not shown', notFound],
-      ['bash -c bun run dev; runas /user:admin true', 'not shown', notFound],
+      // Text a shell runs is read only as one simple command a POSIX-family shell runs (fix brief 4, P).
+      ['su -c bun run dev root', 'not shown', shellText],
+      ['bash -c bun run dev; pkexec true', 'not shown', shellText],
+      ['bash -c bun run dev; runas /user:admin true', 'not shown', shellText],
     ])
   })
 

@@ -8,6 +8,7 @@ import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVa
 import { assignedVariables, CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
+import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
@@ -298,6 +299,8 @@ describe('a call that sets more variables than the stages are sent (fix brief 3,
   }
 
   const assignments = (count: number) => `${Array.from({ length: count }, (_, index) => `a${index}=${index}`).join('\n')}\nnode build.js`
+  // The same assignments before the command on its one statement, which the reader rates whole (fix brief 4, P).
+  const leading = (count: number) => `${Array.from({ length: count }, (_, index) => `a${index}=${index}`).join(' ')} node build.js`
 
   it('reads 50,000 unique assignments and refuses them within 200 ms, where the old dedupe was quadratic', () => {
     const effect = { command: 'bash', args: ['-c', assignments(50_000)] }
@@ -317,9 +320,27 @@ describe('a call that sets more variables than the stages are sent (fix brief 3,
     expect(many.response).toMatchObject({ outcome: 'approval_required' })
     expect(many.entry.judge).toMatchObject({ unavailable: 'the code closure exceeds what the judge reads', passed: false })
     expect(judge.judge).not.toHaveBeenCalled()
-    const few = await script(runtime, assignments(200))
+    const few = await script(runtime, leading(200))
     expect(few.entry.judge).toMatchObject({ passed: true, passedBy: 'thorough' })
     expect(judge.shown).toHaveLength(1)
     expect(judge.shown[0]!.env).toHaveLength(200)
+  })
+})
+
+describe('shell text the reader does not rate whole (fix brief 4, P)', () => {
+  it('is shown to no stage, and asks, while one simple command is rated as its direct form', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const compound = await call(runtime, {}, ['bash', '-c', 'python3 job.py && node build.js'])
+    expect(compound.response).toMatchObject({ outcome: 'approval_required' })
+    expect(compound.ran).toBe(false)
+    expect(compound.entry.judge).toMatchObject({ unavailable: SHELL_TEXT_REFUSAL, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+    const simple = await call(runtime, {}, ['bash', '-c', 'node build.js 2>err.log'])
+    expect(simple.ran).toBe(true)
+    expect(judge.shown.map(input => input.files.map(file => file.path))).toEqual([['/workspace/build.js']])
   })
 })
