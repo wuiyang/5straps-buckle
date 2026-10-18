@@ -206,6 +206,13 @@ describe('a standard script', () => {
     expect(await seenOf({ 'bunfig.toml': 'preload = ["./pre.ts"]\n', 'pre.ts': 'export {}\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', true, ['/workspace/pre.ts']]])
     expect(await seenOf({ 'bunfig.toml': 'preload = ["./gone.ts"]\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', 'not shown', 'the code the interpreter runs was not found']])
     expect(await seenOf({ 'bunfig.toml': 'preload = [1]\n' }, [['bun', ['run', 'dev']]])).toEqual([['bun run dev', 'not shown', 'a config file the reader could not parse']])
+    // An option the reader does not know, or a config it does not place, could hide a preload, so the call asks (fix brief 4, R15).
+    expect(await seenOf({ 'setup.js': 'module.exports = 1\n' }, [['bun', ['run', '--drop', 'console', '-r', './setup.js', 'dev']], ['bun', ['run', '-r./setup.js', 'dev']], ['bun', ['run', '-c', 'conf/bunfig.toml', 'dev']]])).toEqual([
+      ['bun run --drop console -r ./setup.js dev', 'not shown', 'an option the reader does not know'],
+      ['bun run -r./setup.js dev', 'not shown', 'an option the reader does not know'],
+      ['bun run -c conf/bunfig.toml dev', 'not shown', 'an option the reader does not know'],
+    ])
+    expect(await seenOf({ 'alt.toml': 'preload = ["./setup.js"]\n', 'setup.js': 'module.exports = 1\n' }, [['bun', ['run', '--config=alt.toml', 'dev']]])).toEqual([['bun run --config=alt.toml dev', true, ['/workspace/setup.js']]])
   })
 
   it('still matches on the inner form behind a wrapper that runs as the same user', async () => {

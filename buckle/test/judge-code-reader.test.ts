@@ -244,7 +244,7 @@ describe('the script an interpreter finds by its own rules', () => {
 
   it('reads each preload bunfig.toml lists for bun, and refuses a config the reader cannot parse (fix brief 3, R15)', () => {
     const files = (config: string, form: string[] = ['bun', 'run.ts']) => {
-      const { read } = workspace({ 'bunfig.toml': config, 'run.ts': 'export {}\n', 'pre.ts': 'export {}\n', 'second.ts': 'export {}\n', 'conf/bunfig.toml': 'preload = "./local.ts"\n', 'conf/local.ts': 'export {}\n' })
+      const { read } = workspace({ 'bunfig.toml': config, 'run.ts': 'export {}\n', 'pre.ts': 'export {}\n', 'second.ts': 'export {}\n', 'conf/bunfig.toml': 'preload = "./local.ts"\n', 'conf/local.ts': 'export {}\n', 'local.ts': 'export {}\n' })
       const result = read(form)
       return result.kind === 'read' ? result.reading.files.map(file => file.path) : result.reason
     }
@@ -252,8 +252,12 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(files('[install]\nexact = true\n[run]\npreload = "./pre.ts"\n')).toEqual(['/workspace/pre.ts', '/workspace/run.ts'])
     expect(files('[test]\npreload = ["./second.ts"]\ncoverage = { enabled = true }\n')).toEqual(['/workspace/second.ts', '/workspace/run.ts'])
     expect(files('run.preload = ["./pre.ts"]\n')).toEqual(['/workspace/pre.ts', '/workspace/run.ts'])
-    // -c names the config, whose preloads resolve from its own folder; the config itself is read as data, as any value naming a file is.
-    expect(files('preload = ["./pre.ts"]\n', ['bun', '-c', 'conf/bunfig.toml', 'run.ts'])).toEqual(['/workspace/conf/local.ts', '/workspace/run.ts', '/workspace/conf/bunfig.toml'])
+    // --config= names the config, whose preloads resolve from the working directory as bun resolves them (fix brief 4,
+    // R15); the config itself is read as data, as any value naming a file is. Any other spelling of the option refuses.
+    expect(files('preload = ["./pre.ts"]\n', ['bun', '--config=conf/bunfig.toml', 'run.ts'])).toEqual(['/workspace/local.ts', '/workspace/run.ts', '/workspace/conf/bunfig.toml'])
+    for (const form of [['bun', '-c', 'conf/bunfig.toml', 'run.ts'], ['bun', '--config', 'conf/bunfig.toml', 'run.ts'], ['bun', '-c=conf/bunfig.toml', 'run.ts']]) {
+      expect(files('preload = ["./pre.ts"]\n', form), form.join(' ')).toBe(CODE_REFUSALS.unknownOption)
+    }
     for (const config of ['preload = [1]\n', 'preload = { a = "./pre.ts" }\n', 'preload = """./pre.ts"""\n', 'preload = ["./pre.ts"\n', 'not toml at all\n', 'preload = "./pre.ts" trailing\n']) {
       expect(files(config), config).toBe(CODE_REFUSALS.config)
     }

@@ -327,7 +327,7 @@ const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   node: ['--allow-fs-read', '--allow-fs-write', '--conditions', '--cpu-prof-dir', '--cpu-prof-interval', '--cpu-prof-name', '--debug-port', '--diagnostic-dir', '--disable-proto', '--disable-warning', '--dns-result-order', '--eval', '--experimental-loader', '--experimental-sea-config', '--experimental-test-isolation', '--experimental-test-tag-filter', '--heap-prof-dir', '--heap-prof-interval', '--heap-prof-name', '--heapsnapshot-near-heap-limit', '--heapsnapshot-signal', '--icu-data-dir', '--import', '--input-type', '--inspect-port', '--inspect-publish-uid', '--loader', '--localstorage-file', '--max-http-header-size', '--max-old-space-size-percentage', '--network-family-autoselection-attempt-timeout', '--redirect-warnings', '--report-dir', '--report-directory', '--report-filename', '--report-signal', '--require', '--secure-heap', '--secure-heap-min', '--security-revert', '--stack-trace-limit', '--test-concurrency', '--test-coverage-branches', '--test-coverage-exclude', '--test-coverage-functions', '--test-coverage-include', '--test-coverage-lines', '--test-isolation', '--test-name-pattern', '--test-random-seed', '--test-reporter-destination', '--test-rerun-failures', '--test-shard', '--test-skip-pattern', '--test-timeout', '--title', '--tls-cipher-list', '--tls-keylog', '--trace-event-categories', '--trace-event-file-pattern', '--trace-require-module', '--unhandled-rejections', '--use-largepages', '--v8-pool-size', '--watch-kill-signal', '--watch-path', '-C', '-r'],
   tsx: ['-r', '--require', '--import', '--loader', '-C', '--conditions', '--input-type', '--tsconfig'],
   'ts-node': ['-r', '--require', '-P', '--project', '-O', '--compiler-options', '-C', '--compiler', '--cwd', '-I', '--ignore'],
-  bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F', '--port', '--main-fields', '--extension-order', '--jsx-factory', '--jsx-fragment', '--jsx-import-source', '--jsx-runtime', '--elide-lines', '--shell', '--title', '--user-agent', '--console-depth', '--unhandled-rejections'],
+  bun: ['-r', '--preload', '--require', '--import', '--cwd', '--config', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F', '--port', '--main-fields', '--extension-order', '--jsx-factory', '--jsx-fragment', '--jsx-import-source', '--jsx-runtime', '--elide-lines', '--shell', '--title', '--user-agent', '--console-depth', '--unhandled-rejections'],
   deno: ['-c', '--config', '--import-map', '--lock', '--location', '--seed', '--cert', '--ext'],
   python: ['-W', '-X', '--check-hash-based-pycs'],
   perl: ['-I', '-M', '-m'],
@@ -617,6 +617,8 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
         preloads.push({ specifier: value, esm: ESM_PRELOAD_OPTIONS.has(key) })
         continue
       }
+      // bun's config option takes its file only as `--config=<file>`; any other spelling the reader does not place (fix brief 4, R15).
+      if (program === 'bun' && unplacedBunConfig(key, value)) unknownOption = true
       if (valueOptions.includes(key) && value === null && index + 1 < args.length) {
         candidates.push(word, args[++index]!)
         continue
@@ -811,14 +813,21 @@ function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view
   return 'refused' in entry ? entry.refused : entry
 }
 
-/** bun's options that name its config file in place of the working directory's bunfig.toml. */
-const BUN_CONFIG_OPTIONS = ['-c', '--config']
+/**
+ * Whether a bun config option is one the reader does not place (fix brief 4, R15): bun declares `-c, --config <PATH>?`,
+ * whose value it takes only attached to the long name, so `--config=<file>` names the file, while `-c`, `--config`
+ * alone, or a short spelling with a value may leave the next word as the script and the working directory's config
+ * loaded. The reader refuses those rather than guess (bun is not installed here; read from its published option table).
+ */
+function unplacedBunConfig(key: string, value: string | null): boolean {
+  return (key.startsWith('-c') && !key.startsWith('--')) || (key === '--config' && value === null)
+}
 
 /**
  * The code a standard bun script loads before it runs (fix brief 3, R15): each preload its options name (`-r`,
  * `--preload`, `--require`, `--import`, either spelling) and each its bunfig.toml lists, read with what each imports as
- * any preload is. The script itself stays a standard script and is not read; a preload naming nothing refuses, as does a
- * config file the reader cannot parse.
+ * any preload is. The script itself stays a standard script and is not read; a preload naming nothing refuses, as do a
+ * config file the reader cannot parse and an option the reader does not know.
  */
 export function readBunScriptPreloads(input: { forms: readonly string[][]; chain?: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
   try {
@@ -828,7 +837,8 @@ export function readBunScriptPreloads(input: { forms: readonly string[][]; chain
     if (typeof plan === 'string') return refused(plan)
     const gathered: Gathered = { inline: [], packages: new Map(), queue: [] }
     for (const { form: [, ...args] } of plan) {
-      const { preloads, configs } = bunOptions(args)
+      const { preloads, configs, refusal } = bunOptions(args)
+      if (refusal !== null) return refused(refusal)
       for (const specifier of preloads) {
         const found = preloadOf('bun', { specifier, esm: false }, { cwd: input.cwd, view: input.view, packages: gathered.packages })
         if (typeof found === 'string') return refused(found)
@@ -847,8 +857,8 @@ export function readBunScriptPreloads(input: { forms: readonly string[][]; chain
 function gatherBunfig(configs: readonly string[], into: Gathered, place: Pick<CodeInput, 'cwd' | 'view'>): string | null {
   const listed = bunfigPreloadsOf(configs, place.cwd, place.view)
   if (typeof listed === 'string') return listed
-  for (const { specifier, base } of listed) {
-    const found = preloadOf('bun', { specifier, esm: false }, { cwd: base, view: place.view, packages: into.packages })
+  for (const specifier of listed) {
+    const found = preloadOf('bun', { specifier, esm: false }, { cwd: place.cwd, view: place.view, packages: into.packages })
     if (typeof found === 'string') return found
     if (found !== null) into.queue.push({ real: found.real, language: 'js', runtime: 'bun' })
   }
@@ -857,44 +867,47 @@ function gatherBunfig(configs: readonly string[], into: Gathered, place: Pick<Co
 
 /**
  * The preloads and config files a bun form names before its script or subcommand (`bun run -r ./setup.js dev`): each
- * option in either spelling, every other value option's value skipped; past the first word that is neither an option nor
- * `run`, the words are the script's own.
+ * preload option in either spelling and `--config=<file>`, every other value option's value skipped; past the first word
+ * that is neither an option nor `run`, the words are the script's own. A refusal at an option the reader does not know or
+ * a config option it does not place, either of which could hide a preload (fix brief 4, R15).
  */
-function bunOptions(args: readonly string[]): { preloads: string[]; configs: string[] } {
+function bunOptions(args: readonly string[]): { preloads: string[]; configs: string[]; refusal: string | null } {
   const preloads: string[] = []
   const configs: string[] = []
   let run = false
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
     if (word === '--') break
-    const equals = word.startsWith('--') ? word.indexOf('=') : -1
-    const head = equals > 0 ? word.slice(0, equals) : word
-    if (PRELOAD_OPTIONS.bun!.includes(head) || BUN_CONFIG_OPTIONS.includes(head)) {
-      const value = equals > 0 ? word.slice(equals + 1) : args[++index]
-      if (value !== undefined) (BUN_CONFIG_OPTIONS.includes(head) ? configs : preloads).push(value)
+    if (word.startsWith('-') && word !== '-') {
+      const { key, value } = optionKey('bun', word)
+      if (!knownOption('bun', key) || unplacedBunConfig(key, value)) return { preloads, configs, refusal: CODE_REFUSALS.unknownOption }
+      if (PRELOAD_OPTIONS.bun!.includes(key)) {
+        const named = value ?? args[++index]
+        if (named !== undefined) preloads.push(named)
+      } else if (key === '--config') {
+        configs.push(value!)
+      } else if (VALUE_OPTIONS.bun!.includes(key) && value === null) {
+        index++
+      }
       continue
     }
-    if (VALUE_OPTIONS.bun!.includes(word)) {
-      index++
-      continue
-    }
-    if (word.startsWith('-')) continue
     if (!run && word === 'run') {
       run = true
       continue
     }
     break
   }
-  return { preloads, configs }
+  return { preloads, configs, refusal: null }
 }
 
 /**
- * The preloads a bun call's config lists, each with the real folder it is resolved from (fix brief 3, R15): the last
- * config `-c` or `--config` names, which must exist, else the working directory's bunfig.toml where there is one. A
- * refusal where the config lands beyond the agent's view, may not be read, is not text, or holds what the reader cannot
- * parse. bun's global config in the owner's home is beyond what the reader reads.
+ * The preloads a bun call's config lists (fix brief 3, R15): the last config `--config=` names, which must exist, else
+ * the working directory's bunfig.toml where there is one. bun resolves every preload, a config's included, from the
+ * working directory, not the config's folder (fix brief 4, R15). A refusal where the config lands beyond the agent's
+ * view, may not be read, is not text, or holds what the reader cannot parse. bun's global config in the owner's home is
+ * beyond what the reader reads.
  */
-function bunfigPreloadsOf(configs: readonly string[], cwd: string, view: CodeView): Array<{ specifier: string; base: string }> | string {
+function bunfigPreloadsOf(configs: readonly string[], cwd: string, view: CodeView): string[] | string {
   const named = configs.at(-1)
   const located = view.locate(named ?? 'bunfig.toml', cwd)
   if (located === 'outside') return CODE_REFUSALS.unreadable
@@ -904,7 +917,7 @@ function bunfigPreloadsOf(configs: readonly string[], cwd: string, view: CodeVie
   if (buffer === null || !isUtf8(buffer)) return CODE_REFUSALS.config
   const listed = bunfigPreloads(buffer.toString('utf8'))
   if (listed === null) return CODE_REFUSALS.config
-  return listed.map(specifier => ({ specifier, base: dirname(located.real) }))
+  return listed
 }
 
 /** The tables of a bunfig.toml whose `preload` runs before the code bun runs: the top level, [run], and [test]. */
