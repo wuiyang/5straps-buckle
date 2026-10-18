@@ -6,6 +6,8 @@ import { QUICK_TIMEOUT_MS } from '../common/adapters/judge/typesafe.js'
 import { JUDGE_TIMEOUT_MS } from '../common/adapters/judge/verdict.js'
 import { SOCKET_TIMEOUT_MS } from '../common/adapters/package-scan/socket.js'
 import { isInterpreter } from '../common/domain/command-forms.js'
+import { CODE_REFUSALS } from '../common/services/judge/code-reader.js'
+import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
 
 // What the decision AI's pages say of standard scripts (D91, addendum 2, defect 5): bun is an interpreter, so `bun run`
 // asks on its own and `bun run *` applies; no page may call it an ordinary command.
@@ -33,5 +35,14 @@ describe('bun run on the pages', () => {
   it('is named among the interpreter invocations where the standard scripts are listed', () => {
     const judge = pages.find(page => page.name === 'judge.md')!
     expect(judge.text).toMatch(/`bun run`, `npx`, `pnpx`, and `bunx` are interpreter invocations/)
+  })
+})
+
+describe('the reasons a reading refuses with', () => {
+  it('are quoted on judge-03.md as an approver reads them (fix brief 4)', () => {
+    const page = pages.find(item => item.name === 'judge-03.md')!.text
+    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config]) {
+      expect(page, reason).toContain(`"${reason}"`)
+    }
   })
 })

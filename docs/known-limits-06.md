@@ -25,17 +25,35 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   sees, and Python packages carry no version.
 - Imports are read by their text: a computed `require(name)`, an `importlib` call, and the imports
   of Perl, Ruby, PHP, or Lua code are not followed. Past 50 files or 512 KiB, no stage is asked.
-- Code a pipe hands the interpreter is not read, as in `cat job.py | python3`: a stage reads the
-  shell text alone. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text, and a
-  heredoc only on the interpreter's own statement, with no other heredoc before it on its line.
+- Shell text, a shell's `-c` text or a `script_run` bash body, is rated only when it is one simple
+  command: one statement, with no list or pipe (`;`, `&&`, `||`, `|`, `&`, or a second line), no
+  group, subshell, function, loop, or condition, and no substitution or expansion; it may carry
+  leading assignments, one input (a file, a heredoc, or a here-string), and output redirections,
+  and its command, behind `env`, `timeout`, `nice`, `nohup`, `stdbuf`, `exec`, or `command`, is the
+  interpreter. Anything else is not rated: `cat job.py | python3`, `cd sub && node x.js`, and
+  `python3 $(echo a).py` each ask a person, and an allowed command under `approval.quickJudge all`
+  then runs unscreened. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text.
+  The `-c` text of a C shell, fish, or a busybox shell applet is never rated, nor text a shell runs
+  with an option such as `-i`, `-l`, `-k`, or `-x`.
 - A call over 160 KiB of JSON is not sent to Jev; the thorough model may still rate it.
-- A call that changes its working directory anywhere in it (`cd`, `pushd`, `env -C`, `sudo -D`,
-  or `--cwd`), or sets a variable that changes what code runs, is not rated: an ask goes to a
-  person, and an allowed command under `approval.quickJudge all` runs unscreened.
+- A call that changes its working directory anywhere in it (`cd`, `chdir`, `pushd`, `env -C`,
+  `sudo -D`, or `--cwd`), or sets a variable that changes what code runs (an exported bash function
+  among them), is not rated, with the same result.
 - The reader fails closed on what it does not model, with the same result: an interpreter option it
-  does not know, a runtime that loads variables from a file (`--env-file`), more than 256 variables
-  set, a bunfig.toml it cannot parse, or a parenthesised import list over 200 lines. bun's global
-  config file is not read.
+  does not know, an option before a runner's package, or before the operand of a package that is no
+  runtime (`npx eslint --fix .`); a subcommand that runs code it does not follow (`bun test`,
+  `deno task`, or `bun x`); an interactive flag (`python3 -i`, `node -i -e`, `lua -i`, or
+  `php -a`); code on an input nothing on its statement feeds (`python3 -`); an import naming a URL,
+  or a path holding `?`, `#`, or `%`; a runtime that loads variables from a file (`--env-file`);
+  more than 256 variables set; a package.json or bunfig.toml it cannot parse whole; bun's config
+  named any way but `--config=<file>`; a script, import, or redirected file whose name holds a
+  backslash; and a parenthesised import list over 200 lines. bun's global config file is not read.
+- Compiled Python beside a module the reader would show (`__pycache__/<name>.*.pyc`, `<name>.pyc`,
+  or an extension module) is not rated either, since Python may run it in place of the source.
+  Python writes those caches itself, so a tree it has already run asks a person until they are
+  removed.
+- `node .` at the root of the workspace or a mount asks: node tries the file beside that folder
+  first, which lies beyond what the reader sees.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
   under `approval.quickJudge all` in automated mode, or when the destructive list names them.
 

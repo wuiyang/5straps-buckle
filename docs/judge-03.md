@@ -63,6 +63,20 @@ credentials the display hides hidden wherever it is kept or shown, the cache inc
 2,000 characters (ending `[cut]` on a line of its own). The report to Rings does not carry the
 verdict yet.
 
+## Why no stage was shown a call
+
+An `unavailable` reason says why no stage rated a command; the ask then goes to a person, and an
+allowed command under `approval.quickJudge all` runs unscreened. Shell text is rated only as one
+simple command (one statement, at most one input, no pipe, list, group, substitution, or
+expansion), as [what it reads](judge-02.md) describes. Besides a variable that changes what code
+runs, a change of working directory, code past the caps, and a file it cannot find or read, the
+reader's reasons include: "shell text the
+reader does not rate whole", "an option the reader does not know", "a subcommand the reader does
+not model", "an interactive flag reads standard input as code", "the code the interpreter runs
+comes from standard input the reader cannot place", "an import the reader does not model", "the
+code runs compiled Python the reader cannot show", and "a config file the reader could not parse".
+A reason is cut to 500 characters, never inside an escape it quotes.
+
 ## Cost
 
 Jev costs $0.042 per million input tokens, and its output is free, so one rating of a few
