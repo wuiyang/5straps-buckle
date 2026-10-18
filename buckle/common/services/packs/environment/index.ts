@@ -1,4 +1,4 @@
-import { isAbsolute } from 'pathe'
+import { basename, isAbsolute } from 'pathe'
 import { z } from 'zod'
 import type { HostEnvironment } from '../../../domain/environment.js'
 import type { ResolvedProgram } from '../../../domain/executable.js'
@@ -18,7 +18,7 @@ export function createEnvironmentPack(input: { command: string; validator: Resol
       name: 'env_validate',
       description: 'Validate environment configuration with the owner-configured Varlock executable. Returns only validity; no values or validator output.',
       risk: 'execute', input: z.object({}).strict(),
-      effects: () => [{ kind: 'exec', command: input.command, args: ['load', '--agent'] }],
+      effects: () => [{ kind: 'exec', command: input.command, args: ['load', '--agent'], shownAs: basename(input.command) }],
       run: async (_args, context) => {
         if (!isAbsolute(input.command)) throw new ToolInputError('The owner must configure an absolute validator executable path')
         const { validator } = input

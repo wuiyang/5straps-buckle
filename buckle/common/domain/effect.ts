@@ -14,14 +14,21 @@ export type ToolEffect =
    */
   | { kind: 'write_path'; path: string; host?: true }
   | { kind: 'network'; url: string }
-  | { kind: 'exec'; command: string; args: string[] }
+  | ExecEffect
   | { kind: 'process_probe' }
+
+/**
+ * A program run. `shownAs`: the word the decision AI's stages are shown in place of `command` where `command` is a host
+ * path Buckle supplies itself (its own node, the owner's validator, an absolute agent-browser), never the agent's own
+ * text (fix brief 1, item 16); approvers, the rules, grants, and the standard-script match read `command`.
+ */
+export interface ExecEffect { kind: 'exec'; command: string; args: string[]; shownAs?: string }
 
 export type ResolvedEffect =
   | { kind: 'read_path'; path: string; directory: string }
   | { kind: 'write_path'; path: string; directory: string }
   | { kind: 'network'; url: URL }
-  | { kind: 'exec'; command: string; args: string[] }
+  | ExecEffect
   | { kind: 'process_probe' }
 
 /**

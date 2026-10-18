@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'pathe'
+import { basename, isAbsolute, join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
@@ -173,7 +173,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           if (mode !== null) assertHeld(mode)
           if ('refusal' in allowedDomains) throw new ToolInputError(allowedDomains.refusal, { code: 'PERMISSION_DENIED' })
           return [
-            { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args] },
+            { kind: 'exec', command: options.agentBrowserCommand, args: [input.command, ...input.args], ...(isAbsolute(options.agentBrowserCommand) ? { shownAs: basename(options.agentBrowserCommand) } : {}) },
             ...browserEffects(input.command, input.args),
           ]
         },

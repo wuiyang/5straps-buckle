@@ -215,7 +215,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
           const runtime = RUNTIMES[input.runtime](input.script)
           return [
             ...input.sensitiveFiles.map(path => ({ kind: 'read_path' as const, path })),
-            { kind: 'exec', command: runtime.command, args: runtime.args },
+            // The node runtime is Buckle's own binary, a host path no stage of the decision AI is shown.
+            { kind: 'exec', command: runtime.command, args: runtime.args, ...(input.runtime === 'node' ? { shownAs: 'node' } : {}) },
             { kind: 'write_path', path: input.cwd },
           ]
         },

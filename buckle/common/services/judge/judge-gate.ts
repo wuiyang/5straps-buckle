@@ -157,9 +157,11 @@ export function createJudgeGate(input: {
     const code = standardScript ? { kind: 'read' as const, reading: { inline: null, files: [], packages: [] } } : readInterpreterCode({ forms: running, shellForms: allForms(forms), cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
+    // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.
+    const program = effect.shownAs ?? effect.command
     return {
-      command: shownCommand(effect.command, effect.args),
-      argv: shownWords(effect.command, effect.args),
+      command: shownCommand(program, effect.args),
+      argv: shownWords(program, effect.args),
       interpreters,
       ...code.reading,
       env: shownVariables(variables),

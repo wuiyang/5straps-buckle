@@ -70,13 +70,13 @@ the agent gave it with a secret's hidden; each file read, with its path inside t
 Socket's view; whether it is a standard script; the workspace's command lists; the working
 directory and the mounts as the sandbox names them; and Buckle's own summary of the call. So the
 content of the workspace's own scripts leaves the machine. Never: a value from the node's own
-environment, a file the
-agent could not read, a token, or a key in the body (each key goes in its `Authorization`
-header). A workspace shown at its real path is named `/workspace`; a host path the agent typed
-into the command itself stays in the command.
+environment, a file the agent could not read, a token, or a key in the body (each key goes in its
+`Authorization` header). A workspace shown at its real path is named `/workspace`, and Buckle's
+own programs, such as its node, by name alone; a host path the agent typed into the command itself
+stays in the command.
 
 Jev reads at most 64,000 tokens a request. Buckle sends it at most 160 KiB of JSON, about 40,000
-tokens; a larger call is not sent to Jev at all, and the routing goes on without it. Each
+tokens; a larger call is not sent to Jev, and the routing goes on without it. Each
 `<image:` in it is sent as `<image :`, as TypeSafe's SDK would refuse it as a picture reference.
 
 ## The fixed instructions

@@ -5,6 +5,7 @@ import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { judgeCachePath } from '../common/services/judge/judge-cache.js'
+import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -249,6 +250,23 @@ describe('what the judge never rates', () => {
     expect(response).toMatchObject({ outcome: 'approval_required' })
     expect(judge.judge).not.toHaveBeenCalled()
     expect(entry.judge).toMatchObject({ unavailable: 'the code closure exceeds what the judge reads', passed: false })
+  })
+})
+
+describe('a host path Buckle supplies itself', () => {
+  it('is shown to no stage: a script_run node call names node, never Buckle\'s own binary', async () => {
+    const judge = fakeJudge(() => verdict('danger', 0.95))
+    const runtime = await runtimeOf(node(), judge)
+    const response = await runtime.invoke({ request: { requestId: 'script-node', approvalTokens: [], tool: 'script_run', args: { runtime: 'node', script: 'console.log(1)' } }, sessionId: 'judge', approvalWait: { mode: 'none' } })
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(judge.judge).toHaveBeenCalledTimes(1)
+    expect(judge.shown[0]).toMatchObject({ command: "node --input-type=module --eval 'console.log(1)'", argv: ['node', '--input-type=module', '--eval', 'console.log(1)'], inline: 'console.log(1)' })
+    expect(JSON.stringify(judge.shown[0])).not.toContain(process.execPath)
+  })
+
+  it('names the owner\'s validator by its basename to a stage, while the rules and approvers keep its path', () => {
+    const pack = createEnvironmentPack({ command: '/opt/tools/varlock', validator: { path: null, reason: 'not used here' } as never, cwd: tmpdir(), runProcess: vi.fn() as never, environment: () => ({}) })
+    expect(pack.tools[0]!.prepare({}).effects).toEqual([{ kind: 'exec', command: '/opt/tools/varlock', args: ['load', '--agent'], shownAs: 'varlock' }])
   })
 })
 
