@@ -362,27 +362,29 @@ const STDIN_SCRIPT_MARKER = new Set(['-', '/dev/stdin'])
 const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
 
 /**
- * Whether an interpreter option is one the reader models (fix brief 3, R7): an inline flag, a value option, a preload,
- * or a flag the interpreter documents. node also takes `--no-<boolean>` and underscores for dashes; python's short
- * options cluster, so an all-flag cluster is known and a cluster carrying a value or code letter is not. A `--opt=value`
- * long option is self-contained, so it is matched by the part before `=`. Anything else is unknown, and the reading
- * fails closed rather than guess which word is the script.
+ * An option word as the interpreter matches it (fix brief 4, G1): a long option up to its `=`, node's underscores read
+ * as dashes as node reads them (`--redirect_warnings` is `--redirect-warnings`), with the value after the `=`; any
+ * other word as it is, with no value. Every table lookup uses this one key, so no spelling is known to one check and
+ * missed by another.
  */
-function knownOption(program: string, word: string): boolean {
-  if (program === 'python') {
-    if (word === '-W' || word === '-X') return true
-    if (PYTHON_FLAG_CLUSTER.test(word)) return true
-    const head = word.split('=')[0]!
-    return head === '--help' || head === '--version' || head === '--check-hash-based-pycs'
-  }
-  let core = word.startsWith('--') ? word.split('=')[0]! : word
-  if (program === 'node') core = core.replace(/_/g, '-')
-  if (program === 'node' && core.startsWith('--no-')) return FLAG_OPTIONS.node!.includes(`--${core.slice(5)}`)
-  const inline = INLINE_FLAGS[program] ?? []
-  const preloading = PRELOAD_OPTIONS[program] ?? []
-  const values = VALUE_OPTIONS[program] ?? []
-  const flags = FLAG_OPTIONS[program] ?? []
-  return inline.includes(core) || preloading.includes(core) || values.includes(core) || flags.includes(core)
+function optionKey(program: string, word: string): { key: string; value: string | null } {
+  if (!word.startsWith('--')) return { key: word, value: null }
+  const equals = word.indexOf('=')
+  const head = equals > 0 ? word.slice(0, equals) : word
+  return { key: program === 'node' ? head.replace(/_/g, '-') : head, value: equals > 0 ? word.slice(equals + 1) : null }
+}
+
+/**
+ * Whether an interpreter option, by its key (optionKey), is one the reader models (fix brief 3, R7): an inline flag, a
+ * value option, a preload, or a flag the interpreter documents. node also takes `--no-<boolean>`; python's short
+ * options cluster, so an all-flag cluster is known and a cluster carrying a value or code letter is not. Anything else
+ * is unknown, and the reading fails closed rather than guess which word is the script.
+ */
+function knownOption(program: string, key: string): boolean {
+  if (program === 'python') return key === '-W' || key === '-X' || PYTHON_FLAG_CLUSTER.test(key) || key === '--help' || key === '--version' || key === '--check-hash-based-pycs'
+  if (program === 'node' && key.startsWith('--no-')) return FLAG_OPTIONS.node!.includes(`--${key.slice(5)}`)
+  const tables = [INLINE_FLAGS[program], PRELOAD_OPTIONS[program], VALUE_OPTIONS[program], FLAG_OPTIONS[program]]
+  return tables.some(table => table?.includes(key) === true)
 }
 
 /**
@@ -458,13 +460,14 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   const operandOf = (name: string): Operand => ({ name, required: true, runtime: program })
   for (let index = 0; index < args.length; index++) {
     const word = args[index]!
-    const equals = word.startsWith('--') ? word.indexOf('=') : -1
-    if (flags.includes(word) && index + 1 < args.length) {
+    // The option as the interpreter matches it, once per word, for every table below (fix brief 4, G1).
+    const { key, value } = optionKey(program, word)
+    if (flags.includes(key) && value === null && index + 1 < args.length) {
       inline.push(args[++index]!)
       continue
     }
-    if (equals > 0 && flags.includes(word.slice(0, equals))) {
-      inline.push(word.slice(equals + 1))
+    if (value !== null && flags.includes(key)) {
+      inline.push(value)
       continue
     }
     if (program === 'python' && word === '-m' && index + 1 < args.length) {
@@ -518,15 +521,15 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     }
     if (seeking) {
       // A preload runs before the script, so it is found as the entry is (fix brief 2, H7).
-      if (preloading.includes(word) && index + 1 < args.length) {
+      if (preloading.includes(key) && value === null && index + 1 < args.length) {
         preloads.push(args[++index]!)
         continue
       }
-      if (equals > 0 && preloading.includes(word.slice(0, equals))) {
-        preloads.push(word.slice(equals + 1))
+      if (value !== null && preloading.includes(key)) {
+        preloads.push(value)
         continue
       }
-      if (valueOptions.includes(word) && index + 1 < args.length) {
+      if (valueOptions.includes(key) && value === null && index + 1 < args.length) {
         candidates.push(word, args[++index]!)
         continue
       }
@@ -542,9 +545,9 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     }
     // While seeking the script, an option in none of the interpreter's tables could take the next word as its value and
     // hide the script that runs, so the reading fails closed (fix brief 3, R7).
-    if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, word)) unknownOption = true
+    if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, key)) unknownOption = true
     candidates.push(word)
-    if (equals > 0) candidates.push(word.slice(equals + 1))
+    if (value !== null) candidates.push(value)
   }
   // A C shell's `-c` text, and a busybox or toybox shell applet's, is never rated: the grammar is no parser of those
   // shells (fix brief 4, P).

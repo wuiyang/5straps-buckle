@@ -273,6 +273,11 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['python3', '-Zzz', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false })
     // --redirect-warnings takes a value, so its value is not the script; the redirected file is.
     expect(paths(shell('node --redirect-warnings notes.txt < from-stdin.js'))).toEqual(['/workspace/from-stdin.js'])
+    // node reads underscores as dashes in an option's name, and so does every table lookup (fix brief 4, G1).
+    expect(paths(shell('node --redirect_warnings notes.txt - < from-stdin.js'))).toEqual(['/workspace/from-stdin.js'])
+    expect(paths(shell('node --redirect_warnings notes.txt < from-stdin.js'))).toEqual(['/workspace/from-stdin.js'])
+    expect(read(['node', '--experimental_loader', './missing.mjs', 'build.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(reading(read(['node', '--input_type', 'module', '-e', '1']))).toMatchObject({ inline: '1', files: [] })
     // A known flag and a self-contained --opt=value are read, not refused.
     expect(reading(read(['node', '--enable-source-maps', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
     expect(reading(read(['node', '--input-type=module', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
