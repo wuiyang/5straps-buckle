@@ -36,7 +36,7 @@ function reading(result: CodeRead) {
 }
 
 describe('the code a JavaScript or TypeScript call runs', () => {
-  it('reads the script and its local imports transitively, a TypeScript source for a .js specifier, index files, JSON, and names bare packages', () => {
+  it('reads the script and its local imports transitively under tsx: a TypeScript source for a .js specifier, index files, JSON, and bare packages named', () => {
     const { read } = workspace({
       'app.mjs': "import { util } from './lib/util.js'\nimport _ from 'lodash'\nconst data = require('./data.json')\nawait import('./late.mjs')\n",
       'lib/util.ts': "export { deep } from '../deep'\nimport { readFile } from 'node:fs/promises'\nexport const util = 1\n",
@@ -44,7 +44,8 @@ describe('the code a JavaScript or TypeScript call runs', () => {
       'data.json': '{"a": 1}\n',
       'late.mjs': 'export {}\n',
     })
-    const code = reading(read(['node', 'app.mjs']))
+    // tsx resolves a .js specifier to its TypeScript source and tries extensions and index files; node does neither (fix brief 3, F1).
+    const code = reading(read(['tsx', 'app.mjs']))
     expect(code.files.map(file => file.path)).toEqual(['/workspace/app.mjs', '/workspace/lib/util.ts', '/workspace/late.mjs', '/workspace/data.json', '/workspace/deep/index.ts'])
     expect(code.packages.map(item => item.name)).toEqual(['@scope/pkg', 'lodash', 'node:fs'])
     expect(code.inline).toBeNull()
@@ -60,6 +61,32 @@ describe('the code a JavaScript or TypeScript call runs', () => {
     const { read } = workspace({ 'helper.cjs': 'module.exports = 1\n', 'scripts/gen.ts': "import './shared.ts'\n", 'scripts/shared.ts': 'export {}\n' })
     expect(reading(read(['node', '-e', "require('./helper.cjs')"]))).toMatchObject({ inline: "require('./helper.cjs')", files: [{ path: '/workspace/helper.cjs' }] })
     expect(reading(read(['npx', 'tsx', 'scripts/gen.ts']))).toMatchObject({ packages: [{ name: 'tsx', version: null, socket: null }], files: [{ path: '/workspace/scripts/gen.ts' }, { path: '/workspace/scripts/shared.ts' }] })
+  })
+
+  it('resolves a file\'s imports by node\'s own rules under node: require as CommonJS, import by the exact name (fix brief 3, F1)', () => {
+    const { read } = workspace({
+      'uses-require.js': "require('./lib')\n", 'lib.mjs': 'export {}\n', 'lib/index.js': 'module.exports = 1\n',
+      'uses-main.js': "require('./tool')\n", 'tool/package.json': '{"main":"run.js"}', 'tool/run.js': 'module.exports = 2\n', 'tool/index.js': 'nope\n',
+      'folder.mjs': "import './lib'\n", 'bare-name.mjs': "import './other'\n", 'other.js': 'export {}\n',
+      'exact.mjs': "import './other.js'\nawait import('./lib.mjs')\n",
+      'esm/package.json': '{"type":"module"}', 'esm/app.js': "import './dep.js'\n", 'esm/dep.js': 'export {}\n', 'esm/loose.js': "import './dep'\n",
+      'uses-ts.js': "require('./util')\n", 'util.ts': 'export {}\n',
+    })
+    const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
+    // node's require tries lib.js, lib.json, lib.node, then the folder: it never loads lib.mjs, so lib/index.js is shown.
+    expect(files(['node', 'uses-require.js'])).toEqual(['/workspace/uses-require.js', '/workspace/lib/index.js'])
+    expect(files(['node', 'uses-main.js'])).toEqual(['/workspace/uses-main.js', '/workspace/tool/run.js'])
+    // An ES module import tries no extension, index, or folder, so a name that is no file refuses.
+    expect(read(['node', 'folder.mjs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.missing, truncated: false })
+    expect(read(['node', 'bare-name.mjs'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.missing, truncated: false })
+    expect(files(['node', 'exact.mjs'])).toEqual(['/workspace/exact.mjs', '/workspace/other.js', '/workspace/lib.mjs'])
+    // A .js file under "type": "module" is read the same way: its import names the file exactly.
+    expect(files(['node', 'esm/app.js'])).toEqual(['/workspace/esm/app.js', '/workspace/esm/dep.js'])
+    expect(read(['node', 'esm/loose.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.missing, truncated: false })
+    // The runtime is carried with each file: node loads no TypeScript source, so the require names nothing and refuses;
+    // tsx, which keeps the wider list, loads util.ts.
+    expect(read(['node', 'uses-ts.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.missing, truncated: false })
+    expect(files(['tsx', 'uses-ts.js'])).toEqual(['/workspace/uses-ts.js', '/workspace/util.ts'])
   })
 
   it('refuses an import naming no file, so the call asks', () => {

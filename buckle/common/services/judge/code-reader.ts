@@ -79,7 +79,10 @@ function readCode(input: CodeInput): CodeRead {
   const inline: string[] = []
   // Each package by name, with every real folder an importer looks its version up from, or null for none (Python).
   const packages: Packages = new Map()
-  const queue: Array<{ real: string; language: Language }> = []
+  // Each file to read, with the runtime whose rules resolve what it imports: the entry's program, or for a runner the
+  // package it runs; a file inherits its importer's (fix brief 3, F1).
+  const queue: Array<{ real: string; language: Language; runtime: string }> = []
+  const enqueue = (found: Found, runtime: string) => { for (const item of found) queue.push({ ...item, runtime }) }
   for (const [command = '', ...args] of input.forms) {
     const program = programOf(command)
     const read = argumentsOf(program, args)
@@ -89,16 +92,17 @@ function readCode(input: CodeInput): CodeRead {
     inline.push(...read.inline)
     for (const name of read.packages) named(packages, name, cwd)
     const language = languageOfProgram(program)
+    const runtime = RUNNERS.has(program) ? programOf(read.packages[0] ?? '') : program
     // `python -m a.b`: the module's file under the working directory, with its package's __main__.py, else a package.
     for (const module of read.modules) {
       const files = pythonModule({ module, roots: [cwd], view, main: true })
       if (files.length === 0) named(packages, module.split('.')[0]!, null)
-      queue.push(...files)
+      enqueue(files, runtime)
     }
     for (const preload of read.preloads) {
       const found = preloadOf(program, preload, { cwd, view, packages })
       if (typeof found === 'string') return refused(found)
-      if (found !== null) queue.push({ real: found.real, language: 'js' })
+      if (found !== null) queue.push({ real: found.real, language: 'js', runtime })
     }
     // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
     // it, the code that runs is unknown, so the call asks.
@@ -106,12 +110,12 @@ function readCode(input: CodeInput): CodeRead {
       const entry = scriptEntry(program, name, cwd, view)
       if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
       if (entry === 'none') return refused(CODE_REFUSALS.notFound)
-      queue.push({ real: entry.real, language })
+      queue.push({ real: entry.real, language, runtime })
     }
     if (read.operand !== null) {
       const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
       if (entry === 'outside' || entry === 'unreadable') return refused(CODE_REFUSALS.unreadable)
-      if (typeof entry === 'object') queue.push({ real: entry.real, language })
+      if (typeof entry === 'object') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
       else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return refused(CODE_REFUSALS.notFound)
     }
     // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
@@ -119,12 +123,12 @@ function readCode(input: CodeInput): CodeRead {
     for (const name of read.candidates) {
       const located = view.locate(name, cwd)
       if (located === 'outside') return refused(CODE_REFUSALS.unreadable)
-      if (typeof located === 'object') queue.push({ real: located.real, language })
+      if (typeof located === 'object') queue.push({ real: located.real, language, runtime })
     }
     for (const code of read.inline) {
-      const found = importsOf(language, code, { file: null, cwd, view, packages })
+      const found = importsOf(language, code, { file: null, cwd, view, packages, runtime })
       if (typeof found === 'string') return refused(found)
-      queue.push(...found)
+      enqueue(found, runtime)
     }
   }
   const fed = fedInputsOf(input.shellForms ?? [], input.forms)
@@ -133,16 +137,16 @@ function readCode(input: CodeInput): CodeRead {
   if (fed.unknown) return refused(CODE_REFUSALS.notFound)
   for (const { program, code } of fed.inline) {
     inline.push(code)
-    const found = importsOf(languageOfProgram(program), code, { file: null, cwd, view, packages })
+    const found = importsOf(languageOfProgram(program), code, { file: null, cwd, view, packages, runtime: program })
     if (typeof found === 'string') return refused(found)
-    queue.push(...found)
+    enqueue(found, program)
   }
   // A file redirected into an interpreter's input is its script (`python3 < job.py`).
   for (const { program, name } of fed.scripts) {
     const located = view.locate(name, cwd)
     if (located === 'outside') return refused(CODE_REFUSALS.unreadable)
     if (located === 'none') return refused(CODE_REFUSALS.notFound)
-    queue.push({ real: located.real, language: languageOfProgram(program) })
+    queue.push({ real: located.real, language: languageOfProgram(program), runtime: program })
   }
   const files: JudgeFile[] = []
   const seen = new Set<string>()
@@ -164,9 +168,9 @@ function readCode(input: CodeInput): CodeRead {
     const content = buffer.toString('utf8')
     files.push({ path, sha256: createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length, content })
     const language = languageOfFile(next.real, content) ?? next.language
-    const found = importsOf(language, content, { file: next.real, cwd, view, packages })
+    const found = importsOf(language, content, { file: next.real, cwd, view, packages, runtime: next.runtime })
     if (typeof found === 'string') return refused(found)
-    queue.push(...found)
+    enqueue(found, next.runtime)
   }
   return { kind: 'read', reading: { inline: inline.length > 0 ? inline.join('\n') : null, files, packages: installed(packages, view) } }
 }
@@ -793,36 +797,53 @@ function manifestVersion(real: string, view: CodeView): string | null {
  * The local files one piece of code imports, by its language, each with the language it is read as; the bare
  * specifiers are added to `packages`. A string where an import names a local file that does not exist.
  */
-function importsOf(language: Language, code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
+/** Where an import is resolved from: its file (null for inline code), the working directory, the view, the packages met, and the runtime whose rules resolve it. */
+interface Place { file: string | null; cwd: string; view: CodeView; packages: Packages; runtime?: string }
+
+function importsOf(language: Language, code: string, place: Place): Found | string {
   if (language === 'js') return jsImports(code, place)
   if (language === 'python') return pythonImports(code, place)
   if (language === 'shell') return shellSources(code, place)
   return []
 }
 
-const JS_SPECIFIERS = [
+/** The ES module statements: `import`, `export from`, and `import()`, which node resolves by the exact name. */
+const JS_MODULE_SPECIFIERS = [
   /\bimport\s+(?:[\w*{}\s,$]+?\s+from\s+)?['"]([^'"\n]+)['"]/g,
   /\bexport\s+[\w*{}\s,$]+?\s+from\s+['"]([^'"\n]+)['"]/g,
   /\bimport\(\s*['"]([^'"\n]+)['"]\s*\)/g,
-  /\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g,
 ]
+/** CommonJS `require()`, which node resolves with its extensions, a folder's main, and its index files. */
+const JS_REQUIRE_SPECIFIER = /\brequire\(\s*['"]([^'"\n]+)['"]\s*\)/g
 const JS_EXTENSIONS = ['.js', '.mjs', '.cjs', '.ts', '.mts', '.cts', '.json']
 /** A TypeScript project imports `./a.js` for the `./a.ts` it compiles to it. */
 const TS_SOURCES: Readonly<Record<string, readonly string[]>> = { '.js': ['.ts', '.tsx'], '.mjs': ['.mts'], '.cjs': ['.cts'] }
 
-function jsImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
+/**
+ * The local files one piece of JavaScript imports (fix brief 3, F1). Under node the statement decides the rules, as node's
+ * own loaders do, whatever the file's package.json `type` says: `import`, `export from`, and `import()` name a file
+ * exactly, with no extension, index, or folder tried (ERR_UNSUPPORTED_DIR_IMPORT), so a name that is no file refuses;
+ * `require()` follows node's CommonJS order (nodeEntry): the name, `.js`, `.json`, `.node`, a folder's main, then its
+ * index. tsx, ts-node, bun, and deno resolve more widely, so they keep the wider list (jsCandidates). A file node never
+ * loads, such as a `lib.mjs` beside the `lib/` a require runs, is never shown in place of the one it runs.
+ */
+function jsImports(code: string, place: Place): Found | string {
   const found: Found = []
   const base = place.file === null ? place.cwd : dirname(place.file)
-  for (const pattern of JS_SPECIFIERS) {
+  const node = place.runtime === 'node'
+  const statements: Array<{ pattern: RegExp; resolve: (specifier: string) => Located | 'unreadable' }> = [
+    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, resolve: (specifier: string) => (node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
+    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view) : firstLocated(place.view, jsCandidates(specifier), base)) },
+  ]
+  for (const { pattern, resolve } of statements) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
         named(place.packages, packageName(specifier), base)
         continue
       }
-      const located = jsCandidates(specifier).map(name => place.view.locate(name, base))
-      const file = located.find(item => typeof item === 'object')
-      if (file) found.push({ real: file.real, language: null })
-      else return located.includes('outside') ? CODE_REFUSALS.unreadable : CODE_REFUSALS.missing
+      const file = resolve(specifier)
+      if (typeof file === 'object') found.push({ real: file.real, language: null })
+      else return file === 'none' ? CODE_REFUSALS.missing : CODE_REFUSALS.unreadable
     }
   }
   return found
@@ -866,7 +887,7 @@ function groupedNames(code: string, from: number): string | null {
   return null
 }
 
-function pythonImports(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
+function pythonImports(code: string, place: Place): Found | string {
   const found: Found = []
   const beside = place.file === null ? place.cwd : dirname(place.file)
   for (const [, list = ''] of code.matchAll(PYTHON_IMPORT)) {
@@ -930,7 +951,7 @@ function pythonModule(input: { module: string; roots: readonly string[]; view: C
 
 const SHELL_SOURCE = /(?:^|[\n;&|(]|\bthen|\bdo|\belse)[ \t]*(?:source|\.)[ \t]+(['"]?)([^\s'";&|)]+)\1/g
 
-function shellSources(code: string, place: { file: string | null; cwd: string; view: CodeView; packages: Packages }): Found | string {
+function shellSources(code: string, place: Place): Found | string {
   const found: Found = []
   for (const [, , name = ''] of code.matchAll(SHELL_SOURCE)) {
     // A name an expansion supplies exists only once the shell runs; the judge reads the line that names it.
