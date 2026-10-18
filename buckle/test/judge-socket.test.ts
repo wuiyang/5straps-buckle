@@ -43,8 +43,8 @@ describe('the Socket scanner', () => {
   it('looks up the key\'s organization once, then posts the batch with alerts, the key as basic auth alone', async () => {
     const { fetch, sent } = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : ndjson(artifact(LEFT_PAD), JSON.stringify({ _type: 'summary', value: { purl_input: 1, resolved: 1, errors: {} } }))))
     const scanner = createSocketScanner({ apiKey: KEY, fetch })
-    expect(await scanner.scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, SUMMARY]]))
-    expect(await scanner.scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, SUMMARY]]))
+    expect(await scanner.scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, SUMMARY]]), failed: false })
+    expect(await scanner.scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, SUMMARY]]), failed: false })
     expect(sent.map(item => `${item.method} ${item.url}`)).toEqual([
       'GET https://api.socket.dev/v0/organizations',
       'POST https://api.socket.dev/v0/orgs/owner-org/purl?alerts=true',
@@ -69,26 +69,27 @@ describe('the Socket scanner', () => {
   it('tries a 429 or a 5xx once more, and answers null for every package on an error, a refusal, or a timeout', async () => {
     let posts = 0
     const retried = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : ++posts === 1 ? new Response('busy', { status: 429 }) : ndjson(artifact(LEFT_PAD))))
-    expect(await createSocketScanner({ apiKey: KEY, fetch: retried.fetch }).scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, SUMMARY]]))
+    expect(await createSocketScanner({ apiKey: KEY, fetch: retried.fetch }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, SUMMARY]]), failed: false })
     expect(posts).toBe(2)
 
     const refused = fakeFetch(() => Response.json({ error: { message: `bad key ${KEY}` } }, { status: 401 }))
-    expect(await createSocketScanner({ apiKey: KEY, fetch: refused.fetch }).scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, null]]))
+    // Each failure is told apart from no summary, so a verdict reached without Socket's view is not kept (fix brief 2, H11).
+    expect(await createSocketScanner({ apiKey: KEY, fetch: refused.fetch }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: true })
     expect(refused.sent).toHaveLength(1)
 
     const broken = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : new Response('not json at all\n{"_type":"purlError","value":{"error":"x","inputPurl":"y","retryable":false}}')))
-    expect(await createSocketScanner({ apiKey: KEY, fetch: broken.fetch }).scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, null]]))
+    expect(await createSocketScanner({ apiKey: KEY, fetch: broken.fetch }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: false })
 
     const hanging = fakeFetch(({ url }) => (url.endsWith('/v0/organizations') ? ORGANIZATIONS() : new Promise<Response>(() => {})))
     const started = performance.now()
-    expect(await createSocketScanner({ apiKey: KEY, fetch: hanging.fetch, timeoutMs: 50 }).scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, null]]))
+    expect(await createSocketScanner({ apiKey: KEY, fetch: hanging.fetch, timeoutMs: 50 }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, null]]), failed: true })
     expect(performance.now() - started).toBeLessThan(5_000)
   })
 })
 
 const fakeScanner = (summary: SocketSummary | null = SUMMARY) => {
   const asked: string[][] = []
-  const scanner: PackageScanner = { scan: vi.fn(async (purls: readonly string[]) => { asked.push([...purls]); return new Map(purls.map(purl => [purl, summary])) }) }
+  const scanner: PackageScanner = { scan: vi.fn(async (purls: readonly string[]) => { asked.push([...purls]); return { summaries: new Map(purls.map(purl => [purl, summary])), failed: false } }) }
   return { scanner, asked }
 }
 
@@ -98,9 +99,9 @@ describe('the Socket cache', () => {
     let clock = Date.parse('2026-10-18T00:00:00.000Z')
     const { scanner, asked } = fakeScanner()
     const cached = openSocketCache({ scanner, filePath, now: () => clock })
-    expect(await cached.scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, SUMMARY]]))
+    expect(await cached.scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, SUMMARY]]), failed: false })
     clock += SOCKET_CACHE_TTL_MS - 1
-    expect(await openSocketCache({ scanner, filePath, now: () => clock }).scan([LEFT_PAD])).toEqual(new Map([[LEFT_PAD, SUMMARY]]))
+    expect(await openSocketCache({ scanner, filePath, now: () => clock }).scan([LEFT_PAD])).toEqual({ summaries: new Map([[LEFT_PAD, SUMMARY]]), failed: false })
     expect(asked).toHaveLength(1)
     expect(statSync(filePath).mode & 0o777).toBe(0o600)
     clock += 1
@@ -142,14 +143,14 @@ const INPUT: JudgeInput = {
 describe('what the judge is shown of Socket', () => {
   it('a summary beside each package version, and none for a package without one', async () => {
     const { scanner, asked } = fakeScanner()
-    expect((await withSocket(INPUT, scanner)).packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: SUMMARY }, { name: 'requests', version: null, socket: null }])
+    expect((await withSocket(INPUT, scanner)).input.packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: SUMMARY }, { name: 'requests', version: null, socket: null }])
     expect(asked).toEqual([[LEFT_PAD]])
   })
 
   it(`at most ${PACKAGE_SCAN_LIMIT} packages a rating, saying so`, async () => {
     const { scanner, asked } = fakeScanner()
     const packages: JudgePackage[] = Array.from({ length: PACKAGE_SCAN_LIMIT + 2 }, (_, index) => ({ name: `p${index}`, version: '1.0.0', socket: null }))
-    const shown = await withSocket({ ...INPUT, packages }, scanner)
+    const { input: shown } = await withSocket({ ...INPUT, packages }, scanner)
     expect(asked[0]).toHaveLength(PACKAGE_SCAN_LIMIT)
     expect(shown.packagesTruncated).toBe(true)
     expect(shown.packages.filter(item => item.socket !== null)).toHaveLength(PACKAGE_SCAN_LIMIT)
@@ -157,14 +158,14 @@ describe('what the judge is shown of Socket', () => {
 
   it('a summary for each version of a package, by its own package URL', async () => {
     const summaries = new Map([[npmPackageUrl('lodash', '3.0.0'), { ...SUMMARY, alerts: [{ type: 'old', severity: 'high' }] }], [npmPackageUrl('lodash', '4.17.21'), SUMMARY]])
-    const scanner: PackageScanner = { scan: vi.fn(async () => summaries) }
-    const shown = await withSocket({ ...INPUT, packages: [{ name: 'lodash', version: '3.0.0', socket: null }, { name: 'lodash', version: '4.17.21', socket: null }] }, scanner)
+    const scanner: PackageScanner = { scan: vi.fn(async () => ({ summaries, failed: false })) }
+    const { input: shown } = await withSocket({ ...INPUT, packages: [{ name: 'lodash', version: '3.0.0', socket: null }, { name: 'lodash', version: '4.17.21', socket: null }] }, scanner)
     expect(scanner.scan).toHaveBeenCalledWith([npmPackageUrl('lodash', '3.0.0'), npmPackageUrl('lodash', '4.17.21')], undefined)
     expect(shown.packages.map(item => item.socket)).toEqual([summaries.get(npmPackageUrl('lodash', '3.0.0')), SUMMARY])
   })
 
   it('nothing, and no error, where the scanner fails', async () => {
     const failing: PackageScanner = { scan: () => Promise.reject(new Error('down')) }
-    expect((await withSocket(INPUT, failing)).packages.map(item => item.socket)).toEqual([null, null])
+    expect(await withSocket(INPUT, failing)).toMatchObject({ input: { packages: [{ socket: null }, { socket: null }] }, failed: true })
   })
 })

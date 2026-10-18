@@ -62,10 +62,11 @@ export function openSocketCache(input: { scanner: PackageScanner; filePath: stri
         if (hit && fresh(hit.at)) answers.set(purl, hit.summary)
         else asked.push(purl)
       }
-      if (asked.length === 0) return answers
+      if (asked.length === 0) return { summaries: answers, failed: false }
       const scanned = await input.scanner.scan(asked, signal)
-      const given = asked.flatMap(purl => { const summary = scanned.get(purl) ?? null; answers.set(purl, summary); return summary === null ? [] : [{ purl, summary }] })
-      if (given.length === 0) return answers
+      const given = asked.flatMap(purl => { const summary = scanned.summaries.get(purl) ?? null; answers.set(purl, summary); return summary === null ? [] : [{ purl, summary }] })
+      const result = { summaries: answers, failed: scanned.failed }
+      if (given.length === 0) return result
       const at = now()
       try {
         await store.update((state) => {
@@ -76,7 +77,7 @@ export function openSocketCache(input: { scanner: PackageScanner; filePath: stri
       } catch (error) {
         logger.warn('Socket\'s package summaries could not be kept; they are asked for again next time', { error })
       }
-      return answers
+      return result
     },
     async clear() {
       const held = (() => { try { return store.read().entries.length } catch { return 0 } })()

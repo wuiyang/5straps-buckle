@@ -168,12 +168,32 @@ describe('the packages the code imports', () => {
     const config = node()
     withPackage(config)
     const judge = fakeJudge()
-    const scanner = { scan: vi.fn(async (purls: readonly string[]) => new Map(purls.map(purl => [purl, SUMMARY]))) }
+    const scanner = { scan: vi.fn(async (purls: readonly string[]) => ({ summaries: new Map(purls.map(purl => [purl, SUMMARY])), failed: false })) }
     const runtime = await createRuntime({ config, judge, packageScanner: scanner })
     runtimes.push(runtime)
     await call(runtime, 'node', ['job.js'])
     expect(scanner.scan.mock.calls[0]![0]).toEqual(['pkg:npm/left-pad@1.3.0'])
     expect(judge.shown[0]!.packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: SUMMARY }])
+  })
+
+  it('keep no verdict reached while Socket was unreachable, so the next call is rated again and sees the alert (fix brief 2, H11)', async () => {
+    const config = node()
+    withPackage(config)
+    const judge = fakeJudge()
+    const ALERT = { ...SUMMARY, alerts: [{ type: 'malware', severity: 'critical' }] }
+    let lookups = 0
+    const scanner = { scan: vi.fn(async (purls: readonly string[]) => (++lookups === 1 ? { summaries: new Map(purls.map(purl => [purl, null])), failed: true } : { summaries: new Map(purls.map(purl => [purl, ALERT])), failed: false })) }
+    const runtime = await createRuntime({ config, judge, packageScanner: scanner })
+    runtimes.push(runtime)
+    const first = await call(runtime, 'node', ['job.js'])
+    expect(first.entry.judge).toMatchObject({ passed: true, socket: 'unavailable' })
+    const second = await call(runtime, 'node', ['job.js'])
+    expect(judge.judge).toHaveBeenCalledTimes(2)
+    expect(judge.shown[1]!.packages).toEqual([{ name: 'left-pad', version: '1.3.0', socket: ALERT }])
+    expect(second.entry.judge).not.toHaveProperty('socket')
+    // With Socket's answer, the verdict is kept: a third call is served from the cache.
+    await call(runtime, 'node', ['job.js'])
+    expect(judge.judge).toHaveBeenCalledTimes(2)
   })
 
   it('carry no Socket summary where the node has no Socket key, and the rating still runs', async () => {

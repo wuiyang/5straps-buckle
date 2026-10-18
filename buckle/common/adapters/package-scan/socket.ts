@@ -58,28 +58,31 @@ export function createSocketScanner(options: { apiKey: string; baseUrl?: string;
   return {
     async scan(purls, signal) {
       const answers = new Map<string, SocketSummary | null>(purls.map(purl => [purl, null]))
-      if (purls.length === 0) return answers
+      if (purls.length === 0) return { summaries: answers, failed: false }
       const timeout = AbortSignal.timeout(options.timeoutMs ?? SOCKET_TIMEOUT_MS)
       const abort = signal ? AbortSignal.any([signal, timeout]) : timeout
+      // A lookup that did not get Socket's answer failed (fix brief 2, H11): a verdict reached without it is not kept.
+      const failed = { summaries: answers, failed: true }
       try {
         organization ??= organizationOf(abort).then(slug => { if (slug === null) organization = undefined; return slug }, () => { organization = undefined; return null })
         const slug = await organization
-        if (slug === null) return answers
+        if (slug === null) return failed
         const response = await requested(`/v0/orgs/${encodeURIComponent(slug)}/purl?alerts=true`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify({ components: purls.map(purl => ({ purl })) }),
           signal: abort,
         })
-        if (!response) return answers
+        if (!response) return failed
         for (const line of (await settled(response.text(), abort)).split('\n')) {
           const artifact = artifactOf(line)
           if (artifact && answers.has(artifact.purl)) answers.set(artifact.purl, artifact.summary)
         }
       } catch {
         // Advisory: the rating runs without Socket's view.
+        return failed
       }
-      return answers
+      return { summaries: answers, failed: false }
     },
   }
 }

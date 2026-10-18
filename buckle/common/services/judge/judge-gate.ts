@@ -47,6 +47,8 @@ export interface JudgedAsk {
   passedBy?: 'quick' | 'thorough'
   flagged?: true
   screened?: true
+  /** The Socket lookup for its packages failed, so a verdict it reached was used and not kept (fix brief 2, H11). */
+  socket?: 'unavailable'
 }
 
 /** The part of a call the decision AI reads: its effects, the tool and arguments, and the caller's signal. */
@@ -203,21 +205,28 @@ export function createJudgeGate(input: {
     try { return paths.resolve(typeof args.cwd === 'string' ? args.cwd : '.') } catch { return paths.root }
   }
 
-  /** One command's input, with Socket's view added at most once and only when a stage is asked rather than its cache. */
+  /**
+   * One command's input, with Socket's view added at most once and only when a stage is asked rather than its cache;
+   * `socketFailed` once that lookup failed, so no verdict reached with it is kept (fix brief 2, H11).
+   */
   function prepared(asked: JudgeInput, signal: AbortSignal | undefined) {
     let enriched: Promise<JudgeInput> | undefined
     let settled: JudgeInput | undefined
+    let failed = false
     return {
       asked,
       sent: async () => {
-        enriched ??= withSocket(asked, input.scanner, signal).then(value => (settled = value))
+        enriched ??= withSocket(asked, input.scanner, signal).then((value) => { failed = value.failed; return (settled = value.input) })
         return enriched
       },
       shown: () => settled ?? asked,
+      socketFailed: () => failed,
     }
   }
   type Prepared = ReturnType<typeof prepared>
 
+  /** A rating finished: what the stages were shown, and that the Socket lookup failed where it did. */
+  const finished = (judged: JudgedAsk, command: Prepared): JudgedAsk => ({ ...judged, input: command.shown(), ...(command.socketFailed() ? { socket: 'unavailable' as const } : {}) })
   async function thorough(command: Prepared, signal: AbortSignal | undefined): Promise<StageRating<JudgeResult>> {
     const { provider, model } = settings
     const key = judgeCacheKey({ provider, model, policyUpdatedAt: input.policy.updatedAt, asked: command.asked })
@@ -225,7 +234,7 @@ export function createJudgeGate(input: {
     if (kept && 'reasoning' in kept) return { provider, model, result: clippedResult(kept) }
     // Clipped whichever adapter answered, before it is kept, so every reader downstream sees the same bounded text.
     const result = clippedResult(await input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) }))
-    if (result.kind === 'verdict') await input.cache.set(key, result)
+    if (result.kind === 'verdict' && !command.socketFailed()) await input.cache.set(key, result)
     return { provider, model, result }
   }
 
@@ -238,7 +247,7 @@ export function createJudgeGate(input: {
     // Jev reads 64k tokens a request: past the budget it is not asked at all, and the routing goes on without it.
     if (Buffer.byteLength(JSON.stringify(state)) > QUICK_STATE_BUDGET_BYTES) return { provider, model, result: { kind: 'unavailable', reason: QUICK_OVER_BUDGET } }
     const result = await input.quickJudge!.quick(state, { model, ...(signal ? { signal } : {}) })
-    if (result.kind === 'verdict') await input.cache.set(key, result)
+    if (result.kind === 'verdict' && !command.socketFailed()) await input.cache.set(key, result)
     return { provider, model, result }
   }
 
@@ -259,15 +268,15 @@ export function createJudgeGate(input: {
     const judged: JudgedAsk = { subject: ask.subject, ...(ask.cause ? { cause: ask.cause } : {}), input: asked }
     if (quickFirst) {
       judged.quick = await quick(command, call.signal)
-      if (judgePasses(judged.quick.result)) return { ...judged, input: command.shown(), passedBy: 'quick' }
-      if (ratedDanger(judged.quick.result)) return { ...judged, input: command.shown() }
+      if (judgePasses(judged.quick.result)) return finished({ ...judged, passedBy: 'quick' }, command)
+      if (ratedDanger(judged.quick.result)) return finished(judged, command)
     }
     // An interpreter ask goes on to the thorough stage; another the quick stage rated without settling it does too.
     if (thoroughReady && (judgeable(ask) || judged.quick?.result.kind === 'verdict')) {
       judged.thorough = await thorough(command, call.signal)
       if (judgePasses(judged.thorough.result)) judged.passedBy = 'thorough'
     }
-    return { ...judged, input: command.shown() }
+    return finished(judged, command)
   }
 
   return {
@@ -296,7 +305,7 @@ export function createJudgeGate(input: {
         if (typeof asked === 'string') return { ...unread(subject, asked, 'quick'), screened: true }
         const command = prepared(asked, call.signal)
         const rating = await quick(command, call.signal)
-        return { subject, input: command.shown(), quick: rating, screened: true, ...(ratedDanger(rating.result) ? { flagged: true as const } : {}) }
+        return finished({ subject, input: asked, quick: rating, screened: true, ...(ratedDanger(rating.result) ? { flagged: true as const } : {}) }, command)
       }))
     },
     async rateOnRequest(call) {
@@ -311,7 +320,7 @@ export function createJudgeGate(input: {
       // The owner asked, so every stage that applies rates it, and both verdicts are shown.
       const [quickRating, thoroughRating] = await Promise.all([quickApplies ? quick(command, call.signal) : undefined, thoroughApplies ? thorough(command, call.signal) : undefined])
       const passedBy = thoroughRating && judgePasses(thoroughRating.result) ? 'thorough' as const : quickRating && judgePasses(quickRating.result) ? 'quick' as const : undefined
-      return { subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: command.shown(), ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }
+      return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }, command)
     },
   }
 }
@@ -419,7 +428,7 @@ export function judgeAuditOf(judged: readonly JudgedAsk[]): JudgeAudit | undefin
 /** One rating as an audit entry keeps it; `passed` says whether it ran or approved the call (on request: whether the owner's command approved it). */
 export function auditOf(item: JudgedAsk, passed = item.passedBy !== undefined): JudgeAudit {
   const quick = item.quick ? quickAuditOf(item.quick) : undefined
-  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}) }
+  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}), ...(item.socket ? { socket: item.socket } : {}) }
   if (item.thorough) {
     const { provider, model, result } = item.thorough
     const beside = { ...(quick ? { quick } : {}), ...marks }

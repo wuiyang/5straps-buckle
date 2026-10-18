@@ -9,11 +9,21 @@ export interface SocketSummary {
 }
 
 /**
+ * What one lookup answered: each package URL's summary, or null where there is none, and whether the lookup failed (a
+ * timeout, an error, or an unreachable host), apart from a scanner with no key or a package Socket does not know, which
+ * is no failure (fix brief 2, H11).
+ */
+export interface PackageScan {
+  summaries: Map<string, SocketSummary | null>
+  failed: boolean
+}
+
+/**
  * Looks up package versions by their package URLs (`pkg:npm/<name>@<version>`), each answered with Socket's summary, or
  * null where the scanner has none: no key, a timeout, an error, or a package it does not know. It never throws.
  */
 export interface PackageScanner {
-  scan(purls: readonly string[], signal?: AbortSignal): Promise<Map<string, SocketSummary | null>>
+  scan(purls: readonly string[], signal?: AbortSignal): Promise<PackageScan>
 }
 
 /** The most packages one rating looks up at Socket (D91, addendum 2 C); past it the rest keep no summary. */
@@ -28,5 +38,5 @@ export function npmPackageUrl(name: string, version: string): string {
 
 /** The scanner of a node with no Socket key: every package is answered with null. */
 export const nullPackageScanner: PackageScanner = {
-  scan: purls => Promise.resolve(new Map(purls.map(purl => [purl, null]))),
+  scan: purls => Promise.resolve({ summaries: new Map(purls.map(purl => [purl, null])), failed: false }),
 }
