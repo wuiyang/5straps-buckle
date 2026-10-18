@@ -60,6 +60,14 @@ export interface CodeView {
 
 export type Located = { real: string } | 'none' | 'outside'
 
+/** Where an interpreter's own lookup lands: a real file, nothing, or a refusal with its reason. */
+type Entry = { real: string } | 'none' | { refused: string }
+
+/** A located name as an entry: one beyond every place the agent's view reaches refuses. */
+function entryOf(located: Located): Entry {
+  return located === 'outside' ? { refused: CODE_REFUSALS.unreadable } : located
+}
+
 type Language = 'js' | 'python' | 'shell' | null
 
 /**
@@ -192,16 +200,16 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // it, the code that runs is unknown, so the call asks.
   for (const name of read.programFiles) {
     const entry = scriptEntry(program, name, cwd, view)
-    if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
     if (entry === 'none') return CODE_REFUSALS.notFound
+    if ('refused' in entry) return entry.refused
     queue.push({ real: entry.real, language, runtime })
   }
   if (read.operand !== null) {
     const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
-    if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
+    if (entry !== 'none' && 'refused' in entry) return entry.refused
     // A folder's __main__.py is imported, so its compiled form may run; the reader refuses that for a script too (fix brief 4, G12).
-    if (typeof entry === 'object' && read.operand.runtime === 'python' && compiledBeside(view, dirname(entry.real), pythonStem(entry.real))) return CODE_REFUSALS.compiledPython
-    if (typeof entry === 'object') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
+    if (entry !== 'none' && read.operand.runtime === 'python' && compiledBeside(view, dirname(entry.real), pythonStem(entry.real))) return CODE_REFUSALS.compiledPython
+    if (entry !== 'none') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
     else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return CODE_REFUSALS.notFound
   }
   // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
@@ -569,13 +577,13 @@ function runnerArguments(args: readonly string[]): Arguments {
  * Where an interpreter finds its script (fix brief 1, item 7; fix brief 2, H1 and H8), by the rules of the runtime that
  * runs it (`runtime`, the package for a runner): node's own (nodeEntry), Python's (the name, then a folder's
  * `__main__.py`), the exact name for perl, ruby, php, lua, the C shells, and awk, or the TypeScript runners'
- * (typeScriptEntry). `unreadable` where a folder's manifest is one the agent may not read.
+ * (typeScriptEntry). A refusal where a folder's manifest is one the agent may not read or the reader could not parse.
  */
-function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Located | 'unreadable' {
-  if (runtime === 'python') return firstLocated(view, [name, `${name}/__main__.py`], base)
+function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Entry {
+  if (runtime === 'python') return entryOf(firstLocated(view, [name, `${name}/__main__.py`], base))
   if (runtime === 'node') return nodeEntry(name, base, view)
   // perl, ruby, php, lua, the C shells, and awk try no extension and no folder: the name as written.
-  if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return firstLocated(view, [name], base)
+  if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return entryOf(firstLocated(view, [name], base))
   return typeScriptEntry(name, base, view)
 }
 
@@ -589,19 +597,19 @@ const NODE_EXTENSIONS = ['.js', '.json', '.node']
  * index file; and where `main` names nothing, or there is none, the folder's own index file. No ESM or TypeScript
  * sibling is tried, as node tries none: `main: "start"` beside start.mjs runs index.js.
  */
-function nodeEntry(name: string, base: string, view: CodeView): Located | 'unreadable' {
+function nodeEntry(name: string, base: string, view: CodeView): Entry {
   const withExtensions = (path: string) => [path, ...NODE_EXTENSIONS.map(extension => `${path}${extension}`)]
   const indexes = (folder: string) => NODE_EXTENSIONS.map(extension => `${folder}/index${extension}`)
   const direct = firstLocated(view, withExtensions(name), base)
-  if (direct !== 'none') return direct
+  if (direct !== 'none') return entryOf(direct)
   const main = packageMain(name, base, view)
-  if (main === 'unreadable') return main
+  if (main !== null && typeof main === 'object') return main
   if (main !== null) {
     const path = mainPath(name, main)
     const entry = firstLocated(view, [...withExtensions(path), ...indexes(path)], base)
-    if (entry !== 'none') return entry
+    if (entry !== 'none') return entryOf(entry)
   }
-  return firstLocated(view, indexes(name), base)
+  return entryOf(firstLocated(view, indexes(name), base))
 }
 
 /**
@@ -610,18 +618,18 @@ function nodeEntry(name: string, base: string, view: CodeView): Located | 'unrea
  * package.json `main` the same way, then its index file. These runners resolve more widely than node does, so the
  * reader tries the wider list.
  */
-function typeScriptEntry(name: string, base: string, view: CodeView): Located | 'unreadable' {
+function typeScriptEntry(name: string, base: string, view: CodeView): Entry {
   const candidates = jsCandidates(name)
   const indexes = candidates.slice(-JS_EXTENSIONS.length)
   const direct = firstLocated(view, candidates.slice(0, -JS_EXTENSIONS.length), base)
-  if (direct !== 'none') return direct
+  if (direct !== 'none') return entryOf(direct)
   const main = packageMain(name, base, view)
-  if (main === 'unreadable') return main
+  if (main !== null && typeof main === 'object') return main
   if (main !== null) {
     const entry = firstLocated(view, jsCandidates(mainPath(name, main)), base)
-    if (entry !== 'none') return entry
+    if (entry !== 'none') return entryOf(entry)
   }
-  return firstLocated(view, indexes, base)
+  return entryOf(firstLocated(view, indexes, base))
 }
 
 /**
@@ -652,8 +660,8 @@ function preloadOf(runtime: string, specifier: string, place: { cwd: string; vie
     return null
   }
   const entry = scriptEntry(runtime, specifier, place.cwd, place.view)
-  if (entry === 'outside' || entry === 'unreadable') return CODE_REFUSALS.unreadable
-  return entry === 'none' ? CODE_REFUSALS.notFound : entry
+  if (entry === 'none') return CODE_REFUSALS.notFound
+  return 'refused' in entry ? entry.refused : entry
 }
 
 /** bun's options that name its config file in place of the working directory's bunfig.toml. */
@@ -876,16 +884,29 @@ function tomlValue(source: string, from: number): { value: TomlValue; end: numbe
   return bare ? { value: TOML_OTHER, end: from + bare[0].length } : null
 }
 
-/** A folder's package.json `main`, or null where it has no manifest or the manifest names none. */
-function packageMain(folder: string, base: string, view: CodeView): string | null | 'unreadable' {
+/**
+ * A folder's package.json `main`, or null where it has no manifest or the manifest names none (no `main`, or an empty
+ * one). A leading byte order mark is dropped, as node drops it. A refusal where the agent may not read the manifest, and
+ * where it still does not parse or its `main` is no string (fix brief 4, G6): the reader never falls back to an index
+ * file past a manifest it could not read whole.
+ */
+function packageMain(folder: string, base: string, view: CodeView): string | null | { refused: string } {
   const located = view.locate(join(folder, 'package.json'), base)
   if (typeof located !== 'object') return null
-  if (!view.readable(located.real)) return 'unreadable'
+  if (!view.readable(located.real)) return { refused: CODE_REFUSALS.unreadable }
   const buffer = view.read(located.real, MANIFEST_LIMIT)
-  if (buffer === null) return 'unreadable'
+  if (buffer === null) return { refused: CODE_REFUSALS.unreadable }
+  const main = parsedManifest(buffer)?.main
+  if (main === undefined) return parsedManifest(buffer) === null ? { refused: CODE_REFUSALS.config } : null
+  if (typeof main !== 'string') return { refused: CODE_REFUSALS.config }
+  return main === '' ? null : main
+}
+
+/** A manifest's JSON object, a leading byte order mark dropped; null where it is no JSON object. */
+function parsedManifest(buffer: Buffer): Record<string, unknown> | null {
   try {
-    const main = (JSON.parse(buffer.toString('utf8')) as { main?: unknown }).main
-    return typeof main === 'string' && main !== '' ? main : null
+    const parsed: unknown = JSON.parse(buffer.toString('utf8').replace(/^\uFEFF/, ''))
+    return parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
   } catch {
     return null
   }
@@ -963,7 +984,7 @@ function manifestVersion(real: string, view: CodeView): string | null {
   try {
     if (!view.readable(real)) return null
     const buffer = view.read(real, MANIFEST_LIMIT)
-    const version = buffer === null ? undefined : (JSON.parse(buffer.toString('utf8')) as { version?: unknown }).version
+    const version = buffer === null ? undefined : parsedManifest(buffer)?.version
     return typeof version === 'string' && VERSION.test(version) ? version : null
   } catch {
     return null
@@ -1008,9 +1029,9 @@ function jsImports(code: string, place: Place): Found | string {
   const found: Found = []
   const base = place.file === null ? place.cwd : dirname(place.file)
   const node = place.runtime === 'node'
-  const statements: Array<{ pattern: RegExp; resolve: (specifier: string) => Located | 'unreadable' }> = [
-    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, resolve: (specifier: string) => (node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
-    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view) : firstLocated(place.view, jsCandidates(specifier), base)) },
+  const statements: Array<{ pattern: RegExp; resolve: (specifier: string) => Entry }> = [
+    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
+    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view) : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
   ]
   for (const { pattern, resolve } of statements) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
@@ -1019,8 +1040,9 @@ function jsImports(code: string, place: Place): Found | string {
         continue
       }
       const file = resolve(specifier)
-      if (typeof file === 'object') found.push({ real: file.real, language: null })
-      else return file === 'none' ? CODE_REFUSALS.missing : CODE_REFUSALS.unreadable
+      if (file === 'none') return CODE_REFUSALS.missing
+      if ('refused' in file) return file.refused
+      found.push({ real: file.real, language: null })
     }
   }
   return found

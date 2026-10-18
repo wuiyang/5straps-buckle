@@ -279,6 +279,22 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(read(['python3', '-B', 'job.py'])).files.map(file => file.path)).toEqual(['/workspace/job.py'])
   })
 
+  it('reads a manifest node reads past a byte order mark, and refuses one it cannot parse or whose main is no string (fix brief 4, G6)', () => {
+    const tool = { 'tool/run.js': 'module.exports = 1\n', 'tool/index.js': 'module.exports = 2\n', 'uses.js': "require('./tool')\n" }
+    const config = { kind: 'refused', reason: CODE_REFUSALS.config, truncated: false }
+    const bom = workspace({ ...tool, 'tool/package.json': Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from('{"main":"run.js"}')]) })
+    expect(paths(bom.read(['node', 'tool']))).toEqual(['/workspace/tool/run.js'])
+    expect(paths(bom.read(['node', 'uses.js']))).toEqual(['/workspace/uses.js', '/workspace/tool/run.js'])
+    for (const manifest of ['{"main":', '{"main": 5}', '["run.js"]']) {
+      const { read } = workspace({ ...tool, 'tool/package.json': manifest })
+      expect(read(['node', 'tool']), manifest).toEqual(config)
+      expect(read(['node', 'uses.js']), manifest).toEqual(config)
+      expect(read(['tsx', 'tool']), manifest).toEqual(config)
+    }
+    // A manifest naming no main still falls back to the folder's index, as node does.
+    expect(paths(workspace({ ...tool, 'tool/package.json': '{"name":"tool"}' }).read(['node', 'tool']))).toEqual(['/workspace/tool/index.js'])
+  })
+
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
     const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
