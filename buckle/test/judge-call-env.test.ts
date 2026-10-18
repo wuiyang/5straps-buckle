@@ -71,7 +71,7 @@ describe('the variables that change what code runs', () => {
   it('are the names and prefixes fix brief 1 lists', () => {
     expect(CODE_LOADING_VARIABLES).toEqual({
       names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT'],
-      prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_'],
+      prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_'],
     })
   })
 
@@ -381,6 +381,23 @@ describe('the 500-character clip on a reason no stage rated (fix brief 4, G13)',
     expect(reason).toHaveLength(500)
     expect(reason.endsWith('\\u0001 [cut]')).toBe(true)
     expect(runtime.approvalService.listing()[0]!.call?.judge?.[0]).toMatchObject({ unavailable: reason })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a function bash imports from the environment (fix brief 4, P, extra)', () => {
+  it('is a code-loading variable, set in the env argument or through env, since it runs in place of the command it names', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'env *'], deny: [] } })
+    const viaArgument = await call(runtime, { env: { 'BASH_FUNC_python3%%': '() { echo other; }' } }, ['bash', '-c', 'python3 job.py'])
+    expect(viaArgument.ran).toBe(false)
+    expect(viaArgument.entry.judge).toMatchObject({ unavailable: codeLoadingReason('BASH_FUNC_python3%%'), passed: false })
+    const viaEnv = await call(runtime, {}, ['env', 'BASH_FUNC_python3%%=() { echo other; }', 'bash', '-c', 'python3 job.py'])
+    expect(viaEnv.ran).toBe(false)
+    expect(viaEnv.entry.judge).toMatchObject({ unavailable: codeLoadingReason('BASH_FUNC_python3%%'), passed: false })
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })

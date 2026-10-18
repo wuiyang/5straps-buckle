@@ -13,7 +13,8 @@ export const CODE_LOADING_VARIABLES = Object.freeze({
     'PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES',
     'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT',
   ]),
-  prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_']),
+  // BASH_FUNC_: bash imports a function from `BASH_FUNC_<name>%%`, which then runs in place of the command it names.
+  prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_']),
 })
 
 /** One variable a call sets for its command, as the decision AI is shown it. */

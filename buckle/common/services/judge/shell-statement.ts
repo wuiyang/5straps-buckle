@@ -26,13 +26,14 @@ const BOTH_OUTPUTS_SHELLS = new Set(['bash', 'rbash', 'zsh'])
 const STATEMENT_WRAPPERS = new Set(['env', 'timeout', 'nice', 'nohup', 'stdbuf', 'exec', 'command'])
 
 /**
- * The shell options before a `-c` text that change nothing the grammar reads: clusters of c, e, u, x, v, f, and n (the
+ * The shell options before a `-c` text that change nothing the grammar reads: clusters of c, e, u, v, f, and n (the
  * `-c` among them), `+` clusters of the same letters but c, and `-o`/`+o` with one of a few settings. `-i` and `-l`
- * (startup files), `-k` (assignments anywhere), `-s`, `-O`, and every long option are left out, so they refuse.
+ * (startup files), `-k` (assignments anywhere), `-x` (bash expands a trace prompt the environment may set, running
+ * what it substitutes), `-s`, `-O`, and every long option are left out, so they refuse.
  */
-const SHELL_OPTION = /^(?:-[ceuxvfn]+|\+[euxvfn]+)$/
+const SHELL_OPTION = /^(?:-[ceuvfn]+|\+[euvfn]+)$/
 const SHELL_SETTING_OPTIONS = new Set(['-o', '+o'])
-const SHELL_SETTINGS = new Set(['errexit', 'nounset', 'pipefail', 'xtrace', 'verbose', 'noglob'])
+const SHELL_SETTINGS = new Set(['errexit', 'nounset', 'pipefail', 'verbose', 'noglob'])
 
 /** The shell and its `-c` text, where a form is a rated shell whose options are all ones the grammar models; else null. */
 export function ratedShellText(form: readonly string[]): { shell: string; text: string } | null {

@@ -126,7 +126,8 @@ export function assignedVariables(effect: { command: string; args: readonly stri
     leadingAssignments(form, variables, false)
     const program = baseCommand(form[0] ?? '')
     if (program === 'env' || program === 'sudo') {
-      for (const word of wrapperWords(all, index)) assignment(word, variables)
+      // env sets any NAME=value word, its name holding any character but `=` (`BASH_FUNC_python3%%=() { ...; }`).
+      for (const word of wrapperWords(all, index)) wrapperAssignment(word, variables)
     }
     declared(program, form.slice(1).map(word => ({ raw: word, word })), variables)
     const text = shellText(form)
@@ -157,6 +158,12 @@ function leadingAssignments(words: readonly string[], into: AssignedVariable[], 
     const word = words[index]!
     into.push({ name: ASSIGNMENT.exec(word)![1]!, value: typed || index > 0 ? word.slice(word.indexOf('=') + 1) : null })
   }
+}
+
+/** A NAME=value word a wrapper reads before its command, whatever characters its name holds; an option is none. */
+function wrapperAssignment(word: string, into: AssignedVariable[]): void {
+  const equals = word.indexOf('=')
+  if (equals > 0 && !word.startsWith('-')) into.push({ name: word.slice(0, equals), value: word.slice(equals + 1) })
 }
 
 function assignment(word: string, into: AssignedVariable[]): void {

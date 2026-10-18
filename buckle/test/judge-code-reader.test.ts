@@ -658,6 +658,8 @@ describe('the single-statement grammar (fix brief 4, P)', () => {
     // A shell option that runs startup files or exports assignments anywhere is one the grammar does not model.
     expect(call('bash', '-i', '-c', 'python3 x.py')).toEqual(shellRefusal)
     expect(call('bash', '-k', '-c', 'python3 x.py')).toEqual(shellRefusal)
+    // -x makes bash expand a trace prompt the environment may set, which runs what it substitutes.
+    expect(call('bash', '-x', '-c', 'python3 x.py')).toEqual(shellRefusal)
   })
 
   it('rates one simple command as its direct form: leading assignments, one feed, and any output redirections', () => {
