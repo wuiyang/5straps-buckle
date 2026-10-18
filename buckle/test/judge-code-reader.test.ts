@@ -156,6 +156,21 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(fed('cat evil.py > out.txt; python3 -c 1', 'python3')).files).toEqual([])
   })
 
+  it('reads <> as <, and refuses a duplicated descriptor or input another command takes first (fix brief 2, H6)', () => {
+    const { root, view } = workspace({ 'evil.py': 'import os\n', 'build.js': 'console.log(1)\n', 'list.txt': 'evil.py\n' })
+    const fed = (text: string, form: string[] = ['python3']) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })
+    expect(reading(fed('python3 <> evil.py')).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
+    expect(reading(fed('python3 0<>evil.py')).files.map(file => file.path)).toEqual(['/workspace/evil.py'])
+    expect(fed('exec 3<evil.py; python3 <&3')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(fed('python3 0<&3 3<evil.py')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
+    expect(reading(fed('node build.js <&3', ['node', 'build.js'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
+    for (const text of ['xargs python3 <<< evil.py', 'xargs python3 < list.txt', 'xargs python3 <<EOF\nevil.py\nEOF']) {
+      expect(fed(text), text).toEqual({ kind: 'refused', reason: 'the code the interpreter runs comes from another command', truncated: false })
+    }
+    // A pipe stays the documented limit: the stage reads the shell text alone.
+    expect(reading(fed('cat evil.py | python3')).files).toEqual([])
+  })
+
   it('takes the input as data where the interpreter names a script, inline code, or a module (fix brief 2, R7)', () => {
     const { root, view } = workspace({ 'build.js': 'console.log(1)\n', 'job.py': 'print(1)\n', 'data.bin': Buffer.from([0xff, 0xfe, 0x00]), 'evil.py': 'import os\n' })
     const fed = (text: string, form: string[]) => readInterpreterCode({ forms: [form], shellForms: [['bash', '-c', text]], cwd: root, view })

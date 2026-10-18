@@ -22,6 +22,7 @@ export const CODE_REFUSALS = Object.freeze({
   missing: 'the code imports a file that does not exist',
   failed: 'the code could not be read',
   notFound: 'the code the interpreter runs was not found',
+  fromCommand: 'the code the interpreter runs comes from another command',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -118,6 +119,7 @@ function readCode(input: CodeInput): CodeRead {
   }
   const fed = fedInputsOf(input.shellForms ?? [], input.forms)
   if (fed.overBudget) return refused(CODE_REFUSALS.truncated, true)
+  if (fed.fromCommand) return refused(CODE_REFUSALS.fromCommand)
   if (fed.unknown) return refused(CODE_REFUSALS.notFound)
   for (const { program, code } of fed.inline) {
     inline.push(code)
@@ -169,9 +171,13 @@ const HERE_STRING = /^0?<<</
 const STDIN_HEREDOC = /^0?<<(?!<)/
 const ANY_HEREDOC = /^\d*<<(?!<)/
 const ANY_HEREDOC_IN_TEXT = /<<(?!<)/
-/** A file redirected into a statement's input: `<` or `0<`, never a heredoc, a descriptor, `<>`, or a process substitution. */
-const STDIN_FILE = /^0?<(?![<>&(])/
+/** A file redirected into a statement's input: `<`, `0<`, `<>`, or `0<>`, never a heredoc, a descriptor, or a process substitution. */
+const STDIN_FILE = /^0?<(?![<&(])/
+/** A descriptor duplicated onto a statement's input (`<&3`, `0<&3`), whose code no reading can know (fix brief 2, H6). */
+const STDIN_DUPLICATE = /^0?<&/
 const EXPANSION = /[$`]/
+/** Any redirection of a statement's input: a file, a heredoc, a here-string, or a descriptor. */
+const STDIN_REDIRECTION = /^0?</
 
 /** What shell text feeds the interpreters being read: here-strings as inline code, files redirected into their input as scripts. */
 interface FedInputs {
@@ -181,6 +187,8 @@ interface FedInputs {
   unknown: boolean
   /** Whether reading the text and its heredoc bodies ran past READ_BUDGET, so some code was left unread. */
   overBudget: boolean
+  /** Whether what a statement feeds goes to another command first, such as xargs, which runs the interpreter with it. */
+  fromCommand: boolean
 }
 
 /**
@@ -191,7 +199,7 @@ interface FedInputs {
  */
 function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]): FedInputs {
   const running = new Set(forms.map(([command = '']) => programOf(command)))
-  const fed: FedInputs = { inline: [], scripts: [], unknown: false, overBudget: false }
+  const fed: FedInputs = { inline: [], scripts: [], unknown: false, overBudget: false, fromCommand: false }
   // One budget for every text and every heredoc body walked, so no text costs more than READ_BUDGET in all (fix brief 2, R9).
   const meter = { characters: READ_BUDGET.characters }
   for (const [command = '', ...args] of shellForms) {
@@ -202,9 +210,15 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
     const heredocs = heredocIndex(operand, meter)
     for (const statement of shellStatementList(operand, meter).statements) {
       const tokens = shellTokens(statement)
-      const form = statementCommand(tokens)
-      if (form === null || !running.has(programOf(form[0]!))) continue
+      const chain = statementCommand(tokens)
+      const form = chain?.at(-1)
+      if (form === undefined || !running.has(programOf(form[0]!))) continue
       const program = programOf(form[0]!)
+      // xargs reads the statement's input itself and runs the interpreter with what it read (fix brief 2, H6).
+      if (chain!.some(([word = '']) => baseCommand(word) === 'xargs') && tokens.some(({ raw }) => STDIN_REDIRECTION.test(raw))) {
+        fed.fromCommand = true
+        continue
+      }
       // A file on its input is the script only where the interpreter names none, or names `-`; past a script operand,
       // inline code, or a module, its input is data (fix brief 2, R7).
       const own = argumentsOf(program, form.slice(1))
@@ -212,7 +226,8 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
       for (let index = 0; index < tokens.length; index++) {
         const { raw, word: unquoted } = tokens[index]!
         const bare = BARE_REDIRECTION.test(raw)
-        const target = bare ? tokens[index + 1] : { raw: raw.replace(/^0?<+/, ''), word: unquoted.replace(/^0?<+/, '') }
+        const prefix = STDIN_FILE.test(raw) ? /^0?<>?/ : /^0?<+/
+        const target = bare ? tokens[index + 1] : { raw: raw.replace(prefix, ''), word: unquoted.replace(prefix, '') }
         if (HERE_STRING.test(raw)) {
           if (HERE_STRING_SHELLS.has(shell) && target !== undefined) fed.inline.push({ program, code: target.word })
         } else if (STDIN_HEREDOC.test(raw)) {
@@ -221,6 +236,9 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
           if (bodies === 'overBudget') fed.overBudget = true
           else if (bodies === null || tokens.filter(token => ANY_HEREDOC.test(token.raw)).length > 1) fed.unknown = true
           else fed.inline.push(...bodies.map(code => ({ program, code })))
+        } else if ((STDIN_DUPLICATE.test(raw) || (STDIN_FILE.test(raw) && target === undefined)) && inputIsScript) {
+          // A duplicated descriptor, or a redirection left with no target where the statement splits at its `&` (`<&3`).
+          fed.unknown = true
         } else if (STDIN_FILE.test(raw) && target !== undefined && inputIsScript) {
           if (EXPANSION.test(target.raw)) fed.unknown = true
           else fed.scripts.push({ program, name: target.word })
@@ -237,11 +255,12 @@ function fedInputsOf(shellForms: readonly string[][], forms: readonly string[][]
 }
 
 /**
- * The command a statement runs, with its words: its words without assignments before them and without redirections or
- * their targets, then through the wrappers command-forms reads (env, timeout, nice, exec, command, nohup, stdbuf, and
- * the rest), so `env python3 <<<` and `timeout 5 python3 <<<` name python3 (fix brief 1, item 9).
+ * The commands a statement runs, each wrapper's then the one it runs, with their words: its words without assignments
+ * before them and without redirections or their targets, then through the wrappers command-forms reads (env, timeout,
+ * nice, exec, command, nohup, stdbuf, xargs, and the rest), so `env python3 <<<` and `timeout 5 python3 <<<` end in
+ * python3 (fix brief 1, item 9).
  */
-function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>): string[] | null {
+function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>): string[][] | null {
   const words: string[] = []
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
@@ -254,8 +273,8 @@ function statementCommand(tokens: ReadonlyArray<{ raw: string; word: string }>):
   }
   const [command, ...args] = words
   if (command === undefined) return null
-  const last = commandFormsOf({ command, args }).chain.at(-1)
-  return last?.[0] === undefined ? words : last
+  const { chain } = commandFormsOf({ command, args })
+  return chain.at(-1)?.[0] === undefined ? [words] : chain
 }
 
 /**
