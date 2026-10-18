@@ -29,16 +29,18 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   shell text alone. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text, and a
   heredoc only on the interpreter's own statement, with no other heredoc before it on its line.
 - A call over 160 KiB of JSON is not sent to Jev; the thorough model may still rate it.
+- A call that changes its working directory first (`cd`, `env -C`, `sudo -D`, or `--cwd`), or
+  sets a variable that changes what code runs anywhere in it, is not rated: it asks a person.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
   under `approval.quickJudge all` in automated mode, or when the destructive list names them.
 
 ## Elsewhere
 
 - Socket is advisory and looks at 50 packages a rating; with no key, a timeout, or an error, the
-  rating runs without it.
+  rating runs without it, and a verdict reached while its lookup failed is not kept.
 - No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
-- No Rings view of the verdict yet: the report to Rings, the 5straps agent control plane, carries
-  none.
+- No Rings view of the verdict yet: Rings, the 5straps agent control plane, drops the webhook's
+  `judge` field in its approvals reader, and the report to Rings carries none.
 - `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason:
   a signed challenge carries no verdict yet.
 - No live call has been made yet to a real AI gateway, TypeSafe, or Socket: the built-in model name

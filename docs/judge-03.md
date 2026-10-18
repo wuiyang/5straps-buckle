@@ -14,7 +14,8 @@ network access. One byte changed in any file it reads, two files swapping conten
 upgraded, or a mount added or made writable, makes a new key, so all of the code is rated again.
 A verdict is kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state
 directory, readable by the owner alone, at most 1,000 with the oldest dropped, so a restart keeps
-them. A policy change empties it, and no failure is kept.
+them. A policy change empties it. No failure is kept, nor a verdict reached while the Socket lookup
+failed.
 
 Socket, a supply-chain security service that scores open source packages, has its summaries kept
 the same way, by package URL, for 24 hours, in `socket-cache.json` beside it, at most 2,000.
@@ -36,13 +37,15 @@ answered. The approval webhook carries a `judge` object beside each ask: the tho
 `level`, `confidence`, `model`, `reasoning`, and `latencyMs`, or `unavailable`, with Jev's verdict
 as `quick`; `buckle approvals --json` carries the same inside the ask's `call`.
 `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason,
-because a signed challenge carries no verdict yet; Rings receives the webhook's `judge` object and
-shows what it shows. An allowed command Jev rated `danger` asks with the reason "The decision AI's
-quick stage rated this command danger, so a person decides; nothing it says refuses a command".
+because a signed challenge carries no verdict yet. Rings, the 5straps agent control plane, does not
+show the verdict yet, because its approvals reader drops the webhook's `judge` field. An allowed
+command Jev rated `danger` asks with the reason "The decision AI's quick stage rated this command
+danger, so a person decides; nothing it says refuses a command".
 
-A call a stage passed asks no one, and the webhook is not called: the serve terminal prints one
-info line naming the stage, the model, the level, the confidence, and the command as an approver
-would see it, credentials hidden.
+A stage's pass lifts that command's ask, and the webhook is not called for it: the serve terminal
+prints one info line naming the stage, the model, the level, the confidence, and the command as an
+approver would see it, credentials hidden. Where another ask remains, such as `write_scope`, the
+line says the call still waits for it, and the ask goes out as usual.
 
 ## The audit entry
 
@@ -53,10 +56,12 @@ naming the stage, and names `judge` among what allowed it. One a stage rated and
 carries the same with `passed: false`, or `unavailable` in place of a verdict; Jev's verdict alone
 stands where the thorough model was not asked. `flagged: true` marks an allowed command Jev turned
 into an ask, and `screened: true` one it rated and let run, recorded
-`passed: false, screened: true` because no ask was passed. `promptDigest` is the sha256 of the
+`passed: false, screened: true` because no ask was passed. `socket: 'unavailable'` marks a rating
+made while the Socket lookup failed, whose verdict was not kept. `promptDigest` is the sha256 of the
 model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, cut to
-2,000 characters (ending `[cut]`) wherever it is kept or shown, with the credentials the display
-hides hidden. The report to Rings, the 5straps agent control plane, does not carry the verdict yet.
+2,000 characters (ending `[cut]` on a line of its own) wherever it is kept or shown, with the
+credentials the display hides hidden, before the cut too. The report to Rings does not carry the
+verdict yet.
 
 ## Cost
 

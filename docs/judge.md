@@ -44,7 +44,7 @@ switch lets through is not rated.
 
 | Jev's answer | What happens |
 |---|---|
-| `safe` at 0.8 or above | The call runs; the audit entry and an info line at the serve terminal name Jev. |
+| `safe` at 0.8 or above | Its ask is lifted, and the call runs once no other ask remains; the audit entry and an info line at the serve terminal name Jev. |
 | `danger` at 0.8 or above | A person decides, the verdict beside the whole action; the thorough model is not asked. |
 | `warning`, a lower confidence, no verdict, a call over Jev's budget, or Jev off | An interpreter ask, or one Jev rated, goes to the thorough model; any other ask goes to a person. |
 
