@@ -351,9 +351,14 @@ const VALUE_OPTIONS: Readonly<Record<string, readonly string[]>> = {
   node: ['-r', '--require', '--import', '--loader', '--experimental-loader', '-C', '--conditions', '--input-type', '--title', '--env-file', '--env-file-if-exists', '--inspect-port', '--run', '--watch-path', '--disable-warning', '--test-reporter', '--test-reporter-destination'],
   tsx: ['-r', '--require', '--import', '--loader', '-C', '--conditions', '--input-type', '--env-file', '--tsconfig'],
   'ts-node': ['-r', '--require', '-P', '--project', '-O', '--compiler-options', '-C', '--compiler', '--cwd', '-I', '--ignore'],
-  bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--env-file', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F'],
+  bun: ['-r', '--preload', '--require', '--import', '--cwd', '-c', '--config', '--env-file', '--tsconfig-override', '--conditions', '--define', '-d', '--loader', '-l', '--filter', '-F', '--port', '--main-fields', '--extension-order', '--jsx-factory', '--jsx-fragment', '--jsx-import-source', '--jsx-runtime', '--elide-lines', '--shell', '--title', '--user-agent', '--console-depth', '--unhandled-rejections'],
   deno: ['-c', '--config', '--import-map', '--lock', '--location', '--seed', '--cert', '--env-file', '--ext'],
   python: ['-W', '-X', '--check-hash-based-pycs'],
+}
+
+/** The options of a program whose value is the next word (VALUE_OPTIONS), so a reader of its words skips that value. */
+export function valueOptionsOf(program: string): readonly string[] {
+  return VALUE_OPTIONS[program] ?? []
 }
 
 /**

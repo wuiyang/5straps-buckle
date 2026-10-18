@@ -18,7 +18,7 @@ import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from './call-forms.js'
-import { CODE_REFUSALS, readInterpreterCode, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -185,14 +185,15 @@ export function createJudgeGate(input: {
 
   /**
    * Whether a form is `bun run` naming a file rather than a package.json script: its first operand after `run` and its
-   * flags holds a slash, ends in a script extension, or names a file in the agent's view.
+   * flags, each flag's value skipped as the code reader skips it (fix brief 2, R15), holds a slash, ends in a script
+   * extension, or names a file in the agent's view.
    */
   function runsFile(form: readonly string[], cwd: string): boolean {
     const [command = '', ...args] = form
     if (baseCommand(command) !== 'bun') return false
-    const run = args.findIndex(word => !word.startsWith('-'))
+    const run = operandAt(args, 0, valueOptionsOf('bun'))
     if (args[run] !== 'run') return false
-    const operand = args.slice(run + 1).find(word => !word.startsWith('-'))
+    const operand = args[operandAt(args, run + 1, valueOptionsOf('bun'))]
     if (operand === undefined) return false
     return /[/\\]/.test(operand) || SCRIPT_EXTENSION.test(operand) || typeof input.view.locate(operand, cwd) === 'object'
   }
@@ -313,6 +314,17 @@ export function createJudgeGate(input: {
       return { subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: command.shown(), ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }
     },
   }
+}
+
+/** The index of the first operand from `from` on, past options and the value of each that takes one, or after a `--`; -1 for none. */
+function operandAt(args: readonly string[], from: number, values: readonly string[]): number {
+  for (let index = from; index < args.length; index++) {
+    const word = args[index]!
+    if (word === '--') return index + 1 < args.length ? index + 1 : -1
+    if (!word.startsWith('-')) return index
+    if (values.includes(word)) index++
+  }
+  return -1
 }
 
 /** The command a subject names among a call's effects. */

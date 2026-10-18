@@ -119,6 +119,54 @@ describe('a standard script', () => {
     ])
   })
 
+  /** Per call, what the quick stage was shown (its standard flag and files), or that it was not shown, the code not read. */
+  async function standardOf(calls: Array<[string, string[]]>, shellCalls: Array<[string, string[]]> = []) {
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'deploy.ts'), 'export {}\n')
+    writeFileSync(join(config.cwd, 'deployx'), 'console.log(1)\n')
+    const fakes = judges({ quick: quick('danger', 0.95) })
+    const runtime = await runtimeOf(config, fakes)
+    const seen: unknown[] = []
+    const each = async ([command, args]: [string, string[]]) => {
+      const before = fakes.shownQuick.length
+      const { entry } = await call(runtime, command, args)
+      const input = fakes.shownQuick[before]
+      seen.push(input ? [input.command, input.standardScript, input.files.map(file => file.path)] : [[command, ...args].join(' '), 'not shown', entry?.judge && 'quick' in entry.judge ? entry.judge.quick : undefined])
+    }
+    for (const item of calls) await each(item)
+    if (shellCalls.length > 0) await withPolicy(runtime, { allow: ['bash -c *'] })
+    for (const item of shellCalls) await each(item)
+    return seen
+  }
+
+  it('skips the value of a bun run option before taking the operand, so bun run --port 3000 ./deploy.ts is read (fix brief 2, R15)', async () => {
+    expect(await standardOf([['bun', ['run', '--conditions', 'development', 'deploy.ts']], ['bun', ['run', '-d', 'X:1', 'deploy.ts']], ['bun', ['run', '--port', '3000', './deploy.ts']], ['bun', ['run', '--cwd', 'sub', 'deploy.ts']]])).toEqual([
+      ['bun run --conditions development deploy.ts', false, ['/workspace/deploy.ts']],
+      ['bun run -d X:1 deploy.ts', false, ['/workspace/deploy.ts']],
+      ['bun run --port 3000 ./deploy.ts', false, ['/workspace/deploy.ts']],
+      ['bun run --cwd sub deploy.ts', 'not shown', { provider: 'typesafe', model: 'jev-latest', unavailable: 'the call changes its working directory before the code runs' }],
+    ])
+  })
+
+  it('counts each sign of a file alone: a slash, a script extension, or a file the view finds (fix brief 2, R15 and H10)', async () => {
+    const notFound = { provider: 'typesafe', model: 'jev-latest', unavailable: 'the code the interpreter runs was not found' }
+    expect(await standardOf([['bun', ['run', './missing']], ['bun', ['run', 'missing.ts']], ['bun', ['run', 'deployx']]])).toEqual([
+      ['bun run ./missing', 'not shown', notFound],
+      ['bun run missing.ts', 'not shown', notFound],
+      ['bun run deployx', false, ['/workspace/deployx']],
+    ])
+  })
+
+  it('is never standard behind any privilege wrapper: doas, su, pkexec, or runas (fix brief 2, H10)', async () => {
+    const notFound = { provider: 'typesafe', model: 'jev-latest', unavailable: 'the code the interpreter runs was not found' }
+    expect(await standardOf([['doas', ['bun', 'run', 'dev']], ['su', ['-c', 'bun run dev', 'root']]], [['bash', ['-c', 'bun run dev; pkexec true']], ['bash', ['-c', 'bun run dev; runas /user:admin true']]])).toEqual([
+      ['doas bun run dev', 'not shown', notFound],
+      ['su -c bun run dev root', 'not shown', notFound],
+      ['bash -c bun run dev; pkexec true', 'not shown', notFound],
+      ['bash -c bun run dev; runas /user:admin true', 'not shown', notFound],
+    ])
+  })
+
   it('still matches on the inner form behind a wrapper that runs as the same user', async () => {
     expect(await shown([['timeout', ['60', 'bun', 'run', 'dev']]])).toEqual([['timeout 60 bun run dev', true, []]])
   })
