@@ -75,7 +75,10 @@ reader does not rate whole", "an option the reader does not know", "a subcommand
 not model", "an interactive flag reads standard input as code", "the code the interpreter runs
 comes from standard input the reader cannot place", "an import the reader does not model", "the
 code runs compiled Python the reader cannot show", and "a config file the reader could not parse".
-A reason is cut to 500 characters, never inside an escape it quotes.
+The shell-text reason also covers `flock -c` and a wrapper that sets the program name (`exec -a`,
+`env --argv0`); the interactive reason covers `php -a` after `-f` and a debugger fed its input; the
+compiled-Python reason covers a folder the reader cannot list and `-X pycache_prefix`. A reason is
+cut to 500 characters, never inside an escape it quotes.
 
 ## Cost
 
