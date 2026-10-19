@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
+import { formatMountRow } from '../common/domain/mount-table.js'
 import { isRestrictive, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -20,7 +21,7 @@ export interface CliResult {
 const USAGE = `Usage: buckle policy <action> [--workspace <name> | --dir <path>]
 Acts on the workspace named, or else on the one whose folder holds the current directory.
 
-  buckle policy show [--json]                 The workspace's policy
+  buckle policy show [--json]                 The workspace's policy, and its mount table
   buckle policy allow-command <glob>          Only matching command lines may run
   buckle policy deny-command <glob>           Matching command lines are refused; deny wins
   buckle policy destructive-command <glob>    Matching command lines ask first, once or per session
@@ -343,7 +344,9 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   const effective = runtime.policy.effective()
   const sources = runtime.policy.sources()
   const dangerously = runtime.policy.dangerouslyAllow()
-  if (values.json) return print({ workspaceId: runtime.workspaceId, effective, sources, dangerouslyAllow: dangerously })
+  // The mount table, as buckle workspace mount list prints it: the system folders and the node's toolchains are no row (D85, Q1; D90 (3)).
+  const mounts = runtime.mountTable()
+  if (values.json) return print({ workspaceId: runtime.workspaceId, effective, sources, dangerouslyAllow: dangerously, mounts })
 
   // An allow-type list is one source whole; a deny-type list names each entry's, the node's being its floor (Q14).
   const section = (title: string, items: string[], source: SettingSource | FloorEntries): void => {
@@ -355,6 +358,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
 
   process.stdout.write(`Workspace ${runtime.workspaceName()} at ${runtime.paths().root}\n`)
   process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}, ${SOURCE_WORDS[sources.mount]}\n`)
+  process.stdout.write(`Mounts (source:target:access)\n${mounts.length === 0 ? '  (none)\n' : mounts.map(row => `  ${formatMountRow(row)}\n`).join('')}`)
   process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
   section('Command allow list (only these may run)', effective.commands.allow, sources['commands.allow'])
   section('Command deny list (refused outright)', effective.commands.deny, sources['commands.deny'])

@@ -8,14 +8,14 @@ import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/s
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { credentialLikeName, resolveSettings, settingsPath, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, mountRows, resolveSettings, settingsPath, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { openSocketCache, socketCachePath } from '../common/services/judge/socket-cache.js'
 import { nullPackageScanner } from '../common/types/ports/package-scan.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { restartRoute, restartSteps, restartSubject } from '../common/services/node-service/installed.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
-import { formatMount, parseMountSpec } from '../common/domain/mount-table.js'
+import { formatMount, formatMountRow, parseMountSpec } from '../common/domain/mount-table.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -420,15 +420,11 @@ async function mount(context: Context): Promise<CliResult> {
   if (action === 'list') {
     if (positionals.length > 0 || values['read-only']) return fail(MOUNT_USAGE)
     const inForce = resolveSettings(context.workspaces.settings(workspace.id), context.config.workspaceDefaults)
-    const rows = [
-      ...(inForce.mount === null ? [] : [{ source: workspace.dir, target: inForce.mount, access: 'rw' as const, from: 'folder' }]),
-      ...inForce.mounts.map(entry => ({ source: entry.source, target: entry.target, access: entry.access, from: entry.scratch ? 'node scratch root' : inForce.sources.mounts === 'node' ? 'node default' : 'workspace' })),
-    ]
+    const rows = mountRows(workspace.dir, inForce)
     if (values.json) return print(rows)
     if (inForce.mount === null) process.stdout.write(`Workspace ${workspace.name}'s folder shows at its real path; buckle workspace set mount /workspace mounts it.
 `)
-    for (const row of rows) process.stdout.write(`${formatMount(row)}${row.from === 'node default' || row.from === 'node scratch root' ? `  (${row.from})` : ''}
-`)
+    for (const row of rows) process.stdout.write(`${formatMountRow(row)}\n`)
     return { exitCode: 0 }
   }
   return fail(MOUNT_USAGE)

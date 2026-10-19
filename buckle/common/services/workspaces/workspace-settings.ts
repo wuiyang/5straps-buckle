@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { allowedInterpreters, CommandPolicySchema, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
-import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount, type TableMount } from '../../domain/mount-table.js'
+import { MAX_OWNER_MOUNTS, mountTargetRefusal, type MountRow, type OwnerMount, type TableMount } from '../../domain/mount-table.js'
 import { comparablePath, ignoresCase, isInside, pathRoot } from '../../domain/paths.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
 import { browserBlockRefusal, DEFAULT_APPROVAL_WAIT_MS, type BrowserSettingNames, type NodeDefaults, type WorkspaceScope } from '../../runtime/config.js'
@@ -435,6 +435,20 @@ function mountsInForce(stored: WorkspaceSettings, node: NodeDefaults, sources: R
   const nodes = node.mounts ?? []
   sources.mounts = own.length > 0 ? 'workspace' : nodes.length > 0 ? 'node' : 'built-in'
   return (own.length > 0 ? own : nodes).map(mount => ({ ...mount }))
+}
+
+/**
+ * The mount table in force as the owner reads it, the same wherever it is shown (`buckle workspace mount list` and
+ * `buckle policy show`): the folder's own entry first, where it shows at a sandbox path, then each mount, the
+ * workspace's own or, while it has none, the node's (BUCKLE_MOUNTS and BUCKLE_SCRATCH_ROOTS).
+ * The system folders and the node's toolchains are bound for every workspace and are no row (D85, Q1; D90 (3)).
+ */
+export function mountRows(folder: string, resolved: Pick<ResolvedSettings, 'mount' | 'mounts' | 'sources'>): MountRow[] {
+  const from = (entry: TableMount): MountRow['from'] => (entry.scratch ? 'node scratch root' : resolved.sources.mounts === 'node' ? 'node default' : 'workspace')
+  return [
+    ...(resolved.mount === null ? [] : [{ source: folder, target: resolved.mount, access: 'rw' as const, from: 'folder' as const }]),
+    ...resolved.mounts.map(entry => ({ source: entry.source, target: entry.target, access: entry.access, from: from(entry) })),
+  ]
 }
 
 function defined<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {

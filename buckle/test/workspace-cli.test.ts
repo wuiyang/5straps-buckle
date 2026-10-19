@@ -327,6 +327,8 @@ describe('buckle workspace list and show', () => {
     out = ''
     expect((await policy('show')).exitCode).toBe(0)
     expect(out).toContain('Mount     /workspace, the workspace\'s own\n')
+    // The mount table follows, as buckle workspace mount list prints it: a workspace with no mount of its own shows its folder alone.
+    expect(out).toContain(`Mount     /workspace, the workspace's own\nMounts (source:target:access)\n  ${alpha}:/workspace:rw\nDangerously allow`)
     expect(out).toContain('Command allow list (only these may run), the node\'s default, from buckle.env\n  pnpm *\n')
     expect(out).toContain('Command deny list (refused outright)\n  curl *  the node\'s, for every workspace\n  rm *    the workspace\'s own\n')
     expect(out).toContain('Approved hosts and URLs (only these may be reached), the workspace\'s own\n  docs.test\n')
@@ -334,6 +336,7 @@ describe('buckle workspace list and show', () => {
     out = ''
     expect((await policy('show', '--json')).exitCode).toBe(0)
     expect(JSON.parse(out)).toMatchObject({ sources: { 'mount': 'workspace', 'commands.allow': 'node', 'network.allow': 'workspace', 'commands.deny': { node: ['curl *'], workspace: ['rm *'] } } })
+    expect(JSON.parse(out).mounts).toEqual([{ source: alpha, target: '/workspace', access: 'rw', from: 'folder' }])
   })
 
   // Fix brief 4, finding 25: five of the labels were pinned by no test, and a mutant fixing each one passed the suite.
@@ -346,12 +349,81 @@ describe('buckle workspace list and show', () => {
     out = ''
     expect((await policy('show')).exitCode).toBe(0)
     expect(out).toContain('Mount     /node, the node\'s default, from buckle.env\n')
+    expect(out).toContain(`Mount     /node, the node's default, from buckle.env\nMounts (source:target:access)\n  ${alpha}:/node:rw\nDangerously allow`)
     expect(out).toContain('Approved hosts and URLs (only these may be reached), the node\'s default, from buckle.env\n  node.test\n')
     expect(out).toContain('Destructive additions')
     expect(out).toMatch(/git push \*\s+the node's, for every workspace\n\s+rm -rf \*\s+the workspace's own/)
     out = ''
     expect((await policy('show', '--json')).exitCode).toBe(0)
     expect(JSON.parse(out).sources).toMatchObject({ 'mount': 'node', 'network.allow': 'node', 'commands.destructive': { node: ['git push *'], workspace: ['rm -rf *'] } })
+    expect(JSON.parse(out).mounts).toEqual([{ source: alpha, target: '/node', access: 'rw', from: 'folder' }])
+  })
+
+  // The workspace-model follow-up (checkpoint 2026-10-17 item 5): policy show lists the mount table as mount list does,
+  // the folder first, and --json adds the rows mount list --json prints, beside effective and sources, unchanged.
+  it('lists the workspace\'s own mounts after its folder, and --json carries the rows mount list --json prints', async () => {
+    await init(alpha)
+    const [data, docs] = [join(outside, 'data'), join(outside, 'docs')]
+    for (const folder of [data, docs]) mkdirSync(folder)
+    expect((await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })).exitCode).toBe(0)
+    expect((await buckle(['mount', 'add', `${docs}:/docs:ro`], { cwd: alpha })).exitCode).toBe(0)
+    const listed = JSON.parse((await buckle(['mount', 'list', '--json'], { cwd: alpha })).out) as unknown
+    const policy = (...words: string[]) => runCli({ argv: ['policy', ...words], config: node(), confirm: null, cwd: alpha })
+    out = ''
+    expect((await policy('show')).exitCode).toBe(0)
+    expect(out).toContain(`Mounts (source:target:access)\n  ${alpha}:/workspace:rw\n  ${data}:/data:rw\n  ${docs}:/docs:ro\nDangerously allow`)
+    out = ''
+    expect((await policy('show', '--json')).exitCode).toBe(0)
+    const json = JSON.parse(out) as Record<string, unknown>
+    expect(Object.keys(json)).toEqual(['workspaceId', 'effective', 'sources', 'dangerouslyAllow', 'mounts'])
+    expect(json.mounts).toEqual(listed)
+    expect(json.mounts).toEqual([
+      { source: alpha, target: '/workspace', access: 'rw', from: 'folder' },
+      { source: data, target: '/data', access: 'rw', from: 'workspace' },
+      { source: docs, target: '/docs', access: 'ro', from: 'workspace' },
+    ])
+  })
+
+  // D85 Q1 and D90 (3): the node's toolchains (BUCKLE_MOUNT_READ_ONLY) and the system folders are bound, never listed.
+  it('marks the node\'s default mounts a workspace takes while it has none, and never lists the toolchains or system folders', async () => {
+    await init(alpha)
+    const [docs, toolchain] = [join(outside, 'docs'), join(outside, 'toolchain')]
+    for (const folder of [docs, toolchain]) mkdirSync(folder)
+    const config = node({ BUCKLE_MOUNTS: JSON.stringify([{ source: docs, target: '/docs', readOnly: true }]), BUCKLE_MOUNT_READ_ONLY: toolchain })
+    const policy = (...words: string[]) => runCli({ argv: ['policy', ...words], config, confirm: null, cwd: alpha })
+    out = ''
+    expect((await policy('show')).exitCode).toBe(0)
+    expect(out).toContain(`Mounts (source:target:access)\n  ${alpha}:/workspace:rw\n  ${docs}:/docs:ro  (node default)\nDangerously allow`)
+    expect(out).not.toContain(toolchain)
+    // No row stands at a folder the sandbox keeps: a row's target follows the source's colon.
+    expect(out).not.toMatch(/:\/(usr|bin|sbin|lib|lib64|etc|dev|proc|sys|tmp)[:/]/)
+    out = ''
+    expect((await policy('show', '--json')).exitCode).toBe(0)
+    expect(JSON.parse(out).mounts).toEqual([
+      { source: alpha, target: '/workspace', access: 'rw', from: 'folder' },
+      { source: docs, target: '/docs', access: 'ro', from: 'node default' },
+    ])
+    expect(JSON.parse(out).mounts).toEqual(JSON.parse((await buckle(['mount', 'list', '--json'], { cwd: alpha, config })).out))
+  })
+
+  it('marks the node\'s scratch roots, and drops the folder\'s row once the folder shows at its real path', async () => {
+    await init(alpha)
+    const scratch = join(outside, 'scratch')
+    mkdirSync(scratch)
+    const config = node({ BUCKLE_SCRATCH_ROOTS: scratch })
+    const policy = (...words: string[]) => runCli({ argv: ['policy', ...words], config, confirm: null, cwd: alpha })
+    out = ''
+    expect((await policy('show')).exitCode).toBe(0)
+    expect(out).toContain(`Mounts (source:target:access)\n  ${alpha}:/workspace:rw\n  ${scratch}:${scratch}:rw  (node scratch root)\nDangerously allow`)
+    out = ''
+    expect((await policy('show', '--json')).exitCode).toBe(0)
+    expect(JSON.parse(out).mounts).toEqual([
+      { source: alpha, target: '/workspace', access: 'rw', from: 'folder' },
+      { source: scratch, target: scratch, access: 'rw', from: 'node scratch root' },
+    ])
+    out = ''
+    expect((await policy('unmount')).exitCode).toBe(0)
+    expect(out).toContain(`Mount     (none: the real path shows through), the workspace's own\nMounts (source:target:access)\n  ${scratch}:${scratch}:rw  (node scratch root)\nDangerously allow`)
   })
 
   it('says how to start where the node has none', async () => {

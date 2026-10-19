@@ -85,6 +85,19 @@ export function formatMount(mount: OwnerMount): string {
   return `${mount.source}:${mount.target}:${mount.access}`
 }
 
+/** Where a row of the mount table comes from, as `buckle workspace mount list --json` names it in `from`. */
+export type MountOrigin = 'folder' | 'workspace' | 'node default' | 'node scratch root'
+
+/** A row of the mount table as the owner reads it: the folder's own entry, or a mount, with where it comes from. */
+export interface MountRow extends OwnerMount {
+  from: MountOrigin
+}
+
+/** A row as `buckle workspace mount list` prints it: `source:target:access`, one of the node's marked as such. */
+export function formatMountRow(row: MountRow): string {
+  return row.from === 'node default' || row.from === 'node scratch root' ? `${formatMount(row)}  (${row.from})` : formatMount(row)
+}
+
 function overlaps(left: string, right: string): boolean {
   return isInside(left, right, 'linux') || isInside(right, left, 'linux')
 }

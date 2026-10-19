@@ -77,7 +77,8 @@ import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
 import { BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
-import { openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
+import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
+import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 
@@ -181,6 +182,11 @@ export interface BuckleRuntime {
   registry(): ToolRegistry
   skills(): LoadedSkill[]
   paths(): PathView
+  /**
+   * The mount table in force, as `buckle workspace mount list` reads it (mountRows): the folder's own entry first, then
+   * each mount with where it comes from. For the owner's views alone, as it names host folders.
+   */
+  mountTable(): MountRow[]
   policy: PolicyHandle
   grants: GrantStore
   approvals: ApprovalRegistry
@@ -437,6 +443,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     registry: () => registry,
     skills: allSkills,
     paths: () => paths,
+    // The settings this runtime took up, as the policy's sources are read: what is in force, not a write still to apply.
+    mountTable: () => mountRows(config.cwd, resolveSettings(applied, config.workspaceDefaults)),
     grants,
     approvals,
     approvalService,
