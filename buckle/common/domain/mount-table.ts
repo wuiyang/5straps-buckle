@@ -1,5 +1,5 @@
 import { posix } from 'pathe'
-import { MountPathSchema } from '@5straps/protocol'
+import { MountPathSchema, type MountRow } from '@5straps/protocol'
 import { isInside } from './paths.js'
 import { SANDBOX_HOME } from './sandbox-mounts.js'
 
@@ -85,13 +85,11 @@ export function formatMount(mount: OwnerMount): string {
   return `${mount.source}:${mount.target}:${mount.access}`
 }
 
-/** Where a row of the mount table comes from, as `buckle workspace mount list --json` names it in `from`. */
-export type MountOrigin = 'folder' | 'workspace' | 'node default' | 'node scratch root'
-
-/** A row of the mount table as the owner reads it: the folder's own entry, or a mount, with where it comes from. */
-export interface MountRow extends OwnerMount {
-  from: MountOrigin
-}
+/**
+ * A row of the mount table as the owner reads it, the folder's own entry or a mount, with where it comes from in `from`:
+ * the protocol's type, as the setup face sends the same rows.
+ */
+export type { MountOrigin, MountRow } from '@5straps/protocol'
 
 /** A row as `buckle workspace mount list` prints it: `source:target:access`, one of the node's marked as such. */
 export function formatMountRow(row: MountRow): string {

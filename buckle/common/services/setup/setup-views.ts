@@ -1,7 +1,7 @@
 import { resolveFilesystemAccess } from '../../domain/filesystem-policy.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { isRestrictive, refuseSwitchIn } from '../../domain/policy.js'
-import { ApprovalWithdrawSchema, emptyWorkspacePolicy, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type WorkspacePolicy } from '@5straps/protocol'
+import { ApprovalWithdrawSchema, emptyWorkspacePolicy, WorkspacePolicyUpdateSchema, type ApprovalWithdraw, type SetupWorkspaceStatus, type WorkspacePolicy } from '@5straps/protocol'
 import { actionsPath } from '../../runtime/config.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { WorkspacePatchSchema, WorkspaceRegistrationSchema, WorkspaceTokenInputSchema, type ManagedWorkspace, type WorkspaceManager, type WorkspaceRegistration } from '../workspaces/workspace-manager.js'
@@ -21,7 +21,7 @@ type Query = Record<string, string>
  * their own and take common code as types only (plan section B). Each takes the workspace it serves.
  */
 export interface SetupViews {
-  /** How the node is set up for this workspace: identity, root and mount, sandbox, packs, policy state. */
+  /** How the node is set up for this workspace: identity, root, mount and mount table, sandbox, packs, policy state. */
   status(workspace: ManagedWorkspace): Promise<Record<string, unknown>>
   /** The policy as the setup face shows it: effective, revision, stored, and where each part in force comes from. */
   policy(workspace: ManagedWorkspace): Record<string, unknown>
@@ -50,13 +50,16 @@ export function createSetupViews(): SetupViews {
     async status({ config, runtime }) {
       const manifest = runtime.manifest()
       const effective = runtime.policy.effective()
+      // `mounts` is the mount table as buckle workspace mount list --json prints it, optional in the protocol, so an
+      // older Rings ignores it. The owner's face shows host folders, as `root` does; no agent reads it.
+      const workspace: SetupWorkspaceStatus = { root: config.cwd, mount: effective.mount, displayRoot: runtime.paths().displayRoot, mounts: runtime.mountTable() }
       return {
         serverId: config.serverId,
         /** Which of the node's workspaces this face serves, and the identity its reports carry. */
         workspaceId: runtime.workspaceId,
         name: config.serverName,
         version: manifest.version,
-        workspace: { root: config.cwd, mount: effective.mount, displayRoot: runtime.paths().displayRoot },
+        workspace,
         sandbox: manifest.sandbox,
         packs: manifest.packs,
         // Which browser browser_command drives, as a word and the setting that chose it, never the setting's value,

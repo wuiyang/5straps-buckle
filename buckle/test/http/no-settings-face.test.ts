@@ -93,7 +93,9 @@ describe('no face exposes node settings', () => {
     // entries awaits the maintainer's ruling under BUCKLE-D19; any other value reaching a body fails here.
     const reported: Record<string, string[]> = {
       '/v1/manifest': ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
-      [app.setup('status')]: ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT'],
+      // The status's mount table (the workspace-model follow-up, M2) names the node's scratch roots, as the manifest
+      // does; the BUCKLE_MOUNT_READ_ONLY toolchains are never a row (D90 (3)).
+      [app.setup('status')]: ['BUCKLE_WORKSPACE_ROOT', 'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_SCRATCH_ROOTS'],
       '/setup/workspaces': ['BUCKLE_WORKSPACE_ROOT'],
       // BUCKLE_ALLOWED_HOSTS is the node's URL list too (Phase 2 item 5), so the policy view reports its entries beside BUCKLE_NETWORK_ALLOW's.
       [app.setup('policy')]: ['BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_NETWORK_ALLOW', 'BUCKLE_ALLOWED_HOSTS'],

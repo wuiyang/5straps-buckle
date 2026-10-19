@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { SetupWorkspaceStatusSchema } from '@5straps/protocol'
 import { sandboxBinds, type BuckleConfig } from '../../common/runtime/config.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
@@ -130,6 +131,27 @@ it('inherits the node callbacks, so a registered workspace is not absent from th
   expect(response.status).toBe(200)
   // Every entry it posts carries workspaceId: 'one', which is the identity that was missing.
   expect(await response.json()).toMatchObject({ reporting: true, workspaceId: await app.idOf('one') })
+})
+
+// The workspace-model follow-up, M2: the status names the workspace's mount table as buckle workspace mount list --json
+// prints it, in an optional field an older Rings ignores (protocol version 1); the policy view is as it was.
+it('names the workspace\'s mount table in its status, as mount list --json prints it, and leaves the policy view as it was', async () => {
+  await register('one')
+  const data = join(root, 'data')
+  mkdirSync(data)
+  const workspaces = await app.services.getWorkspaces()
+  const id = await app.idOf('one')
+  await workspaces.addMount(id, { source: data, target: '/data', access: 'ro' })
+  // The runtime takes the write up as buckle serve does when the settings change.
+  await (await workspaces.resolve(id, { setup: true })).runtime.takeUpSettings()
+  const status = await (await app.request('/workspaces/one/setup/status', { headers: headers(NODE_SETUP) })).json() as { workspace: unknown }
+  expect(status.workspace).toEqual({ root: join(root, 'one'), mount: '/workspace', displayRoot: '/workspace', mounts: [
+    { source: join(root, 'one'), target: '/workspace', access: 'rw', from: 'folder' },
+    { source: data, target: '/data', access: 'ro', from: 'workspace' },
+  ] })
+  expect(SetupWorkspaceStatusSchema.parse(status.workspace)).toEqual(status.workspace)
+  const policy = await (await app.request('/workspaces/one/setup/policy', { headers: headers(NODE_SETUP) })).json() as Record<string, unknown>
+  expect(Object.keys(policy).sort()).toEqual(['dangerouslyAllow', 'effective', 'revision', 'sources', 'stored'])
 })
 
 it('retains setup history and audit while a workspace is offline, and serves it again once reactivated', async () => {
