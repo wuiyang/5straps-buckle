@@ -892,8 +892,9 @@ function runnerArguments(args: readonly string[]): Arguments {
  * (typeScriptEntry). A refusal where a folder's manifest is one the agent may not read or the reader could not parse.
  */
 function scriptEntry(runtime: string, name: string, base: string, view: CodeView): Entry {
-  if (runtime === 'python') return entryOf(firstLocated(view, [name, `${name}/__main__.py`], base))
+  // A backslash names a file pathe cannot place as the platform does, under every runtime's rules (fix brief 6, B10).
   if (literalBackslash(name)) return { refused: CODE_REFUSALS.unreadable }
+  if (runtime === 'python') return entryOf(firstLocated(view, [name, `${name}/__main__.py`], base))
   if (runtime === 'node') return nodeEntry(name, base, view, 'entry')
   // perl, ruby, php, lua, the C shells, and awk try no extension and no folder: the name as written.
   if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return entryOf(firstLocated(view, [name], base))

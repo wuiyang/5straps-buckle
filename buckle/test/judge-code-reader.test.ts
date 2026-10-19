@@ -206,6 +206,15 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(read(['node', 'build.js', 'a\\b']))).toEqual(['/workspace/build.js'])
   })
 
+  it('refuses a python script whose name holds a backslash, never showing the file pathe would place there (fix brief 6, B10)', () => {
+    const { read, shell } = workspace({ 'a/b.py': 'print(0)\n', 'job.py': 'print(1)\n' })
+    const unreadable = { kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false }
+    expect(read(['python3', 'a\\b.py'])).toEqual(unreadable)
+    expect(read(['python3', '--', 'a\\b.py'])).toEqual(unreadable)
+    expect(shell("python3 'a\\b.py'")).toEqual(unreadable)
+    expect(paths(read(['python3', 'job.py']))).toEqual(['/workspace/job.py'])
+  })
+
   it('is the word after a leading --, found the same way, and a namespace package\'s __main__.py for python -m (fix brief 2, H5)', () => {
     const { read } = workspace({ 'build.js': 'evil()\n', 'tool/index.js': 'evil()\n', 'pkg/__main__.py': 'import os\n', 'tools/__main__.py': 'import json\n', 'deep/inner/__main__.py': 'import re\n' })
     const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
