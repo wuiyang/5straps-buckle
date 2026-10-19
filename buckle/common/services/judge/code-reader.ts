@@ -175,9 +175,39 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
   return planned
 }
 
-/** Whether a form is `flock` running a command through `$SHELL -c` (`flock <lock> -c <text>`, or `--command`; fix brief 5, P3). */
+/** flock's options that take a value (util-linux flock(1)): `-w`, `--wait`, or `--timeout`, and `-E` or `--conflict-exit-code`. */
+const FLOCK_SHORT_VALUES = 'wE'
+const FLOCK_LONG_VALUES = ['timeout', 'wait', 'conflict-exit-code']
+
+/**
+ * Whether a form is `flock` running a command through `$SHELL -c` (`flock <lock> -c <text>`, or `--command`; fix brief 5,
+ * P3). util-linux flock stops its options at the lock operand and reads `-c` or `--command` only as the word right after
+ * it, so a `-c` anywhere else is an argument of the command flock runs (fix brief 6, B6), as the command reader reads it.
+ */
 function flockCommand(form: readonly string[]): boolean {
-  return baseCommand(form[0] ?? '') === 'flock' && form.slice(1).some(word => word === '-c' || word === '--command')
+  if (baseCommand(form[0] ?? '') !== 'flock') return false
+  let index = 1
+  while (index < form.length) {
+    const word = form[index]!
+    if (word === '--') {
+      index++
+      break
+    }
+    if (word === '-' || !word.startsWith('-')) break
+    index += flockOptionTakesNext(word) ? 2 : 1
+  }
+  const next = form[index + 1]
+  return next === '-c' || next === '--command'
+}
+
+/** Whether a flock option word takes the next word as its value: a long one getopt_long matches by prefix, or a short cluster ending in one. */
+function flockOptionTakesNext(word: string): boolean {
+  if (word.startsWith('--')) {
+    const typed = word.slice(2)
+    return !typed.includes('=') && typed.length > 0 && FLOCK_LONG_VALUES.some(name => name.startsWith(typed))
+  }
+  const at = [...word.slice(1)].findIndex(character => FLOCK_SHORT_VALUES.includes(character))
+  return at >= 0 && at === word.length - 2
 }
 
 /**

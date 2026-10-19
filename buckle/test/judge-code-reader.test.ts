@@ -875,6 +875,18 @@ describe('the code a here-string hands an interpreter', () => {
     expect(paths(call('flock', '-w', '5', 'lk', 'node', 'build.js'))).toEqual(['/workspace/build.js'])
   })
 
+  it('reads flock\'s -c only as the word right after the lock operand, as util-linux does (fix brief 6, B6)', () => {
+    const { call } = workspace({ '7.py': 'print(1)\n', 'build.js': 'console.log(1)\n' })
+    // A -c after the command is that command's own (util-linux flock 2.39: `flock -c 'echo x' lk` exits 64).
+    expect(reading(call('flock', 'lk', 'python3', '-c', 'print(1)'))).toMatchObject({ inline: 'print(1)', files: [] })
+    expect(paths(call('flock', 'lk', 'node', 'build.js', '-c'))).toEqual(['/workspace/build.js'])
+    expect(paths(call('flock', 'lk', 'node', 'build.js', '--command'))).toEqual(['/workspace/build.js'])
+    // Right after the lock operand, past any options and their values, it runs through $SHELL -c.
+    for (const words of [['lk', '-c', 'python3 7.py'], ['lk', '--command', 'python3 7.py'], ['-w', '5', 'lk', '-c', 'python3 7.py'], ['-nw5', 'lk', '-c', 'python3 7.py'], ['--wait', '5', 'lk', '-c', 'python3 7.py'], ['--timeout=5', 'lk', '-c', 'python3 7.py'], ['-E', '9', '--', 'lk', '-c', 'python3 7.py']]) {
+      expect(call('flock', ...words), words.join(' ')).toEqual(shellRefusal)
+    }
+  })
+
   it('refuses a wrapper that sets the program name, which points an interpreter at a venv unseen (fix brief 5, N1)', () => {
     // A venv fixture with neutral names: pyvenv.cfg beside a fv/bin the agent never writes, and a .pth file that runs at
     // startup. exec -a and env --argv0 make CPython take argv[0] as its executable path and read these before the script.
