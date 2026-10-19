@@ -70,7 +70,7 @@ async function call(runtime: BuckleRuntime, args: JsonObject = {}, command = ['n
 describe('the variables that change what code runs', () => {
   it('are the names and prefixes fix brief 1 lists', () => {
     expect(CODE_LOADING_VARIABLES).toEqual({
-      names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT', 'SHELL'],
+      names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT', 'SHELL', 'HOME'],
       prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_'],
     })
   })
@@ -409,6 +409,22 @@ describe('a function bash imports from the environment (fix brief 4, P, extra)',
     const viaEnv = await call(runtime, {}, ['env', 'BASH_FUNC_python3%%=() { echo other; }', 'bash', '-c', 'python3 job.py'])
     expect(viaEnv.ran).toBe(false)
     expect(viaEnv.entry.judge).toMatchObject({ unavailable: codeLoadingReason('BASH_FUNC_python3%%'), passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a call that sets HOME (fix brief 5, P4)', () => {
+  it('is not rated, since zsh and Python read startup code from HOME, and the reason names HOME with no value', async () => {
+    expect(codeLoadingVariable(callVariables({ env: { HOME: '/workspace/h' } }))).toBe('HOME')
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const { response, entry, ran } = await call(runtime, { env: { HOME: '/workspace/h' } }, ['python3', 'job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: codeLoadingReason('HOME'), passed: false })
+    expect(JSON.stringify(entry.judge)).not.toContain('/workspace/h')
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })

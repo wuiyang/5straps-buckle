@@ -13,8 +13,10 @@ export const CODE_LOADING_VARIABLES = Object.freeze({
     'PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES',
     'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT',
     // SHELL: flock runs its `-c` text through `$SHELL -c`, so a call that sets it chooses the shell that runs that text
-    // (fix brief 5, P3, a coordinator default recorded for the owner, reversible).
-    'SHELL',
+    // (fix brief 5, P3). HOME: zsh reads its startup files from HOME when ZDOTDIR is unset, and Python runs
+    // usercustomize.py from the user site under HOME at startup (fix brief 5, P4). Both are coordinator defaults
+    // recorded for the owner, reversible.
+    'SHELL', 'HOME',
   ]),
   // BASH_FUNC_: bash imports a function from `BASH_FUNC_<name>%%`, which then runs in place of the command it names.
   prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_']),
