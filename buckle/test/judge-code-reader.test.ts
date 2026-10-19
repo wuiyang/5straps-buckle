@@ -275,6 +275,21 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(abs.read(['node', 'a.mjs'])).toEqual(unmodelled)
   })
 
+  it('refuses a specifier holding a control, a tab, or an edge space before it reads a scheme or a package, so a hidden URL refuses (fix brief 6, B8)', () => {
+    const unmodelled = { kind: 'refused', reason: CODE_REFUSALS.unmodelledImport, truncated: false }
+    // node 24.21.0 strips the edge space and removes the tab before it reads the scheme, so the first four run the URL
+    // (recheck 5, live); the rest pin an absolute specifier and an inner control or U+007F. Each holds the real character.
+    for (const specifier of [' file:///workspace/target.mjs', 'fi\tle:///workspace/target.mjs', ' data:text/javascript,console.log(1)', '\tdata:text/javascript,console.log(1)', '/workspace/target.mjs ', './tar\u0001get.mjs', './tar\u007fget.mjs', 'decoy-package ']) {
+      const { read } = workspace({ 'target.mjs': 'export {}\n', 'a.mjs': `import '${specifier}'\n`, 'build.js': 'console.log(1)\n' })
+      expect(read(['node', 'a.mjs']), JSON.stringify(specifier)).toEqual(unmodelled)
+      expect(read(['tsx', 'a.mjs']), JSON.stringify(specifier)).toEqual(unmodelled)
+      expect(read(['node', '--import', specifier, 'build.js']), JSON.stringify(specifier)).toEqual(unmodelled)
+    }
+    // A plain file and a plain package still read.
+    const plain = workspace({ 'target.mjs': 'export {}\n', 'a.mjs': "import './target.mjs'\nimport 'decoy-package'\n" })
+    expect(reading(plain.read(['node', 'a.mjs']))).toMatchObject({ files: [{ path: '/workspace/a.mjs' }, { path: '/workspace/target.mjs' }], packages: [{ name: 'decoy-package' }] })
+  })
+
   it('reads each preload bunfig.toml lists for bun, and refuses a config the reader cannot parse (fix brief 3, R15)', () => {
     const files = (config: string, form: string[] = ['bun', 'run.ts']) => {
       const { read } = workspace({ 'bunfig.toml': config, 'run.ts': 'export {}\n', 'pre.ts': 'export {}\n', 'second.ts': 'export {}\n', 'conf/bunfig.toml': 'preload = "./local.ts"\n', 'conf/local.ts': 'export {}\n', 'local.ts': 'export {}\n' })
