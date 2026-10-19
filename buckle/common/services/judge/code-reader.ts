@@ -115,6 +115,9 @@ interface Planned { form: readonly string[]; feed: StatementFeed | null }
  */
 function planOf(input: Pick<CodeInput, 'forms' | 'chain'>): Planned[] | string {
   const chain = input.chain ?? input.forms
+  // flock runs its `-c` text through `$SHELL -c`, which the command reader maps to `sh -c`, but the shell that runs it
+  // is whatever SHELL names, so the grammar's reading of it as sh may not be the code that runs (fix brief 5, P3).
+  if (chain.some(flockCommand)) return SHELL_TEXT_REFUSAL
   let statement: { form: readonly string[]; feed: StatementFeed | null } | null | undefined
   let matched = false
   const planned: Planned[] = []
@@ -132,6 +135,11 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain'>): Planned[] | string {
   // The rules and the grammar must agree on the statement's interpreter form, or neither reading is trusted.
   if (statement !== undefined && !matched) return SHELL_TEXT_REFUSAL
   return planned
+}
+
+/** Whether a form is `flock` running a command through `$SHELL -c` (`flock <lock> -c <text>`, or `--command`; fix brief 5, P3). */
+function flockCommand(form: readonly string[]): boolean {
+  return baseCommand(form[0] ?? '') === 'flock' && form.slice(1).some(word => word === '-c' || word === '--command')
 }
 
 /** The interpreter form a shell form's `-c` text runs, with its feed, where that text is one simple command; else null. */

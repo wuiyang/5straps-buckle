@@ -636,6 +636,14 @@ describe('the code a here-string hands an interpreter', () => {
     expect(shell("sudo python3 <<< 'import helper'")).toEqual(shellRefusal)
   })
 
+  it('refuses flock -c text, which runs through $SHELL -c rather than sh (fix brief 5, P3)', () => {
+    const { call } = workspace({ 'helper.py': 'X = 1\n', '7.py': 'print(1)\n', 'build.js': 'console.log(1)\n' })
+    expect(call('flock', 'lk', '-c', 'python3 - < 7.py')).toEqual(shellRefusal)
+    expect(call('flock', 'lk', '-c', "python3 <<< 'import helper'")).toEqual(shellRefusal)
+    // flock running a command directly, with no -c, still reads it (the shell is not involved).
+    expect(paths(call('flock', '-w', '5', 'lk', 'node', 'build.js'))).toEqual(['/workspace/build.js'])
+  })
+
   it('reads a heredoc\'s body as inline code, and refuses one a shell would expand, one left open, and a text with more than one statement', () => {
     const { shell } = workspace({ 'helper.py': 'X = 1\n' })
     expect(reading(shell("python3 - <<'EOF'\nimport helper\nprint(1)\nEOF\n"))).toMatchObject({ inline: 'import helper\nprint(1)', files: [{ path: '/workspace/helper.py' }] })
