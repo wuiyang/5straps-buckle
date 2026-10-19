@@ -462,6 +462,60 @@ describe('buckle workspace list and show', () => {
     expect(out).toContain(`Mount     (none: the real path shows through), the workspace's own\nMounts (source:target:access)\n  ${scratch}:${scratch}:rw  (node scratch root)\nDangerously allow`)
   })
 
+  // The mounts follow-up, first fix round: workspace show builds its mounts rows from the rows mount list and policy show
+  // print, so the three views agree for one workspace: the folder first, and the node's rows marked as the node's.
+  describe('the mount table in workspace show, policy show, and mount list', () => {
+    const SOURCE_COLUMN = /^(.+?) +(workspace|node default|built-in)$/
+    /** The `mounts` rows of workspace show: each one's value, and the source column beside it. */
+    const shownRows = (text: string) => text.split('\n').filter(line => /^ {2}mounts /.test(line)).map(line => SOURCE_COLUMN.exec(line.replace(/^ {2}mounts +/, ''))!.slice(1))
+    /** The rows policy show prints under its Mounts heading. */
+    const policyRows = (text: string) => /Mounts \(source:target:access\)\n((?: {2}.+\n)+)Dangerously allow/.exec(text)![1]!.split('\n').filter(Boolean).map(line => line.slice(2))
+    const listedRows = async (config: NodeConfig) => (await buckle(['mount', 'list'], { cwd: alpha, config })).out.split('\n').filter(line => line && !line.includes('shows at its real path'))
+    const policyShow = async (config: NodeConfig) => { out = ''; await runCli({ argv: ['policy', 'show'], config, confirm: null, cwd: alpha }); return out }
+    const showRows = async (config: NodeConfig) => shownRows((await buckle(['show'], { cwd: alpha, config })).out)
+
+    it('agree on the folder, a node default, and a scratch root, each marked as policy show and mount list mark it', async () => {
+      await init(alpha)
+      const [docs, scratch] = [join(outside, 'docs'), join(outside, 'scratch')]
+      for (const folder of [docs, scratch]) mkdirSync(folder)
+      const config = node({ BUCKLE_MOUNTS: JSON.stringify([{ source: docs, target: '/docs', readOnly: true }]), BUCKLE_SCRATCH_ROOTS: scratch })
+      const rows = [`${alpha}:/workspace:rw`, `${docs}:/docs:ro  (node default)`, `${scratch}:${scratch}:rw  (node scratch root)`]
+      expect(await listedRows(config)).toEqual(rows)
+      expect(policyRows(await policyShow(config))).toEqual(rows)
+      expect(await showRows(config)).toEqual([[rows[0], 'workspace'], [rows[1], 'node default'], [rows[2], 'node default']])
+    })
+
+    it('agree on the workspace\'s own mounts after its folder', async () => {
+      await init(alpha)
+      const [data, docs] = [join(outside, 'data'), join(outside, 'docs')]
+      for (const folder of [data, docs]) mkdirSync(folder)
+      expect((await buckle(['mount', 'add', `${data}:/data`], { cwd: alpha })).exitCode).toBe(0)
+      expect((await buckle(['mount', 'add', `${docs}:/docs:ro`], { cwd: alpha })).exitCode).toBe(0)
+      const config = node()
+      const rows = [`${alpha}:/workspace:rw`, `${data}:/data:rw`, `${docs}:/docs:ro`]
+      expect(await listedRows(config)).toEqual(rows)
+      expect(policyRows(await policyShow(config))).toEqual(rows)
+      expect(await showRows(config)).toEqual(rows.map(row => [row, 'workspace']))
+    })
+
+    it('agree once the folder shows at its real path, which leaves its row out, and on an empty table', async () => {
+      await init(alpha)
+      const scratch = join(outside, 'scratch')
+      mkdirSync(scratch)
+      const config = node({ BUCKLE_SCRATCH_ROOTS: scratch })
+      expect((await runCli({ argv: ['policy', 'unmount'], config, confirm: null, cwd: alpha })).exitCode).toBe(0)
+      const rows = [`${scratch}:${scratch}:rw  (node scratch root)`]
+      expect(await listedRows(config)).toEqual(rows)
+      expect(policyRows(await policyShow(config))).toEqual(rows)
+      expect(await showRows(config)).toEqual([[rows[0], 'node default']])
+
+      const bare = node()
+      expect(await listedRows(bare)).toEqual([])
+      expect(await policyShow(bare)).toContain('Mounts (source:target:access)\n  (none)\nDangerously allow')
+      expect(await showRows(bare)).toEqual([['(none)', 'built-in']])
+    })
+  })
+
   it('says how to start where the node has none', async () => {
     expect((await buckle(['list'])).out).toContain('No workspace yet: run buckle workspace init in the folder to serve.')
   })

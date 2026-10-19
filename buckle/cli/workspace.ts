@@ -213,9 +213,12 @@ function show(context: Context): CliResult {
   if (values.json) return print({ ...workspace, settings, inForce })
   const named = workspaceArgument(workspace.name)
   const onOff = (on: boolean) => (on ? 'on' : 'off')
+  // The mount table as mount list and policy show print it, the folder first and the node's rows marked as such; the
+  // source column is where the setting comes from, as for every row, so a scratch root reads node default there.
+  const table = mountRows(workspace.dir, inForce)
   const rows: Array<[string, string, SettingSource]> = [
     ['mount', inForce.mount ?? '(none: its real path)', inForce.sources.mount!],
-    ...(inForce.mounts.length === 0 ? [['mounts', '(none)', inForce.sources.mounts!] as [string, string, SettingSource]] : inForce.mounts.map((entry): [string, string, SettingSource] => ['mounts', formatMount(entry), inForce.sources.mounts!])),
+    ...(table.length === 0 ? [['mounts', '(none)', inForce.sources.mounts!] as [string, string, SettingSource]] : table.map((row): [string, string, SettingSource] => ['mounts', formatMountRow(row), row.from === 'folder' ? inForce.sources.mount! : inForce.sources.mounts!])),
     ['approvalWaitMs', inForce.approvalWaitMs === 0 ? '0 (until someone answers)' : String(inForce.approvalWaitMs), inForce.sources.approvalWaitMs!],
     ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
     ...(['shell', 'code', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
