@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type FilesystemPermission, type JsonValue } from '@5straps/protocol'
 import { runProcess as hostRunProcess } from '../common/adapters/process-runner.js'
 import { findExecutable } from '../common/domain/executable.js'
+import type { HostEnvironment } from '../common/domain/environment.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
@@ -14,7 +15,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 import { createGitPack } from '../common/services/packs/git/index.js'
 import type { ToolContext } from '../common/domain/tool.js'
-import type { ProcessRunner } from '../common/types/ports/process-runner.js'
+import type { ProcessRequest, ProcessRunner } from '../common/types/ports/process-runner.js'
 
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn(), mount: string | null = null, git = 'git') {
   const stateDirectory = mkdtempSync(join(tmpdir(), 'git-pack-state-'))
@@ -330,5 +331,151 @@ describe.skipIf(hostGit === null)('a git_diff or git_log naming no path reads th
     expect(await call('git_diff', { staged: true })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
     expect(await call('git_log', {})).toMatchObject({ commits: [{ subject: 'seed' }] })
     expect(requests.flatMap(request => request.args).filter(word => word === '--' || word.startsWith(':('))).toEqual([])
+  })
+})
+
+// D77 (owner, 2026-10-11), the rev-parse race: the repository query and the command were two spawns, and the command found
+// its repository again by itself, so a `.git` swapped between them (a `gitdir:` file, or a link) pointed it elsewhere.
+describe('a git tool runs against the directories its repository query resolved (D77, the rev-parse race)', () => {
+  const PINNED = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_COMMON_DIR'] as const
+  function repositories() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-race-')))
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-race-outside-')))
+    mkdirSync(join(root, 'repo', '.git'), { recursive: true })
+    mkdirSync(join(outside, '.git'))
+    return { root, repo: join(root, 'repo'), outside }
+  }
+  /** A git that answers the query as a repository with its own `.git`, then runs `during` at the step named. */
+  function racing(during: { query?: () => void; config?: () => void; command?: () => void } = {}) {
+    return vi.fn<ProcessRunner>(async request => {
+      const answer = (stdout: string, exitCode = 0) => ({ exitCode, signal: null, stderr: '', truncated: false, timedOut: false, stdout })
+      if (request.args[0] === 'rev-parse') {
+        during.query?.()
+        return answer(`${request.cwd}\n${request.cwd}/.git\n${request.cwd}/.git\n`)
+      }
+      if (request.args[0] === 'config') {
+        during.config?.()
+        return answer('', 1)
+      }
+      during.command?.()
+      return answer('# branch.head main\n1 .M N... 100644 100644 100644 0 0 seen-through-the-swap.txt\n')
+    })
+  }
+  const commandOf = (runProcess: ReturnType<typeof racing>) => runProcess.mock.calls.map(([request]) => request).filter(request => request.args[0] === 'status')
+  const pointOutside = (repo: string, outside: string) => () => {
+    renameSync(join(repo, '.git'), join(repo, 'moved-git'))
+    writeFileSync(join(repo, '.git'), `gitdir: ${join(outside, '.git')}\n`)
+  }
+  const linkOutside = (repo: string, outside: string) => () => {
+    renameSync(join(repo, '.git'), join(repo, 'moved-git'))
+    symlinkSync(join(outside, '.git'), join(repo, '.git'))
+  }
+
+  it('hands the config listing and the command the resolved git directory, work tree, and common directory, and the query none', async () => {
+    const { root, repo } = repositories()
+    const runProcess = racing()
+    const { call } = gitPack(root, runProcess)
+    await call('git_status', { repo: 'repo' })
+    const [query, ...rest] = runProcess.mock.calls.map(([request]) => request)
+    for (const name of PINNED) expect(query!.environment).not.toHaveProperty(name)
+    expect(rest.map(request => request.args[0])).toEqual(['config', 'status'])
+    for (const request of rest) expect(request.environment).toMatchObject({ GIT_DIR: `${repo}/.git/.`, GIT_WORK_TREE: repo, GIT_COMMON_DIR: `${repo}/.git/.` })
+  })
+
+  // A link swapped in before the query is checked already meets the boundary check; after it, only the pinning sees it.
+  it.each([
+    ['a gitdir: file', 'query', pointOutside],
+    ['a gitdir: file', 'config', pointOutside],
+    ['a link', 'config', linkOutside],
+  ] as const)('refuses, running no command, when .git is swapped for %s outside the root at the %s step', async (_, step, swap) => {
+    const { root, repo, outside } = repositories()
+    const runProcess = racing({ [step]: swap(repo, outside) })
+    const { call } = gitPack(root, runProcess)
+    const refusal = await refusalOf(() => call('git_status', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
+    expect(String(refusal)).not.toContain(root)
+    expect(String(refusal)).not.toContain(outside)
+    expect(commandOf(runProcess)).toEqual([])
+  })
+
+  it('refuses, showing nothing git printed, when .git is swapped while the command runs', async () => {
+    const { root, repo, outside } = repositories()
+    const runProcess = racing({ command: pointOutside(repo, outside) })
+    const { call } = gitPack(root, runProcess)
+    const refusal = await refusalOf(() => call('git_status', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(String(refusal)).not.toContain('seen-through-the-swap')
+    expect(commandOf(runProcess)).toHaveLength(1)
+  })
+
+  it('never hands git a repository, object, or config variable from its caller, only its own', async () => {
+    const { root, repo } = repositories()
+    const runProcess = racing()
+    const elsewhere = '/elsewhere'
+    const caller: HostEnvironment = extra => ({
+      PATH: '/usr/bin', GIT_DIR: elsewhere, GIT_WORK_TREE: elsewhere, GIT_OBJECT_DIRECTORY: elsewhere, GIT_ALTERNATE_OBJECT_DIRECTORIES: elsewhere,
+      GIT_COMMON_DIR: elsewhere, GIT_CONFIG_GLOBAL: elsewhere, GIT_CONFIG_SYSTEM: elsewhere, GIT_CEILING_DIRECTORIES: elsewhere, GIT_INDEX_FILE: elsewhere, ...extra,
+    })
+    const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [] }), runProcess, stateDirectory: mkdtempSync(join(tmpdir(), 'git-pack-state-')), git: { path: 'git', argv0: 'git', args: [] }, environment: caller })
+    await pack.tools.find(tool => tool.capability.name === 'git_status')!.prepare({ repo: 'repo' }).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 1_000, signal: AbortSignal.timeout(1_000) })
+    const requests: ProcessRequest[] = runProcess.mock.calls.map(([request]) => request)
+    expect(requests).toHaveLength(3)
+    for (const request of requests) {
+      expect(Object.values(request.environment ?? {})).not.toContain(elsewhere)
+      expect(request.environment).toMatchObject({ GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' })
+      for (const name of ['GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_CONFIG_SYSTEM', 'GIT_INDEX_FILE']) expect(request.environment).not.toHaveProperty(name)
+    }
+    expect(requests[0]!.environment).toMatchObject({ GIT_CEILING_DIRECTORIES: parentOf(root) })
+    expect(requests[2]!.environment).toMatchObject({ GIT_DIR: `${repo}/.git/.`, GIT_WORK_TREE: repo })
+  })
+})
+
+function parentOf(path: string): string {
+  return path.slice(0, path.lastIndexOf('/')) || '/'
+}
+
+describe.skipIf(hostGit === null)('a git tool pinned to the resolved directories, against the installed git', () => {
+  it('still reads a linked worktree inside the workspace, from its root and a folder in it', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-worktree-')))
+    mkdirSync(join(root, 'main', 'src'), { recursive: true })
+    writeFileSync(join(root, 'main', 'src', 'a.txt'), 'first\n')
+    git(join(root, 'main'), 'init', '-q')
+    git(join(root, 'main'), 'add', '.')
+    git(join(root, 'main'), 'commit', '-qm', 'seed')
+    git(join(root, 'main'), 'worktree', 'add', '-q', '-b', 'side', join(root, 'side'))
+    writeFileSync(join(root, 'side', 'src', 'a.txt'), 'second\n')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    expect(await call('git_status', { repo: 'side' })).toMatchObject({ branch: 'side', entries: [{ state: '.M', path: 'src/a.txt' }] })
+    expect(await call('git_diff', { repo: 'side/src', paths: ['a.txt'] })).toMatchObject({ diff: expect.stringContaining('+second') })
+    expect(await call('git_log', { repo: 'side/src' })).toMatchObject({ commits: [{ subject: 'seed' }] })
+  })
+
+  it('refuses when .git becomes a gitdir: file outside the root just before git runs, showing nothing of that repository', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const seeded = (directory: string, subject: string) => {
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'a.txt'), `${subject}\n`)
+      git(directory, 'init', '-q')
+      git(directory, 'add', 'a.txt')
+      git(directory, 'commit', '-qm', subject)
+    }
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-live-race-')))
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-live-race-outside-')))
+    seeded(root, 'inside')
+    seeded(outside, 'history kept elsewhere')
+    const swapping: ProcessRunner = request => {
+      if (request.args[0] === 'log') {
+        renameSync(join(root, '.git'), join(root, 'moved-git'))
+        writeFileSync(join(root, '.git'), `gitdir: ${join(outside, '.git')}\n`)
+      }
+      return hostRunProcess(request)
+    }
+    const { call } = gitPack(root, swapping, null, hostGit!)
+    const refusal = await refusalOf(() => call('git_log', {}))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-live-race/)
   })
 })

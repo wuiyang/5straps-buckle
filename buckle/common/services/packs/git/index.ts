@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
@@ -33,6 +33,10 @@ const REPOSITORY_QUERY = ['rev-parse', '--path-format=absolute', '--show-topleve
 const LITERAL_PATHSPECS = { GIT_LITERAL_PATHSPECS: '1' }
 /** Constant, so a refusal shows no path the agent did not write (D9, D17). */
 const OUTSIDE_REPOSITORY = 'Refused: a path outside the repository, which the git tools never read; nothing was run'
+/** Constant too: a repository moved mid-call, whose new place is no business of the agent's. */
+const REPOSITORY_MOVED = 'The repository changed while Buckle checked it, so nothing git read from it is shown; send the call again'
+/** The variables git finds a repository, its objects, its index, or its config by: always the pack's own, never its caller's. */
+const GIT_VARIABLE = /^GIT_/i
 
 const repoInput = z.object({ repo: z.string().default('.') })
 const statusInput = repoInput.extend({ untracked: z.boolean().default(true) })
@@ -75,7 +79,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       args: [...options.git.args, ...input.args],
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: environment({ ...ISOLATION_ENVIRONMENT, ...LITERAL_PATHSPECS, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config), ...input.extra }),
+      environment: withOwnGitVariables(environment, { ...ISOLATION_ENVIRONMENT, ...LITERAL_PATHSPECS, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config), ...input.extra }),
       signal: input.signal,
     })
   }
@@ -85,6 +89,9 @@ export function createGitPack(options: GitPackOptions): Pack {
    * built before anything is spawned, so a path refused there runs nothing.
    * `refreshesIndex`: the command may write the repository's index (git diff refreshes it whatever GIT_OPTIONAL_LOCKS
    * says), so in a mount the owner shares read-only it runs on a private copy of the index instead.
+   *
+   * Only the repository query finds the repository; every later spawn runs against the places it resolved (D77, the
+   * rev-parse race), checked unchanged before each and after the command (pinRepository).
    */
   const run = async (input: Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> & {
     repo: string
@@ -97,16 +104,23 @@ export function createGitPack(options: GitPackOptions): Pack {
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
     const spawnHere = (args: string[], config: GitConfig[], extra?: Record<string, string>) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal, ...(extra ? { extra } : {}) })
     const found = await spawnHere(REPOSITORY_QUERY, isolation)
-    assertRepositoryInside({ answer: found, boundary, repo: input.repo, platform })
+    const repository = assertRepositoryInside({ answer: found, boundary, repo: input.repo, platform })
+    const pinned = pinRepository(repository, platform)
+    const spawnPinned = (args: string[], config: GitConfig[], extra?: Record<string, string>) => {
+      pinned.assertUnchanged()
+      return spawnHere(args, config, { ...pinned.environment, ...extra })
+    }
     const keys = await configuredFilterPrograms({
-      spawn: args => spawnHere(args, isolation),
+      spawn: args => spawnPinned(args, isolation),
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
     const config = [...isolation, ...filterProgramOverrides(keys)]
     const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
-    const index = readOnly ? privateIndex({ found: found.stdout.split('\n'), stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
+    const index = readOnly ? privateIndex({ repository, stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
     try {
-      const result = await spawnHere(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index?.environment)
+      const result = await spawnPinned(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index?.environment)
+      // A swap while git ran is refused too, before git's own answer, which may name where it was pointed.
+      pinned.assertUnchanged()
       if (result.exitCode !== 0) {
         throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
       }
@@ -224,26 +238,26 @@ const PRIVATE_INDEX_CONFIG: GitConfig[] = [{ key: 'core.splitIndex', value: 'fal
  * directory, whose refs, objects, and config git reads in place and status and diff write none of. git runs with it as
  * GIT_DIR and the work tree named, so nothing in the owner's `.git` is touched. What is copied is bounded by the index.
  */
-function privateIndex(input: { found: string[]; stateDirectory: string; shown: string }): { environment: Record<string, string>; remove: () => void } {
+function privateIndex(input: { repository: Repository; stateDirectory: string; shown: string }): { environment: Record<string, string>; remove: () => void } {
   const directory = join(input.stateDirectory, 'git-index')
-  const [workTree, gitDirectory, commonDirectory] = input.found.map(line => nativePath(line.trim()))
+  const { workTree, gitDirectory, commonDirectory } = input.repository
   const copy = join(directory, randomUUID())
   try {
     mkdirSync(directory, { recursive: true, mode: 0o700 })
-    const shared = readdirSync(gitDirectory!).filter(name => name.startsWith('sharedindex.'))
+    const shared = readdirSync(gitDirectory).filter(name => name.startsWith('sharedindex.'))
     if (shared.length === 0) {
       const path = `${copy}.index`
-      const index = join(gitDirectory!, 'index')
+      const index = join(gitDirectory, 'index')
       if (existsSync(index)) copyFileSync(index, path)
       return { environment: { GIT_INDEX_FILE: path }, remove: () => { for (const file of [path, `${path}.lock`]) rmSync(file, { force: true }) } }
     }
     mkdirSync(copy, { mode: 0o700 })
     const remove = () => rmSync(copy, { recursive: true, force: true })
     try {
-      for (const name of ['HEAD', 'index', ...shared]) if (existsSync(join(gitDirectory!, name))) copyFileSync(join(gitDirectory!, name), join(copy, name))
+      for (const name of ['HEAD', 'index', ...shared]) if (existsSync(join(gitDirectory, name))) copyFileSync(join(gitDirectory, name), join(copy, name))
       writeFileSync(join(copy, 'commondir'), `${commonDirectory}\n`, { mode: 0o600 })
     } catch (error) { remove(); throw error }
-    return { environment: { GIT_DIR: copy, GIT_WORK_TREE: workTree! }, remove }
+    return { environment: { GIT_DIR: copy, GIT_WORK_TREE: workTree }, remove }
   } catch {
     throw new ToolInputError(`The repository at ${input.shown} is in a mount the owner shares read-only, and Buckle could not copy its index to read it without writing there, so git is not run`, { code: 'PERMISSION_DENIED' })
   }
@@ -299,11 +313,57 @@ function ceilingEnvironment(boundary: string): Record<string, string> {
  * and log then showed files and commits no permission check judged, through a mount too. A bare repository has no work
  * tree to name, so it is refused with the rest.
  */
-function assertRepositoryInside(input: { answer: ProcessResult; boundary: string; repo: string; platform: NodeJS.Platform }): void {
+function assertRepositoryInside(input: { answer: ProcessResult; boundary: string; repo: string; platform: NodeJS.Platform }): Repository {
   if (input.answer.exitCode !== 0) throw new ToolExecutionError(`git finds no repository with a work tree at ${input.repo} inside the root it lies in`, { code: 'GIT_NO_REPOSITORY' })
   const places = input.answer.stdout.split('\n').filter(Boolean).map(place => realPlace(place, input.platform))
-  if (places.length === 3 && places.every(place => place !== null && isInside(input.boundary, place, input.platform))) return
+  const [workTree, gitDirectory, commonDirectory] = places
+  if (places.length === 3 && places.every(place => place !== null && isInside(input.boundary, place, input.platform))) return { workTree: workTree!, gitDirectory: gitDirectory!, commonDirectory: commonDirectory! }
   throw new ToolInputError(`The repository git finds at ${input.repo} keeps its files or history outside the root it lies in, where no permission check looked, so git is not run there`, { code: 'PERMISSION_DENIED' })
+}
+
+/** The places a repository query resolved, each by its real path, all checked inside the root the repository lies in. */
+interface Repository { workTree: string; gitDirectory: string; commonDirectory: string }
+
+/**
+ * The repository a call's later spawns run against (D77, the rev-parse race): GIT_DIR, GIT_WORK_TREE, and GIT_COMMON_DIR
+ * name the places the query resolved, so git finds nothing again by itself. A git directory named as a path git reads as
+ * a `gitdir:` file once `.git` is one, so each is named with a trailing `/.`, which only a directory satisfies. The three
+ * are taken as they are on disk once checked, each a directory its own real path reaches, by device and inode, and
+ * `assertUnchanged` compares them again: before each spawn and after the command, so a `.git` swapped for a `gitdir:`
+ * file or a link, or a folder above it for a link, is refused rather than followed. A swap made and undone while git
+ * runs is not seen; the window is that run.
+ */
+function pinRepository(repository: Repository, platform: NodeJS.Platform): { environment: Record<string, string>; assertUnchanged: () => void } {
+  const places = [repository.workTree, repository.gitDirectory, repository.commonDirectory]
+  const identities = () => places.map(place => directoryIdentity(place, platform))
+  const known = identities()
+  const assertUnchanged = () => {
+    const now = identities()
+    if (known.some((identity, index) => identity === null || identity !== now[index])) throw new ToolInputError(REPOSITORY_MOVED, { code: 'PERMISSION_DENIED' })
+  }
+  assertUnchanged()
+  return {
+    environment: { GIT_DIR: `${repository.gitDirectory}/.`, GIT_WORK_TREE: repository.workTree, GIT_COMMON_DIR: `${repository.commonDirectory}/.` },
+    assertUnchanged,
+  }
+}
+
+/** A directory's device and inode, where `place` is one and is still its own real path; null otherwise. */
+function directoryIdentity(place: string, platform: NodeJS.Platform): string | null {
+  const stats = lstatSync(place, { bigint: true, throwIfNoEntry: false })
+  if (!stats?.isDirectory() || realPlace(place, platform) !== place) return null
+  return `${stats.dev}:${stats.ino}`
+}
+
+/**
+ * git's environment: the caller's, with every `GIT_` variable it carries dropped, and the pack's own set over it. A
+ * caller's GIT_DIR, GIT_OBJECT_DIRECTORY, GIT_ALTERNATE_OBJECT_DIRECTORIES, GIT_CONFIG_SYSTEM, or the like would point git
+ * at a repository, objects, or config no check looked at (D77).
+ */
+function withOwnGitVariables(environment: HostEnvironment, own: Record<string, string>): NodeJS.ProcessEnv {
+  const merged = environment(own)
+  for (const name of Object.keys(merged)) if (GIT_VARIABLE.test(name) && !Object.hasOwn(own, name)) delete merged[name]
+  return merged
 }
 
 /** Where a place git named really is, in pathe's form, or null when it cannot be found. */
