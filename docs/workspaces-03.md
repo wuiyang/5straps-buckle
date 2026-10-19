@@ -47,6 +47,11 @@ is the one that may be empty, as it then allows no tool.
 or Buckle's) and marks each deny entry as the node's or the workspace's own. `--json` and the
 setup face's policy view carry the same as `sources`.
 
+After the folder's mount, it prints the [mount table](mounts.md) as `buckle workspace mount list`
+does: the folder's own entry first, then each mount as `source:target:access`, the node's marked
+`(node default)` or `(node scratch root)`. `--json` carries those rows as `mounts`, and so does
+`workspace.mounts` in the setup face's status.
+
 ## The node's own settings
 
 Some settings belong to the node alone, the same for every workspace, and no workspace sets

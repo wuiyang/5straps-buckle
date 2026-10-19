@@ -20,13 +20,15 @@ settings, in the state directory (`~/.5straps/buckle`, or the absolute path in
 `BUCKLE_STATE_DIR`), with the node's name, host, port, and admin credential. Then it serves the
 current directory, or the folder `--dir` names, as a workspace, and prints that workspace's agent
 token once. Each later `buckle init`, in another project, keeps the node's file and adds that
-folder as a workspace with a token of its own. `--force` writes the node's file again, with a new
+folder as a workspace with its own token. `--force` writes the node's file again, with a new
 admin credential, and keeps every workspace and the node's workspace defaults. In a folder a workspace already serves, it adds
 nothing and says how to mint a token there.
 
-In a terminal it asks where the agent sees the folder (`/workspace`), which packs to offer,
+In a terminal it asks where the agent sees the folder (`/workspace`), more folders to
+[mount](mounts.md) (`--volume <local>:<sandbox>[:ro]` without asking), which packs to offer,
 whether shell tools and host Git are on, and the approved hosts and URLs. Each answer goes to the
-new workspace's settings; Enter leaves the setting to the node's default. [First run](first-run.md) walks through it.
+new workspace's settings; Enter leaves it to the node's default. [First run](first-run.md) walks
+through it.
 
 ## buckle workspace
 
@@ -34,7 +36,7 @@ new workspace's settings; Enter leaves the setting to the node's default. [First
 `BUCKLE_ADMIN_TOKEN` in `buckle.env`.
 
 ```bash
-buckle workspace init [--dir <path>] [--name <name>] [--yes]
+buckle workspace init [--dir <path>] [--name <name>] [--volume <local>:<sandbox>[:ro]] [--yes]
 buckle workspace add <dir> [--name <name>] [--yes] [--fresh]
 buckle workspace list [--json]
 buckle workspace show [--json]
@@ -72,7 +74,7 @@ buckle workspace token revoke <token-id>
   each token's id, label, and date, never the token. `token revoke` refuses one from the next call
   on; the last token of a workspace cannot be revoked.
 
-The 0.1 `buckle workspace add <id> --root <dir>` is gone: `add` names the folder first.
+The 0.1 `buckle workspace add <id> --root <dir>` is gone.
 `buckle workspace token add <id>` still works for one release.
 
 ## Which workspace a command means
@@ -96,7 +98,7 @@ shown once, when it is minted. Over HTTP, `/mcp` and `/v1/*` serve the workspace
 token belongs to, so an agent's configuration needs only the host, the port, and its token.
 `/workspaces/<id>/mcp` and `/workspaces/<id>/v1/*` also work, for a token of `<id>` alone. A
 token of no workspace and a token of another workspace get the same refusal, revealing nothing
-about which workspaces exist. A disabled workspace answers 409.
+about which exist. A disabled workspace answers 409.
 
 `buckle mcp` serves one workspace over stdio: the one `--workspace <name>` names, else the one
 holding `--dir <path>`, else the one holding `BUCKLE_WORKSPACE_ROOT` (for older configurations),

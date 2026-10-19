@@ -17,29 +17,30 @@ The first run sets this machine's node up, then serves the current directory as 
 [workspace](workspaces.md). It writes the node's settings to one file, `buckle.env`, in the
 state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
 macOS it creates the directory with mode 700 and the file with 600. It never writes into
-the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; then name that file
-with `BUCKLE_ENV_FILE` whenever you start Buckle; `buckle mcp` needs it in the state
-directory. A node set up already keeps its file unless you pass `--force`, and `buckle init` in
-another project adds it as another workspace.
+the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; every start then
+names it with `BUCKLE_ENV_FILE`, and `buckle mcp` needs it in the state directory. A node set up
+already keeps its file unless you pass `--force`, and `buckle init` in another project adds it
+as another workspace.
 
 In a terminal it asks each question with a default. Enter keeps it, leaving a workspace
-setting to the node's default in `buckle.env`, else the one shown:
+setting to the node's default, else the one shown:
 
 | Question | Default | Kept as |
 |---|---|---|
 | Folder to serve | the current directory | the workspace's folder |
 | Where the agent sees it | `/workspace` | the workspace's mount |
+| Mount another folder? (until blank) | none | a mount, as `--volume` adds one |
 | Name for this node, first run or `--force` | the folder's path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
 | Packs to offer | every built-in pack, and plugins | `packs.enabled` |
 | Shell tools on? | on | `packs.shell` |
 | Host Git and forge tools on? | off | `packs.hostGit` |
 | Approved hosts and URLs | none | the workspace's approved list |
-| Approved hosts for workspaces without a list, first run or `--force` | none | `BUCKLE_ALLOWED_HOSTS` |
+| Approved hosts for workspaces without a list, first run or `--force` | none, or the file's list under `--force` | `BUCKLE_ALLOWED_HOSTS` |
 
-`--yes`, or no terminal, takes every default and says so. Its summary checks
-`bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why not and what it
-unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, and
-`BUCKLE_SANDBOX=auto`. Change the workspace's answers later with `buckle workspace set` and
+`--yes`, or no terminal, takes every default, adding only `--volume` mounts, and says so. Its
+summary checks `bwrap` on Linux, `rg`, `git`, and `agent-browser`: where each was found, or why
+not and what it unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`,
+and `BUCKLE_SANDBOX=auto`. Change the workspace's answers later with `buckle workspace set` and
 `buckle policy`, and the node's with `buckle settings set`.
 
 ### The two credentials
@@ -51,8 +52,8 @@ unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUCKLE_PORT=4320`, 
   experimental `/setup` face, which is off until `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, and
   `buckle workspace` needs it before it changes workspaces or mints tokens.
 
-Running tools and answering approvals from the local CLI needs neither. `buckle init` prints both
-once, so treat that output like the file.
+Running tools and answering approvals from the local CLI needs neither. Treat what `buckle init`
+prints, both credentials, like the file.
 
 ## Choosing the folder
 
@@ -61,7 +62,6 @@ The folder decides what an agent reaches without asking:
 - Reads inside the folder run. With the default `/workspace` mount, a read outside it is
   refused; without a mount, it asks.
 - The first write to each directory asks, inside the folder too.
-- Tools show the folder to the agent as `/workspace`.
 
 Choose the project directory, not your home directory. Buckle refuses a folder that contains the
 state directory or the settings file, or one inside or around another workspace.
@@ -92,7 +92,7 @@ For Claude Code:
 claude mcp add buckle -- buckle mcp
 ```
 
-For a client configured in JSON, the usual entry is:
+For a client configured in JSON:
 
 ```json
 {
@@ -102,8 +102,8 @@ For a client configured in JSON, the usual entry is:
 }
 ```
 
-`--workspace` pins the workspace, so the client's working directory does not matter; without
-it, `buckle mcp` serves the workspace holding that directory. Each available tool registers with its schema; each skill is a resource at
+`--workspace` pins the workspace; without it, `buckle mcp` serves the one holding the client's
+working directory. Each available tool registers with its schema; each skill is a resource at
 `buckle://skills/<id>`. Logs go to stderr, because stdout carries the protocol.
 
 ### HTTP
