@@ -477,6 +477,14 @@ describe('the statements whose input the call\'s own text feeds', () => {
 // Slice 7i residual and owner decision D7: `sudo git push` was read as `sudo` alone. Each wrapper's options are read
 // as its getopt string reads them, so the command after them is read as a command of its own.
 describe('the command a wrapper runs', () => {
+  it('reads a NAME=value word as an assignment only at a statement head and in env and sudo, else as a program path beside it (fix brief 6, A7)', () => {
+    expect(commandForms('FOO=1', ['python3', 'a.py']).chain).toEqual([['FOO=1', 'python3', 'a.py'], ['python3', 'a.py']])
+    expect(commandForms('FOO=/w/x', ['python3', 'a.py']).chain).toEqual([['FOO=/w/x', 'python3', 'a.py'], ['python3', 'a.py']])
+    expect(commandForms('env', ['FOO=1', 'python3', 'a.py']).chain).toEqual([['env', 'FOO=1', 'python3', 'a.py'], ['python3', 'a.py']])
+    expect(commandForms('sudo', ['FOO=/w/x', 'python3', 'a.py']).chain).toEqual([['sudo', 'FOO=/w/x', 'python3', 'a.py'], ['python3', 'a.py']])
+    expect(commandForms('nice', ['FOO=/bin/rm', 'x']).chain).toEqual([['nice', 'FOO=/bin/rm', 'x'], ['FOO=/bin/rm', 'x'], ['rm', 'x'], ['x']])
+  })
+
   const runs = (command: string, args: string[]) => commandForms(command, args).chain.at(-1)
 
   it.each<[string, string[]]>([

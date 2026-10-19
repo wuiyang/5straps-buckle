@@ -1022,9 +1022,25 @@ function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judg
     if (inner.command === 'session') return { chain, unread: firstLimit(unread, 'session') }
     if (!inner.command?.[0]) return { chain, unread: judged && inner.open && xargs ? firstLimit(unread, 'expansion') : unread }
     if (baseCommand(current[0]!) === 'xargs') xargs = { replace: xargsReplace(current.slice(1, current.length - inner.command.length)) }
+    const execs = execsItsCommand(current)
     current = inner.command
     chain.push(reduced(current))
+    // A NAME=value word such a wrapper runs is a program path (`nice FOO=/bin/rm x` runs a file in a folder named FOO=),
+    // read by its basename beside the word as typed, which names the variable for the code-loading check; the reading as
+    // an assignment follows both, since bash's `time` keyword applies one (fix brief 6, A7).
+    if (execs && ASSIGNMENT.test(current[0]!) && /[\\/]/.test(current[0]!)) chain.push([baseCommand(current[0]!), ...current.slice(1)])
   }
+}
+
+/**
+ * Whether a prefix is a program in WRAPPERS that execs the command after its own words as a path: every one but env and
+ * sudo, which apply the NAME=value words before that command themselves. A shell keyword, `function`, and `coproc` are
+ * read by the shell, which applies an assignment after them (fix brief 6, A7).
+ */
+function execsItsCommand(words: readonly string[]): boolean {
+  const word = words[0] ?? ''
+  if (!Object.hasOwn(WRAPPERS, baseCommand(word)) || ASSIGNMENT.test(word)) return false
+  return WRAPPERS[baseCommand(word)]!.assignments !== true
 }
 
 /** Whether something other than the text supplies a command word: see wrapperChain. An assignment word is no command word. */

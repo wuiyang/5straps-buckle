@@ -75,7 +75,10 @@ export function wrapperWords(all: readonly string[][], index: number): string[] 
   const form = all[index]!
   const next = all[index + 1]
   const start = next ? form.length - next.length : -1
-  const ends = next !== undefined && start > 0 && baseCommand(form[start] ?? '') === next[0] && next.slice(1).every((word, offset) => form[start + 1 + offset] === word)
+  // The next form's command word is the typed one reduced as the rules reduce it: its basename, or an assignment-shaped
+  // word as typed (fix brief 5, D1; fix brief 6, A7).
+  const typed = form[start] ?? ''
+  const ends = next !== undefined && start > 0 && (ASSIGNMENT.test(typed) ? typed : baseCommand(typed)) === next[0] && next.slice(1).every((word, offset) => form[start + 1 + offset] === word)
   return form.slice(1, ends ? start : form.length)
 }
 

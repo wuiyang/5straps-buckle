@@ -1945,6 +1945,20 @@ describe("the clauses of the splitter's redirection branch, under an unrelated d
   })
 })
 
+describe('an assignment-shaped word a wrapper runs as a program (fix brief 6, A7)', () => {
+  // nice, timeout, nohup, xargs, exec, and command exec the word after their own as a path (coreutils 9.4: nice
+  // PYTHONSTARTUP=x ... exits 127, no such file), so `nice FOO=/bin/rm x` runs a file in a folder named FOO=.
+  it('meets the deny list and the destructive list by its basename, as it did before D1', () => {
+    const commands = { allow: ['*'], deny: ['curl *', 'rm *'], destructive: ['tar *'] }
+    expect(evaluate('nice', ['FOO=/bin/rm', 'x'], commands).kind).toBe('deny')
+    expect(evaluate('timeout', ['5', 'FOO=/usr/bin/curl', 'http://x'], commands).kind).toBe('deny')
+    const listed = evaluate('nice', ['FOO=/bin/tar', 'x'], commands)
+    expect(listed.kind).toBe('ask')
+    if (listed.kind === 'ask') expect(listed.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'destructive-list' })
+    expect(evaluate('bash', ['-c', 'exec FOO=/bin/rm x'], { allow: ['bash -c *'], deny: ['rm *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

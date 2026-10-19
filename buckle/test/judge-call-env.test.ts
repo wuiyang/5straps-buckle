@@ -5,8 +5,8 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
-import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from '../common/services/judge/call-forms.js'
-import { commandForms, commandFormsOf } from '../common/domain/command-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, wrapperWords } from '../common/services/judge/call-forms.js'
+import { allForms, commandForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
@@ -424,6 +424,22 @@ describe('a code-loading reason names the variable as typed (fix brief 5, D1)', 
       expect((entry.judge as { unavailable: string }).unavailable, command.join(' ')).toBe(codeLoadingReason('PYTHONSTARTUP'))
     }
     expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a wrapper an assignment-shaped program follows (fix brief 6, A7)', () => {
+  it('reads only its own words, since the next form keeps that word as typed', () => {
+expect(wrapperWords(allForms(commandForms('exec', ['FOO=1', 'python3', '-u', 'a.py'])), 0)).toEqual([])
+expect(wrapperWords(allForms(commandForms('nice', ['-n', '5', 'FOO=/bin/rm', 'x'])), 0)).toEqual(['-n', '5'])
+  })
+
+  it('still names a code-loading variable as typed when its value holds a slash', async () => {
+const judge = fakeJudge()
+const runtime = await runtimeOf(node(), { judge })
+await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['nice *'], deny: [] } })
+const { entry } = await call(runtime, {}, ['nice', 'PYTHONSTARTUP=/w/x', 'python3', 'a.py'])
+expect((entry.judge as { unavailable: string }).unavailable).toBe(codeLoadingReason('PYTHONSTARTUP'))
+expect(judge.judge).not.toHaveBeenCalled()
   })
 })
 
