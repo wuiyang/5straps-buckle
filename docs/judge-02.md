@@ -22,13 +22,14 @@ For a command it rates, Buckle reads:
   Python `import` and `from ... import` of a module beside the file or under the working
   directory, with each package's `__init__.py`; and shell `source` and `.`.
 
-Shell text, a shell's `-c` text or a `script_run` bash body, is read only when it is one simple
-command: one statement with no list, pipe, `&`, second line, group, loop, condition, substitution,
-or expansion (`$`, a backtick, a glob, or a `~`). Leading assignments,
-one input (a file, a heredoc, or a here-string), and output redirections may stand on it, and its
-command, behind `env`, `timeout`, `nice`, `nohup`, `stdbuf`, `exec` (bare only), or `command`, must
-be the interpreter; it is then read as that call typed directly. A wrapper that sets the program
-name (`exec -a`, `env --argv0`) is not read, nor C shell, fish, or `flock -c` text.
+Shell text, a shell's `-c` text or a `script_run` bash body, is read only as one simple command:
+one statement with no list, pipe, `&`, second line, group, loop, condition, substitution, or
+expansion (`$`, a backtick, a glob, or a `~`). Leading assignments, one input (a file, a heredoc,
+or a here-string), and output redirections may stand on it, and its command, behind `env`,
+`timeout`, `nice`, `nohup`, `stdbuf`, `exec`, or `command`, must be the interpreter; it is then
+read as that call typed directly. A wrapper that sets the program name or splits a word
+(`exec -a`, `env -a`, `env -S`) is not read, nor a heredoc a shell reads as its script, nor C
+shell, fish, or `flock -c` text.
 
 For an ask, it reads the interpreters the policy does not allow; for an allowed command under
 `approval.quickJudge all` in automated mode, every interpreter it runs. A standard development
@@ -38,13 +39,12 @@ It reads only what the agent could read without asking, through the file tools' 
 is asked where it cannot show the code that runs; an ask then goes to a person, and an allowed
 command under `approval.quickJudge all` runs unscreened. That covers shell text that is not one
 simple command; a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,
-`PYTHONPATH`, `SHELL`, or `HOME` (the audit entry names it, never its value); a change of working
-directory anywhere (`cd`, `chdir`, `pushd`, `env -C`, `sudo -D`, or `--cwd`); an option (a runner's
-too), subcommand, interactive flag (`php -a` after `-f` too), a debugger fed its input
-(`python3 -m pdb`), import, or config file the reader does not model; compiled Python beside a
-module it would show, in a folder it cannot list, or moved by `-X pycache_prefix`; code on an input
-nothing feeds (`python3 -`); code past 50 files or 512 KiB; and a script, import, or argument it
-cannot find, may not read, or finds is not text.
+`PYTHONPATH`, `SHELL`, `HOME`, or `ARGV0` (the audit entry names it, never its value); a change of
+working directory (`cd`, `chdir`, `pushd`, `env -C`, `sudo -D`, or `--cwd`); an interpreter named
+by a path inside the workspace; an option, subcommand, `python3 -m` module, interactive flag,
+import, or config file the reader does not model; compiled Python beside a module it would show,
+or in a folder it cannot list; code on an input nothing feeds (`python3 -`); code past 50 files or
+512 KiB; and a script, import, or argument it cannot find, may not read, or finds is not text.
 [Known limits, part six](known-limits-06.md) lists each.
 
 ## Packages and Socket
