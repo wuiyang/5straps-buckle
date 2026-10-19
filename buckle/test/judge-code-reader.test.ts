@@ -458,6 +458,15 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(read(['npx', 'tsx', 'job.ts']))).toEqual(['/workspace/job.ts'])
   })
 
+  it('reads bunfig preloads for a runner that starts bun, as the direct form does (fix brief 5, G11b)', () => {
+    const tree = { 'bunfig.toml': 'preload = ["./pre.ts"]\n', 'pre.ts': 'export {}\n', 'job.ts': 'export {}\n' }
+    for (const runner of ['bunx', 'npx', 'pnpx']) {
+      expect(paths(workspace(tree).read([runner, 'bun', 'job.ts'])), runner).toEqual(['/workspace/pre.ts', '/workspace/job.ts'])
+    }
+    // The direct form shows the same preload and script.
+    expect(paths(workspace(tree).read(['bun', 'job.ts']))).toEqual(['/workspace/pre.ts', '/workspace/job.ts'])
+  })
+
   it('refuses, so the call asks, where the script operand names nothing, rather than rating the command line alone', () => {
     const { read } = workspace({ 'data.txt': 'x\n' })
     for (const form of [['node', 'missing'], ['python3', 'missing'], ['python3', '-W', 'ignore', 'missing.py'], ['bun', 'run', 'missing'], ['npx', 'tsx', 'missing']]) {

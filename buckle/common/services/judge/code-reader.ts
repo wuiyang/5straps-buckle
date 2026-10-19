@@ -211,9 +211,12 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     if (typeof found === 'string') return found
     if (found !== null) queue.push({ real: found.real, language: 'js', runtime })
   }
-  // bun also runs each preload its bunfig.toml lists, the one `-c` names or else the working directory's (fix brief 3, R15).
-  if (program === 'bun') {
-    const reason = gatherBunfig(bunOptions(args).configs, into, place)
+  // bun also runs each preload its bunfig.toml lists, the one `-c` names or else the working directory's (fix brief 3,
+  // R15). A runner that starts bun (bunx, npx bun, pnpx bun) reads the same bunfig, over the words after its package, as
+  // the direct form does (fix brief 5, G11b).
+  if (runtime === 'bun') {
+    const bunWords = RUNNERS.has(program) ? args.slice(1) : args
+    const reason = gatherBunfig(bunOptions(bunWords).configs, into, place)
     if (reason !== null) return reason
   }
   // The script, found as the interpreter finds it; where it names nothing and no inline code or module stands in for
