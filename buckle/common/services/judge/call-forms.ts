@@ -96,14 +96,12 @@ export function typedCommandWord(chain: readonly (readonly string[])[], at: numb
   return before[start]!
 }
 
-/** An env option word that sets the program name an interpreter reads: a short cluster holding `a`, or `--argv0` (fix brief 5, N1). */
-const ENV_ARGV0 = /^(?:-[^-]*a|--argv0(?:=.*)?$)/
-
 /**
  * Whether a wrapper in the chain sets the program name an interpreter reads, which points it at a path the reader does
  * not show (fix brief 5, N1): `exec` with any option (bash's exec getopt is `cla:`, so `-a`, `-c`, and `-l` all set the
- * program name or the environment), or `env` with `-a` or `--argv0`. CPython takes argv[0] as its executable path and
- * reads a venv's pyvenv.cfg and its .pth files beside it before the script.
+ * program name or the environment), or `env` with `-a` in a cluster or `--argv0` by any prefix getopt_long takes
+ * (`--a`, `--argv=`; fix brief 6, B2). CPython takes argv[0] as its executable path and reads a venv's pyvenv.cfg and its
+ * .pth files beside it before the script.
  */
 export function setsProgramName(all: readonly string[][]): boolean {
   return all.some((form, index) => {
@@ -112,8 +110,16 @@ export function setsProgramName(all: readonly string[][]): boolean {
     const words = wrapperWords(all, index)
     return program === 'exec'
       ? words.some(word => word.startsWith('-') && word !== '--')
-      : words.some(word => ENV_ARGV0.test(word))
+      : words.some(word => namesOption(word, 'a', 'argv0'))
   })
+}
+
+/**
+ * Whether an env in the chain splits a word into more words (`-S` in a cluster, or `--split-string` by any prefix), which
+ * env then reads as options and a command again, by rules the reader does not follow there (fix brief 6, B2).
+ */
+export function splitsWords(all: readonly string[][]): boolean {
+  return all.some((form, index) => baseCommand(form[0] ?? '') === 'env' && wrapperWords(all, index).some(word => namesOption(word, 'S', 'split-string')))
 }
 
 /**

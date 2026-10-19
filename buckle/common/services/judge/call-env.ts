@@ -15,8 +15,9 @@ export const CODE_LOADING_VARIABLES = Object.freeze({
     // SHELL: flock runs its `-c` text through `$SHELL -c`, so a call that sets it chooses the shell that runs that text
     // (fix brief 5, P3). HOME: zsh reads its startup files from HOME when ZDOTDIR is unset, and Python runs
     // usercustomize.py from the user site under HOME at startup (fix brief 5, P4). Both are coordinator defaults
-    // recorded for the owner, reversible.
-    'SHELL', 'HOME',
+    // recorded for the owner, reversible. ARGV0: zsh starts an external command with ARGV0 as its argv[0], which CPython
+    // reads as its own path, as `exec -a` sets it (zshparam; fix brief 6, B2).
+    'SHELL', 'HOME', 'ARGV0',
   ]),
   // BASH_FUNC_: bash imports a function from `BASH_FUNC_<name>%%`, which then runs in place of the command it names.
   prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_']),

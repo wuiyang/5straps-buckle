@@ -3,7 +3,7 @@
 // a character it does not model in the place it meets it refuses the whole text.
 import { baseCommand, shellLeadingWords } from '../../domain/argv.js'
 import { allForms, commandForms, isInterpreter } from '../../domain/command-forms.js'
-import { setsProgramName } from './call-forms.js'
+import { setsProgramName, splitsWords } from './call-forms.js'
 
 /** Why the reader rates no code of shell text it does not parse whole (fix brief 4, P). */
 export const SHELL_TEXT_REFUSAL = 'shell text the reader does not rate whole'
@@ -66,7 +66,7 @@ export function statementInterpreter(statement: SimpleStatement): { form: string
   if (forms.unread !== null || forms.overBudget || forms.scriptData || forms.nested.length > 0) return null
   // exec is a wrapper (STATEMENT_WRAPPERS), but with an option it sets the program name an interpreter reads, which
   // points it at a path the reader does not show, so a wrapper that does is not rated (fix brief 5, N1).
-  if (setsProgramName(allForms(forms))) return null
+  if (setsProgramName(allForms(forms)) || splitsWords(allForms(forms))) return null
   const final = forms.chain.at(-1)!
   if (forms.chain.slice(0, -1).some(([word = '']) => !STATEMENT_WRAPPERS.has(baseCommand(word)))) return null
   return isInterpreter(baseCommand(final[0] ?? '')) ? { form: final, chain: forms.chain } : null

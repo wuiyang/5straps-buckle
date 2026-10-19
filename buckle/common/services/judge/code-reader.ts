@@ -13,7 +13,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
-import { setsProgramName, typedCommandWord } from './call-forms.js'
+import { setsProgramName, splitsWords, typedCommandWord } from './call-forms.js'
 import { ratedShellText, SHELL_TEXT_REFUSAL, simpleStatement, statementInterpreter, type StatementFeed } from './shell-statement.js'
 
 /** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
@@ -37,6 +37,8 @@ export const CODE_REFUSALS = Object.freeze({
   subcommand: 'a subcommand the reader does not model',
   stdin: 'the code the interpreter runs comes from standard input the reader cannot place',
   localInterpreter: 'the interpreter is a program inside the workspace',
+  programName: 'the call sets the program name the interpreter reads',
+  splitWords: 'the call splits a word into words the reader does not read again',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -133,9 +135,11 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'cwd' | 'vi
   // flock runs its `-c` text through `$SHELL -c`, which the command reader maps to `sh -c`, but the shell that runs it
   // is whatever SHELL names, so the grammar's reading of it as sh may not be the code that runs (fix brief 5, P3).
   if (chain.some(flockCommand)) return SHELL_TEXT_REFUSAL
-  // A wrapper that sets the program name an interpreter reads (exec with an option, env -a or --argv0) points it at a
-  // path the reader does not show, so a call whose own chain does one is not rated (fix brief 5, N1).
-  if (setsProgramName(chain)) return SHELL_TEXT_REFUSAL
+  // A call whose env splits a word into more words, options among them, is not rated, since the reader does not re-parse
+  // them (fix brief 6, B2); nor is one whose own chain sets the program name an interpreter reads (exec with an option,
+  // env -a or --argv0 by any prefix), which points it at a path the reader does not show (fix brief 5, N1).
+  if (splitsWords(chain)) return CODE_REFUSALS.splitWords
+  if (setsProgramName(chain)) return CODE_REFUSALS.programName
   let statement: ReturnType<typeof textStatement> | undefined
   let matched = false
   const planned: Planned[] = []

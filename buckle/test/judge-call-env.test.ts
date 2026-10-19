@@ -71,7 +71,7 @@ async function call(runtime: BuckleRuntime, args: JsonObject = {}, command = ['n
 describe('the variables that change what code runs', () => {
   it('are the names and prefixes fix brief 1 lists', () => {
     expect(CODE_LOADING_VARIABLES).toEqual({
-      names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT', 'SHELL', 'HOME'],
+      names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT', 'SHELL', 'HOME', 'ARGV0'],
       prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_'],
     })
   })
@@ -456,6 +456,21 @@ describe('an interpreter named by a path inside the workspace (fix brief 6, B1)'
       expect(ran, command.join(' ')).toBe(false)
       expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
     }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe("zsh's ARGV0, which sets the program name an external command is started with (fix brief 6, B2)", () => {
+  it('is a code-loading variable, so a call that sets it is not rated', async () => {
+    // zshparam: ARGV0, exported for an external command, becomes its argv[0], which CPython reads as its own path.
+    expect(codeLoadingVariable(callVariables({ env: { ARGV0: 'fv/bin/python3' } }))).toBe('ARGV0')
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['zsh -c *'], deny: [] } })
+    const { response, entry, ran } = await call(runtime, {}, ['zsh', '-c', 'ARGV0=fv/bin/python3 python3 a.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: codeLoadingReason('ARGV0'), passed: false })
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })

@@ -805,12 +805,33 @@ describe('the code a here-string hands an interpreter', () => {
     for (const text of ['exec -a fv/bin/python3 python3 job.py', 'exec -afv/bin/python3 python3 job.py', 'exec -c -a fv/bin/python3 python3 job.py', 'env --argv0=fv/bin/python3 python3 job.py', 'env -a fv/bin/python3 python3 job.py']) {
       expect(shell(text), text).toEqual(shellRefusal)
     }
-    // The same wrappers typed directly refuse too.
-    expect(call('env', '--argv0=fv/bin/python3', 'python3', 'job.py')).toEqual(shellRefusal)
-    expect(call('env', '-a', 'fv/bin/python3', 'python3', 'job.py')).toEqual(shellRefusal)
+    // The same wrappers typed directly refuse too, with a reason that names no shell text (fix brief 6, B2).
+    const programName = { kind: 'refused', reason: CODE_REFUSALS.programName, truncated: false }
+    expect(call('env', '--argv0=fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
+    expect(call('env', '-a', 'fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
     // Plain exec and env, with no such option, still read the script.
     expect(paths(shell('exec python3 job.py'))).toEqual(['/workspace/job.py'])
     expect(paths(call('env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
+
+  it('refuses env\'s --argv0 by any prefix getopt_long takes, and env -S, whose split words the reader does not read again (fix brief 6, B2)', () => {
+    const { call, shell } = workspace({ 'job.py': 'print("JOB")\n', 'fv/pyvenv.cfg': 'home = /usr/bin\n' })
+    const programName = { kind: 'refused', reason: CODE_REFUSALS.programName, truncated: false }
+    const split = { kind: 'refused', reason: CODE_REFUSALS.splitWords, truncated: false }
+    // GNU env's getopt_long takes any unambiguous prefix of --argv0, and no other env long option starts with a.
+    expect(call('env', '--argv=fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
+    expect(call('env', '--a', 'fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
+    expect(call('timeout', '5', 'env', '--argv=fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
+    expect(call('env', '-ia', 'fv/bin/python3', 'python3', 'job.py')).toEqual(programName)
+    expect(shell('env --ar fv/bin/python3 python3 job.py')).toEqual(shellRefusal)
+    // env -S splits its value into more words, options among them, which the reader does not re-parse.
+    expect(call('env', '-S', '-i -a fv/bin/python3', 'python3', 'job.py')).toEqual(split)
+    expect(call('env', '--split-string=python3 job.py')).toEqual(split)
+    expect(call('env', '-S', 'python3 job.py')).toEqual(split)
+    expect(shell("env -S '-i -a fv/bin/python3' python3 job.py")).toEqual(shellRefusal)
+    expect(call('env', '-a', 'x', 'python3', 'job.py')).not.toEqual(shellRefusal)
+    // env with neither still reads.
+    expect(paths(call('env', '-i', 'FOO=1', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
   })
 
   it('reads a heredoc\'s body as inline code, and refuses one a shell would expand, one left open, and a text with more than one statement', () => {
