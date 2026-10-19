@@ -1863,6 +1863,25 @@ describe('a list operator right after a heredoc word (fix brief 6, A2)', () => {
   })
 })
 
+describe('a redirection attached to the word before it (fix brief 6, A3)', () => {
+  // bash ends a word at an unquoted `<` or `>`, so `rm>/dev/null -rf x` runs rm with the arguments -rf x.
+  it('meets rm, sudo, and git behind an attached redirection at the floor and in the deny list', () => {
+    const recursive = evaluate('bash', ['-c', 'rm>/dev/null -rf x'], { allow: ['bash -c *'] })
+    expect(recursive.kind).toBe('ask')
+    if (recursive.kind === 'ask') expect(recursive.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+    expect(evaluate('bash', ['-c', 'rm>/dev/null -rf x'], { allow: ['bash -c *'], deny: ['rm *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', 'sudo>/dev/null ls'], { allow: ['bash -c *'] }).kind).toBe('ask')
+    expect(evaluate('bash', ['-c', 'git>out push --force origin main'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it.each(['python3>log x.py', 'python3<x.py', 'python3 x.py>log'])('bash -c %j asks at the interpreter floor and meets a python3 deny', (text) => {
+    const ask = evaluate('bash', ['-c', text], { allow: ['bash -c *'] })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: ['python3 *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

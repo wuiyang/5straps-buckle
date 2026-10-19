@@ -385,6 +385,23 @@ describe('shell text as a shell splits it', () => {
   })
 })
 
+describe('a word an unquoted < or > ends (fix brief 6, A3)', () => {
+  it('starts a redirection there, its descriptor digits with it only when they are the whole word so far', () => {
+    const raw = (text: string) => shellTokens(text).map(token => token.raw)
+    expect(raw('echo a>b')).toEqual(['echo', 'a', '>b'])
+    expect(raw('rm>/dev/null -rf x')).toEqual(['rm', '>/dev/null', '-rf', 'x'])
+    expect(raw('cmd 2>err a2>out')).toEqual(['cmd', '2>err', 'a2', '>out'])
+    expect(raw('cat <in>out 2>&1>>log')).toEqual(['cat', '<in', '>out', '2>&1', '>>log'])
+    expect(raw('cat<<EOF>out')).toEqual(['cat', '<<EOF', '>out'])
+    expect(raw("x'>'y \\>z \"a>b\"")).toEqual(["x'>'y", '\\>z', '"a>b"'])
+    expect(raw('echo a<(true) b>(true)')).toEqual(['echo', 'a<(true)', 'b>(true)'])
+  })
+
+  it('still reads echo a>b as echo with the operand a, its output going to b', () => {
+    expect(commandForms('bash', ['-c', 'echo a>b']).nested).toContainEqual(['echo', 'a'])
+  })
+})
+
 // A substitution, an array, an extended glob, or arithmetic cuts the statement it sits in, so no piece shows which word
 // is the command word; the command is also kept whole, as a head, each body replaced by `$()`.
 describe('the commands a substitution cuts, kept whole', () => {

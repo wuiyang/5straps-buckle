@@ -1039,6 +1039,7 @@ const LITERAL_COMMAND_WORDS: Shape[] = [
     ['ANSI-C quotes', `$'${SENTINEL}' mark`],
     ['a tilde path', `HOME="$PWD"; ~/${PAYLOAD}`],
     ['a literal path', `./${PAYLOAD}`],
+    ['a redirection attached to it (fix brief 6, A3)', `${SENTINEL}>/dev/null mark`],
     ['an assignment holding a variable', `A=$HOME ${PAYLOAD}`],
     ['an assignment holding a substitution with blanks', `x=$(echo a b) ${PAYLOAD}`],
     ['an assignment holding a double-quoted substitution', `A="$(echo x)" ${PAYLOAD}`],

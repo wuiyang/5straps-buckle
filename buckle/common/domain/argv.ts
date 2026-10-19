@@ -1734,14 +1734,22 @@ const bodyReading = (arithmetic: boolean): BodyReading =>
  * parenthesis (BodyReading), a `${...}` to its closing brace (quotes inside it nest, a bare `{` does not, as bash 5.2
  * reads it), and a backtick body to the next backtick no backslash escapes (quotes inside it nest nothing, as bash finds
  * it). So `x="$(echo "a b")"` is one word and the word after it is the command (a probe under bash 5.2: the reading
- * that ended the double-quoted word at the inner quote read the command as `b)` while bash ran git push). An unclosed
- * quote or expansion runs to the end of the text.
+ * that ended the double-quoted word at the inner quote read the command as `b)` while bash ran git push). An unquoted
+ * `<` or `>` ends a word too, unless it opens a process substitution or follows the descriptor digits that are the whole
+ * word so far, so `rm>/dev/null -rf x` is `rm`, `>/dev/null`, `-rf`, and `x` (fix brief 6, A3). An unclosed quote or
+ * expansion runs to the end of the text.
  */
 function wordEnd(text: string, from: number): number {
   return partEnd(text, from, 'word')
 }
 
-/** Where `first`, whose text starts at `from`, ends: past its closer, at the blank that ends a word, or at the end of the text. */
+/** What may stand before a redirection operator in the same word: the descriptor it redirects (`2>`). */
+const REDIRECTION_PREFIX = /^\d+$/
+
+/**
+ * Where `first`, whose text starts at `from`, ends: past its closer, at the blank that ends a word, at an unquoted `<` or
+ * `>` that ends one, or at the end of the text.
+ */
 function partEnd(text: string, from: number, first: WordPart): number {
   const parts: WordPart[] = [first]
   let index = from
@@ -1756,6 +1764,14 @@ function partEnd(text: string, from: number, first: WordPart): number {
     else if (character === '\\') index += 2
     else if (part === 'word') {
       if (character === ' ' || character === '\t' || character === '\n') return index
+      // An unquoted `<` or `>` that opens no process substitution ends the word, as bash's reader ends one, and starts a
+      // redirection; descriptor digits belong to it only when they are the whole word so far (fix brief 6, A3). One a
+      // whole-command reading shows with its body cut (`BASH_ENV=<$() bash`) is a process substitution too.
+      if ((character === '<' || character === '>') && text[index + 1] !== '(' && !text.startsWith(SUBSTITUTED, index + 1)) {
+        if (index > from && !REDIRECTION_PREFIX.test(text.slice(from, index))) return index
+        while (text[index] === '<' || text[index] === '>') index++
+        continue
+      }
       const quoted = character === "'" || character === '$' ? literalQuoteEnd(text, index) : null
       if (quoted !== null) index = quoted
       else if (character === '"') opened = { part: 'double', next: index + 1 }
