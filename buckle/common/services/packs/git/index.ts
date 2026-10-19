@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative } from 'pathe'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { isAbsolute, join, normalize, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
@@ -9,10 +9,11 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
+import { resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { isInside, nativePath, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
+import { isInside, isInsideAny, nativePath, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
 import { ownRoots, realPathOr, type ResolvedProgram } from '../../../domain/executable.js'
 
 const PACK_ID = 'git'
@@ -35,6 +36,12 @@ const LITERAL_PATHSPECS = { GIT_LITERAL_PATHSPECS: '1' }
 const OUTSIDE_REPOSITORY = 'Refused: a path outside the repository, which the git tools never read; nothing was run'
 /** Constant too: a repository moved mid-call, whose new place is no business of the agent's. */
 const REPOSITORY_MOVED = 'The repository changed while Buckle checked it, so nothing git read from it is shown; send the call again'
+/** Constant as well: where a repository borrows objects from is the owner's business, never shown to the agent. */
+const BORROWS_OUTSIDE = 'The repository borrows objects from outside the workspace, so git is not run there'
+/** How many levels of an object store's own alternates git follows (it ignores those nested deeper), and one more. */
+const ALTERNATES_DEPTH = 6
+/** The most of one alternates file read; a longer one is refused rather than read in part. */
+const ALTERNATES_BYTES = 64 * 1024
 /** The variables git finds a repository, its objects, its index, or its config by: always the pack's own, never its caller's. */
 const GIT_VARIABLE = /^GIT_/i
 
@@ -106,8 +113,13 @@ export function createGitPack(options: GitPackOptions): Pack {
     const found = await spawnHere(REPOSITORY_QUERY, isolation)
     const repository = assertRepositoryInside({ answer: found, boundary, repo: input.repo, platform })
     const pinned = pinRepository(repository, platform)
-    const spawnPinned = (args: string[], config: GitConfig[], extra?: Record<string, string>) => {
+    // The objects git may read, its own and every store it borrows from, are checked wherever the places are (D77).
+    const assertUnchanged = () => {
       pinned.assertUnchanged()
+      assertObjectsInside(repository, options.paths, platform)
+    }
+    const spawnPinned = (args: string[], config: GitConfig[], extra?: Record<string, string>) => {
+      assertUnchanged()
       return spawnHere(args, config, { ...pinned.environment, ...extra })
     }
     const keys = await configuredFilterPrograms({
@@ -120,7 +132,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     try {
       const result = await spawnPinned(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index?.environment)
       // A swap while git ran is refused too, before git's own answer, which may name where it was pointed.
-      pinned.assertUnchanged()
+      assertUnchanged()
       if (result.exitCode !== 0) {
         throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
       }
@@ -346,6 +358,73 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
     environment: { GIT_DIR: `${repository.gitDirectory}/.`, GIT_WORK_TREE: repository.workTree, GIT_COMMON_DIR: `${repository.commonDirectory}/.` },
     assertUnchanged,
   }
+}
+
+/**
+ * Refused, naming no path, where git would read objects from outside every root the view reaches (D77,
+ * objects/info/alternates): the objects folder of the git directory and of the common one, which may be a link, each
+ * object store their `info/alternates` names, and in turn each of those stores' own, as deep as git follows them. A
+ * line is a path, absolute or, as git reads it, relative to the real objects folder holding the file and folded as
+ * text; one starting with `"` is C-quoted and is refused where its quoting is not whole; a blank line and a `#` line
+ * name none. Each lands where its links lead (resolveTarget), a store that does not exist yet where it would be made.
+ * An absent file is the normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which it never has here
+ * (withOwnGitVariables).
+ */
+function assertObjectsInside(repository: Repository, paths: PathView, platform: NodeJS.Platform): void {
+  const roots = paths.reachableRoots.map(root => realPathOr(root, platform))
+  const landing = (place: string): string => {
+    try {
+      const real = resolveTarget(place, { shares: paths.shares, platform })
+      if (isInsideAny(roots, real, platform)) return real
+    } catch { /* a place that cannot be resolved is refused below */ }
+    throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  }
+  const read = new Set<string>()
+  let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => landing(join(directory, 'objects')))
+  for (let depth = 0; depth < ALTERNATES_DEPTH && stores.length > 0; depth++) {
+    stores = stores.filter(store => !read.has(store)).flatMap(store => {
+      read.add(store)
+      return alternatesOf(store, platform).map(line => landing(isAbsolute(line) ? normalize(line) : join(store, line)))
+    })
+  }
+}
+
+/** The stores one object store's `info/alternates` names, each line as written; none where it has no such file. */
+function alternatesOf(store: string, platform: NodeJS.Platform): string[] {
+  let text: string
+  try {
+    if (statSync(join(store, 'info', 'alternates')).size > ALTERNATES_BYTES) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+    text = readFileSync(join(store, 'info', 'alternates'), 'utf8')
+  } catch (error) {
+    if (error instanceof ToolInputError) throw error
+    // git reads no alternates where the file cannot be read, absent or not.
+    return []
+  }
+  return text.split('\n').filter(line => line !== '' && !line.startsWith('#')).map(line => {
+    const path = line.startsWith('"') ? unquoted(line) : line
+    // Off Windows a backslash is part of a name, which pathe would read as a separator: such a line is refused.
+    try { if (path !== null) return withForwardSlashes(path, platform) } catch { /* refused below */ }
+    throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  })
+}
+
+const C_ESCAPES: Readonly<Record<string, string>> = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '"': '"', '\\': '\\' }
+
+/** A line git reads as C-quoted, unquoted, or null where its quoting is not whole up to the line's end. */
+function unquoted(line: string): string | null {
+  let text = ''
+  for (let index = 1; index < line.length; index++) {
+    const character = line[index]!
+    if (character === '"') return index === line.length - 1 ? text : null
+    if (character !== '\\') { text += character; continue }
+    const escape = line[index + 1] ?? ''
+    const octal = /^[0-3][0-7]{2}$/.test(line.slice(index + 1, index + 4))
+    if (octal) { text += String.fromCharCode(Number.parseInt(line.slice(index + 1, index + 4), 8)); index += 3; continue }
+    if (!Object.hasOwn(C_ESCAPES, escape)) return null
+    text += C_ESCAPES[escape]
+    index++
+  }
+  return null
 }
 
 /** A directory's device and inode, where `place` is one and is still its own real path; null otherwise. */

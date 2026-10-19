@@ -479,3 +479,114 @@ describe.skipIf(hostGit === null)('a git tool pinned to the resolved directories
     expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-live-race/)
   })
 })
+
+// D77 (owner, 2026-10-11), objects/info/alternates: a repository inside the root can borrow its objects from a store
+// anywhere, which git then reads as the repository's own history, with no permission check on that place.
+describe('a git tool refuses a repository that borrows objects from outside the workspace (D77, alternates)', () => {
+  const BORROWS = 'borrows objects from outside the workspace'
+  function workspace() {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-alternates-')))
+    const root = join(parent, 'root')
+    const outside = join(parent, 'elsewhere')
+    for (const directory of [join(root, 'repo', '.git', 'objects', 'info'), join(root, 'shared', 'info'), join(outside, 'info')]) mkdirSync(directory, { recursive: true })
+    return { root, repo: join(root, 'repo'), outside }
+  }
+  const alternates = (store: string, ...lines: string[]) => writeFileSync(join(store, 'info', 'alternates'), `${lines.join('\n')}\n`)
+  /** A git that answers the query with the places named, and runs `during` when the command runs. */
+  function answeringAt(places: { workTree: string; gitDirectory: string; commonDirectory: string }, during?: () => void) {
+    return vi.fn<ProcessRunner>(async request => {
+      const answer = (stdout: string, exitCode = 0) => ({ exitCode, signal: null, stderr: '', truncated: false, timedOut: false, stdout })
+      if (request.args[0] === 'rev-parse') return answer(`${places.workTree}\n${places.gitDirectory}\n${places.commonDirectory}\n`)
+      if (request.args[0] === 'config') return answer('', 1)
+      during?.()
+      return answer('borrowed-commit\x1fsomeone\x1f2026-10-20T00:00:00Z\x1fa subject from the borrowed store\n')
+    })
+  }
+  const plain = (repo: string) => ({ workTree: repo, gitDirectory: join(repo, '.git'), commonDirectory: join(repo, '.git') })
+  const logOf = (runProcess: ReturnType<typeof answeringAt>) => runProcess.mock.calls.filter(([request]) => request.args[0] === 'log')
+  async function refused(root: string, runProcess: ReturnType<typeof answeringAt>, outside: string) {
+    const { call } = gitPack(root, runProcess)
+    const refusal = await refusalOf(() => call('git_log', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(BORROWS) })
+    expect(String(refusal)).not.toContain(outside)
+    expect(String(refusal)).not.toContain('a subject from the borrowed store')
+  }
+
+  it('runs with no alternates file, the normal case, and with one naming a store inside the workspace', async () => {
+    const { root, repo } = workspace()
+    const runProcess = answeringAt(plain(repo))
+    const { call } = gitPack(root, runProcess)
+    await call('git_log', { repo: 'repo' })
+    alternates(join(repo, '.git', 'objects'), join(root, 'shared'), '# a comment', '')
+    await call('git_log', { repo: 'repo' })
+    expect(logOf(runProcess)).toHaveLength(2)
+  })
+
+  it('refuses one naming a store outside, after the query and before any other spawn', async () => {
+    const { root, repo, outside } = workspace()
+    alternates(join(repo, '.git', 'objects'), outside)
+    const runProcess = answeringAt(plain(repo))
+    await refused(root, runProcess, outside)
+    expect(runProcess.mock.calls.map(([request]) => request.args[0])).toEqual(['rev-parse'])
+  })
+
+  it('reads a relative line from the objects folder: one landing inside runs, one landing outside refuses', async () => {
+    const { root, repo, outside } = workspace()
+    // From repo/.git/objects, three levels up is the root: inside when read from objects/, outside when read from .git/.
+    alternates(join(repo, '.git', 'objects'), '../../../shared')
+    const inside = answeringAt(plain(repo))
+    await gitPack(root, inside).call('git_log', { repo: 'repo' })
+    expect(logOf(inside)).toHaveLength(1)
+    alternates(join(repo, '.git', 'objects'), '../../../../elsewhere')
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('refuses a quoted line naming a store outside, and a store inside that borrows from one outside in turn', async () => {
+    const { root, repo, outside } = workspace()
+    alternates(join(repo, '.git', 'objects'), `"${outside}"`)
+    await refused(root, answeringAt(plain(repo)), outside)
+    alternates(join(repo, '.git', 'objects'), join(root, 'shared'))
+    alternates(join(root, 'shared'), outside)
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('reads a linked worktree\'s common directory, and refuses an objects folder that is a link outside', async () => {
+    const { root, repo, outside } = workspace()
+    mkdirSync(join(repo, '.git', 'worktrees', 'side'), { recursive: true })
+    mkdirSync(join(root, 'side'))
+    alternates(join(repo, '.git', 'objects'), outside)
+    await refused(root, answeringAt({ workTree: join(root, 'side'), gitDirectory: join(repo, '.git', 'worktrees', 'side'), commonDirectory: join(repo, '.git') }), outside)
+    alternates(join(repo, '.git', 'objects'), '')
+    renameSync(join(repo, '.git', 'objects'), join(repo, 'kept-objects'))
+    symlinkSync(outside, join(repo, '.git', 'objects'))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('refuses, showing nothing git printed, an alternates file written while the command runs', async () => {
+    const { root, repo, outside } = workspace()
+    await refused(root, answeringAt(plain(repo), () => alternates(join(repo, '.git', 'objects'), outside)), outside)
+  })
+})
+
+describe.skipIf(hostGit === null)('a repository that borrows objects, against the installed git', () => {
+  it('refuses a clone that shares the objects of a repository outside the workspace, and reads one sharing a repository inside', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-shared-')))
+    for (const [directory, subject] of [[join(parent, 'elsewhere'), 'history kept elsewhere'], [join(parent, 'root', 'origin'), 'history kept inside']] as const) {
+      mkdirSync(directory, { recursive: true })
+      writeFileSync(join(directory, 'a.txt'), `${subject}\n`)
+      git(directory, 'init', '-q')
+      git(directory, 'add', 'a.txt')
+      git(directory, 'commit', '-qm', subject)
+    }
+    const root = join(parent, 'root')
+    git(root, 'clone', '-q', '--shared', join(parent, 'elsewhere'), 'borrowing')
+    git(root, 'clone', '-q', '--shared', join(root, 'origin'), 'sharing')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    const refusal = await refusalOf(() => call('git_log', { repo: 'borrowing' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-shared/)
+    expect(await call('git_log', { repo: 'sharing' })).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+  })
+})
