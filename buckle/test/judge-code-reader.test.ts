@@ -217,7 +217,7 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', '--', 'missing'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
     expect(read(['python3', '--', 'missing.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
     expect(reading(read(['node', 'build.js', '--', 'missing'])).files.map(file => file.path)).toEqual(['/workspace/build.js'])
-    expect(reading(read(['python3', '-m', 'pytest']))).toMatchObject({ files: [], packages: [{ name: 'pytest' }] })
+    expect(reading(read(['python3', '-m', 'black']))).toMatchObject({ files: [], packages: [{ name: 'black' }] })
   })
 
   it('finds each preload as the script is found, names a bare one as a package, and refuses one naming nothing (fix brief 2, H7)', () => {
@@ -458,6 +458,27 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', 'debug', 'job.js'])).toEqual(subcommand)
   })
 
+  it('refuses python -m of a debugger or a console, fed or not, and of a module that discovers or evaluates code, and reads any other (fix brief 6, B3)', () => {
+    const { read, shell } = workspace({ 'job.py': 'print(1)\n', 'second.py': 'print(2)\n', '.pdbrc': 'import marker\n', 'test_decoy.py': 'print(3)\n', 'data.json': '{}\n' })
+    const interactive = { kind: 'refused', reason: CODE_REFUSALS.interactive, truncated: false }
+    const discovering = { kind: 'refused', reason: CODE_REFUSALS.discoveringModule, truncated: false }
+    // pdb runs a planted .pdbrc whatever its input is, and code, asyncio, and idlelib run what they are fed (python 3.12).
+    for (const module of ['pdb', 'code', 'asyncio', 'idlelib']) {
+      expect(read(['python3', '-m', module, 'job.py']), module).toEqual(interactive)
+      expect(shell(`python3 -m ${module} job.py < second.py`), module).toEqual(interactive)
+    }
+    // unittest and pytest import test files the reader never lists, and timeit runs its arguments as code.
+    for (const module of ['unittest', 'pytest', 'timeit']) {
+      expect(read(['python3', '-m', module]), module).toEqual(discovering)
+      expect(shell(`python3 -m ${module} < second.py`), module).toEqual(discovering)
+    }
+    expect(read(['python3', '-m', 'timeit', 'print(1)'])).toEqual(discovering)
+    expect(read(['python3', '-m', 'idlelib.idle'])).toEqual(interactive)
+    // Any other module reads as before, its input data.
+    expect(reading(read(['python3', '-m', 'json.tool', 'data.json']))).toMatchObject({ files: [{ path: '/workspace/data.json' }], packages: [{ name: 'json' }] })
+    expect(reading(shell('python3 -m json.tool < data.json'))).toMatchObject({ files: [], packages: [{ name: 'json' }] })
+  })
+
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
     const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
@@ -613,7 +634,7 @@ describe('the code a Python call runs', () => {
     const { read } = workspace({ 'tools/__init__.py': '', 'tools/gen.py': 'import os\n', 'app/__init__.py': '', 'app/__main__.py': 'import json\n', 'data.txt': 'x\n' })
     expect(reading(read(['python3', '-m', 'tools.gen']))).toMatchObject({ files: [{ path: '/workspace/tools/__init__.py' }, { path: '/workspace/tools/gen.py' }], packages: [{ name: 'os', version: null }] })
     expect(reading(read(['python3', '-m', 'app'])).files.map(file => file.path)).toEqual(['/workspace/app/__init__.py', '/workspace/app/__main__.py'])
-    expect(reading(read(['python3', '-m', 'pytest', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: [{ name: 'pytest', version: null }] })
+    expect(reading(read(['python3', '-m', 'black', '-q', 'data.txt']))).toMatchObject({ files: [{ path: '/workspace/data.txt' }], packages: [{ name: 'black', version: null }] })
   })
 
   it('reads imports after a semicolon or a compound statement\'s colon', () => {

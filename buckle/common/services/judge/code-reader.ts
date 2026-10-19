@@ -35,6 +35,7 @@ export const CODE_REFUSALS = Object.freeze({
   interactive: 'an interactive flag reads standard input as code',
   unmodelledImport: 'an import the reader does not model',
   subcommand: 'a subcommand the reader does not model',
+  discoveringModule: 'a module that discovers or evaluates code the reader does not show',
   stdin: 'the code the interpreter runs comes from standard input the reader cannot place',
   localInterpreter: 'the interpreter is a program inside the workspace',
   programName: 'the call sets the program name the interpreter reads',
@@ -254,9 +255,9 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // An option the reader does not model could change which word is the script, so the call asks rather than rate code
   // that may not be the code that runs (fix brief 3, R7); so could a C shell's text (fix brief 4, P).
   if (read.refusal !== null) return read.refusal
-  // A debugger that reads its commands from standard input runs code the reader does not show: `python3 -m pdb job.py`
-  // fed a file runs that file's debugger commands before or instead of the script (fix brief 5, G2c).
-  if (program === 'python' && planned.feed !== null && read.modules.includes('pdb')) return CODE_REFUSALS.interactive
+  // A python module that runs code the reader does not show refuses whether or not anything feeds it (fix brief 6, B3).
+  const moduleRefusal = program === 'python' ? pythonModuleRefusal(read.modules) : null
+  if (moduleRefusal !== null) return moduleRefusal
   inline.push(...read.inline)
   for (const name of read.packages) named(packages, name, cwd)
   const language = languageOfProgram(program)
@@ -486,6 +487,25 @@ function isInteractive(program: string, key: string): boolean {
   if (program === 'node') return key === '-i' || key === '--interactive'
   if (program === 'lua' || program === 'luajit') return key === '-i'
   return program === 'php' && (key === '-a' || key === '--interactive')
+}
+
+/**
+ * The python modules whose own code reads code the reader does not show (fix brief 6, B3): pdb runs `.pdbrc` from the
+ * working directory and HOME and its `-c` commands, and code, asyncio, and idlelib run a console over their input; and
+ * unittest and pytest discover test files the reader never lists, and timeit runs its arguments as code. Matched by the
+ * module's top-level package, so a submodule of one refuses too.
+ */
+const INTERACTIVE_PYTHON_MODULES = new Set(['pdb', 'code', 'asyncio', 'idlelib'])
+const DISCOVERING_PYTHON_MODULES = new Set(['unittest', 'pytest', 'timeit'])
+
+/** The refusal for a `python -m` module that runs code the reader does not show, or null for any other. */
+function pythonModuleRefusal(modules: readonly string[]): string | null {
+  for (const module of modules) {
+    const top = module.split('.')[0]!
+    if (INTERACTIVE_PYTHON_MODULES.has(top)) return CODE_REFUSALS.interactive
+    if (DISCOVERING_PYTHON_MODULES.has(top)) return CODE_REFUSALS.discoveringModule
+  }
+  return null
 }
 
 /**
