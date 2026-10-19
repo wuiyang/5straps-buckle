@@ -784,7 +784,9 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
         // A stdin marker after the `--` is still one, for every interpreter that has one (fix brief 4, R7b); but lua and
         // luajit open a file literally named `-` once it follows `--`, so for them it is the operand (lua.c 5.4.6
         // handle_script: `if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0) fname = NULL`; luajit.c the same; fix brief 5, R7b).
-        if (STDIN_SCRIPT_MARKER.has(next) && program !== 'lua' && program !== 'luajit') {
+        // `/dev/stdin` they open with fopen, which reads the redirected file, so it stays a marker (fix brief 6, B7).
+        const luaFile = next === '-' && (program === 'lua' || program === 'luajit')
+        if (STDIN_SCRIPT_MARKER.has(next) && !luaFile) {
           stdinScript = true
           break
         }

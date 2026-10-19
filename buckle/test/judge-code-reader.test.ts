@@ -385,6 +385,13 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(shell('lua - < other.lua'))).toEqual(['/workspace/other.lua'])
   })
 
+  it('reads lua\'s and luajit\'s /dev/stdin after -- as the redirected file, which they open with fopen (fix brief 6, B7)', () => {
+    const { shell } = workspace({ '-': 'print(0)\n', 'other.lua': 'print(1)\n' })
+    expect(paths(shell('lua -- /dev/stdin < other.lua'))).toEqual(['/workspace/other.lua'])
+    expect(paths(shell('luajit -- /dev/stdin < other.lua'))).toEqual(['/workspace/other.lua'])
+    expect(paths(shell('lua -- - < other.lua'))).toEqual(['/workspace/-'])
+  })
+
   it('reads a C shell\'s options as clusters: s, i, or t reads the script from its input, b ends the options, c is text never rated (fix brief 4, R7)', () => {
     const { read, shell } = workspace({ 'other.csh': 'echo 1\n', 'x': 'echo 2\n', '-x.csh': 'echo 3\n' })
     expect(paths(shell('tcsh -fs x < other.csh'))).toEqual(['/workspace/other.csh'])
