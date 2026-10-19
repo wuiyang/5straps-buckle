@@ -56,10 +56,10 @@ export function ratedShellText(form: readonly string[]): { shell: string; text: 
 }
 
 /**
- * The interpreter form one statement runs: its command through the known wrappers (STATEMENT_WRAPPERS), as the rules
- * read it, which must end in an interpreter and read nothing nested; null otherwise.
+ * The interpreter form one statement runs, with the chain it ends: its command through the known wrappers
+ * (STATEMENT_WRAPPERS), as the rules read it, which must end in an interpreter and read nothing nested; null otherwise.
  */
-export function statementInterpreter(statement: SimpleStatement): string[] | null {
+export function statementInterpreter(statement: SimpleStatement): { form: string[]; chain: string[][] } | null {
   const [command, ...args] = statement.words
   if (command === undefined) return null
   const forms = commandForms(command, args)
@@ -69,7 +69,7 @@ export function statementInterpreter(statement: SimpleStatement): string[] | nul
   if (setsProgramName(allForms(forms))) return null
   const final = forms.chain.at(-1)!
   if (forms.chain.slice(0, -1).some(([word = '']) => !STATEMENT_WRAPPERS.has(baseCommand(word)))) return null
-  return isInterpreter(baseCommand(final[0] ?? '')) ? final : null
+  return isInterpreter(baseCommand(final[0] ?? '')) ? { form: final, chain: forms.chain } : null
 }
 
 /** A character a word may hold unquoted: none a shell expands, globs, splits on, or reads as an operator. */

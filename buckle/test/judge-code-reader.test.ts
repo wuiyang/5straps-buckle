@@ -34,7 +34,7 @@ function workspace(files: Record<string, string | Buffer>, options: { mount?: st
   const call = (command: string, ...args: string[]): CodeRead => {
     const forms = commandFormsOf({ command, args })
     const running = allForms(forms).filter(([word = '']) => forms.interpreters.includes(word) || forms.interpreters.includes(baseCommand(word)))
-    return readInterpreterCode({ forms: running, chain: forms.chain, cwd: root, view })
+    return readInterpreterCode({ forms: running, chain: forms.chain, typed: [command, ...args], cwd: root, view })
   }
   const shell = (text: string, program = 'bash'): CodeRead => call(program, '-c', text)
   return { base, root, read, call, shell, view }
@@ -732,6 +732,43 @@ describe('the code a Python call runs', () => {
   it('refuses a relative import naming no module', () => {
     const { read } = workspace({ 'pkg/__init__.py': 'from .gone import x\n' })
     expect(read(['python3', 'pkg/__init__.py'])).toMatchObject({ kind: 'refused', reason: CODE_REFUSALS.missing })
+  })
+})
+
+describe('an interpreter named by a path (fix brief 6, B1)', () => {
+  // The program that runs is the file at the path, which the agent may have written, not the interpreter its basename
+  // names; only a path outside the workspace and every mount is one the agent cannot have placed.
+  const planted = '#!/bin/sh\necho planted\n'
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+
+  it('refuses a planted program inside the workspace, typed directly, behind a wrapper, or in shell text', () => {
+    const { call, shell } = workspace({ 'job.py': 'print(1)\n', 'x.ts': 'console.log(1)\n', 'x.js': 'console.log(2)\n', 'fv/bin/python3': planted, 'node_modules/.bin/tsx': planted, 'tools/node': planted })
+    expect(call('./fv/bin/python3', 'job.py')).toEqual(local)
+    expect(call('fv/bin/python3', 'job.py')).toEqual(local)
+    expect(call('/workspace/fv/bin/python3', 'job.py')).toEqual(local)
+    expect(call('env', './fv/bin/python3', 'job.py')).toEqual(local)
+    expect(call('timeout', '5', 'node_modules/.bin/tsx', 'x.ts')).toEqual(local)
+    expect(call('/workspace/tools/node', 'x.js')).toEqual(local)
+    expect(shell('./fv/bin/python3 job.py')).toEqual(local)
+    expect(shell('node_modules/.bin/tsx x.ts')).toEqual(local)
+    expect(shell('env /workspace/tools/node x.js')).toEqual(local)
+  })
+
+  it('refuses a path that names nothing, and a link inside the workspace whatever it points to', () => {
+    const { call, root } = workspace({ 'job.py': 'print(1)\n', 'fv/pyvenv.cfg': 'home = /usr/bin\n' })
+    expect(call('./gone/python3', 'job.py')).toEqual(local)
+    // A link beside a pyvenv.cfg runs the real interpreter with that venv's settings, read from the link's own folder.
+    mkdirSync(join(root, 'fv', 'bin'))
+    symlinkSync(process.execPath, join(root, 'fv', 'bin', 'python3'))
+    expect(call('fv/bin/python3', 'job.py')).toEqual(local)
+  })
+
+  it('rates a path outside the workspace and every mount, as the interpreter its basename names', () => {
+    const { call, shell } = workspace({ 'job.py': 'print(1)\n' })
+    expect(paths(call('/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('/usr/bin/python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('env', '/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('python3', 'job.py'))).toEqual(['/workspace/job.py'])
   })
 })
 

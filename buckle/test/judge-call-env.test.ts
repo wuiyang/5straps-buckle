@@ -10,6 +10,7 @@ import { allForms, commandForms, commandFormsOf } from '../common/domain/command
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
+import { CODE_REFUSALS } from '../common/services/judge/code-reader.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
@@ -440,6 +441,22 @@ await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['nic
 const { entry } = await call(runtime, {}, ['nice', 'PYTHONSTARTUP=/w/x', 'python3', 'a.py'])
 expect((entry.judge as { unavailable: string }).unavailable).toBe(codeLoadingReason('PYTHONSTARTUP'))
 expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('an interpreter named by a path inside the workspace (fix brief 6, B1)', () => {
+  it('is not rated, since the program at that path is not the interpreter its basename names', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    // Typed directly it asks at the interpreter floor with no allow list; in shell text, under an allow of bash -c.
+    for (const [allow, command] of [[[], ['./fv/bin/python3', 'a.py']], [['bash -c *'], ['bash', '-c', './fv/bin/python3 a.py']]] as const) {
+      await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [...allow], deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, [...command])
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, command.join(' ')).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
   })
 })
 

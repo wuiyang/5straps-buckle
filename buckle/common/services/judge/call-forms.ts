@@ -82,6 +82,20 @@ export function wrapperWords(all: readonly string[][], index: number): string[] 
   return form.slice(1, ends ? start : form.length)
 }
 
+/**
+ * The command word of the chain's form at `at` as the call typed it (`typed`, the call's own words): the call's first
+ * word, or the word of the form before it where this form's words end that one; null where the chain does not show it,
+ * as for a NAME=value program a wrapper runs, read by its basename (fix brief 6, A7 and B1).
+ */
+export function typedCommandWord(chain: readonly (readonly string[])[], at: number, typed: readonly string[]): string | null {
+  if (at === 0) return typed[0] ?? null
+  const form = chain[at]!
+  const before = chain[at - 1]!
+  const start = before.length - form.length
+  if (start < 1 || !form.slice(1).every((word, offset) => before[start + 1 + offset] === word)) return null
+  return before[start]!
+}
+
 /** An env option word that sets the program name an interpreter reads: a short cluster holding `a`, or `--argv0` (fix brief 5, N1). */
 const ENV_ARGV0 = /^(?:-[^-]*a|--argv0(?:=.*)?$)/
 

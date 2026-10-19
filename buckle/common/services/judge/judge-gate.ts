@@ -172,7 +172,10 @@ export function createJudgeGate(input: {
     // A standard script's own code is not read, but what bun loads before it is: its preloads and its bunfig.toml's (fix brief 3, R15).
     // The chain tells the reader which forms the call runs itself and which come from shell text, which it reads only as
     // one simple command (fix brief 4, P).
-    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, cwd, view: input.view })
+    // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
+    // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
+    const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
+    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.

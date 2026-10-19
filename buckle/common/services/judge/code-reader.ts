@@ -13,7 +13,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
-import { setsProgramName } from './call-forms.js'
+import { setsProgramName, typedCommandWord } from './call-forms.js'
 import { ratedShellText, SHELL_TEXT_REFUSAL, simpleStatement, statementInterpreter, type StatementFeed } from './shell-statement.js'
 
 /** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
@@ -36,6 +36,7 @@ export const CODE_REFUSALS = Object.freeze({
   unmodelledImport: 'an import the reader does not model',
   subcommand: 'a subcommand the reader does not model',
   stdin: 'the code the interpreter runs comes from standard input the reader cannot place',
+  localInterpreter: 'the interpreter is a program inside the workspace',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -61,6 +62,11 @@ export interface CodeView {
   rootOf(real: string): string | null
   /** The names a real folder holds, or none where it holds none or is no folder. */
   names(folder: string): readonly string[]
+  /**
+   * The real path a name lands on before any link in it is followed, a relative one from `base`, through the view's own
+   * mapping (a sandbox path to the host path it names), or `outside` where it lands beyond every place the view reaches.
+   */
+  named(name: string, base: string): string | 'outside'
 }
 
 export type Located = { real: string } | 'none' | 'outside'
@@ -100,6 +106,11 @@ export interface CodeInput {
    * the one statement of the last form's `-c` text (fix brief 4, P). Left out, every form is the call's own.
    */
   chain?: readonly string[][]
+  /**
+   * The call's words as typed, whose first is its command word before the rules reduce it to a basename; left out, the
+   * chain's first form stands for it.
+   */
+  typed?: readonly string[]
   cwd: string
   view: CodeView
 }
@@ -114,25 +125,31 @@ interface Planned { form: readonly string[]; feed: StatementFeed | null }
  * other form the rules hold from it is a piece (statementPieces), split inside a quoted word where no shell splits: no
  * statement, so it is neither read nor required to match (fix brief 5, P1).
  */
-function planOf(input: Pick<CodeInput, 'forms' | 'chain'>): Planned[] | string {
+function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'cwd' | 'view'>): Planned[] | string {
   const chain = input.chain ?? input.forms
+  // An interpreter named by a path runs the program at that path, which the agent may have placed, not the interpreter
+  // its basename names; so may one whose typed command word the chain does not show (fix brief 6, B1).
+  const mayBePlaced = (word: string | null) => word === null || (PATH_SEPARATOR.test(word) && !programOutsideView(word, input.cwd, input.view))
   // flock runs its `-c` text through `$SHELL -c`, which the command reader maps to `sh -c`, but the shell that runs it
   // is whatever SHELL names, so the grammar's reading of it as sh may not be the code that runs (fix brief 5, P3).
   if (chain.some(flockCommand)) return SHELL_TEXT_REFUSAL
   // A wrapper that sets the program name an interpreter reads (exec with an option, env -a or --argv0) points it at a
   // path the reader does not show, so a call whose own chain does one is not rated (fix brief 5, N1).
   if (setsProgramName(chain)) return SHELL_TEXT_REFUSAL
-  let statement: { form: readonly string[]; feed: StatementFeed | null } | null | undefined
+  let statement: ReturnType<typeof textStatement> | undefined
   let matched = false
   const planned: Planned[] = []
   for (const form of input.forms) {
-    if (chain.includes(form)) {
+    const at = chain.indexOf(form)
+    if (at >= 0) {
+      if (mayBePlaced(input.chain === undefined ? form[0] ?? '' : typedCommandWord(chain, at, input.typed ?? chain[0]!))) return CODE_REFUSALS.localInterpreter
       planned.push({ form, feed: null })
       continue
     }
     if (statement === undefined) statement = textStatement(chain.at(-1))
     if (statement === null) return SHELL_TEXT_REFUSAL
     if (matched || !sameWords(statement.form, form)) continue
+    if (mayBePlaced(statement.typed)) return CODE_REFUSALS.localInterpreter
     matched = true
     planned.push({ form, feed: statement.feed })
   }
@@ -146,12 +163,32 @@ function flockCommand(form: readonly string[]): boolean {
   return baseCommand(form[0] ?? '') === 'flock' && form.slice(1).some(word => word === '-c' || word === '--command')
 }
 
-/** The interpreter form a shell form's `-c` text runs, with its feed, where that text is one simple command; else null. */
-function textStatement(form: readonly string[] | undefined): { form: readonly string[]; feed: StatementFeed | null } | null {
+/**
+ * The interpreter form a shell form's `-c` text runs, with its feed and its command word as the text typed it (null where
+ * the chain does not show that word), where that text is one simple command; else null.
+ */
+function textStatement(form: readonly string[] | undefined): { form: readonly string[]; feed: StatementFeed | null; typed: string | null } | null {
   const text = form === undefined ? null : ratedShellText(form)
   const statement = text === null ? null : simpleStatement(text.text, text.shell)
   const interpreter = statement === null ? null : statementInterpreter(statement)
-  return statement === null || interpreter === null ? null : { form: interpreter, feed: statement.feed }
+  if (statement === null || interpreter === null) return null
+  return { form: interpreter.form, feed: statement.feed, typed: typedCommandWord(interpreter.chain, interpreter.chain.length - 1, statement.words) }
+}
+
+/** A path separator in a command word: the program that runs is the file at that path, not one the PATH finds. */
+const PATH_SEPARATOR = /[\\/]/
+
+/**
+ * Whether a program named by a path lies outside the workspace and every mount, where the agent cannot have placed it:
+ * the path as named, before any link is followed (a link beside a pyvenv.cfg runs the real interpreter with that
+ * folder's settings), and the file its links reach; a name that reaches no file is not (fix brief 6, B1).
+ */
+function programOutsideView(name: string, base: string, view: CodeView): boolean {
+  const named = view.named(name, base)
+  if (named === 'outside') return true
+  if (view.rootOf(named) !== null) return false
+  const located = view.locate(name, base)
+  return located === 'outside' || (located !== 'none' && view.rootOf(located.real) === null)
 }
 
 function sameWords(one: readonly string[], other: readonly string[]): boolean {
@@ -911,11 +948,11 @@ function unplacedBunConfig(key: string, value: string | null): boolean {
  * any preload is. The script itself stays a standard script and is not read; a preload naming nothing refuses, as do a
  * config file the reader cannot parse and an option the reader does not know.
  */
-export function readBunScriptPreloads(input: { forms: readonly string[][]; chain?: readonly string[][]; cwd: string; view: CodeView }): CodeRead {
+export function readBunScriptPreloads(input: { forms: readonly string[][]; chain?: readonly string[][]; typed?: readonly string[]; cwd: string; view: CodeView }): CodeRead {
   try {
     const forms = input.forms.filter(([command = '']) => /^bun(?:[\d.-]|$)/.test(baseCommand(command)))
     // A bun form from shell text is read only where that text is one simple command (fix brief 4, P).
-    const plan = planOf({ forms, chain: input.chain })
+    const plan = planOf({ ...input, forms })
     if (typeof plan === 'string') return refused(plan)
     const gathered: Gathered = { inline: [], packages: new Map(), queue: [], names: memoListing(input.view) }
     for (const { form: [, ...args] } of plan) {
@@ -1485,10 +1522,14 @@ function fileAt(view: CodeView, name: string, base: string): string | null {
  */
 export function createCodeView(input: { paths: PathView; canRead: (real: string) => boolean; protectedRoots: readonly string[] }): CodeView {
   const { paths } = input
+  const namedPath = (name: string, base: string): string | 'outside' => {
+    try { return name.startsWith('/') ? paths.resolve(name) : paths.resolve(join(base, name)) } catch { return 'outside' }
+  }
   return {
+    named: namedPath,
     locate(name, base) {
-      let named: string
-      try { named = name.startsWith('/') ? paths.resolve(name) : paths.resolve(join(base, name)) } catch { return 'outside' }
+      const named = namedPath(name, base)
+      if (named === 'outside') return 'outside'
       try {
         const real = resolveTarget(named, { shares: paths.shares })
         return statSync(real).isFile() ? { real } : 'none'
