@@ -38,6 +38,11 @@ hiding, and paths, [part three](known-limits-03.md) code mode, the command line,
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory
   lies elsewhere.
+- `git_diff` with no paths, staged or not, is judged by the repository alone, and a path naming a
+  folder by that folder, so it shows the changes of every tracked file beneath, a `.env` included,
+  with no credential-file ask about that file; `git_log` with no path lists the commits of every
+  file. Buckle filters neither, as a filtered diff would misreport the tree to the agent: name each
+  file to have it judged, or leave `packs.hostGit` off for a repository that tracks a credential file.
 
 ## Windows shims
 

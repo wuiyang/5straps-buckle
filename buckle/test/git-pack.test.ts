@@ -309,3 +309,26 @@ describe.skipIf(hostGit === null)('git_diff reads the paths it names literally, 
     expect(await call('git_diff', { paths: ['.env'] })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
   })
 })
+
+// A known limit, kept on purpose (D77 read beside BUCKLE-D17, which declined a per-path gate on git_diff): a diff or log
+// naming no path is judged by the repository alone and shows every tracked file, a `.env` included. Buckle adds no
+// `:(exclude)` pathspec, as a filtered diff would misreport the tree (docs/known-limits-02.md).
+describe.skipIf(hostGit === null)('a git_diff or git_log naming no path reads the whole tree, against the installed git', () => {
+  it('shows a tracked .env change unstaged and staged, and lists its commit, with no pathspec added', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-whole-')))
+    writeFileSync(join(root, '.env'), 'NAME=first\n')
+    git(root, 'init', '-q')
+    git(root, 'add', '.env')
+    git(root, 'commit', '-qm', 'seed')
+    writeFileSync(join(root, '.env'), 'NAME=second\n')
+    const requests: Parameters<ProcessRunner>[0][] = []
+    const { call } = gitPack(root, request => { requests.push(request); return hostRunProcess(request) }, null, hostGit!)
+    expect(await call('git_diff', {})).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
+    git(root, 'add', '.env')
+    expect(await call('git_diff', { staged: true })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
+    expect(await call('git_log', {})).toMatchObject({ commits: [{ subject: 'seed' }] })
+    expect(requests.flatMap(request => request.args).filter(word => word === '--' || word.startsWith(':('))).toEqual([])
+  })
+})

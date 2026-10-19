@@ -93,6 +93,9 @@ buckle workspace set packs.hostLsp on    # language servers in the dev pack
 Each applies to that workspace alone. A filesystem `deny` or `ask` rule in its policy withholds
 all three packs again.
 
+A `git_diff` or `git_log` that names no path is judged by the repository alone, so it shows every
+tracked file, a `.env` included; Buckle does not filter it ([known limits](known-limits-02.md#where-programs-come-from)).
+
 Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
 an empty directory Buckle owns, and overrides the repository's program settings, so no hook or
 configured program from the repository runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
@@ -100,32 +103,4 @@ in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_A
 (`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
 rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 
-## The browser's allowed hosts
-
-`browser_command` runs one `agent-browser` command in a session of its own, headless unless
-the workspace sets `browser.headed` on. By default each session gets a fresh browser with no saved state; the
-owner can choose a profile folder that keeps logins, or their own Chrome, as
-[Using your own browser](browser-login.md) describes. No agent call can. The first call in a mode
-launches the browser and may outlast a client's wait; the same call again reuses it.
-
-The owner installs `agent-browser` outside any workspace (Buckle refuses one inside):
-`npm i -g agent-browser`, then `agent-browser install`. Buckle
-looks for it where it looks for every program ([Install](install.md#requirements)), reading, never
-running, npm's `.cmd` shim on Windows. Without it, the pack's reason says where Buckle looked.
-
-For a fresh browser with an approved list, Buckle passes its hosts to `agent-browser` as
-`--allowed-domains`, so clicks, redirects, and page requests stay on them. The browser matches
-host names only, so inside a page an allowed host is reachable on any port and path, while the
-page a command opens is still judged with port and path. With no approved list, no flag is passed
-and public hosts are open. When a list has no usable host, Buckle does not start the browser and
-says which list to fix.
-
-## Change history
-
-Tool writes and shell publications are recorded as checkpoints under `history/`, kept up to
-`BUCKLE_HISTORY_MAX_BYTES` (1 GiB) and `BUCKLE_HISTORY_RETENTION_DAYS` (30):
-
-```bash
-buckle history list
-buckle history restore <id>
-```
+[Part two](sandbox-and-tools-02.md) covers the browser's allowed hosts and the change history.

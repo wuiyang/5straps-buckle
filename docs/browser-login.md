@@ -8,7 +8,7 @@ workspace set browser.<key>` applies from the workspace's next call; `BUCKLE_BRO
 `buckle.env`, every workspace's default, at a restart. Nothing an agent sends can select one.
 
 Install agent-browser, the browser Buckle drives, outside any workspace
-([Sandbox and tools](sandbox-and-tools.md#the-browsers-allowed-hosts)).
+([Sandbox and tools](sandbox-and-tools-02.md#the-browsers-allowed-hosts)).
 
 ## Logging in without a setting
 
