@@ -200,6 +200,11 @@ export interface CommandForms {
   /** Every command the last of the chain runs inside itself (a shell body's statements, eval's text, a find -exec command), each with its own chain and bodies, flattened. */
   nested: string[][]
   /**
+   * The forms of `nested` read only from a statement piece (statementPieces), a split no shell makes, by identity, so the
+   * code reader can tell one from a statement a shell runs (fix brief 6, B5).
+   */
+  pieces: string[][]
+  /**
    * Why a command was left unread, or null: wrappers or shell bodies nested past MAX_DEPTH, substitutions nested past
    * MAX_SUBSTITUTIONS, a find -exec command that is a primary, a `#` Buckle cannot place, an interactive session, or
    * shell text an expansion supplies; the first in READ_LIMITS order when several were met.
@@ -348,7 +353,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const own = startupOf(words, chain, place)
-  const forms: Reading = { chain, nested: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
+  const forms: Reading = { chain, nested: [], pieces: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
   addStartup(forms.startup, inner.startup)
   for (const group of inner.groups) {
     if (budget.spent) break
@@ -378,8 +383,12 @@ function readNested(forms: Reading, command: string[], depth: number, budget: Bu
     return null
   }
   const nested = formsOf(command, depth + 1, budget, at)
+  const before = forms.nested.length
   keep(forms.nested, nested.chain, budget)
   keep(forms.nested, nested.nested, budget)
+  // Every form a piece holds is a piece; a statement passes up the pieces read below it.
+  const inner = new Set(nested.pieces)
+  for (const form of forms.nested.slice(before)) if (piece || inner.has(form)) forms.pieces.push(form)
   for (const head of nested.heads) forms.heads.push(head)
   forms.unread = firstLimit(forms.unread, nested.unread)
   if (!piece) {

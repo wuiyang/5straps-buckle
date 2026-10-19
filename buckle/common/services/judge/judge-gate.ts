@@ -175,7 +175,7 @@ export function createJudgeGate(input: {
     // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
     // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
     const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
-    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, cwd, view: input.view })
+    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.

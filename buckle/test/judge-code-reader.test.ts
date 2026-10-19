@@ -34,7 +34,7 @@ function workspace(files: Record<string, string | Buffer>, options: { mount?: st
   const call = (command: string, ...args: string[]): CodeRead => {
     const forms = commandFormsOf({ command, args })
     const running = allForms(forms).filter(([word = '']) => forms.interpreters.includes(word) || forms.interpreters.includes(baseCommand(word)))
-    return readInterpreterCode({ forms: running, chain: forms.chain, typed: [command, ...args], cwd: root, view })
+    return readInterpreterCode({ forms: running, chain: forms.chain, typed: [command, ...args], pieces: forms.pieces, cwd: root, view })
   }
   const shell = (text: string, program = 'bash'): CodeRead => call(program, '-c', text)
   return { base, root, read, call, shell, view }
@@ -848,6 +848,23 @@ describe('the code a here-string hands an interpreter', () => {
       expect(reading(shell(text)), text).toMatchObject({ inline: 'import helper', files: [{ path: '/workspace/helper.py' }] })
     }
     expect(shell("sudo python3 <<< 'import helper'")).toEqual(shellRefusal)
+  })
+
+  it('skips only a piece split inside a quoted word; any other form from the text that does not match the statement refuses (fix brief 6, B5)', () => {
+    const { shell, root, view } = workspace({ 'decoy.js': 'console.log(1)\n', 'build.js': 'console.log(2)\n', 'job.py': 'print(1)\n' })
+    // A heredoc body a shell reads as its script is a statement the rules read, not a piece: the grammar's statement
+    // (`busybox sh`, fed the body) does not show it, so the call refuses.
+    expect(shell("busybox sh <<'EOF'\nnode decoy.js\nEOF")).toEqual(shellRefusal)
+    expect(shell("tcsh <<'EOF'\nnode decoy.js\nEOF")).toEqual(shellRefusal)
+    // The rules read `node` alone where the grammar reads `node build.js` (an `&` splits the rules' statement): no match.
+    expect(shell('node &> out.log build.js')).toEqual(shellRefusal)
+    // A piece is skipped, but a reading where no form matches the statement still refuses: the rules and the grammar
+    // must agree on the statement's interpreter form.
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', 'python3 -c "import os; print(1)"'] })
+    const piece = forms.pieces.find(([word]) => word === 'python3')!
+    expect(piece).toEqual(['python3', '-c', 'import os'])
+    expect(readInterpreterCode({ forms: [piece], chain: forms.chain, pieces: forms.pieces, cwd: root, view })).toEqual(shellRefusal)
+    expect(reading(shell('python3 -c "import os; print(1)"'))).toMatchObject({ inline: 'import os; print(1)', files: [] })
   })
 
   it('refuses flock -c text, which runs through $SHELL -c rather than sh (fix brief 5, P3)', () => {

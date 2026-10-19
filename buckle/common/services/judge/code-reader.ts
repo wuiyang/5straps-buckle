@@ -114,6 +114,11 @@ export interface CodeInput {
    * chain's first form stands for it.
    */
   typed?: readonly string[]
+  /**
+   * The forms the rules read only from a statement piece (CommandForms.pieces), a split no shell makes, by identity; left
+   * out, none is.
+   */
+  pieces?: readonly (readonly string[])[]
   cwd: string
   view: CodeView
 }
@@ -124,12 +129,14 @@ interface Planned { form: readonly string[]; feed: StatementFeed | null }
 /**
  * The invocations to read, each with its feed (fix brief 4, P): the call's own forms as they are, and from shell text
  * only the one statement the grammar parses whole (shell-statement.ts), where the rules hold that same interpreter form
- * among their own; a refusal otherwise, so a person decides. The grammar reads the text as one simple command, so any
- * other form the rules hold from it is a piece (statementPieces), split inside a quoted word where no shell splits: no
- * statement, so it is neither read nor required to match (fix brief 5, P1).
+ * among their own; a refusal otherwise, so a person decides. Another form the rules hold from that text is skipped only
+ * where it is a piece (CommandForms.pieces), split inside a quoted word where no shell splits, which runs nothing (fix
+ * brief 5, P1); any other, such as a heredoc body a shell reads as its script (`busybox sh <<EOF`), runs code the
+ * statement does not show, so it refuses (fix brief 6, B5).
  */
-function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'cwd' | 'view'>): Planned[] | string {
+function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 'cwd' | 'view'>): Planned[] | string {
   const chain = input.chain ?? input.forms
+  const pieces = new Set(input.pieces ?? [])
   // An interpreter named by a path runs the program at that path, which the agent may have placed, not the interpreter
   // its basename names; so may one whose typed command word the chain does not show (fix brief 6, B1).
   const mayBePlaced = (word: string | null) => word === null || (PATH_SEPARATOR.test(word) && !programOutsideView(word, input.cwd, input.view))
@@ -153,10 +160,15 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'cwd' | 'vi
     }
     if (statement === undefined) statement = textStatement(chain.at(-1))
     if (statement === null) return SHELL_TEXT_REFUSAL
-    if (matched || !sameWords(statement.form, form)) continue
-    if (mayBePlaced(statement.typed)) return CODE_REFUSALS.localInterpreter
-    matched = true
-    planned.push({ form, feed: statement.feed })
+    if (sameWords(statement.form, form)) {
+      // The same statement read once more (another reading of its redirections) is read once.
+      if (matched) continue
+      if (mayBePlaced(statement.typed)) return CODE_REFUSALS.localInterpreter
+      matched = true
+      planned.push({ form, feed: statement.feed })
+      continue
+    }
+    if (!pieces.has(form)) return SHELL_TEXT_REFUSAL
   }
   // The rules and the grammar must agree on the statement's interpreter form, or neither reading is trusted.
   if (statement !== undefined && !matched) return SHELL_TEXT_REFUSAL
@@ -976,7 +988,7 @@ function unplacedBunConfig(key: string, value: string | null): boolean {
  * any preload is. The script itself stays a standard script and is not read; a preload naming nothing refuses, as do a
  * config file the reader cannot parse and an option the reader does not know.
  */
-export function readBunScriptPreloads(input: { forms: readonly string[][]; chain?: readonly string[][]; typed?: readonly string[]; cwd: string; view: CodeView }): CodeRead {
+export function readBunScriptPreloads(input: { forms: readonly string[][]; chain?: readonly string[][]; typed?: readonly string[]; pieces?: readonly (readonly string[])[]; cwd: string; view: CodeView }): CodeRead {
   try {
     const forms = input.forms.filter(([command = '']) => /^bun(?:[\d.-]|$)/.test(baseCommand(command)))
     // A bun form from shell text is read only where that text is one simple command (fix brief 4, P).
