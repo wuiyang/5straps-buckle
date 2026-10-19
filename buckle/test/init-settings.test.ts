@@ -429,14 +429,90 @@ describe('buckle init and the workspace\'s mounts', () => {
     expect(existsSync(out)).toBe(false)
   })
 
-  it('adds no mount to a folder a workspace serves already, saying so', async () => {
-    await init(scripted([], false), ['--dir', workspace])
-    const before = served().settings
-    const again = await init(scripted([], false), ['--dir', workspace, '--volume', `${data}:/data`])
-    expect(again.exitCode).toBe(0)
-    expect(again.printed).toContain(`The mounts named were not added either; add them with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${served().name}.`)
-    expect(again.printed).toContain(`  Mounts      ${workspace}:/workspace:rw\n`)
-    expect(served().settings).toEqual(before)
+  // The mounts follow-up, first fix round: the folder is looked up in the registry before the mounts are checked, so a mount is never checked
+  // against a folder that is not the workspace's own, and a request that adds nothing is refused instead of dropped.
+  describe('on a folder a workspace serves already', () => {
+    const refusal = (name: string) => `The folder is already served by workspace ${name}; add mounts with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${name}. Nothing was written.`
+    const filesOf = () => ({ registry: readFileSync(join(state, 'workspaces.json'), 'utf8'), settings: readFileSync(settingsPath(state, served().id), 'utf8'), env: readFileSync(out, 'utf8') })
+
+    it.each([
+      ['its own folder', [] as string[], () => workspace],
+      ['a folder inside it', [] as string[], () => join(workspace, 'sub')],
+      ['its own folder, with --yes', ['--yes'], () => workspace],
+      ['its own folder, with --force', ['--force'], () => workspace],
+    ])('refuses --volume for %s, writing nothing', async (_name, flags, folder) => {
+      await init(scripted([], false), ['--dir', workspace])
+      mkdirSync(join(workspace, 'sub'))
+      const before = filesOf()
+      const again = await init(scripted([], false), ['--dir', folder(), ...flags, '--volume', `${data}:/data`])
+      expect(again.exitCode).toBe(1)
+      expect(again.printed).toBe('')
+      expect(errors).toContain(refusal(served().name))
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('names the workspace\'s own rule, not the one for a folder it does not show at --mount', async () => {
+      await init(scripted([], false), ['--dir', workspace, '--mount', '/code'])
+      const before = filesOf()
+      const again = await init(scripted([], false), ['--dir', workspace, '--yes', '--volume', `${data}:/workspace/x`])
+      expect(again.exitCode).toBe(1)
+      expect(errors).toContain(refusal(served().name))
+      expect(errors).not.toContain('overlaps /workspace')
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('refuses a folder served at its real path as well, where mount add would refuse the mount', async () => {
+      await init(scripted([], false), ['--dir', workspace, '--mount', ''])
+      const before = filesOf()
+      const again = await init(scripted([], false), ['--dir', workspace, '--yes', '--volume', `${data}:/data`])
+      expect(again.exitCode).toBe(1)
+      expect(errors).toContain(refusal(served().name))
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('still mints nothing and exits 0 without --volume, saying how to mint a token', async () => {
+      await init(scripted([], false), ['--dir', workspace])
+      const before = filesOf()
+      const again = await init(scripted([], false), ['--dir', workspace, '--yes'])
+      expect(again.exitCode).toBe(0)
+      expect(again.printed).toContain(`is already in workspace ${served().name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${served().name}.`)
+      expect(again.printed).not.toContain('The mounts named were not added')
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('does not ask the mount question at a terminal', async () => {
+      await init(scripted([], false), ['--dir', workspace])
+      const before = filesOf()
+      const prompt = scripted([workspace, ''])
+      const again = await init(prompt)
+      expect(again.exitCode).toBe(0)
+      expect(prompt.asked).not.toContain(MOUNT_QUESTION)
+      expect(prompt.asked[0]).toContain('Folder to serve')
+      expect(prompt.asked[1]).toContain('Where the agent sees it')
+      expect(prompt.asked[2]).toContain('Packs to offer')
+      expect(again.printed).toContain('is already in workspace')
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('refuses --volume at a terminal after the folder is named, without asking the mount question', async () => {
+      await init(scripted([], false), ['--dir', workspace])
+      const before = filesOf()
+      const prompt = scripted([workspace, ''])
+      const again = await init(prompt, ['--volume', `${data}:/data`])
+      expect(again.exitCode).toBe(1)
+      expect(prompt.asked).not.toContain(MOUNT_QUESTION)
+      expect(errors).toContain(refusal(served().name))
+      expect(filesOf()).toEqual(before)
+    })
+
+    it('adds --volume to another folder of a node set up already, as for a first folder', async () => {
+      await init(scripted([], false), ['--dir', workspace])
+      const other = join(workspace, '..', 'other')
+      mkdirSync(other)
+      const again = await init(scripted([], false), ['--dir', other, '--volume', `${data}:/data`])
+      expect(again.exitCode).toBe(0)
+      expect(served(other).settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }, { source: data, target: '/data', access: 'rw' }])
+    })
   })
 })
 
@@ -536,6 +612,19 @@ describe('buckle init on a node set up before workspaces', () => {
     expect(failed).not.toContain('init-move-other-agent-fixture')
     expect(readFileSync(out, 'utf8')).toBe(before)
     expect(existsSync(join(state, 'workspaces.json'))).toBe(false)
+  })
+
+  // The mounts follow-up, first fix round: a folder the move itself makes a workspace is not in the registry to be found
+  // before init opens the node, so the mounts named are checked first and then left out, and init says so.
+  it('says the --volume mounts were not added where the move itself makes the folder a workspace', async () => {
+    const data = join(workspace, '..', 'data')
+    mkdirSync(data)
+    writeFileSync(out, `BUCKLE_ADMIN_TOKEN=init-move-admin-fixture\nBUCKLE_AUTH_TOKEN=init-move-agent-fixture\nBUCKLE_WORKSPACE_ROOT=${workspace}\n`, { mode: 0o600 })
+
+    const result = await init(scripted([], false), ['--yes', '--dir', workspace, '--volume', `${data}:/data`])
+    expect(result.exitCode).toBe(0)
+    expect(result.printed).toContain(`The mounts named were not added either; add them with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${basename(workspace)}.`)
+    expect(JSON.stringify(served().settings)).not.toContain(data)
   })
 
   // Findings 11 and 21: --force as the first command used to rewrite the file before migration read it. D85, Q3: the

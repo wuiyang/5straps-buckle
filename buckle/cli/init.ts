@@ -11,7 +11,7 @@ import { isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { refusedNetworkEntries } from '../common/domain/policy.js'
 import { BROWSER_INSTALL } from '../common/services/packs/browser/index.js'
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
-import { nodeRootsOf, openWorkspaceManager, WorkspaceError, type MintedToken, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { nodeRootsOf, openWorkspaceManager, servingWorkspace, WorkspaceError, type MintedToken, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { MigrationError, movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { workspaceUntrusted } from '../common/services/workspaces/node-roots.js'
 import { mountRows, resolveSettings, withMount, withOwnerMounts, type ResolvedSettings, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
@@ -38,7 +38,8 @@ const USAGE = `Usage: buckle init [--dir <dir>] [--mount <path>] [--volume <loca
 
 Sets this machine's node up once, then serves a folder as one of its workspaces: the current directory, or --dir
 (--root is its earlier name), seen by the agent at /workspace, or at --mount. Each --volume shares another host
-folder or file at a sandbox path, read-write unless :ro, as buckle workspace mount add does. --name names the node.
+folder or file at a sandbox path, read-write unless :ro, as buckle workspace mount add does; a folder a workspace
+serves already takes none here, and mount add adds to that workspace. --name names the node.
 
 The node's settings go to buckle.env in the state directory (~/.5straps/buckle, or BUCKLE_STATE_DIR), owner-only;
 --out or BUCKLE_ENV_FILE selects a custom file instead, which buckle mcp reads only inside the state directory. They
@@ -109,7 +110,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   try {
     // Under --yes, or with no terminal, the --volume mounts alone: a default install adds none (D83).
     answers = interactive
-      ? await askFolder(prompt, { folder: given, mount: values.mount, name: values.name, writesNode })
+      ? await askFolder(prompt, { folder: given, mount: values.mount, name: values.name, writesNode, served: asked => servedFolder({ out, folder: asked, platform }) !== null })
       : { folder: given ?? process.cwd(), mount: values.mount ?? '/workspace', volumes: [], name: values.name ?? null, allowedHosts: null }
     if (interactive) {
       choices = await askWorkspaceChoices(prompt)
@@ -139,6 +140,10 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
   // Each mount named is checked as buckle workspace mount add checks one, on the node the file will set up, so a refused
   // one stops init before anything is written (the workspace-model follow-up, M3).
   const volumes = [...values.volume ?? [], ...answers.volumes]
+  // A folder a workspace serves takes no mount here, so it is looked up before the mounts are checked against a folder
+  // that is not the workspace's own: init refuses the request instead of dropping it (the mounts follow-up, first fix round).
+  const holder = volumes.length > 0 ? servedFolder({ out, folder, platform }) : null
+  if (holder !== null) return fail(`The folder is already served by workspace ${holder.name}; add mounts with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${workspaceArgument(holder.name)}. Nothing was written.`)
   let mounts: OwnerMount[] = []
   if (volumes.length > 0) {
     try { mounts = checkedVolumes(volumes, { cwd: process.cwd(), dir: folder, folder: mount, guards: mountGuardsOf(nodeConfig(out, written ?? readFileSync(out, 'utf8'), platform), platform) }) } catch (error) {
@@ -168,6 +173,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     const nodePort = /^BUCKLE_PORT=(\d+)$/m.exec(contents)?.[1] ?? port
     const start = await startOf(node.stateDirectory, platform, options.home)
     const inForce = resolveSettings(workspaces.settings(served.id), node.workspaceDefaults)
+    // Left for a node that moved onto workspaces just now: its folder was served by the move, which the lookup before could not see.
     const unadded = mounts.length > 0 ? ` The mounts named were not added either; add them with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${workspaceArgument(served.name)}.` : ''
     process.stdout.write(`${adminToken ? `Wrote ${out}` : `The node is already set up in ${out}; its settings are unchanged.`}
 ${served.token ? '' : `\n${folder} is already in workspace ${served.name}: nothing was added. Mint a token for it with buckle workspace token create --workspace ${workspaceArgument(served.name)}.${unadded}\n`}
@@ -314,6 +320,23 @@ function carriedInto(input: { kept: Array<{ key: string; value: string }>; headi
 }
 
 /**
+ * The workspace already serving `folder`, read from the registry beside the node file `out` before anything is written
+ * (the mounts follow-up, first fix round). None where there is no file yet, the file will not load (--force moves the
+ * node from it before it writes), the node is not on workspaces yet, or its registry will not read; opening the node
+ * reports that last one later.
+ */
+function servedFolder(input: { out: string; folder: string; platform: NodeJS.Platform }): { id: string; name: string } | null {
+  if (!existsSync(input.out)) return null
+  const dir = typedPath(input.folder, input.platform)
+  let stateDirectory: string
+  try { stateDirectory = nodeConfig(input.out, readFileSync(input.out, 'utf8'), input.platform).stateDirectory } catch { return null }
+  try { return servingWorkspace({ stateDirectory, dir, platform: input.platform }) } catch (error) {
+    if (error instanceof WorkspaceError) return null
+    throw error
+  }
+}
+
+/**
  * The folder as a workspace: a new one, named after the folder, with the choices as its settings, or the one already
  * holding it, which keeps its own. A name another workspace holds is asked about at a terminal (D85, Q15); with --yes,
  * or none, init is refused, naming the command that takes --name.
@@ -347,10 +370,11 @@ async function pair(input: { out: string; code: string; rings: string; url?: str
   return { exitCode: result.ok ? 0 : 1 }
 }
 
-async function askFolder(prompt: InitPrompt, defaults: { folder?: string; mount?: string; name?: string; writesNode: boolean }) {
+async function askFolder(prompt: InitPrompt, defaults: { folder?: string; mount?: string; name?: string; writesNode: boolean; served: (folder: string) => boolean }) {
   const folder = (await prompt.question(`Folder to serve [${defaults.folder ?? process.cwd()}]: `)).trim() || defaults.folder || process.cwd()
   const mount = (await prompt.question(`Where the agent sees it [${defaults.mount ?? '/workspace'}]: `)).trim() || defaults.mount || '/workspace'
-  const volumes = await askVolumes(prompt)
+  // A folder a workspace serves takes no mount here, so the question is not asked (the mounts follow-up, first fix round).
+  const volumes = defaults.served(folder) ? [] : await askVolumes(prompt)
   const name = defaults.writesNode ? (await prompt.question(`Name for this node [${defaults.name ?? defaultNodeName(resolve(folder))}]: `)).trim() || defaults.name || null : null
   return { folder, mount, volumes, name, allowedHosts: null as string | null }
 }

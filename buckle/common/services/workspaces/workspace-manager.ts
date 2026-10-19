@@ -20,7 +20,7 @@ import { unmetPackPrerequisite } from '../packs/index.js'
 import { cdpEndpointKey, profileFolderKey } from '../packs/browser/mode.js'
 import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
-import { migrateNode, type AskName } from './migration.js'
+import { migrateNode, movedOntoWorkspaces, type AskName } from './migration.js'
 import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
 import { assertNoHostExposure, canonicalDirectory, checkedMountSource, exposedRoots, mountGuardsOf, overlaps, refuseMountJoining, type MountGuards } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
@@ -739,6 +739,17 @@ function names(state: Registry): string {
 
 function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
   return { id: workspace.id, name: workspace.name, dir: workspace.dir, online: workspace.online, tokens: workspace.tokens.length, revision: workspace.revision, updatedAt: workspace.updatedAt }
+}
+
+/**
+ * The workspace serving `dir`, found as `target` finds it, read from the registry alone: the manager is not opened, so
+ * nothing is moved, recovered, or written. None where no workspace holds `dir`, or the node is not on workspaces yet.
+ * Throws WorkspaceRegistryError where the registry will not read.
+ */
+export function servingWorkspace(input: { stateDirectory: string; dir: string; platform?: NodeJS.Platform }): { id: string; name: string } | null {
+  if (!movedOntoWorkspaces(input.stateDirectory)) return null
+  const holding = holderOf(openRegistry({ stateDirectory: input.stateDirectory }).read(), input.dir, input.platform ?? process.platform)
+  return holding ? { id: holding.id, name: holding.name } : null
 }
 
 /**
