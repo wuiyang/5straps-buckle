@@ -3,10 +3,15 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFil
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { JsonValue } from '@5straps/protocol'
+import { emptyWorkspacePolicy, type FilesystemPermission, type JsonValue } from '@5straps/protocol'
 import { runProcess as hostRunProcess } from '../common/adapters/process-runner.js'
 import { findExecutable } from '../common/domain/executable.js'
+import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
+import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createPathView } from '../common/domain/path-view.js'
+import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 import { createGitPack } from '../common/services/packs/git/index.js'
 import type { ToolContext } from '../common/domain/tool.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
@@ -23,6 +28,11 @@ function gitPack(root: string, runProcess: ProcessRunner = vi.fn(), mount: strin
 }
 
 /** A git that answers every call with nothing, and the repository it is asked about as one with its own `.git`. */
+/** What a call was refused with, or null where it ran: a refusal at prepare time is thrown rather than returned. */
+async function refusalOf(run: () => Promise<unknown>): Promise<unknown> {
+  try { await run(); return null } catch (error) { return error }
+}
+
 function answering() {
   return vi.fn<ProcessRunner>(async request => ({
     exitCode: 0, signal: null, stderr: '', truncated: false, timedOut: false,
@@ -185,5 +195,117 @@ describe.skipIf(hostGit === null)('a git tool reads only a repository inside the
     expect(await call('git_diff', { repo: 'nested' })).toMatchObject({ diff: expect.stringContaining('+changed') })
     expect(await call('git_log', { repo: 'nested' })).toMatchObject({ commits: [{ subject: 'commit of nested.txt' }] })
     expect(await call('git_branch', { repo: 'nested' })).toMatchObject({ branches: [{ name: 'main', current: true }] })
+  })
+})
+
+// D77 (owner, 2026-10-11): git_diff and git_log judged the repository alone, so git_diff printed a named `.env` under a
+// read deny on it and with no sensitive-file ask. Each path they name is now a read of its own, as git_blame's file is.
+describe('git_diff and git_log declare a read of each path they name (D77)', () => {
+  function workspace() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-named-')))
+    for (const directory of ['.git', 'secrets', 'sub']) mkdirSync(join(root, directory))
+    writeFileSync(join(root, '.env'), 'NAME=placeholder\n')
+    return root
+  }
+  const prepare = (root: string, tool: string, args: Record<string, JsonValue>, mount: string | null = null) => {
+    const pack = createGitPack({ paths: createPathView({ root, mount, scratchRoots: [] }), runProcess: vi.fn(), stateDirectory: mkdtempSync(join(tmpdir(), 'git-pack-state-')), git: { path: 'git', argv0: 'git', args: [] } })
+    return pack.tools.find(candidate => candidate.capability.name === tool)!.prepare(args)
+  }
+  /** The verdict the node's own rules give the call, in the node's order, with one filesystem rule. */
+  async function verdict(root: string, tool: string, args: Record<string, JsonValue>, rule: { path: string; read: FilesystemPermission } | null) {
+    const paths = createPathView({ root, mount: null, scratchRoots: [] })
+    const effects = await resolveEffects({ effects: prepare(root, tool, args).effects, paths })
+    const policy = { ...emptyWorkspacePolicy(), filesystem: { rules: rule ? [rule] : [] } }
+    const engine = createPermissionEngine([createSensitivePathRule(), createFilesystemPolicyRule({ root, policy }), createReadScopeRule({ paths })])
+    return engine.evaluate({ tool, effects, grants: { subjectsFor: () => [] } })
+  }
+
+  it('declares the repository and each path git_diff names, joined to the repository', () => {
+    const root = workspace()
+    expect(prepare(root, 'git_diff', { repo: 'repo', paths: ['.env', 'sub/../a.txt'] }).effects).toEqual([
+      { kind: 'read_path', path: 'repo' }, { kind: 'read_path', path: 'repo/.env' }, { kind: 'read_path', path: 'repo/a.txt' },
+    ])
+    expect(prepare(root, 'git_log', { repo: '.', path: 'secrets/' }).effects).toEqual([{ kind: 'read_path', path: '.' }, { kind: 'read_path', path: 'secrets' }])
+    expect(prepare(root, 'git_diff', { repo: '/workspace', paths: ['/workspace/.env'] }, '/workspace').effects).toEqual([{ kind: 'read_path', path: '/workspace' }, { kind: 'read_path', path: '/workspace/.env' }])
+  })
+
+  it('refuses git_diff naming .env under a read deny on it', async () => {
+    expect(await verdict(workspace(), 'git_diff', { paths: ['.env'] }, { path: '.env', read: 'deny' })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy' } })
+  })
+
+  it('asks for git_diff naming .env under an ask rule, and under the sensitive-file check alone, with the file named', async () => {
+    const root = workspace()
+    expect(await verdict(root, 'git_diff', { paths: ['.env'] }, { path: '.env', read: 'ask' })).toMatchObject({ kind: 'ask', asks: expect.arrayContaining([expect.objectContaining({ rule: 'filesystem_policy', subject: `read:${join(root, '.env')}` })]) })
+    expect(await verdict(root, 'git_diff', { staged: true, paths: ['.env'] }, null)).toMatchObject({ kind: 'ask', asks: [expect.objectContaining({ rule: 'sensitive_path', subject: join(root, '.env') })] })
+  })
+
+  it('refuses git_log naming secrets/ under a read deny on that folder, and asks under an ask rule', async () => {
+    const root = workspace()
+    expect(await verdict(root, 'git_log', { path: 'secrets/' }, { path: 'secrets', read: 'deny' })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy' } })
+    expect(await verdict(root, 'git_log', { path: 'secrets/' }, { path: 'secrets', read: 'ask' })).toMatchObject({ kind: 'ask', asks: [expect.objectContaining({ subject: `read:${join(root, 'secrets')}` })] })
+  })
+
+  it.each<[string, Record<string, JsonValue>]>([
+    ['git_diff', { repo: 'sub', paths: ['../.env'] }],
+    ['git_diff', { paths: ['a.txt', '../outside.txt'] }],
+    ['git_diff', { paths: ['/etc/hosts'] }],
+    ['git_log', { repo: 'sub', path: '..' }],
+    ['git_blame', { repo: 'sub', path: '../.env' }],
+  ])('refuses %s naming a path outside the repository (%j), with a constant reason and before any spawn', async (tool, args) => {
+    const root = workspace()
+    const { call, runProcess } = gitPack(root)
+    const refusal = await refusalOf(() => call(tool, args))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('a path outside the repository') })
+    expect(String(refusal)).not.toContain(root)
+    expect(runProcess).not.toHaveBeenCalled()
+  })
+
+  it('refuses a named link that lands outside the root and every mount, before any spawn', async () => {
+    const root = workspace()
+    const outside = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-elsewhere-')))
+    symlinkSync(join(outside, 'kept.txt'), join(root, 'kept.txt'))
+    const { call, runProcess } = gitPack(root)
+    const calls: Array<[string, Record<string, JsonValue>]> = [['git_diff', { paths: ['kept.txt'] }], ['git_log', { path: 'kept.txt' }]]
+    for (const [tool, args] of calls) {
+      const refusal = await refusalOf(() => call(tool, args))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('a path outside the repository') })
+      expect(String(refusal)).not.toContain(outside)
+    }
+    expect(runProcess).not.toHaveBeenCalled()
+  })
+
+  it('hands git each judged path relative to the repository, read literally rather than as a pattern', async () => {
+    const root = workspace()
+    const runProcess = answering()
+    const { call } = gitPack(root, runProcess)
+    await call('git_diff', { paths: ['./sub/../.env', '.en*'] })
+    const diff = runProcess.mock.calls.at(-1)![0]
+    expect(diff.args.slice(-3)).toEqual(['--', '.env', '.en*'])
+    expect(diff.environment).toMatchObject({ GIT_LITERAL_PATHSPECS: '1' })
+  })
+
+  it('declares the repository alone for git_diff with no paths, and runs as it did', async () => {
+    const root = workspace()
+    expect(prepare(root, 'git_diff', {}).effects).toEqual([{ kind: 'read_path', path: '.' }])
+    const runProcess = answering()
+    const { call } = gitPack(root, runProcess)
+    await call('git_diff', {})
+    expect(runProcess.mock.calls.at(-1)![0].args.slice(1)).toEqual(['--unified=3', '--no-color', '--no-ext-diff', '--no-textconv'])
+  })
+})
+
+describe.skipIf(hostGit === null)('git_diff reads the paths it names literally, against the installed git', () => {
+  it('prints no .env change for a pattern that would match it, and the change for the file named', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-literal-')))
+    writeFileSync(join(root, '.env'), 'NAME=first\n')
+    git(root, 'init', '-q')
+    git(root, 'add', '.env')
+    git(root, 'commit', '-qm', 'seed')
+    writeFileSync(join(root, '.env'), 'NAME=second\n')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    expect(await call('git_diff', { paths: ['.en*'] })).toEqual({ diff: '' })
+    expect(await call('git_diff', { paths: ['.env'] })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
   })
 })

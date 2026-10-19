@@ -26,6 +26,13 @@ const FIELD_SEPARATOR = '\x1f'
 const PATCH_SAFETY_ARGS = ['--no-ext-diff', '--no-textconv']
 /** What git is asked before it runs: the work tree, the git directory, and the common one of the repository it finds. */
 const REPOSITORY_QUERY = ['rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--git-common-dir']
+/**
+ * Every path git is handed is a file or folder by that name, never a pattern or a `:(magic)` pathspec: the path judged
+ * is the path read (D77). `.en*` would otherwise print `.env`'s diff while only a file named `.en*` was judged.
+ */
+const LITERAL_PATHSPECS = { GIT_LITERAL_PATHSPECS: '1' }
+/** Constant, so a refusal shows no path the agent did not write (D9, D17). */
+const OUTSIDE_REPOSITORY = 'Refused: a path outside the repository, which the git tools never read; nothing was run'
 
 const repoInput = z.object({ repo: z.string().default('.') })
 const statusInput = repoInput.extend({ untracked: z.boolean().default(true) })
@@ -68,13 +75,14 @@ export function createGitPack(options: GitPackOptions): Pack {
       args: [...options.git.args, ...input.args],
       cwd: input.cwd,
       timeoutMs: input.timeoutMs,
-      environment: environment({ ...ISOLATION_ENVIRONMENT, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config), ...input.extra }),
+      environment: environment({ ...ISOLATION_ENVIRONMENT, ...LITERAL_PATHSPECS, ...ceilingEnvironment(input.boundary), ...gitConfigEnvironment(input.config), ...input.extra }),
       signal: input.signal,
     })
   }
 
   /**
-   * `args` may be built from the judged real repository git runs in, for a path git is handed relative to it.
+   * `args` may be built from the judged real repository git runs in, for a path git is handed relative to it; they are
+   * built before anything is spawned, so a path refused there runs nothing.
    * `refreshesIndex`: the command may write the repository's index (git diff refreshes it whatever GIT_OPTIONAL_LOCKS
    * says), so in a mount the owner shares read-only it runs on a private copy of the index instead.
    */
@@ -84,6 +92,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     refreshesIndex?: boolean
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
+    const args = typeof input.args === 'function' ? input.args(cwd) : input.args
     const boundary = repositoryBoundary(options.paths, cwd, platform)
     const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
     const spawnHere = (args: string[], config: GitConfig[], extra?: Record<string, string>) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal, ...(extra ? { extra } : {}) })
@@ -94,7 +103,6 @@ export function createGitPack(options: GitPackOptions): Pack {
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
     const config = [...isolation, ...filterProgramOverrides(keys)]
-    const args = typeof input.args === 'function' ? input.args(cwd) : input.args
     const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
     const index = readOnly ? privateIndex({ found: found.stdout.split('\n'), stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
     try {
@@ -105,6 +113,18 @@ export function createGitPack(options: GitPackOptions): Pack {
       return result.stdout
     } finally { index?.remove() }
   }
+
+  /** A path a tool names, as its effect declares it: joined to the repository, and refused when it leaves it. */
+  const named = (repo: string, path: string) => repositoryPath(options.paths, repo, path, platform)
+  /**
+   * `--` and each named path as git is handed it: the judged real path relative to the judged real repository, never
+   * the agent's string, refused before any spawn where it lands outside the repository (a link out of it).
+   */
+  const pathspec = (repository: string, paths: string[], context: Pick<ToolContext, 'authorizeReadTarget'>): string[] => paths.length === 0 ? [] : ['--', ...paths.map(path => {
+    const real = judgedPath({ named: path, kind: 'read', paths: options.paths, context })
+    if (!isInside(repository, real, platform)) throw new ToolInputError(OUTSIDE_REPOSITORY, { code: 'PERMISSION_DENIED' })
+    return relative(repository, real) || '.'
+  })]
 
   const tools = [
     defineTool(PACK_ID, {
@@ -126,12 +146,13 @@ export function createGitPack(options: GitPackOptions): Pack {
       risk: 'read',
       tags: ['git'],
       input: diffInput,
-      effects: input => [{ kind: 'read_path', path: input.repo }],
+      // Each path named is read too (D77); a diff of the whole tree names none, and shows every tracked file (known limit).
+      effects: input => [{ kind: 'read_path', path: input.repo }, ...input.paths.map(path => ({ kind: 'read_path' as const, path: named(input.repo, path) }))],
       run: async (input, context): Promise<JsonValue> => {
         const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS]
         if (input.staged) args.push('--staged')
-        if (input.paths.length > 0) args.push('--', ...input.paths)
-        return { diff: await run({ repo: input.repo, args, refreshesIndex: true, ...context }) }
+        const paths = input.paths.map(path => named(input.repo, path))
+        return { diff: await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, paths, context)], refreshesIndex: true, ...context }) }
       },
     }),
     defineTool(PACK_ID, {
@@ -140,12 +161,12 @@ export function createGitPack(options: GitPackOptions): Pack {
       risk: 'read',
       tags: ['git'],
       input: logInput,
-      effects: input => [{ kind: 'read_path', path: input.repo }],
+      effects: input => [{ kind: 'read_path', path: input.repo }, ...(input.path === undefined ? [] : [{ kind: 'read_path' as const, path: named(input.repo, input.path) }])],
       run: async (input, context): Promise<JsonValue> => {
         const format = ['%H', '%an', '%aI', '%s'].join('%x1f')
         const args = ['log', `--max-count=${input.limit}`, `--format=${format}`]
-        if (input.path) args.push('--', input.path)
-        return { commits: parseLog(await run({ repo: input.repo, args, ...context })) }
+        const paths = input.path === undefined ? [] : [named(input.repo, input.path)]
+        return { commits: parseLog(await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, paths, context)], ...context })) }
       },
     }),
     defineTool(PACK_ID, {
@@ -155,13 +176,13 @@ export function createGitPack(options: GitPackOptions): Pack {
       tags: ['git'],
       input: blameInput,
       // The repository is read too, and the file is where git finds it: under the repository (review L5 of the second re-review).
-      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: blamedFile(input) }],
+      effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: named(input.repo, input.path) }],
       run: async (input, context): Promise<JsonValue> => {
         // git is handed the judged real file, named from the judged real repository it runs in, never the agent's string.
-        const file = judgedPath({ named: blamedFile(input), kind: 'read', paths: options.paths, context })
         const args = ['blame', '--line-porcelain', '--no-textconv']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)
-        return { lines: parseBlame(await run({ repo: input.repo, args: repository => [...args, '--', relative(repository, file)], ...context })) }
+        const file = named(input.repo, input.path)
+        return { lines: parseBlame(await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, [file], context)], ...context })) }
       },
     }),
     defineTool(PACK_ID, {
@@ -228,9 +249,19 @@ function privateIndex(input: { found: string[]; stateDirectory: string; shown: s
   }
 }
 
-/** The file git_blame reads, as its effect names it: where git finds it, under the repository. */
-function blamedFile(input: { repo: string; path: string }): string {
-  return isAbsolute(input.path) ? input.path : join(input.repo, withForwardSlashes(input.path))
+/**
+ * A path a git tool names, as its effect declares it: where git finds it, under the repository, an absolute one as it
+ * is, with no trailing slash. Refused, with a constant reason, where the view reads it outside the repository the
+ * agent named (a `..` or an absolute path elsewhere); a link out of it is refused where it is judged (pathspec).
+ */
+function repositoryPath(paths: PathView, repo: string, path: string, platform: NodeJS.Platform): string {
+  // `secrets/` is the folder `secrets`, as the rules name it.
+  const named = (isAbsolute(path) ? path : join(repo, withForwardSlashes(path))).replace(/(?<=.)\/+$/, '')
+  const repository = paths.resolve(repo)
+  let place: string
+  try { place = paths.resolve(named) } catch { throw new ToolInputError(OUTSIDE_REPOSITORY, { code: 'PERMISSION_DENIED' }) }
+  if (!isInside(repository, place, platform)) throw new ToolInputError(OUTSIDE_REPOSITORY, { code: 'PERMISSION_DENIED' })
+  return named
 }
 
 /**
