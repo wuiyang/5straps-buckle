@@ -78,8 +78,9 @@ describe('the variables that change what code runs', () => {
 
   it('are found by name or prefix, as Windows reads a name, and named without their value', () => {
     const named = (env: Record<string, string>) => codeLoadingVariable(callVariables({ env }))
-    // PYTHONPYCACHEPREFIX moves Python's cache tree, so a pyc there runs unseen; the PYTHON prefix covers it (fix brief 5, G12b).
-    for (const name of ['NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PYTHONPYCACHEPREFIX', 'PERL5OPT', 'RUBYOPT', 'BASH_ENV', 'Path', 'GEM_HOME', 'BUN_INSTALL']) expect(named({ FOO: '1', [name]: 'x' })).toBe(name)
+    // PYTHONPYCACHEPREFIX moves Python's cache tree, so a pyc there runs unseen, and PYTHON_FROZEN_MODULES=off makes -m
+    // import runpy from the working directory; the PYTHON prefix covers both (fix brief 5, G12b; fix brief 6, B4).
+    for (const name of ['NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONPATH', 'PYTHONPYCACHEPREFIX', 'PYTHON_FROZEN_MODULES', 'PERL5OPT', 'RUBYOPT', 'BASH_ENV', 'Path', 'GEM_HOME', 'BUN_INSTALL']) expect(named({ FOO: '1', [name]: 'x' })).toBe(name)
     expect(named({ FOO: '1', CI: 'true', NODEJS_HOME: 'x' })).toBeUndefined()
     // The child reads a name up to its first `=` (fix brief 2, H4).
     for (const name of ['PATH=/w/bin:/usr/bin', 'ifs=x', 'BASH_ENV=./x']) expect(named({ [name]: 'x' })).toBe(name)

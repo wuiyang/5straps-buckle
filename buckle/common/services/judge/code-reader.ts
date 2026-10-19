@@ -295,8 +295,13 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     if (entry !== 'none' && 'refused' in entry) return entry.refused
     // A folder's __main__.py is imported, so its compiled form may run; the reader refuses that for a script too (fix
     // brief 4, G12). The folder named runs its __main__ beside its own path, before any link is followed, so a pyc there
-    // runs even when __main__.py is a link (fix brief 5, G12b).
-    if (entry !== 'none' && read.operand.runtime === 'python' && (compiledBeside(into.names, dirname(entry.real), pythonStem(entry.real)) || compiledBeside(into.names, join(cwd, read.operand.name), '__main__'))) return CODE_REFUSALS.compiledPython
+    // runs even when __main__.py is a link (fix brief 5, G12b); that path is the one the view maps the name to, relative
+    // or absolute (fix brief 6, B4).
+    if (entry !== 'none' && read.operand.runtime === 'python') {
+      const folder = view.named(read.operand.name, cwd)
+      if (folder === 'outside') return CODE_REFUSALS.unreadable
+      if (compiledBeside(into.names, dirname(entry.real), pythonStem(entry.real)) || compiledBeside(into.names, folder, '__main__')) return CODE_REFUSALS.compiledPython
+    }
     if (entry !== 'none') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
     else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return CODE_REFUSALS.notFound
   }
@@ -472,10 +477,11 @@ function stdinMarker(program: string, word: string): boolean {
 const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
 /**
  * The `-X` implementation options the reader models. `pycache_prefix` moves the cache tree, so Python reads a pyc from a
- * folder the reader never looks at; it is left out, and any other `-X` value not here refuses as an unknown option, so
- * the reader never rates a command whose `-X` it does not know (fix brief 5, G12b).
+ * folder the reader never looks at (fix brief 5, G12b), and `frozen_modules=off` makes `-m` import runpy from the working
+ * directory (fix brief 6, B4); both are left out, and any other `-X` value not here refuses as an unknown option, so the
+ * reader never rates a command whose `-X` it does not know.
  */
-const KNOWN_PYTHON_X = new Set(['dev', 'utf8', 'faulthandler', 'importtime', 'warn_default_encoding', 'frozen_modules', 'int_max_str_digits', 'showrefcount', 'tracemalloc', 'no_debug_ranges', 'perf'])
+const KNOWN_PYTHON_X = new Set(['dev', 'utf8', 'faulthandler', 'importtime', 'warn_default_encoding', 'int_max_str_digits', 'showrefcount', 'tracemalloc', 'no_debug_ranges', 'perf'])
 
 /**
  * Whether an option, by its key, makes the interpreter read its standard input as code once its script or inline code

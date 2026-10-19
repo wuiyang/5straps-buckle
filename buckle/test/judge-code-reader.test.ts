@@ -743,11 +743,35 @@ describe('the code a Python call runs', () => {
     expect(app.read(['python3', 'app'])).toEqual(refusal)
   })
 
+  it('checks a folder script\'s __main__ beside the folder as the view names it, for an absolute operand too (fix brief 6, B4)', () => {
+    const compiled = Buffer.from([0x00, 0x0d, 0x0d, 0x0a])
+    const refusal = { kind: 'refused', reason: CODE_REFUSALS.compiledPython, truncated: false }
+    // A link beside its own target, and one into another folder; each with the compiled __main__ planted beside the link.
+    const near = { 'app/real_main.py': 'print(1)\n', 'app/__pycache__/__main__.cpython-312.pyc': compiled }
+    const far = { 'real/entry.py': 'print(1)\n', 'app/__pycache__/__main__.cpython-312.pyc': compiled }
+    for (const [tree, target] of [[near, 'real_main.py'], [far, '../real/entry.py']] as const) {
+      const mounted = workspace(tree)
+      symlinkSync(target, join(mounted.root, 'app', '__main__.py'))
+      expect(mounted.read(['python3', '/workspace/app']), target).toEqual(refusal)
+      expect(mounted.read(['python3', 'app']), target).toEqual(refusal)
+      const bare = workspace(tree, { mount: null })
+      symlinkSync(target, join(bare.root, 'app', '__main__.py'))
+      expect(bare.read(['python3', join(bare.root, 'app')]), target).toEqual(refusal)
+    }
+    // With no compiled __main__ beside the link, the absolute operand reads the linked source.
+    const clean = workspace({ 'real/entry.py': 'print(1)\n', 'app/.keep': '' })
+    symlinkSync('../real/entry.py', join(clean.root, 'app', '__main__.py'))
+    expect(paths(clean.read(['python3', '/workspace/app']))).toEqual(['/workspace/real/entry.py'])
+  })
+
   it('refuses -X pycache_prefix and any unknown -X value, and reads a known one (fix brief 5, G12b)', () => {
     const { read } = workspace({ 'job.py': 'print(1)\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
     expect(read(['python3', '-X', 'pycache_prefix=/tmp/pc', 'job.py'])).toEqual(unknown)
     expect(read(['python3', '-X', 'nonesuch', 'job.py'])).toEqual(unknown)
+    // frozen_modules=off makes -m import runpy from the working directory, so a planted runpy.py would run (fix brief 6, B4).
+    expect(read(['python3', '-X', 'frozen_modules=off', '-m', 'json.tool'])).toEqual(unknown)
+    expect(read(['python3', '-X', 'frozen_modules', 'job.py'])).toEqual(unknown)
     expect(paths(read(['python3', '-X', 'dev', 'job.py']))).toEqual(['/workspace/job.py'])
     expect(paths(read(['python3', '-X', 'int_max_str_digits=640', 'job.py']))).toEqual(['/workspace/job.py'])
   })
