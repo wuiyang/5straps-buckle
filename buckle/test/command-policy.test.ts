@@ -1833,6 +1833,25 @@ describe('a statement a redirection opens (fix brief 5, N2)', () => {
   })
 })
 
+describe('a leading &> or &>> redirection (fix brief 6, A1)', () => {
+  // bash reads `&>f` as one redirection and runs the command after it; dash and POSIX sh read `a &>f b` as the
+  // background job `a &` and then `>f b`. Cutting the statement at that `&` reads python3 as the command either way.
+  const texts: Array<[string, string]> = [
+    ['bash', '&>/dev/null python3 x.py'],
+    ['bash', '&>>log python3 x.py'],
+    ['bash', 'true &&>/dev/null python3 x.py'],
+    ['sh', 'true &>/dev/null python3 x.py'],
+  ]
+
+  it.each(texts)('%s -c %j asks at the interpreter floor and meets a python3 deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

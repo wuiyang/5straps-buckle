@@ -1319,9 +1319,12 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         // A subshell's redirections follow its `)`, in the next command.
         if (opened !== undefined) level.feeding.closed = level.feeding.compounds.pop() ?? null
       }
-    } else if ((character === '&' && (previous === '>' || previous === '<' || text[index + 1] === '>')) || (character === '|' && previous === '>')) {
-      // The `&` of `>&`, `<&`, or `N>&M`, the `&` of `&>` or `&>>`, and the `|` of `>|` belong to a redirection operator,
-      // not a list operator, so they stay in the statement; a shell runs the command after the redirection (fix brief 5, N2).
+    } else if ((character === '&' && (previous === '>' || previous === '<')) || (character === '|' && previous === '>')) {
+      // The `&` of `>&`, `<&`, or `N>&M` and the `|` of `>|` belong to a redirection operator, not a list operator, in
+      // every POSIX shell, so they stay in the statement; a shell runs the command after the redirection (fix brief 5,
+      // N2). The `&` of `&>` and `&>>` still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
+      // one redirection, read as `>f b`, leaves the same command, so the cut reads at least what either runs (fix brief
+      // 6, A1).
       level.wordStart = true
     } else if (BREAK_CHARACTERS.has(character)) {
       level.wordStart = true
