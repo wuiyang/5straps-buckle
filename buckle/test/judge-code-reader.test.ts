@@ -250,6 +250,31 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(read(['node', '--import=./target.mjs', 'build.js']))).toEqual(['/workspace/target.mjs', '/workspace/build.js'])
   })
 
+  it('refuses an ES module specifier an URL parse would change, while require stays exact (fix brief 5, F1b)', () => {
+    const unmodelled = { kind: 'refused', reason: CODE_REFUSALS.unmodelledImport, truncated: false }
+    // node 24 and tsx strip a leading or trailing space, and remove a tab or a C0 control, so an import holding one runs
+    // another file than the reader would show; it refuses under an ES module resolution. Each specifier holds a real
+    // space, tab, or control character inside the statement, not an escape.
+    for (const specifier of ['./target.mjs ', ' ./target.mjs', './tar\tget.mjs', './target.mjs\u0001', './target.mjs\u007f']) {
+      const importer = { 'a.mjs': `import '${specifier}'\n`, 'b.mjs': `export * from '${specifier}'\n`, 'c.mjs': `await import('${specifier}')\n` }
+      const { read } = workspace({ 'target.mjs': 'export {}\n', ...importer })
+      expect(read(['node', 'a.mjs']), JSON.stringify(specifier)).toEqual(unmodelled)
+      expect(read(['node', 'b.mjs']), JSON.stringify(specifier)).toEqual(unmodelled)
+      expect(read(['tsx', 'c.mjs']), JSON.stringify(specifier)).toEqual(unmodelled)
+    }
+    // --import resolves as an ES module too, so a trailing space refuses.
+    expect(workspace({ 'build.js': 'console.log(1)\n', 'target.mjs': 'export {}\n' }).read(['node', '--import', './target.mjs ', 'build.js'])).toEqual(unmodelled)
+    // CommonJS require takes the name as written: a file literally named with a trailing space is read.
+    const cjs = workspace({ 'e.cjs': "require('./target.mjs ')\n", 'target.mjs ': 'module.exports = 1\n' })
+    expect(paths(cjs.read(['node', 'e.cjs']))).toEqual(['/workspace/e.cjs', '/workspace/target.mjs '])
+    // A runner's preloads resolve with the package's runtime, so node's -r is a require: it reads lib/index.js, not lib.mjs (fix brief 5, F1b, pin).
+    const runner = workspace({ 'lib.mjs': 'export {}\n', 'lib/index.js': 'module.exports = 1\n', 'build.js': 'console.log(1)\n' })
+    expect(paths(runner.read(['npx', 'node', '-r', './lib', 'build.js']))).toEqual(['/workspace/lib/index.js', '/workspace/build.js'])
+    // An absolute specifier holding ?, #, or % refuses too (fix brief 5, F1b, pin).
+    const abs = workspace({ 'a.mjs': "import '/workspace/target.mjs?v=1'\n", 'target.mjs?v=1': 'export {}\n', 'target.mjs': 'evil()\n' })
+    expect(abs.read(['node', 'a.mjs'])).toEqual(unmodelled)
+  })
+
   it('reads each preload bunfig.toml lists for bun, and refuses a config the reader cannot parse (fix brief 3, R15)', () => {
     const files = (config: string, form: string[] = ['bun', 'run.ts']) => {
       const { read } = workspace({ 'bunfig.toml': config, 'run.ts': 'export {}\n', 'pre.ts': 'export {}\n', 'second.ts': 'export {}\n', 'conf/bunfig.toml': 'preload = "./local.ts"\n', 'conf/local.ts': 'export {}\n', 'local.ts': 'export {}\n' })

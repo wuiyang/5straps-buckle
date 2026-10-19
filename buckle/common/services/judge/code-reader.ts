@@ -466,6 +466,23 @@ function unmodelledSpecifier(specifier: string): boolean {
   return (specifier.startsWith('.') || specifier.startsWith('/')) && /[?#%]/.test(specifier)
 }
 
+/** A C0 control (U+0000 to U+001F, a tab among them) or U+007F anywhere in a specifier. */
+const ESM_CONTROL = /[\u0000-\u001f\u007f]/
+/** The leading or trailing C0 controls, U+007F, and spaces a WHATWG URL parse strips from a specifier. */
+const ESM_EDGE = /^[\s\u0000-\u001f\u007f]+|[\s\u0000-\u001f\u007f]+$/g
+/**
+ * Whether an ES module specifier names a different file once a loader parses it as a WHATWG URL (fix brief 5, F1b):
+ * node 24 and tsx remove a tab anywhere and strip a leading or trailing C0 control or space, so a relative or absolute
+ * specifier holding a tab, any C0 control, U+007F, or a leading or trailing space would run a file the reader cannot
+ * show. The specifier is relative or absolute once those edge characters are stripped; it refuses where it held any of
+ * them. CommonJS `require` takes the name as written, so this is checked for an ES module resolution alone.
+ */
+function esmUnmodelledSpecifier(specifier: string): boolean {
+  const core = specifier.replace(ESM_EDGE, '')
+  if (!core.startsWith('.') && !core.startsWith('/')) return false
+  return specifier !== core || ESM_CONTROL.test(specifier)
+}
+
 /**
  * A runtime's subcommands (fix brief 4, G8): after one of `script` the next operand is the script (`deno run main.ts`,
  * `bun run build.ts`, `tsx watch app.ts`); one of `inert` runs no workspace code (`deno fmt`, `bun outdated`); any other
@@ -821,7 +838,7 @@ function firstLocated(view: CodeView, names: readonly string[], base: string): L
  */
 function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view: CodeView; packages: Packages }): { real: string } | null | string {
   const { specifier } = preload
-  if (unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
+  if (unmodelledSpecifier(specifier) || (preload.esm && esmUnmodelledSpecifier(specifier))) return CODE_REFUSALS.unmodelledImport
   if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
     named(place.packages, packageName(specifier), place.cwd)
     return null
@@ -1227,13 +1244,13 @@ function jsImports(code: string, place: Place): Found | string {
   const found: Found = []
   const base = place.file === null ? place.cwd : dirname(place.file)
   const node = place.runtime === 'node'
-  const statements: Array<{ pattern: RegExp; resolve: (specifier: string) => Entry }> = [
-    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
-    { pattern: JS_REQUIRE_SPECIFIER, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view, 'require') : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
+  const statements: Array<{ pattern: RegExp; esm: boolean; resolve: (specifier: string) => Entry }> = [
+    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, esm: true, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
+    { pattern: JS_REQUIRE_SPECIFIER, esm: false, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view, 'require') : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
   ]
-  for (const { pattern, resolve } of statements) {
+  for (const { pattern, esm, resolve } of statements) {
     for (const [, specifier = ''] of code.matchAll(pattern)) {
-      if (unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
+      if (unmodelledSpecifier(specifier) || (esm && esmUnmodelledSpecifier(specifier))) return CODE_REFUSALS.unmodelledImport
       if (literalBackslash(specifier)) return CODE_REFUSALS.unreadable
       if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
         named(place.packages, packageName(specifier), base)
