@@ -43,8 +43,9 @@ Buckle refuses, and writes nothing, where:
 Taking the folder's mount away, or moving it onto a mount, is refused while mounts need it.
 
 `buckle init` and `buckle workspace init` take the same form as `--volume`, once per mount, and
-`buckle init` asks for more at a terminal. Each is checked as `mount add` checks one; a refused
-entry stops the command before anything is written. `buckle policy show` lists the table too.
+`buckle init` asks for more at a terminal. Each is checked as `mount add` checks one: a typed answer
+naming no mount is asked again, and any other refused entry stops the command before anything is
+written. `buckle policy show` lists the table too.
 
 ## The node's mounts
 
