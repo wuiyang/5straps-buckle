@@ -1,5 +1,5 @@
 import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens, type ShellToken } from '../../domain/argv.js'
-import { allForms, type CommandForms, READ_BUDGET } from '../../domain/command-forms.js'
+import { allForms, type CommandForms, READ_BUDGET, REDIRECTION, redirectionReadings, takesNextWord } from '../../domain/command-forms.js'
 
 /** Why a call whose working directory changes before its code runs is not rated (fix brief 2, H2). */
 export const CHANGES_DIRECTORY = 'the call changes its working directory before the code runs'
@@ -121,8 +121,6 @@ const DECLARING = new Set(['export', 'declare', 'typeset', 'local', 'readonly'])
 const C_SHELLS = new Set(['csh', 'tcsh'])
 /** The busybox and toybox applets that are a shell, whose `-c` text follows the applet's name. */
 const SHELL_APPLETS = new Set(['sh', 'ash', 'hush', 'bash', 'toysh'])
-const REDIRECTION = /^\d*[<>]/
-const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
 
 /** A variable a call's words or shell text set: its name, and its value as written, or null where none is given or its spelling is lost. */
 export interface AssignedVariable { name: string; value: string | null }
@@ -154,7 +152,10 @@ export function assignedVariables(effect: { command: string; args: readonly stri
     if (text === null) return
     const listed = shellStatementList(text, { characters: READ_BUDGET.characters })
     unread ||= listed.overBudget
-    for (const statement of listed.statements) statementAssignments(shellTokens(statement), C_SHELLS.has(program), variables)
+    for (const statement of listed.statements) {
+      const tokens = shellTokens(statement)
+      for (const clobber of redirectionReadings(tokens)) statementAssignments(tokens, C_SHELLS.has(program), clobber, variables)
+    }
   })
   return { variables, unread }
 }
@@ -191,13 +192,16 @@ function assignment(word: string, into: AssignedVariable[]): void {
   if (match) into.push({ name: match[1]!, value: word.slice(word.indexOf('=') + 1) })
 }
 
-/** One statement of shell text: its leading assignments, then what its command declares. */
-function statementAssignments(tokens: readonly ShellToken[], cShell: boolean, into: AssignedVariable[]): void {
+/**
+ * One statement of shell text, its redirections read as `clobber` says (redirectionReadings, the grammar the rules read
+ * shares): its leading assignments, then what its command declares.
+ */
+function statementAssignments(tokens: readonly ShellToken[], cShell: boolean, clobber: boolean, into: AssignedVariable[]): void {
   let index = 0
   for (; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (REDIRECTION.test(raw)) {
-      if (BARE_REDIRECTION.test(raw)) index++
+      if (takesNextWord(raw, clobber)) index++
       continue
     }
     const match = ASSIGNMENT.exec(raw)

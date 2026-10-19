@@ -1,4 +1,4 @@
-import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -158,9 +158,38 @@ function wrapperOf(command: string): Wrapper | undefined {
   return SHELL_KEYWORDS.has(command) ? KEYWORD : undefined
 }
 
-/** A redirection word: optional descriptor digits, then `<` or `>`; a bare operator's target is the next word (`<<- EOF`). */
-const REDIRECTION = /^\d*[<>]/
-const BARE_REDIRECTION = /^\d*(?:<<-|<<?<?|>>?|>\||<>)$/
+/**
+ * A redirection word, shared with the judge gate's reading (call-forms.ts): optional descriptor digits or a bash named
+ * descriptor (`{fd}`), then `<`, `>`, or `&>` (fix brief 6, A4).
+ */
+export const REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:[<>]|&>)/
+/**
+ * A word that is only a redirection operator, whose target is the next word (`<<- EOF`, `>& out`, `{fd}> out`): bash's
+ * `<`, `<<`, `<<-`, `<<<`, `<>`, `<&`, `>`, `>>`, `>&`, `>|`, `&>`, and `&>>`, and zsh's forms of the output ones ending in
+ * `|` or `!` (`>!`, `>>|`, `>&|`, `>>&`, `&>|`), with optional descriptor digits or a named descriptor before it.
+ */
+export const BARE_REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:<<-|<<<|<<|<>|<&|<|(?:>>?&?|&>>?)[|!]?)$/
+/**
+ * A bare operator ending in `!` (`>!`, `>>!`, `>&!`): zsh's clobber forms, whose target is the next word, while bash, dash,
+ * and ksh read `>` (or `>>`, `>&`) onto a file named `!` and the next word as a word of the command (a probe under bash
+ * 5.2: `>! echo x` ran echo). A statement holding one is read both ways (redirectionReadings).
+ */
+const SHELL_DEPENDENT_REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:>>?&?|&>>?)!$/
+const ONE_READING: readonly boolean[] = [true]
+const BOTH_READINGS: readonly boolean[] = [true, false]
+
+/**
+ * How a statement's redirections are read: as zsh reads a bare operator ending in `!` (true) and, where one stands in the
+ * statement, also as bash, dash, and ksh read it (false), so a rule meets the command either shell runs (fix brief 6, A4).
+ */
+export function redirectionReadings(tokens: readonly { raw: string }[]): readonly boolean[] {
+  return tokens.some(token => SHELL_DEPENDENT_REDIRECTION.test(token.raw)) ? BOTH_READINGS : ONE_READING
+}
+
+/** Whether a redirection word takes the next word as its target, in the reading `clobber` names (redirectionReadings). */
+export function takesNextWord(raw: string, clobber: boolean): boolean {
+  return BARE_REDIRECTION.test(raw) && (clobber || !SHELL_DEPENDENT_REDIRECTION.test(raw))
+}
 /** A word's typed basename: a slash, then a name, as a tilde path ends (`~/bin/tool`, `~user/bin/x`). */
 const TYPED_BASENAME = /\/[^/]+$/
 
@@ -331,7 +360,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
     for (const piece of statementPieces(group.statement)) {
       const form = budget.spent ? null : statementForm(piece, budget)
       if (form === null) break
-      if (form.words.length > 0) readNested(forms, form.words, depth, budget, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false, fed: false }, true)
+      for (const words of readingsOf(form)) if (words.length > 0) readNested(forms, words, depth, budget, { statement: true, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: false, whole: false, fed: false }, true)
     }
   }
   forms.overBudget = budget.spent
@@ -802,18 +831,23 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     const form = statementForm(statement, budget)
     if (form === null) break
     const known = seen.get(statement)!
-    groups.push({ command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: sure && !known.net, whole: known.whole, fed: around.fed || known.fed })
+    const group: CommandGroup = { command: form.words, statement, heredoc: form.heredoc, expanded: form.expanded, found: false, sure: sure && !known.net, whole: known.whole, fed: around.fed || known.fed }
+    groups.push(group)
+    // The other reading of a redirection whose meaning depends on the shell; the statement's pieces are read once.
+    if (form.other !== null) groups.push({ ...group, command: form.other, statement: '' })
   }
   for (const [head, known] of heads) {
     if (!sure || known.net) continue
     const form = budget.spent ? null : statementForm(head, budget)
     if (form === null) break
-    const { chain, unread: limit } = wrapperChain(form.words, form.expanded, JUDGED)
-    if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
-    scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
-    for (const step of chain) judged.push(step)
-    // A head is the only reading of a command a process substitution cut whole (`BASH_ENV=<(...) bash`).
-    addStartup(startup, startupOf(form.words, chain, { ...CALL, statement: true, heredoc: form.heredoc, expanded: form.expanded, fed: around.fed || known.fed }))
+    for (const words of readingsOf(form)) {
+      const { chain, unread: limit } = wrapperChain(words, form.expanded, JUDGED)
+      if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
+      scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
+      for (const step of chain) judged.push(step)
+      // A head is the only reading of a command a process substitution cut whole (`BASH_ENV=<(...) bash`).
+      addStartup(startup, startupOf(words, chain, { ...CALL, statement: true, heredoc: form.heredoc, expanded: form.expanded, fed: around.fed || known.fed }))
+    }
   }
   for (const use of aliasUses(groups, budget)) groups.push(use)
   return { groups, unread, scriptData, heads: judged, startup }
@@ -906,22 +940,28 @@ const BODY_RUNNERS: ReadonlySet<string> = new Set([...SHELL_COMMANDS, 'source', 
  * (`sudo -s`); a command whose words a cut left out (`$(...) <<EOF`) may too.
  */
 function feedsShell(owner: string): boolean {
-  const words = shellWordsWithoutRedirections(owner)
-  if (words.length === 0) return true
-  const { chain, unread } = wrapperChain(words, NO_WORDS, null)
-  return unread === 'session' || chain.some(([command = '']) => BODY_RUNNERS.has(command))
+  return shellWordsWithoutRedirections(owner).some((words) => {
+    if (words.length === 0) return true
+    const { chain, unread } = wrapperChain(words, NO_WORDS, null)
+    return unread === 'session' || chain.some(([command = '']) => BODY_RUNNERS.has(command))
+  })
 }
 
-/** A command's words as statementForm reads them, its redirections dropped, with no budget: an owner is one command. */
-function shellWordsWithoutRedirections(text: string): string[] {
-  const words: string[] = []
+/**
+ * A command's words as statementForm reads them, its redirections dropped, with no budget: an owner is one command. One
+ * list per reading of its redirections (redirectionReadings).
+ */
+function shellWordsWithoutRedirections(text: string): string[][] {
   const tokens = shellTokens(text)
-  for (let index = 0; index < tokens.length; index++) {
-    const { raw, word } = tokens[index]!
-    if (!REDIRECTION.test(raw)) words.push(word)
-    else if (BARE_REDIRECTION.test(raw)) index++
-  }
-  return words
+  return redirectionReadings(tokens).map((clobber) => {
+    const words: string[] = []
+    for (let index = 0; index < tokens.length; index++) {
+      const { raw, word } = tokens[index]!
+      if (!REDIRECTION.test(raw)) words.push(word)
+      else if (takesNextWord(raw, clobber)) index++
+    }
+    return words
+  })
 }
 
 /**
@@ -1288,19 +1328,41 @@ function readShort(wrapper: Wrapper, words: readonly string[], index: number): R
 const STDIN_REDIRECTION = /^0?</
 const STDIN_HEREDOC = /^0?<<(?!<)/
 
+/** A statement's words (statementForm), and `other`, its words as the other shells read a bare operator ending in `!`, or null. */
+interface StatementForm { words: string[]; heredoc: boolean; expanded: Expanded; other: string[] | null }
+
+/** Each reading of a statement's words: one, or two where a redirection's meaning depends on the shell. */
+const readingsOf = (form: StatementForm): string[][] => (form.other === null ? [form.words] : [form.words, form.other])
+
 /**
  * A statement's words without its redirections, so `make > /dev/null` is judged as `make`. Only an unquoted
  * operator redirects: `git clean -e '>' -f` hands git a `>` and keeps its `-f` (slice 7 review F2). `heredoc` says
- * the last redirection of its input is a heredoc, which Buckle reads. Null when the budget's words ran out before the
- * statement was read whole.
+ * the last redirection of its input is a heredoc, which Buckle reads. Where a bare operator ends in `!`, `other` reads
+ * it as bash does, its target `!` and the next word one of the command's (redirectionReadings), `expanded` holding the
+ * words of both. Null when the budget's words ran out before the statement was read whole.
  */
-function statementForm(statement: string, budget: Budget): { words: string[]; heredoc: boolean; expanded: Expanded } | null {
+function statementForm(statement: string, budget: Budget): StatementForm | null {
   const { tokens, more } = shellTokensUpTo(statement, Math.max(0, budget.words))
   budget.words -= tokens.length
   if (more) {
     budget.spent = true
     return null
   }
+  const readings = redirectionReadings(tokens)
+  const first = statementWords(tokens, readings[0]!)
+  if (readings.length === 1) return { ...first, other: null }
+  const second = statementWords(tokens, readings[1]!)
+  const expanded = new Map(first.expanded)
+  for (const [word, met] of second.expanded) expanded.set(word, mergedExpansion(expanded.get(word), met))
+  return { words: first.words, heredoc: first.heredoc && second.heredoc, expanded, other: second.words }
+}
+
+/** A word seen two ways may do what either does: name a command, split, or start with only the text both share. */
+const mergedExpansion = (known: Expansion | undefined, met: Expansion): Expansion =>
+  known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) }
+
+/** A statement's words in one reading of its redirections (statementForm). */
+function statementWords(tokens: readonly ShellToken[], clobber: boolean): { words: string[]; heredoc: boolean; expanded: Expanded } {
   const words: string[] = []
   let heredoc = false
   let expanded: Map<string, Expansion> | null = null
@@ -1312,16 +1374,14 @@ function statementForm(statement: string, budget: Budget): { words: string[]; he
         expanded ??= new Map()
         // A word that expands more than a leading tilde before a typed basename may name another command: a lone `~`,
         // `~+`, `~-`, `~2`, or `~user` is the whole name, which HOME, PWD, OLDPWD, the directory stack, or a home holds,
-        // and the call may set the first three. A word seen two ways may do what either does: name a command, split, or
-        // start with only the text both share.
+        // and the call may set the first three; a word seen two ways may do what either does (mergedExpansion).
         const met: Expansion = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
-        const known = expanded.get(word)
-        expanded.set(word, known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) })
+        expanded.set(word, mergedExpansion(expanded.get(word), met))
       }
       continue
     }
     if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)
-    if (BARE_REDIRECTION.test(raw)) index++
+    if (takesNextWord(raw, clobber)) index++
   }
   return { words, heredoc, expanded: expanded ?? NO_WORDS }
 }

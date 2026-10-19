@@ -1322,10 +1322,11 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         // A subshell's redirections follow its `)`, in the next command.
         if (opened !== undefined) level.feeding.closed = level.feeding.compounds.pop() ?? null
       }
-    } else if ((character === '&' && (previous === '>' || previous === '<')) || (character === '|' && previous === '>')) {
+    } else if ((character === '&' && (previous === '>' || previous === '<')) || (character === '|' && (previous === '>' || (previous === '&' && text[index - 2] === '>')))) {
       // The `&` of `>&`, `<&`, or `N>&M` and the `|` of `>|` belong to a redirection operator, not a list operator, in
       // every POSIX shell, so they stay in the statement; a shell runs the command after the redirection (fix brief 5,
-      // N2). The `&` of `&>` and `&>>` still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
+      // N2). So does the `|` of zsh's `>&|` and `>>&|`, a syntax error in bash and dash (fix brief 6, A4). The `&` of `&>`
+      // and `&>>` still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
       // one redirection, read as `>f b`, leaves the same command, so the cut reads at least what either runs (fix brief
       // 6, A1).
       level.wordStart = true
@@ -1735,16 +1736,16 @@ const bodyReading = (arithmetic: boolean): BodyReading =>
  * reads it), and a backtick body to the next backtick no backslash escapes (quotes inside it nest nothing, as bash finds
  * it). So `x="$(echo "a b")"` is one word and the word after it is the command (a probe under bash 5.2: the reading
  * that ended the double-quoted word at the inner quote read the command as `b)` while bash ran git push). An unquoted
- * `<` or `>` ends a word too, unless it opens a process substitution or follows the descriptor digits that are the whole
- * word so far, so `rm>/dev/null -rf x` is `rm`, `>/dev/null`, `-rf`, and `x` (fix brief 6, A3). An unclosed quote or
+ * `<` or `>` ends a word too, unless it opens a process substitution or follows the descriptor digits or `{name}` that
+ * are the whole word so far, so `rm>/dev/null -rf x` is `rm`, `>/dev/null`, `-rf`, and `x` (fix brief 6, A3, A4). An unclosed quote or
  * expansion runs to the end of the text.
  */
 function wordEnd(text: string, from: number): number {
   return partEnd(text, from, 'word')
 }
 
-/** What may stand before a redirection operator in the same word: the descriptor it redirects (`2>`). */
-const REDIRECTION_PREFIX = /^\d+$/
+/** What may stand before a redirection operator in the same word: the descriptor it redirects (`2>`), or a bash named one (`{fd}>`). */
+const REDIRECTION_PREFIX = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/
 
 /**
  * Where `first`, whose text starts at `from`, ends: past its closer, at the blank that ends a word, at an unquoted `<` or

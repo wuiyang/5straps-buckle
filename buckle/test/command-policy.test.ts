@@ -1882,6 +1882,37 @@ describe('a redirection attached to the word before it (fix brief 6, A3)', () =>
   })
 })
 
+describe('a bare redirection operator, a named descriptor, or a zsh clobber operator (fix brief 6, A4)', () => {
+  // Each operator takes the next word as its target, so the command is the word after that (bash 5.2 ran the command
+  // after `>& out`, `2>& 1`, `<& 0`, and `{fd}>out`; zsh's operators are from the zshmisc manual, REDIRECTION).
+  const texts: Array<[string, string]> = [
+    ['bash', '>& out python3 x.py'],
+    ['bash', '2>& err python3 x.py'],
+    ['bash', '<& 0 python3 x.py'],
+    ['bash', '{fd}>out python3 x.py'],
+    ['bash', '{fd}> out python3 x.py'],
+    ['zsh', '>! out python3 x.py'],
+    ['zsh', '>>| out python3 x.py'],
+    ['zsh', '>&| out python3 x.py'],
+  ]
+
+  it.each(texts)('%s -c %j asks at the interpreter floor and meets a python3 deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+  })
+
+  it("reads a bare >! both as zsh's clobber operator and as bash's > onto a file named !, so either command meets the rules", () => {
+    // bash 5.2 ran `>! echo x`, writing a file named `!`; zsh takes the next word as the target.
+    expect(evaluate('bash', ['-c', '>! rm -rf x'], { allow: ['bash -c *'] }).kind).toBe('ask')
+    expect(evaluate('bash', ['-c', '>! rm -rf x'], { allow: ['bash -c *'], deny: ['rm *'] }).kind).toBe('deny')
+    expect(evaluate('zsh', ['-c', '>! out rm -rf x'], { allow: ['zsh -c *'], deny: ['rm *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', '>>! git push --force origin main'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

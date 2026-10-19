@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory } from '../common/services/judge/call-forms.js'
-import { commandFormsOf } from '../common/domain/command-forms.js'
+import { commandForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
@@ -450,6 +450,31 @@ describe('a variable set after a leading &> redirection (fix brief 6, A1)', () =
     expect(ran).toBe(false)
     expect(entry.judge).toMatchObject({ unavailable: codeLoadingReason('PYTHONPATH'), passed: false })
     expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a variable set after a bare redirection operator (fix brief 6, A4)', () => {
+  it('is read, since the gate shares the rules\' redirection grammar and the operator takes the next word as its target', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    for (const text of ['2>& 1 PYTHONPATH=x python3 a.py', '{fd}> out PYTHONPATH=x python3 a.py']) {
+      const { response, entry, ran } = await call(runtime, {}, ['bash', '-c', text])
+      expect(response, text).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, text).toBe(false)
+      expect(entry.judge, text).toMatchObject({ unavailable: codeLoadingReason('PYTHONPATH'), passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+
+  it('reads the shell text itself with that grammar, where no form of the rules carries the assignment', () => {
+    // The forms of the shell call alone, its statements left out, so only the gate's own reading of the text finds it.
+    const names = (text: string, shell = 'bash') => assignedVariables({ command: shell, args: ['-c', text] }, { ...commandForms(shell, ['-c', text]), nested: [] }).variables.map(variable => variable.name)
+    expect(names('2>& 1 PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+    expect(names('{fd}> out PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+    // Both readings of a bare >!: zsh's, whose target is the next word, and bash's, whose target is `!`.
+    expect(names('>! out PYTHONPATH=x python3 a.py', 'zsh')).toContain('PYTHONPATH')
+    expect(names('>! PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
   })
 })
 
