@@ -1924,6 +1924,27 @@ describe("ksh93's >;word and <>;word redirections (fix brief 6, A5)", () => {
   })
 })
 
+describe("the clauses of the splitter's redirection branch, under an unrelated deny glob (fix brief 6, A6)", () => {
+  // A call that runs an interpreter is refused under any deny glob (slice 7c review R7C-CR-1), so a statement the splitter
+  // cuts wrong, which hides python3, is allowed under `git push *`; each row pins one clause or cut of the branch.
+  const rows: Array<[string, string]> = [
+    ['bash', '<&0 python3 x.py'],
+    ['bash', '&>/dev/null python3 x.py'],
+    ['bash', 'true &&>/dev/null python3 x.py'],
+    ['bash', 'cat <<EOF&python3 x.py'],
+    ['sh', 'echo A &>/dev/null python3 x.py'],
+    ['dash', 'echo A &>/dev/null python3 x.py'],
+  ]
+
+  it.each(rows)('%s -c %j asks at the interpreter floor and is denied under git push *', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['git push *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
