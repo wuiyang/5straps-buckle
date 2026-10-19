@@ -110,6 +110,42 @@ describe('buckle workspace init', () => {
     expect(result.exitCode).toBe(1)
     expect(result.err).toContain('This node has no admin credential')
   })
+
+  // The workspace-model follow-up, M3 (Q6, after Docker's -v): --volume adds mounts beside the folder at /workspace,
+  // each checked as buckle workspace mount add checks one, and the table is printed after the token.
+  it('adds each --volume as a mount, a relative source where it runs, and prints the table', async () => {
+    const [data, docs] = [join(outside, 'data'), join(outside, 'docs')]
+    for (const folder of [data, docs]) mkdirSync(folder)
+    const result = await buckle(['init', '--volume', '../outside/data:/data', '--volume', `${docs}:/docs:ro`], { cwd: alpha })
+    expect(result).toMatchObject({ exitCode: 0, err: '' })
+    expect(settings(alpha).mounts).toEqual([
+      { kind: 'workspace', target: '/workspace', access: 'rw' },
+      { source: data, target: '/data', access: 'rw' },
+      { source: docs, target: '/docs', access: 'ro' },
+    ])
+    expect(result.out).toContain(`Mounts (source:target:access)\n  ${alpha}:/workspace:rw\n  ${data}:/data:rw\n  ${docs}:/docs:ro\n`)
+  })
+
+  it.each([
+    ['a source that does not exist', () => `${join(outside, 'missing')}:/data`, 'A mount\'s source must be an existing folder or file'],
+    ['the folder\'s own target', () => `${outside}:/workspace/data`, 'where the workspace\'s folder shows'],
+    ['a system folder', () => `${outside}:/etc/data`, 'for the host\'s own programs'],
+    ['the workspace\'s own folder', () => `${alpha}:/again`, 'the workspace\'s own folder'],
+    ['no sandbox path', () => `${outside}:data`, 'names no mount'],
+  ])('refuses %s, naming the entry, and makes no workspace', async (_name, spec, reason) => {
+    const result = await buckle(['init', '--volume', spec()], { cwd: alpha })
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toContain(spec())
+    expect(result.err).toContain(reason)
+    expect(result.err).toContain('Nothing was written.')
+    expect((await buckle(['list'])).out).toContain('No workspace yet')
+  })
+
+  it('prints the folder\'s row alone without --volume', async () => {
+    const result = await buckle(['init'], { cwd: alpha })
+    expect(result.out).toContain(`Mounts (source:target:access)\n  ${alpha}:/workspace:rw\n`)
+    expect(settings(alpha).mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }])
+  })
 })
 
 // D85, Q15: a workspace's name is the handle the owner types; it is unique on the node, without regard to case, and
@@ -885,7 +921,8 @@ describe('a node scratch root that holds a workspace\'s folder', () => {
     const config = node({ BUCKLE_SCRATCH_ROOTS: code })
     const note = `The scratch root ${code} holds the folder of workspace site, so its shell commands are refused while that folder shows at a mount, as the scratch root would show it a second time: narrow the node's scratch roots (buckle settings set scratch-roots), or show the folder at its real path (buckle policy unmount).\n`
     expect((await buckle(['init'], { cwd: site, config })).out).toContain(note)
-    expect((await buckle(['init'], { cwd: alpha, config })).out).not.toContain('scratch root')
+    // The mount table lists the node's scratch root; the note, which names the folder it holds, is not printed.
+    expect((await buckle(['init'], { cwd: alpha, config })).out).not.toContain('holds the folder of workspace')
     expect((await runCli({ argv: ['policy', 'unmount'], config, confirm: null, cwd: site })).exitCode).toBe(0)
     expect((await buckle(['set', 'mount', '/srv/site'], { cwd: site, config })).out).toContain(note)
     out = ''

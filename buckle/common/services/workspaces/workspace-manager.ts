@@ -1,12 +1,12 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'pathe'
+import { basename, join, resolve } from 'pathe'
 import { z } from 'zod'
 import { isWorkspaceToolAllowed, WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
-import { actionsPath, dangerouslyAllowPath, protectedStateRoots, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
+import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf, type UntrustedRoot } from '../../domain/executable.js'
 import { logger } from '../../runtime/log.js'
@@ -22,11 +22,11 @@ import type { ActionLog } from '../../types/ports/action-log.js'
 import { activeElsewhere, activeWorkDirectory } from './active-work.js'
 import { migrateNode, type AskName } from './migration.js'
 import { NewWorkspaceNameSchema, openRegistry, sameName, touched, WorkspaceError, WorkspaceRegistryError, type Registry, type StoredWorkspace } from './registry.js'
-import { assertNoHostExposure, canonicalDirectory, canonicalMountSource, exposedRoots, overlaps } from './workspace-dirs.js'
+import { assertNoHostExposure, canonicalDirectory, checkedMountSource, exposedRoots, mountGuardsOf, overlaps, refuseMountJoining, type MountGuards } from './workspace-dirs.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { workspaceIdFor } from './workspace-id.js'
 import { assertNodeDefaults, browserInForceRefusal, defaultSettings, openSettingsFile, ownerMounts, ownMount, resolveSettings, scopeOf, settingsPath, withOwnerMounts, withPolicy, WorkspaceSettingsError, type WorkspaceSettings } from './workspace-settings.js'
-import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
+import type { OwnerMount } from '../../domain/mount-table.js'
 
 export { WorkspaceError, WorkspaceRegistryError, WORKSPACE_REGISTRY_UNREADABLE } from './registry.js'
 
@@ -426,27 +426,25 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      */
     async addMount(id: string, mount: OwnerMount): Promise<OwnerMount> {
       const workspace = requireStored(store.read(), id)
-      const source = canonicalMountSource(mount.source, platform, input.storedPath)
-      const meets = (other: string) => overlaps(other, source, platform)
-      if ([stateRoot, ...protectedStateRoots(node)].some(meets)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, Buckle\'s state', 409)
-      if (meets(workspace.dir)) throw new WorkspaceError('A mount\'s source must not hold, or sit inside, the workspace\'s own folder, which shows at its own target', 409)
-      if (mount.access === 'rw' && exposed.some(meets)) throw new WorkspaceError('A writable mount\'s source must not hold, or sit inside, a folder every sandbox runs programs from (a system folder, the Node install, or a toolchain the node names); share it read-only with :ro', 409)
-      const added: OwnerMount = { source, target: mount.target, access: mount.access }
+      const guards = manager.mountGuards()
+      const added = checkedMountSource(mount, { dir: workspace.dir, guards })
       await settingsOf(id).update((current) => {
         const resolved = resolveSettings(current, node.workspaceDefaults)
         const owners = ownerMounts(current)
-        if (owners.some(owner => owner.target === added.target)) throw new WorkspaceError(`A mount already shows at ${added.target}; remove it first with buckle workspace mount remove ${added.target}`, 409)
-        // The folder's own entry is no part of the count; the settings schema keeps the bound for a file edited by hand.
-        if (owners.length >= MAX_OWNER_MOUNTS) throw new WorkspaceError(`A workspace holds at most ${MAX_OWNER_MOUNTS} mounts of its own, not counting its folder; remove one first with buckle workspace mount remove <sandbox-path>`, 409)
-        const shared = owners.find(owner => overlaps(owner.source, source, platform))
-        if (shared) throw new WorkspaceError(`That source holds, or sits inside, the source of the mount at ${shared.target}`, 409)
         const folder = ownMount(current) === undefined ? resolved.mount : ownMount(current) ?? null
-        const refusal = mountTargetRefusal(added.target, { folder, others: owners.map(owner => owner.target), fixed: node.mountReadOnlyPaths.concat(dirname(dirname(process.execPath))) })
-        if (refusal) throw new WorkspaceError(refusal)
+        refuseMountJoining(added, { folder, owners, guards })
         return withOwnerMounts(current, [...owners, added], folder)
       })
       nodeRoots.take(registeredRoots(node.stateDirectory, store.read().workspaces))
       return added
+    },
+
+    /**
+     * What a mount of one of this node's workspaces is checked against (checkedMountSource, refuseMountJoining), so a
+     * command that makes a workspace with mounts checks each before anything is written, as `addMount` checks one.
+     */
+    mountGuards(): MountGuards {
+      return mountGuardsOf(node, platform, { stateRoot, ...(input.storedPath ? { storedPath: input.storedPath } : {}) })
     },
 
     /** Takes one of the owner's mounts out of a workspace's table, by its target; the folder's own entry stays (Phase 2 item 1). */

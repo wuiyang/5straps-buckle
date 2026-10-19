@@ -439,8 +439,9 @@ function mountsInForce(stored: WorkspaceSettings, node: NodeDefaults, sources: R
 
 /**
  * The mount table in force as the owner reads it, the same wherever it is shown (`buckle workspace mount list`,
- * `buckle policy show`, and the setup face's status): the folder's own entry first, where it shows at a sandbox path,
- * then each mount, the workspace's own or, while it has none, the node's (BUCKLE_MOUNTS and BUCKLE_SCRATCH_ROOTS).
+ * `buckle policy show`, the setup face's status, `buckle init`, and `buckle workspace init`): the folder's own entry
+ * first, where it shows at a sandbox path, then each mount, the workspace's own or, while it has none, the node's
+ * (BUCKLE_MOUNTS and BUCKLE_SCRATCH_ROOTS).
  * The system folders and the node's toolchains are bound for every workspace and are no row (D85, Q1; D90 (3)).
  */
 export function mountRows(folder: string, resolved: Pick<ResolvedSettings, 'mount' | 'mounts' | 'sources'>): MountRow[] {

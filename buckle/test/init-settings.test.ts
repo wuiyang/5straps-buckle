@@ -68,10 +68,11 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
   })
 
   it('shows each default, and Enter keeps the shipped ones', async () => {
-    const prompt = scripted([workspace, '', 'Fixture'])
+    const prompt = scripted([workspace, '', '', 'Fixture'])
     const result = await init(prompt)
 
-    expect(prompt.asked.slice(3)).toEqual([
+    expect(prompt.asked[2]).toBe('Mount another folder? local:sandbox[:ro], blank for none: ')
+    expect(prompt.asked.slice(4)).toEqual([
       expect.stringContaining('[all]'),
       expect.stringContaining('[Y/n]'),
       expect.stringContaining('[y/N]'),
@@ -97,7 +98,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
   })
 
   it('writes the answers that move off a default', async () => {
-    const result = await init(scripted([workspace, '', 'Fixture', 'fs, shell', 'n', 'y', 'localhost:3000,*.example.com', 'db.internal']))
+    const result = await init(scripted([workspace, '', '', 'Fixture', 'fs, shell', 'n', 'y', 'localhost:3000,*.example.com', 'db.internal']))
 
     expect(parseEnv(result.written)).toMatchObject({ BUCKLE_ALLOWED_HOSTS: 'db.internal' })
     const { settings } = served()
@@ -108,7 +109,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
   })
 
   it('asks again after an answer the settings check refuses, saying why', async () => {
-    const prompt = scripted([workspace, '', 'Fixture', 'fs,rocket', 'fs', 'maybe', '', '', '*', '', '*.0.0.1', ''])
+    const prompt = scripted([workspace, '', '', 'Fixture', 'fs,rocket', 'fs', 'maybe', '', '', '*', '', '*.0.0.1', ''])
     const result = await init(prompt)
 
     expect(prompt.said).toContainEqual(expect.stringContaining('Unknown pack rocket'))
@@ -123,7 +124,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
 
   it('asks again for the environment pack while BUCKLE_ENV_VALIDATOR_COMMAND is unset, naming it, and takes it once set', async () => {
     vi.stubEnv('BUCKLE_ENV_VALIDATOR_COMMAND', '')
-    const refused = scripted([workspace, '', 'Fixture', 'fs,environment', 'fs'])
+    const refused = scripted([workspace, '', '', 'Fixture', 'fs,environment', 'fs'])
     await init(refused)
     expect(served().settings.packs.enabled).toEqual(['fs'])
     expect(refused.said).toContainEqual(expect.stringContaining('environment (BUCKLE_ENV_VALIDATOR_COMMAND is not set)'))
@@ -132,7 +133,7 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
     const other = join(workspace, '..', 'other')
     mkdirSync(other)
     // The node is set up already, so its name is not asked again.
-    const accepted = scripted([other, '', 'fs,environment'])
+    const accepted = scripted([other, '', '', 'fs,environment'])
     await init(accepted)
     expect(served(other).settings.packs.enabled).toEqual(['fs', 'environment'])
   })
@@ -220,12 +221,12 @@ describe('the command init prints to start the node', () => {
 
   // D85 Q4, owner ruling of 2026-10-17: the launchd agent on macOS; nothing on a platform Buckle drives no service manager on.
   it('offers the service on macOS too', async () => {
-    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'darwin')
+    const { printed } = await init(scripted([workspace, '', '', 'Fixture']), [], 'darwin')
     expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
   })
 
   it('offers no service where Buckle drives no service manager', async () => {
-    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'freebsd')
+    const { printed } = await init(scripted([workspace, '', '', 'Fixture']), [], 'freebsd')
     expect(printed).not.toContain('buckle service install')
   })
 
@@ -234,7 +235,7 @@ describe('the command init prints to start the node', () => {
   })
 
   it('prints each Windows form on its own labelled line, the restrict example quoted as each shell reads it', async () => {
-    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'win32')
+    const { printed } = await init(scripted([workspace, '', '', 'Fixture']), [], 'win32')
     expect(printed).toContain([
       '  1. Start the node:',
       `       PowerShell   $env:BUCKLE_ENV_FILE = '${out}'; buckle serve`,
@@ -255,7 +256,7 @@ describe('the command init prints to start the node', () => {
   })
 
   it('keeps one form on the step\'s own line on Linux', async () => {
-    const { printed } = await init(scripted([workspace, '', 'Fixture']), [], 'linux')
+    const { printed } = await init(scripted([workspace, '', '', 'Fixture']), [], 'linux')
     expect(printed).toContain(`  1. Start the node:            BUCKLE_ENV_FILE=${out} buckle serve\n`)
     // Phase 3, item 7: init offers the service on Linux and Windows.
     expect(printed).toContain(`     Or at every login:         BUCKLE_ENV_FILE=${out} buckle service install --now\n`)
@@ -351,11 +352,99 @@ describe('buckle init without questions', () => {
   })
 })
 
+// The workspace-model follow-up, M3 (Q6, after Docker's -v): buckle init offers the workspace's mounts beside its
+// folder, checked as buckle workspace mount add checks one; a default install adds none (D83).
+describe('buckle init and the workspace\'s mounts', () => {
+  const MOUNT_QUESTION = 'Mount another folder? local:sandbox[:ro], blank for none: '
+  let data: string
+  let docs: string
+  let errors: string
+  beforeEach(() => {
+    data = join(workspace, '..', 'data')
+    docs = join(workspace, '..', 'docs')
+    for (const folder of [data, docs]) mkdirSync(folder)
+    errors = ''
+    vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { errors += String(chunk); return true })
+  })
+  afterEach(() => { vi.restoreAllMocks() })
+  const folderOnly = () => [{ kind: 'workspace', target: '/workspace', access: 'rw' }]
+
+  it('adds each --volume as a mount, read-write unless :ro, a relative source the current directory\'s, and ends the summary with the table', async () => {
+    const cwd = vi.spyOn(process, 'cwd').mockReturnValue(join(workspace, '..'))
+    let result: Awaited<ReturnType<typeof init>>
+    try { result = await init(scripted([], false), ['--dir', workspace, '--yes', '--volume', `${data}:/data`, '--volume', './docs:/docs:ro']) } finally { cwd.mockRestore() }
+    expect(result.exitCode).toBe(0)
+    expect(served().settings.mounts).toEqual([...folderOnly(), { source: data, target: '/data', access: 'rw' }, { source: docs, target: '/docs', access: 'ro' }])
+    expect(result.printed).toContain(`  Network     no approved list\n  Mounts      ${workspace}:/workspace:rw\n              ${data}:/data:rw\n              ${docs}:/docs:ro\n`)
+    expect(result.printed).toContain('These are the defaults, kept because nothing was asked, beside the mounts --volume named.')
+  })
+
+  it.each([
+    ['--yes', true, ['--yes']],
+    ['no terminal', false, []],
+  ])('adds no mount under %s without --volume, as a default install grants nothing more, and prints the folder\'s row alone', async (_label, interactive, flags) => {
+    const prompt = scripted([`${data}:/data`], interactive)
+    const result = await init(prompt, ['--dir', workspace, ...flags])
+    expect(result.exitCode).toBe(0)
+    expect(prompt.asked).toEqual([])
+    expect(served().settings.mounts).toEqual(folderOnly())
+    expect(result.printed).toContain(`  Mounts      ${workspace}:/workspace:rw\nThese are the defaults, kept because nothing was asked. Change one`)
+  })
+
+  it('asks after where the agent sees the folder, again until a blank answer, and again after one that names no mount', async () => {
+    const prompt = scripted([workspace, '', `${data}:/data`, 'nonsense', `${docs}:/docs:ro`, '', 'Fixture'])
+    const result = await init(prompt)
+    expect(result.exitCode).toBe(0)
+    expect(prompt.asked.slice(1, 6)).toEqual([expect.stringContaining('Where the agent sees it'), MOUNT_QUESTION, MOUNT_QUESTION, MOUNT_QUESTION, MOUNT_QUESTION])
+    expect(prompt.asked[6]).toContain('Name for this node')
+    expect(prompt.said).toContain('nonsense names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only')
+    expect(served().settings.mounts).toEqual([...folderOnly(), { source: data, target: '/data', access: 'rw' }, { source: docs, target: '/docs', access: 'ro' }])
+    expect(result.printed).toContain(`  Mounts      ${workspace}:/workspace:rw\n              ${data}:/data:rw\n              ${docs}:/docs:ro\n`)
+  })
+
+  it.each([
+    ['a target that is no plain absolute path', () => ['--volume', `${data}:/a/../b`], 'is not an absolute sandbox path with plain names'],
+    ['a target with no sandbox path', () => ['--volume', `${data}:data`], '/data:data names no mount: write it as <local>:<sandbox>'],
+    ['the folder\'s target', () => ['--volume', `${data}:/workspace`], 'overlaps /workspace, where the workspace\'s folder shows'],
+    ['a system folder', () => ['--volume', `${data}:/usr/data`], 'for the host\'s own programs'],
+    ['a source that does not exist', () => ['--volume', `${join(data, 'missing')}:/data`], 'A mount\'s source must be an existing folder or file'],
+    ['the workspace\'s own folder as a source', () => ['--volume', `${workspace}:/again`], 'the workspace\'s own folder'],
+    ['a target taken twice', () => ['--volume', `${data}:/data`, '--volume', `${docs}:/data`], 'A mount already shows at /data'],
+    ['a mount beside a folder at its real path', () => ['--mount', '', '--volume', `${data}:/data`], 'A mount needs the workspace\'s folder mounted'],
+  ])('refuses %s before anything is written, naming the entry and the rule', async (_name, flags, reason) => {
+    const given = flags()
+    const result = await runInit(['--out', out, '--port', '4399', '--dir', workspace, '--yes', ...given], scripted([], false), {})
+    expect(result.exitCode).toBe(1)
+    expect(errors).toContain(reason)
+    expect(errors).toContain(given.at(-1)!)
+    expect(errors).toContain('Nothing was written.')
+    expect(existsSync(out)).toBe(false)
+    expect(existsSync(state)).toBe(false)
+  })
+
+  it('checks the mounts typed at a terminal too, writing nothing when one is refused', async () => {
+    const result = await runInit(['--out', out, '--port', '4399'], scripted([workspace, '', `${data}:/proc/data`, '', 'Fixture']), {})
+    expect(result.exitCode).toBe(1)
+    expect(errors).toContain(`The mount ${data}:/proc/data is refused:`)
+    expect(existsSync(out)).toBe(false)
+  })
+
+  it('adds no mount to a folder a workspace serves already, saying so', async () => {
+    await init(scripted([], false), ['--dir', workspace])
+    const before = served().settings
+    const again = await init(scripted([], false), ['--dir', workspace, '--volume', `${data}:/data`])
+    expect(again.exitCode).toBe(0)
+    expect(again.printed).toContain(`The mounts named were not added either; add them with buckle workspace mount add <local>:<sandbox>[:ro] --workspace ${served().name}.`)
+    expect(again.printed).toContain(`  Mounts      ${workspace}:/workspace:rw\n`)
+    expect(served().settings).toEqual(before)
+  })
+})
+
 describe.skipIf(process.platform === 'win32')('buckle init writes the environment file owner-only (RINGS-D20)', () => {
   it('narrows a world-readable file it replaces with --force', async () => {
     writeFileSync(out, 'BUCKLE_PORT=1\n')
     chmodSync(out, 0o644)
-    await init(scripted([workspace, '', 'Fixture'], false), ['--force', '--root', workspace])
+    await init(scripted([workspace, '', '', 'Fixture'], false), ['--force', '--root', workspace])
     expect(statSync(out).mode & 0o777).toBe(0o600)
   })
 })
@@ -364,12 +453,12 @@ describe.skipIf(process.platform === 'win32')('buckle init writes the environmen
 // workspace's own list, says so as the comment above the line it writes does.
 describe('the node hosts question', () => {
   it('is for a workspace with no list of its own, as the buckle.env comment above the line says', async () => {
-    const prompt = scripted([workspace, '', 'Fixture', '', '', '', 'example.com', 'db.internal'])
+    const prompt = scripted([workspace, '', '', 'Fixture', '', '', '', 'example.com', 'db.internal'])
     const result = await init(prompt)
 
-    expect(prompt.asked[6]).toContain('Approved hosts and URLs')
-    expect(prompt.asked[7]).toContain('Hosts a workspace with no approved list of its own may reach, which turns that list on')
-    expect(prompt.asked[7]).not.toContain('every workspace')
+    expect(prompt.asked[7]).toContain('Approved hosts and URLs')
+    expect(prompt.asked[8]).toContain('Hosts a workspace with no approved list of its own may reach, which turns that list on')
+    expect(prompt.asked[8]).not.toContain('every workspace')
     expect(result.written).toContain('# Hosts a workspace with no approved list of its own may reach, which turns that list on')
     expect(parseEnv(result.written).BUCKLE_ALLOWED_HOSTS).toBe('db.internal')
     // This workspace keeps the list it was just given; the node's hosts serve the others.
@@ -384,7 +473,7 @@ describe('the node hosts question under --force', () => {
 
   it('writes the owner\'s answer, not the old file\'s value, and does not list the key as kept', async () => {
     writeFileSync(out, earlier, { mode: 0o600 })
-    const prompt = scripted([workspace, '', 'Fixture', '', '', '', '', 'new.example'])
+    const prompt = scripted([workspace, '', '', 'Fixture', '', '', '', '', 'new.example'])
     const result = await init(prompt, ['--force'])
 
     expect(result.exitCode).toBe(0)
@@ -395,7 +484,7 @@ describe('the node hosts question under --force', () => {
 
   it('offers the old value as the question\'s default, so Enter keeps it and says it kept it', async () => {
     writeFileSync(out, earlier, { mode: 0o600 })
-    const prompt = scripted([workspace, '', 'Fixture', '', '', '', '', ''])
+    const prompt = scripted([workspace, '', '', 'Fixture', '', '', '', '', ''])
     const result = await init(prompt, ['--force'])
 
     expect(hostsQuestion(prompt)).toMatch(/\[old\.example,second\.example\]: $/)
@@ -405,7 +494,7 @@ describe('the node hosts question under --force', () => {
 
   it('still shows [none] when the file written again holds no hosts', async () => {
     writeFileSync(out, 'BUCKLE_ADMIN_TOKEN=old-admin-fixture\nBUCKLE_SANDBOX=none\n', { mode: 0o600 })
-    const forced = scripted([workspace, '', 'Fixture', '', '', '', '', ''])
+    const forced = scripted([workspace, '', '', 'Fixture', '', '', '', '', ''])
     await init(forced, ['--force'])
     expect(hostsQuestion(forced)).toMatch(/\[none\]: $/)
   })
@@ -525,7 +614,7 @@ describe('buckle init checks the programs Buckle runs', () => {
     // A node of its own each time, so each run sets the folder up anew.
     vi.stubEnv('BUCKLE_STATE_DIR', mkdtempSync(join(workspace, '..', 'state-')))
     try {
-      const prompt = scripted(input.interactive ? [root, '', 'Fixture'] : [], input.interactive ?? false)
+      const prompt = scripted(input.interactive ? [root, '', '', 'Fixture'] : [], input.interactive ?? false)
       const result = await runInit(['--root', root, '--out', out, '--port', '4399', '--force', ...input.interactive ? [] : ['--yes']], prompt, { platform: input.platform, programSearch: input.programSearch })
       expect(result.exitCode).toBe(0)
     } finally { stdout.mockRestore() }
@@ -654,7 +743,7 @@ describe.each([['node'], ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e']])('buckle init
   })
 
   it('asks for the workspace\'s name at a terminal, and serves the folder under the answer', async () => {
-    const prompt = scripted([folder, '', 'Fixture', '', '', '', '', '', 'nodejs'])
+    const prompt = scripted([folder, '', '', 'Fixture', '', '', '', '', '', 'nodejs'])
     const result = await init(prompt)
 
     expect(result.exitCode).toBe(0)

@@ -2,7 +2,6 @@ import { readFileSync } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNameSchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
-import { formatMountRow } from '../common/domain/mount-table.js'
 import { isRestrictive, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -11,6 +10,7 @@ import { WorkspaceError, type WorkspaceManager } from '../common/services/worksp
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import type { CommandTarget } from './target.js'
+import { mountTableText } from './workspace.js'
 
 export interface CliResult {
   exitCode: number
@@ -358,7 +358,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
 
   process.stdout.write(`Workspace ${runtime.workspaceName()} at ${runtime.paths().root}\n`)
   process.stdout.write(`Mount     ${effective.mount ?? '(none: the real path shows through)'}, ${SOURCE_WORDS[sources.mount]}\n`)
-  process.stdout.write(`Mounts (source:target:access)\n${mounts.length === 0 ? '  (none)\n' : mounts.map(row => `  ${formatMountRow(row)}\n`).join('')}`)
+  process.stdout.write(mountTableText(mounts))
   process.stdout.write(`Dangerously allow  ${describeDangerously(dangerously)}\n\n`)
   section('Command allow list (only these may run)', effective.commands.allow, sources['commands.allow'])
   section('Command deny list (refused outright)', effective.commands.deny, sources['commands.deny'])

@@ -8,14 +8,15 @@ import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/s
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { PolicyError } from '../common/domain/policy.js'
 import { WorkspaceError, WorkspaceNameRefusedError, WorkspaceNameTakenError, type MintedToken, type TakenUp, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import { credentialLikeName, mountRows, resolveSettings, settingsPath, variableNameRefusal, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { credentialLikeName, mountRows, resolveSettings, settingsPath, variableNameRefusal, withOwnerMounts, WORKSPACE_MOUNT_TARGET, WorkspaceSettingsConflictError, WorkspaceSettingsInvalidError, type SettingSource, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { canonicalDirectory, checkedMountSource, refuseMountJoining, type MountGuards } from '../common/services/workspaces/workspace-dirs.js'
 import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { openSocketCache, socketCachePath } from '../common/services/judge/socket-cache.js'
 import { nullPackageScanner } from '../common/types/ports/package-scan.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { restartRoute, restartSteps, restartSubject } from '../common/services/node-service/installed.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
-import { formatMount, formatMountRow, parseMountSpec } from '../common/domain/mount-table.js'
+import { formatMount, formatMountRow, parseMountSpec, type MountRow, type OwnerMount } from '../common/domain/mount-table.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
 
 export interface CliResult {
@@ -34,8 +35,9 @@ export interface NamePrompt {
 const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
 the one whose folder holds --dir <path>, or else the current directory. <name> is a workspace's name, or its id.
 
-  buckle workspace init [--dir <path>] [--name <name>] [--yes]
-                                       Serve a folder as a workspace, and print its agent token once
+  buckle workspace init [--dir <path>] [--name <name>] [--volume <local>:<sandbox>[:ro]]... [--yes]
+                                       Serve a folder as a workspace, and print its agent token once;
+                                       each --volume shares another host folder or file, as mount add does
   buckle workspace add <dir> [--name <name>] [--yes] [--fresh]
                                        The same, with the folder named first; --fresh leaves any removed records behind
   buckle workspace prune [--yes]       The removed workspaces whose records are still kept; --yes deletes them
@@ -110,14 +112,16 @@ interface Context { config: NodeConfig; workspaces: WorkspaceManager; target: Co
 
 /** `buckle workspace init`: the folder --dir names, relative to where it runs, or that directory; the token printed once. */
 async function init(context: Context): Promise<CliResult> {
-  let values: { name?: string; yes?: boolean }
+  let values: { name?: string; yes?: boolean; volume?: string[] }
   // 0.1's `--id` went with the typed id (D85, Q15): an unknown flag is refused with the usage, as `add` refuses `--root`.
-  try { ({ values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' } }, allowPositionals: false })) } catch (error) {
-    return fail(`${(error instanceof Error ? error.message : String(error)).split('. ')[0]}\nUsage: buckle workspace init [--dir <folder>] [--name <name>] [--yes]`)
+  try { ({ values } = parseArgs({ args: context.rest, options: { name: { type: 'string' }, yes: { type: 'boolean' }, volume: { type: 'string', multiple: true } }, allowPositionals: false })) } catch (error) {
+    return fail(`${(error instanceof Error ? error.message : String(error)).split('. ')[0]}\nUsage: buckle workspace init [--dir <folder>] [--name <name>] [--volume <local>:<sandbox>[:ro]]... [--yes]`)
   }
   if (context.target.workspace !== undefined) return fail('buckle workspace init makes a workspace: name its folder with --dir, and its name with --name')
   const dir = resolve(context.cwd, context.target.dir ?? '.')
-  return serve(context, { dir, name: values.name, yes: values.yes === true })
+  // Each --volume is checked as buckle workspace mount add checks one, beside the folder at /workspace, before anything is written.
+  const mounts = values.volume?.length ? checkedVolumes(values.volume, { cwd: context.cwd, dir, folder: WORKSPACE_MOUNT_TARGET, guards: context.workspaces.mountGuards() }) : []
+  return serve(context, { dir, name: values.name, yes: values.yes === true, mounts })
 }
 
 /** `buckle workspace add <dir> [--name <name>]`: init with the folder named first (D85, Q15). */
@@ -136,9 +140,13 @@ async function add(context: Context): Promise<CliResult> {
  * Serves a folder as a new workspace, named as asked, or after its folder. A name another workspace holds is asked
  * about at a terminal until one is free; with --yes, or no terminal, it is refused, naming --name (D85, Q15).
  */
-async function serve(context: Context, input: { dir: string; name?: string; yes: boolean; fresh?: boolean }): Promise<CliResult> {
-  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(input.fresh ? { fresh: true } : {}), ...(name === undefined ? {} : { name }) }))
+async function serve(context: Context, input: { dir: string; name?: string; yes: boolean; fresh?: boolean; mounts?: readonly OwnerMount[] }): Promise<CliResult> {
+  const mounts = input.mounts ?? []
+  // The mounts join the folder's entry in the settings create writes, so a refused write leaves no workspace behind.
+  const settings = mounts.length === 0 ? {} : { settings: (defaults: WorkspaceSettings) => withOwnerMounts(defaults, mounts, WORKSPACE_MOUNT_TARGET) }
+  const { workspace, token, takenUp } = await createNamed(context.prompt, { ...input, refusal: 'name it with --name <name>' }, name => context.workspaces.create({ dir: input.dir, ...(input.fresh ? { fresh: true } : {}), ...(name === undefined ? {} : { name }), ...settings }))
   printMinted(workspace, token, takenUp)
+  process.stdout.write(`\n${mountTableText(mountRows(workspace.dir, resolveSettings(context.workspaces.settings(workspace.id), context.config.workspaceDefaults)))}`)
   noteScratchOverFolder(context, workspace)
   return { exitCode: 0, detail: `init ${workspace.name}` }
 }
@@ -389,6 +397,54 @@ async function judgeCache(context: Context): Promise<CliResult> {
 const MOUNT_USAGE = 'Usage: buckle workspace mount add <local>:<sandbox>[:ro] [--read-only] | mount remove <sandbox> | mount list [--json]'
 
 /**
+ * A mount as the owner types it, after Docker's -v (Q6): `<local>:<sandbox>[:ro]`, read-only too with `readOnly`. A
+ * relative source is `cwd`'s; an absolute one is kept as typed, so a Windows share keeps its form. Null where the text
+ * names no mount (parseMountSpec).
+ */
+export function typedMount(spec: string, input: { readOnly: boolean; cwd: string }): OwnerMount | null {
+  const parsed = parseMountSpec(spec, input.readOnly)
+  if (!parsed) return null
+  return { ...parsed, source: isAbsolute(parsed.source) ? parsed.source : resolve(input.cwd, parsed.source) }
+}
+
+/** Why a text names no mount, as `buckle workspace mount add` says it. */
+export function unnamedMount(spec: string): string {
+  return `${spec} names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only`
+}
+
+/**
+ * The mounts `buckle init` and `buckle workspace init` are given beside a new workspace's folder (`--volume`, and at a
+ * terminal the answers `buckle init` takes): each read and checked as `buckle workspace mount add` reads and checks one,
+ * against the ones before it, for the folder `dir` showing at `folder`. The first refused throws a WorkspaceError
+ * naming it and the rule, before anything is written. Answers the mounts with their sources as stored.
+ */
+export function checkedVolumes(specs: readonly string[], input: { cwd: string; dir: string; folder: string | null; guards: MountGuards }): OwnerMount[] {
+  const dir = canonicalDirectory(input.dir, input.guards.platform)
+  const owners: OwnerMount[] = []
+  for (const spec of specs) {
+    const refused = (rule: string) => new WorkspaceError(`The mount ${spec} is refused: ${rule}. Nothing was written.`)
+    const typed = typedMount(spec, { readOnly: false, cwd: input.cwd })
+    if (!typed) throw new WorkspaceError(`${unnamedMount(spec)}. Nothing was written.`)
+    // As withOwnerMounts refuses one: a mount is a path of the sandbox's own tree, which a folder at its real path has not.
+    if (input.folder === null) throw refused('A mount needs the workspace\'s folder mounted, so the agent has a sandbox to see it in: give --mount a sandbox path, such as /workspace')
+    try {
+      const added = checkedMountSource(typed, { dir, guards: input.guards })
+      refuseMountJoining(added, { folder: input.folder, owners, guards: input.guards })
+      owners.push(added)
+    } catch (error) {
+      if (error instanceof WorkspaceError) throw refused(error.message)
+      throw error
+    }
+  }
+  return owners
+}
+
+/** The mount table as `buckle policy show` prints it: a heading, then each row as `buckle workspace mount list` prints it. */
+export function mountTableText(rows: readonly MountRow[]): string {
+  return `Mounts (source:target:access)\n${rows.length === 0 ? '  (none)\n' : rows.map(row => `  ${formatMountRow(row)}\n`).join('')}`
+}
+
+/**
  * `buckle workspace mount` (Phase 2 item 1, D84 (3), Q6 after Docker's -v): `add` shares a host folder or file at a
  * sandbox path, read-write unless `:ro` or `--read-only`; `remove` takes one away by its sandbox path; `list` prints
  * the table in force, the folder's own entry first, as `source:target:access`. The system folders every sandbox binds
@@ -402,10 +458,9 @@ async function mount(context: Context): Promise<CliResult> {
   const workspace = targeted(context)
   if (action === 'add') {
     if (positionals.length !== 1 || values.json) return fail(MOUNT_USAGE)
-    const spec = parseMountSpec(positionals[0]!, values['read-only'] === true)
-    if (!spec) return fail(`${positionals[0]} names no mount: write it as <local>:<sandbox>, such as ./data:/data, with :ro to share it read-only`)
-    // A relative source is the current directory's; an absolute one is passed as typed, so a Windows share keeps its form.
-    const added = await context.workspaces.addMount(workspace.id, { ...spec, source: isAbsolute(spec.source) ? spec.source : resolve(context.cwd, spec.source) })
+    const typed = typedMount(positionals[0]!, { readOnly: values['read-only'] === true, cwd: context.cwd })
+    if (!typed) return fail(unnamedMount(positionals[0]!))
+    const added = await context.workspaces.addMount(workspace.id, typed)
     process.stdout.write(`Workspace ${workspace.name}: ${added.target} shows ${added.source}, ${added.access === 'rw' ? 'read-write' : 'read-only'}. It applies once the workspace has no active work.
 `)
     return { exitCode: 0, detail: `mount add ${workspace.name} ${formatMount(added)}` }
