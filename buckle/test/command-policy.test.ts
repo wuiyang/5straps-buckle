@@ -1852,6 +1852,17 @@ describe('a leading &> or &>> redirection (fix brief 6, A1)', () => {
   })
 })
 
+describe('a list operator right after a heredoc word (fix brief 6, A2)', () => {
+  // bash and dash read `<<EOF` as the operator and its word, so the `&` after the word puts `cat <<EOF` in the
+  // background and runs the next statement; `let x=1<<2&...` holds the same heredoc for bash.
+  it.each(['cat <<EOF&python3 x.py', 'cat <<EOF&python3 x.py\nbody\nEOF', "cat <<'EOF'&python3 x.py", 'let x=1<<2&python3 x.py'])('bash -c %j asks at the interpreter floor and meets a python3 deny', (text) => {
+    const ask = evaluate('bash', ['-c', text], { allow: ['bash -c *'] })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: ['python3 *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

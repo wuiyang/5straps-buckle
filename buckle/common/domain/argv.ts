@@ -1272,6 +1272,9 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       const heredoc = heredocAt(text, index + 2, level.command)
       if (heredoc) heredocs.push(heredoc.heredoc)
       index = (heredoc?.next ?? index + 2) - 1
+      // The jump passes over the delimiter word, so its last character is the one read last: a `&` right after the
+      // word is a list operator, not the `&` of a `<&` the first `<` would make of it (fix brief 6, A2).
+      level.previous = text[index]!
     } else if (character === '(') {
       // `!(` at a word start is a negated subshell, or an extended glob when extglob is on, which the text need not say.
       const kind: ParenKind = !WORD_PAREN_BEFORE.has(previous) ? 'command' : previous === '!' && previousStarted ? 'unsure' : 'word'
