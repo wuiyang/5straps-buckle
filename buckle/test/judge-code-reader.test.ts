@@ -761,6 +761,21 @@ describe('the code a here-string hands an interpreter', () => {
     expect(paths(call('flock', '-w', '5', 'lk', 'node', 'build.js'))).toEqual(['/workspace/build.js'])
   })
 
+  it('refuses a wrapper that sets the program name, which points an interpreter at a venv unseen (fix brief 5, N1)', () => {
+    // A venv fixture with neutral names: pyvenv.cfg beside a fv/bin the agent never writes, and a .pth file that runs at
+    // startup. exec -a and env --argv0 make CPython take argv[0] as its executable path and read these before the script.
+    const { call, shell } = workspace({ 'job.py': 'print("JOB")\n', 'fv/pyvenv.cfg': 'home = /usr/bin\n', 'fv/lib/python3.12/site-packages/x.pth': 'import sys\n' })
+    for (const text of ['exec -a fv/bin/python3 python3 job.py', 'exec -afv/bin/python3 python3 job.py', 'exec -c -a fv/bin/python3 python3 job.py', 'env --argv0=fv/bin/python3 python3 job.py', 'env -a fv/bin/python3 python3 job.py']) {
+      expect(shell(text), text).toEqual(shellRefusal)
+    }
+    // The same wrappers typed directly refuse too.
+    expect(call('env', '--argv0=fv/bin/python3', 'python3', 'job.py')).toEqual(shellRefusal)
+    expect(call('env', '-a', 'fv/bin/python3', 'python3', 'job.py')).toEqual(shellRefusal)
+    // Plain exec and env, with no such option, still read the script.
+    expect(paths(shell('exec python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
+
   it('reads a heredoc\'s body as inline code, and refuses one a shell would expand, one left open, and a text with more than one statement', () => {
     const { shell } = workspace({ 'helper.py': 'X = 1\n' })
     expect(reading(shell("python3 - <<'EOF'\nimport helper\nprint(1)\nEOF\n"))).toMatchObject({ inline: 'import helper\nprint(1)', files: [{ path: '/workspace/helper.py' }] })

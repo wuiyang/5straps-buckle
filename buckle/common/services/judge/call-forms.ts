@@ -79,6 +79,26 @@ export function wrapperWords(all: readonly string[][], index: number): string[] 
   return form.slice(1, ends ? start : form.length)
 }
 
+/** An env option word that sets the program name an interpreter reads: a short cluster holding `a`, or `--argv0` (fix brief 5, N1). */
+const ENV_ARGV0 = /^(?:-[^-]*a|--argv0(?:=.*)?$)/
+
+/**
+ * Whether a wrapper in the chain sets the program name an interpreter reads, which points it at a path the reader does
+ * not show (fix brief 5, N1): `exec` with any option (bash's exec getopt is `cla:`, so `-a`, `-c`, and `-l` all set the
+ * program name or the environment), or `env` with `-a` or `--argv0`. CPython takes argv[0] as its executable path and
+ * reads a venv's pyvenv.cfg and its .pth files beside it before the script.
+ */
+export function setsProgramName(all: readonly string[][]): boolean {
+  return all.some((form, index) => {
+    const program = baseCommand(form[0] ?? '')
+    if (program !== 'exec' && program !== 'env') return false
+    const words = wrapperWords(all, index)
+    return program === 'exec'
+      ? words.some(word => word.startsWith('-') && word !== '--')
+      : words.some(word => ENV_ARGV0.test(word))
+  })
+}
+
 /**
  * Whether a word is an option: a cluster of short options holding `short` (`-iC`; a value letter's own value may read as
  * one too, which fails closed), or a long one getopt would take for `long`, by any prefix typed (`--ch`).

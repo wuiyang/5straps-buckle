@@ -13,6 +13,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
+import { setsProgramName } from './call-forms.js'
 import { ratedShellText, SHELL_TEXT_REFUSAL, simpleStatement, statementInterpreter, type StatementFeed } from './shell-statement.js'
 
 /** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
@@ -118,6 +119,9 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain'>): Planned[] | string {
   // flock runs its `-c` text through `$SHELL -c`, which the command reader maps to `sh -c`, but the shell that runs it
   // is whatever SHELL names, so the grammar's reading of it as sh may not be the code that runs (fix brief 5, P3).
   if (chain.some(flockCommand)) return SHELL_TEXT_REFUSAL
+  // A wrapper that sets the program name an interpreter reads (exec with an option, env -a or --argv0) points it at a
+  // path the reader does not show, so a call whose own chain does one is not rated (fix brief 5, N1).
+  if (setsProgramName(chain)) return SHELL_TEXT_REFUSAL
   let statement: { form: readonly string[]; feed: StatementFeed | null } | null | undefined
   let matched = false
   const planned: Planned[] = []
