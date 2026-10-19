@@ -1913,6 +1913,17 @@ describe('a bare redirection operator, a named descriptor, or a zsh clobber oper
   })
 })
 
+describe("ksh93's >;word and <>;word redirections (fix brief 6, A5)", () => {
+  // The ksh93 manual (sh.1, Input/Output): `>;word` writes a temporary file renamed to word when the command succeeds,
+  // and `<>;word` is `<>` truncated the same way; both run the command. bash and dash reject `>;` as a syntax error.
+  it.each(['>;out python3 x.py', '<>;out python3 x.py', '>; out python3 x.py'])('ksh -c %j asks at the interpreter floor and meets a python3 deny', (text) => {
+    const ask = evaluate('ksh', ['-c', text], { allow: ['ksh -c *'] })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate('ksh', ['-c', text], { allow: ['ksh -c *'], deny: ['python3 *'] }).kind).toBe('deny')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

@@ -165,10 +165,11 @@ function wrapperOf(command: string): Wrapper | undefined {
 export const REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:[<>]|&>)/
 /**
  * A word that is only a redirection operator, whose target is the next word (`<<- EOF`, `>& out`, `{fd}> out`): bash's
- * `<`, `<<`, `<<-`, `<<<`, `<>`, `<&`, `>`, `>>`, `>&`, `>|`, `&>`, and `&>>`, and zsh's forms of the output ones ending in
- * `|` or `!` (`>!`, `>>|`, `>&|`, `>>&`, `&>|`), with optional descriptor digits or a named descriptor before it.
+ * `<`, `<<`, `<<-`, `<<<`, `<>`, `<&`, `>`, `>>`, `>&`, `>|`, `&>`, and `&>>`, zsh's forms of the output ones ending in
+ * `|` or `!` (`>!`, `>>|`, `>&|`, `>>&`, `&>|`), and ksh93's `>;` and `<>;` (fix brief 6, A5), with optional descriptor
+ * digits or a named descriptor before it.
  */
-export const BARE_REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:<<-|<<<|<<|<>|<&|<|(?:>>?&?|&>>?)[|!]?)$/
+export const BARE_REDIRECTION = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?(?:<<-|<<<|<<|<>;?|<&|<|>;|(?:>>?&?|&>>?)[|!]?)$/
 /**
  * A bare operator ending in `!` (`>!`, `>>!`, `>&!`): zsh's clobber forms, whose target is the next word, while bash, dash,
  * and ksh read `>` (or `>>`, `>&`) onto a file named `!` and the next word as a word of the command (a probe under bash

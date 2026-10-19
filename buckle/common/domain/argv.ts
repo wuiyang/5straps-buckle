@@ -1322,11 +1322,12 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         // A subshell's redirections follow its `)`, in the next command.
         if (opened !== undefined) level.feeding.closed = level.feeding.compounds.pop() ?? null
       }
-    } else if ((character === '&' && (previous === '>' || previous === '<')) || (character === '|' && (previous === '>' || (previous === '&' && text[index - 2] === '>')))) {
+    } else if ((character === '&' && (previous === '>' || previous === '<')) || (character === '|' && (previous === '>' || (previous === '&' && text[index - 2] === '>'))) || (character === ';' && previous === '>')) {
       // The `&` of `>&`, `<&`, or `N>&M` and the `|` of `>|` belong to a redirection operator, not a list operator, in
       // every POSIX shell, so they stay in the statement; a shell runs the command after the redirection (fix brief 5,
-      // N2). So does the `|` of zsh's `>&|` and `>>&|`, a syntax error in bash and dash (fix brief 6, A4). The `&` of `&>`
-      // and `&>>` still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
+      // N2). So does the `|` of zsh's `>&|` and `>>&|` (fix brief 6, A4), and the `;` of ksh93's `>;word` and `<>;word`
+      // (A5), each a syntax error in bash and dash, so keeping it there merges nothing they run. The `&` of `&>` and `&>>`
+      // still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
       // one redirection, read as `>f b`, leaves the same command, so the cut reads at least what either runs (fix brief
       // 6, A1).
       level.wordStart = true
