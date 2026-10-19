@@ -674,6 +674,17 @@ describe('the single-statement grammar (fix brief 4, P)', () => {
     expect(call('dash', '-c', 'node build.js &> out.log')).toEqual(shellRefusal)
   })
 
+  it('rates one command holding inline code, whose quoted word the rules also split into pieces, with that code shown (fix brief 5, P1)', () => {
+    const { shell } = workspace({ 'a.py': 'print(1)\n', 'b.py': 'print(2)\n' })
+    expect(reading(shell('python3 -c "print(1)"'))).toMatchObject({ inline: 'print(1)', files: [] })
+    expect(reading(shell('python3 -c "import os; print(1)"'))).toMatchObject({ inline: 'import os; print(1)', files: [] })
+    expect(reading(shell("node -e 'console.log(1); console.log(2)'"))).toMatchObject({ inline: 'console.log(1); console.log(2)', files: [] })
+    // Compound text still refuses, quoted code in it or not.
+    for (const text of ['python3 a.py && python3 -c "print(1)"', 'python3 -c "print(1)" | python3 b.py', 'python3 $(echo a).py -c "x;y"', '{ python3 -c "print(1)"; }']) {
+      expect(shell(text), text).toEqual(shellRefusal)
+    }
+  })
+
   it('removes quotes as a shell does, and refuses an expansion inside double quotes', () => {
     expect(simpleStatement(`python3 "my job.py" 'a b' c\\ d -c "print(\\"x\\")"`, 'bash')).toEqual({ words: ['python3', 'my job.py', 'a b', 'c d', '-c', 'print("x")'], feed: null })
     expect(simpleStatement('A=1 B="x y" node build.js < in.txt', 'sh')).toEqual({ words: ['node', 'build.js'], feed: { kind: 'file', name: 'in.txt' } })

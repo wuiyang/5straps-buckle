@@ -107,25 +107,30 @@ export interface CodeInput {
 interface Planned { form: readonly string[]; feed: StatementFeed | null }
 
 /**
- * The invocations to read, each with its feed (fix brief 4, P): the call's own forms as they are, and a form from shell
- * text only where that text is one simple command the grammar parses whole (shell-statement.ts) and the interpreter form
- * it runs through the known wrappers is exactly this one; a refusal otherwise, so a person decides.
+ * The invocations to read, each with its feed (fix brief 4, P): the call's own forms as they are, and from shell text
+ * only the one statement the grammar parses whole (shell-statement.ts), where the rules hold that same interpreter form
+ * among their own; a refusal otherwise, so a person decides. The grammar reads the text as one simple command, so any
+ * other form the rules hold from it is a piece (statementPieces), split inside a quoted word where no shell splits: no
+ * statement, so it is neither read nor required to match (fix brief 5, P1).
  */
 function planOf(input: Pick<CodeInput, 'forms' | 'chain'>): Planned[] | string {
   const chain = input.chain ?? input.forms
   let statement: { form: readonly string[]; feed: StatementFeed | null } | null | undefined
+  let matched = false
   const planned: Planned[] = []
   for (const form of input.forms) {
     if (chain.includes(form)) {
       planned.push({ form, feed: null })
       continue
     }
-    // The rules may read the one statement more than once (its pieces too); it is read once.
-    const known = statement !== undefined
     if (statement === undefined) statement = textStatement(chain.at(-1))
-    if (statement === null || !sameWords(statement.form, form)) return SHELL_TEXT_REFUSAL
-    if (!known) planned.push({ form, feed: statement.feed })
+    if (statement === null) return SHELL_TEXT_REFUSAL
+    if (matched || !sameWords(statement.form, form)) continue
+    matched = true
+    planned.push({ form, feed: statement.feed })
   }
+  // The rules and the grammar must agree on the statement's interpreter form, or neither reading is trusted.
+  if (statement !== undefined && !matched) return SHELL_TEXT_REFUSAL
   return planned
 }
 

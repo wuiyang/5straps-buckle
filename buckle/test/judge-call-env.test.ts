@@ -352,6 +352,17 @@ describe('shell text the reader does not rate whole (fix brief 4, P)', () => {
     expect(simple.ran).toBe(true)
     expect(judge.shown.map(input => input.files.map(file => file.path))).toEqual([['/workspace/build.js']])
   })
+
+  it('rates a script_run bash body that is one command holding inline code, with the code shown (fix brief 5, P1)', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const requestId = `script-${Math.random()}`
+    await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'script_run', args: { runtime: 'bash', script: 'python3 -c "print(1)"' } }, sessionId: 'env', approvalWait: { mode: 'none' } })
+    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    expect(entry.judge).toMatchObject({ passed: true, passedBy: 'thorough' })
+    expect(judge.shown.map(input => input.inline)).toEqual(['print(1)'])
+  })
 })
 
 describe('the 500-character clip on a reason no stage rated (fix brief 4, G13)', () => {
