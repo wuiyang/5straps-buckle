@@ -1319,6 +1319,10 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
         // A subshell's redirections follow its `)`, in the next command.
         if (opened !== undefined) level.feeding.closed = level.feeding.compounds.pop() ?? null
       }
+    } else if ((character === '&' && (previous === '>' || previous === '<' || text[index + 1] === '>')) || (character === '|' && previous === '>')) {
+      // The `&` of `>&`, `<&`, or `N>&M`, the `&` of `&>` or `&>>`, and the `|` of `>|` belong to a redirection operator,
+      // not a list operator, so they stay in the statement; a shell runs the command after the redirection (fix brief 5, N2).
+      level.wordStart = true
     } else if (BREAK_CHARACTERS.has(character)) {
       level.wordStart = true
       finish(level, index, index + 1)

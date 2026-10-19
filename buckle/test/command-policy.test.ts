@@ -1817,6 +1817,22 @@ describe('the destructive floor the owner raised', () => {
   })
 })
 
+describe('a statement a redirection opens (fix brief 5, N2)', () => {
+  it('keeps the interpreter after >&, 2>&1, and >| in the statement, so the deny list and the floor meet it', () => {
+    for (const text of ['>&2 python3 x.py', '2>&1 python3 x.py', '>| out python3 x.py']) {
+      expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: ['python3 *'] }).kind, text).toBe('deny')
+      const ask = evaluate('bash', ['-c', text], { allow: ['bash -c *'] })
+      expect(ask.kind, text).toBe('ask')
+      if (ask.kind === 'ask') expect(ask.asks[0]?.rule, text).toBe('destructive_command')
+    }
+  })
+
+  it('does not let a leading redirection lift a deny glob or the built-in floor', () => {
+    expect(evaluate('bash', ['-c', '>&2 git push --force origin main'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', '>&2 sudo ls'], { allow: ['bash -c *'] }).kind).toBe('ask')
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

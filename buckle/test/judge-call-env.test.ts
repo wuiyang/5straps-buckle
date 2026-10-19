@@ -414,6 +414,19 @@ describe('a function bash imports from the environment (fix brief 4, P, extra)',
   })
 })
 
+describe('a variable set after a leading redirection (fix brief 5, N2)', () => {
+  it('is read, since the redirection no longer ends the statement before the assignment', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const { response, entry, ran } = await call(runtime, {}, ['bash', '-c', '2>&1 PYTHONPATH=x python3 a.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: codeLoadingReason('PYTHONPATH'), passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
 describe('a call that sets HOME (fix brief 5, P4)', () => {
   it('is not rated, since zsh and Python read startup code from HOME, and the reason names HOME with no value', async () => {
     expect(codeLoadingVariable(callVariables({ env: { HOME: '/workspace/h' } }))).toBe('HOME')
