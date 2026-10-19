@@ -98,6 +98,9 @@ export function simpleStatement(text: string, shell: string): SimpleStatement | 
     if (redirection) {
       const [whole, digits = '', operator = ''] = redirection
       if (operator.startsWith('&') && (digits !== '' || !BOTH_OUTPUTS_SHELLS.has(shell))) return null
+      // zsh reads a `<` right before a digit or `-` as the start of a numeric glob (`<0-9>`, `<5->`, `<->`), a word it
+      // expands to file names, where another shell reads a feed (zsh Src/lex.c, isnumglob; fix brief 5, P2).
+      if (shell === 'zsh' && operator.startsWith('<') && /[\d-]/.test(text[at + digits.length + 1] ?? '')) return null
       const target = readWord(text, skipBlanks(text, at + whole.length))
       if (target === null || target.raw === '') return null
       at = target.end

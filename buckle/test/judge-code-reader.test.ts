@@ -685,6 +685,19 @@ describe('the single-statement grammar (fix brief 4, P)', () => {
     }
   })
 
+  it('refuses a < in zsh text that zsh reads as a numeric glob, and reads a plain feed (fix brief 5, P2)', () => {
+    // zsh's lexer reads `<` followed by digits, `-`, digits, and `>` as one numeric glob word, with no option check
+    // (zsh Src/lex.c: isnumglob, called in gettok's LX1_INANG case and gettokstr's LX2_INANG case), so
+    // `python3 <0-9>.py` runs `python3 7.py`, not a feed from 0-9. zsh is not installed here; this follows that source.
+    const { call } = workspace({ '0-9': 'print(0)\n', '7.py': 'print(7)\n', 'job.py': 'print(1)\n' })
+    for (const text of ['python3 <0-9>.py', 'python3 <5->.py', 'python3 <-9>.py', 'python3 <->.py', 'python3 0<0-9>.py', 'python3 a<0-9>.py']) {
+      expect(call('zsh', '-c', text), text).toEqual(shellRefusal)
+    }
+    expect(paths(call('zsh', '-c', 'python3 < job.py'))).toEqual(['/workspace/job.py'])
+    // bash has no numeric glob: the same text feeds 0-9.
+    expect(paths(call('bash', '-c', 'python3 <0-9>.py'))).toEqual(['/workspace/0-9'])
+  })
+
   it('removes quotes as a shell does, and refuses an expansion inside double quotes', () => {
     expect(simpleStatement(`python3 "my job.py" 'a b' c\\ d -c "print(\\"x\\")"`, 'bash')).toEqual({ words: ['python3', 'my job.py', 'a b', 'c d', '-c', 'print("x")'], feed: null })
     expect(simpleStatement('A=1 B="x y" node build.js < in.txt', 'sh')).toEqual({ words: ['node', 'build.js'], feed: { kind: 'file', name: 'in.txt' } })
