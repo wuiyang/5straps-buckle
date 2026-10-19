@@ -192,6 +192,9 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // An option the reader does not model could change which word is the script, so the call asks rather than rate code
   // that may not be the code that runs (fix brief 3, R7); so could a C shell's text (fix brief 4, P).
   if (read.refusal !== null) return read.refusal
+  // A debugger that reads its commands from standard input runs code the reader does not show: `python3 -m pdb job.py`
+  // fed a file runs that file's debugger commands before or instead of the script (fix brief 5, G2c).
+  if (program === 'python' && planned.feed !== null && read.modules.includes('pdb')) return CODE_REFUSALS.interactive
   inline.push(...read.inline)
   for (const name of read.packages) named(packages, name, cwd)
   const language = languageOfProgram(program)
@@ -500,7 +503,8 @@ const SUBCOMMANDS: Readonly<Record<string, { script: readonly string[]; inert: r
     refused: ['test', 'x', 'install', 'i', 'add', 'a', 'remove', 'rm', 'update', 'pm', 'build', 'init', 'create', 'c', 'repl', 'exec', 'patch', 'publish'],
   },
   tsx: { script: ['watch'], inert: [], refused: [] },
-  node: { script: ['inspect'], inert: [], refused: [] },
+  // node's `inspect` and `debug` start the debugger, a subcommand that runs code the reader does not follow (fix brief 5, G2c).
+  node: { script: [], inert: [], refused: ['inspect', 'debug'] },
 }
 
 /**
@@ -678,7 +682,9 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     // While seeking the script, an option in none of the interpreter's tables could take the next word as its value and
     // hide the script that runs, so the reading fails closed (fix brief 3, R7).
     if (seeking && word.startsWith('-') && word !== '-' && word !== '--' && OPTION_CHECKED.has(program) && !knownOption(program, key)) unknownOption = true
-    if (seeking && isInteractive(program, key)) interactive = true
+    // php keeps parsing after `-f <file>`, and `-a` or `--interactive` then runs its interactive shell in place of the
+    // script, so php's interactive flag is read over every option word, not only while seeking (fix brief 5, G2b).
+    if ((seeking || program === 'php') && isInteractive(program, key)) interactive = true
     candidates.push(word)
     if (value !== null) candidates.push(value)
   }

@@ -429,6 +429,20 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(paths(shell('node -i job.js < second.js'))).toEqual(['/workspace/job.js'])
   })
 
+  it('refuses php -a after -f, a debugger fed from standard input, and node\'s inspect and debug (fix brief 5, G2b and G2c)', () => {
+    const { read, shell } = workspace({ 'x.php': '<?php echo 1;\n', 'job.py': 'print(1)\n', 'job.js': 'console.log(1)\n', 'cmds': 'c\n' })
+    const interactive = { kind: 'refused', reason: CODE_REFUSALS.interactive, truncated: false }
+    const subcommand = { kind: 'refused', reason: CODE_REFUSALS.subcommand, truncated: false }
+    // php keeps parsing after -f <file>, and -a or --interactive then runs its shell in place of the script (php_cli.c).
+    expect(shell('php -f x.php -a < cmds')).toEqual(interactive)
+    expect(shell('php -f x.php --interactive < cmds')).toEqual(interactive)
+    // pdb reads its debugger commands from the fed input, which the reader cannot show.
+    expect(shell('python3 -m pdb job.py < cmds')).toEqual(interactive)
+    // node's inspect and debug start the debugger, a subcommand the reader does not follow.
+    expect(shell('node inspect job.js < cmds')).toEqual(subcommand)
+    expect(read(['node', 'debug', 'job.js'])).toEqual(subcommand)
+  })
+
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
     const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
