@@ -1,4 +1,4 @@
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -671,6 +671,57 @@ describe('the code a Python call runs', () => {
   it('takes a package folder before a module file of the same name, as Python\'s finder does', () => {
     const { read } = workspace({ 'uses.py': 'import pkg\n', 'pkg/__init__.py': 'X = 1\n', 'pkg.py': 'Y = 2\n' })
     expect(paths(read(['python3', 'uses.py']))).toEqual(['/workspace/uses.py', '/workspace/pkg/__init__.py'])
+  })
+
+  it('refuses where a __pycache__ cannot be listed, since a pyc may hide there (fix brief 5, G12b)', () => {
+    const { view, root } = workspace({ 'job.py': 'import helper\n', 'helper.py': 'X = 1\n' })
+    const refusal = { kind: 'refused', reason: CODE_REFUSALS.compiledPython, truncated: false }
+    // A folder the reader cannot list throws anything but "not there"; the compiled check then fails closed.
+    const blocked = { ...view, names: (folder: string) => { if (folder.endsWith('__pycache__')) { const error = new Error('denied') as NodeJS.ErrnoException; error.code = 'EACCES'; throw error } return view.names(folder) } }
+    expect(readInterpreterCode({ forms: [['python3', 'job.py']], cwd: root, view: blocked })).toEqual(refusal)
+    // A missing folder (ENOENT) stays empty, so a clean tree still reads.
+    expect(readInterpreterCode({ forms: [['python3', 'job.py']], cwd: root, view }).kind).toBe('read')
+  })
+
+  it('refuses a __pycache__ the process cannot list, with a planted pyc, unless it runs as root (fix brief 5, G12b)', () => {
+    if (process.getuid?.() === 0) return
+    const ws = workspace({ 'job.py': 'import helper\n', 'helper.py': 'X = 1\n', '__pycache__/helper.cpython-312.pyc': Buffer.from([0x00, 0x0d, 0x0d, 0x0a]) })
+    const cache = join(ws.root, '__pycache__')
+    chmodSync(cache, 0o311)
+    try {
+      expect(ws.read(['python3', 'job.py'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.compiledPython, truncated: false })
+    } finally {
+      chmodSync(cache, 0o755)
+    }
+  })
+
+  it('refuses a symlinked __main__.py whose compiled form sits beside the link, for -m and a folder script (fix brief 5, G12b)', () => {
+    const compiled = Buffer.from([0x00, 0x0d, 0x0d, 0x0a])
+    const refusal = { kind: 'refused', reason: CODE_REFUSALS.compiledPython, truncated: false }
+    // CPython looks for <pkg>/__pycache__/__main__.pyc beside the folder as named, before following the __main__ link.
+    const pkg = workspace({ 'tool/__init__.py': '', 'tool/real_main.py': 'print(1)\n', 'tool/__pycache__/__main__.cpython-312.pyc': compiled })
+    symlinkSync('real_main.py', join(pkg.root, 'tool', '__main__.py'))
+    expect(pkg.read(['python3', '-m', 'tool'])).toEqual(refusal)
+    const app = workspace({ 'app/real_main.py': 'print(1)\n', 'app/__pycache__/__main__.cpython-312.pyc': compiled })
+    symlinkSync('real_main.py', join(app.root, 'app', '__main__.py'))
+    expect(app.read(['python3', 'app'])).toEqual(refusal)
+  })
+
+  it('refuses -X pycache_prefix and any unknown -X value, and reads a known one (fix brief 5, G12b)', () => {
+    const { read } = workspace({ 'job.py': 'print(1)\n' })
+    const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
+    expect(read(['python3', '-X', 'pycache_prefix=/tmp/pc', 'job.py'])).toEqual(unknown)
+    expect(read(['python3', '-X', 'nonesuch', 'job.py'])).toEqual(unknown)
+    expect(paths(read(['python3', '-X', 'dev', 'job.py']))).toEqual(['/workspace/job.py'])
+    expect(paths(read(['python3', '-X', 'int_max_str_digits=640', 'job.py']))).toEqual(['/workspace/job.py'])
+  })
+
+  it('lists each folder at most once while checking for compiled Python (fix brief 5, G12b)', () => {
+    const { view, root } = workspace({ 'job.py': 'import a\nimport b\n', 'a.py': 'X = 1\n', 'b.py': 'Y = 2\n' })
+    const seen = new Map<string, number>()
+    const counted = { ...view, names: (folder: string) => { seen.set(folder, (seen.get(folder) ?? 0) + 1); return view.names(folder) } }
+    expect(readInterpreterCode({ forms: [['python3', 'job.py']], cwd: root, view: counted }).kind).toBe('read')
+    expect([...seen.values()].every(count => count === 1)).toBe(true)
   })
 
   it('reads a one-name group that spells the word unparsed, the refusal being no string (fix brief 4, R8)', () => {

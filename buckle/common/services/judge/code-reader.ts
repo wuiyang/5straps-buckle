@@ -154,7 +154,22 @@ function sameWords(one: readonly string[], other: readonly string[]): boolean {
   return one.length === other.length && one.every((word, index) => word === other[index])
 }
 
-/** What the reader gathers before it reads any file: the inline code, the packages met, and each file to read. */
+/** The names a folder holds, read once per folder per reading (memoListing), so the compiled-Python check lists each folder once (fix brief 5, G12b). */
+type Listing = (folder: string) => readonly string[]
+
+/** A per-reading memo of folder listings over a view, so a folder is listed once however many modules sit beside it (fix brief 5, G12b). */
+function memoListing(view: CodeView): Listing {
+  const cache = new Map<string, readonly string[]>()
+  return (folder) => {
+    const known = cache.get(folder)
+    if (known !== undefined) return known
+    const listed = view.names(folder)
+    cache.set(folder, listed)
+    return listed
+  }
+}
+
+/** What the reader gathers before it reads any file: the inline code, the packages met, each file to read, and a folder-listing memo. */
 interface Gathered {
   inline: string[]
   /** Each package by name, with every real folder an importer looks its version up from, or null for none (Python). */
@@ -164,12 +179,14 @@ interface Gathered {
    * package it runs; a file inherits its importer's (fix brief 3, F1).
    */
   queue: Array<{ real: string; language: Language; runtime: string }>
+  /** Folder listings read once each, for the compiled-Python check (fix brief 5, G12b). */
+  names: Listing
 }
 
 function readCode(input: CodeInput): CodeRead {
   const plan = planOf(input)
   if (typeof plan === 'string') return refused(plan)
-  const gathered: Gathered = { inline: [], packages: new Map(), queue: [] }
+  const gathered: Gathered = { inline: [], packages: new Map(), queue: [], names: memoListing(input.view) }
   for (const planned of plan) {
     const reason = gatherForm(planned, gathered, input)
     if (reason !== null) return refused(reason)
@@ -201,7 +218,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   const runtime = RUNNERS.has(program) ? programOf(read.packages[0] ?? '') : program
   // `python -m a.b`: the module's file under the working directory, with its package's __main__.py, else a package.
   for (const module of read.modules) {
-    const files = pythonModule({ module, roots: [cwd], view, main: true })
+    const files = pythonModule({ module, roots: [cwd], view, names: into.names, main: true })
     if (typeof files === 'string') return files
     if (files.length === 0) named(packages, module.split('.')[0]!, null)
     enqueue(files, runtime)
@@ -230,8 +247,10 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   if (read.operand !== null) {
     const entry = scriptEntry(read.operand.runtime, read.operand.name, cwd, view)
     if (entry !== 'none' && 'refused' in entry) return entry.refused
-    // A folder's __main__.py is imported, so its compiled form may run; the reader refuses that for a script too (fix brief 4, G12).
-    if (entry !== 'none' && read.operand.runtime === 'python' && compiledBeside(view, dirname(entry.real), pythonStem(entry.real))) return CODE_REFUSALS.compiledPython
+    // A folder's __main__.py is imported, so its compiled form may run; the reader refuses that for a script too (fix
+    // brief 4, G12). The folder named runs its __main__ beside its own path, before any link is followed, so a pyc there
+    // runs even when __main__.py is a link (fix brief 5, G12b).
+    if (entry !== 'none' && read.operand.runtime === 'python' && (compiledBeside(into.names, dirname(entry.real), pythonStem(entry.real)) || compiledBeside(into.names, join(cwd, read.operand.name), '__main__'))) return CODE_REFUSALS.compiledPython
     if (entry !== 'none') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
     else if (read.operand.required && read.inline.length === 0 && read.modules.length === 0) return CODE_REFUSALS.notFound
   }
@@ -250,7 +269,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     if (typeof located === 'object') queue.push({ real: located.real, language, runtime })
   }
   for (const code of read.inline) {
-    const found = importsOf(language, code, { file: null, cwd, view, packages, runtime })
+    const found = importsOf(language, code, { file: null, cwd, view, packages, runtime, names: into.names })
     if (typeof found === 'string') return found
     enqueue(found, runtime)
   }
@@ -271,7 +290,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   }
   const code = feed.kind === 'heredoc' ? feed.body : feed.code
   inline.push(code)
-  const found = importsOf(language, code, { file: null, cwd, view, packages, runtime })
+  const found = importsOf(language, code, { file: null, cwd, view, packages, runtime, names: into.names })
   if (typeof found === 'string') return found
   enqueue(found, runtime)
   return null
@@ -303,7 +322,7 @@ function readClosure(gathered: Gathered, place: Pick<CodeInput, 'cwd' | 'view'>)
     const content = buffer.toString('utf8')
     files.push({ path, sha256: createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length, content })
     const language = languageOfFile(next.real, content) ?? next.language
-    const found = importsOf(language, content, { file: next.real, cwd, view, packages, runtime: next.runtime })
+    const found = importsOf(language, content, { file: next.real, cwd, view, packages, runtime: next.runtime, names: gathered.names })
     if (typeof found === 'string') return refused(found)
     for (const item of found) queue.push({ ...item, runtime: next.runtime })
   }
@@ -405,6 +424,12 @@ function stdinMarker(program: string, word: string): boolean {
 }
 /** Python's short options that take no value, so a cluster of only these is a known flag; a value letter (W, X) or code letter (c, m) in a cluster fails closed. */
 const PYTHON_FLAG_CLUSTER = /^-[bBdEhiIOPqRsSuvVx]+$/
+/**
+ * The `-X` implementation options the reader models. `pycache_prefix` moves the cache tree, so Python reads a pyc from a
+ * folder the reader never looks at; it is left out, and any other `-X` value not here refuses as an unknown option, so
+ * the reader never rates a command whose `-X` it does not know (fix brief 5, G12b).
+ */
+const KNOWN_PYTHON_X = new Set(['dev', 'utf8', 'faulthandler', 'importtime', 'warn_default_encoding', 'frozen_modules', 'int_max_str_digits', 'showrefcount', 'tracemalloc', 'no_debug_ranges', 'perf'])
 
 /**
  * Whether an option, by its key, makes the interpreter read its standard input as code once its script or inline code
@@ -570,6 +595,13 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     const word = args[index]!
     // The option as the interpreter matches it, once per word, for every table below (fix brief 4, G1).
     const { key, value } = optionKey(program, word)
+    // python's `-X <name>` takes its value as the next word; a value the reader does not model (pycache_prefix moves the
+    // cache tree) could change which code runs, so it fails closed (fix brief 5, G12b).
+    if (seeking && program === 'python' && key === '-X') {
+      const setting = index + 1 < args.length ? args[++index]! : undefined
+      if (setting === undefined || !KNOWN_PYTHON_X.has(setting.split('=')[0]!)) unknownOption = true
+      continue
+    }
     if (flags.includes(key) && value === null && index + 1 < args.length) {
       inline.push(args[++index]!)
       continue
@@ -881,7 +913,7 @@ export function readBunScriptPreloads(input: { forms: readonly string[][]; chain
     // A bun form from shell text is read only where that text is one simple command (fix brief 4, P).
     const plan = planOf({ forms, chain: input.chain })
     if (typeof plan === 'string') return refused(plan)
-    const gathered: Gathered = { inline: [], packages: new Map(), queue: [] }
+    const gathered: Gathered = { inline: [], packages: new Map(), queue: [], names: memoListing(input.view) }
     for (const { form: [, ...args] } of plan) {
       const { preloads, configs, refusal } = bunOptions(args)
       if (refusal !== null) return refused(refusal)
@@ -1219,8 +1251,8 @@ function manifestVersion(real: string, view: CodeView): string | null {
  * The local files one piece of code imports, by its language, each with the language it is read as; the bare
  * specifiers are added to `packages`. A string where an import names a local file that does not exist.
  */
-/** Where an import is resolved from: its file (null for inline code), the working directory, the view, the packages met, and the runtime whose rules resolve it. */
-interface Place { file: string | null; cwd: string; view: CodeView; packages: Packages; runtime?: string }
+/** Where an import is resolved from: its file (null for inline code), the working directory, the view, the packages met, the runtime whose rules resolve it, and the folder-listing memo (fix brief 5, G12b). */
+interface Place { file: string | null; cwd: string; view: CodeView; packages: Packages; runtime?: string; names: Listing }
 
 function importsOf(language: Language, code: string, place: Place): Found | string {
   if (language === 'js') return jsImports(code, place)
@@ -1320,7 +1352,7 @@ function pythonImports(code: string, place: Place): Found | string {
   const beside = place.file === null ? place.cwd : dirname(place.file)
   for (const [, list = ''] of code.matchAll(PYTHON_IMPORT)) {
     for (const module of list.split(',').map(item => item.trim().split(/\s+/)[0]!).filter(Boolean)) {
-      const files = pythonModule({ module, roots: [beside, place.cwd], view: place.view })
+      const files = pythonModule({ module, roots: [beside, place.cwd], view: place.view, names: place.names })
       if (typeof files === 'string') return files
       if (files.length === 0) named(place.packages, module.split('.')[0]!, null)
       found.push(...files)
@@ -1338,14 +1370,14 @@ function pythonImports(code: string, place: Place): Found | string {
       roots = [root]
       // `from . import a`: each name is a module of the package; `from .m import a`: m is, and a may be one too.
       for (const name of module === '' ? imported : [module]) {
-        const files = pythonModule({ module: name, roots, view: place.view })
+        const files = pythonModule({ module: name, roots, view: place.view, names: place.names })
         if (typeof files === 'string') return files
         if (files.length === 0) return CODE_REFUSALS.missing
         found.push(...files)
       }
       if (module === '') continue
     } else {
-      const files = pythonModule({ module, roots, view: place.view })
+      const files = pythonModule({ module, roots, view: place.view, names: place.names })
       if (typeof files === 'string') return files
       if (files.length === 0) {
         named(place.packages, module.split('.')[0]!, null)
@@ -1355,7 +1387,7 @@ function pythonImports(code: string, place: Place): Found | string {
     }
     // A name imported from a package may be a module of it, which runs on import too.
     for (const name of imported) {
-      const files = pythonModule({ module: `${module}.${name}`, roots, view: place.view })
+      const files = pythonModule({ module: `${module}.${name}`, roots, view: place.view, names: place.names })
       if (typeof files === 'string') return files
       found.push(...files)
     }
@@ -1371,24 +1403,27 @@ function pythonImports(code: string, place: Place): Found | string {
  * beside any part of the path in a root up to the one that holds the module, so a module whose only form is compiled
  * refuses too, and beside every file shown.
  */
-function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; main?: boolean }): Found | string {
+function pythonModule(input: { module: string; roots: readonly string[]; view: CodeView; names: Listing; main?: boolean }): Found | string {
   const parts = input.module.split('.').filter(Boolean)
   for (const root of input.roots) {
     for (let index = 0; index < parts.length; index++) {
       const above = join(root, ...parts.slice(0, index))
-      if (compiledBeside(input.view, above, parts[index]!) || compiledBeside(input.view, join(above, parts[index]!), '__init__')) return CODE_REFUSALS.compiledPython
+      if (compiledBeside(input.names, above, parts[index]!) || compiledBeside(input.names, join(above, parts[index]!), '__init__')) return CODE_REFUSALS.compiledPython
     }
     const path = join(...parts)
     const module = fileAt(input.view, `./${path}/__init__.py`, root) ?? fileAt(input.view, `./${path}.py`, root)
     const namespaceMain = !module && input.main ? fileAt(input.view, `./${path}/__main__.py`, root) : null
     if (!module && !namespaceMain) continue
+    // `python -m <pkg>` runs <pkg>/__main__.py beside the folder as named, before a link is followed, so a compiled
+    // __main__ there runs even when __main__.py is a symlink to another folder (fix brief 5, G12b).
+    if (input.main && compiledBeside(input.names, join(root, path), '__main__')) return CODE_REFUSALS.compiledPython
     const packages = parts.slice(0, -1).flatMap((_, index) => {
       const init = fileAt(input.view, `./${join(...parts.slice(0, index + 1))}/__init__.py`, root)
       return init ? [init] : []
     })
     const main = namespaceMain ?? (input.main && module!.endsWith('__init__.py') ? fileAt(input.view, `./${path}/__main__.py`, root) : null)
     const files = [...packages, ...(module ? [module] : []), ...(main ? [main] : [])]
-    if (files.some(real => compiledBeside(input.view, dirname(real), pythonStem(real)))) return CODE_REFUSALS.compiledPython
+    if (files.some(real => compiledBeside(input.names, dirname(real), pythonStem(real)))) return CODE_REFUSALS.compiledPython
     return files.map(real => ({ real, language: 'python' as const }))
   }
   return []
@@ -1403,12 +1438,18 @@ function pythonStem(real: string): string {
  * Whether a folder holds a compiled form of a module, which Python may run in place of its source (fix brief 4, G12):
  * a cached `__pycache__/<stem>.*.pyc`, used whenever its header matches the source or is never checked; a legacy
  * `<stem>.pyc`, imported where no source stands beside it; or an extension module, `<stem>.so`, `<stem>.*.so`,
- * `<stem>.pyd`, or `<stem>.*.pyd`, which the finder tries before the source.
+ * `<stem>.pyd`, or `<stem>.*.pyd`, which the finder tries before the source. A folder the reader cannot list may hide a
+ * compiled module Python opens with search permission alone, so it fails closed (fix brief 5, G12b). The listings come
+ * through the per-reading memo, so each folder is read once.
  */
-function compiledBeside(view: CodeView, folder: string, stem: string): boolean {
+function compiledBeside(names: Listing, folder: string, stem: string): boolean {
   const extension = (name: string) => name === `${stem}.pyc` || name === `${stem}.so` || name === `${stem}.pyd` || (name.startsWith(`${stem}.`) && /\.(?:so|pyd)$/.test(name))
-  if (view.names(folder).some(extension)) return true
-  return view.names(join(folder, '__pycache__')).some(name => name.startsWith(`${stem}.`) && name.endsWith('.pyc'))
+  try {
+    if (names(folder).some(extension)) return true
+    return names(join(folder, '__pycache__')).some(name => name.startsWith(`${stem}.`) && name.endsWith('.pyc'))
+  } catch {
+    return true
+  }
 }
 
 const SHELL_SOURCE = /(?:^|[\n;&|(]|\bthen|\bdo|\belse)[ \t]*(?:source|\.)[ \t]+(['"]?)([^\s'";&|)]+)\1/g
@@ -1469,7 +1510,15 @@ export function createCodeView(input: { paths: PathView; canRead: (real: string)
       return paths.mountOf(real)?.source ?? null
     },
     names(folder) {
-      try { return readdirSync(folder) } catch { return [] }
+      // A folder that is not there is empty; one that is there but cannot be listed (a permission error, say) throws, so
+      // the compiled-Python check fails closed rather than count it empty (fix brief 5, G12b).
+      try {
+        return readdirSync(folder)
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code === 'ENOENT' || code === 'ENOTDIR') return []
+        throw error
+      }
     },
   }
 }
