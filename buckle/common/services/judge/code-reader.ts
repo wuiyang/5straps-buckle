@@ -232,8 +232,13 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
   // A word naming no file is no script; one landing beyond every place the agent's view reaches may be one the
   // judge cannot see, so the call asks.
   for (const name of read.candidates) {
-    // A word with a backslash names a file pathe cannot name as the platform does; as data it is left unread.
-    if (literalBackslash(name)) continue
+    // A word with a backslash is a path pathe cannot name as the platform does: with a slash too it is a path the reader
+    // cannot resolve as node does, so it refuses rather than show another file; a bare word such as `a\b` stays data,
+    // left unread (fix brief 5, H1b).
+    if (literalBackslash(name)) {
+      if (name.includes('/')) return CODE_REFUSALS.unreadable
+      continue
+    }
     const located = view.locate(name, cwd)
     if (located === 'outside') return CODE_REFUSALS.unreadable
     if (typeof located === 'object') queue.push({ real: located.real, language, runtime })

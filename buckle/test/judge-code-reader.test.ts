@@ -198,6 +198,14 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(read(['node', 'addon'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.binary, truncated: false })
   })
 
+  it('refuses a data word holding a backslash and a slash, which it cannot resolve as node does, but leaves a bare one as data (fix brief 5, H1b)', () => {
+    const { read } = workspace({ 'build.js': 'console.log(1)\n' })
+    expect(read(['node', 'build.js', '/elsewhere\\x.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    expect(read(['node', 'build.js', '../x\\y.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    // A bare word with a backslash and no slash is left unread as data, so the script alone is shown.
+    expect(paths(read(['node', 'build.js', 'a\\b']))).toEqual(['/workspace/build.js'])
+  })
+
   it('is the word after a leading --, found the same way, and a namespace package\'s __main__.py for python -m (fix brief 2, H5)', () => {
     const { read } = workspace({ 'build.js': 'evil()\n', 'tool/index.js': 'evil()\n', 'pkg/__main__.py': 'import os\n', 'tools/__main__.py': 'import json\n', 'deep/inner/__main__.py': 'import re\n' })
     const files = (form: string[]) => reading(read(form)).files.map(file => file.path)
