@@ -609,8 +609,10 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
       if (seeking && index + 1 < args.length) {
         const next = args[++index]!
         seeking = false
-        // A stdin marker after the `--` is still one, for every interpreter that has one (fix brief 4, R7b).
-        if (STDIN_SCRIPT_MARKER.has(next)) {
+        // A stdin marker after the `--` is still one, for every interpreter that has one (fix brief 4, R7b); but lua and
+        // luajit open a file literally named `-` once it follows `--`, so for them it is the operand (lua.c 5.4.6
+        // handle_script: `if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0) fname = NULL`; luajit.c the same; fix brief 5, R7b).
+        if (STDIN_SCRIPT_MARKER.has(next) && program !== 'lua' && program !== 'luajit') {
           stdinScript = true
           break
         }

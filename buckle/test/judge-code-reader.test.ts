@@ -327,6 +327,16 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(workspace({ 'data.php': '<?php echo 1;\n' }).shell('php - x < data.php')).toEqual({ kind: 'refused', reason: CODE_REFUSALS.notFound, truncated: false })
   })
 
+  it('reads lua\'s and luajit\'s - after -- as a file of that name, not stdin, but a lone - still as stdin (fix brief 5, R7b)', () => {
+    // lua.c 5.4.6 handle_script opens a file literally named `-` when it follows `--`
+    // (`if (strcmp(fname, "-") == 0 && strcmp(argv[-1], "--") != 0) fname = NULL;`); luajit.c has the same test.
+    const { shell } = workspace({ '-': 'print(0)\n', 'other.lua': 'print(1)\n' })
+    expect(paths(shell('lua -- - < other.lua'))).toEqual(['/workspace/-'])
+    expect(paths(shell('luajit -- - < other.lua'))).toEqual(['/workspace/-'])
+    // A lone `-` with no `--` before it is still stdin, so the redirected file is the script.
+    expect(paths(shell('lua - < other.lua'))).toEqual(['/workspace/other.lua'])
+  })
+
   it('reads a C shell\'s options as clusters: s, i, or t reads the script from its input, b ends the options, c is text never rated (fix brief 4, R7)', () => {
     const { read, shell } = workspace({ 'other.csh': 'echo 1\n', 'x': 'echo 2\n', '-x.csh': 'echo 3\n' })
     expect(paths(shell('tcsh -fs x < other.csh'))).toEqual(['/workspace/other.csh'])
