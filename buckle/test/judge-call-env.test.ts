@@ -414,6 +414,19 @@ describe('a function bash imports from the environment (fix brief 4, P, extra)',
   })
 })
 
+describe('a code-loading reason names the variable as typed (fix brief 5, D1)', () => {
+  it('shows the typed case even where only a reduced form carried the assignment', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'nice *'], deny: [] } })
+    for (const command of [['nice', 'PYTHONSTARTUP=x', 'python3', 'a.py'], ['bash', '-c', '{ PYTHONSTARTUP=x python3 a.py; }']]) {
+      const { entry } = await call(runtime, {}, command)
+      expect((entry.judge as { unavailable: string }).unavailable, command.join(' ')).toBe(codeLoadingReason('PYTHONSTARTUP'))
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
 describe('a variable set after a leading redirection (fix brief 5, N2)', () => {
   it('is read, since the redirection no longer ends the statement before the assignment', async () => {
     const judge = fakeJudge()

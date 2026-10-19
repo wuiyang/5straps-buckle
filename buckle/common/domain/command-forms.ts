@@ -1156,10 +1156,11 @@ function shellSessionCommand(words: readonly string[]): Unwrapped {
   return { command, unread: command.every(readsAsItself) ? null : 'ownParsing' }
 }
 
-/** A command as a rule compares it: the command word reduced to its basename. */
+/** A command as a rule compares it: the command word reduced to its basename. A leading NAME=value assignment is no
+ * command path, so it keeps its case (it reaches the code-loading check by name; fix brief 5, D1). */
 function reduced(words: readonly string[]): string[] {
   const [command = '', ...args] = words
-  return [baseCommand(command), ...args]
+  return [ASSIGNMENT.test(command) ? command : baseCommand(command), ...args]
 }
 
 /** A wrapper's reading, marked `unsure` when an expansion among its words may move the command it runs. */
