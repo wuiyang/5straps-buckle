@@ -20,7 +20,11 @@ export const CODE_LOADING_VARIABLES = Object.freeze({
     'SHELL', 'HOME', 'ARGV0',
   ]),
   // BASH_FUNC_: bash imports a function from `BASH_FUNC_<name>%%`, which then runs in place of the command it names.
-  prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_']),
+  // NPM_CONFIG_: npm, npx, and pnpm read npm_config_* in any case and pass node-options on as NODE_OPTIONS, and
+  // userconfig and globalconfig point npm at a file that can set it (npm 11.19.0 and pnpm 10.33.2 ran a planted preload;
+  // pnpm ignored pnpm_config_node_options, so PNPM_CONFIG_ is not listed). A coordinator default for the owner,
+  // reversible (fix brief 7, B17).
+  prefixes: Object.freeze(['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_', 'NPM_CONFIG_']),
 })
 
 /** One variable a call sets for its command, as the decision AI is shown it. */

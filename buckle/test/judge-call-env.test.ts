@@ -72,7 +72,7 @@ describe('the variables that change what code runs', () => {
   it('are the names and prefixes fix brief 1 lists', () => {
     expect(CODE_LOADING_VARIABLES).toEqual({
       names: ['PATH', 'IFS', 'ENV', 'BASH_ENV', 'ZDOTDIR', 'SHELLOPTS', 'BASHOPTS', 'CDPATH', 'GCONV_PATH', 'GLIBC_TUNABLES', 'JAVA_TOOL_OPTIONS', 'JDK_JAVA_OPTIONS', '_JAVA_OPTIONS', 'PHP_INI_SCAN_DIR', 'PHPRC', 'GOFLAGS', 'GOPATH', 'GOROOT', 'SHELL', 'HOME', 'ARGV0'],
-      prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_'],
+      prefixes: ['LD_', 'DYLD_', 'NODE_', 'PYTHON', 'PERL', 'RUBY', 'GEM_', 'BUN_', 'DENO_', 'BASH_FUNC_', 'NPM_CONFIG_'],
     })
   })
 
@@ -644,6 +644,33 @@ describe('a quoted assignment-shaped head in shell text (fix brief 7, B15)', () 
     expect(response).toMatchObject({ outcome: 'approval_required' })
     expect(ran).toBe(false)
     expect(entry.judge).toMatchObject({ unavailable: SHELL_TEXT_REFUSAL, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe("npm's config variables (fix brief 7, B17)", () => {
+  // npm and npx read npm_config_* in any case and pass node-options on as NODE_OPTIONS, and userconfig and globalconfig
+  // point npm at a file that can set it (npm 11.19.0 ran a planted preload before the runner's bin).
+  it('are not rated: npx tsx job.ts asks, naming the variable without its value, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'hidden.js'), "console.log('marker')\n")
+    writeFileSync(join(config.cwd, 'job.ts'), 'export {}\n')
+    const runtime = await runtimeOf(config, { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['npx *', 'bash -c *'], deny: [] } })
+    const rows: Array<[JsonObject, string[], string]> = [
+      [{ env: { npm_config_node_options: '--require=./hidden.js' } }, ['npx', 'tsx', 'job.ts'], 'npm_config_node_options'],
+      [{ env: { NPM_CONFIG_USERCONFIG: './decoy.rc' } }, ['npx', 'tsx', 'job.ts'], 'NPM_CONFIG_USERCONFIG'],
+      [{}, ['bash', '-c', 'npm_config_node_options=--require=./hidden.js npx tsx job.ts'], 'npm_config_node_options'],
+    ]
+    for (const [args, command, name] of rows) {
+      const { response, entry, ran } = await call(runtime, args, command)
+      expect(response, name).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, name).toBe(false)
+      expect(entry.judge, name).toMatchObject({ unavailable: codeLoadingReason(name), passed: false })
+      expect(JSON.stringify(entry), name).not.toContain('hidden.js')
+      expect(JSON.stringify(entry), name).not.toContain('decoy.rc')
+    }
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
