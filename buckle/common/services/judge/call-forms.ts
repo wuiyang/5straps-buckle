@@ -1,5 +1,5 @@
 import { baseCommand, SHELL_COMMANDS, shellScriptOperand, shellStatementList, shellTokens, type ShellToken } from '../../domain/argv.js'
-import { allForms, type CommandForms, READ_BUDGET, REDIRECTION, redirectionReadings, takesNextWord } from '../../domain/command-forms.js'
+import { allForms, type CommandForms, isRedirection, READ_BUDGET, redirectionReadings, takesNextWord } from '../../domain/command-forms.js'
 
 /** Why a call whose working directory changes before its code runs is not rated (fix brief 2, H2). */
 export const CHANGES_DIRECTORY = 'the call changes its working directory before the code runs'
@@ -223,7 +223,7 @@ function statementAssignments(tokens: readonly ShellToken[], cShell: boolean, cl
   let index = 0
   for (; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
-    if (REDIRECTION.test(raw)) {
+    if (isRedirection(raw)) {
       if (takesNextWord(raw, clobber)) index++
       continue
     }

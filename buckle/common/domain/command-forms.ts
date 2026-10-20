@@ -1,4 +1,4 @@
-import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -184,12 +184,24 @@ const BOTH_READINGS: readonly boolean[] = [true, false]
  * statement, also as bash, dash, and ksh read it (false), so a rule meets the command either shell runs (fix brief 6, A4).
  */
 export function redirectionReadings(tokens: readonly { raw: string }[]): readonly boolean[] {
-  return tokens.some(token => SHELL_DEPENDENT_REDIRECTION.test(token.raw)) ? BOTH_READINGS : ONE_READING
+  return tokens.some(token => SHELL_DEPENDENT_REDIRECTION.test(joinedOperator(token.raw))) ? BOTH_READINGS : ONE_READING
 }
 
-/** Whether a redirection word takes the next word as its target, in the reading `clobber` names (redirectionReadings). */
+/**
+ * Whether a redirection word takes the next word as its target, in the reading `clobber` names (redirectionReadings). The
+ * word is read as joinedOperator reads it, so a line continuation in its operator leaves it bare (fix brief 7, A4b).
+ */
 export function takesNextWord(raw: string, clobber: boolean): boolean {
-  return BARE_REDIRECTION.test(raw) && (clobber || !SHELL_DEPENDENT_REDIRECTION.test(raw))
+  const word = joinedOperator(raw)
+  return BARE_REDIRECTION.test(word) && (clobber || !SHELL_DEPENDENT_REDIRECTION.test(word))
+}
+
+/**
+ * Whether a word is a redirection, read as joinedOperator reads it, so `2\<newline>> err` redirects descriptor 2 as bash
+ * reads it (fix brief 7, A4b); every reader of a statement's words tests this one predicate.
+ */
+export function isRedirection(raw: string): boolean {
+  return REDIRECTION.test(joinedOperator(raw))
 }
 /** A word's typed basename: a slash, then a name, as a tilde path ends (`~/bin/tool`, `~user/bin/x`). */
 const TYPED_BASENAME = /\/[^/]+$/
@@ -980,7 +992,7 @@ function shellWordsWithoutRedirections(text: string): string[][] {
     const words: string[] = []
     for (let index = 0; index < tokens.length; index++) {
       const { raw, word } = tokens[index]!
-      if (!REDIRECTION.test(raw)) words.push(word)
+      if (!isRedirection(raw)) words.push(word)
       else if (takesNextWord(raw, clobber)) index++
     }
     return words
@@ -1415,7 +1427,7 @@ function statementWords(tokens: readonly ShellToken[], clobber: boolean): { word
   let expanded: Map<string, Expansion> | null = null
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
-    if (!REDIRECTION.test(raw)) {
+    if (!isRedirection(raw)) {
       if (BARE_SUBSTITUTION.test(raw)) bare.push(words.length)
       words.push(word)
       if (holdsExpansion(raw)) {
@@ -1428,7 +1440,8 @@ function statementWords(tokens: readonly ShellToken[], clobber: boolean): { word
       }
       continue
     }
-    if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)
+    const operator = joinedOperator(raw)
+    if (STDIN_REDIRECTION.test(operator)) heredoc = STDIN_HEREDOC.test(operator)
     if (takesNextWord(raw, clobber)) index++
   }
   return { words, heredoc, expanded: expanded ?? NO_WORDS, bare }

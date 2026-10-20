@@ -7,7 +7,7 @@ import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
-import { shellStatementList, shellTokens } from '../common/domain/argv.js'
+import { joinedOperator, shellStatementList, shellTokens } from '../common/domain/argv.js'
 import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
@@ -2066,6 +2066,44 @@ describe('a command a substitution cuts, read whole by the floor and the deny li
     expect(evaluate('bash', ['-c', '$(x) rm -rf y'], { allow: ['rm *'] }).kind).toBe('deny')
     const asked = evaluate('bash', ['-c', '$(x) rm -rf y'], { allow: ['rm *', 'bash -c *'] })
     expect(asked.kind).toBe('ask')
+  })
+})
+
+describe('a line continuation inside a redirection operator (fix brief 7, A4b)', () => {
+  // bash and dash remove a backslash-newline before they read words, so `>\<newline> out` is `> out`, `2\<newline>>` is
+  // `2>`, and `{f\<newline>d}>` is `{fd}>` (bash 5.2.21 ran the command after each, and printed fd=10 for the named one).
+  const shells = ['bash', 'sh']
+
+  it.each(shells.flatMap(shell => ['>\\\n out rm -rf x', '{f\\\nd}>out rm -rf x'].map(text => [shell, text])))('%s -c %j asks at the floor and meets an rm deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['rm *'] }).kind).toBe('deny')
+  })
+
+  const interpreted = ['>\\\n| out python3 x.py', '<\\\n& 0 python3 x.py', '2\\\n> err python3 x.py', '{fd}\\\n>out python3 x.py', '2>\\\n& 1 python3 x.py']
+  it.each(shells.flatMap(shell => interpreted.map(text => [shell, text])))('%s -c %j asks at the interpreter floor and meets a python3 deny and an unrelated git push deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it('leaves a quoted operator a word, and an escaped backslash before a newline a word that ends its statement', () => {
+    expect(allForms(commandFormsOf({ command: 'bash', args: ['-c', "echo '>\\\n' out"] }))).toContainEqual(['echo', '>\\\n', 'out'])
+    // `2`, an escaped backslash, then a newline: the newline ends a statement whose word is `2\`, and no continuation joins it.
+    expect(shellStatementList('2\\\\\n> out python3 x.py').statements).toEqual(['2\\\\', '> out python3 x.py'])
+    expect(shellTokens('2\\\\').map(token => token.word)).toEqual(['2\\'])
+    expect(joinedOperator('2\\\\\n>')).toBe('2\\\\\n>')
+    expect(joinedOperator('2\\\n>')).toBe('2>')
+  })
+
+  it("pins ksh93's bare <>; operator, whose target is the next word", () => {
+    expect(evaluate('ksh', ['-c', '<>; out python3 x.py'], { allow: ['ksh -c *'] }).kind).toBe('ask')
+    expect(evaluate('ksh', ['-c', '<>; out python3 x.py'], { allow: ['ksh -c *'], deny: ['python3 *'] }).kind).toBe('deny')
   })
 })
 

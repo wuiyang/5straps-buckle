@@ -527,6 +527,26 @@ describe('a variable set after a bare redirection operator (fix brief 6, A4)', (
   })
 })
 
+describe('a variable set after a redirection operator a line continuation splits (fix brief 7, A4b)', () => {
+  // bash removes a backslash-newline before it reads words, so `>\<newline> x` is `> x` and PYTHONPATH is assigned.
+  it('is not rated: the call asks, naming the variable', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
+    const { response, entry, ran } = await call(runtime, {}, ['bash', '-c', '>\\\n x PYTHONPATH=x python3 a.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: codeLoadingReason('PYTHONPATH'), passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+
+  it('is read in the shell text itself, where no form of the rules carries the assignment', () => {
+    const names = (text: string) => assignedVariables({ command: 'bash', args: ['-c', text] }, { ...commandForms('bash', ['-c', text]), nested: [] }).variables.map(variable => variable.name)
+    expect(names('>\\\n x PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+    expect(names('2>\\\n& 1 PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+  })
+})
+
 describe('a call that sets HOME (fix brief 5, P4)', () => {
   it('is not rated, since zsh and Python read startup code from HOME, and the reason names HOME with no value', async () => {
     expect(codeLoadingVariable(callVariables({ env: { HOME: '/workspace/h' } }))).toBe('HOME')

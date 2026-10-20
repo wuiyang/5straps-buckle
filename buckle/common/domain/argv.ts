@@ -1783,6 +1783,41 @@ function wordEnd(text: string, from: number): number {
 /** What may stand before a redirection operator in the same word: the descriptor it redirects (`2>`), or a bash named one (`{fd}>`). */
 const REDIRECTION_PREFIX = /^(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})$/
 
+/** The characters of a redirection operator, shared with the grammar's operators (command-forms.ts REDIRECTION). */
+const OPERATOR_CHARACTER = /[<>&|!;]/
+
+/**
+ * A word as the redirection grammar reads it (command-forms.ts REDIRECTION, BARE_REDIRECTION, and takesNextWord): its
+ * leading operator span, the descriptor digits or `{name}` and then the operator characters, with each line continuation
+ * in it removed, as bash and dash remove a backslash-newline before they read words (`>\<newline>` is `>`, `2\<newline>>`
+ * is `2>`, `{f\<newline>d}>` is `{fd}>`), and the rest of the word as written. A pair is read from the left, so an
+ * escaped backslash before a newline stays (fix brief 7, A4b).
+ */
+export function joinedOperator(raw: string): string {
+  if (!raw.includes('\\\n')) return raw
+  let span = ''
+  type State = 'start' | 'digits' | 'name' | 'named' | 'operator'
+  let state: State = 'start'
+  let at = 0
+  while (at < raw.length) {
+    if (raw[at] === '\\' && raw[at + 1] === '\n') {
+      at += 2
+      continue
+    }
+    const character = raw[at]!
+    const next: State | null = state === 'name' ? (/\w/.test(character) ? 'name' : character === '}' ? 'named' : null)
+      : OPERATOR_CHARACTER.test(character) ? 'operator'
+        : (state === 'start' || state === 'digits') && /\d/.test(character) ? 'digits'
+          : state === 'start' && character === '{' ? 'name'
+            : null
+    if (next === null) break
+    span += character
+    state = next
+    at++
+  }
+  return span + raw.slice(at)
+}
+
 /**
  * Where `first`, whose text starts at `from`, ends: past its closer, at the blank that ends a word, at an unquoted `<` or
  * `>` that ends one, or at the end of the text.
@@ -1804,9 +1839,11 @@ function partEnd(text: string, from: number, first: WordPart): number {
       // An unquoted `<` or `>` that opens no process substitution ends the word, as bash's reader ends one, and starts a
       // redirection; descriptor digits belong to it only when they are the whole word so far (fix brief 6, A3). One a
       // whole-command reading shows with its body cut (`BASH_ENV=<$() bash`) is a process substitution too.
+      // bash removes a line continuation before it reads the word, so one among the digits or the operator characters is
+      // no part of either (`2\<newline>>`, `>\<newline>>`; fix brief 7, A4b).
       if ((character === '<' || character === '>') && text[index + 1] !== '(' && !text.startsWith(SUBSTITUTED, index + 1)) {
-        if (index > from && !REDIRECTION_PREFIX.test(text.slice(from, index))) return index
-        while (text[index] === '<' || text[index] === '>') index++
+        if (index > from && !REDIRECTION_PREFIX.test(text.slice(from, index).replace(CONTINUED_LINE, joinLine))) return index
+        while (text[index] === '<' || text[index] === '>' || (text[index] === '\\' && text[index + 1] === '\n')) index += text[index] === '\\' ? 2 : 1
         continue
       }
       const quoted = character === "'" || character === '$' ? literalQuoteEnd(text, index) : null
