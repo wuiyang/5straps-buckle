@@ -12,7 +12,7 @@ import { allForms, commandFormsOf, READ_BUDGET, READ_LIMITS } from '../common/do
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
-import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
+import { createDestructiveCommandRule, PATH_SPELLING_REASON } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
 import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 
@@ -2726,5 +2726,14 @@ describe('a command word written as a path (D74, bare words only)', () => {
       expect(evaluate('/home/x/bin/git', ['status'], { allow: ['/home/x/bin/git status'] }).kind).toBe('allow')
       expect(evaluate('/home/x/bin/git', ['status'], { allow: ['git *', '/home/x/bin/git status'] }).kind).toBe('allow')
     })
+  })
+
+  // The reason ended "an allow rule that spells the path admits it", which no rule does for a backslash spelling on Linux
+  // and macOS, or for a spelling not written plainly (git pack recheck 1, held[4]).
+  it('asks with a path reason that holds on every platform', () => {
+    for (const [command, platform] of [['.\\gradlew', 'linux'], ['.\\gradlew', 'darwin'], ['./gradlew', 'linux'], ['/usr//bin/gradlew', 'linux'], ['C:\\Tools\\gradlew', 'win32']] as const) {
+      expect(askOf(evaluate(command, ['run'], { allow: ['gradlew run'] }, undefined, platform)).map(ask => ask.reason), `${command} on ${platform}`).toEqual([PATH_SPELLING_REASON])
+    }
+    expect(PATH_SPELLING_REASON).toMatch(/\(a path written plainly with slashes can be named by an allow rule that spells it\)$/)
   })
 })

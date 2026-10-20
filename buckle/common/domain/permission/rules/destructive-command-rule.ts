@@ -8,8 +8,12 @@ import { allowedVia, ask } from '../decision.js'
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
 const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard', 'shred', 'sgdisk'])
 
-/** Why a call asks that runs a command written as a path only a bare-word allow rule names (D74): constant, the call shown whole. */
-export const PATH_SPELLING_REASON = 'A command written as a path runs the program at that path, which an allow rule naming the bare command does not admit; asked rather than run (an allow rule that spells the path admits it)'
+/**
+ * Why a call asks that runs a command written as a path only a bare-word allow rule names (D74): constant, the call shown
+ * whole. Its hint holds on every platform: no rule names a spelling not written plainly, nor, on Linux and macOS, one
+ * written with a backslash (git pack recheck 1, held[4]).
+ */
+export const PATH_SPELLING_REASON = 'A command written as a path runs the program at that path, which an allow rule naming the bare command does not admit; asked rather than run (a path written plainly with slashes can be named by an allow rule that spells it)'
 
 /** Shell text is not argv, so these run against the script body of `bash -c`. */
 const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
