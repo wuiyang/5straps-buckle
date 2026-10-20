@@ -516,9 +516,13 @@ function unquoted(line: Buffer): Buffer | null {
   return null
 }
 
-/** A directory's device and inode, where `place` is one and is still its own real path; null otherwise. */
+/**
+ * A directory's device and inode, where `place` is one and is still its own real path; null otherwise, and where it
+ * cannot be read: lstat throws ENOTDIR, whatever throwIfNoEntry says, once a folder above the place has become a file.
+ */
 function directoryIdentity(place: string, platform: NodeJS.Platform): string | null {
-  const stats = lstatSync(place, { bigint: true, throwIfNoEntry: false })
+  let stats
+  try { stats = lstatSync(place, { bigint: true, throwIfNoEntry: false }) } catch { return null }
   if (!stats?.isDirectory() || realPlace(place, platform) !== place) return null
   return `${stats.dev}:${stats.ino}`
 }

@@ -345,13 +345,13 @@ describe('a git tool runs against the directories its repository query resolved 
     mkdirSync(join(outside, '.git'))
     return { root, repo: join(root, 'repo'), outside }
   }
-  /** A git that answers the query as a repository with its own `.git`, then runs `during` at the step named. */
-  function racing(during: { query?: () => void; config?: () => void; command?: () => void } = {}) {
+  /** A git that answers the query as a repository with its own `.git`, or with the places named, then runs `during` at the step named. */
+  function racing(during: { query?: () => void; config?: () => void; command?: () => void } = {}, places?: string[]) {
     return vi.fn<ProcessRunner>(async request => {
       const answer = (stdout: string, exitCode = 0) => ({ exitCode, signal: null, stderr: '', truncated: false, timedOut: false, stdout })
       if (request.args[0] === 'rev-parse') {
         during.query?.()
-        return answer(`${request.cwd}\n${request.cwd}/.git\n${request.cwd}/.git\n`)
+        return answer(places ? `${places.join('\n')}\n` : `${request.cwd}\n${request.cwd}/.git\n${request.cwd}/.git\n`)
       }
       if (request.args[0] === 'config') {
         during.config?.()
@@ -395,6 +395,37 @@ describe('a git tool runs against the directories its repository query resolved 
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
     expect(String(refusal)).not.toContain(root)
     expect(String(refusal)).not.toContain(outside)
+    expect(commandOf(runProcess)).toEqual([])
+  })
+
+  // A folder above a pinned place that became a file made the identity check throw ENOTDIR, a plain error in place of the
+  // constant refusal (review 1 of the git pack, held[1]).
+  it('refuses with the constant reason when the main .git under a pinned linked worktree becomes a file', async () => {
+    const { root } = repositories()
+    const main = join(root, 'main', '.git')
+    mkdirSync(join(main, 'worktrees', 'side'), { recursive: true })
+    mkdirSync(join(root, 'side'))
+    const swap = () => {
+      renameSync(main, join(root, 'main', 'moved-git'))
+      writeFileSync(main, 'gitdir: elsewhere\n')
+    }
+    const runProcess = racing({ config: swap }, [join(root, 'side'), join(main, 'worktrees', 'side'), main])
+    const refusal = await refusalOf(() => gitPack(root, runProcess).call('git_status', { repo: 'side' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
+    expect(String(refusal)).not.toContain(root)
+    expect(commandOf(runProcess)).toEqual([])
+  })
+
+  it('refuses with the constant reason when the repository folder itself becomes a file', async () => {
+    const { root, repo } = repositories()
+    const swap = () => {
+      renameSync(repo, join(root, 'moved-repo'))
+      writeFileSync(repo, 'a file now\n')
+    }
+    const runProcess = racing({ config: swap })
+    const refusal = await refusalOf(() => gitPack(root, runProcess).call('git_status', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
+    expect(String(refusal)).not.toContain(root)
     expect(commandOf(runProcess)).toEqual([])
   })
 
