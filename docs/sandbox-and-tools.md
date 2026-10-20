@@ -82,8 +82,10 @@ and mounts the approved file read-only for that call. This needs bubblewrap with
 
 ## Host Git, forge, and language servers
 
-These run on the host, outside the sandbox, and Buckle judges only the repository and the paths a
-call names, not every file they read, so they start off. Turn them on for a repository you trust:
+These run on the host, outside the sandbox. Buckle judges the repository a call names, and each
+path `git_diff`, `git_log`, `git_blame`, and the language servers name, but not the paths
+`git_commit` stages or every file they read, so they start off. Turn them on for a repository you
+trust:
 
 ```bash
 buckle workspace set packs.hostGit on    # the git and forge packs
@@ -95,14 +97,18 @@ all three packs again.
 
 `git_diff` and `git_log` judge each path they name as a read, as `git_blame` judges its file, so
 the credential-file check asks about a named `.env`. git reads each path literally, never as a
-pattern, and a path outside the repository is refused. A `git_diff` or
-`git_log` that names no path is judged by the repository alone, so it shows every tracked file, a
-`.env` included; Buckle does not filter it ([known limits](known-limits-02.md#where-programs-come-from)).
+pattern, and a path outside the repository is refused. A `git_diff` or `git_log` that names no
+path is judged by the repository alone, so a diff shows the changes of every tracked file, a `.env`
+included, and a log lists the commits of every file; Buckle filters neither
+([known limits](known-limits-02.md#where-programs-come-from)).
 
-Each git call runs against the repository Buckle checked: git is handed the git directory, work
-tree, and common directory that check found, and the call is refused when any of them changes
-before or while git runs. A repository whose `objects/info/alternates` file borrows objects from
-outside the workspace and its mounts is refused too.
+Each `git` pack call (`git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch`) runs against
+the repository Buckle checked: git is handed the git directory, work tree, and common directory
+that check found, and the call is refused when any of them changes before or while git runs. A
+repository whose `objects/info/alternates` file borrows objects from outside the workspace and its
+mounts is refused too; for a repository outside them that you approved reading, its own folder
+counts as well. The forge pack gets neither check
+([known limits](known-limits-04.md#the-forge-pack)).
 
 Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
 an empty directory Buckle owns, and overrides the repository's program settings, so no hook or

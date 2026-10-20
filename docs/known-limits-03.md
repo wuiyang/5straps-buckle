@@ -3,7 +3,7 @@
 What Buckle, the approval and sandbox runtime on this machine, does not yet handle in code mode, on
 the command line, and in workspaces. [Known limits](known-limits.md) covers reading commands, credential hiding, and
 paths, [part two](known-limits-02.md) the programs Buckle starts itself, and [part four](known-limits-04.md) mounts,
-the sandbox layout, the URL list, and the browser.
+the sandbox layout, the URL list, the browser, and the forge pack.
 
 ## Code mode
 

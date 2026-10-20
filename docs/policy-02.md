@@ -33,8 +33,17 @@ be one the agent placed. Such a call, or a shell body holding one, asks at the
 [destructive floor](approvals.md#the-destructive-floor) instead of running, with the whole call
 shown, wherever only a bare-word allow glob names it. An allow glob that spells the path admits that
 spelling: `buckle policy allow-command '/usr/bin/git status'`, or `'*/* *'` for any command written
-as a path. A deny or destructive glob meets the command by its basename and as written, so
-`git push *` still refuses `/usr/bin/git push`. With no allow list nothing changes.
+as a path. Each alternative of a brace in the command word counts on its own, so
+`{git,/usr/bin/git} status` admits those two and asks for `./git status`, and a path glob meets
+only a path written plainly, with no `.`, `..`, or doubled slash.
+
+A pattern cannot hold `\`, so on Linux and macOS, where a backslash is part of a name, no allow
+rule names a command written with one, such as `.\gradlew`. On Windows write it with `/`, or let
+the rule spell `/`: `C:/Tools/git status` admits `C:\Tools\git status`.
+
+A deny or destructive glob meets the command by its basename and as written, so `git push *` still
+refuses `/usr/bin/git push`. With no allow list a path spelling runs as before, unless a deny or
+destructive glob that spells the path meets it; such a glob matched nothing before.
 
 ## Reading limits
 

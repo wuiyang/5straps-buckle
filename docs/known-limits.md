@@ -4,7 +4,8 @@ What Buckle, the approval and sandbox runtime on this machine, does not yet read
 handle, each with an example. [What stays unread](policy-03.md) covers reading commands in more
 depth, [part two](known-limits-02.md) the programs it starts itself,
 [part three](known-limits-03.md) code mode, the command line, and workspaces,
-[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser,
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the
+forge pack,
 [part five](known-limits-05.md) running Buckle as a service, and [part six](known-limits-06.md) and
 [part seven](known-limits-07.md) the decision AI.
 

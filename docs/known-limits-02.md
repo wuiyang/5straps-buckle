@@ -4,7 +4,8 @@ More of what Buckle, the approval and sandbox runtime on this machine, does not 
 programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents, and the
 files a browser command writes. [Known limits](known-limits.md) covers reading commands, credential
 hiding, and paths, [part three](known-limits-03.md) code mode, the command line, and workspaces, and
-[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, and the browser.
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the
+forge pack.
 
 ## Where programs come from
 
@@ -43,9 +44,11 @@ hiding, and paths, [part three](known-limits-03.md) code mode, the command line,
   with no credential-file ask about that file; `git_log` with no path lists the commits of every
   file. Buckle filters neither, as a filtered diff would misreport the tree to the agent: name each
   file to have it judged, or leave `packs.hostGit` off for a repository that tracks a credential file.
-- Two changes to a repository go unseen by the git tools: a folder swapped and swapped back while
-  git runs, and a link inside the git folder to a file outside it, such as a pack file. Only the
-  folders themselves and the stores `objects/info/alternates` names are checked.
+- Two changes to a repository go unseen by the `git` pack: a folder swapped and swapped back while
+  git runs, and a link anywhere inside the git folder, to a file or a folder outside it, such as a
+  pack file, `objects/pack`, a folder of loose objects, or `refs`. Only the work tree, the git
+  folder, the common folder, each `objects` folder, and the stores `objects/info/alternates` names
+  are checked.
 
 ## Windows shims
 

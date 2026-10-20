@@ -1,7 +1,8 @@
 # Known limits, part four
 
 What Buckle, the approval and sandbox runtime on this machine, does not yet handle in a
-workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its browser.
+workspace's [mounts](mounts.md), its sandbox layout, its one URL list, its browser, and the forge
+pack's git tools.
 [Part three](known-limits-03.md) covers code mode, the command line, and workspaces.
 
 ## The sandbox layout
@@ -66,3 +67,12 @@ workspace's [mounts](mounts.md), its sandbox layout, its one URL list, and its b
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
   setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
   as [Rings](rings.md), the 5straps control plane for agents, reads that field.
+
+## The forge pack
+
+- The forge pack, which commits, pushes, and opens pull requests on GitHub, runs `git_commit` and
+  `git_push` against the repository as given. They refuse one whose git folder points or links
+  elsewhere, but are not pinned to the directories Buckle checked and do not read
+  `objects/info/alternates`, so a commit or push can carry objects from a store outside the
+  workspace. `git_commit` judges none of the paths it stages: a named `.env` is committed with no
+  credential-file ask.
