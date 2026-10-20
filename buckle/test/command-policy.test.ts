@@ -2522,4 +2522,32 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(reasonOf(evaluate('/bin/sh', ['-c', 'pnpm build']))).toContain("allow-command '/bin/sh -c *'")
     expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['/bin/sh -c *'] }).kind).toBe('allow')
   })
+
+  // A brace in the command word made the whole glob a path glob, so its bare alternative admitted every path spelling
+  // of the command with no ask (review 1 of the git pack, held[3]). Each alternative now counts on its own.
+  it.each([['{git,/usr/bin/git} status'], ['{/usr/bin/git,git} status'], ['{*git,/usr/bin/git} status']])('reads each alternative of the command word on its own under %s: the bare word and the spelled path run, any other spelling asks', glob => {
+    for (const allow of [[glob], ['ls', glob]]) {
+      expect(evaluate('git', ['status'], { allow }).kind).toBe('allow')
+      expect(evaluate('/usr/bin/git', ['status'], { allow }).kind).toBe('allow')
+      for (const command of ['./x/git', '/tmp/evil/git']) {
+        expect(askOf(evaluate(command, ['status'], { allow })), `${command} under ${allow.join(', ')}`).toEqual([expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })])
+      }
+    }
+  })
+
+  it('reads the alternatives of the command word the same way in a shell body', () => {
+    const allow = ['bash -c *', '{git,/usr/bin/git} status']
+    expect(evaluate('bash', ['-c', 'git status'], { allow }).kind).toBe('allow')
+    expect(evaluate('bash', ['-c', '/usr/bin/git status'], { allow }).kind).toBe('allow')
+    for (const body of ['./x/git status', '/tmp/evil/git status']) {
+      expect(askOf(evaluate('bash', ['-c', body], { allow })), body).toEqual([expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })])
+    }
+  })
+
+  it('admits each path a brace in the command word spells, and no other spelling', () => {
+    const allow = ['/usr/{bin,local/bin}/git status']
+    expect(evaluate('/usr/local/bin/git', ['status'], { allow }).kind).toBe('allow')
+    expect(evaluate('/usr/bin/git', ['status'], { allow }).kind).toBe('allow')
+    expect(evaluate('./x/git', ['status'], { allow }).kind).toBe('deny')
+  })
 })

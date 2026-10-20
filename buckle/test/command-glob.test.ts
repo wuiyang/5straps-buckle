@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CommandGlobError, compileCommandGlob } from '../common/domain/command-glob.js'
+import { CommandGlobError, compileCommandGlob, splitByCommandWord } from '../common/domain/command-glob.js'
 
 function line(pattern: string, words: string[]): boolean {
   return compileCommandGlob(pattern).matchesLine(words)
@@ -112,3 +112,28 @@ describe('what a pattern may not be', () => {
   })
 })
 
+
+// D74 (bare words only): a glob meets a command word written as a path only by the alternatives that spell a path, so
+// each alternative of its command word counts on its own (review 1 of the git pack, held[3]).
+describe('a glob split by the alternatives of its command word', () => {
+  it('gives the bare alternatives and the path alternatives each a glob of their own, with the words after them', () => {
+    const { bare, path } = splitByCommandWord(compileCommandGlob('{git,*git,/usr/bin/git,*/git} status'))
+    expect(bare?.source).toBe('{git,*git,/usr/bin/git,*/git} status')
+    expect(bare?.matchesLine(['git', 'status'])).toBe(true)
+    expect(bare?.matchesLine(['sgit', 'status'])).toBe(true)
+    expect(bare?.matchesLine(['git', 'push'])).toBe(false)
+    expect(path?.matchesLine(['/usr/bin/git', 'status'])).toBe(true)
+    expect(path?.matchesLine(['./x/git', 'status'])).toBe(true)
+    expect(path?.matchesLine(['git', 'status'])).toBe(false)
+    expect(path?.matchesLine(['/usr/bin/git', 'push'])).toBe(false)
+  })
+
+  it('leaves a half with no alternatives empty, and reads ** or a lone * as bare', () => {
+    expect(splitByCommandWord(compileCommandGlob('/usr/bin/git status')).bare).toBeNull()
+    expect(splitByCommandWord(compileCommandGlob('git status')).path).toBeNull()
+    for (const source of ['**', '*', '** status']) {
+      const glob = compileCommandGlob(source)
+      expect(splitByCommandWord(glob)).toEqual({ bare: glob, path: null })
+    }
+  })
+})

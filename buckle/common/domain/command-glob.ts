@@ -36,23 +36,43 @@ type WordPattern =
   | { kind: 'one_word'; alternatives: string[] }
 
 /**
- * Whether a glob spells its command word as a path (`/usr/bin/git status`, or a wildcard then `/git`): only such a glob
- * meets a command word written as a path, which a glob naming the bare word never admits (D74, bare words only).
+ * A glob split by the alternatives of its command word (D74, bare words only): `bare`, the glob as its alternatives with
+ * no separator spell it, which meets a command by its bare word; `path`, the glob as its alternatives that spell a path
+ * (`/usr/bin/git`, or a wildcard then `/git`), which alone meets a command word written as a path. Either is null where
+ * no alternative is of its kind; a first word of `**`, or a lone `*`, is bare. `{git,/usr/bin/git} status` is both, so
+ * its bare alternative never admits `./x/git status` as a spelled path would.
  */
-export function spellsPath(glob: Pick<CommandGlob, 'source'>): boolean {
-  return writtenAsPath(glob.source.split(/\s+/)[0] ?? '')
+export interface CommandWordSplit { bare: CommandGlob | null; path: CommandGlob | null }
+
+const splits = new WeakMap<CommandGlob, CommandWordSplit>()
+
+export function splitByCommandWord(glob: CommandGlob): CommandWordSplit {
+  const known = splits.get(glob)
+  if (known) return known
+  const [first, ...rest] = patternsOf(glob.source)
+  const part = (alternatives: string[]) => (alternatives.length === 0 ? null : globOf(glob.source, [{ kind: 'one_word', alternatives }, ...rest]))
+  const split = first === undefined || first.kind === 'any_words'
+    ? { bare: glob, path: null }
+    : { bare: part(first.alternatives.filter(alternative => !writtenAsPath(alternative))), path: part(first.alternatives.filter(writtenAsPath)) }
+  splits.set(glob, split)
+  return split
 }
 
 export function compileCommandGlob(source: string): CommandGlob {
   const trimmed = source.trim()
   if (!trimmed) throw new CommandGlobError('A command pattern cannot be empty')
   rejectRegexSyntax(trimmed)
+  return globOf(trimmed, patternsOf(trimmed))
+}
 
-  const words = trimmed.split(/\s+/)
-  const patterns = words.map((word, index) => toWordPattern(word, index === words.length - 1))
+function patternsOf(source: string): WordPattern[] {
+  const words = source.split(/\s+/)
+  return words.map((word, index) => toWordPattern(word, index === words.length - 1))
+}
 
+function globOf(source: string, patterns: WordPattern[]): CommandGlob {
   return {
-    source: trimmed,
+    source,
     matchesLine: line => matchFrom({ patterns, line, allowTrailing: false }, 0, 0),
     matchesPrefix: line => matchFrom({ patterns, line, allowTrailing: true }, 0, 0),
   }

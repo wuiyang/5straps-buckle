@@ -1,6 +1,6 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
-import { type CommandGlob, spellsPath } from '../../command-glob.js'
+import { type CommandGlob, splitByCommandWord } from '../../command-glob.js'
 import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, typedForm } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
@@ -42,8 +42,10 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  */
 export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[] } = {}): PermissionRule {
   const added = input.added ?? []
-  const bareAllow = (input.allow ?? []).filter(glob => !spellsPath(glob))
-  const pathAllow = (input.allow ?? []).filter(glob => spellsPath(glob))
+  // Each allow glob by the alternatives of its command word: `{git,/usr/bin/git} status` names the bare word and spells a path.
+  const splits = (input.allow ?? []).map(splitByCommandWord)
+  const bareAllow = splits.flatMap(split => (split.bare ? [split.bare] : []))
+  const pathAllow = splits.flatMap(split => (split.path ? [split.path] : []))
   const allowed = input.allowedInterpreters
   return {
     id: 'destructive_command',

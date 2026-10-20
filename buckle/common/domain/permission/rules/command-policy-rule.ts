@@ -1,7 +1,7 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
 import { commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason } from '../../command-forms.js'
-import { type CommandGlob, spellsPath } from '../../command-glob.js'
+import { type CommandGlob, splitByCommandWord } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -157,7 +157,11 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       }
 
       const allow = policy.commands.allow
-      const admitted = allow.some(glob => glob.matchesLine(words) || (spellsPath(glob) && glob.matchesLine(typed)))
+      // A glob's bare alternatives meet the command by its basename, and only its path alternatives meet it as typed (D74).
+      const admitted = allow.some(glob => {
+        const split = splitByCommandWord(glob)
+        return (split.bare?.matchesLine(words) ?? false) || (split.path?.matchesLine(typed) ?? false)
+      })
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
         return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(typed, wrapper)}'`)
