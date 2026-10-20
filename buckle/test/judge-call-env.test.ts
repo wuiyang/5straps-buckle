@@ -708,3 +708,19 @@ describe('a call that sets SHELL (fix brief 5, P3)', () => {
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
+
+describe('an interpreter behind xargs (fix brief 8, B20)', () => {
+  it('is not rated: the call asks with the xargs reason, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    writeFileSync(join(config.cwd, 'decoy.py'), 'print(2)\n')
+    writeFileSync(join(config.cwd, 'list.txt'), 'decoy.py\n')
+    const runtime = await runtimeOf(config, { judge })
+    const { response, entry, ran } = await call(runtime, {}, ['xargs', '-a', 'list.txt', '-I', 'job.py', 'python3', 'job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.xargsWords, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})

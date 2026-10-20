@@ -41,6 +41,7 @@ export const CODE_REFUSALS = Object.freeze({
   programName: 'the call sets the program name the interpreter reads',
   splitWords: 'the call splits a word into words the reader does not read again',
   runnerSource: 'the runner runs a package from a path or a source the reader does not show',
+  xargsWords: 'the call hands the interpreter words it reads from a file or puts in place of its own',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -147,6 +148,9 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
   // env -a or --argv0 by any prefix), which points it at a path the reader does not show (fix brief 5, N1).
   if (splitsWords(chain)) return CODE_REFUSALS.splitWords
   if (setsProgramName(chain)) return CODE_REFUSALS.programName
+  // xargs puts its items in place of a replace string (-I, -i, --replace) and reads them from a file (-a, --arg-file), so
+  // the interpreter behind it runs words the reader never saw; no chain holding it is rated (fix brief 8, B20).
+  if (chain.some(form => baseCommand(form[0] ?? '') === 'xargs')) return CODE_REFUSALS.xargsWords
   // Every program the call runs itself, by its typed command word: the call as typed, each wrapper, the shell whose text
   // is read, and the interpreter (fix brief 7, B11). Left without a chain, every form is the call's own.
   if (input.chain === undefined ? input.forms.some(form => mayBePlaced(form[0] ?? '')) : chainPlaced(chain, input.typed ?? chain[0]!, input.cwd, input.view)) return CODE_REFUSALS.localInterpreter

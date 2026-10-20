@@ -1249,3 +1249,35 @@ describe('the reader\'s caps', () => {
     expect(reading(read(['node', '-e', `import './b.mjs'\n// ${half.slice(40)}`])).files).toHaveLength(1)
   })
 })
+
+describe('an interpreter behind xargs (fix brief 8, B20)', () => {
+  // xargs puts each item in place of a replace string (`-I R`, `-i`, `--replace` by any prefix) and reads the items from a
+  // file (`-a`, `--arg-file`), so the interpreter runs words the reader never saw: GNU findutils 4.9.0 xargs ran the decoy
+  // list.txt named for `xargs -a list.txt -I job.py python3 job.py`. No chain holding xargs is rated.
+  const files = { 'job.py': 'print(1)\n', 'decoy.py': 'print(2)\n', 'list.txt': 'decoy.py\n', '{}': 'print(3)\n' }
+  const replaced = { kind: 'refused', reason: CODE_REFUSALS.xargsWords, truncated: false }
+
+  it('refuses a replace string or an arg file, alone, together, or behind another wrapper', () => {
+    const { call } = workspace(files)
+    for (const words of [
+      ['xargs', '-a', 'list.txt', '-I', 'job.py', 'python3', 'job.py'],
+      ['xargs', '-a', 'list.txt', '-Ijob.py', 'python3', 'job.py'],
+      ['xargs', '-a', 'list.txt', '--replace=job.py', 'python3', 'job.py'],
+      ['xargs', '--arg-file=list.txt', '--repl=job.py', 'python3', 'job.py'],
+      ['xargs', '-a', 'list.txt', '-rI', 'job.py', 'python3', 'job.py'],
+      ['xargs', '-a', 'list.txt', '-r', '-I', 'job.py', 'env', 'python3', 'job.py'],
+      ['nice', 'xargs', '-a', 'list.txt', '-I', 'job.py', 'python3', 'job.py'],
+      ['/usr/bin/xargs', '-a', 'list.txt', '-I', 'job.py', 'python3', 'job.py'],
+      ['xargs', '-i', 'python3', '{}'],
+      ['xargs', '--replace', 'python3', '{}'],
+      ['xargs', '-a', 'list.txt', 'python3', 'job.py'],
+    ]) expect(call(words[0]!, ...words.slice(1)), words.join(' ')).toEqual(replaced)
+  })
+
+  it('still refuses xargs in shell text as before, and reads the interpreter called directly', () => {
+    const { call, shell } = workspace(files)
+    expect(shell('xargs -a list.txt -I job.py python3 job.py')).toEqual(shellRefusal)
+    expect(paths(call('python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('nice', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
+})
