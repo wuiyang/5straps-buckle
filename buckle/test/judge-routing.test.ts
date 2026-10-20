@@ -10,9 +10,10 @@ import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The decision AI's two stages in automated mode (D91, addendum 2 B), row by row: Jev's safe at 0.8 or above runs the
-// call; Jev's danger at 0.8 or above goes to a person with no thorough call; anything else goes to the thorough stage for
-// an interpreter ask or an ask Jev rated, and otherwise to a person. A deny is never rated and never lifted.
+// The decision AI's two stages in automated mode (D91, addendum 2 B, and the owner's ruling of 2026-10-20, addendum 3),
+// row by row: Jev's verdict is a rating alone and never runs a call; its danger at 0.8 or above goes to a person with no
+// thorough call; anything else goes to the thorough stage for an interpreter ask, whose safe at 0.8 or above runs it, and
+// otherwise to a person. A deny is never rated and never lifted.
 
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
@@ -77,14 +78,14 @@ async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePol
 }
 
 describe('a call a stage passed', () => {
-  it('prints one info line naming the stage, the model, the level, the confidence, and the command as an approver sees it; none for an ask', async () => {
+  it('prints one info line naming the thorough stage, the model, the level, the confidence, and the command as an approver sees it; none for a quick safe or an ask', async () => {
     const info = vi.spyOn(logger, 'info').mockImplementation(() => {})
     const passes = () => info.mock.calls.filter(([message]) => String(message).startsWith('The decision AI'))
     const args = ['job.py', 'https://me:hunter2@example.com/x']
+    // Jev's safe passes nothing; the thorough stage, which answers danger here, is asked next (addendum 3 R1).
     await call(await runtimeOf(node(), judges({ quick: quick('safe', 0.93) })), 'python3', args)
     await call(await runtimeOf(node(), judges({ thorough: thorough('safe', 0.9) })), 'python3', args)
     expect(passes()).toEqual([
-      ['The decision AI\'s quick stage rated a command safe, so it runs without asking', { stage: 'quick', model: 'jev-1.13.0', level: 'safe', confidence: 0.93, subject: expect.stringMatching(/^python3 job\.py .*\[redacted\]/) }],
       ['The decision AI\'s thorough stage rated a command safe, so it runs without asking', { stage: 'thorough', model: 'gpt-6-luna', level: 'safe', confidence: 0.9, subject: expect.stringMatching(/^python3 job\.py .*\[redacted\]/) }],
     ])
     expect(JSON.stringify(passes())).not.toContain('hunter2')
@@ -221,15 +222,33 @@ describe('a standard script', () => {
 })
 
 describe('an interpreter ask, with the quick stage on', () => {
-  it('runs on Jev\'s safe at 0.8 or above, with no thorough call, naming the quick stage in the audit entry', async () => {
-    const fakes = judges({ quick: quick('safe', 0.93) })
-    const { response, entry, ran } = await call(await runtimeOf(node(), fakes), 'python3', ['job.py'])
-    expect(response).toMatchObject({ outcome: 'ok' })
-    expect(ran).toBe(true)
-    expect(fakes.judge.judge).not.toHaveBeenCalled()
-    expect(fakes.shownQuick[0]).toMatchObject({ command: 'python3 job.py', files: [{ path: '/workspace/job.py' }] })
-    expect(entry.approvedBy).toEqual(['judge'])
-    expect(entry.judge).toEqual({ quick: { provider: 'typesafe', model: 'jev-1.13.0', level: 'safe', confidence: 0.93, probabilities: expect.any(Object), latencyMs: 120 }, passed: true, passedBy: 'quick' })
+  it('goes on to the thorough stage after Jev\'s safe at 0.95, whose own safe alone runs the call (addendum 3 R1)', async () => {
+    const passing = judges({ quick: quick('safe', 0.95), thorough: thorough('safe', 0.91) })
+    const ran = await call(await runtimeOf(node(), passing), 'python3', ['job.py'])
+    expect(ran.response).toMatchObject({ outcome: 'ok' })
+    expect(passing.judge.judge).toHaveBeenCalledTimes(1)
+    expect(passing.shownQuick[0]).toMatchObject({ command: 'python3 job.py', files: [{ path: '/workspace/job.py' }] })
+    expect(ran.entry.approvedBy).toEqual(['judge'])
+    expect(ran.entry.judge).toMatchObject({ level: 'safe', passed: true, passedBy: 'thorough', quick: { level: 'safe', confidence: 0.95 } })
+
+    const held = judges({ quick: quick('safe', 0.95), thorough: thorough('warning', 0.9) })
+    const asked = await call(await runtimeOf(node(), held), 'python3', ['job.py'])
+    expect(asked.response).toMatchObject({ outcome: 'approval_required' })
+    expect(asked.ran).toBe(false)
+    expect(asked.entry.judge).toMatchObject({ level: 'warning', passed: false, quick: { level: 'safe' } })
+    expect(asked.entry.judge).not.toHaveProperty('passedBy')
+  })
+
+  it('leaves the ask standing on Jev\'s safe where the thorough stage has no key, the quick verdict beside the action (addendum 3 R1)', async () => {
+    const { quickJudge } = judges({ quick: quick('safe', 0.95) })
+    const runtime = await createRuntime({ config: node(), quickJudge })
+    runtimes.push(runtime)
+    const { response, entry, ran, waiting } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ quick: { level: 'safe', confidence: 0.95 }, passed: false })
+    expect(entry.judge).not.toHaveProperty('passedBy')
+    expect(waiting?.call?.judge).toEqual([{ subject: expect.any(String), quick: { level: 'safe', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 } }])
   })
 
   it('asks on Jev\'s danger at 0.8 or above, with no thorough call, the verdict beside the action', async () => {
@@ -284,15 +303,16 @@ describe('an interpreter ask, with the quick stage on', () => {
 })
 
 describe('a standard development script', () => {
-  it('reaches each stage as a standard script, on its command line alone, for npm, pnpm, and yarn as for npx', async () => {
+  it('reaches the quick stage as a standard script, on its command line alone, for npm, pnpm, and yarn, and on the destructive list still asks a person', async () => {
     const fakes = judges({ quick: quick('warning', 0.9), thorough: thorough('safe', 0.95) })
     const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), fakes)
     await withPolicy(runtime, { destructive: ['npm run *', 'pnpm dev', 'yarn build'] })
     for (const [command, args] of [['npm', ['run', 'dev']], ['pnpm', ['dev']], ['yarn', ['build']]] as const) {
-      expect((await call(runtime, command, [...args])).response, command).toMatchObject({ outcome: 'ok' })
+      expect((await call(runtime, command, [...args])).response, command).toMatchObject({ outcome: 'approval_required' })
     }
     expect(fakes.shownQuick.map(item => [item.command, item.standardScript, item.files])).toEqual([['npm run dev', true, []], ['pnpm dev', true, []], ['yarn build', true, []]])
-    expect(fakes.shownThorough.map(item => item.standardScript)).toEqual([true, true, true])
+    // A destructive-list ask is no interpreter ask, so the thorough stage is not asked (addendum 3 R1).
+    expect(fakes.shownThorough).toEqual([])
   })
 })
 
@@ -305,26 +325,22 @@ describe('the quick stage\'s scope', () => {
     expect(fakes.judge.judge).not.toHaveBeenCalled()
   })
 
-  it('asks: Jev rates a floor or destructive-list ask, and its safe runs the call', async () => {
+  it('asks: Jev rates a floor or destructive-list ask, and its safe runs nothing (addendum 3 R1)', async () => {
     const fakes = judges({ quick: quick('safe', 0.9) })
     const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), fakes)
     await withPolicy(runtime, { destructive: ['make clean'] })
     const listed = await call(runtime, 'make', ['clean'])
-    expect(listed.response).toMatchObject({ outcome: 'ok' })
-    expect(listed.entry.judge).toMatchObject({ quick: { level: 'safe' }, passedBy: 'quick' })
+    expect(listed.response).toMatchObject({ outcome: 'approval_required' })
+    expect(listed.entry.judge).toMatchObject({ quick: { level: 'safe' }, passed: false })
     expect(fakes.judge.judge).not.toHaveBeenCalled()
   })
 
-  it('asks: a floor ask Jev cannot rate goes to a person, and one it rates without settling goes to the thorough stage', async () => {
-    const unrated = judges({ quick: NO_QUICK, thorough: thorough('safe', 0.99) })
-    expect((await call(await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), unrated), 'sudo', ['ls'])).response).toMatchObject({ outcome: 'approval_required' })
-    expect(unrated.judge.judge).not.toHaveBeenCalled()
-
-    const escalated = judges({ quick: quick('warning', 0.9), thorough: thorough('safe', 0.95) })
-    const { response, entry } = await call(await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), escalated), 'sudo', ['ls'])
-    expect(response).toMatchObject({ outcome: 'ok' })
-    expect(escalated.judge.judge).toHaveBeenCalledTimes(1)
-    expect(entry.judge).toMatchObject({ level: 'safe', passedBy: 'thorough', quick: { level: 'warning' } })
+  it('asks: a floor ask goes to a person whatever Jev answers, the thorough stage never asked (addendum 3 R1)', async () => {
+    for (const answer of [NO_QUICK, quick('warning', 0.9), quick('safe', 0.95)]) {
+      const fakes = judges({ quick: answer, thorough: thorough('safe', 0.99) })
+      expect((await call(await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), fakes), 'sudo', ['ls'])).response).toMatchObject({ outcome: 'approval_required' })
+      expect(fakes.judge.judge).not.toHaveBeenCalled()
+    }
   })
 
   it('never rates or lifts a deny', async () => {

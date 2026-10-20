@@ -133,11 +133,11 @@ describe('buckle approvals judge', () => {
     await manager.close()
   })
 
-  it('runs both stages the settings name, prints both verdicts, and approves on either stage\'s safe verdict, naming the stage', async () => {
+  it('runs both stages the settings name, prints both verdicts, and approves on the thorough stage\'s safe verdict alone (addendum 3 R1)', async () => {
     const judge = await standIn({ level: 'danger', confidence: 0.95 })
     const jev = await quickStandIn({ choice: 'safe', confidence: 0.92 })
     const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url })
-    const { request, token } = await ask(runtime)
+    const { token } = await ask(runtime)
 
     const shown = await buckle(['approvals', 'judge', token])
     expect(shown.exitCode).toBe(0)
@@ -145,16 +145,29 @@ describe('buckle approvals judge', () => {
     expect(jev.seen[0]).toMatchObject({ authorization: `Bearer ${QUICK_KEY}`, body: { model: 'jev-latest', state: { command: 'python3 job.py' } } })
     expect(judge.seen).toHaveLength(1)
 
-    const approved = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
-    expect(approved.exitCode).toBe(0)
-    expect(approved.out).toContain(`Approved ${token} once in workspace site, on the decision AI's quick stage's safe verdict`)
-    const audited = runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
-    expect(audited?.judge).toMatchObject({ level: 'danger', passed: true, passedBy: 'quick', quick: { provider: 'typesafe', model: 'jev-1.13.0', level: 'safe' } })
-    await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
-    const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
-    expect(result?.decidedBy).toEqual(['judge:quick:typesafe:jev-1.13.0'])
-    expect(shown.out + approved.out).not.toContain(QUICK_KEY)
+    // Jev's safe alone approves nothing.
+    const refused = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
+    expect(refused.exitCode).toBe(0)
+    expect(refused.out).toContain(`Not safe at 0.8 or above, so nothing is approved; ${token} is still waiting`)
+    expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
+    expect(runtime.actions.read(100).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect(shown.out + refused.out).not.toContain(QUICK_KEY)
     await manager.close()
+
+    // The thorough stage's safe approves once, recorded as the thorough stage's, Jev's danger beside it.
+    const safe = await standIn({ level: 'safe', confidence: 0.9 })
+    const wary = await quickStandIn({ choice: 'danger', confidence: 0.9 })
+    const second = await node({ url: safe.url, quickUrl: wary.url })
+    const { request, token: other } = await ask(second.runtime, 'on-request-3')
+    const approved = await second.buckle(['approvals', 'judge', other, '--approve-if-safe'])
+    expect(approved.exitCode).toBe(0)
+    expect(approved.out).toContain(`Approved ${other} once in workspace site, on the decision AI's thorough stage's safe verdict`)
+    const audited = second.runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
+    expect(audited?.judge).toMatchObject({ level: 'safe', passed: true, passedBy: 'thorough', quick: { provider: 'typesafe', model: 'jev-1.13.0', level: 'danger' } })
+    await second.runtime.invoke({ request: { ...request, approvalTokens: [other] }, sessionId: 'agent' })
+    const result = second.runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
+    expect(result?.decidedBy).toEqual(['judge:thorough:openai-compatible:GPT-6-luna'])
+    await second.manager.close()
   })
 
   it('approves nothing on a verdict that is not safe at 0.8 or above, and exits 1 where there is none', async () => {

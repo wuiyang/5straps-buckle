@@ -13,10 +13,11 @@ export type QuickAudit =
   | { provider: string; model: string; unavailable: string }
 
 /**
- * How a rating acted: the stage whose safe verdict ran the call, an allowed command the quick stage made ask, or one it
- * let run; and `socket: 'unavailable'` where the Socket lookup for its packages failed, so its verdict was not kept.
+ * How a rating acted: the thorough stage, whose safe verdict alone runs or approves a call (`passedBy`; addendum 3 R1), an
+ * allowed command the quick stage made ask, or one it let run; and `socket: 'unavailable'` where the Socket lookup for its
+ * packages failed, so its verdict was not kept.
  */
-interface JudgeMarks { passedBy?: 'quick' | 'thorough'; flagged?: true; screened?: true; socket?: 'unavailable' }
+interface JudgeMarks { passedBy?: 'thorough'; flagged?: true; screened?: true; socket?: 'unavailable' }
 
 /**
  * What the decision AI said of a call (D91): the thorough stage's verdict and whether a stage passed the call, or why it

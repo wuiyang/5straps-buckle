@@ -8,7 +8,7 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 /** How an ask the decision AI passed reads in allowedBy and approvedBy: `judge:destructive_command:<subject>` (D91). */
 export const JUDGE = 'judge'
 
-/** The confidence a verdict needs before it acts (D91): a `safe` one passes a call, and a quick `danger` one goes straight to a person. */
+/** The confidence a verdict needs before it acts (D91): a thorough `safe` one passes a call, and a quick `danger` one goes straight to a person. */
 export const JUDGE_PASS_CONFIDENCE = 0.8
 
 /**
@@ -31,8 +31,11 @@ export function quickCovers(scope: QuickJudgeScope, ask: Ask): boolean {
   return ask.rule === 'destructive_command' && ask.cause !== undefined && ask.cause !== 'judge'
 }
 
-/** Whether a rating passes the call: `safe` at JUDGE_PASS_CONFIDENCE or above. A `warning` never runs without a person. */
-export function judgePasses(result: JudgeResult | QuickResult): boolean {
+/**
+ * Whether a thorough verdict passes the call: `safe` at JUDGE_PASS_CONFIDENCE or above. A `warning` never runs without a
+ * person, and the quick stage's verdict is a rating alone, never a pass (addendum 3 R1).
+ */
+export function judgePasses(result: JudgeResult): boolean {
   return result.kind === 'verdict' && result.level === 'safe' && result.confidence >= JUDGE_PASS_CONFIDENCE
 }
 

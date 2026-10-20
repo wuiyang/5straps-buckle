@@ -232,14 +232,16 @@ describe('the packages the code imports', () => {
     const scanner = { scan: vi.fn(async (purls: readonly string[]) => (++lookups === 1 ? { summaries: new Map(purls.map(purl => [purl, null])), failed: true } : { summaries: new Map(purls.map(purl => [purl, ALERT])), failed: false })) }
     const runtime = await createRuntime({ config, judge, quickJudge, packageScanner: scanner })
     runtimes.push(runtime)
+    // Jev's safe is a rating alone, so the thorough stage rates the interpreter ask too (addendum 3 R1).
     const first = await call(runtime, 'node', ['job.js'])
-    expect(first.entry.judge).toMatchObject({ passedBy: 'quick', socket: 'unavailable' })
+    expect(first.entry.judge).toMatchObject({ passedBy: 'thorough', socket: 'unavailable', quick: { level: 'safe' } })
     await call(runtime, 'node', ['job.js'])
     expect(quickJudge.quick).toHaveBeenCalledTimes(2)
-    // With Socket's answer, the quick verdict is kept: a third call is served from the cache.
+    expect(judge.judge).toHaveBeenCalledTimes(2)
+    // With Socket's answer, both verdicts are kept: a third call is served from the cache.
     await call(runtime, 'node', ['job.js'])
     expect(quickJudge.quick).toHaveBeenCalledTimes(2)
-    expect(judge.judge).not.toHaveBeenCalled()
+    expect(judge.judge).toHaveBeenCalledTimes(2)
   })
 
   it('carry no Socket summary where the node has no Socket key, and the rating still runs', async () => {

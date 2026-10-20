@@ -560,9 +560,9 @@ function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; 
 /**
  * `buckle approvals judge <token> [--approve-if-safe]` (D91, addenda C and 2 B): every stage of the decision AI that
  * applies rates one waiting ask at the owner's request, its code read afresh, and the whole action is printed with both
- * verdicts beside it, as `buckle approvals show` prints it. With --approve-if-safe, either stage's safe verdict at 0.8 or
- * above approves the ask once, the stage and its model named as who decided it; anything else approves nothing. Exit 1
- * where no stage gave a verdict.
+ * verdicts beside it, as `buckle approvals show` prints it. With --approve-if-safe, the thorough stage's safe verdict at
+ * 0.8 or above approves the ask once, the stage and its model named as who decided it; the quick stage's verdict is a
+ * rating alone, and anything else approves nothing (addendum 3 R1). Exit 1 where no stage gave a verdict.
  */
 async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; approveIfSafe: boolean; node: string }): Promise<CliResult> {
   const { runtime, token } = input
@@ -577,7 +577,7 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
     return { exitCode: 1, detail: `judge ${token} no verdict`, judge: auditOf(judged, false) }
   }
   const levels = results.flatMap(result => (result.kind === 'verdict' ? [result.level] : [])).join(', ')
-  const passing = judged.passedBy === 'thorough' ? judged.thorough : judged.passedBy === 'quick' ? judged.quick : undefined
+  const passing = judged.passedBy === 'thorough' ? judged.thorough : undefined
   if (!input.approveIfSafe || passing === undefined) {
     process.stdout.write(`${input.approveIfSafe ? 'Not safe at 0.8 or above, so nothing is approved' : 'Nothing is approved'}; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
     return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }

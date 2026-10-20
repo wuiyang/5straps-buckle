@@ -33,9 +33,10 @@ export interface StageRating<R> {
 }
 
 /**
- * What the decision AI said of one command (D91, addendum 2 B): what it was shown (null where its code could not be read
- * whole), each stage that answered, and what that did: the stage whose safe verdict ran the call, an allowed command the
- * quick stage turned into an ask, or one it rated and let run.
+ * What the decision AI said of one command (D91, addendum 2 B, addendum 3): what it was shown (null where its code could
+ * not be read whole), each stage that answered, and what that did: the thorough stage's safe verdict that ran or approved
+ * the call (`passedBy`, only ever the thorough stage: the quick stage's verdict is a rating alone), an allowed command
+ * the quick stage turned into an ask, or one it rated and let run.
  */
 export interface JudgedAsk {
   subject: string
@@ -44,7 +45,7 @@ export interface JudgedAsk {
   input: JudgeInput | null
   quick?: StageRating<QuickResult>
   thorough?: StageRating<JudgeResult>
-  passedBy?: 'quick' | 'thorough'
+  passedBy?: 'thorough'
   flagged?: true
   screened?: true
   /** The Socket lookup for its packages failed, so a verdict it reached was used and not kept (fix brief 2, H11). */
@@ -68,7 +69,7 @@ export interface JudgeGate {
   readonly screens: boolean
   /** Whether a stage rates this ask: an interpreter ask for the thorough stage, or a command ask the quick stage's scope covers. */
   covers(ask: Ask): boolean
-  /** Automated mode: each ask it covers, once per distinct subject, by the routing of addendum 2 B. */
+  /** Automated mode: each ask it covers, once per distinct subject, by the routing of addendum 2 B as addendum 3 changes it. */
   rate(call: CallView & { asks: readonly Ask[] }): Promise<JudgedAsk[]>
   /** Automated mode, scope all: each command of the call no ask names, by the quick stage alone; a danger verdict flags it. */
   screen(call: CallView & { asked: ReadonlySet<string> }): Promise<JudgedAsk[]>
@@ -99,10 +100,11 @@ export const QUICK_OVER_BUDGET = 'the call is larger than the quick stage reads'
  * the approver sees it, the code the interpreter runs read through the agent's own view (code-reader.ts), the packages
  * with their versions and Socket's view, the lists in force, and the sandbox's names for the working directory and the
  * mounts; then each stage's verdict, from the workspace's cache where the same command, code, packages, policy, provider,
- * and model were rated in the last day, else from the stage, which is kept. Routing, in automated mode: the quick stage
- * first where its scope covers the ask, whose safe verdict at 0.8 or above runs the call and whose danger verdict at 0.8 or
- * above goes to a person; anything else goes to the thorough stage for an interpreter ask or one the quick stage rated,
- * and otherwise to a person. Nothing it says refuses a call.
+ * and model were rated in the last day, else from the stage, which is kept. Routing, in automated mode (the owner's ruling
+ * of 2026-10-20, addendum 3 R1): the quick stage rates first where its scope covers the ask, a rating alone that never
+ * runs a call; its danger verdict at 0.8 or above goes to a person; any other answer goes on to the thorough stage for an
+ * interpreter ask, whose safe verdict at 0.8 or above runs the call, and otherwise to a person. Nothing it says refuses a
+ * call.
  */
 export function createJudgeGate(input: {
   judge: Judge | null
@@ -278,7 +280,7 @@ export function createJudgeGate(input: {
       : { subject, input: null, thorough: { provider: settings.provider, model: settings.model, result } }
   }
 
-  /** The routing of addendum 2 B for one ask in automated mode. */
+  /** The routing of addendum 2 B, as addendum 3 changes it, for one ask in automated mode. */
   async function route(ask: Ask, effect: Exec, call: CallView): Promise<JudgedAsk> {
     const quickFirst = quickReady && quickCovers(settings.quick, ask)
     const asked = shown(effect, call, false, ask.reason)
@@ -287,11 +289,11 @@ export function createJudgeGate(input: {
     const judged: JudgedAsk = { subject: ask.subject, ...(ask.cause ? { cause: ask.cause } : {}), input: asked }
     if (quickFirst) {
       judged.quick = await quick(command, call.signal)
-      if (judgePasses(judged.quick.result)) return finished({ ...judged, passedBy: 'quick' }, command)
+      // Jev's verdict is a rating, never a pass: a danger at 0.8 or above goes to a person (addendum 3 R1).
       if (ratedDanger(judged.quick.result)) return finished(judged, command)
     }
-    // An interpreter ask goes on to the thorough stage; another the quick stage rated without settling it does too.
-    if (thoroughReady && (judgeable(ask) || judged.quick?.result.kind === 'verdict')) {
+    // Any other answer goes on to the thorough stage where it applies, an interpreter ask, and otherwise to a person.
+    if (thoroughReady && judgeable(ask)) {
       judged.thorough = await thorough(command, call.signal)
       if (judgePasses(judged.thorough.result)) judged.passedBy = 'thorough'
     }
@@ -336,9 +338,10 @@ export function createJudgeGate(input: {
       const asked = shown(effect, call, call.ask === null, call.ask?.reason ?? null)
       if (typeof asked === 'string') return unread(call.subject, asked, thoroughApplies ? 'thorough' : 'quick')
       const command = prepared(asked, call.signal)
-      // The owner asked, so every stage that applies rates it, and both verdicts are shown.
+      // The owner asked, so every stage that applies rates it, and both verdicts are shown; only the thorough stage's safe
+      // verdict approves (addendum 3 R1).
       const [quickRating, thoroughRating] = await Promise.all([quickApplies ? quick(command, call.signal) : undefined, thoroughApplies ? thorough(command, call.signal) : undefined])
-      const passedBy = thoroughRating && judgePasses(thoroughRating.result) ? 'thorough' as const : quickRating && judgePasses(quickRating.result) ? 'quick' as const : undefined
+      const passedBy = thoroughRating && judgePasses(thoroughRating.result) ? 'thorough' as const : undefined
       return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }, command)
     },
   }
@@ -409,7 +412,7 @@ export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly 
  * webhook is not called for a pass.
  */
 export function announcePass(judged: JudgedAsk, waitingFor: readonly string[]): void {
-  const rating = judged.passedBy === 'quick' ? judged.quick : judged.passedBy === 'thorough' ? judged.thorough : undefined
+  const rating = judged.passedBy === 'thorough' ? judged.thorough : undefined
   if (rating?.result.kind !== 'verdict') return
   const { level, confidence, model } = rating.result
   const rules = [...new Set(waitingFor)]

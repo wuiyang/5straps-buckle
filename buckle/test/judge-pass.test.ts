@@ -49,7 +49,6 @@ describe('what the quick stage\'s scope covers', () => {
     expect(ratedDanger(verdict('danger', 0.8))).toBe(true)
     expect(ratedDanger(verdict('danger', 0.79))).toBe(false)
     expect(ratedDanger(verdict('warning', 0.99))).toBe(false)
-    expect(judgePasses(verdict('safe', 0.8))).toBe(true)
   })
 })
 
