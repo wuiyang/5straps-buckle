@@ -873,8 +873,17 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     if (!sure || known.net) continue
     const form = budget.spent ? null : statementForm(head, budget)
     if (form === null) break
-    // A word that is only a substitution may expand to no word, so the head is also read without it (fix brief 7, A3b).
-    const readings = form.bare.length === 0 ? readingsOf(form) : [...readingsOf(form), form.words.filter((_, at) => !form.bare.includes(at))]
+    // A word that is only a substitution may expand to no word, so the head is also read without it (fix brief 7, A3b). That
+    // reading's words are charged to the budget before it is built, as a piece's are (fix brief 8, A3c).
+    const readings = readingsOf(form)
+    if (form.bare.size > 0) {
+      budget.words -= form.words.length - form.bare.size
+      if (budget.words < 0) {
+        budget.spent = true
+        break
+      }
+      readings.push(form.words.filter((_, at) => !form.bare.has(at)))
+    }
     for (const words of readings) {
       const { chain, unread: limit } = wrapperChain(words, form.expanded, JUDGED)
       if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
@@ -1382,9 +1391,9 @@ const STDIN_HEREDOC = /^0?<<(?!<)/
 /**
  * A statement's words (statementForm), and `other`, its words as the other shells read a bare operator ending in `!`, or
  * null; `bare`, the index in `words` of each word that is only a substitution a head cut (`$$()`), unquoted, which may
- * expand to no word.
+ * expand to no word, as a set, so a reading without them costs one lookup a word (fix brief 8, A3c).
  */
-interface StatementForm { words: string[]; heredoc: boolean; expanded: Expanded; other: string[] | null; bare: number[] }
+interface StatementForm { words: string[]; heredoc: boolean; expanded: Expanded; other: string[] | null; bare: ReadonlySet<number> }
 
 /** An unquoted word that is only the bodies a head cut, each written `$$()`, which may expand to no word at all. */
 const BARE_SUBSTITUTION = /^(?:\$\$\(\))+$/
@@ -1417,25 +1426,32 @@ function statementForm(statement: string, budget: Budget): StatementForm | null 
 
 /** A word seen two ways may do what either does: name a command, split, or start with only the text both share. */
 const mergedExpansion = (known: Expansion | undefined, met: Expansion): Expansion =>
-  known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) }
+  known === undefined || known === met ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) }
 
 /** A statement's words in one reading of its redirections (statementForm). */
-function statementWords(tokens: readonly ShellToken[], clobber: boolean): { words: string[]; heredoc: boolean; expanded: Expanded; bare: number[] } {
+function statementWords(tokens: readonly ShellToken[], clobber: boolean): { words: string[]; heredoc: boolean; expanded: Expanded; bare: Set<number> } {
   const words: string[] = []
-  const bare: number[] = []
+  const bare = new Set<number>()
   let heredoc = false
   let expanded: Map<string, Expansion> | null = null
+  // What an expansion word may make of itself, found once per spelling, so a head's many bare substitutions cost one
+  // lookup each (fix brief 8, A3c).
+  const shapes = new Map<string, Expansion>()
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (!isRedirection(raw)) {
-      if (BARE_SUBSTITUTION.test(raw)) bare.push(words.length)
+      if (BARE_SUBSTITUTION.test(raw)) bare.add(words.length)
       words.push(word)
-      if (holdsExpansion(raw)) {
-        expanded ??= new Map()
+      let met = shapes.get(raw)
+      if (met === undefined && holdsExpansion(raw)) {
         // A word that expands more than a leading tilde before a typed basename may name another command: a lone `~`,
         // `~+`, `~-`, `~2`, or `~user` is the whole name, which HOME, PWD, OLDPWD, the directory stack, or a home holds,
         // and the call may set the first three; a word seen two ways may do what either does (mergedExpansion).
-        const met: Expansion = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
+        met = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
+        shapes.set(raw, met)
+      }
+      if (met !== undefined) {
+        expanded ??= new Map()
         expanded.set(word, mergedExpansion(expanded.get(word), met))
       }
       continue

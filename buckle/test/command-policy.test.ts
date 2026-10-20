@@ -2114,6 +2114,25 @@ describe('a command a substitution cuts, read whole by the floor and the deny li
   })
 })
 
+describe('a head holding many bare substitutions (fix brief 8, A3c)', () => {
+  // The reading of a head without its bare substitution words looked each word up in the list of them, so a body of echo
+  // and 330,000 empty backtick pairs (990 KB, under the request cap) held the node for about a minute.
+  it('reads echo and 330,000 empty backtick pairs through the rules in under a second', () => {
+    const text = `echo${' ``'.repeat(330_000)}`
+    const { milliseconds, result } = leastProcessorTime(() => evaluate('bash', ['-c', text], { allow: ['bash -c *'] }), 2)
+    expect(milliseconds).toBeLessThan(1_000)
+    expect(result.kind).toBe('allow')
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
+
+  it('charges that reading to the read budget before it is built', () => {
+    // 400,001 words in the statement, 400,002 in its head, and 400,001 in the head read without its bare word: past the
+    // budget's 1,000,000 words only with the last counted.
+    const forms = commandFormsOf({ command: 'bash', args: ['-c', `echo${' w'.repeat(400_000)} \`\``] })
+    expect(forms.overBudget).toBe(true)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', `echo${' w'.repeat(400_000)} x`] }).overBudget).toBe(false)
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
+})
+
 describe('a line continuation inside a redirection operator (fix brief 7, A4b)', () => {
   // bash and dash remove a backslash-newline before they read words, so `>\<newline> out` is `> out`, `2\<newline>>` is
   // `2>`, and `{f\<newline>d}>` is `{fd}>` (bash 5.2.21 ran the command after each, and printed fd=10 for the named one).
