@@ -2646,4 +2646,36 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(evaluate('/usr/bin/git', ['status'], { allow }).kind).toBe('allow')
     expect(evaluate('./x/git', ['status'], { allow }).kind).toBe('deny')
   })
+
+  // The call itself and a find -exec command are spawned, not parsed by a shell, so a NAME=value word holding a
+  // separator is their program: `FOO=./git status` runs the file `git` in a folder named `FOO=.`. It was read as an
+  // assignment, so a bare glob admitted it with no ask and a deny glob missed it (git pack recheck 1, held[0]).
+  describe('a NAME=value command word Buckle or find spawns', () => {
+    const pathAsk = [expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })]
+
+    it.each([['git status'], ['git *']])('asks for the call FOO=./git status under allow %s, a command written as a path', glob => {
+      expect(askOf(evaluate('FOO=./git', ['status'], { allow: [glob] }))).toEqual(pathAsk)
+    })
+
+    it('refuses the call where a deny glob meets it by its basename', () => {
+      expect(evaluate('FOO=./git', ['status'], { deny: ['git *'] }).kind).toBe('deny')
+      expect(evaluate('FOO=./git', ['push', 'origin'], { deny: ['git push *'] }).kind).toBe('deny')
+    })
+
+    it.each([['-exec'], ['-execdir'], ['-ok'], ['-okdir']])('reads a find %s command the same way', primary => {
+      const args = ['.', primary, 'FOO=./git', 'status', ';']
+      expect(askOf(evaluate('find', args, { allow: ['find *', 'git status'] }))).toEqual(pathAsk)
+      expect(evaluate('find', args, { deny: ['git *'] }).kind).toBe('deny')
+    })
+
+    it('admits the spelling an allow glob spells', () => {
+      expect(evaluate('FOO=./git', ['status'], { allow: ['FOO=./git status'] }).kind).toBe('allow')
+    })
+
+    it('still reads FOO=./git as an assignment in shell text, as a shell does', () => {
+      expect(evaluate('bash', ['-c', 'FOO=./git status'], { allow: ['bash -c *', 'git status'] }).kind).toBe('allow')
+      expect(evaluate('bash', ['-c', 'FOO=./git status'], { allow: ['bash -c *'], deny: ['git *'] }).kind).toBe('allow')
+      expect(allForms(commandFormsOf({ command: 'bash', args: ['-c', 'FOO=./git status'] }))).not.toContainEqual(['git', 'status'])
+    })
+  })
 })

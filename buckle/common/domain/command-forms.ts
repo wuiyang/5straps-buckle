@@ -374,7 +374,8 @@ const CALL: Place = { statement: false, heredoc: false, expanded: NO_WORDS, foun
  * split no shell makes, read only so a glob meets a command quoted for another program, so it marks no script as data.
  */
 function formsOf(words: readonly string[], depth: number, budget: Budget, place: Place): Reading {
-  const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null)
+  // The call itself and a find -exec command are spawned as words, which no shell parses first.
+  const { chain, unread } = wrapperChain(words, place.expanded, place.sure && place.whole ? (place.found ? JUDGED_FOUND : JUDGED) : null, !place.statement || place.found)
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const own = startupOf(words, chain, place)
@@ -1050,9 +1051,13 @@ const JUDGED_FOUND: Judged = { found: true }
  * an expansion among the words a program reads before the command it runs, where it may be an option, an option's
  * value, or several words, and so move that command: a wrapper's (innerCommand) and, at the chain's end, find's,
  * ssh's, su's, or a shell's before its script (unsureLeadingWords). Words after the command's own word are its arguments.
+ * `spawned`: the words are run as they stand, never parsed by a shell first (the call itself, a find -exec command), so
+ * a NAME=value first word holding a separator is the program they run, as a wrapper's operand is (programPath).
  */
-function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judged | null): { chain: string[][]; unread: UnreadLimit | null } {
+function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judged | null, spawned = false): { chain: string[][]; unread: UnreadLimit | null } {
   const chain = [reduced(words)]
+  const program = spawned ? programPath(words) : null
+  if (program) chain.push(program)
   let current = words
   let unread: UnreadLimit | null = null
   // What an xargs earlier in the chain hands on: its items, and the string it replaces with one.
@@ -1070,11 +1075,21 @@ function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judg
     const execs = execsItsCommand(current)
     current = inner.command
     chain.push(reduced(current))
-    // A NAME=value word such a wrapper runs is a program path (`nice FOO=/bin/rm x` runs a file in a folder named FOO=),
-    // read by its basename beside the word as typed, which names the variable for the code-loading check; the reading as
-    // an assignment follows both, since bash's `time` keyword applies one (fix brief 6, A7).
-    if (execs && ASSIGNMENT.test(current[0]!) && /[\\/]/.test(current[0]!)) chain.push(spelled([baseCommand(current[0]!), ...current.slice(1)], current[0]!))
+    const operand = execs ? programPath(current) : null
+    if (operand) chain.push(operand)
   }
+}
+
+/**
+ * A NAME=value first word holding a separator, where the words are executed as they stand (a wrapper's operand, the
+ * call itself, a find -exec command), is a program path: `nice FOO=/bin/rm x` runs a file in a folder named `FOO=`.
+ * It is read by its basename, recorded as written (spelled), beside the word as typed, which names the variable for the
+ * code-loading check; the reading as an assignment follows both, since bash's `time` keyword applies one (fix brief 6,
+ * A7; git pack recheck 1, held[0]). Null for any other first word.
+ */
+function programPath(words: readonly string[]): string[] | null {
+  const [command = '', ...args] = words
+  return ASSIGNMENT.test(command) && writtenAsPath(command) ? spelled([baseCommand(command), ...args], command) : null
 }
 
 /**
