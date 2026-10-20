@@ -2678,4 +2678,34 @@ describe('a command word written as a path (D74, bare words only)', () => {
       expect(allForms(commandFormsOf({ command: 'bash', args: ['-c', 'FOO=./git status'] }))).not.toContainEqual(['git', 'status'])
     })
   })
+
+  // shell_exec spawns `~/bin/git` as written, so execve reads it under the working folder, where the agent can make a
+  // folder named `~`, while a shell reads it from a home folder: one glob named two programs (git pack recheck 1,
+  // held[2]). A command word whose first segment starts with `~` is never written plainly.
+  describe('a command word that starts with ~', () => {
+    const pathAsk = [expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })]
+
+    it.each<[string, string[], string[]]>([
+      ['~/bin/git', ['status'], ['~/bin/git status']],
+      ['~/bin/git', ['status'], ['*/* *']],
+      ['~/.local/bin/x', ['run'], ['~/.local/bin/* *']],
+      ['~user/bin/x', ['run'], ['~user/bin/* *']],
+    ])('refuses %s %j under allow %j, which no path glob meets', (command, args, allow) => {
+      expect(evaluate(command, args, { allow }).kind).toBe('deny')
+    })
+
+    it.each<[string, string[], string[]]>([
+      ['~/bin/git', ['status'], ['git *', '~/bin/git status']],
+      ['~/bin/git', ['status'], ['git status', '*/* *']],
+      ['nice', ['~/bin/git', 'status'], ['nice *', 'git *', '~/bin/git status']],
+      ['bash', ['-c', '~/bin/git status'], ['bash -c *', 'git *', '~/bin/git status']],
+    ])('asks for %s %j under allow %j at the floor, a bare glob naming the command', (command, args, allow) => {
+      expect(askOf(evaluate(command, args, { allow }))).toEqual(pathAsk)
+    })
+
+    it('runs the full path an allow glob spells', () => {
+      expect(evaluate('/home/x/bin/git', ['status'], { allow: ['/home/x/bin/git status'] }).kind).toBe('allow')
+      expect(evaluate('/home/x/bin/git', ['status'], { allow: ['git *', '/home/x/bin/git status'] }).kind).toBe('allow')
+    })
+  })
 })

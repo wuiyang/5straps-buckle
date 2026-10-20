@@ -59,10 +59,10 @@ export function splitByCommandWord(glob: CommandGlob): CommandWordSplit {
 }
 
 /**
- * Whether a glob's path half meets a call as typed (D74): only where the call's command word is written plainly, with
- * no `.` or `..` segment after a leading `./` and no empty one, as its lexical normalisation writes it. `*` crosses
- * `/`, so `/usr/bin/* *` would otherwise meet `/usr/bin/../../elsewhere/git status`, a program outside the folder the
- * rule names. The word is read as asSpelled reads it. The one check the allow list and the floor's exemption share.
+ * Whether a glob's path half meets a call as typed (D74): only where the call's command word is written plainly
+ * (writtenPlainly). `*` crosses `/`, so `/usr/bin/* *` would otherwise meet `/usr/bin/../../elsewhere/git status`, a
+ * program outside the folder the rule names. The word is read as asSpelled reads it. The one check the allow list and
+ * the floor's exemption share.
  */
 export function meetsAsSpelled(path: CommandGlob | null, typed: string[], platform: NodeJS.Platform = process.platform): boolean {
   if (path === null) return false
@@ -80,8 +80,15 @@ export function asSpelled(typed: readonly string[], platform: NodeJS.Platform = 
   return platform === 'win32' && word !== undefined ? [word.replaceAll('\\', '/'), ...rest] : [...typed]
 }
 
+/**
+ * Whether a command word names one program as written: no `.` or `..` segment after a leading `./`, and no empty one,
+ * as its lexical normalisation writes it, and no first segment starting with `~`. A shell reads `~/bin/git` from a home
+ * folder, while a word Buckle or a wrapper spawns is read under its working folder, where the agent can make a folder
+ * named `~`, so such a word names no one program (git pack recheck 1, held[2]).
+ */
 function writtenPlainly(word: string): boolean {
   const [first, ...rest] = word.split('/')
+  if (first?.startsWith('~')) return false
   // An absolute path's empty first segment, and a leading `./`, are how the word starts, not a step in it.
   const steps = first === '' || first === '.' ? rest : [first ?? '', ...rest]
   return steps.every(step => step !== '' && step !== '.' && step !== '..')
