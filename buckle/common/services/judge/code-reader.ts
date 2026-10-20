@@ -175,6 +175,20 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
   return planned
 }
 
+/**
+ * Why the stages would not be shown the programs a call runs, or null: planOf's refusal over the interpreter forms it runs
+ * and its chain, so a program the agent may have placed, the call as typed, a wrapper, or a runner in shell text, refuses
+ * before the gate takes the call for a standard script on its command line (fix brief 7, B12).
+ */
+export function planRefusal(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 'cwd' | 'view'>): string | null {
+  try {
+    const plan = planOf(input)
+    return typeof plan === 'string' ? plan : null
+  } catch {
+    return CODE_REFUSALS.failed
+  }
+}
+
 /** flock's options that take a value (util-linux flock(1)): `-w`, `--wait`, or `--timeout`, and `-E` or `--conflict-exit-code`. */
 const FLOCK_SHORT_VALUES = 'wE'
 const FLOCK_LONG_VALUES = ['timeout', 'wait', 'conflict-exit-code']

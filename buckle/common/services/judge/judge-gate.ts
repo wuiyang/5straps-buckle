@@ -18,7 +18,7 @@ import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile } from './call-forms.js'
-import { CODE_REFUSALS, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, planRefusal, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -161,6 +161,13 @@ export function createJudgeGate(input: {
     const reading = allowed ? forms.interpreters : interpreters
     const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
     const cwd = workingDirectory(call.args)
+    // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
+    // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
+    const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
+    // Every program the call runs is placed first, the call as typed, each wrapper, and each interpreter form, from shell
+    // text too, so a runner named by a path inside the workspace or a mount is never a standard script (fix brief 7, B12).
+    const placed = planRefusal({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
+    if (placed !== null) return placed
     // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
     // npm runs no interpreter Buckle names; or, inside shell text or behind a wrapper, where every interpreter form it runs
     // is one. Never `bun run <file>`, which runs the workspace's own file and is read as `bun <file>` is, and never a call
@@ -172,9 +179,6 @@ export function createJudgeGate(input: {
     // A standard script's own code is not read, but what bun loads before it is: its preloads and its bunfig.toml's (fix brief 3, R15).
     // The chain tells the reader which forms the call runs itself and which come from shell text, which it reads only as
     // one simple command (fix brief 4, P).
-    // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
-    // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
-    const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
     const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
     const shownCwd = sandboxName(cwd)

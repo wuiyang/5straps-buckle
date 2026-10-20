@@ -568,6 +568,53 @@ describe('a wrapper named by a path inside the workspace (fix brief 7, B11)', ()
   })
 })
 
+describe('a standard script named by a path inside the workspace (fix brief 7, B12)', () => {
+  /** A node with planted runners in fv/bin, and its runtime with stand-ins for both stages. */
+  async function planted(environment: NodeJS.ProcessEnv = {}) {
+    const config = node(environment)
+    mkdirSync(join(config.cwd, 'fv', 'bin'), { recursive: true })
+    for (const name of ['npx', 'pnpx', 'bunx', 'npm']) writeFileSync(join(config.cwd, 'fv', 'bin', name), '#!/bin/sh\necho planted\n')
+    const judge = fakeJudge()
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    return { judge, quickJudge, runtime: await runtimeOf(config, { judge, quickJudge }) }
+  }
+
+  it('is never a standard script: a planted runner refuses with the local-program reason, no stage asked', async () => {
+    const { judge, quickJudge, runtime } = await planted()
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'nice *', 'timeout *', 'npx *', 'pnpx *', 'bunx *'], deny: [] } })
+    const calls = [['./fv/bin/npx', 'vitest', 'run'], ['nice', './fv/bin/npx', 'vitest', 'run'], ['timeout', '60', './fv/bin/npx', 'vitest', 'run'], ['bash', '-c', './fv/bin/npx vitest run'], ['./fv/bin/pnpx', 'vitest', 'run'], ['./fv/bin/bunx', 'tsc', '-p', '.']]
+    for (const command of calls) {
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, command.join(' ')).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+  })
+
+  it('refuses a planted npm on the destructive list under quick scope asks, no stage asked', async () => {
+    const { judge, quickJudge, runtime } = await planted({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['npm run build'] } })
+    const { response, entry, ran } = await call(runtime, {}, ['./fv/bin/npm', 'run', 'build'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ quick: { unavailable: CODE_REFUSALS.localInterpreter }, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+  })
+
+  it('keeps npx, and an npx outside the workspace and every mount, standard and rated', async () => {
+    const { judge, runtime } = await planted()
+    // A path that names no file fails closed (fix brief 6, B1), so the outside runner is a real file in a folder of its own.
+    const outside = mkdtempSync(join(tmpdir(), 'buckle-judge-env-outside-'))
+    roots.push(outside)
+    writeFileSync(join(outside, 'npx'), '#!/bin/sh\necho outside\n')
+    for (const command of [['npx', 'vitest', 'run'], [join(outside, 'npx'), 'vitest', 'run']]) await call(runtime, {}, command)
+    expect(judge.shown.map(input => [input.command, input.standardScript, input.files])).toEqual([['npx vitest run', true, []], [`${join(outside, 'npx')} vitest run`, true, []]])
+  })
+})
+
 describe('a call that sets HOME (fix brief 5, P4)', () => {
   it('is not rated, since zsh and Python read startup code from HOME, and the reason names HOME with no value', async () => {
     expect(codeLoadingVariable(callVariables({ env: { HOME: '/workspace/h' } }))).toBe('HOME')
