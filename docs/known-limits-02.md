@@ -33,7 +33,7 @@ hiding, and paths, [part three](known-limits-03.md) code mode, the command line,
   path Windows gives every place on its way too, links included, so a `subst` drive or a drive mapped to a folder cannot hide a
   workspace, and in long names, so an 8.3 short name such as `PROJEC~1` cannot either. A real path
   Buckle cannot read or that lies on a network share is refused, and so is a short name it cannot
-  read back, unless a [mount](mounts.md#windows-shares) of the workspace holds the share. Only an
+  read back, unless a [mount](mounts-02.md#windows-shares) of the workspace holds the share. Only an
   imitated Windows has tested this so far, not a Windows machine.
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory

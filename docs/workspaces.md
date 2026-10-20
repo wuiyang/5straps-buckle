@@ -6,7 +6,8 @@ tokens, policy, settings, grants, approvals, and history. The node's admin crede
 port, and other node settings are its alone; its other settings in `buckle.env` are each
 workspace's defaults. This page covers making and changing workspaces; [the next
 one](workspaces-02.md) covers their settings, [Node defaults](workspaces-03.md) how the node's
-settings apply to each, and [Moving a node from 0.1](workspaces-04.md) a node set up before them.
+settings apply to each, [Moving a node from 0.1](workspaces-04.md) a node set up before them,
+and [Serving workspaces](workspaces-05.md) what `buckle serve` shows.
 
 ## buckle init
 
@@ -21,8 +22,9 @@ settings, in the state directory (`~/.5straps/buckle`, or the absolute path in
 current directory, or the folder `--dir` names, as a workspace, and prints that workspace's agent
 token once. Each later `buckle init`, in another project, keeps the node's file and adds that
 folder as a workspace with its own token. `--force` writes the node's file again, with a new
-admin credential, and keeps every workspace and the node's workspace defaults. In a folder a workspace already serves, it adds
-nothing and says how to mint a token there.
+admin credential, and keeps every workspace and the node's workspace defaults. In a folder a
+workspace already serves, it adds nothing, asks no mount question, and refuses `--volume`,
+pointing at `buckle workspace mount add`; otherwise it says how to mint a token there.
 
 In a terminal it asks where the agent sees the folder (`/workspace`), more folders to
 [mount](mounts.md) (`--volume <local>:<sandbox>[:ro]` without asking), which packs to offer,
@@ -118,11 +120,3 @@ a refusal naming it, and one removed and added again needs the client to restart
 Neither a workspace's settings nor the defaults it takes from the node come from an MCP client's
 `env`: the node reads them from `workspace.json` and `buckle.env` alone, and says so in its log
 where that `env` sets one otherwise.
-
-## buckle serve
-
-`buckle serve` serves every online workspace, and opens each at start, so a broken one is named
-then rather than at its first call; the rest are served. On its terminal it lists them, each with
-its id and name, where the agent sees its folder and from where, its URL mode, and the packs it
-offers, and lists them again after each change. Every question it asks is marked with the
-workspace it waits in.

@@ -45,7 +45,8 @@ Taking the folder's mount away, or moving it onto a mount, is refused while moun
 `buckle init` and `buckle workspace init` take the same form as `--volume`, once per mount, and
 `buckle init` asks for more at a terminal. Each is checked as `mount add` checks one: a typed answer
 naming no mount is asked again, and any other refused entry stops the command before anything is
-written. `buckle policy show` lists the table too.
+written. In a folder a workspace already serves, `buckle init` asks no mount question and refuses
+`--volume`, pointing at `buckle workspace mount add`. `buckle policy show` lists the table too.
 
 ## The node's mounts
 
@@ -92,20 +93,12 @@ stay hidden from the command, and one that holds, or sits inside, Buckle's state
 A change to the table applies once the workspace has no active work, such as a running call or
 a shell copy awaiting review; until then calls are refused with a 409.
 
-## Windows shares
-
-On Windows a mount's source may be a network share (`\\server\share\folder`), and a mapped
-drive is stored as the share it points to, since a node started by another logon does not see
-the letter. A path on a share is reached only inside a mount that holds it: a workspace folder,
-the state directory, and every other path on a share stay refused, and so does a device path
-(`\\?\` or `\\.\`). A program on a share runs only from a read-only mount, as a writable mount is
-a place an agent can write.
-
 ## Platforms
 
 - Linux with bubblewrap: as above.
 - macOS and Windows: the table is path policy for the file, git, code, and browser tools. The
   shell stays withheld wherever the folder is mounted, as Seatbelt and an unsandboxed node cannot
   show a command the same view.
+- Windows: a mount's source may be a network share ([Windows shares](mounts-02.md)).
 
 [Known limits, part four](known-limits-04.md) lists what this does not yet cover.
