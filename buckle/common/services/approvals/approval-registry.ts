@@ -9,7 +9,7 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
-import { RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
+import { FLOOR_WARNING, RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
 
@@ -65,11 +65,13 @@ const quickNoteSchema = z.union([
   z.object({ level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), latencyMs: z.number().nonnegative() }).strict(),
   z.object({ unavailable: z.string() }).strict(),
 ])
+// warning: a floor ask's one constant line, which no stage passes (addendum 3 R2); only that constant is kept.
+const warning = { warning: z.literal(FLOOR_WARNING).optional() }
 const judgeNoteSchema = z.union([
-  z.object({ subject: z.string(), level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string(), latencyMs: z.number().nonnegative().optional(), quick: quickNoteSchema.optional() }).strict(),
-  z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional() }).strict(),
-  z.object({ subject: z.string(), onRequest: z.literal(true) }).strict(),
-  z.object({ subject: z.string(), quick: quickNoteSchema }).strict(),
+  z.object({ subject: z.string(), level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string(), latencyMs: z.number().nonnegative().optional(), quick: quickNoteSchema.optional(), ...warning }).strict(),
+  z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional(), ...warning }).strict(),
+  z.object({ subject: z.string(), onRequest: z.literal(true), ...warning }).strict(),
+  z.object({ subject: z.string(), quick: quickNoteSchema, ...warning }).strict(),
 ])
 const callSchema = z.object({
   arguments: JsonValueSchema, cwd: z.string(), description: z.string().nullable().default(null),

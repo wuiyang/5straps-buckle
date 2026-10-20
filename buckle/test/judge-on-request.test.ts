@@ -97,8 +97,8 @@ async function node(input: { url: string; judge?: string; quickUrl?: string; qui
   return { buckle, runtime, manager }
 }
 
-async function ask(runtime: BuckleRuntime, requestId = 'on-request-1') {
-  const request = { requestId, approvalTokens: [] as string[], tool: 'shell_exec', args: { command: 'python3', args: ['job.py'] } }
+async function ask(runtime: BuckleRuntime, requestId = 'on-request-1', call: { command: string; args: string[] } = { command: 'python3', args: ['job.py'] }) {
+  const request = { requestId, approvalTokens: [] as string[], tool: 'shell_exec', args: call }
   const response = await runtime.invoke({ request, sessionId: 'agent', approvalWait: { mode: 'none' } })
   if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${JSON.stringify(response)}`)
   return { request, token: response.approvals.find(approval => approval.rule === 'destructive_command')!.token }
@@ -224,6 +224,24 @@ describe('buckle approvals judge', () => {
     expect(judge.seen).toHaveLength(0)
     expect(jev.seen).toHaveLength(0)
     expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
+    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    await manager.close()
+  })
+  it('rates a floor ask with both stages and prints both verdicts, and --approve-if-safe approves nothing for one, saying why (addendum 3 R2)', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.99 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.95 })
+    const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url, quick: 'asks' })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['make clean'] } })
+    for (const [requestId, call] of [['floor-sudo', { command: 'sudo', args: ['ls'] }], ['floor-listed', { command: 'make', args: ['clean'] }]] as const) {
+      const { token } = await ask(runtime, requestId, { ...call, args: [...call.args] })
+      const seen = judge.seen.length
+      const result = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
+      expect(result.exitCode, requestId).toBe(0)
+      expect(judge.seen, requestId).toHaveLength(seen + 1)
+      expect(result.out, requestId).toMatch(/ {2}judge: {4}a command at the destructive floor always needs a person; quick: safe \(0\.95, jev-1\.13\.0, \d+ ms\); thorough: safe \(0\.99, GPT-6-luna, \d+ ms\)/)
+      expect(result.out, requestId).toContain(`A command at the destructive floor always needs a person, so nothing is approved; ${token} is still waiting`)
+      expect(runtime.approvalService.waitingAsk(token), requestId).toBeDefined()
+    }
     expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
     await manager.close()
   })

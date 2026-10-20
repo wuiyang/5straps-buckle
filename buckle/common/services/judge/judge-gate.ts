@@ -10,9 +10,9 @@ import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import { logger } from '../../runtime/log.js'
 import type { AskCause, PermissionDecision } from '../../domain/permission/decision.js'
-import { judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
+import { floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
-import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
+import { FLOOR_WARNING, type JudgeNote, type QuickNote } from '../../domain/approval-instruction.js'
 import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
@@ -339,9 +339,9 @@ export function createJudgeGate(input: {
       if (typeof asked === 'string') return unread(call.subject, asked, thoroughApplies ? 'thorough' : 'quick')
       const command = prepared(asked, call.signal)
       // The owner asked, so every stage that applies rates it, and both verdicts are shown; only the thorough stage's safe
-      // verdict approves (addendum 3 R1).
+      // verdict approves (addendum 3 R1), and never a floor ask (R2).
       const [quickRating, thoroughRating] = await Promise.all([quickApplies ? quick(command, call.signal) : undefined, thoroughApplies ? thorough(command, call.signal) : undefined])
-      const passedBy = thoroughRating && judgePasses(thoroughRating.result) ? 'thorough' as const : undefined
+      const passedBy = thoroughRating && judgePasses(thoroughRating.result) && !floorCause(call.ask?.cause) ? 'thorough' as const : undefined
       return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }, command)
     },
   }
@@ -390,6 +390,9 @@ function execOf(effects: readonly ResolvedEffect[], subject: string): Exec | und
   return effects.find((item): item is Exec => item.kind === 'exec' && commandSubject(item.command, item.args) === subject)
 }
 
+/** The floor's warning line as a note carries it (addendum 3 R2). */
+const FLOOR_NOTE: { warning: typeof FLOOR_WARNING } = { warning: FLOOR_WARNING }
+
 /**
  * The notes an ask's call keeps for its approvers (D91): in automated mode what each stage said of each command it rated
  * and did not pass, a command the quick stage flagged among them; on request, that each ask a stage covers may be rated;
@@ -399,7 +402,9 @@ export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly 
   const { gate } = input
   if (!gate || !gate.ready) return []
   const waiting = new Set(input.asks.filter(ask => gate.covers(ask) || ask.cause === 'judge').map(ask => ask.subject))
-  if (gate.mode === 'on-request') return [...waiting].map(subject => ({ subject, onRequest: true as const }))
+  // A floor ask's note carries the floor's warning line, on request too (addendum 3 R2).
+  const floor = new Set(input.asks.filter(ask => ask.rule === 'destructive_command' && floorCause(ask.cause)).map(ask => ask.subject))
+  if (gate.mode === 'on-request') return [...waiting].map(subject => ({ subject, onRequest: true as const, ...(floor.has(subject) ? FLOOR_NOTE : {}) }))
   if (gate.mode !== 'automated') return []
   return input.judged.filter(item => waiting.has(item.subject)).map(judgeNoteOf)
 }
@@ -425,18 +430,22 @@ function listed(names: readonly string[]): string {
   return names.length < 3 ? names.join(' and ') : `${names.slice(0, -1).join(', ')}, and ${names.at(-1)}`
 }
 
-/** One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick stage's beside it. */
+/**
+ * One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick
+ * stage's beside it, and for a floor ask the floor's warning line (addendum 3 R2).
+ */
 export function judgeNoteOf(judged: JudgedAsk): JudgeNote {
   const { subject } = judged
   const quick = judged.quick ? quickNoteOf(judged.quick) : undefined
-  const beside = quick ? { quick } : {}
+  const warned = floorCause(judged.cause) ? FLOOR_NOTE : {}
+  const beside = quick ? { quick, ...warned } : warned
   if (judged.thorough) {
     const { result, model } = judged.thorough
     return result.kind === 'verdict'
       ? { subject, level: result.level, confidence: result.confidence, model, reasoning: redactCredentials(result.reasoning, 'text'), latencyMs: result.latencyMs, ...beside }
       : { subject, unavailable: result.reason, ...beside }
   }
-  return quick ? { subject, quick } : { subject, unavailable: 'no stage rated it' }
+  return quick ? { subject, quick, ...warned } : { subject, unavailable: 'no stage rated it', ...warned }
 }
 
 function quickNoteOf(rating: StageRating<QuickResult>): QuickNote {

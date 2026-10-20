@@ -1,10 +1,11 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { CliRequest } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { describeQuestion } from '../cli/terminal-consumer.js'
-import { describeAsk } from '../common/domain/approval-instruction.js'
+import { describeAsk, FLOOR_WARNING } from '../common/domain/approval-instruction.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
@@ -41,7 +42,7 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
 const verdict = (level: 'safe' | 'warning' | 'danger', confidence: number): JudgeResult => ({ kind: 'verdict', level, confidence, reasoning: `It deletes files. ${level}.`, model: 'claude-opus-5-5', latencyMs: 30, promptDigest: 'e'.repeat(64) })
 
 /** A runtime whose terminal questions and webhook posts are kept; one call asks about python3 job.py. */
-async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv; quickJudge?: QuickJudge }) {
+async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv; quickJudge?: QuickJudge; command?: [string, string[]]; destructive?: string[] }) {
   const webhook = await captureWebhook()
   closing.push(() => webhook.close())
   const questions: CliRequest[] = []
@@ -50,7 +51,9 @@ async function asked(input: { answer?: JudgeResult; environment?: NodeJS.Process
   const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, ...input.environment })
   const runtime: BuckleRuntime = await createRuntime({ config, judge, ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
   closing.push(async () => { await runtime.approvalService.close(); await runtime.history.close() })
-  vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['job.py'] }], execute: vi.fn(async () => 'executed') })
+  if (input.destructive) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: input.destructive } })
+  const [command, args] = input.command ?? ['python3', ['job.py']]
+  vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute: vi.fn(async () => 'executed') })
   const response = await runtime.invoke({ request: { requestId: `shown-${Math.random()}`, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'shown', approvalWait: { mode: 'none' } })
   if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
   await vi.waitFor(() => expect(questions.length).toBeGreaterThan(0))
@@ -94,6 +97,32 @@ describe('the quick stage\'s verdict beside the action', () => {
     expect(body.approvals[0]!.judge).toEqual({ quick: { level: 'danger', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 } })
     expect(runtime.approvalService.listing()[0]!.call?.judge).toEqual([{ subject: approval.subject, quick: { level: 'danger', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 } }])
     expect(question.action.details?.judge).toBe('quick: danger (0.95, jev-1.13.0, 120 ms)')
+  })
+})
+
+describe('a floor ask the quick stage rated (addendum 3 R2)', () => {
+  const jev = (): QuickJudge => ({ quick: vi.fn(async (): Promise<QuickResult> => ({ kind: 'verdict', level: 'safe', confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 120 })) })
+
+  it.each([
+    ['sudo ls', { command: ['sudo', ['ls']] as [string, string[]] }],
+    ['a workspace destructive entry', { command: ['make', ['clean']] as [string, string[]], destructive: ['make clean'] }],
+  ])('is never passed on Jev\'s safe 0.95, the thorough stage not asked, and every approver route carries the floor\'s warning line: %s', async (_, call) => {
+    const quickJudge = jev()
+    const { runtime, judge, approval, question, posted: body } = await asked({ quickJudge, environment: { BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }, answer: verdict('safe', 0.99), ...call })
+    expect(quickJudge.quick).toHaveBeenCalledTimes(1)
+    expect(judge.judge).toHaveBeenCalledTimes(0)
+    const quick = { level: 'safe', confidence: 0.95, model: 'jev-1.13.0', latencyMs: 120 }
+    expect(question.action.details?.judge).toBe(`${FLOOR_WARNING}; quick: safe (0.95, jev-1.13.0, 120 ms)`)
+    expect(body.approvals[0]!.judge).toEqual({ quick, warning: FLOOR_WARNING })
+    expect(runtime.approvalService.listing()[0]!.call?.judge).toEqual([{ subject: approval.subject, quick, warning: FLOOR_WARNING }])
+    expect(runtime.approvalService.waitingAsk(approval.token)).toBeDefined()
+  })
+
+  it('carries the warning line on request too, and never promises that --approve-if-safe approves it', async () => {
+    const { runtime, approval, question, posted: body } = await asked({ quickJudge: jev(), environment: { BUCKLE_APPROVAL_JUDGE: 'on-request', BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }, command: ['sudo', ['ls']] })
+    const command = `buckle approvals judge ${approval.token} --workspace ${runtime.workspaceName()}`
+    expect(question.action.details?.judge).toBe(`${FLOOR_WARNING}; not asked; ${command} rates it`)
+    expect(body.approvals[0]!.judge).toEqual({ onRequest: true, command, warning: FLOOR_WARNING })
   })
 })
 

@@ -82,13 +82,21 @@ export function judgeCommand(input: NamedWorkspace & { request: { token: string 
  * What the decision AI said of an ask's command (D91), kept with the call the ask came from: the thorough stage's verdict
  * or why it gave none, with the quick stage's beside it; the quick stage's alone; or, in a workspace whose judge rates on
  * request, that it was not asked yet. The reasoning is the model's, with the
- * credentials the display hides hidden.
+ * credentials the display hides hidden. A floor ask's note carries FLOOR_WARNING (`warning`), a constant, never a
+ * reasoning (addendum 3 R2).
  */
-export type JudgeNote =
+export type JudgeNote = (
   | { subject: string; level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; reasoning: string; latencyMs?: number; quick?: QuickNote }
   | { subject: string; unavailable: string; quick?: QuickNote }
   | { subject: string; onRequest: true }
   | { subject: string; quick: QuickNote }
+) & { warning?: typeof FLOOR_WARNING }
+
+/**
+ * The one line a floor ask's note carries (addendum 3 R2): the built-in floor (sudo and the destructive commands) or the
+ * workspace's destructive list asked, and no stage of the decision AI ever passes such a call, whatever it rates it.
+ */
+export const FLOOR_WARNING = 'a command at the destructive floor always needs a person'
 
 /** What the quick stage said beside the thorough stage's verdict, or alone (D91, addendum 2 B): Jev writes no reasoning. */
 export type QuickNote = { level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; latencyMs: number } | { unavailable: string }
@@ -104,11 +112,23 @@ export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rul
  * `quick: warning (0.90, jev-1.13.0, 120 ms); thorough: danger (0.92, gpt-6-luna, 900 ms): <reasoning>`. Every route passes it through printable() as it does the rest.
  */
 export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
-  if ('onRequest' in note) return onRequestLine(input)
+  const rated = ratingLine(note, input)
+  // A floor ask's note leads with its one constant warning line (addendum 3 R2).
+  return note.warning === undefined ? rated : rated === '' ? note.warning : `${note.warning}; ${rated}`
+}
+
+/** A note's ratings as one line: judgeLine without the floor warning. */
+function ratingLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
+  if ('onRequest' in note) return note.warning === undefined ? onRequestLine(input) : floorRequestLine(input)
   const quick = 'quick' in note && note.quick ? `quick: ${'level' in note.quick ? `${note.quick.level} (${note.quick.confidence.toFixed(2)}, ${note.quick.model}, ${note.quick.latencyMs} ms)` : `no verdict: ${note.quick.unavailable}`}` : null
   const thorough = 'level' in note ? `${note.level} (${note.confidence.toFixed(2)}, ${note.model}${note.latencyMs === undefined ? '' : `, ${note.latencyMs} ms`}): ${note.reasoning}` : 'unavailable' in note ? `no verdict: ${note.unavailable}` : null
   if (quick === null) return thorough ?? ''
   return thorough === null ? quick : `${quick}; thorough: ${thorough}`
+}
+
+/** That a floor ask was not rated yet, and the command that rates it on request, which never approves one (addendum 3 R2). */
+function floorRequestLine(input: NamedWorkspace & { token?: string | undefined }): string {
+  return input.token === undefined ? 'not asked; the decision AI rates it on request' : `not asked; ${judgeCommand({ ...input, request: { token: input.token } })} rates it`
 }
 
 /** That a waiting ask's command was not rated yet, and the command that rates it on request. */

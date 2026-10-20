@@ -44,6 +44,15 @@ export function ratedDanger(result: JudgeResult | QuickResult): boolean {
   return result.kind === 'verdict' && result.level === 'danger' && result.confidence >= JUDGE_PASS_CONFIDENCE
 }
 
+/**
+ * Whether an ask's cause is the destructive floor's own (addendum 3 R2): the built-in floor (sudo and the destructive
+ * commands) or the workspace's destructive list. No stage ever passes such an ask, whatever it rates it; the thorough
+ * stage is not asked about one in automated mode, and on request its safe approves nothing.
+ */
+export function floorCause(cause: AskCause | undefined): boolean {
+  return cause === 'floor' || cause === 'destructive-list'
+}
+
 /** What a stage's pass is kept under: the cause and the subject of the ask it rated, so it lifts that ask and no other. */
 export function passKey(ask: { cause?: AskCause | undefined; subject: string }): string {
   return `${ask.cause ?? 'none'}:${ask.subject}`

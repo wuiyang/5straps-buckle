@@ -9,8 +9,9 @@ import { parseArgs } from 'node:util'
 import type { InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, FLOOR_WARNING, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
 import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
+import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
@@ -316,8 +317,9 @@ function printUsage(): CliResult {
   buckle approvals show <token> [--json] [--workspace <name>]
                                    One request whole, and the code_run script that made it
   buckle approvals judge <token> [--approve-if-safe] [--workspace <name>]
-                                   The decision AI's verdict on one interpreter request, beside its whole action;
-                                   --approve-if-safe approves it once where the verdict is safe at 0.8 or above
+                                   The decision AI's verdicts on one request, beside its whole action;
+                                   --approve-if-safe approves an interpreter request once where the thorough
+                                   stage rates it safe at 0.8 or above, and never one at the destructive floor
   buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
@@ -562,7 +564,8 @@ function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; 
  * applies rates one waiting ask at the owner's request, its code read afresh, and the whole action is printed with both
  * verdicts beside it, as `buckle approvals show` prints it. With --approve-if-safe, the thorough stage's safe verdict at
  * 0.8 or above approves the ask once, the stage and its model named as who decided it; the quick stage's verdict is a
- * rating alone, and anything else approves nothing (addendum 3 R1). Exit 1 where no stage gave a verdict.
+ * rating alone, and anything else approves nothing (addendum 3 R1), as does a floor ask, whose line says so (R2). Exit 1
+ * where no stage gave a verdict.
  */
 async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; approveIfSafe: boolean; node: string }): Promise<CliResult> {
   const { runtime, token } = input
@@ -577,6 +580,11 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
     return { exitCode: 1, detail: `judge ${token} no verdict`, judge: auditOf(judged, false) }
   }
   const levels = results.flatMap(result => (result.kind === 'verdict' ? [result.level] : [])).join(', ')
+  // A floor ask always needs a person: --approve-if-safe approves nothing for one, whatever both stages said (addendum 3 R2).
+  if (input.approveIfSafe && floorCause(judged.cause)) {
+    process.stdout.write(`${FLOOR_WARNING[0]!.toUpperCase()}${FLOOR_WARNING.slice(1)}, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
+    return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
+  }
   const passing = judged.passedBy === 'thorough' ? judged.thorough : undefined
   if (!input.approveIfSafe || passing === undefined) {
     process.stdout.write(`${input.approveIfSafe ? 'Not safe at 0.8 or above, so nothing is approved' : 'Nothing is approved'}; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
