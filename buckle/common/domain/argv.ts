@@ -818,10 +818,17 @@ type ParenKind = 'word' | 'command' | 'unsure'
  * patterns follow (after `case WORD in`, a `|` between patterns, or `;;`, `;&` or `;;&`) until one ends or an `esac`,
  * and `subject` after a `case WORD` whose `in` is on a later line.
  */
-interface CommandText { text: string; from: number; cut: boolean; runs: boolean; feed: boolean; statements: number; heads: number; pieces: number[] | null; pattern: boolean; subject: boolean }
+interface CommandText { text: string; from: number; cut: boolean; runs: boolean; feed: boolean; statements: number; heads: number; pieces: number[] | null; pattern: boolean; subject: boolean; join: Join | null }
+
+/**
+ * The command before the `&` of a `&>` or `&>>` cut, which bash reads as one redirection of the command around it (`rm
+ * &>/dev/null -rf x` runs rm -rf x), while dash reads the `&` as a background job: its text up to that `&` with the `&`
+ * read as a blank, its body cut into `$()` where one was (`cut`), and whether a feed reached it (fix brief 7, A1b).
+ */
+interface Join { text: string; cut: boolean; feed: boolean }
 
 const commandAt = (from: number, runs: boolean, found: Found): CommandText =>
-  ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null, pattern: false, subject: false })
+  ({ text: '', from, cut: false, runs, feed: false, statements: found.statements.length, heads: found.heads.length, pieces: null, pattern: false, subject: false, join: null })
 
 /** How many statements and heads were found before a point of the reading. */
 interface Mark { statements: number; heads: number }
@@ -1055,6 +1062,19 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       for (const index of command.pieces ?? []) found.flags[index]! |= FED
       if (command.cut && command.runs) found.headFlags[found.headFlags.length - 1]! |= FED
     }
+    // A command a `&>` cut is read whole too, as bash runs it: a statement, or a head where a body was cut from it.
+    const join = command.join
+    if (join !== null && command.runs) {
+      const whole = join.text + (command.cut ? command.text : text.slice(start, at))
+      const fed = command.feed || join.feed ? FED : 0
+      if (command.cut || join.cut) {
+        found.heads.push(whole)
+        found.headFlags.push(flags | fed)
+      } else {
+        found.statements.push(whole)
+        found.flags.push(flags | fed)
+      }
+    }
     // A compound command opens with its reserved word, and a feed on the word that closes one, or on the redirections
     // after a `)`, feeds all of it; an `exec` a feed redirects feeds every command after it.
     const words = command.cut ? leadingWords(command.text, 0, command.text.length) : leadingWords(text, start, at)
@@ -1081,6 +1101,15 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     command.statements = found.statements.length
     command.heads = found.heads.length
     command.pieces = null
+    command.join = null
+  }
+  // What a `&>` or `&>>` whose `&` is at `amp` joins to the command after it (Join): the command so far, after any it
+  // joined already, with the `&` read as a blank, so the shared redirection grammar reads `>word` or `>>word` there.
+  const joinedBefore = (level: SplitLevel, amp: number): Join | null => {
+    const command = level.command
+    if (!command.runs) return null
+    const own = command.cut ? command.text + (command.from >= 0 ? text.slice(command.from, amp) : '') : text.slice(level.start, amp)
+    return { text: `${command.join?.text ?? ''}${own} `, cut: command.cut || command.join?.cut === true, feed: command.feed || command.join?.feed === true }
   }
   // A body opens at `at` inside the command at this level, which a substitution replaces in its head until the body ends.
   const cut = (command: CommandText, at: number) => {
@@ -1327,13 +1356,16 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       // every POSIX shell, so they stay in the statement; a shell runs the command after the redirection (fix brief 5,
       // N2). So does the `|` of zsh's `>&|` and `>>&|` (fix brief 6, A4), and the `;` of ksh93's `>;word` and `<>;word`
       // (A5), each a syntax error in bash and dash, so keeping it there merges nothing they run. The `&` of `&>` and `&>>`
-      // still ends one: dash and POSIX sh read `a &>f b` as `a &` then `>f b`, and bash's
-      // one redirection, read as `>f b`, leaves the same command, so the cut reads at least what either runs (fix brief
-      // 6, A1).
+      // still ends one, as dash and POSIX sh read `a &>f b`: `a &` then `>f b` (fix brief 6, A1).
       level.wordStart = true
     } else if (BREAK_CHARACTERS.has(character)) {
+      // bash, rbash, zsh, mksh, and ksh93 read that `&>` as one redirection of the command around it instead, its later
+      // words that command's arguments, so the command it cut is read whole as well (Join), whatever the shell, as a bare
+      // `>!` is read both ways (fix brief 7, A1b). The `&` of `&&` and `|&` is that operator's.
+      const join = character === '&' && text[index + 1] === '>' && previous !== '&' && previous !== '|' ? joinedBefore(level, index) : null
       level.wordStart = true
       finish(level, index, index + 1)
+      level.command.join = join
       // `;;`, `;&`, and `;;&` end a case clause: the next words are a pattern.
       if (character === ';' && (text[index + 1] === ';' || text[index + 1] === '&')) level.command.pattern = true
       // A `|` or `|&` pipes into what follows; `;`, `&`, `&&`, `||`, and a newline end the pipeline.

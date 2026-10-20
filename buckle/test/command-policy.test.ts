@@ -1959,6 +1959,30 @@ describe('an assignment-shaped word a wrapper runs as a program (fix brief 6, A7
   })
 })
 
+describe('a &> or &>> redirection between a command and its arguments (fix brief 7, A1b)', () => {
+  // bash keeps the words after `&>word` as the first command's arguments (bash 5.2.21 ran `rm &>/dev/null -rf x` as rm
+  // -rf x), while dash reads the `&` as a background job; the statement is read cut at the `&` and whole as well.
+  // `rm -rf *` covers the line in order, so `rm x -rf y` meets `rm *` alone, as the direct call does.
+  it.each([['rm &>/dev/null -rf x', 'rm -rf *'], ['rm x &>/dev/null -rf y', 'rm *'], ['rm &> /dev/null -rf x', 'rm -rf *']])('bash -c %j asks at the floor and meets the deny %j', (text, deny) => {
+    const ask = evaluate('bash', ['-c', text], { allow: ['bash -c *'] })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+    expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: [deny] }).kind).toBe('deny')
+  })
+
+  it.each(['git push &>/dev/null --force origin main', 'git &>/dev/null push --force origin main'])('bash -c %j meets a git push deny', (text) => {
+    expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it('still reads the interpreter after env &>/dev/null, and the dash reading of a later command', () => {
+    for (const [shell, text] of [['bash', 'env &>/dev/null python3 x.py'], ['sh', 'true &>/dev/null python3 x.py'], ['dash', 'echo A &>/dev/null python3 x.py']] as const) {
+      const ask = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+      expect(ask.kind, text).toBe('ask')
+      if (ask.kind === 'ask') expect(ask.asks[0], text).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
