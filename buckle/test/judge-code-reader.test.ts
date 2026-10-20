@@ -1057,9 +1057,18 @@ describe('the code a here-string hands an interpreter', () => {
     expect(call('env', '--split-string=python3 job.py')).toEqual(split)
     expect(call('env', '-S', 'python3 job.py')).toEqual(split)
     expect(shell("env -S '-i -a fv/bin/python3' python3 job.py")).toEqual(shellRefusal)
+    // A value starting with a blank, or holding no -a, is refused for its split alone (fix brief 7, B19).
+    expect(shell("env -S ' -a fv/bin/python3' python3 job.py")).toEqual(shellRefusal)
+    expect(shell("env -S '-i' python3 job.py")).toEqual(shellRefusal)
     expect(call('env', '-a', 'x', 'python3', 'job.py')).not.toEqual(shellRefusal)
     // env with neither still reads.
     expect(paths(call('env', '-i', 'FOO=1', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
+
+  it('refuses a bare preload whose name holds a backslash as unreadable, before naming it a package (fix brief 7, B19)', () => {
+    const { read } = workspace({ 'x.js': 'console.log(1)\n', 'a/b.js': 'console.log(2)\n' })
+    expect(read(['node', '-r', 'a\\b', 'x.js'])).toEqual({ kind: 'refused', reason: CODE_REFUSALS.unreadable, truncated: false })
+    expect(paths(read(['node', '-r', './a/b.js', 'x.js']))).toEqual(['/workspace/a/b.js', '/workspace/x.js'])
   })
 
   it('reads a heredoc\'s body as inline code, and refuses one a shell would expand, one left open, and a text with more than one statement', () => {

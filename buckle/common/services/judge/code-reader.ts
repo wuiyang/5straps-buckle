@@ -1058,11 +1058,13 @@ function firstLocated(view: CodeView, names: readonly string[], base: string): L
 function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view: CodeView; packages: Packages }): { real: string } | null | string {
   const { specifier } = preload
   if ((preload.esm && esmUnmodelledSpecifier(specifier)) || unmodelledSpecifier(specifier)) return CODE_REFUSALS.unmodelledImport
+  // A backslash names a file pathe cannot place as the platform does, a bare name's too, before it is named a package
+  // (fix brief 7, B19).
+  if (literalBackslash(specifier)) return CODE_REFUSALS.unreadable
   if (!specifier.startsWith('.') && !specifier.startsWith('/')) {
     named(place.packages, packageName(specifier), place.cwd)
     return null
   }
-  if (literalBackslash(specifier)) return CODE_REFUSALS.unreadable
   // node's -r is a require from the working directory; --import and the loaders are ES module loads.
   const entry = runtime !== 'node' ? scriptEntry(runtime, specifier, place.cwd, place.view) : preload.esm ? entryOf(place.view.locate(specifier, place.cwd)) : nodeEntry(specifier, place.cwd, place.view, 'require')
   if (entry === 'none') return CODE_REFUSALS.notFound
