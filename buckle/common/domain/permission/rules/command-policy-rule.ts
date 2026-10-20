@@ -1,7 +1,7 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
-import { commandFormsOf, judgedForms, readLimitOf, readLimitReason } from '../../command-forms.js'
-import type { CommandGlob } from '../../command-glob.js'
+import { commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason } from '../../command-forms.js'
+import { type CommandGlob, spellsPath } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -124,6 +124,10 @@ export function administersBuckleService(line: string): boolean {
  * limit that stopped the reading, since the glob might have met the part left unread (docs/dev/architecture.md,
  * Interpreters). The node's deny lists are folded into the workspace's in force, a floor over every workspace (D85, Q14;
  * resolveSettings), so every refusal here names the workspace's policy in force.
+ *
+ * A command word written as a path (D74, bare words only): a deny glob meets it by its basename and as written, and an
+ * allow glob that spells the path admits it as written. One that names only the bare word refuses it no more than
+ * before, and admits it no longer: the destructive floor asks (createDestructiveCommandRule).
  */
 export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
   const source = 'workspace'
@@ -133,6 +137,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       if (effect.kind !== 'exec') return null
       const argv = parseArgv(effect.command, effect.args)
       const words = [argv.command, ...effect.args]
+      const typed = [effect.command, ...effect.args]
       const forms = commandFormsOf(effect)
       // What the refusal names, as an approval shows a command: whole, quoted and redacted (owner decision D17).
       // Written only for a refusal, so a call the policy admits is not redacted on every check (slice 7b review W7B-1).
@@ -152,10 +157,10 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       }
 
       const allow = policy.commands.allow
-      const admitted = allow.some(glob => glob.matchesLine(words))
+      const admitted = allow.some(glob => glob.matchesLine(words) || (spellsPath(glob) && glob.matchesLine(typed)))
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
-        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(words, wrapper)}'`)
+        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(typed, wrapper)}'`)
       }
       if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject(), `Not on the ${source} command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
@@ -168,8 +173,9 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
 /**
  * The allow rule a shell wrapper's refusal names, one that admits the call: an allow glob meets the call as typed, so
  * the rule is the call's own words up to the shell's `-c` word, then `*`, a prefix such as `sudo`, `env`, or `nice`
- * included (`sudo bash -c *`). The shell's words from that `-c` on must end the call as typed; where they do not (an
- * `env -S` value), the rule is the whole call. Each word is written as a pattern word (patternWord).
+ * included (`sudo bash -c *`), and a command word written as a path as written (`/bin/sh -c *`; D74). The shell's
+ * words from that `-c` on must end the call as typed; where they do not (an `env -S` value), the rule is the whole call.
+ * Each word is written as a pattern word (patternWord).
  */
 function wrapperRule(typed: readonly string[], shell: readonly string[]): string {
   const flag = shell.findIndex((word, index) => index > 0 && SHORT_OPTIONS.test(word) && word.includes('c'))
@@ -192,11 +198,11 @@ function patternWord(word: string): string {
 }
 
 /**
- * The first deny glob of a policy that meets a form of the call, read as far as it was read, a command a substitution cut
- * read whole among them (judgedForms; fix brief 7, A3b).
+ * The first deny glob of a policy that meets a form of the call, by its basename or as written (D74), read as far as it
+ * was read, a command a substitution cut read whole among them (judgedForms; fix brief 7, A3b).
  */
 function deniedBy(policy: Pick<CompiledPolicy, 'commands'>, forms: CommandForms): CommandGlob | undefined {
   const judged = judgedForms(forms)
-  return policy.commands.deny.find(glob => judged.some(form => glob.matchesPrefix(form)))
+  return policy.commands.deny.find(glob => judged.some(form => meetsPrefix(glob, form)))
 }
 

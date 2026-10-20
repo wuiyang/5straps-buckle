@@ -14,6 +14,8 @@
  * whatever arguments follow.
  */
 
+import { writtenAsPath } from './argv.js'
+
 /** Characters that only mean something in a regular expression; a glob never uses them. */
 const REGEX_ONLY_CHARACTERS = ['^', '$', '(', ')', '|', '\\', '+', '?', '[', ']']
 
@@ -32,6 +34,14 @@ export interface CommandGlob {
 type WordPattern =
   | { kind: 'any_words' }
   | { kind: 'one_word'; alternatives: string[] }
+
+/**
+ * Whether a glob spells its command word as a path (`/usr/bin/git status`, or a wildcard then `/git`): only such a glob
+ * meets a command word written as a path, which a glob naming the bare word never admits (D74, bare words only).
+ */
+export function spellsPath(glob: Pick<CommandGlob, 'source'>): boolean {
+  return writtenAsPath(glob.source.split(/\s+/)[0] ?? '')
+}
 
 export function compileCommandGlob(source: string): CommandGlob {
   const trimmed = source.trim()

@@ -2309,6 +2309,15 @@ function digitRun(raw: string, from: number, width: number, digit: RegExp): stri
   return raw.slice(from, end)
 }
 
+/**
+ * Whether a command word is written as a path, holding a separator as `./git`, `/usr/bin/git`, and `.\git` do: it runs
+ * the program at that path, not the one its basename names, so an allow rule admits it only where the rule spells a
+ * path too (D74, bare words only).
+ */
+export function writtenAsPath(command: string): boolean {
+  return /[\\/]/.test(command)
+}
+
 /** A command word as the rules compare it: its basename, lowercased, so a path to a binary is the binary. */
 export function baseCommand(command: string): string {
   const withoutDirectory = command.split(/[\\/]/).pop() ?? command

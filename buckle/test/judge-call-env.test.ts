@@ -500,6 +500,22 @@ describe('an interpreter named by a path inside the workspace (fix brief 6, B1)'
     }
     expect(judge.judge).not.toHaveBeenCalled()
   })
+
+  // D74 (bare words only): under an allow rule naming python3, the path spelling asks at the floor as a command written as
+  // a path, which the thorough stage never rates, so the interpreter at that path is still not rated.
+  it('is still not rated under an allow rule naming the bare interpreter, which asks as a command written as a path', async () => {
+    const judge = fakeJudge()
+    const runtime = await runtimeOf(node(), { judge })
+    for (const [allow, command] of [[['python3 *'], ['./fv/bin/python3', 'a.py']], [['bash -c *', 'python3 *'], ['bash', '-c', './fv/bin/python3 a.py']]] as const) {
+      await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [...allow], deny: [] } })
+      const { response, ran } = await call(runtime, {}, [...command])
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      if (response.outcome !== 'approval_required') continue
+      expect(response.approvals.map(approval => approval.reason), command.join(' ')).toEqual([expect.stringMatching(/a command written as a path/i)])
+      expect(ran, command.join(' ')).toBe(false)
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
 })
 
 describe("zsh's ARGV0, which sets the program name an external command is started with (fix brief 6, B2)", () => {
@@ -602,7 +618,13 @@ describe('a wrapper named by a path inside the workspace (fix brief 7, B11)', ()
     expect(direct.response).toMatchObject({ outcome: 'approval_required' })
     expect(direct.ran).toBe(false)
     expect(direct.entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    // D74 (bare words only): an allow rule naming the bare wrapper no longer admits its path spelling, which asks at the
+    // floor as a command written as a path; a rule that spells the path admits it, and the program there is still not rated.
     await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['nice python3 *'], deny: [] } })
+    const bare = await call(runtime, {}, ['./fv/bin/nice', 'python3', 'job.py'])
+    expect(bare.response).toMatchObject({ outcome: 'approval_required', approvals: [{ reason: expect.stringMatching(/a command written as a path/i) }] })
+    expect(bare.ran).toBe(false)
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['./fv/bin/nice python3 *'], deny: [] } })
     const allowed = await call(runtime, {}, ['./fv/bin/nice', 'python3', 'job.py'])
     expect(allowed.response).toMatchObject({ outcome: 'approval_required' })
     expect(allowed.ran).toBe(false)
@@ -624,8 +646,17 @@ describe('a standard script named by a path inside the workspace (fix brief 7, B
 
   it('is never a standard script: a planted runner refuses with the local-program reason, no stage asked', async () => {
     const { judge, quickJudge, runtime } = await planted()
-    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'nice *', 'timeout *', 'npx *', 'pnpx *', 'bunx *'], deny: [] } })
+    const bare = ['bash -c *', 'nice *', 'timeout *', 'npx *', 'pnpx *', 'bunx *']
     const calls = [['./fv/bin/npx', 'vitest', 'run'], ['nice', './fv/bin/npx', 'vitest', 'run'], ['timeout', '60', './fv/bin/npx', 'vitest', 'run'], ['bash', '-c', './fv/bin/npx vitest run'], ['./fv/bin/pnpx', 'vitest', 'run'], ['./fv/bin/bunx', 'tsc', '-p', '.']]
+    // D74 (bare words only): rules naming only the bare runners no longer admit a planted runner's path spelling, which
+    // asks at the floor as a command written as a path; with rules that spell the paths, each runner is still not rated.
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: bare, deny: [] } })
+    for (const command of calls) {
+      const { response, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required', approvals: [{ reason: expect.stringMatching(/a command written as a path/i) }] })
+      expect(ran, command.join(' ')).toBe(false)
+    }
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [...bare, './fv/bin/npx *', './fv/bin/pnpx *', './fv/bin/bunx *'], deny: [] } })
     for (const command of calls) {
       const { response, entry, ran } = await call(runtime, {}, command)
       expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
@@ -777,7 +808,7 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
     const rows: Array<[string[], string[]]> = [
       [[], [join(config.cwd, 'fv\\python3'), 'job.py']],
       [['bash -c *'], ['bash', '-c', `'${join(config.cwd, 'fv\\python3')}' job.py`]],
-      [['npx *'], [join(config.cwd, 'fv\\npx'), 'vitest', 'run']],
+      [[], [join(config.cwd, 'fv\\npx'), 'vitest', 'run']],
     ]
     for (const [allow, command] of rows) {
       await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow, deny: [] } })
@@ -786,6 +817,12 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
       expect(ran, command.join(' ')).toBe(false)
       expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
     }
+    // D74 (bare words only): under an allow rule naming the bare runner, the path spelling asks at the floor as a command
+    // written as a path, which no stage rates either.
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['npx *'], deny: [] } })
+    const bare = await call(runtime, {}, [join(config.cwd, 'fv\\npx'), 'vitest', 'run'])
+    expect(bare.response).toMatchObject({ outcome: 'approval_required', approvals: [{ reason: expect.stringMatching(/a command written as a path/i) }] })
+    expect(bare.ran).toBe(false)
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })

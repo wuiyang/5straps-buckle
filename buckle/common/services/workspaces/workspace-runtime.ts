@@ -926,7 +926,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
     createCommandPolicyRule(compiled),
-    createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters }),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
     networkEgressRule(compiled),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),

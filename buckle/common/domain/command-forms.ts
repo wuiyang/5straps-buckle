@@ -1,4 +1,5 @@
-import { baseCommand, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, writtenAsPath, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import type { CommandGlob } from './command-glob.js'
 
 /**
  * What one reading of a call takes in across every nesting level before it stops and asks (slice 7b review W7B-1,
@@ -1072,7 +1073,7 @@ function wrapperChain(words: readonly string[], expanded: Expanded, judged: Judg
     // A NAME=value word such a wrapper runs is a program path (`nice FOO=/bin/rm x` runs a file in a folder named FOO=),
     // read by its basename beside the word as typed, which names the variable for the code-loading check; the reading as
     // an assignment follows both, since bash's `time` keyword applies one (fix brief 6, A7).
-    if (execs && ASSIGNMENT.test(current[0]!) && /[\\/]/.test(current[0]!)) chain.push([baseCommand(current[0]!), ...current.slice(1)])
+    if (execs && ASSIGNMENT.test(current[0]!) && /[\\/]/.test(current[0]!)) chain.push(spelled([baseCommand(current[0]!), ...current.slice(1)], current[0]!))
   }
 }
 
@@ -1261,7 +1262,37 @@ function shellSessionCommand(words: readonly string[]): Unwrapped {
  * command path, so it keeps its case (it reaches the code-loading check by name; fix brief 5, D1). */
 function reduced(words: readonly string[]): string[] {
   const [command = '', ...args] = words
-  return [ASSIGNMENT.test(command) ? command : baseCommand(command), ...args]
+  if (ASSIGNMENT.test(command)) return [command, ...args]
+  const form = [baseCommand(command), ...args]
+  return writtenAsPath(command) ? spelled(form, command) : form
+}
+
+/**
+ * The command word each form was reduced from, by the form's identity, where the call wrote it as a path (D74, bare
+ * words only): a deny glob and the destructive list meet the form as written too, and an allow glob that names only the
+ * bare word does not admit it.
+ */
+const writtenPaths = new WeakMap<readonly string[], string>()
+
+/** `form`, its command word written as `command`, recorded for typedForm. */
+function spelled(form: string[], command: string): string[] {
+  writtenPaths.set(form, command)
+  return form
+}
+
+/** A form as the call wrote it, its command word with the path it was written with (D74); else the form itself. */
+export function typedForm(form: string[]): string[] {
+  const command = writtenPaths.get(form)
+  return command === undefined ? form : [command, ...form.slice(1)]
+}
+
+/**
+ * Whether a restricting glob (a deny glob, the destructive list) meets a form by its basename or, where the call wrote
+ * its command word as a path, as written, so either spelling of a rule fails closed (D74).
+ */
+export function meetsPrefix(glob: CommandGlob, form: string[]): boolean {
+  const typed = typedForm(form)
+  return glob.matchesPrefix(form) || (typed !== form && glob.matchesPrefix(typed))
 }
 
 /** A wrapper's reading, marked `unsure` when an expansion among its words may move the command it runs. */

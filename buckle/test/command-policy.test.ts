@@ -16,17 +16,18 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { compilePolicy } from '../common/domain/policy.js'
 import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 
-function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}) {
+function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}, shownAs?: string) {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = commands.allow ?? []
   policy.commands.deny = commands.deny ?? []
   policy.commands.destructive = commands.destructive ?? []
   const compiled = compilePolicy(policy)
+  // As the node builds them (workspace-runtime.ts, buildPermissionEngine): the floor reads the allow list too (D74).
   const engine = createPermissionEngine([
     createCommandPolicyRule(compiled),
-    createDestructiveCommandRule({ added: compiled.commands.destructive }),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allow: compiled.commands.allow }),
   ])
-  const effect: ResolvedEffect = { kind: 'exec', command, args }
+  const effect: ResolvedEffect = { kind: 'exec', command, args, ...(shownAs === undefined ? {} : { shownAs }) }
   return engine.evaluate({ tool: 'shell_exec', effects: [effect], grants: { subjectsFor: () => [] } })
 }
 
@@ -63,8 +64,9 @@ describe('the allow list', () => {
     expect(evaluate('bash', ['-c', 'docker compose up'], { allow }).kind).toBe('deny')
   })
 
-  it('judges the base name, so a full path to the binary changes nothing', () => {
-    expect(evaluate('/usr/bin/docker', ['compose', 'restart'], { allow }).kind).toBe('allow')
+  // D74 (bare words only): a full path to the binary ran under a rule naming the bare word; it now asks a person.
+  it('asks for a full path to the binary, which a rule naming the bare word no longer admits', () => {
+    expect(evaluate('/usr/bin/docker', ['compose', 'restart'], { allow }).kind).toBe('ask')
   })
 })
 
@@ -101,9 +103,10 @@ describe('a shell wrapper', () => {
     expect(reasonOf(outcome)).toContain("allow-command 'bash -c *'")
   })
 
-  it('runs once an allow glob names the wrapper itself', () => {
+  it('runs once an allow glob names the wrapper itself, a wrapper written as a path once the glob spells that path (D74)', () => {
     expect(evaluate('bash', ['-c', 'pnpm build'], { allow: ['bash -c *'] }).kind).toBe('allow')
-    expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['sh -c *'] }).kind).toBe('allow')
+    expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['/bin/sh -c *'] }).kind).toBe('allow')
+    expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['sh -c *'] }).kind).toBe('ask')
   })
 
   it('still has every statement of its body judged by the deny list', () => {
@@ -129,7 +132,7 @@ describe('a refused shell wrapper names the allow rule that admits it', () => {
   it.each<[string, string[], string]>([
     ['bash', ['-c', 'pnpm build'], 'bash -c *'],
     ['bash', ['-lc', 'pnpm build'], 'bash -lc *'],
-    ['/bin/sh', ['-c', 'pnpm build'], 'sh -c *'],
+    ['/bin/sh', ['-c', 'pnpm build'], '/bin/sh -c *'],
     ['sudo', ['bash', '-c', 'ls'], 'sudo bash -c *'],
     ['sudo', ['-u', 'deploy', '/bin/bash', '-c', 'ls'], 'sudo -u deploy /bin/bash -c *'],
     ['env', ['bash', '-c', 'ls'], 'env bash -c *'],
@@ -2452,5 +2455,66 @@ describe('what no pattern can change', () => {
     expect(outcome.kind).toBe('ask')
     if (outcome.kind !== 'ask') return
     expect(outcome.asks[0]?.rule).toBe('destructive_command')
+  })
+})
+
+// D74 (owner, 2026-10-11, "Bare words only"): command rules compared the basename, so `./git status` and
+// `/usr/bin/git status` were admitted by an allow rule for `git status`, running whatever program sat at that path
+// under the owner's rule for git. An allow glob now meets a command word written as a path only where it spells a path.
+describe('a command word written as a path (D74, bare words only)', () => {
+  const PATH_CAUSE = /a command written as a path/i
+  const askOf = (outcome: ReturnType<typeof evaluate>) => (outcome.kind === 'ask' ? outcome.asks : [])
+
+  it.each<[string, string[]]>([['./git', ['status']], ['/usr/bin/git', ['status']], ['bin/git', ['status']]])('asks for %s %j under allow git status, at the floor, the whole call shown', (command, args) => {
+    const outcome = evaluate(command, args, { allow: ['git status'] })
+    expect(outcome.kind).toBe('ask')
+    expect(askOf(outcome)).toEqual([expect.objectContaining({ rule: 'destructive_command', cause: 'floor', subject: expect.stringContaining(command), reason: expect.stringMatching(PATH_CAUSE) })])
+  })
+
+  it('runs git status, the bare word the rule names', () => {
+    expect(evaluate('git', ['status'], { allow: ['git status'] }).kind).toBe('allow')
+  })
+
+  it('runs the spelling an allow rule spells, and only that one', () => {
+    expect(evaluate('/usr/bin/git', ['status'], { allow: ['/usr/bin/git status'] }).kind).toBe('allow')
+    expect(evaluate('./git', ['status'], { allow: ['/usr/bin/git status'] }).kind).toBe('deny')
+    expect(evaluate('./git', ['status'], { allow: ['*/git status'] }).kind).toBe('allow')
+  })
+
+  it('refuses a path spelling a deny glob meets by its basename or as written', () => {
+    expect(evaluate('/usr/bin/git', ['push', '--force'], { deny: ['git push *'] }).kind).toBe('deny')
+    expect(evaluate('/usr/bin/git', ['push', '--force'], { allow: ['git *'], deny: ['git push *'] }).kind).toBe('deny')
+    expect(evaluate('/usr/bin/curl', ['https://x.test'], { deny: ['/usr/bin/curl *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', '/usr/bin/curl https://x.test'], { allow: ['bash -c *'], deny: ['/usr/bin/curl *'] }).kind).toBe('deny')
+  })
+
+  it('asks for a path spelling the workspace\'s destructive list spells', () => {
+    expect(evaluate('/opt/tf/terraform', ['destroy'], { destructive: ['/opt/tf/terraform destroy *'] }).kind).toBe('ask')
+  })
+
+  it('reads bash -c \'./git status\' as the direct call: it asks with the same cause, and bash -c \'git status\' runs', () => {
+    const allow = ['git status', 'bash -c *']
+    const direct = askOf(evaluate('./git', ['status'], { allow }))
+    const wrapped = askOf(evaluate('bash', ['-c', './git status'], { allow }))
+    expect(wrapped.map(ask => ask.reason)).toEqual(direct.map(ask => ask.reason))
+    expect(wrapped).toEqual([expect.objectContaining({ cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })])
+    expect(evaluate('bash', ['-c', 'git status'], { allow }).kind).toBe('allow')
+  })
+
+  // A command a substitution cuts is read whole as its head shows it (fix brief 7, A3b), so the path ask reads it too.
+  it.each<[string]>([['./git>$(echo)x status'], ['./git >`true` status'], ['./git $(echo) status']])('reads bash -c %j, a command a substitution cuts, as the direct call: it asks with the path reason', body => {
+    const allow = ['git status', 'bash -c *']
+    expect(askOf(evaluate('bash', ['-c', body], { allow }))).toEqual([expect.objectContaining({ cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })])
+    expect(evaluate('bash', ['-c', body.replace('./git', 'git')], { allow }).kind).toBe('allow')
+  })
+
+  it('leaves a path spelling alone where no allow rule names the command, and a host path Buckle supplies itself', () => {
+    expect(evaluate('./gradlew', ['build']).kind).toBe('allow')
+    expect(evaluate('/opt/tools/agent-browser', ['open', 'https://x.test'], { allow: ['agent-browser *'] }, 'agent-browser').kind).toBe('allow')
+  })
+
+  it('names, for a shell wrapper written as a path, the allow rule that spells it', () => {
+    expect(reasonOf(evaluate('/bin/sh', ['-c', 'pnpm build']))).toContain("allow-command '/bin/sh -c *'")
+    expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['/bin/sh -c *'] }).kind).toBe('allow')
   })
 })

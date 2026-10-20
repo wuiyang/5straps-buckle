@@ -1,12 +1,15 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
-import type { CommandGlob } from '../../command-glob.js'
-import { commandFormsOf, judgedForms, readLimitOf, readLimitReason } from '../../command-forms.js'
+import { type CommandGlob, spellsPath } from '../../command-glob.js'
+import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, typedForm } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
 const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard', 'shred', 'sgdisk'])
+
+/** Why a call asks that runs a command written as a path only a bare-word allow rule names (D74): constant, the call shown whole. */
+export const PATH_SPELLING_REASON = 'A command written as a path runs the program at that path, which an allow rule naming the bare command does not admit; asked rather than run (an allow rule that spells the path admits it)'
 
 /** Shell text is not argv, so these run against the script body of `bash -c`. */
 const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
@@ -32,9 +35,15 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * command deny list, the
  * command policy refuses such a call first (slice 7c review R7C-CR-1). The subject asked and granted stays the call's
  * own argv (owner decision D17).
+ *
+ * `allow`, the workspace's command allow list: a command the call runs written as a path that only a glob naming its
+ * bare word meets asks here, as a floor reason (D74, bare words only); the command policy no longer admits it by that
+ * glob, and no longer refuses it either.
  */
-export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string> } = {}): PermissionRule {
+export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[] } = {}): PermissionRule {
   const added = input.added ?? []
+  const bareAllow = (input.allow ?? []).filter(glob => !spellsPath(glob))
+  const pathAllow = (input.allow ?? []).filter(glob => spellsPath(glob))
   const allowed = input.allowedInterpreters
   return {
     id: 'destructive_command',
@@ -47,11 +56,16 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const judged = judgedForms(forms)
       const floor = firstReason(judged) ?? headScriptReason(forms.heads)
       const listed = floor === null ? classifyAdded({ added, forms: judged }) : null
-      const reason = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed
-      if (!reason) return null
+      const found = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed
       // What the decision AI may answer (D91): an unknown interpreter alone, never a built-in reason, another reading
       // limit, or a call the owner's destructive list names, whichever reason the ask shows.
-      const cause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : 'interpreter'
+      const foundCause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : 'interpreter'
+      // A command written as a path that only a bare-word allow rule names asks a person (D74), where the call would
+      // otherwise run or its one question would be the interpreter the thorough stage answers.
+      const spelled = (found === null || foundCause === 'interpreter') && runsByBareName({ forms, bare: bareAllow, spelled: pathAllow, own: effect.shownAs !== undefined })
+      const reason = spelled ? PATH_SPELLING_REASON : found
+      if (!reason) return null
+      const cause: AskCause = spelled ? 'floor' : foundCause
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
       // credential the display redacts; a grant made before this form matches nothing.
@@ -130,8 +144,25 @@ function hasGitOption(flags: ParsedArgv, short: string | null, ...names: string[
   return [...flags.longFlags.keys()].some(typed => typed.length > 0 && names.some(name => name.startsWith(typed)))
 }
 
+/**
+ * Whether the call runs a command written as a path that a glob naming its bare word meets and no glob spelling a path
+ * admits as written (D74), in the call as typed or any command it runs: a shell body's `./git status` asks as the call
+ * `./git status` does, and so does a command a substitution cuts, read whole as its head shows it (judgedForms; fix
+ * brief 7, A3b). `own`: the call's own command word is a host path Buckle supplies itself (ExecEffect.shownAs), not a
+ * spelling of the agent's.
+ */
+function runsByBareName(input: { forms: CommandForms; bare: readonly CommandGlob[]; spelled: readonly CommandGlob[]; own: boolean }): boolean {
+  if (input.bare.length === 0) return false
+  return judgedForms(input.forms).some(form => {
+    const typed = typedForm(form)
+    if (typed === form || (input.own && form === input.forms.chain[0])) return false
+    return input.bare.some(glob => glob.matchesLine(form)) && !input.spelled.some(glob => glob.matchesLine(typed))
+  })
+}
+
+/** The first glob of the workspace's destructive list that meets a form, by its basename or as written (D74). */
 function classifyAdded(input: { added: readonly CommandGlob[]; forms: readonly string[][] }): string | null {
-  const matched = input.added.find(glob => input.forms.some(form => glob.matchesPrefix(form)))
+  const matched = input.added.find(glob => input.forms.some(form => meetsPrefix(glob, form)))
   return matched ? `On the workspace destructive list: ${matched.source}` : null
 }
 
