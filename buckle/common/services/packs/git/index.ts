@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { posix } from 'node:path'
 import { isAbsolute, join, normalize, relative } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
@@ -9,7 +10,7 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
-import { resolveTarget } from '../../invocation/real-path.js'
+import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
@@ -366,62 +367,150 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
  * object store their `info/alternates` names, and in turn each of those stores' own, as deep as git follows them. A
  * line is a path, absolute or, as git reads it, relative to the real objects folder holding the file and folded as
  * text; one starting with `"` is C-quoted and is refused where its quoting is not whole; a blank line and a `#` line
- * name none. Each lands where its links lead (resolveTarget), a store that does not exist yet where it would be made.
- * An absent file is the normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which it never has here
- * (withOwnGitVariables).
+ * name none. Each is the bytes git opens (storePlace), and lands where its links lead (landingOf). An absent file is the
+ * normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which it never has here (withOwnGitVariables).
  */
 function assertObjectsInside(repository: Repository, paths: PathView, platform: NodeJS.Platform): void {
   const roots = paths.reachableRoots.map(root => realPathOr(root, platform))
-  const landing = (place: string): string => {
-    try {
-      const real = resolveTarget(place, { shares: paths.shares, platform })
-      if (isInsideAny(roots, real, platform)) return real
-    } catch { /* a place that cannot be resolved is refused below */ }
-    throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  const landing = (place: Buffer): Buffer => {
+    const real = landingOf(place, { roots, shares: paths.shares, platform })
+    if (real === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+    return real
   }
   const read = new Set<string>()
-  let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => landing(join(directory, 'objects')))
+  let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => landing(Buffer.from(join(directory, 'objects'))))
   for (let depth = 0; depth < ALTERNATES_DEPTH && stores.length > 0; depth++) {
-    stores = stores.filter(store => !read.has(store)).flatMap(store => {
-      read.add(store)
-      return alternatesOf(store, platform).map(line => landing(isAbsolute(line) ? normalize(line) : join(store, line)))
+    stores = stores.filter(store => !read.has(store.toString('latin1'))).flatMap(store => {
+      read.add(store.toString('latin1'))
+      return alternatesOf(store).map(line => landing(storePlace(store, line, platform)))
     })
   }
 }
 
-/** The stores one object store's `info/alternates` names, each line as written; none where it has no such file. */
-function alternatesOf(store: string, platform: NodeJS.Platform): string[] {
-  let text: string
+/**
+ * Where a store lands, by its real path, when that lies inside one of `roots`; null otherwise, or where it cannot be
+ * found. Off Windows a name is bytes, which git opens as they are, so the store is resolved as bytes and compared with
+ * each root's own bytes: a name that is not UTF-8 is checked where git reads it, never as the text it decodes to. A
+ * store that does not exist yet lands where it would be made (resolveTarget), which only a name that is UTF-8 text can be
+ * read for; any other is refused. On Windows git reads a line as UTF-8, so one that is not is refused, and the text is
+ * resolved as every other path is.
+ */
+function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Buffer | null {
+  const planned = () => {
+    const text = utf8Of(place)
+    if (text === null) return null
+    try {
+      const real = resolveTarget(text, { shares: input.shares, platform: input.platform })
+      return isInsideAny(input.roots, real, input.platform) ? Buffer.from(real) : null
+    } catch { return null }
+  }
+  if (input.platform === 'win32') return planned()
+  let real: Buffer
   try {
-    if (statSync(join(store, 'info', 'alternates')).size > ALTERNATES_BYTES) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
-    text = readFileSync(join(store, 'info', 'alternates'), 'utf8')
+    real = realpathSync.native(place, { encoding: 'buffer' })
+  } catch (error) {
+    return isMissingPathError(error) ? planned() : null
+  }
+  return input.roots.some(root => insideBytes(Buffer.from(root), real)) ? real : null
+}
+
+/** Whether the real path `real` is the real directory `root` or lies beneath it, compared byte for byte. */
+function insideBytes(root: Buffer, real: Buffer): boolean {
+  if (real.equals(root)) return true
+  return real.length > root.length && real.subarray(0, root.length).equals(root) && (root.at(-1) === SLASH || real[root.length] === SLASH)
+}
+
+const SLASH = 0x2f
+
+/** `bytes` as UTF-8 text, the same bytes again when encoded; null where they are not UTF-8. */
+function utf8Of(bytes: Buffer): string | null {
+  try { return UTF8.decode(bytes) } catch { return null }
+}
+
+/** Fatal, so bytes that are not UTF-8 are never read as other text; a byte order mark is kept, as it is part of the name. */
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+/**
+ * The store a line names, as the bytes git opens: an absolute line as written, a relative one after the real objects
+ * folder holding the file, folded as text as git folds it. Off Windows the bytes are folded one for one (read as
+ * latin1, where each byte is one character), and a backslash, which is part of a name there, or a leading drive letter
+ * refuses the line, as before. On Windows the line is UTF-8 (refused where it is not), its backslashes are separators,
+ * and it is folded as any other Windows path.
+ */
+function storePlace(store: Buffer, line: Buffer, platform: NodeJS.Platform): Buffer {
+  const refused = () => new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  if (platform === 'win32') {
+    const text = utf8Of(line)
+    if (text === null) throw refused()
+    let named: string
+    try { named = withForwardSlashes(text, platform) } catch { throw refused() }
+    return Buffer.from(isAbsolute(named) ? normalize(named) : join(store.toString('utf8'), named))
+  }
+  const named = line.toString('latin1')
+  try { withForwardSlashes(named, platform) } catch { throw refused() }
+  return Buffer.from(named.startsWith('/') ? posix.normalize(named) : posix.join(store.toString('latin1'), named), 'latin1')
+}
+
+/**
+ * The stores one object store's `info/alternates` names, each line as git reads it, as bytes; none where it has no such
+ * file. The file is read whole up to ALTERNATES_BYTES and refused past it, and refused where it is no regular file (a
+ * device or a pipe, which git would read without end); a folder of that name is none, as git reads none.
+ */
+function alternatesOf(store: Buffer): Buffer[] {
+  const refused = () => new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  const file = Buffer.concat([store, Buffer.from('/info/alternates')])
+  let bytes: Buffer
+  try {
+    const stats = statSync(file)
+    if (stats.isDirectory()) return []
+    if (!stats.isFile() || stats.size > ALTERNATES_BYTES) throw refused()
+    bytes = readFileSync(file)
   } catch (error) {
     if (error instanceof ToolInputError) throw error
     // git reads no alternates where the file cannot be read, absent or not.
     return []
   }
-  return text.split('\n').filter(line => line !== '' && !line.startsWith('#')).map(line => {
-    const path = line.startsWith('"') ? unquoted(line) : line
-    // Off Windows a backslash is part of a name, which pathe would read as a separator: such a line is refused.
-    try { if (path !== null) return withForwardSlashes(path, platform) } catch { /* refused below */ }
-    throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  if (bytes.length > ALTERNATES_BYTES) throw refused()
+  return linesOf(bytes).filter(line => line.length > 0 && line[0] !== HASH).map(line => {
+    const path = line[0] === QUOTE ? unquoted(line) : line
+    if (path === null) throw refused()
+    return path
   })
 }
 
-const C_ESCAPES: Readonly<Record<string, string>> = { a: '\x07', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t', v: '\v', '"': '"', '\\': '\\' }
+const HASH = 0x23
+const QUOTE = 0x22
+const BACKSLASH = 0x5c
 
-/** A line git reads as C-quoted, unquoted, or null where its quoting is not whole up to the line's end. */
-function unquoted(line: string): string | null {
-  let text = ''
+/** The lines of a file git splits on a newline byte, each as bytes. */
+function linesOf(bytes: Buffer): Buffer[] {
+  const lines: Buffer[] = []
+  let start = 0
+  for (let end = bytes.indexOf(0x0a); end !== -1; end = bytes.indexOf(0x0a, start)) {
+    lines.push(bytes.subarray(start, end))
+    start = end + 1
+  }
+  lines.push(bytes.subarray(start))
+  return lines
+}
+
+const C_ESCAPES: Readonly<Record<string, number>> = { a: 0x07, b: 0x08, f: 0x0c, n: 0x0a, r: 0x0d, t: 0x09, v: 0x0b, '"': QUOTE, '\\': BACKSLASH }
+
+/**
+ * A line git reads as C-quoted, unquoted as git unquotes it (unquote_c_style), each `\ooo` escape and each C escape one
+ * byte; null where its quoting is not whole up to the line's end, which git would read otherwise.
+ */
+function unquoted(line: Buffer): Buffer | null {
+  const bytes: number[] = []
   for (let index = 1; index < line.length; index++) {
-    const character = line[index]!
-    if (character === '"') return index === line.length - 1 ? text : null
-    if (character !== '\\') { text += character; continue }
-    const escape = line[index + 1] ?? ''
-    const octal = /^[0-3][0-7]{2}$/.test(line.slice(index + 1, index + 4))
-    if (octal) { text += String.fromCharCode(Number.parseInt(line.slice(index + 1, index + 4), 8)); index += 3; continue }
+    const byte = line[index]!
+    if (byte === QUOTE) return index === line.length - 1 ? Buffer.from(bytes) : null
+    if (byte !== BACKSLASH) { bytes.push(byte); continue }
+    const digits = line.toString('latin1', index + 1, index + 4)
+    if (/^[0-3][0-7]{2}$/.test(digits)) { bytes.push(Number.parseInt(digits, 8)); index += 3; continue }
+    const escape = String.fromCharCode(line[index + 1] ?? 0)
     if (!Object.hasOwn(C_ESCAPES, escape)) return null
-    text += C_ESCAPES[escape]
+    bytes.push(C_ESCAPES[escape]!)
     index++
   }
   return null

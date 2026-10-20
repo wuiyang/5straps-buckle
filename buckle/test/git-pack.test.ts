@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -566,6 +566,44 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     const { root, repo, outside } = workspace()
     await refused(root, answeringAt(plain(repo), () => alternates(join(repo, '.git', 'objects'), outside)), outside)
   })
+
+  // git unquotes a line into bytes and opens the bytes: a line read as text named another place than the one git opens,
+  // which did not exist, so it was taken as inside while git followed a link there (review 1 of the git pack, held[0]).
+  it('reads a quoted line as the bytes git reads: an e-acute written as octal escapes is the folder of that name', async () => {
+    const { root, repo, outside } = workspace()
+    mkdirSync(join(root, 'é'))
+    alternates(join(repo, '.git', 'objects'), `"${root}/\\303\\251"`)
+    const inside = answeringAt(plain(repo))
+    await gitPack(root, inside).call('git_log', { repo: 'repo' })
+    expect(logOf(inside)).toHaveLength(1)
+    rmdirSync(join(root, 'é'))
+    symlinkSync(outside, join(root, 'é'))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it.skipIf(process.platform !== 'linux')('checks a store named by bytes that are not UTF-8 where git reads it, written raw or quoted', async () => {
+    const { root, repo, outside } = workspace()
+    const objects = join(repo, '.git', 'objects')
+    const name = Buffer.concat([Buffer.from(`${root}/`), Buffer.from([0xe9])])
+    mkdirSync(name)
+    writeFileSync(join(objects, 'info', 'alternates'), Buffer.concat([name, Buffer.from('\n')]))
+    const inside = answeringAt(plain(repo))
+    await gitPack(root, inside).call('git_log', { repo: 'repo' })
+    expect(logOf(inside)).toHaveLength(1)
+    rmdirSync(name)
+    symlinkSync(outside, name)
+    await refused(root, answeringAt(plain(repo)), outside)
+    alternates(objects, `"${root}/\\351"`)
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('refuses a line whose quoting is broken, even one naming a store inside', async () => {
+    const { root, repo, outside } = workspace()
+    for (const line of [`"${join(root, 'shared')}`, `"${join(root, 'shared')}\\q"`, `"${join(root, 'shared')}"trailing`]) {
+      alternates(join(repo, '.git', 'objects'), line)
+      await refused(root, answeringAt(plain(repo)), outside)
+    }
+  })
 })
 
 describe.skipIf(hostGit === null)('a repository that borrows objects, against the installed git', () => {
@@ -588,5 +626,32 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-shared/)
     expect(await call('git_log', { repo: 'sharing' })).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+  })
+
+  it.skipIf(process.platform !== 'linux')('refuses a store reached through a name written as octal escapes, or as bytes that are not UTF-8', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-named-store-')))
+    const elsewhere = join(parent, 'elsewhere')
+    mkdirSync(elsewhere)
+    writeFileSync(join(elsewhere, 'a.txt'), 'history kept elsewhere\n')
+    git(elsewhere, 'init', '-q')
+    git(elsewhere, 'add', 'a.txt')
+    git(elsewhere, 'commit', '-qm', 'history kept elsewhere')
+    const root = join(parent, 'root')
+    mkdirSync(root)
+    git(root, 'clone', '-q', '--shared', elsewhere, 'borrowing')
+    const file = join(root, 'borrowing', '.git', 'objects', 'info', 'alternates')
+    const raw = Buffer.concat([Buffer.from(`${root}/`), Buffer.from([0xe9])])
+    symlinkSync(join(elsewhere, '.git', 'objects'), join(root, 'é'))
+    symlinkSync(join(elsewhere, '.git', 'objects'), raw)
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    for (const line of [Buffer.from(`"${root}/\\303\\251"\n`), Buffer.concat([raw, Buffer.from('\n')])]) {
+      writeFileSync(file, line)
+      expect(execFileSync('git', ['log', '--format=%s'], { cwd: join(root, 'borrowing'), env: quiet }).toString()).toContain('history kept elsewhere')
+      const refusal = await refusalOf(() => call('git_log', { repo: 'borrowing' }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
+      expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-named-store/)
+    }
   })
 })
