@@ -1045,8 +1045,9 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     found.flags.push(flags | (command.cut || !command.runs ? NOT_WHOLE : 0))
     level.start = next
   }
-  // The command at this level ends at `at`: its last piece, and the command whole when a body cut it.
-  const finish = (level: SplitLevel, at: number, next: number) => {
+  // The command at this level ends at `at`: its last piece, and the command whole when a body cut it. `joinGoesOn` says
+  // another `&>` of the same chain cut it, so its whole is read only where the chain ends.
+  const finish = (level: SplitLevel, at: number, next: number, joinGoesOn = false) => {
     const command = level.command
     const feeding = level.feeding
     const start = level.start
@@ -1062,12 +1063,16 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       for (const index of command.pieces ?? []) found.flags[index]! |= FED
       if (command.cut && command.runs) found.headFlags[found.headFlags.length - 1]! |= FED
     }
-    // A command a `&>` cut is read whole too, as bash runs it: a statement, or a head where a body was cut from it.
+    // A command a `&>` cut is read whole too, as bash runs it: a statement, or a head where a body was cut from it. A chain
+    // of them is read once, where it ends, since bash runs the whole and dash the pieces, and no shell the command before
+    // a later `&>`; the whole is charged to the meter as a pass is, and past it nothing is pushed (fix brief 8, A1c).
     const join = command.join
-    if (join !== null && command.runs) {
+    if (join !== null && command.runs && !joinGoesOn) {
       const whole = join.text + (command.cut ? command.text : text.slice(start, at))
       const fed = command.feed || join.feed ? FED : 0
-      if (command.cut || join.cut) {
+      meter.characters -= whole.length
+      if (meter.characters < 0) limits.overBudget = true
+      else if (command.cut || join.cut) {
         found.heads.push(whole)
         found.headFlags.push(flags | fed)
       } else {
@@ -1367,7 +1372,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       // `>!` is read both ways (fix brief 7, A1b). The `&` of `&&` and `|&` is that operator's.
       const join = character === '&' && text[index + 1] === '>' && previous !== '&' && previous !== '|' ? joinedBefore(level, index) : null
       level.wordStart = true
-      finish(level, index, index + 1)
+      finish(level, index, index + 1, join !== null)
       level.command.join = join
       // `;;`, `;&`, and `;;&` end a case clause: the next words are a pattern.
       if (character === ';' && (text[index + 1] === ';' || text[index + 1] === '&')) level.command.pattern = true

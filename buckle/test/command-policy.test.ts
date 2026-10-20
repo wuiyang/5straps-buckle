@@ -8,7 +8,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { joinedOperator, shellStatementList, shellTokens } from '../common/domain/argv.js'
-import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
+import { allForms, commandFormsOf, READ_BUDGET, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -1982,6 +1982,51 @@ describe('a &> or &>> redirection between a command and its arguments (fix brief
       if (ask.kind === 'ask') expect(ask.asks[0], text).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
     }
   })
+})
+
+describe('a chain of &> redirections, read whole once where it ends (fix brief 8, A1c)', () => {
+  // A1b read the command before every `&>` of a chain whole, so n links pushed n statements of up to n links each, none
+  // charged to the read budget: a 320 KB body ran the node out of memory. bash runs only the whole command, and dash
+  // the pieces the `&` cuts; the commands before a chain's last `&>` are ones no shell runs.
+  it('keeps the joined whole of each A1b row and drops the middle prefixes', () => {
+    expect(shellStatementList('rm &>/dev/null -rf x').statements).toContain('rm  >/dev/null -rf x')
+    expect(shellStatementList('rm x &>/dev/null -rf y').statements).toContain('rm x  >/dev/null -rf y')
+    expect(shellStatementList('git &>/dev/null push --force origin main').statements).toContain('git  >/dev/null push --force origin main')
+    expect(shellStatementList('a &>b c &>d e').statements).toEqual(['a', '>b c', '>d e', 'a  >b c  >d e'])
+  })
+
+  it('meets a deny through the whole of a chain, and reads the head of a join a substitution cut', () => {
+    expect(evaluate('bash', ['-c', 'rm &>a -r &>b -f x'], { allow: ['bash -c *'], deny: ['rm -r -f *'] }).kind).toBe('deny')
+    for (const text of ['rm &>/dev/null -rf $(echo x)', 'rm &>$(echo f) -rf x', 'rm &>`echo f` -rf x', 'rm $(echo) &>/dev/null -rf x']) {
+      const ask = evaluate('bash', ['-c', text], { allow: ['bash -c *'] })
+      expect(ask.kind, text).toBe('ask')
+      if (ask.kind === 'ask') expect(ask.asks[0], text).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+      expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'], deny: ['rm -rf *'] }).kind, text).toBe('deny')
+    }
+  })
+
+  it('charges the joined whole to the read budget, so a text past it is over budget', () => {
+    const text = `a${' &>b'.repeat(1_000)}`
+    expect(shellStatementList(text, { characters: text.length + 100 }).overBudget).toBe(true)
+    expect(shellStatementList(text.replaceAll('&>', ';>'), { characters: text.length + 100 }).overBudget).toBe(false)
+  })
+
+  it('reads a bash -c body of 24,999 &> links in well under a second', () => {
+    const { milliseconds, result } = leastProcessorTime(() => evaluate('bash', ['-c', `a${' &>b'.repeat(24_999)}`], { allow: ['bash -c *'] }))
+    expect(milliseconds).toBeLessThan(250)
+    expect(result.kind).toBe('allow')
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
+
+  it('reads a 1 MiB chained body within the budget, holding three statements and charging about twice its length', () => {
+    const text = `a${' &>b'.repeat(262_143)}`
+    const meter = { characters: READ_BUDGET.characters }
+    const list = shellStatementList(text, meter)
+    expect(list.overBudget).toBe(false)
+    expect(list.statements).toHaveLength(3)
+    expect(list.statements.reduce((sum, statement) => sum + statement.length, 0)).toBeLessThan(2 * text.length)
+    expect(READ_BUDGET.characters - meter.characters).toBeLessThan(3 * text.length)
+    expect(evaluate('bash', ['-c', text], { allow: ['bash -c *'] }).kind).toBe('allow')
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
 describe('a heredoc word ending in an escaped operator character (fix brief 7, A2b)', () => {
