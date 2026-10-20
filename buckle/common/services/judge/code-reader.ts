@@ -6,7 +6,7 @@
 import { isUtf8 } from 'node:buffer'
 import { createHash } from 'node:crypto'
 import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'pathe'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand } from '../../domain/argv.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -243,11 +243,20 @@ const PATH_SEPARATOR = /[\\/]/
 
 /**
  * Whether a typed command word may name a program the agent placed: one named by a path runs the file at that path, not
- * the program its basename names, unless it lies outside the workspace and every mount; a word the chain does not show
- * (null) fails closed (fix brief 6, B1).
+ * the program its basename names, unless it is an absolute name lying outside the workspace and every mount; a word the
+ * chain does not show (null) fails closed (fix brief 6, B1). A relative name holding a separator is never judged by the
+ * view: the sandbox resolves it from /workspace under a root holding each mount at its target, so `../data/x` reaches a
+ * mount and `../workspace/x` the workspace, wherever the host keeps them (fix brief 7, B14).
  */
 function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
-  return word === null || (PATH_SEPARATOR.test(word) && !programOutsideView(word, cwd, view))
+  if (word === null) return true
+  if (!PATH_SEPARATOR.test(word)) return false
+  return !absoluteName(word) || !programOutsideView(word, cwd, view)
+}
+
+/** An absolute name: from the root, or on Windows from a drive or a share as pathe reads one. */
+function absoluteName(word: string): boolean {
+  return word.startsWith('/') || (process.platform === 'win32' && isAbsolute(word))
 }
 
 /** Whether any form of a call's chain runs, by its typed command word, a program the agent may have placed (fix brief 7, B11). */

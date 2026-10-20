@@ -16,19 +16,29 @@ import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-function workspace(files: Record<string, string | Buffer>, options: { mount?: string | null } = {}) {
+function workspace(files: Record<string, string | Buffer>, options: { mount?: string | null; mounts?: Array<{ source: string; target: string; files: Record<string, string> }> } = {}) {
   const base = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-judge-code-')))
   roots.push(base)
   const root = join(base, 'project')
   mkdirSync(root)
-  for (const [name, content] of Object.entries(files)) {
-    const path = join(root, name)
-    mkdirSync(dirname(path), { recursive: true })
-    writeFileSync(path, content)
+  const write = (folder: string, content: Record<string, string | Buffer>) => {
+    for (const [name, text] of Object.entries(content)) {
+      const path = join(folder, name)
+      mkdirSync(dirname(path), { recursive: true })
+      writeFileSync(path, text)
+    }
   }
-  const paths = createPathView({ root, mount: options.mount === undefined ? '/workspace' : options.mount })
-  // The rules' answer with no grant: inside the folder, and never a credential file.
-  const view = createCodeView({ paths, canRead: real => isInside(root, real) && basename(real) !== '.env', protectedRoots: [] })
+  write(root, files)
+  // Each mount's source is a folder under the base, named apart from its target, and writable.
+  const mounts = (options.mounts ?? []).map((mount) => {
+    const source = join(base, mount.source)
+    mkdirSync(source, { recursive: true })
+    write(source, mount.files)
+    return { source, target: mount.target, access: 'rw' as const }
+  })
+  const paths = createPathView({ root, mount: options.mount === undefined ? '/workspace' : options.mount, mounts })
+  // The rules' answer with no grant: inside the folder or a mount, and never a credential file.
+  const view = createCodeView({ paths, canRead: real => (isInside(root, real) || mounts.some(mount => isInside(mount.source, real))) && basename(real) !== '.env', protectedRoots: [] })
   const read = (...forms: string[][]): CodeRead => readInterpreterCode({ forms, cwd: root, view })
   // A whole call as the gate reads it: its forms as the rules read them, the interpreter ones read, with its chain.
   const call = (command: string, ...args: string[]): CodeRead => {
@@ -894,6 +904,28 @@ describe('a runner package named by a path or a source other than the registry (
     expect(reading(call('npx', 'eslint@~9.0.0')).packages.map(item => item.name)).toEqual(['eslint'])
     expect(reading(call('npx', '@scope/pkg@1')).packages.map(item => item.name)).toEqual(['@scope/pkg'])
     expect(paths(call('npx', 'tsx', 'job.ts'))).toEqual(['/workspace/job.ts'])
+  })
+})
+
+describe('a program named by a relative path holding a separator (fix brief 7, B14)', () => {
+  // The sandbox runs the call at /workspace under a root holding each mount at its target, so `../data/x` reaches the
+  // mount at /data and `../workspace/x` climbs back into the workspace, wherever the host keeps them; only an absolute
+  // name is judged by the view.
+  const planted = '#!/bin/sh\necho planted\n'
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+
+  it('refuses one that climbs into a mount, whose source is no sibling of the workspace', () => {
+    const { call, shell } = workspace({ 'job.py': 'print(1)\n' }, { mounts: [{ source: 'elsewhere/store', target: '/data', files: { 'fv/bin/python3': planted } }] })
+    expect(call('../data/fv/bin/python3', 'job.py')).toEqual(local)
+    expect(shell('../data/fv/bin/python3 job.py')).toEqual(local)
+    expect(call('env', '../data/fv/bin/python3', 'job.py')).toEqual(local)
+  })
+
+  it('refuses one that climbs back into the workspace under the default mount, and still rates an absolute name outside', () => {
+    const { call } = workspace({ 'job.py': 'print(1)\n', 'fv/bin/python3': planted })
+    expect(call('../workspace/fv/bin/python3', 'job.py')).toEqual(local)
+    expect(call('timeout', '5', '../workspace/fv/bin/python3', 'job.py')).toEqual(local)
+    expect(paths(call('/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
   })
 })
 
