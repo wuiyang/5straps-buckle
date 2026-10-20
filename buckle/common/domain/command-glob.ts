@@ -86,7 +86,7 @@ export function asSpelled(typed: readonly string[], platform: NodeJS.Platform = 
  * folder, while a word Buckle or a wrapper spawns is read under its working folder, where the agent can make a folder
  * named `~`, so such a word names no one program (git pack recheck 1, held[2]).
  */
-function writtenPlainly(word: string): boolean {
+export function writtenPlainly(word: string): boolean {
   const [first, ...rest] = word.split('/')
   if (first?.startsWith('~')) return false
   // An absolute path's empty first segment, and a leading `./`, are how the word starts, not a step in it.

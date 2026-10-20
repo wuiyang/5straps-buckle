@@ -1,7 +1,7 @@
-import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
+import { baseCommand, isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
 import { commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason } from '../../command-forms.js'
-import { asSpelled, type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
+import { asSpelled, type CommandGlob, meetsAsSpelled, splitByCommandWord, writtenPlainly } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -166,7 +166,7 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       })
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
-        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(asSpelled(typed, platform), wrapper)}'`)
+        return deny('command_policy', subject(), wrapperRefusal(asSpelled(typed, platform), wrapper))
       }
       if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject(), `Not on the ${source} command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
@@ -174,6 +174,23 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       return null
     },
   }
+}
+
+const WRAPPER_REFUSAL = 'A shell wrapper hides its command from the word globs, so it needs an allow rule of its own'
+
+/**
+ * Why a shell wrapper no allow rule admits is refused, naming the rule that would (wrapperRule). A path glob meets only
+ * a command word written plainly (meetsAsSpelled), so for one that is not (`/usr//bin/sh`, `/bin/./sh`, `./x/../bash`,
+ * `~/bin/sh`) a rule echoing the word admits nothing, and once stored the call was refused again with the same rule, a
+ * loop (git pack recheck 1, the C4 regression and held[3]). There the rule named spells the word by its basename, which
+ * admits the bare call and leaves this one to the floor's ask; with no basename, no rule is named.
+ */
+function wrapperRefusal(typed: readonly string[], shell: readonly string[]): string {
+  const [command = '', ...args] = typed
+  if (writtenPlainly(command)) return `${WRAPPER_REFUSAL}: buckle policy allow-command '${wrapperRule(typed, shell)}'`
+  const plainly = `${WRAPPER_REFUSAL}; no allow rule admits a command word written with a . or .. step, a doubled slash, or a leading ~, so write it plainly`
+  const bare = baseCommand(command)
+  return bare === '' ? plainly : `${plainly}, or allow it by its bare name: buckle policy allow-command '${wrapperRule([bare, ...args], shell)}'`
 }
 
 /**

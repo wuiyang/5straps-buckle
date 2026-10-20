@@ -184,6 +184,25 @@ describe('a refused shell wrapper names the allow rule that admits it', () => {
     expect(response.outcome).toBe(outcome)
     if (response.outcome === 'approval_required') expect(response.approvals.map(approval => approval.rule)).toEqual(['destructive_command'])
   })
+
+  // A path glob meets only a command word written plainly, so for one that is not the refusal named a rule that, once
+  // stored, refused the call again with the same suggestion, a loop (git pack recheck 1, the C4 regression and held[3]).
+  it.each<[string, string[], string, NodeJS.Platform | undefined]>([
+    ['/usr//bin/sh', ['-c', 'ls'], 'sh -c *', undefined],
+    ['/bin/./sh', ['-c', 'ls'], 'sh -c *', undefined],
+    ['./x/../bash', ['-c', 'ls'], 'bash -c *', undefined],
+    ['../bin/sh', ['-c', 'ls'], 'sh -c *', undefined],
+    ['bin//sh', ['-c', 'ls'], 'sh -c *', undefined],
+    ['~/bin/sh', ['-c', 'ls'], 'sh -c *', undefined],
+    ['/usr//bin/sudo', ['bash', '-c', 'ls'], 'sudo bash -c *', undefined],
+    ['C:\\Git\\.\\bin\\bash', ['-c', 'ls'], 'bash -c *', 'win32'],
+  ])('refuses %s %j, a command word not written plainly, naming the bare rule %j, which admits the bare call and leaves this one to ask', (command, args, rule, platform) => {
+    const reason = reasonOf(evaluate(command, args, {}, undefined, platform))
+    expect(reason).toContain('write it plainly, or allow it by its bare name')
+    expect(ruleIn(reason)).toBe(rule)
+    expect(evaluate(rule.split(' ')[0]!, args, { allow: [rule] }, undefined, platform).kind).not.toBe('deny')
+    expect(evaluate(command, args, { allow: [rule] }, undefined, platform).kind).toBe('ask')
+  })
 })
 
 // The continuation review, "Seen outside this range": `env git push --force dest main` passed both the destructive

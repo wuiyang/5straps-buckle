@@ -16,7 +16,9 @@ prefix such as `sudo` or `env`, is refused until a rule allows the wrapper; one 
 `shell_exec` with the program and its arguments, or allow the wrapper with the rule the message
 names. An allow rule admits a call only as typed, so behind a prefix the message names the prefix
 too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
-`env bash -c *`. [Policy](policy.md#commands) explains why.
+`env bash -c *`. No rule admits a word written with a `.` or `..` step, a doubled slash, or a
+leading `~`, so `/usr//bin/sh -c ls` names the bare `sh -c *`, under which it asks at the
+destructive floor; write the path plainly instead. [Policy](policy.md#commands) explains why.
 
 ## An interpreter is refused or asks
 
