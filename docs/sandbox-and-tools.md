@@ -104,8 +104,9 @@ included, and a log lists the commits of every file; Buckle filters neither
 
 Each `git` pack call (`git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch`) runs against
 the repository Buckle checked: git is handed the git directory, work tree, and common directory
-that check found, and the call is refused when any of them changes before or while git runs. A
-repository whose `objects/info/alternates` file borrows objects from outside the workspace and its
+that check found, and the call is refused when any of them changes before or while git runs. It
+reads that repository alone, never a submodule's, so a submodule's changes and history are not
+shown. A repository whose `objects/info/alternates` file borrows objects from outside the workspace and its
 mounts is refused too; for a repository outside them that you approved reading, its own folder
 counts as well. The forge pack gets neither check
 ([known limits](known-limits-04.md#the-forge-pack)).

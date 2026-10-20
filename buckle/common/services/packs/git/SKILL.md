@@ -24,6 +24,9 @@ with `hash`, `author`, `date`, `subject`.
 literally, never as patterns. Each is checked as a read, so a credential file such as `.env` asks
 the owner first, and a path outside the repository is refused. Name the files you need.
 
+No tool enters a submodule, so `git_status` and `git_diff` show none of its changes. To read one,
+name its folder as `repo`; it is checked as any repository is.
+
 ## Writes go through shell
 
 This pack does not commit, push, or rewrite history. Use `shell_exec` for that, which means

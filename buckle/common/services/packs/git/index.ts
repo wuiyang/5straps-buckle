@@ -45,6 +45,20 @@ const ALTERNATES_DEPTH = 6
 const ALTERNATES_BYTES = 64 * 1024
 /** The variables git finds a repository, its objects, its index, or its config by: always the pack's own, never its caller's. */
 const GIT_VARIABLE = /^GIT_/i
+/**
+ * A submodule's repository is reached through the `.git` pointer in its work-tree folder, which no check here reads and
+ * which may lead outside the workspace, so git never enters one (git pack recheck 1, held[1]). The command line is the
+ * guard, since it outranks every config the repository or `.gitmodules` sets: status and diff take this flag. The keys
+ * below are a second layer, read after the repository's own config. git_log prints no patch and git_blame reads no
+ * gitlink, so neither takes the flag.
+ */
+const IGNORE_SUBMODULES = '--ignore-submodules=all'
+const SUBMODULE_CONFIG: GitConfig[] = [
+  { key: 'diff.ignoreSubmodules', value: 'all' },
+  { key: 'diff.submodule', value: 'short' },
+  { key: 'status.submoduleSummary', value: 'false' },
+  { key: 'submodule.recurse', value: 'false' },
+]
 
 const repoInput = z.object({ repo: z.string().default('.') })
 const statusInput = repoInput.extend({ untracked: z.boolean().default(true) })
@@ -109,7 +123,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
     const args = typeof input.args === 'function' ? input.args(cwd) : input.args
     const boundary = repositoryBoundary(options.paths, cwd, platform)
-    const isolation = isolationConfig(ensureHooksDirectory(options.stateDirectory))
+    const isolation = [...isolationConfig(ensureHooksDirectory(options.stateDirectory)), ...SUBMODULE_CONFIG]
     const spawnHere = (args: string[], config: GitConfig[], extra?: Record<string, string>) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal, ...(extra ? { extra } : {}) })
     const found = await spawnHere(REPOSITORY_QUERY, isolation)
     const repository = assertRepositoryInside({ answer: found, boundary, repo: input.repo, platform })
@@ -162,7 +176,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       input: statusInput,
       effects: input => [{ kind: 'read_path', path: input.repo }],
       run: async (input, context): Promise<JsonValue> => {
-        const args = ['status', '--porcelain=v2', '--branch']
+        const args = ['status', '--porcelain=v2', '--branch', IGNORE_SUBMODULES]
         if (!input.untracked) args.push('--untracked-files=no')
         return parseStatus(await run({ repo: input.repo, args, refreshesIndex: true, ...context }))
       },
@@ -176,7 +190,7 @@ export function createGitPack(options: GitPackOptions): Pack {
       // Each path named is read too (D77); a diff of the whole tree names none, and shows every tracked file (known limit).
       effects: input => [{ kind: 'read_path', path: input.repo }, ...input.paths.map(path => ({ kind: 'read_path' as const, path: named(input.repo, path) }))],
       run: async (input, context): Promise<JsonValue> => {
-        const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS]
+        const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS, IGNORE_SUBMODULES]
         if (input.staged) args.push('--staged')
         const paths = input.paths.map(path => named(input.repo, path))
         return { diff: await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, paths, context)], refreshesIndex: true, ...context }) }

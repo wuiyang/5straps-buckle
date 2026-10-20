@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -291,7 +291,7 @@ describe('git_diff and git_log declare a read of each path they name (D77)', () 
     const runProcess = answering()
     const { call } = gitPack(root, runProcess)
     await call('git_diff', {})
-    expect(runProcess.mock.calls.at(-1)![0].args.slice(1)).toEqual(['--unified=3', '--no-color', '--no-ext-diff', '--no-textconv'])
+    expect(runProcess.mock.calls.at(-1)![0].args.slice(1)).toEqual(['--unified=3', '--no-color', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'])
   })
 })
 
@@ -715,5 +715,94 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
       expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
       expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-named-store/)
     }
+  })
+})
+
+// A gitlink's work-tree `.git` pointer may lead outside the workspace, and git followed it wherever the repository's own
+// config asked (`diff.submodule`, `status.submoduleSummary`), showing that repository's commits in a diff and its state in
+// a status (git pack recheck 1, held[1]). The read pack never enters a submodule.
+describe('a git tool never enters a submodule', () => {
+  const SUBMODULE_CONFIG = { 'diff.ignoreSubmodules': 'all', 'diff.submodule': 'short', 'status.submoduleSummary': 'false', 'submodule.recurse': 'false' }
+  /** The config scope a spawn carries, by key, as git reads GIT_CONFIG_COUNT and its pairs. */
+  const configOf = (request: ProcessRequest) => {
+    const environment = request.environment ?? {}
+    return Object.fromEntries(Array.from({ length: Number(environment.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [environment[`GIT_CONFIG_KEY_${index}`], environment[`GIT_CONFIG_VALUE_${index}`]]))
+  }
+
+  it('hands git_status and git_diff --ignore-submodules=all, and every spawn the submodule keys', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-submodule-')))
+    mkdirSync(join(root, '.git'))
+    for (const tool of ['git_status', 'git_diff']) {
+      const runProcess = answering()
+      await gitPack(root, runProcess).call(tool, {})
+      const requests = runProcess.mock.calls.map(([request]) => request)
+      expect(requests.at(-1)!.args, tool).toContain('--ignore-submodules=all')
+      for (const request of requests) expect(configOf(request), `${tool} ${request.args[0]}`).toMatchObject(SUBMODULE_CONFIG)
+    }
+  })
+})
+
+describe.skipIf(hostGit === null)('a git tool never enters a submodule, against the installed git', () => {
+  const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' }).toString().trim()
+  /**
+   * A repository outside the workspace root with two commits, and one inside whose gitlink `sub` names the first of them
+   * and whose work-tree `sub/.git` points at the outside one, with `view` as its own `diff.submodule`.
+   */
+  function submodule(view: string) {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-submodule-live-')))
+    const elsewhere = join(parent, 'elsewhere')
+    mkdirSync(elsewhere)
+    writeFileSync(join(elsewhere, 'a.txt'), 'first\n')
+    git(elsewhere, 'init', '-q')
+    git(elsewhere, 'add', 'a.txt')
+    git(elsewhere, 'commit', '-qm', 'first outside subject')
+    const first = git(elsewhere, 'rev-parse', 'HEAD')
+    writeFileSync(join(elsewhere, 'a.txt'), 'second\n')
+    git(elsewhere, 'commit', '-qam', 'subject recorded only outside the workspace')
+    const second = git(elsewhere, 'rev-parse', 'HEAD')
+    const root = join(parent, 'ws')
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(join(repo, 'b.txt'), 'inside\n')
+    git(repo, 'init', '-q')
+    git(repo, 'add', 'b.txt')
+    git(repo, 'update-index', '--add', '--cacheinfo', `160000,${first},sub`)
+    git(repo, 'commit', '-qm', 'inside subject')
+    mkdirSync(join(repo, 'sub'))
+    writeFileSync(join(repo, 'sub', '.git'), `gitdir: ${join(elsewhere, '.git')}\n`)
+    git(repo, 'config', 'diff.submodule', view)
+    git(repo, 'config', 'status.submoduleSummary', 'true')
+    return { root, repo, elsewhere, first, second }
+  }
+
+  it.each([['log'], ['diff'], ['short']])('shows nothing of the submodule in git_diff, staged or not, or git_status, under diff.submodule=%s in the repository config', async view => {
+    const { root, repo, second } = submodule(view)
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    expect(await call('git_diff', { repo: 'repo' })).toEqual({ diff: '' })
+    expect(await call('git_status', { repo: 'repo' })).toMatchObject({ entries: [], clean: true })
+    git(repo, 'update-index', '--cacheinfo', `160000,${second},sub`)
+    expect(await call('git_diff', { repo: 'repo', staged: true })).toEqual({ diff: '' })
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('reads nothing of the outside repository: with its git folder unreadable, git_diff and git_status still run', async () => {
+    const { root, elsewhere } = submodule('log')
+    chmodSync(join(elsewhere, '.git'), 0)
+    try {
+      const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+      expect(await call('git_diff', { repo: 'repo' })).toEqual({ diff: '' })
+      expect(await call('git_status', { repo: 'repo' })).toMatchObject({ entries: [], clean: true })
+    } finally { chmodSync(join(elsewhere, '.git'), 0o755) }
+  })
+
+  // git_log prints no patch and git_blame reads no gitlink, so neither needed a change; pinned, they pass before and after.
+  it('lists only the repository\'s own commits from git_log, naming the gitlink or not, and git_blame refuses the gitlink', async () => {
+    const { root } = submodule('log')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    expect(await call('git_log', { repo: 'repo' })).toMatchObject({ commits: [{ subject: 'inside subject' }] })
+    expect(await call('git_log', { repo: 'repo', path: 'sub' })).toMatchObject({ commits: [{ subject: 'inside subject' }] })
+    const refusal = await refusalOf(() => call('git_blame', { repo: 'repo', path: 'sub' }))
+    expect(refusal).toMatchObject({ code: 'GIT_FAILED' })
+    expect(String(refusal)).not.toContain('outside')
   })
 })
