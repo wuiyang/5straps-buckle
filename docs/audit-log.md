@@ -46,7 +46,7 @@ dangerously-allow switch (`policy_dangerously_allowed`), and each change of it
 | `tool`, `outcome`, `event` | the tool, the outcome, and `attempt` or `result` |
 | `effects` | the kinds of effect the call declared: `read_path`, `write_path`, `exec`, `network`, `process_probe` |
 | `asked`, `approvedBy` | the rules that stopped the call, and the rules whose grants let it through, or `judge` where the decision AI passed an ask |
-| `judge` | where the [decision AI](judge.md) rated the call: each stage's level, confidence, and model, the thorough model's reasoning in its own words, clipped at 2,000 characters with credentials hidden, `passed`, and `socket: 'unavailable'` where the Socket lookup failed ([what it keeps](judge-03.md#the-audit-entry)) |
+| `judge` | where the [decision AI](judge.md) rated the call: each stage's level, confidence, and model, the thorough model's reasoning in its own words, clipped at 2,000 characters with credentials hidden, `passed`, `passedBy: 'thorough'` where the thorough model's safe verdict ran or approved the call (Jev's verdict never does), and `socket: 'unavailable'` where the Socket lookup failed ([what it keeps](judge-03.md#the-audit-entry)) |
 | `detail` | an error code, or what an owner command changed; a workspace variable's value and the value of `browser.cdp`, `browser.profile`, or `browser.args` (a DevTools URL, a profile folder, Chromium arguments) are never in it, only the key; `browser.headed`'s value is |
 | `args` | the arguments' shape, trimmed as below |
 | `actorId` | who the transport authenticated, such as `local-owner` for the CLI or `agent:<token id>` over HTTP |

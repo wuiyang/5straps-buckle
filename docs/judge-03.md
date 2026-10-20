@@ -4,22 +4,7 @@ What the [decision AI](judge.md), the optional model check Buckle (the approval 
 runtime on this machine) runs with the node's own keys, keeps and shows. Its two stages are Jev
 (TypeSafe AI's quick decision model) and the thorough model behind an OpenAI-compatible endpoint.
 
-## The cache
-
-Each stage's verdict is kept under that stage's provider and model, the policy (its `updatedAt`
-and its lists), the command, its inline code, each file read as its path with its sha256, each
-package with its version, whether it was a standard script, the working directory, the mounts
-with their access, the variables the call sets, and Buckle's summary of the call, which names its
-network access. One byte changed in any file it reads, two files swapping contents, a package
-upgraded, or a mount added or made writable, makes a new key, so all of the code is rated again.
-A verdict is kept for 24 hours, in memory and in `judge-cache.json` in the workspace's state
-directory, readable by the owner alone, at most 1,000 with the oldest dropped, so a restart keeps
-them. A policy change empties it. No failure is kept, nor a verdict reached while the Socket lookup
-failed.
-
-Socket, a supply-chain security service that scores open source packages, has its summaries kept
-the same way, by package URL, for 24 hours, in `socket-cache.json` beside it, at most 2,000.
-`buckle workspace judge-cache clear` empties both by hand.
+Each stage's verdict is kept for 24 hours, as [its cache](judge-04.md#the-cache) says.
 
 ## What an approver sees
 
@@ -33,26 +18,29 @@ action. The serve terminal, `buckle approvals --watch`, `buckle approvals show`,
 
 With the thorough model alone the line is `danger (0.92, gpt-6-luna, 900 ms): <reasoning>`, and
 with Jev alone `quick: danger (0.95, jev-1.13.0, 90 ms)`. Jev's model is the versioned one that
-answered. The approval webhook carries a `judge` object beside each ask: the thorough model's
-`level`, `confidence`, `model`, `reasoning`, and `latencyMs`, or `unavailable`, with Jev's verdict
-as `quick`; `buckle approvals --json` carries the same inside the ask's `call`.
+answered. An ask at the destructive floor leads its line with "a command at the destructive floor
+always needs a person", which no stage's verdict changes. The approval webhook carries a `judge`
+object beside each ask: the thorough model's `level`, `confidence`, `model`, `reasoning`, and
+`latencyMs`, or `unavailable`, with Jev's verdict as `quick` and the floor's line as `warning`;
+`buckle approvals --json` carries the same inside the ask's `call`.
 `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason,
 because a signed challenge carries no verdict yet. Rings, the 5straps agent control plane, does not
 show the verdict yet, because its approvals reader drops the webhook's `judge` field. An allowed
 command Jev rated `danger` asks with the reason "The decision AI's quick stage rated this command
 danger, so a person decides; nothing it says refuses a command".
 
-A stage's pass lifts that command's ask, and the webhook is not called for it: the serve terminal
-prints one info line naming the stage, the model, the level, the confidence, and the command as an
-approver would see it, credentials hidden. Where another ask remains, such as `write_scope`, the
-line says the call still waits for it, and the ask goes out as usual.
+The thorough model's pass lifts an interpreter ask, and the webhook is not called for it: the serve
+terminal prints one info line naming the thorough stage, the model, the level, the confidence, and
+the command as an approver would see it, credentials hidden. Jev's verdict never passes an ask.
+Where another ask remains, such as `write_scope`, the line says the call still waits for it, and the
+ask goes out as usual.
 
 ## The audit entry
 
-A call a stage ran carries `judge` with the thorough model's `provider`, `model`, `level`,
-`confidence`, `reasoning`, `latencyMs`, and `promptDigest`, Jev's verdict as `quick` (`provider`,
-`model`, `level`, `confidence`, `probabilities`, and `latencyMs`), `passed: true`, and `passedBy`
-naming the stage, and names `judge` among what allowed it. One a stage rated and did not pass
+A call the thorough model ran carries `judge` with its `provider`, `model`, `level`, `confidence`,
+`reasoning`, `latencyMs`, and `promptDigest`, Jev's verdict as `quick` (`provider`, `model`,
+`level`, `confidence`, `probabilities`, and `latencyMs`), `passed: true`, and `passedBy:
+'thorough'`, and names `judge` among what allowed it. One a stage rated and did not pass
 carries the same with `passed: false`, or `unavailable` in place of a verdict, its reason cut to 500
 characters; Jev's verdict alone stands where the thorough model was not asked. `flagged: true` marks
 an allowed command Jev turned into an ask, and `screened: true` one it rated and let run, recorded
@@ -75,23 +63,25 @@ standard input as code", "a module that discovers or evaluates code the reader d
 "the code the interpreter runs comes from standard input the reader cannot place", "an import the
 reader does not model", "the code runs compiled Python the reader cannot show", "a config file the
 reader could not parse", "the interpreter is a program inside the workspace", "the call sets the
-program name the interpreter reads", and "the call splits a word into words the reader does not
-read again".
+program name the interpreter reads", "the call splits a word into words the reader does not read
+again", "the runner runs a package from a path or a source the reader does not show", and "the
+package.json script the standard script names could not be read".
 
-The shell-text reason also covers `flock -c` text, a heredoc a shell reads as its script
-(`busybox sh <<EOF`), and, inside shell text, a wrapper that sets the program name or splits a
-word (`exec -a`, `env -a`, `env -S`). The interactive reason covers `php -a` after `-f` and
-`python3 -m pdb`, `code`, `asyncio`, or `idlelib`; the module reason, `-m unittest`, `pytest`, and
-`timeit`; the unknown-option reason, a `python3 -X` value off the reader's short list
-(`pycache_prefix` and `frozen_modules` among them); the import reason, an ES module specifier
-holding a control, a tab, or a leading or trailing space; and the compiled-Python reason, a folder
-the reader cannot list. A reason is cut to 500 characters, never inside an escape it quotes.
+The shell-text reason also covers `flock -c` text, a heredoc a shell reads as its script (`busybox
+sh <<EOF`), and, inside shell text, a wrapper that sets the program name or splits a word (`exec
+-a`, `env -a`, `env -S`) and a quoted or `+=` command word that reads as an assignment. The
+local-program reason covers a wrapper, a shell, and a runner named by a path inside the workspace or
+a mount, any relative program path holding a separator, and a command word that reads as an
+assignment. The interactive reason covers `php -a` after `-f` and `python3 -m pdb`, `code`,
+`asyncio`, or `idlelib`; the module reason, `-m unittest`, `pytest`, `timeit`, `runpy`, `pydoc`,
+`inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, and `pickletools`, and a second
+`-m`; the unknown-option reason, a `python3 -X` value off the reader's short list (`pycache_prefix`
+and `frozen_modules` among them); the import reason, an ES module specifier holding a control, a
+tab, or a leading or trailing space; and the compiled-Python reason, a folder the reader cannot
+list. A reason is cut to 500 characters, never inside an escape it quotes.
 
-## Cost
+`buckle approvals judge` refuses a call the policy now denies, asking no stage: "The policy now
+denies this call; the decision AI never rates a deny".
 
-Jev costs $0.042 per million input tokens, and its output is free, so one rating of a few
-thousand tokens costs a fraction of a cent. The thorough model costs what your AI gateway or provider
-charges for one short request per distinct command and code. A Socket lookup counts against the
-key's Socket quota. A kept verdict or summary costs nothing.
-
-The limits are on [Known limits, part six](known-limits-06.md).
+What a rating costs is on [its cost](judge-04.md#cost), and the limits are on [Known
+limits, part six](known-limits-06.md) and [part seven](known-limits-07.md).

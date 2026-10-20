@@ -6,9 +6,9 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 
 ## Judgement
 
-- A verdict is a model's judgement and can be wrong. In automated mode a `safe` at 0.8 or above
-  runs the call with no person, from either stage; under `approval.quickJudge asks` or `all`, that
-  includes a call the built-in floor or the destructive list asks about.
+- A verdict is a model's judgement and can be wrong. In automated mode the thorough model's `safe`
+  at 0.8 or above runs an interpreter ask with no person. Jev's verdict never runs a call, and an
+  ask the built-in floor or the destructive list makes always goes to a person.
 - Jev, TypeSafe AI's quick stage, writes no reasoning: an approver reads its level, confidence,
   and model alone.
 - Prompt injection through the command, a comment, or a file it reads is bounded, not ruled out:
@@ -43,14 +43,16 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   `PYTHONPATH`, `SHELL`, `HOME`, `ARGV0`, and an exported bash function among them), is not
   rated, with the same result. A wrapper that sets the program name an interpreter reads (`exec`
   with an option, or `env -a` or `--argv0` by any prefix) or splits a word (`env -S`) is not rated
-  either, nor an interpreter named by a path inside the workspace or a mount
-  (`./fv/bin/python3 job.py`; `/usr/bin/python3 job.py` is still rated); `exec` is read only bare.
+  either, nor a program named by a path inside the workspace or a mount, an interpreter, wrapper,
+  shell, or runner alike (`./fv/bin/env python3 job.py`; `/usr/bin/python3 job.py` is still rated),
+  as [part seven](known-limits-07.md) details; `exec` is read only bare.
 - The reader fails closed on what it does not model, with the same result: an interpreter option it
   does not know, an option before a runner's package, or before the operand of a package that is no
   runtime (`npx eslint --fix .`); a subcommand that runs code it does not follow (`bun test`,
   `deno task`, `bun x`, or node's `inspect` and `debug`); an interactive flag (`python3 -i`,
-  `node -i -e`, `lua -i`, or `php -a`, including `php -a` after `-f`), and `python3 -m pdb`, `code`,
-  `asyncio`, `idlelib`, `unittest`, `pytest`, or `timeit`, fed or not; code on an input nothing on
+  `node -i -e`, `lua -i`, or `php -a`, including `php -a` after `-f`), and `python3 -m` of `pdb`,
+  `code`, `asyncio`, `idlelib`, `unittest`, `pytest`, `timeit`, or a module that runs another by
+  name, fed or not; code on an input nothing on
   its statement feeds (`python3 -`); an import naming a URL, a path holding `?`, `#`, or `%`, or an
   ES module import or `--import` holding a tab, a control, or a leading or trailing space; a runtime
   that loads variables from a file (`--env-file`); more than 256 variables set; a package.json or
@@ -59,6 +61,11 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   import, or redirected file whose name holds a backslash, and an argument holding a backslash and a
   slash; and a parenthesised import list over 200 lines. bun's global config file is not read; lua
   opens a file named `-` after `--`, so that is its script, not standard input.
+- Not rated either, with the same result: a runner package named by a path or a source other than
+  the registry (`npx ./tool`, `npx eslint@file:./tool`, `npx user/repo`); `python3 -m` of `runpy`,
+  `pydoc`, `inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, or `pickletools`, or a
+  second `-m` among a module's arguments; npm's config variables (`npm_config_node_options`,
+  `NPM_CONFIG_USERCONFIG`); and a quoted or `+=` command word the rules read as an assignment.
 - Compiled Python beside a module the reader would show (`__pycache__/<name>.*.pyc`, `<name>.pyc`,
   or an extension module), in a folder the reader cannot list, or moved by `-X pycache_prefix`, is
   not rated either, since Python may run it in place of the source. Python writes those caches
@@ -68,16 +75,5 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
   under `approval.quickJudge all` in automated mode, or when the destructive list names them.
 
-## Elsewhere
-
-- Socket is advisory and looks at 50 packages a rating; with no key, a timeout, or an error, the
-  rating runs without it, and a verdict reached while its lookup failed is not kept.
-- No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
-- No Rings view of the verdict yet: Rings, the 5straps agent control plane, drops the webhook's
-  `judge` field in its approvals reader, and the report to Rings carries none.
-- `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason:
-  a signed challenge carries no verdict yet.
-- No live call has been made yet to a real AI gateway, TypeSafe, or Socket: the built-in model name
-  `gpt-6-luna` (a gateway may name it differently), Jev's answers, and Socket's organization route
-  follow the published documentation and the tests' imitations. A failure of any of them is no
-  verdict, so a call asks as before.
+The round's further refusals, and the limits that are not about reading, are on [part
+seven](known-limits-07.md).
