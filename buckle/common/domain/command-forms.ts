@@ -221,10 +221,21 @@ export interface CommandForms {
   interpreters: string[]
   /**
    * The whole-command reading: each command a substitution cut, read whole with each body as `$()` (a head), as the
-   * command behind each wrapper in turn, wherever its command word was judged (textCommands). No rule matches on it; it
-   * is kept so a test can hold the forms to it, since a command word it reads that no form reads is one no glob meets.
+   * command behind each wrapper in turn, wherever it surely runs (textCommands), and again with each word that is only a
+   * substitution left out, since one may expand to no word (`git $(echo) push`). The destructive floor and the deny list
+   * read it beside the forms (judgedForms), so `rm>$(true) -rf x` meets the floor as `rm -rf x`; the allow list never
+   * reads it, so a head can only add an ask or a refusal (fix brief 7, A3b).
    */
   heads: string[][]
+}
+
+/**
+ * Every form the destructive floor and the deny list read: every form (allForms), then every head (CommandForms.heads),
+ * the command a substitution cut, read whole, which no piece shows (fix brief 7, A3b). The allow list matches the call as
+ * typed alone, so no head admits a call.
+ */
+export function judgedForms(forms: CommandForms): string[][] {
+  return forms.heads.length === 0 ? allForms(forms) : [...allForms(forms), ...forms.heads]
 }
 
 /**
@@ -850,7 +861,9 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     if (!sure || known.net) continue
     const form = budget.spent ? null : statementForm(head, budget)
     if (form === null) break
-    for (const words of readingsOf(form)) {
+    // A word that is only a substitution may expand to no word, so the head is also read without it (fix brief 7, A3b).
+    const readings = form.bare.length === 0 ? readingsOf(form) : [...readingsOf(form), form.words.filter((_, at) => !form.bare.includes(at))]
+    for (const words of readings) {
       const { chain, unread: limit } = wrapperChain(words, form.expanded, JUDGED)
       if (limit === 'expansion') unread = firstLimit(unread, 'expansion')
       scriptData ||= (around.fed || known.fed) && runsScriptFile(chain)
@@ -1354,8 +1367,15 @@ function readShort(wrapper: Wrapper, words: readonly string[], index: number): R
 const STDIN_REDIRECTION = /^0?</
 const STDIN_HEREDOC = /^0?<<(?!<)/
 
-/** A statement's words (statementForm), and `other`, its words as the other shells read a bare operator ending in `!`, or null. */
-interface StatementForm { words: string[]; heredoc: boolean; expanded: Expanded; other: string[] | null }
+/**
+ * A statement's words (statementForm), and `other`, its words as the other shells read a bare operator ending in `!`, or
+ * null; `bare`, the index in `words` of each word that is only a substitution a head cut (`$$()`), unquoted, which may
+ * expand to no word.
+ */
+interface StatementForm { words: string[]; heredoc: boolean; expanded: Expanded; other: string[] | null; bare: number[] }
+
+/** An unquoted word that is only the bodies a head cut, each written `$$()`, which may expand to no word at all. */
+const BARE_SUBSTITUTION = /^(?:\$\$\(\))+$/
 
 /** Each reading of a statement's words: one, or two where a redirection's meaning depends on the shell. */
 const readingsOf = (form: StatementForm): string[][] => (form.other === null ? [form.words] : [form.words, form.other])
@@ -1380,7 +1400,7 @@ function statementForm(statement: string, budget: Budget): StatementForm | null 
   const second = statementWords(tokens, readings[1]!)
   const expanded = new Map(first.expanded)
   for (const [word, met] of second.expanded) expanded.set(word, mergedExpansion(expanded.get(word), met))
-  return { words: first.words, heredoc: first.heredoc && second.heredoc, expanded, other: second.words }
+  return { words: first.words, heredoc: first.heredoc && second.heredoc, expanded, other: second.words, bare: first.bare }
 }
 
 /** A word seen two ways may do what either does: name a command, split, or start with only the text both share. */
@@ -1388,13 +1408,15 @@ const mergedExpansion = (known: Expansion | undefined, met: Expansion): Expansio
   known === undefined ? met : { command: known.command || met.command, splits: known.splits || met.splits, prefix: sharedStart(known.prefix, met.prefix) }
 
 /** A statement's words in one reading of its redirections (statementForm). */
-function statementWords(tokens: readonly ShellToken[], clobber: boolean): { words: string[]; heredoc: boolean; expanded: Expanded } {
+function statementWords(tokens: readonly ShellToken[], clobber: boolean): { words: string[]; heredoc: boolean; expanded: Expanded; bare: number[] } {
   const words: string[] = []
+  const bare: number[] = []
   let heredoc = false
   let expanded: Map<string, Expansion> | null = null
   for (let index = 0; index < tokens.length; index++) {
     const { raw, word } = tokens[index]!
     if (!REDIRECTION.test(raw)) {
+      if (BARE_SUBSTITUTION.test(raw)) bare.push(words.length)
       words.push(word)
       if (holdsExpansion(raw)) {
         expanded ??= new Map()
@@ -1409,7 +1431,7 @@ function statementWords(tokens: readonly ShellToken[], clobber: boolean): { word
     if (STDIN_REDIRECTION.test(raw)) heredoc = STDIN_HEREDOC.test(raw)
     if (takesNextWord(raw, clobber)) index++
   }
-  return { words, heredoc, expanded: expanded ?? NO_WORDS }
+  return { words, heredoc, expanded: expanded ?? NO_WORDS, bare }
 }
 
 /** The text two strings start with. */

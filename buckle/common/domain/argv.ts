@@ -1111,17 +1111,17 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     const own = command.cut ? command.text + (command.from >= 0 ? text.slice(command.from, amp) : '') : text.slice(level.start, amp)
     return { text: `${command.join?.text ?? ''}${own} `, cut: command.cut || command.join?.cut === true, feed: command.feed || command.join?.feed === true }
   }
-  // A body opens at `at` inside the command at this level, which a substitution replaces in its head until the body ends.
-  const cut = (command: CommandText, at: number) => {
-    if (command.from >= 0) command.text += text.slice(command.from, at) + SUBSTITUTED
+  // A body opens at `at` inside the command at this level, which `marker` replaces in its head until the body ends.
+  const cut = (command: CommandText, at: number, marker = SUBSTITUTED) => {
+    if (command.from >= 0) command.text += text.slice(command.from, at) + marker
     command.from = -1
     command.cut = true
   }
   // A body outside quotes opens at `at` and starts at `next`: the command so far is a piece, and the body is read as
   // commands of its own (`runs`) until it closes.
   // A body's commands read the input of the command around it, which a fed run around that command already covers.
-  const open = (level: SplitLevel, at: number, next: number, runs: boolean) => {
-    cut(level.command, at)
+  const open = (level: SplitLevel, at: number, next: number, runs: boolean, marker = SUBSTITUTED) => {
+    cut(level.command, at, marker)
     piece(level, at, next)
     level.interrupted.push(level.command)
     level.feedings.push(level.feeding)
@@ -1277,9 +1277,11 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       if (character === '`') readBacktick(text.slice(level.body, index), level.doubleQuoted)
     } else if (character === '`') {
       // A backtick outside quotes opens a body or closes the one open at this level; either way it splits a statement.
-      // A word starts with the body, and the word around the substitution goes on after it.
+      // A word starts with the body, and the word around the substitution goes on after it. Its head writes it as a `$(`
+      // cut does, `$$()`, so a `<` or `>` before it is never read as the `<(` or `>(` whose cut leaves `<$()` (fix brief 7,
+      // A3b).
       if (level.backtick === null) {
-        open(level, index, index + 1, true)
+        open(level, index, index + 1, true, `$${SUBSTITUTED}`)
         level.backtick = index + 1
         level.wordStart = true
       } else {

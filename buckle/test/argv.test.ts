@@ -409,7 +409,8 @@ describe('the commands a substitution cuts, kept whole', () => {
 
   it.each([
     ['$(echo git) push origin', ['$$() push origin']],
-    ['`echo git` push origin', ['$() push origin']],
+    // A backtick body is a command substitution, written as a `$(` cut writes one (fix brief 7, A3b).
+    ['`echo git` push origin', ['$$() push origin']],
     ['g$(echo it) push', ['g$$() push']],
     ['x=$(echo a b) $(echo git) push', ['x=$$() $$() push']],
     ['x="$(echo "a b")" $y push', ['x="$()" $y push']],

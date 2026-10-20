@@ -1,7 +1,7 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import type { CommandGlob } from '../../command-glob.js'
-import { allForms, commandFormsOf, readLimitOf, readLimitReason } from '../../command-forms.js'
+import { commandFormsOf, judgedForms, readLimitOf, readLimitReason } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -42,8 +42,11 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       if (effect.kind !== 'exec') return null
       const forms = commandFormsOf(effect)
       const limit = readLimitOf(forms, allowed)
-      const floor = firstReason(allForms(forms))
-      const listed = floor === null ? classifyAdded({ added, forms: allForms(forms) }) : null
+      // A command a substitution cut is judged whole too, as its head shows it (judgedForms), and the script patterns read
+      // its words, so `chmod>$(echo)x 777 x` asks as `chmod 777 x` in a script body does (fix brief 7, A3b).
+      const judged = judgedForms(forms)
+      const floor = firstReason(judged) ?? headScriptReason(forms.heads)
+      const listed = floor === null ? classifyAdded({ added, forms: judged }) : null
       const reason = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed
       if (!reason) return null
       // What the decision AI may answer (D91): an unknown interpreter alone, never a built-in reason, another reading
@@ -130,6 +133,16 @@ function hasGitOption(flags: ParsedArgv, short: string | null, ...names: string[
 function classifyAdded(input: { added: readonly CommandGlob[]; forms: readonly string[][] }): string | null {
   const matched = input.added.find(glob => input.forms.some(form => glob.matchesPrefix(form)))
   return matched ? `On the workspace destructive list: ${matched.source}` : null
+}
+
+/** The script pattern a head's words meet, joined as a script body would hold them, or null for none (fix brief 7, A3b). */
+function headScriptReason(heads: readonly string[][]): string | null {
+  for (const head of heads) {
+    const text = head.join(' ')
+    const met = SCRIPT_PATTERNS.find(({ pattern }) => pattern.test(text))
+    if (met) return met.reason
+  }
+  return null
 }
 
 function classifyShellScript(argv: ParsedArgv): string | null {

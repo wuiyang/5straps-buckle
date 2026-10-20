@@ -7,6 +7,7 @@ import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
+import { shellStatementList, shellTokens } from '../common/domain/argv.js'
 import { allForms, commandFormsOf, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
@@ -2027,6 +2028,44 @@ describe('a heredoc word ending in an escaped operator character (fix brief 7, A
       await runtime.approvalService.close()
       await runtime.history.close()
     }
+  })
+})
+
+describe('a command a substitution cuts, read whole by the floor and the deny list (fix brief 7, A3b)', () => {
+  // A head is the command a substitution cut, read whole with each body as `$()`; the pieces alone show `rm` apart from
+  // `-rf x`. The floor and the deny list read every head that surely runs; the allow list never reads one.
+  const allow = ['bash -c *']
+
+  it.each(['rm>$(true) -rf x', 'rm >$(true) -rf x', 'rm >`true` -rf x', 'rm $(true) -rf x', 'rm<$(echo)x -rf x', 'rm>>$(echo)x -rf x', 'chmod>$(echo)x 777 x'])('bash -c %j asks at the floor', (text) => {
+    const ask = evaluate('bash', ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+  })
+
+  it('meets an rm -rf deny through the head of rm>$(true) -rf x', () => {
+    expect(evaluate('bash', ['-c', 'rm>$(true) -rf x'], { allow, deny: ['rm -rf *'] }).kind).toBe('deny')
+  })
+
+  it.each(['git>$(true) push --force origin main', 'git >`true` push --force origin main', 'git>$((1))x push --force origin main', 'git $(echo) push --force origin main'])('bash -c %j meets a git push deny', (text) => {
+    expect(evaluate('bash', ['-c', text], { allow, deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it('writes a backtick body after > as a command substitution, never as the process substitution a >( cut leaves', () => {
+    const [head] = [...shellStatementList('rm>`true` -rf x').heads.keys()]
+    expect(shellTokens(head!).map(token => token.raw)).toEqual(['rm', '>$$()', '-rf', 'x'])
+    expect(commandFormsOf({ command: 'bash', args: ['-c', 'BASH_ENV=<(echo x) bash'] }).scriptData).toBe(true)
+    const ask = evaluate('bash', ['-c', 'python3>`echo log` x.py'], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate('bash', ['-c', 'python3>`echo log` x.py'], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+  })
+
+  it('reads a substitution between ordinary words as before, and never admits a call through a head', () => {
+    expect(evaluate('bash', ['-c', 'echo $(date) done'], { allow, deny: ['git push *'] }).kind).toBe('allow')
+    expect(evaluate('git', ['commit', '-m', '"$(cat msg)"', '--signoff'], { allow: ['git commit *'] }).kind).toBe('allow')
+    expect(evaluate('bash', ['-c', '$(x) rm -rf y'], { allow: ['rm *'] }).kind).toBe('deny')
+    const asked = evaluate('bash', ['-c', '$(x) rm -rf y'], { allow: ['rm *', 'bash -c *'] })
+    expect(asked.kind).toBe('ask')
   })
 })
 

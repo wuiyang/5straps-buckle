@@ -1,6 +1,6 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
-import { allForms, commandFormsOf, readLimitOf, readLimitReason } from '../../command-forms.js'
+import { commandFormsOf, judgedForms, readLimitOf, readLimitReason } from '../../command-forms.js'
 import type { CommandGlob } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
@@ -191,8 +191,12 @@ function patternWord(word: string): string {
   return word.replace(UNSPELLABLE, '*').replace(/\*+/g, '*') || '*'
 }
 
-/** The first deny glob of a policy that meets a form of the call, read as far as it was read. */
+/**
+ * The first deny glob of a policy that meets a form of the call, read as far as it was read, a command a substitution cut
+ * read whole among them (judgedForms; fix brief 7, A3b).
+ */
 function deniedBy(policy: Pick<CompiledPolicy, 'commands'>, forms: CommandForms): CommandGlob | undefined {
-  return policy.commands.deny.find(glob => allForms(forms).some(form => glob.matchesPrefix(form)))
+  const judged = judgedForms(forms)
+  return policy.commands.deny.find(glob => judged.some(form => glob.matchesPrefix(form)))
 }
 
