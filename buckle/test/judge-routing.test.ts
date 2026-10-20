@@ -5,6 +5,7 @@ import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
+import { SCRIPT_TEXT_REFUSAL } from '../common/services/judge/code-reader.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickResult } from '../common/types/ports/quick-judge.js'
@@ -113,6 +114,8 @@ describe('a standard script', () => {
   async function shown(calls: Array<[string, string[]]>) {
     const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
     writeFileSync(join(config.cwd, 'deploy.ts'), 'export {}\n')
+    // A standard script names a package.json script, whose text the stages are shown (addendum 3 R3).
+    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ scripts: { dev: 'bun deploy.ts' } }))
     const fakes = judges({ quick: quick('danger', 0.95) })
     const runtime = await runtimeOf(config, fakes)
     for (const [command, args] of calls) await call(runtime, command, args)
@@ -186,7 +189,8 @@ describe('a standard script', () => {
   it('reads what bun loads before a standard script: its preload options and its bunfig.toml\'s, and refuses a missing one (fix brief 3, R15)', async () => {
     const seenOf = async (files: Record<string, string>, calls: Array<[string, string[]]>) => {
       const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
-      for (const [name, content] of Object.entries(files)) writeFileSync(join(config.cwd, name), content)
+      // A standard script names a package.json script, whose text the stages are shown (addendum 3 R3).
+      for (const [name, content] of Object.entries({ 'package.json': JSON.stringify({ scripts: { dev: 'bun app.ts' } }), ...files })) writeFileSync(join(config.cwd, name), content)
       const fakes = judges({ quick: quick('danger', 0.95) })
       const runtime = await runtimeOf(config, fakes)
       const seen: unknown[] = []
@@ -305,7 +309,9 @@ describe('an interpreter ask, with the quick stage on', () => {
 describe('a standard development script', () => {
   it('reaches the quick stage as a standard script, on its command line alone, for npm, pnpm, and yarn, and on the destructive list still asks a person', async () => {
     const fakes = judges({ quick: quick('warning', 0.9), thorough: thorough('safe', 0.95) })
-    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), fakes)
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ scripts: { dev: 'vite', build: 'tsc -p .' } }))
+    const runtime = await runtimeOf(config, fakes)
     await withPolicy(runtime, { destructive: ['npm run *', 'pnpm dev', 'yarn build'] })
     for (const [command, args] of [['npm', ['run', 'dev']], ['pnpm', ['dev']], ['yarn', ['build']]] as const) {
       expect((await call(runtime, command, [...args])).response, command).toMatchObject({ outcome: 'approval_required' })
@@ -313,6 +319,55 @@ describe('a standard development script', () => {
     expect(fakes.shownQuick.map(item => [item.command, item.standardScript, item.files])).toEqual([['npm run dev', true, []], ['pnpm dev', true, []], ['yarn build', true, []]])
     // A destructive-list ask is no interpreter ask, so the thorough stage is not asked (addendum 3 R1).
     expect(fakes.shownThorough).toEqual([])
+  })
+})
+
+describe('a standard script naming a package.json script (addendum 3 R3)', () => {
+  /** A node whose working directory holds `manifest` as package.json, under quick scope asks with the scripts on the destructive list. */
+  async function scripted(manifest: string | null, files: Record<string, string> = {}) {
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    if (manifest !== null) writeFileSync(join(config.cwd, 'package.json'), manifest)
+    for (const [name, content] of Object.entries(files)) writeFileSync(join(config.cwd, name), content)
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['npm *', 'pnpm *', 'yarn *'] })
+    return { fakes, runtime }
+  }
+
+  it('shows the stages the script\'s text for each standard form, clipped as a reasoning is', async () => {
+    const long = `node ${'x'.repeat(3_000)}`
+    const { fakes, runtime } = await scripted(JSON.stringify({ scripts: { build: 'tsc -p .', test: 'vitest run', start: 'node server.js', dev: 'vite', long } }))
+    for (const [command, args] of [['npm', ['run', 'build']], ['npm', ['test']], ['npm', ['start']], ['pnpm', ['dev']], ['yarn', ['build']], ['yarn', ['run', 'test']]] as const) await call(runtime, command, [...args])
+    expect(fakes.shownQuick.map(input => [input.command, input.standardScript, input.scriptText])).toEqual([
+      ['npm run build', true, 'tsc -p .'], ['npm test', true, 'vitest run'], ['npm start', true, 'node server.js'], ['pnpm dev', true, 'vite'], ['yarn build', true, 'tsc -p .'], ['yarn run test', true, 'vitest run'],
+    ])
+    await call(runtime, 'npm', ['run', 'long'])
+    const clipped = fakes.shownQuick.at(-1)!.scriptText!
+    expect(Array.from(clipped).length).toBeLessThanOrEqual(2_000)
+    expect(clipped.endsWith('\n[cut]')).toBe(true)
+  })
+
+  it('reads a package.json that starts with a byte order mark', async () => {
+    const { fakes, runtime } = await scripted(`\uFEFF${JSON.stringify({ scripts: { build: 'tsc -p .' } })}`)
+    await call(runtime, 'npm', ['run', 'build'])
+    expect(fakes.shownQuick[0]?.scriptText).toBe('tsc -p .')
+  })
+
+  it('refuses where the script or the package.json is missing, so the ask goes to a person and no stage is asked', async () => {
+    for (const manifest of [JSON.stringify({ scripts: { build: 'tsc' } }), JSON.stringify({ scripts: 'x' }), '{ broken', null]) {
+      const { fakes, runtime } = await scripted(manifest)
+      const { response, entry } = await call(runtime, 'npm', ['run', manifest === null ? 'build' : 'gone'])
+      expect(response, String(manifest)).toMatchObject({ outcome: 'approval_required' })
+      expect(entry.judge, String(manifest)).toMatchObject({ quick: { unavailable: SCRIPT_TEXT_REFUSAL }, passed: false })
+      expect(fakes.quickJudge.quick, String(manifest)).not.toHaveBeenCalled()
+    }
+  })
+
+  it('gives bun run naming a file no script text: its code is read', async () => {
+    const { fakes, runtime } = await scripted(JSON.stringify({ scripts: { './x.ts': 'never' } }), { 'x.ts': 'export {}\n' })
+    await call(runtime, 'bun', ['run', './x.ts'])
+    expect(fakes.shownQuick[0]).toMatchObject({ command: 'bun run ./x.ts', standardScript: false, files: [{ path: '/workspace/x.ts' }] })
+    expect(fakes.shownQuick[0]).not.toHaveProperty('scriptText')
   })
 })
 

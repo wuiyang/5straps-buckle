@@ -108,9 +108,11 @@ describe('an allowed command, with the quick stage on for all', () => {
   it('rates npm run dev, which never asks on its own, as a standard script on its command line alone', async () => {
     const shown: JudgeInput[] = []
     const quickJudge: QuickJudge = { quick: vi.fn(async (input: JudgeInput) => { shown.push(input); return quick('safe', 0.99) }) }
-    const runtime = await runtimeOf(node(), { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
+    const config = node()
+    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }))
+    const runtime = await runtimeOf(config, { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
     expect((await call(runtime, 'npm', ['run', 'dev'])).response).toMatchObject({ outcome: 'ok' })
-    expect(shown[0]).toMatchObject({ command: 'npm run dev', standardScript: true, files: [], interpreters: [] })
+    expect(shown[0]).toMatchObject({ command: 'npm run dev', standardScript: true, files: [], interpreters: [], scriptText: 'vite' })
   })
 
   it('runs once a person approves the ask Jev raised, sent again with the approval\'s token', async () => {

@@ -47,6 +47,14 @@ describe('a verdict\'s cache key', () => {
     expect(new Set([base, ...changed]).size).toBe(changed.length + 1)
   })
 
+  it('holds a standard script\'s package.json text: a changed text is a new key, and a call with none keeps its key (addendum 3 R3)', () => {
+    const base = key(input())
+    expect(key(input({ scriptText: 'tsc -p .' }))).not.toBe(base)
+    expect(key(input({ scriptText: 'tsc -p .' }))).not.toBe(key(input({ scriptText: 'tsc -p . && node deploy.js' })))
+    expect(key(input({ scriptText: 'tsc -p .' }))).toBe(key(input({ scriptText: 'tsc -p .' })))
+    expect(key(input())).toBe(base)
+  })
+
   it('holds the working directory: the same command run from another folder is a new key', () => {
     expect(key(input({ cwd: '/workspace/sub' }))).not.toBe(key(input()))
   })

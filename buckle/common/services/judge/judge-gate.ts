@@ -13,12 +13,12 @@ import type { AskCause, PermissionDecision } from '../../domain/permission/decis
 import { floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
 import { FLOOR_WARNING, type JudgeNote, type QuickNote } from '../../domain/approval-instruction.js'
-import { clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
+import { clippedReasoning, clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile } from './call-forms.js'
-import { CODE_REFUSALS, planRefusal, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -183,6 +183,11 @@ export function createJudgeGate(input: {
     // one simple command (fix brief 4, P).
     const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
     if (code.kind === 'refused') return code.reason
+    // A standard script naming a package.json script is shown that script's text, as context (addendum 3 R3).
+    const scriptForm = !standardScript ? null : standardForm(typed) ? typed : running.length === 1 ? running[0]! : null
+    const scriptName = scriptForm === null ? null : packageScriptName(scriptForm)
+    const script = scriptName === null ? null : packageScript(scriptName, cwd, input.view)
+    if (script !== null && typeof script !== 'string') return script.refused
     const shownCwd = sandboxName(cwd)
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.
     const program = effect.shownAs ?? effect.command
@@ -195,6 +200,7 @@ export function createJudgeGate(input: {
       packagesTruncated: false,
       truncated: false,
       standardScript,
+      ...(script === null ? {} : { scriptText: clippedReasoning(script) }),
       policy: lists,
       cwd: shownCwd,
       mounts: [{ target: shownRoot, access: 'read-write' }, ...paths.mounts.filter(mount => !mount.scratch && mount.target !== mount.source).map(mount => ({ target: mount.target, access: mount.access === 'rw' ? 'read-write' as const : 'read-only' as const }))],
@@ -216,6 +222,24 @@ export function createJudgeGate(input: {
     const operand = args[operandAt(args, run + 1, valueOptionsOf('bun'))]
     if (operand === undefined) return false
     return /[/\\]/.test(operand) || SCRIPT_EXTENSION.test(operand) || typeof input.view.locate(operand, cwd) === 'object'
+  }
+
+  /**
+   * The package.json script a standard form names (addendum 3 R3): `npm run <name>`, `npm test`, `npm start`, `pnpm run
+   * <name>`, `pnpm dev|build|test`, `yarn run <name>`, `yarn dev|build|test`, or `bun run <name>` naming no file; null
+   * for any other form, an option word before the name included.
+   */
+  function packageScriptName(form: readonly string[]): string | null {
+    const [command = '', ...args] = form
+    const program = baseCommand(command)
+    const [first, second] = args
+    const named = first === 'run' && second !== undefined && !second.startsWith('-') ? second : null
+    if (program === 'npm') return named ?? (first === 'test' || first === 'start' ? first : null)
+    if (program === 'pnpm' || program === 'yarn') return named ?? (first === 'dev' || first === 'build' || first === 'test' ? first : null)
+    if (program !== 'bun') return null
+    const run = operandAt(args, 0, valueOptionsOf('bun'))
+    if (args[run] !== 'run') return null
+    return args[operandAt(args, run + 1, valueOptionsOf('bun'))] ?? null
   }
 
   /** The real working directory a call names, its own `cwd` argument resolved in the view, else the workspace. */

@@ -197,6 +197,7 @@ describe('the judge a provider names', () => {
 
 describe('the fixed instructions', () => {
   it('are pinned, so a change to what every rating is asked under is a reviewed one', () => {
-    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('6b73e7311d939c2b8cd80c6e4f2f5e5ff7f87f099d49593cb6ea13a5fa41d88f')
+    // Addendum 3 R3 adds scriptText to the fields the prompt names.
+    expect(createHash('sha256').update(JUDGE_SYSTEM_PROMPT).digest('hex')).toBe('06366543f7d3b4782d7d13c14a2b35756cf001317f96bb2b3bda512bf3fac6d1')
   })
 })

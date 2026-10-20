@@ -1338,6 +1338,30 @@ function packageMain(folder: string, base: string, view: CodeView): string | nul
   return main === '' ? null : main
 }
 
+/** Why a standard script's text is not shown (addendum 3 R3): its package.json is missing, unreadable, or holds no such script. */
+export const SCRIPT_TEXT_REFUSAL = 'the package.json script the standard script names could not be read'
+
+/**
+ * The text of the script `name` in the working directory's package.json, read as the reader reads a manifest: through the
+ * agent's view, beneath its folder and never through a link out of it, a leading byte order mark dropped (addendum 3 R3).
+ * A missing, unreadable, or unparsed manifest, or one without that script, refuses with SCRIPT_TEXT_REFUSAL, as npm would
+ * fail too. The text is context for the stages, never code the reader shows.
+ */
+export function packageScript(name: string, cwd: string, view: CodeView): string | { refused: string } {
+  const refusal = { refused: SCRIPT_TEXT_REFUSAL }
+  try {
+    const located = view.locate('package.json', cwd)
+    if (typeof located !== 'object' || !view.readable(located.real)) return refusal
+    const buffer = view.read(located.real, MANIFEST_LIMIT)
+    const scripts = buffer === null ? undefined : parsedManifest(buffer)?.scripts
+    if (scripts === null || typeof scripts !== 'object' || Array.isArray(scripts) || !Object.hasOwn(scripts, name)) return refusal
+    const text = (scripts as Record<string, unknown>)[name]
+    return typeof text === 'string' ? text : refusal
+  } catch {
+    return refusal
+  }
+}
+
 /** A manifest's JSON object, a leading byte order mark dropped; null where it is no JSON object. */
 function parsedManifest(buffer: Buffer): Record<string, unknown> | null {
   try {

@@ -67,6 +67,12 @@ export interface JudgeInput {
   truncated: boolean
   /** Whether the command is one of the owner's standard development scripts, rated on its command line alone. */
   standardScript: boolean
+  /**
+   * For a standard script naming a package.json script (`npm run build`, `npm test`, `pnpm dev`, `bun run dev`), that
+   * script's text from the working directory's package.json, with the credentials the display hides hidden and clipped as
+   * a reasoning is: context for the stages, not code Buckle read; absent for every other call (addendum 3 R3).
+   */
+  scriptText?: string
   /** The workspace's command lists in force, the node's floor included. */
   policy: { allow: string[]; deny: string[]; destructive: string[]; allowedInterpreters: string[] }
   /** The working directory as the sandbox names it: `/workspace`, or a folder inside it, never a host path. */
