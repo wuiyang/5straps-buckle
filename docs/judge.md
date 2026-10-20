@@ -20,7 +20,7 @@ nothing](judge-05.md) continue on the next pages.
 | Value | What happens |
 |---|---|
 | `off` | The default. Nothing is rated, and asks go out as they always have. |
-| `on-request` | Asks go out as before, with one line saying the decision AI is available. |
+| `on-request` | Asks go out as before, with one line saying the decision AI is available ([on request](judge-03.md#on-request)). |
 | `automated` | Each call in scope is rated as it arrives, and the routing below decides. |
 
 ## What each stage rates
@@ -33,7 +33,7 @@ scope covers. `approval.quickJudge` sets what Jev rates:
 |---|---|
 | `off` | Nothing: the default. |
 | `interpreters` | The interpreter asks the thorough model rates. |
-| `asks` | Every command ask a person would see at the [destructive floor](approvals.md#the-destructive-floor): an interpreter, the built-in floor (`sudo`, `rm -rf`), and the workspace's destructive list. |
+| `asks` | Every command ask a person would see at the [destructive floor](approvals.md#the-destructive-floor): an interpreter, the built-in floor (`sudo`, `rm -rf`), a command written as a path, and the workspace's destructive list. |
 | `all` | Every command, allowed ones too, in automated mode only: an allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask; one whose code the reader cannot read whole is rated on its command line. |
 
 Jev's verdict is a rating alone and never runs a call. An ask at the destructive floor, from the
@@ -56,25 +56,6 @@ under the write lock just before the program starts, and where it changed the ca
 the ask going to a person with "the code changed after the decision AI rated it". A `warning`
 never runs a call. The agent reads the level alone in the ask's reason ("the decision AI rated it
 danger"), never the reasoning, which would show it how to steer the next rating.
-
-## On request
-
-```bash
-buckle approvals judge <token>                    # both verdicts beside the whole action
-buckle approvals judge <token> --approve-if-safe  # and approve it once on the thorough model's safe
-```
-
-The command prepares the call again from the arguments its ask kept, reads its code afresh, has
-every stage that applies rate it, and prints the whole action as `buckle approvals show` does, with
-each verdict, confidence, model, and the thorough reasoning. With `--approve-if-safe`, the
-thorough model's `safe` at 0.8 or above approves once an interpreter ask, or an allowed command Jev
-turned into an ask under `all`, recorded as decided by the thorough stage and its model and bound
-to the code it rated: a retry after that code changed spends nothing and asks again. Jev's verdict
-alone approves nothing, and an ask at the destructive floor never: the command prints the floor's
-line. Where only Jev holds a key, an ask's line offers no approval. Anything else approves nothing
-and exits 0; no verdict exits 1. A call whose kept arguments hide a credential is not rated
-([why](judge-03.md#what-the-on-request-command-refuses)). Each run is audited. It takes
-`--workspace <name>` and works in automated mode too.
 
 ## Standard development scripts
 

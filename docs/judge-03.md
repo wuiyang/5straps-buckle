@@ -54,6 +54,25 @@ credentials the display hides hidden wherever it is kept or shown, the cache inc
 2,000 characters (ending `[cut]` on a line of its own). The report to Rings does not carry the
 verdict yet.
 
+## On request
+
+```bash
+buckle approvals judge <token>                    # both verdicts beside the whole action
+buckle approvals judge <token> --approve-if-safe  # and approve it once on the thorough model's safe
+```
+
+The command prepares the call again from the arguments its ask kept, reads its code afresh, has
+every stage that applies rate it, and prints the whole action as `buckle approvals show` does, with
+each verdict, confidence, model, and the thorough reasoning. With `--approve-if-safe`, the
+thorough model's `safe` at 0.8 or above approves once an interpreter ask, or an allowed command Jev
+turned into an ask under `all`, recorded as decided by the thorough stage and its model and bound
+to the code it rated: a retry after that code changed spends nothing and asks again. Jev's verdict
+alone approves nothing, and an ask at the destructive floor never: the command prints the floor's
+line. Where only Jev holds a key, an ask's line offers no approval. Anything else approves nothing
+and exits 0; no verdict exits 1. A call whose kept arguments hide a credential is not rated
+([why](#what-the-on-request-command-refuses)). Each run is audited. It takes
+`--workspace <name>` and works in automated mode too.
+
 ## What the on-request command refuses
 
 `buckle approvals judge` refuses a call the policy now denies, asking no stage: "The policy now

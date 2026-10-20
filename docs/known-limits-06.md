@@ -44,8 +44,10 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   rated, with the same result. A wrapper that sets the program name an interpreter reads (`exec`
   with an option, or `env -a` or `--argv0` by any prefix) or splits a word (`env -S`) is not rated
   either, nor a program named by a path inside the workspace or a mount, an interpreter, wrapper,
-  shell, or runner alike (`./fv/bin/env python3 job.py`; `/usr/bin/python3 job.py` is still rated),
-  as [part seven](known-limits-07.md) details; `exec` is read only bare.
+  shell, or runner alike (`./fv/bin/env python3 job.py`; `/usr/bin/python3 job.py` is rated unless
+  a bare-word allow rule names it, when it asks as
+  [a command written as a path](policy-02.md#a-command-written-as-a-path)), as
+  [part seven](known-limits-07.md) details; `exec` is read only bare.
 - The reader fails closed on what it does not model, with the same result: an interpreter option it
   does not know, an option before a runner's package, or before the operand of a package that is no
   runtime (`npx cowsay --fix .`); a subcommand that runs code it does not follow (`bun test`,
@@ -76,7 +78,7 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 - Compiled Python beside a module the reader would show (`__pycache__/<name>.*.pyc`, `<name>.pyc`,
   or an extension module), in a folder the reader cannot list, or moved by `-X pycache_prefix`, is
   not rated either, since Python may run it in place of the source. Python writes those caches
-  itself, so a tree it has already run asks a person until they are removed.
+  itself, so a tree it has run asks a person until they are removed.
 
 The round's further refusals, and the limits that are not about reading, are on [part
 seven](known-limits-07.md).

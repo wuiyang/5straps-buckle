@@ -71,8 +71,11 @@ pack's git tools.
 ## The forge pack
 
 - The forge pack, which commits, pushes, and opens pull requests on GitHub, runs `git_commit` and
-  `git_push` against the repository as given. They refuse one whose git folder points or links
-  elsewhere, but are not pinned to the directories Buckle checked and do not read
-  `objects/info/alternates`, so a commit or push can carry objects from a store outside the
-  workspace. `git_commit` judges none of the paths it stages: a named `.env` is committed with no
-  credential-file ask.
+  `git_push` against the repository as given, with no pin to the directories Buckle checked and no
+  `objects/info/alternates` check. `git_commit` refuses a repository whose `.git` is a file or a
+  link, whose git folder holds a `commondir` or `gitdir` file, or with a link at the top of its git
+  folder, directly in `objects`, or under `refs` or `logs`, and a local push checks its destination
+  the same way. A link deeper in `objects`, such as one pack file, goes unseen, and `git_push` makes
+  none of these checks on the repository it pushes from, so a commit or push can carry objects from
+  a store outside the workspace. `git_commit` judges none of the paths it stages: a named `.env` is
+  committed with no credential-file ask.

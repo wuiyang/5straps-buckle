@@ -37,7 +37,8 @@ shown, wherever only a bare-word allow glob names it. An allow glob that spells 
 spelling: `buckle policy allow-command '/usr/bin/git status'`, or `'*/* *'` for any command written
 as a path with `/`. Each alternative of a brace in the command word counts on its own, so
 `{git,/usr/bin/git} status` admits those two and asks for `./git status`, and a path glob meets
-only a path written plainly, with no `.`, `..`, or doubled slash. A command word starting with `~`
+only a path written plainly: no `.` or `..` step after a leading `./`, and no doubled slash. A
+command word starting with `~`
 is never written plainly either: a shell reads it from a home folder and a direct call from its
 working folder, so spell the full path.
 
