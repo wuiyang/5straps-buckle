@@ -117,7 +117,7 @@ export function createGitPack(options: GitPackOptions): Pack {
     // The objects git may read, its own and every store it borrows from, are checked wherever the places are (D77).
     const assertUnchanged = () => {
       pinned.assertUnchanged()
-      assertObjectsInside(repository, options.paths, platform)
+      assertObjectsInside(repository, boundary, options.paths, platform)
     }
     const spawnPinned = (args: string[], config: GitConfig[], extra?: Record<string, string>) => {
       assertUnchanged()
@@ -362,16 +362,18 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
 }
 
 /**
- * Refused, naming no path, where git would read objects from outside every root the view reaches (D77,
- * objects/info/alternates): the objects folder of the git directory and of the common one, which may be a link, each
- * object store their `info/alternates` names, and in turn each of those stores' own, as deep as git follows them. A
+ * Refused, naming no path, where git would read objects from outside every root the view reaches and outside
+ * `boundary`, the folder the repository query was checked against, which for a repository outside them all that a read
+ * approval judged is that folder (repositoryBoundary; D77, objects/info/alternates): the objects folder of the git
+ * directory and of the common one, which may be a link, each object store their `info/alternates` names, and in turn
+ * each of those stores' own, as deep as git follows them. A
  * line is a path, absolute or, as git reads it, relative to the real objects folder holding the file and folded as
  * text; one starting with `"` is C-quoted and is refused where its quoting is not whole; a blank line and a `#` line
  * name none. Each is the bytes git opens (storePlace), and lands where its links lead (landingOf). An absent file is the
  * normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which it never has here (withOwnGitVariables).
  */
-function assertObjectsInside(repository: Repository, paths: PathView, platform: NodeJS.Platform): void {
-  const roots = paths.reachableRoots.map(root => realPathOr(root, platform))
+function assertObjectsInside(repository: Repository, boundary: string, paths: PathView, platform: NodeJS.Platform): void {
+  const roots = [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary]
   const landing = (place: Buffer): Buffer => {
     const real = landingOf(place, { roots, shares: paths.shares, platform })
     if (real === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })

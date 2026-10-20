@@ -1,7 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type FilesystemPermission, type JsonValue } from '@5straps/protocol'
 import { runProcess as hostRunProcess } from '../common/adapters/process-runner.js'
@@ -628,6 +628,25 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     await refused(root, answeringAt(plain(repo)), outside)
   })
 
+  // repositoryBoundary still reaches a repository outside the workspace that a read approval judged, and the objects
+  // check, which read only the workspace's roots, refused it as borrowing with no alternates file at all (review 1 of
+  // the git pack, held[10]).
+  it('runs a read-approved repository outside the workspace, its own stores included, and refuses one borrowing from outside it', async () => {
+    const { root, outside } = workspace()
+    const approved = join(dirname(root), 'approved')
+    for (const directory of [join(approved, '.git', 'objects', 'info'), join(approved, 'store', 'info')]) mkdirSync(directory, { recursive: true })
+    const judged = { authorizeReadTarget: (target: string) => target === approved }
+    const runs = answeringAt(plain(approved))
+    await gitPack(root, runs).call('git_log', { repo: approved }, judged)
+    alternates(join(approved, '.git', 'objects'), join(approved, 'store'))
+    await gitPack(root, runs).call('git_log', { repo: approved }, judged)
+    expect(logOf(runs)).toHaveLength(2)
+    alternates(join(approved, '.git', 'objects'), outside)
+    const refusal = await refusalOf(() => gitPack(root, answeringAt(plain(approved))).call('git_log', { repo: approved }, judged))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(BORROWS) })
+    expect(String(refusal)).not.toContain(outside)
+  })
+
   it('refuses a line whose quoting is broken, even one naming a store inside', async () => {
     const { root, repo, outside } = workspace()
     for (const line of [`"${join(root, 'shared')}`, `"${join(root, 'shared')}\\q"`, `"${join(root, 'shared')}"trailing`]) {
@@ -657,6 +676,18 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-shared/)
     expect(await call('git_log', { repo: 'sharing' })).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+  })
+
+  it('reads a repository outside the workspace once a read of it is approved', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-approved-')))
+    const root = join(parent, 'root')
+    const approved = join(parent, 'approved')
+    for (const directory of [root, approved]) mkdirSync(directory)
+    execFileSync('git', ['-c', 'init.defaultBranch=main', 'init', '-q'], { cwd: approved, env: quiet, stdio: 'pipe' })
+    writeFileSync(join(approved, 'a.txt'), 'kept outside\n')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    expect(await call('git_status', { repo: approved }, { authorizeReadTarget: target => target === approved })).toMatchObject({ branch: 'main', entries: [{ state: 'untracked', path: 'a.txt' }] })
   })
 
   it.skipIf(process.platform !== 'linux')('refuses a store reached through a name written as octal escapes, or as bytes that are not UTF-8', async () => {
