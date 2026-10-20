@@ -2604,6 +2604,42 @@ describe('a command word written as a path (D74, bare words only)', () => {
     }
   })
 
+  // Pins the review's mutations showed missing (review 1 of the git pack, held[6], held[7], and held[8]).
+  describe('pins', () => {
+    const pathAsk = [expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })]
+
+    // `\` counts as a separator on every platform, so a command written with one is a path spelling everywhere.
+    it.each<[string, string[]]>([['.\\git', ['status']], ['C:\\Tools\\git', ['status']], ['tools\\git', ['status']]])('asks for %s %j under allow git status, a backslash counting as a separator on every platform', (command, args) => {
+      expect(askOf(evaluate(command, args, { allow: ['git status'] }))).toEqual(pathAsk)
+    })
+
+    it('asks for a backslash spelling in a shell body too, and refuses one a deny glob meets by its basename', () => {
+      expect(askOf(evaluate('bash', ['-c', "'.\\git' status"], { allow: ['git status', 'bash -c *'] }))).toEqual(pathAsk)
+      for (const command of ['.\\git', 'C:\\Tools\\git']) expect(evaluate(command, ['push', '--force'], { allow: ['git *'], deny: ['git push *'] }).kind, command).toBe('deny')
+    })
+
+    it('runs the spelling an allow glob spells beside a bare glob for the same command, and asks for one only the bare glob admits', () => {
+      const allow = ['git *', '/usr/bin/git status']
+      expect(evaluate('/usr/bin/git', ['status'], { allow }).kind).toBe('allow')
+      expect(askOf(evaluate('/usr/bin/git', ['push'], { allow }))).toEqual(pathAsk)
+      expect(evaluate('git', ['status'], { allow }).kind).toBe('allow')
+      expect(evaluate('bash', ['-c', '/usr/bin/git status'], { allow: [...allow, 'bash -c *'] }).kind).toBe('allow')
+    })
+
+    // A wrapper's NAME=value operand is a program path (`nice FOO=./git status` runs a file in a folder named FOO=.).
+    it.each<[string, string[], string[]]>([
+      ['nice', ['FOO=./git', 'status'], ['nice *', 'git status']],
+      ['bash', ['-c', 'exec FOO=./git status'], ['bash -c *', 'git status']],
+      ['timeout', ['5', 'FOO=/usr/bin/git', 'status'], ['timeout *', 'git status']],
+    ])('asks for %s %j under allow %j, a wrapper running a NAME=value word written as a path', (command, args, allow) => {
+      expect(askOf(evaluate(command, args, { allow }))).toEqual(pathAsk)
+    })
+
+    it('admits a wrapper\'s NAME=value operand an allow glob spells', () => {
+      expect(evaluate('nice', ['FOO=./git', 'status'], { allow: ['nice *', 'FOO=./git status'] }).kind).toBe('allow')
+    })
+  })
+
   it('admits each path a brace in the command word spells, and no other spelling', () => {
     const allow = ['/usr/{bin,local/bin}/git status']
     expect(evaluate('/usr/local/bin/git', ['status'], { allow }).kind).toBe('allow')
