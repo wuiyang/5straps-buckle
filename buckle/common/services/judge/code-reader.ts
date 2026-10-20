@@ -581,11 +581,15 @@ function isInteractive(program: string, key: string): boolean {
 /**
  * The python modules whose own code reads code the reader does not show (fix brief 6, B3): pdb runs `.pdbrc` from the
  * working directory and HOME and its `-c` commands, and code, asyncio, and idlelib run a console over their input; and
- * unittest and pytest discover test files the reader never lists, and timeit runs its arguments as code. Matched by the
- * module's top-level package, so a submodule of one refuses too.
+ * unittest and pytest discover test files the reader never lists, and timeit runs its arguments as code. So do the
+ * standard modules that run or import another module or a script by name, which the reader would name as a package and
+ * never show (fix brief 7, B16): runpy, pydoc, inspect, cProfile, profile, trace, and doctest; pickle, whose loading
+ * imports what its data names; and pickletools beside it. Each is refused whole, whatever its arguments, since trace
+ * takes its `--module` by any prefix and pydoc and inspect import their argument with no flag. Matched by the module's
+ * top-level package, so a submodule of one refuses too.
  */
 const INTERACTIVE_PYTHON_MODULES = new Set(['pdb', 'code', 'asyncio', 'idlelib'])
-const DISCOVERING_PYTHON_MODULES = new Set(['unittest', 'pytest', 'timeit'])
+const DISCOVERING_PYTHON_MODULES = new Set(['unittest', 'pytest', 'timeit', 'runpy', 'pydoc', 'inspect', 'cProfile', 'profile', 'trace', 'doctest', 'pickle', 'pickletools'])
 
 /** The refusal for a `python -m` module that runs code the reader does not show, or null for any other. */
 function pythonModuleRefusal(modules: readonly string[]): string | null {
@@ -725,6 +729,8 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
   let interactive = false
   // A C shell's `-c` in a cluster of its options (fix brief 4, R7c).
   let cShellText = false
+  // A second `-m` among a python module's own arguments (fix brief 7, B16).
+  let secondModule = false
   // The program files awk runs (`-f prog.awk`), each of which must name a file.
   const programFiles: string[] = []
   const modules: string[] = []
@@ -764,8 +770,10 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     }
     if (program === 'python' && word === '-m' && index + 1 < args.length) {
       modules.push(args[++index]!)
-      // What follows the module is its own arguments, each a name that may be a file.
+      // What follows the module is its own arguments, each a name that may be a file; a second `-m` among them is a
+      // module the first may run by name, which the reader never shows (fix brief 7, B16).
       candidates.push(...args.slice(index + 1))
+      secondModule = args.includes('-m', index + 1)
       break
     }
     if (AWKS.has(program) && (word === '-f' || word === '--file') && index + 1 < args.length) {
@@ -887,7 +895,8 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     : interactiveRuns ? CODE_REFUSALS.interactive
       : unmodelledSubcommand ? CODE_REFUSALS.subcommand
         : urlOperand ? CODE_REFUSALS.unmodelledImport
-          : shellText ? SHELL_TEXT_REFUSAL : null
+          : secondModule ? CODE_REFUSALS.discoveringModule
+            : shellText ? SHELL_TEXT_REFUSAL : null
   const inputIsCode = stdinScript || takesCodeOnInput(program, args, { inert, operand, inline, modules })
   return { inline, packages: [], modules, preloads, programFiles, candidates, operand, stdinScript, inputIsCode, refusal }
 }

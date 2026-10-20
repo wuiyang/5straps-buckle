@@ -505,6 +505,24 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(shell('python3 -m json.tool < data.json'))).toMatchObject({ files: [], packages: [{ name: 'json' }] })
   })
 
+  it('refuses python -m of a module that runs or imports another module by name, and a second -m, fed or not (fix brief 7, B16)', () => {
+    const { read, shell } = workspace({ 'job.py': 'print(1)\n', 'second.py': 'print(2)\n', 'decoy.py': 'print(3)\n', 'helper.py': 'print(4)\n', 'data.pkl': 'x', 'data.json': '{}\n' })
+    const discovering = { kind: 'refused', reason: CODE_REFUSALS.discoveringModule, truncated: false }
+    // python 3.12.3 ran the planted module for runpy, pydoc, inspect, cProfile -m, profile -m, and trace --module.
+    const spellings = [
+      'runpy decoy', 'pydoc decoy', 'inspect decoy', 'cProfile -m decoy', 'trace --count --module helper', 'profile -m decoy', 'doctest decoy',
+      'pickle data.pkl', 'pickletools data.pkl', 'runpy pdb job.py', 'cProfile helper.py', 'outer -m helper',
+    ]
+    for (const spelling of spellings) {
+      expect(read(['python3', '-m', ...spelling.split(' ')]), spelling).toEqual(discovering)
+      expect(shell(`python3 -m ${spelling} < second.py`), spelling).toEqual(discovering)
+    }
+    expect(shell('python3 -m runpy code < second.py')).toEqual(discovering)
+    // A module of the workspace, and one that reads its argument as data, read as before.
+    expect(paths(read(['python3', '-m', 'helper']))).toEqual(['/workspace/helper.py'])
+    expect(reading(read(['python3', '-m', 'json.tool', 'data.json']))).toMatchObject({ files: [{ path: '/workspace/data.json' }], packages: [{ name: 'json' }] })
+  })
+
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
     const { read, shell } = workspace({ 'job.ts': 'console.log(1)\n', 'other.js': 'console.log(2)\n', 'x.txt': 'notes\n', 'src/a.js': '1\n' })
     const unknown = { kind: 'refused', reason: CODE_REFUSALS.unknownOption, truncated: false }
