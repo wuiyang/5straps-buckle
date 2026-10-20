@@ -929,6 +929,30 @@ describe('a program named by a relative path holding a separator (fix brief 7, B
   })
 })
 
+describe('a command word the rules would read as an assignment (fix brief 7, B15)', () => {
+  // A quoted or escaped NAME=value head, and NAME+=value under sh and dash, is no assignment to the shell, which runs it
+  // as a program path (bash, dash, and sh ran a planted FOO=fv/env); the rules read it as one and see only the command
+  // after it. A direct exec runs the word as a program too.
+  const planted = '#!/bin/sh\necho planted\n'
+  const files = { 'job.py': 'print(1)\n', 'FOO=fv/env': planted, 'FOO+=fv/env': planted, 'FOO=fv/x': planted }
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+
+  it('refuses a quoted, escaped, or += head in shell text, under every shell', () => {
+    const { shell } = workspace(files)
+    for (const text of ['F\\OO=fv/env python3 job.py', '"FOO"=fv/env python3 job.py', "'FOO=fv/env' python3 job.py"]) expect(shell(text), text).toEqual(shellRefusal)
+    for (const program of ['sh', 'dash', 'bash', 'zsh']) expect(shell('FOO+=fv/env python3 job.py', program), program).toEqual(shellRefusal)
+  })
+
+  it('refuses a direct exec whose command word is NAME=value, and reads a leading assignment a shell or env applies', () => {
+    const { call, shell } = workspace(files)
+    expect(call('FOO=fv/x', 'python3', 'job.py')).toEqual(local)
+    expect(call('FOO=1', 'python3', 'job.py')).toEqual(local)
+    expect(paths(shell('FOO=1 python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('env FOO=1 python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('env', 'FOO=1', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
+})
+
 describe('the code a here-string hands an interpreter', () => {
   it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and refuses one a shell without them, or an expansion, would change', () => {
     const { call } = workspace({ 'helper.py': 'X = 1\n' })

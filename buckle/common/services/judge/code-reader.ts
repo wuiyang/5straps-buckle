@@ -14,7 +14,7 @@ import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
 import { setsProgramName, splitsWords, typedCommandWord } from './call-forms.js'
-import { ratedShellText, SHELL_TEXT_REFUSAL, simpleStatement, statementInterpreter, type StatementFeed } from './shell-statement.js'
+import { ratedShellText, RULES_ASSIGNMENT, SHELL_TEXT_REFUSAL, simpleStatement, statementInterpreter, type StatementFeed } from './shell-statement.js'
 
 /** What the judge reads of one call's code at most (D91, addendum B): beyond either, it rates nothing and the call asks. */
 export const CODE_LIMITS = Object.freeze({ files: 50, bytes: 512 * 1_024 })
@@ -249,7 +249,9 @@ const PATH_SEPARATOR = /[\\/]/
  * mount and `../workspace/x` the workspace, wherever the host keeps them (fix brief 7, B14).
  */
 function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
-  if (word === null) return true
+  // A NAME=value command word is a program a direct exec, or a wrapper that execs its command, runs by that name, while
+  // the rules read it as an assignment (fix brief 7, B15).
+  if (word === null || RULES_ASSIGNMENT.test(word)) return true
   if (!PATH_SEPARATOR.test(word)) return false
   return !absoluteName(word) || !programOutsideView(word, cwd, view)
 }

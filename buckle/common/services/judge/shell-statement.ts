@@ -78,6 +78,12 @@ const PLAIN = /^[A-Za-z0-9_\-./,:+@%=]$/
 const REDIRECTION = /(\d*)(<<<|<<-|<<|<>|<&|<|>>|>\||>&|>|&>>|&>)/y
 /** A leading assignment: an unquoted name, then `=`. */
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
+/**
+ * An assignment as the rules read one (command-forms.ts ASSIGNMENT): a name, an optional array index, an optional `+`,
+ * then `=`. A command word of this shape is read by the rules as an assignment while a shell, or a direct exec, runs it as
+ * a program (fix brief 7, B15).
+ */
+export const RULES_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*(?:\[[^\]]*\])?\+?=/
 
 interface Word { raw: string; value: string; quoted: boolean; end: number }
 
@@ -86,8 +92,8 @@ interface Word { raw: string; value: string; quoted: boolean; end: number }
  * (`;`, `&&`, `||`, `|`, `&`, or a newline between statements), a subshell, group, function, or compound command, a
  * command, process, or arithmetic substitution, a parameter, tilde, glob, or brace expansion, a comment, a second feed on
  * the input, an input on another descriptor, a duplicated input, a heredoc left open or one whose body a shell would
- * expand, or a quote left open. Leading assignments are kept apart from the words; output redirections are allowed and
- * dropped. Blank lines may stand before and after the statement.
+ * expand, a command word the rules would read as an assignment, or a quote left open. Leading assignments are kept apart
+ * from the words; output redirections are allowed and dropped. Blank lines may stand before and after the statement.
  */
 export function simpleStatement(text: string, shell: string): SimpleStatement | null {
   const words: Word[] = []
@@ -143,6 +149,10 @@ export function simpleStatement(text: string, shell: string): SimpleStatement | 
   if (!/^[ \t\n]*$/.test(rest)) return null
   const first = words.findIndex(word => !ASSIGNMENT.test(word.raw))
   if (first < 0) return null
+  // A quoted or escaped NAME=value head (`"FOO"=x`, `F\OO=x`, `'FOO=x'`), or a `NAME+=value` one, which sh and dash have
+  // no syntax for, is the program a shell runs, while the rules read it as an assignment: refused under every shell (fix
+  // brief 7, B15).
+  if (RULES_ASSIGNMENT.test(words[first]!.value)) return null
   return { words: words.slice(first).map(word => word.value), feed }
 }
 
