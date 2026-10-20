@@ -104,8 +104,8 @@ export interface RegistryStore {
 }
 
 // A registry the node cannot read is the owner's to repair: a 409 naming the file and fields, not a 500.
-export function openRegistry(input: { stateDirectory: string; lockDeadlineMs?: number }): RegistryStore {
-  const store = createJsonFileStore({ filePath: registryPath(input.stateDirectory), schema: RegistrySchema, fallback: { version: 2 as const, workspaces: [] }, lockDeadlineMs: input.lockDeadlineMs })
+export function openRegistry(input: { stateDirectory: string; lockDeadlineMs?: number; silent?: boolean }): RegistryStore {
+  const store = createJsonFileStore({ filePath: registryPath(input.stateDirectory), schema: RegistrySchema, fallback: { version: 2 as const, workspaces: [] }, lockDeadlineMs: input.lockDeadlineMs, silent: input.silent })
   const repairable = (error: unknown): unknown => error instanceof StateFileError ? new WorkspaceRegistryError(error.message, 409) : error
   return {
     read() {

@@ -2,11 +2,12 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { parseEnv } from 'node:util'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest'
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
 import { createRuntimeOwner } from '@5straps/runtime'
 import { loadConfig } from '../common/runtime/config.js'
+import { logger } from '../common/runtime/log.js'
 import { holdServe, serviceDirectory, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceIdOf } from './support/workspaces.js'
@@ -512,6 +513,37 @@ describe('buckle init and the workspace\'s mounts', () => {
       const again = await init(scripted([], false), ['--dir', other, '--volume', `${data}:/data`])
       expect(again.exitCode).toBe(0)
       expect(served(other).settings.mounts).toEqual([{ kind: 'workspace', target: '/workspace', access: 'rw' }, { source: data, target: '/data', access: 'rw' }])
+    })
+  })
+
+  // The mounts follow-up, second fix round, item F5: the read-only lookup of the folder reads the registry apart from the
+  // manager, so a registry that parses with one invalid field was reported by the lookup and then by the manager.
+  describe('with a workspaces.json that parses but holds one invalid field', () => {
+    const REPORT = 'State file cannot be read safely'
+    let reported: MockInstance<typeof logger.error>
+    const reports = () => reported.mock.calls.filter(([message]) => message === REPORT).length
+    beforeEach(async () => {
+      await init(scripted([], false), ['--dir', workspace])
+      const file = join(state, 'workspaces.json')
+      const registry = JSON.parse(readFileSync(file, 'utf8')) as { workspaces: { online: unknown }[] }
+      registry.workspaces[0]!.online = 'yes'
+      writeFileSync(file, `${JSON.stringify(registry, null, 2)}\n`)
+      errors = ''
+      reported = vi.spyOn(logger, 'error').mockImplementation(() => {})
+    })
+
+    it.each([
+      ['--volume and no terminal', () => scripted([], false), () => ['--dir', workspace, '--yes', '--volume', `${data}:/data`]],
+      ['--volume at a terminal, after the folder is named', () => scripted([workspace, '']), () => ['--volume', `${data}:/data`]],
+      ['a terminal and no --volume', () => scripted([workspace, '']), () => [] as string[]],
+      ['--yes and no --volume', () => scripted([], false), () => ['--dir', workspace, '--yes']],
+    ])('logs the failure once with %s, and refuses as before', async (_name, prompt, flags) => {
+      const again = await init(prompt(), flags())
+      expect(again.exitCode).toBe(1)
+      expect(errors).toContain('State file is unreadable or invalid')
+      expect(errors).toContain('workspaces.0.online')
+      expect(errors).not.toContain('already served')
+      expect(reports()).toBe(1)
     })
   })
 })

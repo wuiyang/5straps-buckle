@@ -113,7 +113,11 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
   return result
 }
 
-export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number }): JsonFileStore<T> {
+/**
+ * `silent` is for a look that leaves an unreadable file to the store that opens it for real: the failure is thrown, not
+ * logged, so the owner reads one line for it and not one from each store (mounts follow-up, second fix round, item F5).
+ */
+export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodType<T>; fallback: T; lockDeadlineMs?: number; silent?: boolean }): JsonFileStore<T> {
   // The failure last logged, with the file's version: met again, it is thrown without a second line. A mode put back
   // keeps the version, so only a read that succeeds forgets it, and a new damage after that is logged again.
   let reported: string | undefined
@@ -132,7 +136,7 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
       const reason = failureKind(error)
       const failure = `${fileVersion(input.filePath)} ${reason} ${fields ?? ''}`
       const repeated = failure === reported
-      if (!repeated) logger.error('State file cannot be read safely', { filePath: input.filePath, reason, ...(fields ? { fields } : {}) })
+      if (!repeated && !input.silent) logger.error('State file cannot be read safely', { filePath: input.filePath, reason, ...(fields ? { fields } : {}) })
       reported = failure
       // No cause: a parse error's message quotes the file around the fault, and every log site that meets this error
       // would follow it (slice 7b review RRL-1). This line and the one above name the file, the kind and the fields.

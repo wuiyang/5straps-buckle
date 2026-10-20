@@ -322,8 +322,8 @@ function carriedInto(input: { kept: Array<{ key: string; value: string }>; headi
 /**
  * The workspace already serving `folder`, read from the registry beside the node file `out` before anything is written
  * (the mounts follow-up, first fix round). None where there is no file yet, the file will not load (--force moves the
- * node from it before it writes), the node is not on workspaces yet, or its registry will not read; opening the node
- * reports that last one later.
+ * node from it before it writes), the node is not on workspaces yet, or its registry will not read; that last one is
+ * not logged here, since opening the node reports it later.
  */
 function servedFolder(input: { out: string; folder: string; platform: NodeJS.Platform }): { id: string; name: string } | null {
   if (!existsSync(input.out)) return null

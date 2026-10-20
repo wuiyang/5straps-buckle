@@ -744,11 +744,12 @@ function describe(workspace: StoredWorkspace): WorkspaceDescriptor {
 /**
  * The workspace serving `dir`, found as `target` finds it, read from the registry alone: the manager is not opened, so
  * nothing is moved, recovered, or written. None where no workspace holds `dir`, or the node is not on workspaces yet.
- * Throws WorkspaceRegistryError where the registry will not read.
+ * Throws WorkspaceRegistryError where the registry will not read, without logging it: the manager, opened after,
+ * reports a registry it cannot read, and the owner reads that line once.
  */
 export function servingWorkspace(input: { stateDirectory: string; dir: string; platform?: NodeJS.Platform }): { id: string; name: string } | null {
   if (!movedOntoWorkspaces(input.stateDirectory)) return null
-  const holding = holderOf(openRegistry({ stateDirectory: input.stateDirectory }).read(), input.dir, input.platform ?? process.platform)
+  const holding = holderOf(openRegistry({ stateDirectory: input.stateDirectory, silent: true }).read(), input.dir, input.platform ?? process.platform)
   return holding ? { id: holding.id, name: holding.name } : null
 }
 
