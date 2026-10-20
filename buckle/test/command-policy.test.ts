@@ -2544,6 +2544,32 @@ describe('a command word written as a path (D74, bare words only)', () => {
     }
   })
 
+  // `*` crosses `/`, so a path glob with a wildcard met a `..` spelling that climbs out of the folder it names, and ran
+  // the agent's program there with no ask (review 1 of the git pack, held[4]). It now meets only a plain spelling.
+  it.each<[string, string[], string[]]>([
+    ['/usr/bin/../../w/bin/git', ['status'], ['/usr/bin/* *']],
+    ['/opt/tools/../../w/bin/x', [], ['/opt/tools/* *']],
+  ])('refuses %s %j under allow %j, a path glob meeting only a command word written plainly', (command, args, allow) => {
+    expect(evaluate(command, args, { allow }).kind).toBe('deny')
+  })
+
+  it.each<[string, string[], string[]]>([
+    ['/usr/bin/../../w/bin/git', ['status'], ['git *', '/usr/bin/* *']],
+    ['/usr//bin/git', ['status'], ['git status', '/usr/* *']],
+    ['./../w/git', ['status'], ['git status', './* *']],
+    ['bash', ['-c', '/usr/bin/../../w/bin/git status'], ['bash -c *', 'git *', '/usr/bin/* *']],
+  ])('asks for %s %j under allow %j at the floor, a .. or a doubled slash meeting no path glob', (command, args, allow) => {
+    expect(askOf(evaluate(command, args, { allow }))).toEqual([expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })])
+  })
+
+  it('still runs a plain spelling a path glob with a wildcard covers', () => {
+    expect(evaluate('/usr/bin/git', ['status'], { allow: ['/usr/bin/* *'] }).kind).toBe('allow')
+    expect(evaluate('/usr/bin/git', ['status'], { allow: ['git *', '/usr/bin/* *'] }).kind).toBe('allow')
+    expect(evaluate('./git', ['status'], { allow: ['./* *'] }).kind).toBe('allow')
+    expect(evaluate('/opt/tools/lint', ['a'], { allow: ['/opt/tools/* *'] }).kind).toBe('allow')
+    expect(evaluate('node_modules/.bin/vitest', ['run'], { allow: ['*/* *'] }).kind).toBe('allow')
+  })
+
   it('admits each path a brace in the command word spells, and no other spelling', () => {
     const allow = ['/usr/{bin,local/bin}/git status']
     expect(evaluate('/usr/local/bin/git', ['status'], { allow }).kind).toBe('allow')

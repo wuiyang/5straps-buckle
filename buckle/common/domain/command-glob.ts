@@ -58,6 +58,23 @@ export function splitByCommandWord(glob: CommandGlob): CommandWordSplit {
   return split
 }
 
+/**
+ * Whether a glob's path half meets a call as typed (D74): only where the call's command word is written plainly, with
+ * no `.` or `..` segment after a leading `./` and no empty one, as its lexical normalisation writes it. `*` crosses
+ * `/`, so `/usr/bin/* *` would otherwise meet `/usr/bin/../../elsewhere/git status`, a program outside the folder the
+ * rule names. A separator is `/`, and `\` too on Windows. The one check the allow list and the floor's exemption share.
+ */
+export function meetsAsSpelled(path: CommandGlob | null, typed: string[], platform: NodeJS.Platform = process.platform): boolean {
+  return path !== null && writtenPlainly(typed[0] ?? '', platform) && path.matchesLine(typed)
+}
+
+function writtenPlainly(word: string, platform: NodeJS.Platform): boolean {
+  const [first, ...rest] = word.split(platform === 'win32' ? /[\\/]/ : '/')
+  // An absolute path's empty first segment, and a leading `./`, are how the word starts, not a step in it.
+  const steps = first === '' || first === '.' ? rest : [first ?? '', ...rest]
+  return steps.every(step => step !== '' && step !== '.' && step !== '..')
+}
+
 export function compileCommandGlob(source: string): CommandGlob {
   const trimmed = source.trim()
   if (!trimmed) throw new CommandGlobError('A command pattern cannot be empty')

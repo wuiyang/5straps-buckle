@@ -1,6 +1,6 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
-import { type CommandGlob, splitByCommandWord } from '../../command-glob.js'
+import { type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
 import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, typedForm } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
@@ -158,7 +158,7 @@ function runsByBareName(input: { forms: CommandForms; bare: readonly CommandGlob
   return judgedForms(input.forms).some(form => {
     const typed = typedForm(form)
     if (typed === form || (input.own && form === input.forms.chain[0])) return false
-    return input.bare.some(glob => glob.matchesLine(form)) && !input.spelled.some(glob => glob.matchesLine(typed))
+    return input.bare.some(glob => glob.matchesLine(form)) && !input.spelled.some(glob => meetsAsSpelled(glob, typed))
   })
 }
 
