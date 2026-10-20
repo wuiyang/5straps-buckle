@@ -38,10 +38,11 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  *
  * `allow`, the workspace's command allow list: a command the call runs written as a path that only a glob naming its
  * bare word meets asks here, as a floor reason (D74, bare words only); the command policy no longer admits it by that
- * glob, and no longer refuses it either.
+ * glob, and no longer refuses it either. `platform`: the host's unless a test imitates another (meetsAsSpelled).
  */
-export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[] } = {}): PermissionRule {
+export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[]; platform?: NodeJS.Platform } = {}): PermissionRule {
   const added = input.added ?? []
+  const platform = input.platform ?? process.platform
   // Each allow glob by the alternatives of its command word: `{git,/usr/bin/git} status` names the bare word and spells a path.
   const splits = (input.allow ?? []).map(splitByCommandWord)
   const bareAllow = splits.flatMap(split => (split.bare ? [split.bare] : []))
@@ -64,7 +65,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const foundCause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : 'interpreter'
       // A command written as a path that only a bare-word allow rule names asks a person (D74), where the call would
       // otherwise run or its one question would be the interpreter the thorough stage answers.
-      const spelled = (found === null || foundCause === 'interpreter') && runsByBareName({ forms, bare: bareAllow, spelled: pathAllow, own: effect.shownAs !== undefined })
+      const spelled = (found === null || foundCause === 'interpreter') && runsByBareName({ forms, bare: bareAllow, spelled: pathAllow, own: effect.shownAs !== undefined, platform })
       const reason = spelled ? PATH_SPELLING_REASON : found
       if (!reason) return null
       const cause: AskCause = spelled ? 'floor' : foundCause
@@ -153,12 +154,12 @@ function hasGitOption(flags: ParsedArgv, short: string | null, ...names: string[
  * brief 7, A3b). `own`: the call's own command word is a host path Buckle supplies itself (ExecEffect.shownAs), not a
  * spelling of the agent's.
  */
-function runsByBareName(input: { forms: CommandForms; bare: readonly CommandGlob[]; spelled: readonly CommandGlob[]; own: boolean }): boolean {
+function runsByBareName(input: { forms: CommandForms; bare: readonly CommandGlob[]; spelled: readonly CommandGlob[]; own: boolean; platform: NodeJS.Platform }): boolean {
   if (input.bare.length === 0) return false
   return judgedForms(input.forms).some(form => {
     const typed = typedForm(form)
     if (typed === form || (input.own && form === input.forms.chain[0])) return false
-    return input.bare.some(glob => glob.matchesLine(form)) && !input.spelled.some(glob => meetsAsSpelled(glob, typed))
+    return input.bare.some(glob => glob.matchesLine(form)) && !input.spelled.some(glob => meetsAsSpelled(glob, typed, input.platform))
   })
 }
 

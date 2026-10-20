@@ -16,16 +16,18 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { compilePolicy } from '../common/domain/policy.js'
 import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 
-function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}, shownAs?: string) {
+/** `platform`, where a test imitates a host other than this one. */
+function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}, shownAs?: string, platform?: NodeJS.Platform) {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = commands.allow ?? []
   policy.commands.deny = commands.deny ?? []
   policy.commands.destructive = commands.destructive ?? []
   const compiled = compilePolicy(policy)
+  const host = platform === undefined ? {} : { platform }
   // As the node builds them (workspace-runtime.ts, buildPermissionEngine): the floor reads the allow list too (D74).
   const engine = createPermissionEngine([
-    createCommandPolicyRule(compiled),
-    createDestructiveCommandRule({ added: compiled.commands.destructive, allow: compiled.commands.allow }),
+    createCommandPolicyRule(compiled, host),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allow: compiled.commands.allow, ...host }),
   ])
   const effect: ResolvedEffect = { kind: 'exec', command, args, ...(shownAs === undefined ? {} : { shownAs }) }
   return engine.evaluate({ tool: 'shell_exec', effects: [effect], grants: { subjectsFor: () => [] } })
@@ -2568,6 +2570,38 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(evaluate('./git', ['status'], { allow: ['./* *'] }).kind).toBe('allow')
     expect(evaluate('/opt/tools/lint', ['a'], { allow: ['/opt/tools/* *'] }).kind).toBe('allow')
     expect(evaluate('node_modules/.bin/vitest', ['run'], { allow: ['*/* *'] }).kind).toBe('allow')
+  })
+
+  // A pattern cannot hold `\`, so on Windows a command written with backslashes could never be admitted, and a shell
+  // wrapper's refusal suggested `C:*Git*bin*bash -c *`, a rule that admits nothing (review 1 of the git pack, held[5]
+  // and held[12]). On Windows only, a path glob now reads the command word's `\` as `/`.
+  describe('on Windows, where a backslash is a separator', () => {
+    const onWindows = (command: string, args: string[], commands: { allow?: string[] }) => evaluate(command, args, commands, undefined, 'win32')
+
+    it.each<[string, string[], string]>([
+      ['C:\\Tools\\git', ['status'], 'C:/Tools/git status'],
+      ['C:\\Tools\\git', ['status'], '*/* *'],
+      ['.\\gradlew', ['run'], '*/* *'],
+    ])('admits %s %j by allow %s, which spells it with /', (command, args, glob) => {
+      expect(onWindows(command, args, { allow: [glob] }).kind).toBe('allow')
+    })
+
+    it('asks for C:\\Tools\\git status under the bare word, and for a .. spelling of it beside a path glob', () => {
+      const pathAsk = [expect.objectContaining({ rule: 'destructive_command', cause: 'floor', reason: expect.stringMatching(PATH_CAUSE) })]
+      expect(askOf(onWindows('C:\\Tools\\git', ['status'], { allow: ['git status'] }))).toEqual(pathAsk)
+      expect(askOf(onWindows('C:\\Tools\\..\\w\\git', ['status'], { allow: ['git status', 'C:/Tools/* *'] }))).toEqual(pathAsk)
+    })
+
+    it('names, for a shell wrapper written with backslashes, the rule with / that admits it', () => {
+      expect(reasonOf(onWindows('C:\\Git\\bin\\bash', ['-c', 'ls'], { allow: ['git status'] }))).toContain("allow-command 'C:/Git/bin/bash -c *'")
+      expect(onWindows('C:\\Git\\bin\\bash', ['-c', 'ls'], { allow: ['git status', 'C:/Git/bin/bash -c *'] }).kind).toBe('allow')
+    })
+  })
+
+  it('reads a backslash as part of a name on Linux: a glob spelling / admits no command written with \\', () => {
+    for (const [command, glob] of [['C:\\Tools\\git', 'C:/Tools/git status'], ['\\x\\git', '/x/git status'], ['.\\gradlew', '*/* *']] as const) {
+      expect(evaluate(command, ['status'], { allow: [glob] }, undefined, 'linux').kind, command).toBe('deny')
+    }
   })
 
   it('admits each path a brace in the command word spells, and no other spelling', () => {

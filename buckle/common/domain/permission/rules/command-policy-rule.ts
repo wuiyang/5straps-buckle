@@ -1,7 +1,7 @@
 import { isShellWrapper, parseArgv, shownCommand } from '../../argv.js'
 import type { CommandForms } from '../../command-forms.js'
 import { commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason } from '../../command-forms.js'
-import { type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
+import { asSpelled, type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
 import type { CompiledPolicy } from '../../policy.js'
 import type { PermissionRule } from '../decision.js'
 import { deny } from '../decision.js'
@@ -126,11 +126,13 @@ export function administersBuckleService(line: string): boolean {
  * resolveSettings), so every refusal here names the workspace's policy in force.
  *
  * A command word written as a path (D74, bare words only): a deny glob meets it by its basename and as written, and an
- * allow glob that spells the path admits it as written. One that names only the bare word refuses it no more than
- * before, and admits it no longer: the destructive floor asks (createDestructiveCommandRule).
+ * allow glob that spells the path admits it as written (meetsAsSpelled). One that names only the bare word refuses it no
+ * more than before, and admits it no longer: the destructive floor asks (createDestructiveCommandRule). `platform`: the
+ * host's unless a test imitates another; on Windows a path glob reads the command word's `\` as `/` (asSpelled).
  */
-export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean } = {}): PermissionRule {
+export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>, options: { enforceWrapperAllow?: boolean; platform?: NodeJS.Platform } = {}): PermissionRule {
   const source = 'workspace'
+  const platform = options.platform ?? process.platform
   return {
     id: 'command_policy',
     evaluate({ effect }) {
@@ -160,11 +162,11 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
       // A glob's bare alternatives meet the command by its basename, and only its path alternatives meet it as typed (D74).
       const admitted = allow.some(glob => {
         const split = splitByCommandWord(glob)
-        return (split.bare?.matchesLine(words) ?? false) || meetsAsSpelled(split.path, typed)
+        return (split.bare?.matchesLine(words) ?? false) || meetsAsSpelled(split.path, typed, platform)
       })
       const wrapper = forms.chain.find(([command = '', ...args]) => isShellWrapper(parseArgv(command, args)))
       if (options.enforceWrapperAllow !== false && wrapper && !admitted) {
-        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(typed, wrapper)}'`)
+        return deny('command_policy', subject(), `A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command '${wrapperRule(asSpelled(typed, platform), wrapper)}'`)
       }
       if (allow.length > 0 && !admitted) {
         return deny('command_policy', subject(), `Not on the ${source} command allow list. Allowed: ${allow.map(glob => glob.source).join('  |  ')}`)
@@ -177,7 +179,8 @@ export function createCommandPolicyRule(policy: Pick<CompiledPolicy, 'commands'>
 /**
  * The allow rule a shell wrapper's refusal names, one that admits the call: an allow glob meets the call as typed, so
  * the rule is the call's own words up to the shell's `-c` word, then `*`, a prefix such as `sudo`, `env`, or `nice`
- * included (`sudo bash -c *`), and a command word written as a path as written (`/bin/sh -c *`; D74). The shell's
+ * included (`sudo bash -c *`), and a command word written as a path as a path glob reads it (`/bin/sh -c *`, and on
+ * Windows `C:/Git/bin/bash -c *` for `C:\Git\bin\bash`; D74, asSpelled). The shell's
  * words from that `-c` on must end the call as typed; where they do not (an `env -S` value), the rule is the whole call.
  * Each word is written as a pattern word (patternWord).
  */
