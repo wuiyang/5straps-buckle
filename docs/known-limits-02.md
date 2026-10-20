@@ -43,6 +43,9 @@ hiding, and paths, [part three](known-limits-03.md) code mode, the command line,
   with no credential-file ask about that file; `git_log` with no path lists the commits of every
   file. Buckle filters neither, as a filtered diff would misreport the tree to the agent: name each
   file to have it judged, or leave `packs.hostGit` off for a repository that tracks a credential file.
+- Two changes to a repository go unseen by the git tools: a folder swapped and swapped back while
+  git runs, and a link inside the git folder to a file outside it, such as a pack file. Only the
+  folders themselves and the stores `objects/info/alternates` names are checked.
 
 ## Windows shims
 

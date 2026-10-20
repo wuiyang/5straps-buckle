@@ -25,6 +25,17 @@ The deny list and the destructive floor judge every command a call runs:
   (letters, digits, and `_@%+=:,./-`);
 - each `find -exec`, `-execdir`, `-ok`, and `-okdir` command.
 
+## A command written as a path
+
+A rule names a command by its bare word: `git status` admits `git status`, not `./git status`,
+`/usr/bin/git status`, or `bin/git status`, each of which runs the program at that path, which may
+be one the agent placed. Such a call, or a shell body holding one, asks at the
+[destructive floor](approvals.md#the-destructive-floor) instead of running, with the whole call
+shown, wherever only a bare-word allow glob names it. An allow glob that spells the path admits that
+spelling: `buckle policy allow-command '/usr/bin/git status'`, or `'*/* *'` for any command written
+as a path. A deny or destructive glob meets the command by its basename and as written, so
+`git push *` still refuses `/usr/bin/git push`. With no allow list nothing changes.
+
 ## Reading limits
 
 Where reading stops, the call is unread. With a deny list it is refused, since the unread part

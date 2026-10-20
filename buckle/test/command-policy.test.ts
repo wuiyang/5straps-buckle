@@ -2513,6 +2513,11 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(evaluate('/opt/tools/agent-browser', ['open', 'https://x.test'], { allow: ['agent-browser *'] }, 'agent-browser').kind).toBe('allow')
   })
 
+  it('admits every path spelling under */* *, as docs/policy-02.md says, and still asks at the floor where the call asks', () => {
+    for (const command of ['./gradlew', '/usr/bin/git', 'node_modules/.bin/vitest']) expect(evaluate(command, ['run'], { allow: ['*/* *'] }).kind, command).toBe('allow')
+    expect(evaluate('/bin/rm', ['-rf', 'build'], { allow: ['*/* *'] }).kind).toBe('ask')
+  })
+
   it('names, for a shell wrapper written as a path, the allow rule that spells it', () => {
     expect(reasonOf(evaluate('/bin/sh', ['-c', 'pnpm build']))).toContain("allow-command '/bin/sh -c *'")
     expect(evaluate('/bin/sh', ['-c', 'pnpm build'], { allow: ['/bin/sh -c *'] }).kind).toBe('allow')

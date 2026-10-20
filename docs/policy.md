@@ -30,7 +30,8 @@ last. `**` matches any run of words, and `{a,b}` one alternative. Buckle refuses
 `^ $ ( ) | \ + ? [ ]` in a pattern.
 
 - An allow list with an entry admits only command lines a glob covers whole, as typed, so a
-  prefix such as `env` never carries another command past it.
+  prefix such as `env` never carries another command past it. A command written as a path asks
+  unless a glob spells that path ([bare words](policy-02.md#a-command-written-as-a-path)).
 - A deny glob refuses every command line that starts with it, wherever Buckle finds that line.
 - A destructive glob adds to the [destructive floor](approvals.md#the-destructive-floor), which
   asks, once or for the session.
