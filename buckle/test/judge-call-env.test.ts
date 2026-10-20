@@ -544,6 +544,8 @@ describe('a variable set after a redirection operator a line continuation splits
     const names = (text: string) => assignedVariables({ command: 'bash', args: ['-c', text] }, { ...commandForms('bash', ['-c', text]), nested: [] }).variables.map(variable => variable.name)
     expect(names('>\\\n x PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
     expect(names('2>\\\n& 1 PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+    // Recheck 7, the A4b residue: the spellings of a continuation among the digits or the name before the operator.
+    for (const text of ['2\\\n> x PYTHONPATH=x python3 a.py', '{fd}\\\n>x PYTHONPATH=x python3 a.py', '{f\\\nd}>x PYTHONPATH=x python3 a.py', '\\\n2> x PYTHONPATH=x python3 a.py']) expect(names(text), text).toContain('PYTHONPATH')
   })
 })
 

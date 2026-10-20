@@ -2169,6 +2169,58 @@ describe('a line continuation inside a redirection operator (fix brief 7, A4b)',
     expect(evaluate('ksh', ['-c', '<>; out python3 x.py'], { allow: ['ksh -c *'] }).kind).toBe('ask')
     expect(evaluate('ksh', ['-c', '<>; out python3 x.py'], { allow: ['ksh -c *'], deny: ['python3 *'] }).kind).toBe('deny')
   })
+
+  it('reads a continuation between the characters of an operator the statement keeps (recheck 7, A4b residue)', () => {
+    expect(evaluate('bash', ['-c', '>\\\n> out python3 x.py'], { allow: ['bash -c *'], deny: ['python3 *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', '>\\\n> out python3 x.py'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+    expect(evaluate('bash', ['-c', 'git >\\\n> out push --force origin main'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+  })
+})
+
+describe('a line continuation inside the &> or << the splitter reads (fix brief 8, A4c)', () => {
+  // bash and dash remove a backslash-newline before they read an operator: bash 5.2.21 wrote `one two` to the file for
+  // `printf "%s\n" one &\<newline>>outA two`, where dash ran `two` as a command, and both read `<\<newline><'EOF'` as a
+  // heredoc and ran the command after its delimiter line, as they did for `<< \<newline> 'EOF'` and for `<<E\<newline>OF`,
+  // whose delimiter is EOF, unquoted (the body's substitution ran).
+  const shells = ['bash', 'sh']
+
+  it.each(shells.flatMap(shell => ['rm &\\\n>/dev/null -rf x', 'rm &\\\n> /dev/null -rf x', 'rm &\\\n>>/dev/null -rf x', 'rm &\\\n\\\n>/dev/null -rf x'].map(text => [shell, text])))('%s -c %j asks at the floor and meets an rm -rf deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['rm -rf *'] }).kind).toBe('deny')
+  })
+
+  it('reads chmod and git push after a continued &>', () => {
+    const ask = evaluate('bash', ['-c', 'chmod &\\\n>/dev/null -R 777 x'], { allow: ['bash -c *'] })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'floor' })
+    expect(evaluate('bash', ['-c', 'git &\\\n>/dev/null push origin main'], { allow: ['bash -c *'], deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it('keeps the dash reading, a cut at the &', () => {
+    expect(shellStatementList('rm &\\\n>/dev/null -rf x').statements).toEqual(['rm', '\\\n>/dev/null -rf x', 'rm  \\\n>/dev/null -rf x'])
+  })
+
+  const heredocs = ["cat <\\\n<'EOF'\n'\nEOF\npython3 x.py\n'", "cat << \\\n 'EOF'\n'\nEOF\npython3 x.py\n'", "cat <<\\\n-EOF\n'\n\tEOF\npython3 x.py\n'", 'cat <<E\\\nOF\n$(python3 x.py)\nEOF']
+  it.each(shells.flatMap(shell => heredocs.map(text => [shell, text])))('%s -c %j asks at the interpreter floor and meets a python3 deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+  })
+
+  it('reads the heredoc whole: its delimiter line ends the body, and the command after it is a statement', () => {
+    expect(shellStatementList("cat <\\\n<'EOF'\n'\nEOF\npython3 x.py").statements).toContain('python3 x.py')
+    expect(shellStatementList('cat <<E\\\nOF\nbody\nEOF\npython3 x.py').statements).not.toContain('EOF')
+  })
+
+  it('reads a continued here-string as one, so a shell it feeds reads its script as data', () => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', "bash <<<'echo hi'"] }).scriptData).toBe(true)
+    expect(commandFormsOf({ command: 'bash', args: ['-c', "bash <\\\n<\\\n<'echo hi'"] }).scriptData).toBe(true)
+  })
 })
 
 describe('what no pattern can change', () => {

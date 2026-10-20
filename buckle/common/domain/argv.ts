@@ -1262,6 +1262,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     level.wordStart = false
     level.previous = character
     level.previousStarted = wordStart !== false
+    const heredocEnd = character === '<' && previous !== '<' ? heredocOperatorEnd(text, index) : -1
     if (character === '\\') {
       // A continuation (backslash-newline) is removed before words are read, so it leaves the reading as it was.
       const continuation = text[index + 1] === '\n'
@@ -1302,12 +1303,13 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       index = stop - 1
       level.wordStart = true
     } else if (character === '#' && wordStart === 'unsure') limits.unsureComment = true
-    // A `<<` is a heredoc, but not inside a `<<<` here-string, whose second `<` would otherwise open one.
-    else if (character === '<' && text[index + 1] === '<' && text[index + 2] !== '<' && previous !== '<') {
+    // A `<<` is a heredoc, but not inside a `<<<` here-string, whose second `<` would otherwise open one; a continuation
+    // between or after its characters is removed first (heredocOperatorEnd).
+    else if (heredocEnd >= 0) {
       level.command.feed = true
-      const heredoc = heredocAt(text, index + 2, level.command)
+      const heredoc = heredocAt(text, heredocEnd, level.command)
       if (heredoc) heredocs.push(heredoc.heredoc)
-      index = (heredoc?.next ?? index + 2) - 1
+      index = (heredoc?.next ?? heredocEnd) - 1
       // The jump passes over the delimiter word, which is never an operator, even where its last character is an escaped
       // `<`, `>`, or `|` (`<<E\>;`): a `&`, `|`, or `;` right after the word is a list operator, never part of a `<&`,
       // `>|`, `>;`, or `||` (fix brief 6, A2; fix brief 7, A2b).
@@ -1369,8 +1371,9 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
     } else if (BREAK_CHARACTERS.has(character)) {
       // bash, rbash, zsh, mksh, and ksh93 read that `&>` as one redirection of the command around it instead, its later
       // words that command's arguments, so the command it cut is read whole as well (Join), whatever the shell, as a bare
-      // `>!` is read both ways (fix brief 7, A1b). The `&` of `&&` and `|&` is that operator's.
-      const join = character === '&' && text[index + 1] === '>' && previous !== '&' && previous !== '|' ? joinedBefore(level, index) : null
+      // `>!` is read both ways (fix brief 7, A1b), and with a continuation between its `&` and `>`, which bash removes
+      // first (fix brief 8, A4c). The `&` of `&&` and `|&` is that operator's.
+      const join = character === '&' && text[pastContinuations(text, index + 1)] === '>' && previous !== '&' && previous !== '|' ? joinedBefore(level, index) : null
       level.wordStart = true
       finish(level, index, index + 1, join !== null)
       level.command.join = join
@@ -1390,7 +1393,7 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       }
     } else if (BLANKS.has(character) || OPERATOR_CHARACTERS.has(character)) {
       level.wordStart = true
-      if (character === '<' && text[index + 1] === '<' && text[index + 2] === '<') level.command.feed = true
+      if (character === '<' && hereStringAt(text, index)) level.command.feed = true
     }
   }
   while (levels.length > (mode.heredocText ? 1 : 0)) {
@@ -1438,11 +1441,39 @@ function heredocAt(text: string, at: number, owner: CommandText): { heredoc: Her
   return word === null ? null : { heredoc: { delimiter: word.delimiter, tabs: word.tabs, quoted: word.quoted, owner }, next: word.next }
 }
 
-/** The delimiter word of a heredoc whose `<<` ends just before `at` (HeredocWord), and where the word ends; null for none. */
+/**
+ * Where the text goes on past the line continuations at `at`: bash and dash remove a backslash-newline before they read
+ * an operator or a word, so `&\<newline>>` is `&>` and `<\<newline><` is `<<` (fix brief 8, A4c).
+ */
+function pastContinuations(text: string, at: number): number {
+  let index = at
+  while (text[index] === '\\' && text[index + 1] === '\n') index += 2
+  return index
+}
+
+/** Where a `<<` whose first `<` is at `at` ends, continuations removed (pastContinuations); -1 for none, or for a `<<<`. */
+function heredocOperatorEnd(text: string, at: number): number {
+  const second = pastContinuations(text, at + 1)
+  if (text[second] !== '<') return -1
+  return text[pastContinuations(text, second + 1)] === '<' ? -1 : second + 1
+}
+
+/** Whether the `<` at `at` opens a `<<<` here-string, continuations removed (pastContinuations). */
+function hereStringAt(text: string, at: number): boolean {
+  const second = pastContinuations(text, at + 1)
+  return text[second] === '<' && text[pastContinuations(text, second + 1)] === '<'
+}
+
+/**
+ * The delimiter word of a heredoc whose `<<` ends just before `at` (HeredocWord), and where the word ends; null for none.
+ * A continuation before the `-`, among the blanks, or in the word is removed first, so it quotes nothing: under bash and
+ * dash `<<E\<newline>OF` ends at an `EOF` line and expands its body (fix brief 8, A4c).
+ */
 function heredocWordAt(text: string, at: number): (HeredocWord & { next: number }) | null {
-  const tabs = text[at] === '-'
-  let index = tabs ? at + 1 : at
-  while (text[index] === ' ' || text[index] === '\t') index++
+  let index = pastContinuations(text, at)
+  const tabs = text[index] === '-'
+  if (tabs) index++
+  for (index = pastContinuations(text, index); text[index] === ' ' || text[index] === '\t'; index = pastContinuations(text, index + 1));
   const start = index
   let quote: string | null = null
   while (index < text.length) {
@@ -1456,7 +1487,9 @@ function heredocWordAt(text: string, at: number): (HeredocWord & { next: number 
   }
   const word = text.slice(start, index)
   const delimiter = unquote(word)
-  return delimiter === '' ? null : { delimiter, tabs, quoted: /['"\\]/.test(word), next: index }
+  // Each backslash with the character it escapes, paired from the left: one before a newline is a continuation.
+  const quoted = /['"]/.test(word) || (word.match(/\\[\s\S]?/g) ?? []).some(pair => pair !== '\\\n')
+  return delimiter === '' ? null : { delimiter, tabs, quoted, next: index }
 }
 
 /**
