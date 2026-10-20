@@ -1983,6 +1983,53 @@ describe('a &> or &>> redirection between a command and its arguments (fix brief
   })
 })
 
+describe('a heredoc word ending in an escaped operator character (fix brief 7, A2b)', () => {
+  // A backslash makes the delimiter's last character part of the word, never an operator, so the `&`, `|`, or `;` after
+  // it is a list operator (bash 5.2.21 and dash ran the second command of each).
+  const texts = ['cat <<E\\<&python3 x.py\nE<', 'cat <<E\\>&python3 x.py', 'cat <<E\\>|python3 x.py', 'cat <<E\\>;python3 x.py', 'cat <<a\\>;python3 x.py', 'cat <<\\>;python3 x.py', 'cat <<-a\\>;python3 x.py', 'cat <<"a"\\>;python3 x.py']
+  const rows = texts.flatMap(text => [['bash', text], ['sh', text]] as Array<[string, string]>)
+
+  it.each(rows)('%s -c %j asks at the interpreter floor and meets a python3 deny and an unrelated git push deny', (shell, text) => {
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['git push *'] }).kind).toBe('deny')
+  })
+
+  it('keeps the pipe after a delimiter ending in an escaped |, so the shell it feeds reads its script as data', () => {
+    expect(commandFormsOf({ command: 'bash', args: ['-c', 'cat <<E\\||bash l'] }).scriptData).toBe(true)
+    expect(evaluate('bash', ['-c', 'cat <<E\\||bash l'], { allow: ['bash -c *'], deny: ['node *'] }).kind).toBe('deny')
+  })
+
+  it('still splits after an unescaped delimiter and keeps a redirection after a heredoc in its statement', () => {
+    for (const text of ['cat <<EOF&python3 x.py', 'let x=1<<2&python3 x.py']) expect(allForms(commandFormsOf({ command: 'bash', args: ['-c', text] })), text).toContainEqual(['python3', 'x.py'])
+    const kept = allForms(commandFormsOf({ command: 'bash', args: ['-c', 'cat <<EOF >&2 python3 x.py'] }))
+    expect(kept).toContainEqual(['cat', 'python3', 'x.py'])
+    expect(kept).not.toContainEqual(['python3', 'x.py'])
+  })
+
+  it('asks through the runtime for a find -exec sh text under an empty policy', async () => {
+    const config = configFromEnvironment({
+      BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-heredoc-word-')), BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-heredoc-word-state-')),
+      BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
+    })
+    const runtime = await createRuntime({ config })
+    const execute = vi.fn(async () => 'executed')
+    const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'find', args: ['.', '-maxdepth', '0', '-exec', 'sh', '-c', 'cat <<a\\>;python3 build.js', ';'] }], execute })
+    try {
+      const response = await runtime.invoke({ request: { requestId: 'heredoc-word', approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'heredoc-word', approvalWait: { mode: 'none' } })
+      expect(response.outcome).toBe('approval_required')
+      expect(execute).not.toHaveBeenCalled()
+    } finally {
+      prepare.mockRestore()
+      await runtime.approvalService.close()
+      await runtime.history.close()
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
