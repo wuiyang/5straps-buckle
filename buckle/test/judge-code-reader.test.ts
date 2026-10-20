@@ -874,6 +874,29 @@ describe('a wrapper or a shell named by a path (fix brief 7, B11)', () => {
   })
 })
 
+describe('a runner package named by a path or a source other than the registry (fix brief 7, B13)', () => {
+  // npm exec installs a folder, a file: or git spec, or a tarball and runs its bin with no prompt (npm 11.19.0 ran a
+  // decoy folder's bin for npx ./tool), code the reader never shows; only a plain registry name is named and rated.
+  const files = { 'tool/package.json': '{"name":"decoy-tool","bin":{"decoy-tool":"cli.js"}}\n', 'tool/cli.js': 'console.log(1)\n', 'job.ts': 'export {}\n' }
+  const source = { kind: 'refused', reason: CODE_REFUSALS.runnerSource, truncated: false }
+
+  it('refuses a path, a file: or link: spec, a git or other scheme, GitHub shorthand, or a tarball, as the package or after its @', () => {
+    const { call, shell } = workspace(files)
+    for (const words of [['npx', './tool'], ['npx', 'file:./tool'], ['npx', 'link:./tool'], ['pnpx', './tool'], ['bunx', './tool'], ['npx', 'eslint@file:./tool'], ['npx', 'tsx@file:./tool', 'job.ts'], ['npx', 'user/repo'], ['npx', 'github:user/repo'], ['npx', '/workspace/tool'], ['npx', 'decoy.tgz']]) {
+      expect(call(words[0]!, ...words.slice(1)), words.join(' ')).toEqual(source)
+    }
+    expect(shell('npx ./tool')).toEqual(source)
+  })
+
+  it('still names a plain registry package with or without a version or range, and reads the script a runtime runs', () => {
+    const { call } = workspace(files)
+    expect(reading(call('npx', 'eslint@9.0.0')).packages.map(item => item.name)).toEqual(['eslint'])
+    expect(reading(call('npx', 'eslint@~9.0.0')).packages.map(item => item.name)).toEqual(['eslint'])
+    expect(reading(call('npx', '@scope/pkg@1')).packages.map(item => item.name)).toEqual(['@scope/pkg'])
+    expect(paths(call('npx', 'tsx', 'job.ts'))).toEqual(['/workspace/job.ts'])
+  })
+})
+
 describe('the code a here-string hands an interpreter', () => {
   it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and refuses one a shell without them, or an expansion, would change', () => {
     const { call } = workspace({ 'helper.py': 'X = 1\n' })

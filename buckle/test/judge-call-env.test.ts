@@ -615,6 +615,22 @@ describe('a standard script named by a path inside the workspace (fix brief 7, B
   })
 })
 
+describe('a runner package named by a path (fix brief 7, B13)', () => {
+  it('is not rated: npx ./tool asks with the runner reason, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    mkdirSync(join(config.cwd, 'tool'))
+    writeFileSync(join(config.cwd, 'tool', 'package.json'), '{"name":"decoy-tool","bin":{"decoy-tool":"cli.js"}}\n')
+    writeFileSync(join(config.cwd, 'tool', 'cli.js'), 'console.log(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const { response, entry, ran } = await call(runtime, {}, ['npx', './tool'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.runnerSource, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
 describe('a call that sets HOME (fix brief 5, P4)', () => {
   it('is not rated, since zsh and Python read startup code from HOME, and the reason names HOME with no value', async () => {
     expect(codeLoadingVariable(callVariables({ env: { HOME: '/workspace/h' } }))).toBe('HOME')

@@ -40,6 +40,7 @@ export const CODE_REFUSALS = Object.freeze({
   localInterpreter: 'the interpreter is a program inside the workspace',
   programName: 'the call sets the program name the interpreter reads',
   splitWords: 'the call splits a word into words the reader does not read again',
+  runnerSource: 'the runner runs a package from a path or a source the reader does not show',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -902,6 +903,7 @@ function runnerArguments(args: readonly string[]): Arguments {
   const none: Arguments = { inline: [], packages: [], modules: [], preloads: [], programFiles: [], candidates: [], operand: null, stdinScript: false, inputIsCode: false, refusal: null }
   if (first === undefined) return { ...none, refusal: CODE_REFUSALS.notFound }
   if (first.startsWith('-')) return { ...none, refusal: CODE_REFUSALS.unknownOption }
+  if (!registrySpec(first)) return { ...none, refusal: CODE_REFUSALS.runnerSource }
   const name = packageName(first)
   const runtime = programOf(name)
   if (JS_RUNTIMES.has(runtime)) {
@@ -912,6 +914,19 @@ function runnerArguments(args: readonly string[]): Arguments {
   if (at !== 0 && rest.length > 0) return { ...none, packages: [name], refusal: CODE_REFUSALS.unknownOption }
   // A package that is no runtime reads its input as data, if at all.
   return { ...none, packages: [name], candidates: rest, operand: at === 0 ? { name: rest[0]!, required: false, runtime } : null }
+}
+
+/**
+ * A plain registry spec as npm-package-arg reads one: a name, or `@scope/name`, with an optional `@` and a version, a
+ * range, or a tag holding no slash, backslash, or colon. A name starting with `.` or `~`, any slash outside a scope, a
+ * backslash, a scheme or a drive letter (`file:`, `link:`, `github:`, `git+https:`, `C:`), and a tarball name are not;
+ * npm exec installs such a package from a folder, a file, git, or a URL and runs its bin with no prompt (fix brief 7, B13).
+ */
+const REGISTRY_SPEC = /^(?:@[^\s/\\:@]+\/)?[^\s/\\:@.~][^\s/\\:@]*(?:@[^/\\:]*)?$/
+const TARBALL = /\.(?:tgz|tar\.gz|tar)$/i
+
+function registrySpec(word: string): boolean {
+  return REGISTRY_SPEC.test(word) && !TARBALL.test(word)
 }
 
 /**
