@@ -137,9 +137,7 @@ interface Planned { form: readonly string[]; feed: StatementFeed | null }
 function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 'cwd' | 'view'>): Planned[] | string {
   const chain = input.chain ?? input.forms
   const pieces = new Set(input.pieces ?? [])
-  // An interpreter named by a path runs the program at that path, which the agent may have placed, not the interpreter
-  // its basename names; so may one whose typed command word the chain does not show (fix brief 6, B1).
-  const mayBePlaced = (word: string | null) => word === null || (PATH_SEPARATOR.test(word) && !programOutsideView(word, input.cwd, input.view))
+  const mayBePlaced = (word: string | null) => placedWord(word, input.cwd, input.view)
   // flock runs its `-c` text through `$SHELL -c`, which the command reader maps to `sh -c`, but the shell that runs it
   // is whatever SHELL names, so the grammar's reading of it as sh may not be the code that runs (fix brief 5, P3).
   if (chain.some(flockCommand)) return SHELL_TEXT_REFUSAL
@@ -148,13 +146,14 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
   // env -a or --argv0 by any prefix), which points it at a path the reader does not show (fix brief 5, N1).
   if (splitsWords(chain)) return CODE_REFUSALS.splitWords
   if (setsProgramName(chain)) return CODE_REFUSALS.programName
+  // Every program the call runs itself, by its typed command word: the call as typed, each wrapper, the shell whose text
+  // is read, and the interpreter (fix brief 7, B11). Left without a chain, every form is the call's own.
+  if (input.chain === undefined ? input.forms.some(form => mayBePlaced(form[0] ?? '')) : chainPlaced(chain, input.typed ?? chain[0]!, input.cwd, input.view)) return CODE_REFUSALS.localInterpreter
   let statement: ReturnType<typeof textStatement> | undefined
   let matched = false
   const planned: Planned[] = []
   for (const form of input.forms) {
-    const at = chain.indexOf(form)
-    if (at >= 0) {
-      if (mayBePlaced(input.chain === undefined ? form[0] ?? '' : typedCommandWord(chain, at, input.typed ?? chain[0]!))) return CODE_REFUSALS.localInterpreter
+    if (chain.includes(form)) {
       planned.push({ form, feed: null })
       continue
     }
@@ -163,7 +162,8 @@ function planOf(input: Pick<CodeInput, 'forms' | 'chain' | 'typed' | 'pieces' | 
     if (sameWords(statement.form, form)) {
       // The same statement read once more (another reading of its redirections) is read once.
       if (matched) continue
-      if (mayBePlaced(statement.typed)) return CODE_REFUSALS.localInterpreter
+      // Each program of the statement's own chain, a wrapper's as much as the interpreter's (fix brief 7, B11).
+      if (statement.typed.some(mayBePlaced)) return CODE_REFUSALS.localInterpreter
       matched = true
       planned.push({ form, feed: statement.feed })
       continue
@@ -211,19 +211,34 @@ function flockOptionTakesNext(word: string): boolean {
 }
 
 /**
- * The interpreter form a shell form's `-c` text runs, with its feed and its command word as the text typed it (null where
- * the chain does not show that word), where that text is one simple command; else null.
+ * The interpreter form a shell form's `-c` text runs, with its feed and the command word of each form of its chain as the
+ * text typed it, a wrapper's matched by its basename among them (null where the chain does not show one), where that text
+ * is one simple command; else null.
  */
-function textStatement(form: readonly string[] | undefined): { form: readonly string[]; feed: StatementFeed | null; typed: string | null } | null {
+function textStatement(form: readonly string[] | undefined): { form: readonly string[]; feed: StatementFeed | null; typed: Array<string | null> } | null {
   const text = form === undefined ? null : ratedShellText(form)
   const statement = text === null ? null : simpleStatement(text.text, text.shell)
   const interpreter = statement === null ? null : statementInterpreter(statement)
   if (statement === null || interpreter === null) return null
-  return { form: interpreter.form, feed: statement.feed, typed: typedCommandWord(interpreter.chain, interpreter.chain.length - 1, statement.words) }
+  return { form: interpreter.form, feed: statement.feed, typed: interpreter.chain.map((_, at) => typedCommandWord(interpreter.chain, at, statement.words)) }
 }
 
 /** A path separator in a command word: the program that runs is the file at that path, not one the PATH finds. */
 const PATH_SEPARATOR = /[\\/]/
+
+/**
+ * Whether a typed command word may name a program the agent placed: one named by a path runs the file at that path, not
+ * the program its basename names, unless it lies outside the workspace and every mount; a word the chain does not show
+ * (null) fails closed (fix brief 6, B1).
+ */
+function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
+  return word === null || (PATH_SEPARATOR.test(word) && !programOutsideView(word, cwd, view))
+}
+
+/** Whether any form of a call's chain runs, by its typed command word, a program the agent may have placed (fix brief 7, B11). */
+function chainPlaced(chain: readonly (readonly string[])[], typed: readonly string[], cwd: string, view: CodeView): boolean {
+  return chain.some((_, at) => placedWord(typedCommandWord(chain, at, typed), cwd, view))
+}
 
 /**
  * Whether a program named by a path lies outside the workspace and every mount, where the agent cannot have placed it:

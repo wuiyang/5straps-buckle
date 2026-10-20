@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
@@ -544,6 +544,27 @@ describe('a variable set after a redirection operator a line continuation splits
     const names = (text: string) => assignedVariables({ command: 'bash', args: ['-c', text] }, { ...commandForms('bash', ['-c', text]), nested: [] }).variables.map(variable => variable.name)
     expect(names('>\\\n x PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
     expect(names('2>\\\n& 1 PYTHONPATH=x python3 a.py')).toContain('PYTHONPATH')
+  })
+})
+
+describe('a wrapper named by a path inside the workspace (fix brief 7, B11)', () => {
+  it('is not rated: the call asks with the local-program reason, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    mkdirSync(join(config.cwd, 'fv', 'bin'), { recursive: true })
+    for (const name of ['env', 'nice']) writeFileSync(join(config.cwd, 'fv', 'bin', name), '#!/bin/sh\necho planted\n')
+    const runtime = await runtimeOf(config, { judge })
+    const direct = await call(runtime, {}, ['./fv/bin/env', 'python3', 'job.py'])
+    expect(direct.response).toMatchObject({ outcome: 'approval_required' })
+    expect(direct.ran).toBe(false)
+    expect(direct.entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['nice python3 *'], deny: [] } })
+    const allowed = await call(runtime, {}, ['./fv/bin/nice', 'python3', 'job.py'])
+    expect(allowed.response).toMatchObject({ outcome: 'approval_required' })
+    expect(allowed.ran).toBe(false)
+    expect(allowed.entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
   })
 })
 

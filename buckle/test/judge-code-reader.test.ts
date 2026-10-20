@@ -848,6 +848,32 @@ describe('an interpreter named by a path (fix brief 6, B1)', () => {
   })
 })
 
+describe('a wrapper or a shell named by a path (fix brief 7, B11)', () => {
+  // Every program a run executes is the file its typed word names: the call as typed, each wrapper, the shell whose text
+  // is read, and the interpreter. One the agent may have placed refuses, as a planted interpreter does (fix brief 6, B1).
+  const planted = '#!/bin/sh\necho planted\n'
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+  const files = { 'job.py': 'print(1)\n', 'fv/bin/env': planted, 'fv/timeout': planted, 'fv/bash': planted, 'fv/nohup': planted }
+
+  it('refuses a planted wrapper or shell, typed directly, behind another wrapper, or in shell text', () => {
+    const { call, shell } = workspace(files)
+    expect(call('./fv/bin/env', 'python3', 'job.py')).toEqual(local)
+    expect(call('/workspace/fv/timeout', '5', 'python3', 'job.py')).toEqual(local)
+    expect(call('nice', './fv/bin/env', 'python3', 'job.py')).toEqual(local)
+    expect(call('./fv/bash', '-c', 'python3 job.py')).toEqual(local)
+    expect(shell('./fv/bin/env python3 job.py')).toEqual(local)
+    expect(shell('exec ./fv/nohup python3 job.py')).toEqual(local)
+  })
+
+  it('reads a wrapper or a shell outside the workspace and every mount, or one the PATH finds', () => {
+    const { call, shell } = workspace(files)
+    expect(paths(call('/usr/bin/env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('/usr/bin/env python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('nice', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('/bin/bash', '-c', 'python3 job.py'))).toEqual(['/workspace/job.py'])
+  })
+})
+
 describe('the code a here-string hands an interpreter', () => {
   it('reads a here-string in bash, zsh, or ksh text as inline code, with what it imports, and refuses one a shell without them, or an expansion, would change', () => {
     const { call } = workspace({ 'helper.py': 'X = 1\n' })
