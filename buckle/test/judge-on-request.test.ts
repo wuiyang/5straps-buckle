@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
@@ -63,7 +64,7 @@ async function quickStandIn(answer: { choice: 'safe' | 'warning' | 'danger'; con
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen }
 }
 
-async function node(input: { url: string; judge?: string; quickUrl?: string }) {
+async function node(input: { url: string; judge?: string; quickUrl?: string; quick?: string }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-on-request-')))
   roots.push(root)
   const folder = join(root, 'site')
@@ -74,7 +75,7 @@ async function node(input: { url: string; judge?: string; quickUrl?: string }) {
     BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     BUCKLE_APPROVAL_JUDGE: input.judge ?? 'on-request', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna',
     BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: input.url,
-    ...(input.quickUrl ? { BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters', BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, BUCKLE_QUICK_JUDGE_BASE_URL: input.quickUrl } : {}),
+    ...(input.quickUrl ? { BUCKLE_APPROVAL_QUICK_JUDGE: input.quick ?? 'interpreters', BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, BUCKLE_QUICK_JUDGE_BASE_URL: input.quickUrl } : {}),
   })
   let out = ''
   let err = ''
@@ -197,5 +198,20 @@ describe('buckle approvals judge', () => {
     expect(judge.seen).toHaveLength(0)
     expect((await on.buckle(['approvals', 'show', 'x', '--approve-if-safe'])).err).toContain('--approve-if-safe is for buckle approvals judge <token>')
     await on.manager.close()
+  })
+  it('refuses to rate a call the policy now denies, asking neither stage, under quickJudge all (fix brief 7, B18)', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.95 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.95 })
+    const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url, quick: 'all' })
+    const { token } = await ask(runtime)
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: ['python3 *'], destructive: [] } })
+    const refused = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
+    expect(refused.exitCode).toBe(1)
+    expect(refused.err).toContain('The policy now denies this call; the decision AI never rates a deny')
+    expect(judge.seen).toHaveLength(0)
+    expect(jev.seen).toHaveLength(0)
+    expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
+    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    await manager.close()
   })
 })

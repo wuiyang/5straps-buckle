@@ -101,6 +101,8 @@ const NO_GRANTS: GrantLookup = { subjectsFor: () => [] }
 
 /** Why the decision AI rates no ask its stages do not cover (D91). */
 const NOT_JUDGEABLE = 'The decision AI rates an ask about running a command, an interpreter the policy does not allow or one the quick stage\'s scope covers, and this ask is about something else'
+/** Why `buckle approvals judge` rates nothing once the policy refuses the call its token names (fix brief 7, B18). */
+const POLICY_NOW_DENIES = 'The policy now denies this call; the decision AI never rates a deny'
 
 /** Said where a change that rebuilds the tools waits for active work: no path, as an agent reads it (Q2). */
 const RESHAPE_WAITS = 'This workspace\'s settings changed in a way that rebuilds its tools; the change takes effect once its active work is resolved, so call again then'
@@ -486,6 +488,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       let effects
       try { effects = await resolveEffects({ effects: settled.registry.get(ask.request.tool).prepare(args).effects, paths: settled.paths }) } catch { return refused(NOT_JUDGEABLE) }
       const outcome = settled.permissions.evaluate({ tool: ask.request.tool, effects, grants: NO_GRANTS })
+      // A deny is never rated, so no stage is asked about a call the policy now refuses (fix brief 7, B18).
+      if (outcome.kind === 'deny') return refused(POLICY_NOW_DENIES)
       const asks = outcome.kind === 'ask' ? outcome.asks.filter(item => settled.judge.covers(item)) : []
       // The ask the token names; an allowed command the quick stage flagged is no rule's ask, and is rated as one.
       const chosen = asks.find(item => item.subject === ask.request.subject) ?? null
