@@ -9,7 +9,7 @@ import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand } from '../../domain/argv.js'
-import type { PathView } from '../../domain/path-view.js'
+import { outsideMountReason, type PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
 import { resolveTarget } from '../invocation/real-path.js'
@@ -69,9 +69,11 @@ export interface CodeView {
   names(folder: string): readonly string[]
   /**
    * The real path a name lands on before any link in it is followed, a relative one from `base`, through the view's own
-   * mapping (a sandbox path to the host path it names), or `outside` where it lands beyond every place the view reaches.
+   * mapping (a sandbox path to the host path it names); `outside` where it lands beyond every place the view reaches, which
+   * only the view's own refusal says; or `unnamed` where the view cannot name it as the platform does (a backslash on Linux
+   * or macOS, a trimmed name on Windows), a path the reader cannot place, which fails closed (fix brief 8, B21).
    */
-  named(name: string, base: string): string | 'outside'
+  named(name: string, base: string): string | 'outside' | 'unnamed'
 }
 
 export type Located = { real: string } | 'none' | 'outside'
@@ -256,6 +258,9 @@ function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
   // A NAME=value command word is a program a direct exec, or a wrapper that execs its command, runs by that name, while
   // the rules read it as an assignment (fix brief 7, B15).
   if (word === null || RULES_ASSIGNMENT.test(word)) return true
+  // On Linux and macOS a backslash is part of a file's name, so `/workspace/fv\python3` runs the file the agent placed,
+  // which no view names as pathe reads the backslash as a separator (fix brief 8, B21).
+  if (literalBackslash(word)) return true
   if (!PATH_SEPARATOR.test(word)) return false
   return !absoluteName(word) || !programOutsideView(word, cwd, view)
 }
@@ -278,6 +283,8 @@ function chainPlaced(chain: readonly (readonly string[])[], typed: readonly stri
 function programOutsideView(name: string, base: string, view: CodeView): boolean {
   const named = view.named(name, base)
   if (named === 'outside') return true
+  // A name the view cannot place is no program outside it: the agent may have placed the file it runs (fix brief 8, B21).
+  if (named === 'unnamed') return false
   if (view.rootOf(named) !== null) return false
   const located = view.locate(name, base)
   return located === 'outside' || (located !== 'none' && view.rootOf(located.real) === null)
@@ -386,7 +393,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     // or absolute (fix brief 6, B4).
     if (entry !== 'none' && read.operand.runtime === 'python') {
       const folder = view.named(read.operand.name, cwd)
-      if (folder === 'outside') return CODE_REFUSALS.unreadable
+      if (folder === 'outside' || folder === 'unnamed') return CODE_REFUSALS.unreadable
       if (compiledBeside(into.names, dirname(entry.real), pythonStem(entry.real)) || compiledBeside(into.names, folder, '__main__')) return CODE_REFUSALS.compiledPython
     }
     if (entry !== 'none') queue.push({ real: entry.real, language, runtime: read.operand.runtime })
@@ -1689,14 +1696,21 @@ function fileAt(view: CodeView, name: string, base: string): string | null {
  */
 export function createCodeView(input: { paths: PathView; canRead: (real: string) => boolean; protectedRoots: readonly string[] }): CodeView {
   const { paths } = input
-  const namedPath = (name: string, base: string): string | 'outside' => {
-    try { return name.startsWith('/') ? paths.resolve(name) : paths.resolve(join(base, name)) } catch { return 'outside' }
+  const namedPath = (name: string, base: string): string | 'outside' | 'unnamed' => {
+    const path = name.startsWith('/') ? name : join(base, name)
+    try { return paths.resolve(path) } catch (error) {
+      // Only the view's own refusal of a path beyond the workspace and every mount is `outside`; any other failure to name
+      // the path (a backslash on Linux or macOS, a trimmed name or a stream on Windows) is one the reader cannot place, never
+      // a program outside the view, which would be rated while the file the agent placed runs (fix brief 8, B21).
+      return error instanceof Error && error.message === outsideMountReason({ named: path, displayRoots: paths.displayRoots }) ? 'outside' : 'unnamed'
+    }
   }
   return {
     named: namedPath,
     locate(name, base) {
       const named = namedPath(name, base)
-      if (named === 'outside') return 'outside'
+      // A name the view cannot place lands on no file the reader may show, so it is refused as a path beyond the view is.
+      if (named === 'outside' || named === 'unnamed') return 'outside'
       try {
         const real = resolveTarget(named, { shares: paths.shares })
         return statSync(real).isFile() ? { real } : 'none'

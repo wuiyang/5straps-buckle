@@ -724,3 +724,27 @@ describe('an interpreter behind xargs (fix brief 8, B20)', () => {
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
+
+describe('a program named by an absolute path holding a backslash (fix brief 8, B21)', () => {
+  it('is not rated, typed directly, in shell text, or as a runner for a standard script, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    // On Linux a file may be named `fv\python3`: the kernel runs it, while the view reads the backslash as a separator.
+    for (const name of ['fv\\python3', 'fv\\npx']) writeFileSync(join(config.cwd, name), '#!/bin/sh\necho planted\n')
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const rows: Array<[string[], string[]]> = [
+      [[], [join(config.cwd, 'fv\\python3'), 'job.py']],
+      [['bash -c *'], ['bash', '-c', `'${join(config.cwd, 'fv\\python3')}' job.py`]],
+      [['npx *'], [join(config.cwd, 'fv\\npx'), 'vitest', 'run']],
+    ]
+    for (const [allow, command] of rows) {
+      await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow, deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, command.join(' ')).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})

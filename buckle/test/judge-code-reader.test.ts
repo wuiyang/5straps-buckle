@@ -1281,3 +1281,47 @@ describe('an interpreter behind xargs (fix brief 8, B20)', () => {
     expect(paths(call('nice', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
   })
 })
+
+describe('a program named by an absolute path holding a backslash (fix brief 8, B21)', () => {
+  // On Linux and macOS a backslash is an ordinary character in a file's name, so `/workspace/fv\python3` runs the file the
+  // agent placed (bash 5.2.21 printed the planted marker), while pathe reads it as a separator: the view could not name
+  // the path, which was taken for one outside the view, so the stage was shown job.py while the planted file ran. A
+  // program word the view cannot name is one the agent may have placed.
+  const planted = '#!/bin/sh\necho planted\n'
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+  const files = { 'job.py': 'print(1)\n', 'job.js': 'console.log(1)\n', 'fv\\python3': planted, 'fv\\env': planted, 'fv\\bash': planted, 'fv\\npx': planted }
+
+  it('refuses the planted program typed directly, behind a wrapper, in shell text, as a shell, and as a runner', () => {
+    const { call, shell } = workspace(files)
+    expect(call('/workspace/fv\\python3', 'job.py')).toEqual(local)
+    expect(call('/workspace/fv\\env', 'python3', 'job.py')).toEqual(local)
+    expect(call('nice', '/workspace/fv\\python3', 'job.py')).toEqual(local)
+    expect(shell("'/workspace/fv\\env' python3 job.py")).toEqual(local)
+    expect(shell("'/workspace/fv\\python3' job.py")).toEqual(local)
+    expect(call('/workspace/fv\\bash', '-c', 'python3 job.py')).toEqual(local)
+    expect(call('/workspace/fv\\npx', 'tsx', 'job.js')).toEqual(local)
+  })
+
+  it('refuses it under no mount too, and still reads a program outside the workspace', () => {
+    const bare = workspace(files, { mount: null })
+    expect(bare.call(join(bare.root, 'fv\\python3'), 'job.py')).toEqual(local)
+    expect(bare.call(join(bare.root, 'fv\\env'), 'python3', 'job.py')).toEqual(local)
+    const { call, shell } = workspace(files)
+    expect(paths(call('/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('/usr/bin/env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('/usr/bin/python3 job.py'))).toEqual(['/workspace/job.py'])
+  })
+
+  it('names such a path neither as a file nor as outside the view, which only the view\'s own refusal of a path beyond it says', () => {
+    const { view, root } = workspace(files)
+    expect(view.named('/workspace/fv\\python3', root)).toBe('unnamed')
+    expect(view.named('/etc/passwd', root)).toBe('outside')
+    expect(view.locate('/workspace/fv\\python3', root)).toBe('outside')
+    // A program the view cannot name may have been placed; one beyond the view cannot have been, and is read by its basename.
+    const stand = (answer: 'outside' | 'unnamed') => ({ ...view, named: (name: string, base: string) => (name === '/elsewhere/python3' ? answer : view.named(name, base)) })
+    const form = ['/elsewhere/python3', 'job.py']
+    const read = (answer: 'outside' | 'unnamed') => readInterpreterCode({ forms: [form], chain: [form], typed: form, cwd: root, view: stand(answer) })
+    expect(read('unnamed')).toEqual(local)
+    expect(paths(read('outside'))).toEqual(['/workspace/job.py'])
+  })
+})
