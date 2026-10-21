@@ -12,9 +12,11 @@ export const JUDGE = 'judge'
 export const JUDGE_PASS_CONFIDENCE = 0.8
 
 /**
- * Whether the thorough stage answers an ask on its own (D91): the destructive floor's ask about an interpreter the policy
- * does not allow, and nothing else. Never a deny, a built-in floor reason, another reading limit, or the workspace's
- * destructive list, unless the quick stage rated it first (addendum 2 B).
+ * Whether the thorough stage answers an ask on its own in automated mode (D91, addendum 3 R1): the destructive floor's
+ * ask about an interpreter the policy does not allow, and nothing else, whatever the quick stage rated first. Never a
+ * deny, a built-in floor reason, another reading limit, or the workspace's destructive list: those go to a person, the
+ * quick stage's rating beside the action where its scope covers them. On request the thorough stage also rates any ask
+ * that scope covers, and its safe approves an interpreter ask alone, never a floor ask (addendum 3 R2).
  */
 export function judgeable(ask: Ask): boolean {
   return ask.rule === 'destructive_command' && ask.cause === 'interpreter'
