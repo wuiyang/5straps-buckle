@@ -601,6 +601,12 @@ function isInteractive(program: string, key: string): boolean {
  */
 const INTERACTIVE_PYTHON_MODULES = new Set(['pdb', 'code', 'asyncio', 'idlelib'])
 const DISCOVERING_PYTHON_MODULES = new Set(['unittest', 'pytest', 'timeit', 'runpy', 'pydoc', 'inspect', 'cProfile', 'profile', 'trace', 'doctest', 'pickle', 'pickletools'])
+/**
+ * A second `-m` among a python module's arguments as argparse, optparse, and getopt read one (fix brief 8, B25): the word
+ * `-m`, one starting with it (`-mhelper`, `-m=helper`), or a single-dash cluster carrying `m` (`-vmhelper`). A long option
+ * (`--mode`) is not one.
+ */
+const SECOND_MODULE = /^-[A-Za-z]*m/
 
 /** The refusal for a `python -m` module that runs code the reader does not show, or null for any other. */
 function pythonModuleRefusal(modules: readonly string[]): string | null {
@@ -782,9 +788,11 @@ function argumentsOf(program: string, args: readonly string[]): Arguments {
     if (program === 'python' && word === '-m' && index + 1 < args.length) {
       modules.push(args[++index]!)
       // What follows the module is its own arguments, each a name that may be a file; a second `-m` among them is a
-      // module the first may run by name, which the reader never shows (fix brief 7, B16).
+      // module the first may run by name, which the reader never shows (fix brief 7, B16): the word `-m`, one starting
+      // with it (`-mhelper`, `-m=helper`), or a single-dash cluster carrying `m` (`-vmhelper`), as argparse reads each
+      // (python 3.12.3 ran the planted helper for every spelling; fix brief 8, B25).
       candidates.push(...args.slice(index + 1))
-      secondModule = args.includes('-m', index + 1)
+      secondModule = args.slice(index + 1).some(arg => SECOND_MODULE.test(arg))
       break
     }
     if (AWKS.has(program) && (word === '-f' || word === '--file') && index + 1 < args.length) {

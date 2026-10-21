@@ -505,22 +505,26 @@ describe('the script an interpreter finds by its own rules', () => {
     expect(reading(shell('python3 -m json.tool < data.json'))).toMatchObject({ files: [], packages: [{ name: 'json' }] })
   })
 
-  it('refuses python -m of a module that runs or imports another module by name, and a second -m, fed or not (fix brief 7, B16)', () => {
+  it('refuses python -m of a module that runs or imports another module by name, and a second -m, fed or not (fix brief 7, B16; fix brief 8, B25)', () => {
     const { read, shell } = workspace({ 'job.py': 'print(1)\n', 'second.py': 'print(2)\n', 'decoy.py': 'print(3)\n', 'helper.py': 'print(4)\n', 'data.pkl': 'x', 'data.json': '{}\n' })
     const discovering = { kind: 'refused', reason: CODE_REFUSALS.discoveringModule, truncated: false }
-    // python 3.12.3 ran the planted module for runpy, pydoc, inspect, cProfile -m, profile -m, and trace --module.
+    // python 3.12.3 ran the planted module for runpy, pydoc, inspect, cProfile -m, profile -m, and trace --module, and a
+    // loader using argparse ran the planted helper for the second -m spelled `-mhelper`, `-m=helper`, and `-vmhelper`
+    // (fix brief 8, B25); profile and a second -m away from the module are pinned on their own (recheck 7, B16).
     const spellings = [
       'runpy decoy', 'pydoc decoy', 'inspect decoy', 'cProfile -m decoy', 'trace --count --module helper', 'profile -m decoy', 'doctest decoy',
       'pickle data.pkl', 'pickletools data.pkl', 'runpy pdb job.py', 'cProfile helper.py', 'outer -m helper',
+      'outer -mhelper', 'outer -m=helper', 'outer -vmhelper', 'profile decoy.py', 'coverage run -m helper',
     ]
     for (const spelling of spellings) {
       expect(read(['python3', '-m', ...spelling.split(' ')]), spelling).toEqual(discovering)
       expect(shell(`python3 -m ${spelling} < second.py`), spelling).toEqual(discovering)
     }
     expect(shell('python3 -m runpy code < second.py')).toEqual(discovering)
-    // A module of the workspace, and one that reads its argument as data, read as before.
+    // A module of the workspace, one that reads its argument as data, and a long option of the module read as before.
     expect(paths(read(['python3', '-m', 'helper']))).toEqual(['/workspace/helper.py'])
     expect(reading(read(['python3', '-m', 'json.tool', 'data.json']))).toMatchObject({ files: [{ path: '/workspace/data.json' }], packages: [{ name: 'json' }] })
+    expect(reading(read(['python3', '-m', 'outer', '--mode', 'x']))).toMatchObject({ files: [], packages: [{ name: 'outer' }] })
   })
 
   it('reads a runner\'s words with the tables of the runtime its package names, and refuses an option it cannot place (fix brief 4, G11)', () => {
