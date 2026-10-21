@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
+import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { SCRIPT_TEXT_REFUSAL } from '../common/services/judge/code-reader.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
@@ -412,5 +413,50 @@ describe('the quick stage\'s scope', () => {
     await call(await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'off' }), fakes), 'python3', ['job.py'])
     expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
     expect(fakes.judge.judge).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('a standard form that selects another workspace package (fix brief 8, B23)', () => {
+  // npm runs the selected package's script for `-w a`, `--workspace=a`, `--workspace a`, `-w=a`, `--workspaces`, `-ws`,
+  // `--ws`, and `--include-workspace-root -w a` (npm 11.19.0 printed that package's marker for each), and bun for
+  // `--filter a` and `-F a` (bun's documentation), while the working directory's package.json names another script;
+  // such a call is refused as one that changes its working directory, before any stage is asked.
+  function workspaced(config: BuckleConfig) {
+    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ workspaces: ['a'], scripts: { build: 'tsc -p .' } }))
+    mkdirSync(join(config.cwd, 'a'))
+    writeFileSync(join(config.cwd, 'a', 'package.json'), JSON.stringify({ scripts: { build: 'node decoy.js' } }))
+    writeFileSync(join(config.cwd, 'a', 'decoy.js'), 'console.log(1)\n')
+  }
+
+  it('refuses bun run with --filter or -F in automated mode, the thorough stage never asked', async () => {
+    const fakes = judges({ thorough: thorough('safe', 0.95) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'off' })
+    workspaced(config)
+    const runtime = await runtimeOf(config, fakes)
+    for (const args of [['run', '--filter', 'a', 'build'], ['run', '-F', 'a', 'build'], ['run', '--filter=a', 'build'], ['run', '-Fa', 'build'], ['--filter', 'a', 'run', 'build']]) {
+      const { response, entry, ran } = await call(runtime, 'bun', args)
+      expect(response, args.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, args.join(' ')).toBe(false)
+      expect(entry.judge, args.join(' ')).toMatchObject({ unavailable: CHANGES_DIRECTORY, passed: false })
+    }
+    expect(fakes.judge.judge).not.toHaveBeenCalled()
+  })
+
+  it('refuses each npm spelling under quick scope asks with npm on the destructive list, Jev never asked, and still shows the root text where the root script runs', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    workspaced(config)
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['npm *', 'pnpm *'] })
+    for (const args of [['run', 'build', '-w', 'a'], ['run', 'build', '--workspace=a'], ['run', 'build', '--workspace', 'a'], ['run', 'build', '-w=a'], ['run', 'build', '--workspaces'], ['run', 'build', '-ws'], ['run', 'build', '--ws'], ['run', 'build', '--include-workspace-root', '-w', 'a'], ['-w', 'a', 'run', 'build']]) {
+      const { response, entry } = await call(runtime, 'npm', args)
+      expect(response, args.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(entry.judge, args.join(' ')).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    }
+    expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
+    // After a `--` the words are the script's own, and pnpm 10.33.2 hands an option after the script name to the script: the root script runs.
+    await call(runtime, 'npm', ['run', 'build', '--', '-w', 'a'])
+    await call(runtime, 'pnpm', ['run', 'build', '--filter', 'a'])
+    expect(fakes.shownQuick.map(input => [input.command, input.standardScript, input.scriptText])).toEqual([['npm run build -- -w a', true, 'tsc -p .'], ['pnpm run build --filter a', true, 'tsc -p .']])
   })
 })

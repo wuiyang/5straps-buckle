@@ -186,6 +186,15 @@ describe('a call that changes its working directory before its code runs (fix br
     expect(changesDirectory(commandFormsOf({ command: 'sh', args: ['-c', 'python3 job.py'] }))).toBe(false)
   })
 
+  it('counts a word selecting another workspace package: npm\'s -w, --workspace, --workspaces, -ws, --ws, and --include-workspace-root, and bun\'s --filter and -F (fix brief 8, B23)', () => {
+    const selects = (words: string[]) => changesDirectory(commandFormsOf({ command: words[0]!, args: words.slice(1) }))
+    for (const words of [['npm', 'run', 'build', '-w', 'a'], ['npm', 'run', 'build', '--workspace=a'], ['npm', 'run', 'build', '--workspace', 'a'], ['npm', 'run', 'build', '-w=a'], ['npm', 'run', 'build', '--workspaces'], ['npm', 'run', 'build', '-ws'], ['npm', 'run', 'build', '--ws'], ['npm', 'run', 'build', '--include-workspace-root'], ['npm', '-w', 'a', 'run', 'build'], ['bun', 'run', '--filter', 'a', 'build'], ['bun', 'run', '-F', 'a', 'build'], ['bun', 'run', '--filter=a', 'build'], ['bun', '--filter', 'a', 'run', 'build']]) {
+      expect(selects(words), words.join(' ')).toBe(true)
+    }
+    // After a `--` the words are the script's own, and pnpm hands an option after the script name to the script.
+    for (const words of [['npm', 'run', 'build', '--', '-w', 'a'], ['pnpm', 'run', 'build', '--filter', 'a'], ['npm', 'run', 'build']]) expect(selects(words), words.join(' ')).toBe(false)
+  })
+
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })

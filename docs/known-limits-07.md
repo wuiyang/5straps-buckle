@@ -39,8 +39,9 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 
 ## Not yet read
 
-- A project `.npmrc` holding `node-options` preloads code under `npx` with no variable set; the
-  reader does not read `.npmrc`. Writing one asks, as a sensitive file does.
+- A project `.npmrc` holding `node-options` preloads code under `npx` with no variable set, and one
+  holding `workspace=` or `workspaces=` runs another package's script under `npm run` with no option
+  typed; the reader does not read `.npmrc`. Writing one asks, as a sensitive file does.
 - `pnpm_config_*` is not a code-loading name: pnpm 10.33.2 ignored `pnpm_config_node_options`,
   while `npm_config_node_options` reached its scripts and is refused.
 

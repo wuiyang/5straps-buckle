@@ -38,20 +38,25 @@ const DIRECTORY_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'prevd', 'ne
 
 /**
  * The options, by program, that run a command or a script from another folder: env's and sudo's (read among the
- * wrapper's own words alone, so an option of the command after them is not one), and those of the runtimes and package
- * managers that take a folder to run in (read anywhere before a `--`, which fails closed for a script's own argument).
+ * wrapper's own words alone, so an option of the command after them is not one), those of the runtimes and package
+ * managers that take a folder to run in, and the words that select another workspace package, whose script then runs in
+ * that package's folder while the working directory's package.json names another: npm's `-w`, `--workspace`,
+ * `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root` (npm 11.19.0 ran the selected package's script for each,
+ * bare or as `=value`), and bun's `--filter` and `-F` (fix brief 8, B23). Each is read anywhere before a `--`, bare, with
+ * `=value`, or by its short letter's prefix, which fails closed for a script's own argument.
  */
 const WRAPPER_CHDIR: Readonly<Record<string, string>> = { env: 'C', sudo: 'D' }
 const PROGRAM_CHDIR: Readonly<Record<string, readonly string[]>> = {
-  bun: ['--cwd'], 'ts-node': ['--cwd'], ruby: ['-C', '-X'],
+  bun: ['--cwd', '--filter', '-F'], 'ts-node': ['--cwd'], ruby: ['-C', '-X'],
   npx: ['-C', '--prefix', '--dir', '--cwd'], pnpx: ['-C', '--prefix', '--dir', '--cwd'], bunx: ['-C', '--prefix', '--dir', '--cwd'],
-  npm: ['-C', '--prefix', '--dir', '--cwd'], pnpm: ['-C', '--prefix', '--dir', '--cwd'], yarn: ['-C', '--prefix', '--dir', '--cwd'],
+  npm: ['-C', '--prefix', '--dir', '--cwd', '-w', '--workspace', '--workspaces', '--ws', '--include-workspace-root'], pnpm: ['-C', '--prefix', '--dir', '--cwd'], yarn: ['-C', '--prefix', '--dir', '--cwd'],
 }
 
 /**
  * Whether a call moves to another folder before its code runs (fix brief 2, H2), so the code read at the call's own
  * working directory may not be the code that runs: a builtin of DIRECTORY_COMMANDS anywhere in it, `env -C` or `--chdir`,
- * `sudo -D` or `--chdir`, `bun --cwd`, or a runner's or package manager's `-C`, `--prefix`, `--dir`, or `--cwd`.
+ * `sudo -D` or `--chdir`, `bun --cwd`, a runner's or package manager's `-C`, `--prefix`, `--dir`, or `--cwd`, or a word
+ * selecting another workspace package, npm's `-w` and bun's `--filter` among them (fix brief 8, B23).
  */
 export function changesDirectory(forms: CommandForms): boolean {
   const all = allForms(forms)
