@@ -1325,3 +1325,26 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
     expect(paths(read('outside'))).toEqual(['/workspace/job.py'])
   })
 })
+
+describe('a runner package whose version part names a folder (fix brief 8, B22)', () => {
+  // npm-package-arg reads a spec whose part after the name's @ starts with `.` as a directory, so npm 11.19.0 ran the
+  // working directory's bin for `npx eslint@.` and `.decoy`'s for `npx eslint@.decoy`, while the reader named the registry
+  // package and showed job.ts as tsx's script; the version part is now classified as npm-package-arg classifies it.
+  const files = { 'package.json': '{"name":"tsx","bin":{"tsx":"cli.js"}}\n', 'cli.js': 'console.log(1)\n', '.decoy/package.json': '{"name":"eslint","bin":{"eslint":"cli.js"}}\n', '.decoy/cli.js': 'console.log(2)\n', 'job.ts': 'export {}\n' }
+  const source = { kind: 'refused', reason: CODE_REFUSALS.runnerSource, truncated: false }
+
+  it('refuses a version part starting with a dot, for every runner and in shell text, and one no version, range, or tag spells', () => {
+    const { call, shell } = workspace(files)
+    for (const words of [['npx', 'eslint@.'], ['npx', 'eslint@..'], ['npx', 'eslint@.decoy'], ['npx', 'tsx@.', 'job.ts'], ['npx', '@scope/pkg@.'], ['pnpx', 'eslint@.decoy'], ['bunx', 'eslint@.decoy'], ['pnpx', 'tsx@.', 'job.ts'], ['bunx', 'tsx@.', 'job.ts'], ['npx', 'eslint@1@2'], ['npx', 'eslint@$HOME'], ['npx', 'eslint@a%2fb'], ['npx', 'eslint@>=9 <10']]) {
+      expect(call(words[0]!, ...words.slice(1)), words.join(' ')).toEqual(source)
+    }
+    for (const text of ['npx eslint@.', 'npx eslint@.decoy', 'npx tsx@. job.ts', 'npx @scope/pkg@.', 'pnpx eslint@.decoy', 'bunx eslint@.decoy']) expect(shell(text), text).toEqual(source)
+  })
+
+  it('still names a package with a version, a range, or a tag, and reads the script a versioned runtime runs', () => {
+    const { call } = workspace(files)
+    for (const spec of ['eslint@9.0.0', 'eslint@^9', 'eslint@~9.0.0', 'eslint@latest', 'eslint@>=9.0.0', 'eslint@1.0.0-beta.1+build.5', 'eslint@1.x']) expect(reading(call('npx', spec)).packages.map(item => item.name), spec).toEqual(['eslint'])
+    expect(reading(call('npx', '@scope/pkg@1')).packages.map(item => item.name)).toEqual(['@scope/pkg'])
+    expect(paths(call('npx', 'tsx@^4', 'job.ts'))).toEqual(['/workspace/job.ts'])
+  })
+})

@@ -949,11 +949,15 @@ function runnerArguments(args: readonly string[]): Arguments {
 
 /**
  * A plain registry spec as npm-package-arg reads one: a name, or `@scope/name`, with an optional `@` and a version, a
- * range, or a tag holding no slash, backslash, or colon. A name starting with `.` or `~`, any slash outside a scope, a
- * backslash, a scheme or a drive letter (`file:`, `link:`, `github:`, `git+https:`, `C:`), and a tarball name are not;
- * npm exec installs such a package from a folder, a file, git, or a URL and runs its bin with no prompt (fix brief 7, B13).
+ * range, or a tag. A name starting with `.` or `~`, any slash outside a scope, a backslash, a scheme or a drive letter
+ * (`file:`, `link:`, `github:`, `git+https:`, `C:`), and a tarball name are not; npm exec installs such a package from a
+ * folder, a file, git, or a URL and runs its bin with no prompt (fix brief 7, B13). The part after the name's `@` is
+ * classified as npm-package-arg's isPosixFile classifies it: one starting with `.` names a folder (npm 11.19.0 ran the
+ * working directory's bin for `npx eslint@.`, and `.decoy`'s for `npx eslint@.decoy`), and `~/`, `/`, `\`, and a drive
+ * letter's colon are no characters of a version, a range, or a tag, nor is anything outside the set a version, a range,
+ * or a tag npm-package-arg reads as a registry spec holds (a space among them, which fails closed; fix brief 8, B22).
  */
-const REGISTRY_SPEC = /^(?:@[^\s/\\:@]+\/)?[^\s/\\:@.~][^\s/\\:@]*(?:@[^/\\:]*)?$/
+const REGISTRY_SPEC = /^(?:@[^\s/\\:@]+\/)?[^\s/\\:@.~][^\s/\\:@]*(?:@(?!\.)[A-Za-z0-9\-_.!~*'()<>=^|+]*)?$/
 const TARBALL = /\.(?:tgz|tar\.gz|tar)$/i
 
 function registrySpec(word: string): boolean {

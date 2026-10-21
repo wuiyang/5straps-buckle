@@ -748,3 +748,19 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
+
+describe('a runner package whose version part names a folder (fix brief 8, B22)', () => {
+  it('is not rated: npx eslint@.decoy asks with the runner reason, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    mkdirSync(join(config.cwd, '.decoy'))
+    writeFileSync(join(config.cwd, '.decoy', 'package.json'), '{"name":"eslint","bin":{"eslint":"cli.js"}}\n')
+    writeFileSync(join(config.cwd, '.decoy', 'cli.js'), 'console.log(1)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const { response, entry, ran } = await call(runtime, {}, ['npx', 'eslint@.decoy'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.runnerSource, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
