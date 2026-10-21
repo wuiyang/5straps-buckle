@@ -13,6 +13,9 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
   runner is never a standard script (`./bin/npx vitest run`). An absolute path outside the
   workspace and every mount is still rated (`/usr/bin/env python3 job.py`, `/bin/bash -c`), but
   one that names no file is not.
+- An absolute program path holding a backslash is not rated on Linux and macOS, where the backslash
+  is part of the file's name (`/workspace/fv\python3`), so the file is one the agent could have
+  placed.
 - Any relative program path holding a separator is not rated, even one that seems to leave the
   workspace: the sandbox runs the call at `/workspace` under a root holding each mount at its
   target, so `../data/fv/bin/python3` reaches the mount at `/data`, and `../workspace/x` the
@@ -23,7 +26,17 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
   so they ask a person under every shell, though bash and zsh apply `FOO+=x` as an assignment.
 - A runner package named by anything but a registry name, with an optional version or range, is
   not rated: a path (`./tool`, `/abs`, `~/tool`), `file:`, `link:`, a git or other scheme, GitHub
-  shorthand (`user/repo`), or a tarball, alone or after the name's `@` (`npx tsx@file:./tool`).
+  shorthand (`user/repo`), or a tarball, alone or after the name's `@` (`npx tsx@file:./tool`), and
+  a version part that starts with a dot, which names a folder (`npx eslint@.`, `npx tsx@. job.ts`).
+
+## Another package's script
+
+- A standard form that selects another workspace package is not rated: npm's `-w`, `--workspace`,
+  `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root`, and bun's `--filter` and `-F`, bare
+  or with `=value`, run the selected package's script while the working directory's `package.json`
+  names another. The words after a `--` are the script's own, and pnpm hands an option after the
+  script name to the script, so `npm run build -- -w a` and `pnpm run build --filter a` are rated
+  with the root's text.
 
 ## Over-refusals kept
 
@@ -35,7 +48,10 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 - A standard script inside shell text that is not one simple command (`bash -c 'echo hi; npx vitest
   run'`) asks a person, as a bun one already did.
 - A standard script naming a `package.json` script asks a person where the working directory's
-  `package.json` is missing, cannot be read or parsed, or holds no such script; npm would fail too.
+  `package.json` is missing, cannot be read or parsed, or holds no such script, even where the tool
+  would still run something: `npm start` falls back to `node server.js`, and npm runs a parent
+  folder's script where the working directory has no `package.json`. An allowed command screened
+  under `approval.quickJudge all` is rated on its command line instead, with no script text.
 
 ## Not yet read
 

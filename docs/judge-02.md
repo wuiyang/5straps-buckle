@@ -1,8 +1,8 @@
 # The decision AI: what it reads and sends
 
 How the [decision AI](judge.md), the optional model check Buckle (the approval and sandbox runtime)
-runs with the node's own keys, reads a command, and what leaves the machine. Both
-stages, Jev (TypeSafe AI's quick decision model) and the thorough model, are shown the same thing.
+runs with the node's own keys, reads a command, and what leaves the machine. Both stages, Jev
+(TypeSafe AI's quick decision model) and the thorough model, see the same thing.
 
 ## The code
 
@@ -44,12 +44,13 @@ command under `approval.quickJudge all` runs unscreened. That covers shell text 
 simple command; a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,
 `PYTHONPATH`, `SHELL`, `HOME`, `ARGV0`, or npm's `npm_config_node_options` (the audit entry names
 it, never its value); a change of working directory (`cd`, `chdir`, `pushd`, `env -C`, `sudo -D`,
-or `--cwd`); a program named by a path inside the workspace or a mount, an interpreter, wrapper,
-shell, or runner alike, or by any relative path holding a separator, or a command word that reads
-as an assignment (`FOO=fv/x`); a runner package named by a path or a source other than the registry
-(`npx ./tool`, `npx github:user/repo`); an option, subcommand, `python3 -m` module (`runpy`, `pydoc`,
-`trace`, and other runners among them, or a second `-m`), interactive flag, import, or config file
-the reader does not model; compiled Python beside a module it would show,
+or `--cwd`), or a word selecting another workspace package (npm `-w`, bun `--filter`); a program
+named by a path inside the workspace or a mount, an interpreter, wrapper, shell, or runner alike, by
+any relative path holding a separator, or by an absolute path holding a backslash, or a command word
+that reads as an assignment (`FOO=fv/x`); an interpreter behind `xargs`; a runner package named by
+anything but a registry name and version (`npx ./tool`, `npx eslint@.`); an option, subcommand,
+`python3 -m` module (`runpy`, `pydoc`, and other runners, or a second `-m`), interactive flag,
+import, or config file the reader does not model; compiled Python beside a module it would show,
 or in a folder it cannot list; code on an input nothing feeds (`python3 -`); code past 50 files or
 512 KiB; and a script, import, or argument it cannot find, may not read, or finds is not text.
 [Known limits, part six](known-limits-06.md) lists each.
@@ -63,9 +64,8 @@ package's code is never read; Socket covers that risk.
 
 Socket is a supply-chain security service that scores open source packages and raises alerts, such
 as install scripts or known malware. Where the node holds `BUCKLE_SOCKET_API_KEY`, Buckle asks
-Socket about each package version, at most 50 a rating (past that the input says
-`packagesTruncated`), and shows both stages Socket's scores (overall, supply chain, quality,
-maintenance, vulnerability, and license, from 0 to 1) and its alerts by type and severity.
+Socket about each package version, at most 50 a rating (then `packagesTruncated` is set), and shows
+both stages its six scores, from 0 to 1, and its alerts by type and severity.
 Socket is advisory: with no key, a timeout of 10 seconds, or an error, each summary is empty and the
 rating runs, and a verdict reached while Socket failed is not kept. Buckle sends Socket the package
 URLs alone, with the key as HTTP basic auth.
@@ -83,8 +83,7 @@ workspace's own scripts leave the machine. Never: a value from the node's own en
 the agent could not read, a token, or a key in the body (each key goes in its `Authorization`
 header). A host path the agent typed stays in the command.
 
-What Jev is sent at most, and the instructions both stages are asked under, are on [the next
-pages](judge-04.md).
+Jev's size cap and both stages' instructions are on [the next page](judge-04.md).
 
 ## Failing closed
 

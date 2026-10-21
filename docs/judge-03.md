@@ -56,7 +56,8 @@ verdict yet.
 An `unavailable` reason says why no stage rated a command; the ask then goes to a person, and an
 allowed command under `approval.quickJudge all` runs unscreened. Shell text is rated only as one
 simple command, as [what it reads](judge-02.md) describes. Besides a variable that changes what
-code runs, a change of working directory, code past the caps, and a file it cannot find or read,
+code runs (npm's `npm_config_*` among them), a change of working directory, code past the caps, and
+a file it cannot find or read,
 the reader's reasons include: "shell text the reader does not rate whole", "an option the
 reader does not know", "a subcommand the reader does not model", "an interactive flag reads
 standard input as code", "a module that discovers or evaluates code the reader does not show",
@@ -64,15 +65,19 @@ standard input as code", "a module that discovers or evaluates code the reader d
 reader does not model", "the code runs compiled Python the reader cannot show", "a config file the
 reader could not parse", "the interpreter is a program inside the workspace", "the call sets the
 program name the interpreter reads", "the call splits a word into words the reader does not read
-again", "the runner runs a package from a path or a source the reader does not show", and "the
-package.json script the standard script names could not be read".
+again", "the runner runs a package from a path or a source the reader does not show", "the call hands
+the interpreter words it reads from a file or puts in place of its own", and "the package.json script
+the standard script names could not be read".
 
 The shell-text reason also covers `flock -c` text, a heredoc a shell reads as its script (`busybox
-sh <<EOF`), and, inside shell text, a wrapper that sets the program name or splits a word (`exec
--a`, `env -a`, `env -S`) and a quoted or `+=` command word that reads as an assignment. The
-local-program reason covers a wrapper, a shell, and a runner named by a path inside the workspace or
-a mount, any relative program path holding a separator, and a command word that reads as an
-assignment. The interactive reason covers `php -a` after `-f` and `python3 -m pdb`, `code`,
+sh <<EOF`), one fed to another interpreter holding a line that starts with an interpreter's name,
+and, inside shell text, a wrapper that sets the program name or splits a word (`exec -a`, `env -a`,
+`env -S`) and a quoted or `+=` command word that reads as an assignment. The local-program reason
+covers a wrapper, a shell, and a runner named by a path inside the workspace or a mount, any relative
+program path holding a separator, an absolute one holding a backslash, and a command word that reads
+as an assignment; the runner reason, a version part naming a folder (`npx eslint@.`); the
+working-directory reason, a word selecting another workspace package (npm `-w`, bun `--filter`). The
+interactive reason covers `php -a` after `-f` and `python3 -m pdb`, `code`,
 `asyncio`, or `idlelib`; the module reason, `-m unittest`, `pytest`, `timeit`, `runpy`, `pydoc`,
 `inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, and `pickletools`, and a second
 `-m`; the unknown-option reason, a `python3 -X` value off the reader's short list (`pycache_prefix`

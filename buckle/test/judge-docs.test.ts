@@ -40,9 +40,9 @@ describe('bun run on the pages', () => {
 })
 
 describe('the reasons a reading refuses with', () => {
-  it('are quoted on judge-03.md as an approver reads them (fix brief 4; fix brief 6, B9; fix brief 7, D7)', () => {
+  it('are quoted on judge-03.md as an approver reads them (fix brief 4; fix brief 6, B9; fix brief 7, D7; fix brief 8, D8)', () => {
     const page = pages.find(item => item.name === 'judge-03.md')!.text
-    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, SCRIPT_TEXT_REFUSAL]) {
+    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, CODE_REFUSALS.xargsWords, SCRIPT_TEXT_REFUSAL]) {
       expect(page, reason).toContain(`"${reason}"`)
     }
   })

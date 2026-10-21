@@ -318,8 +318,9 @@ function printUsage(): CliResult {
                                    One request whole, and the code_run script that made it
   buckle approvals judge <token> [--approve-if-safe] [--workspace <name>]
                                    The decision AI's verdicts on one request, beside its whole action;
-                                   --approve-if-safe approves an interpreter request once where the thorough
-                                   stage rates it safe at 0.8 or above, and never one at the destructive floor
+                                   --approve-if-safe approves an interpreter request, or an allowed command the
+                                   quick stage turned into an ask, once where the thorough stage rates it safe
+                                   at 0.8 or above, and never one at the destructive floor
   buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed

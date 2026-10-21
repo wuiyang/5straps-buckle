@@ -66,6 +66,8 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   `pydoc`, `inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, or `pickletools`, or a
   second `-m` among a module's arguments; npm's config variables (`npm_config_node_options`,
   `NPM_CONFIG_USERCONFIG`); and a quoted or `+=` command word the rules read as an assignment.
+- An interpreter behind `xargs`, whose words come from a file (`-a`) or a replace string (`-I`), is
+  not rated.
 - Compiled Python beside a module the reader would show (`__pycache__/<name>.*.pyc`, `<name>.pyc`,
   or an extension module), in a folder the reader cannot list, or moved by `-X pycache_prefix`, is
   not rated either, since Python may run it in place of the source. Python writes those caches
@@ -73,7 +75,8 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 - `node .` at the root of the workspace or a mount asks: node tries the file beside that folder
   first, which lies beyond what the reader sees.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
-  under `approval.quickJudge all` in automated mode, or when the destructive list names them.
+  under `approval.quickJudge all` in automated mode, or, under `asks` or `all`, when the destructive
+  list names them; a person still decides.
 
 The round's further refusals, and the limits that are not about reading, are on [part
 seven](known-limits-07.md).

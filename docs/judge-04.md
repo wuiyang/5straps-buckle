@@ -21,8 +21,8 @@ Buckle sends Jev at most 160 KiB of JSON; a larger call is not sent to Jev, and 
 without it. Each `<image:` in it is sent as `<image :`, which TypeSafe's SDK would refuse.
 
 Jev's verdict is a rating alone: it never runs a call, and on request it never approves one. The
-thorough model's `safe` at 0.8 or above runs or approves an interpreter ask, and nothing at the
-destructive floor.
+thorough model's `safe` at 0.8 or above runs or approves an interpreter ask, approves on request an
+allowed command Jev turned into an ask under `all`, and nothing at the destructive floor.
 
 ## The node's keys
 
