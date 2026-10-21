@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { FLOOR_WARNING } from '../common/domain/approval-instruction.js'
 import { loadConfig } from '../common/runtime/config.js'
+import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
@@ -241,8 +243,38 @@ describe('buckle approvals judge', () => {
       expect(result.out, requestId).toMatch(/ {2}judge: {4}a command at the destructive floor always needs a person; quick: safe \(0\.95, jev-1\.13\.0, \d+ ms\); thorough: safe \(0\.99, GPT-6-luna, \d+ ms\)/)
       expect(result.out, requestId).toContain(`A command at the destructive floor always needs a person, so nothing is approved; ${token} is still waiting`)
       expect(runtime.approvalService.waitingAsk(token), requestId).toBeDefined()
+      // Without --approve-if-safe the gate's own guard alone keeps the thorough stage's safe from marking a floor ask passed (fix brief 8, B26).
+      const rated = await runtime.judgeAsk(token)
+      expect(rated.kind, requestId).toBe('rated')
+      if (rated.kind === 'rated') expect(rated.judged, requestId).not.toHaveProperty('passedBy')
+      const shown = await buckle(['approvals', 'judge', token])
+      expect(shown.exitCode, requestId).toBe(0)
+      expect(shown.out, requestId).toContain(`Nothing is approved; ${token} is still waiting`)
     }
     expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    // No audit entry of a floor ask carries passedBy: a pass recorded for the wrong ask (fix brief 8, B26).
+    expect(runtime.actions.read(200).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
+    await manager.close()
+  })
+
+  it('keeps the floor\'s line on a floor ask whose reading refuses, approving nothing and asking no stage (fix brief 8, B26)', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.99 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.95 })
+    const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url, quick: 'asks' })
+    // sudo -D changes the working directory before the command runs, so no stage is shown it (fix brief 2, H2).
+    const { token } = await ask(runtime, 'floor-unread', { command: 'sudo', args: ['-D', '/tmp', 'ls'] })
+    const rated = await runtime.judgeAsk(token)
+    expect(rated).toMatchObject({ kind: 'rated', judged: { cause: 'floor', thorough: { result: { kind: 'unavailable', reason: CHANGES_DIRECTORY } } } })
+    for (const flags of [[], ['--approve-if-safe']]) {
+      const result = await buckle(['approvals', 'judge', token, ...flags])
+      expect(result.exitCode, flags.join()).toBe(1)
+      expect(result.out, flags.join()).toContain(`  judge:    ${FLOOR_WARNING}; no verdict: ${CHANGES_DIRECTORY}`)
+      expect(result.out, flags.join()).toContain(`The decision AI gave no verdict, so nothing is approved; ${token} is still waiting`)
+    }
+    expect(judge.seen).toHaveLength(0)
+    expect(jev.seen).toHaveLength(0)
+    expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
+    expect(runtime.actions.read(200).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
     await manager.close()
   })
 })

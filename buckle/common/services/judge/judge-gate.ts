@@ -364,7 +364,8 @@ export function createJudgeGate(input: {
       const thoroughApplies = thoroughReady && (call.ask ? judgeable(call.ask) || quickApplies : quickApplies)
       if (!quickApplies && !thoroughApplies) return null
       const asked = shown(effect, call, call.ask === null, call.ask?.reason ?? null)
-      if (typeof asked === 'string') return unread(call.subject, asked, thoroughApplies ? 'thorough' : 'quick')
+      // The ask's cause stays on a refused reading too, so a floor ask's line keeps the floor's warning (fix brief 8, B26).
+      if (typeof asked === 'string') return { ...unread(call.subject, asked, thoroughApplies ? 'thorough' : 'quick'), ...(call.ask?.cause ? { cause: call.ask.cause } : {}) }
       const command = prepared(asked, call.signal)
       // The owner asked, so every stage that applies rates it, and both verdicts are shown; only the thorough stage's safe
       // verdict approves (addendum 3 R1), and never a floor ask (R2).
