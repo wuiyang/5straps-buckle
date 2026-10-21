@@ -108,11 +108,46 @@ describe('an allowed command, with the quick stage on for all', () => {
   it('rates npm run dev, which never asks on its own, as a standard script on its command line alone', async () => {
     const shown: JudgeInput[] = []
     const quickJudge: QuickJudge = { quick: vi.fn(async (input: JudgeInput) => { shown.push(input); return quick('safe', 0.99) }) }
-    const config = node()
-    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ scripts: { dev: 'vite' } }))
-    const runtime = await runtimeOf(config, { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
+    const runtime = await runtimeOf(node(), { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
     expect((await call(runtime, 'npm', ['run', 'dev'])).response).toMatchObject({ outcome: 'ok' })
-    expect(shown[0]).toMatchObject({ command: 'npm run dev', standardScript: true, files: [], interpreters: [], scriptText: 'vite' })
+    expect(shown[0]).toMatchObject({ command: 'npm run dev', standardScript: true, files: [], interpreters: [] })
+    // No package.json: the screen still rates the command line, with no script text (fix brief 8, B24).
+    expect(shown[0]).not.toHaveProperty('scriptText')
+  })
+
+  it('shows the package.json script\'s text where it reads, and rates the command line alone where it does not, as before (fix brief 8, B24)', async () => {
+    // The agent writes package.json, so a file the reader refuses must not switch the screen off: npm 11.19.0 ran the
+    // script of a 70 KB package.json, past the manifest limit, and pnpm 10.33.2 ran a planted node_modules/.bin/build for
+    // `pnpm build` with no such script. Jev rates each on its command line, and its danger still turns the run into an ask.
+    const large = JSON.stringify({ scripts: { build: 'tsc -p .' }, padding: 'x'.repeat(70_000) })
+    const rows: Array<[string, string, string[], string | undefined, JudgeLevel]> = [
+      [JSON.stringify({ scripts: { dev: 'vite' } }), 'npm', ['run', 'dev'], 'vite', 'safe'],
+      [large, 'npm', ['run', 'build'], undefined, 'safe'],
+      [large, 'npm', ['run', 'build'], undefined, 'danger'],
+      [JSON.stringify({ scripts: { dev: 'vite' } }), 'pnpm', ['build'], undefined, 'danger'],
+    ]
+    for (const [manifest, command, args, scriptText, level] of rows) {
+      const shown: JudgeInput[] = []
+      const quickJudge: QuickJudge = { quick: vi.fn(async (input: JudgeInput) => { shown.push(input); return quick(level, 0.91) }) }
+      const config = node()
+      writeFileSync(join(config.cwd, 'package.json'), manifest)
+      const runtime = await runtimeOf(config, { quickJudge, judge: fakes(quick('safe', 0.99)).judge })
+      const label = `${command} ${args.join(' ')} ${level}`
+      const { response, entry, ran } = await call(runtime, command, [...args])
+      expect(quickJudge.quick, label).toHaveBeenCalledTimes(1)
+      expect(shown[0], label).toMatchObject({ command: `${command} ${args.join(' ')}`, standardScript: true, files: [] })
+      if (scriptText === undefined) expect(shown[0], label).not.toHaveProperty('scriptText')
+      else expect(shown[0]!.scriptText, label).toBe(scriptText)
+      if (level === 'safe') {
+        expect(response, label).toMatchObject({ outcome: 'ok' })
+        expect(ran, label).toBe(true)
+        expect(entry.judge, label).toMatchObject({ passed: false, screened: true })
+      } else {
+        expect(response, label).toMatchObject({ outcome: 'approval_required' })
+        expect(ran, label).toBe(false)
+        expect(entry.judge, label).toMatchObject({ quick: { level: 'danger' }, passed: false, flagged: true, screened: true })
+      }
+    }
   })
 
   it('runs once a person approves the ask Jev raised, sent again with the approval\'s token', async () => {

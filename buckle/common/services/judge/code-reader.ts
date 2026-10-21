@@ -1359,8 +1359,10 @@ export const SCRIPT_TEXT_REFUSAL = 'the package.json script the standard script 
 /**
  * The text of the script `name` in the working directory's package.json, read as the reader reads a manifest: through the
  * agent's view, beneath its folder and never through a link out of it, a leading byte order mark dropped (addendum 3 R3).
- * A missing, unreadable, or unparsed manifest, or one without that script, refuses with SCRIPT_TEXT_REFUSAL, as npm would
- * fail too. The text is context for the stages, never code the reader shows.
+ * A missing, unreadable, or unparsed manifest, or one without that script, refuses with SCRIPT_TEXT_REFUSAL, even where
+ * the tool would still run something (`npm start` falls back to `node server.js`, and npm runs a parent folder's script
+ * where the working directory has no package.json); for an allowed command screened under `all` the gate rates the
+ * command line instead (fix brief 8, B24). The text is context for the stages, never code the reader shows.
  */
 export function packageScript(name: string, cwd: string, view: CodeView): string | { refused: string } {
   const refusal = { refused: SCRIPT_TEXT_REFUSAL }

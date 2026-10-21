@@ -143,9 +143,10 @@ export function createJudgeGate(input: {
    * allowed command (`allowed`), the code of every interpreter it runs. A reason in place of it where the code cannot be
    * read whole, where the call sets a variable that changes what code runs, which no stage could see run, where it
    * changes its working directory before the code runs, so the code read at its own may not be the code that runs, or
-   * where its runtime loads variables from a file the reader does not follow (fix brief 3, F2).
+   * where its runtime loads variables from a file the reader does not follow (fix brief 3, F2). `screened` says the
+   * quick stage screens an allowed command under `all`, which a standard script's unread package.json does not refuse.
    */
-  function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null): JudgeInput | string {
+  function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null, screened = false): JudgeInput | string {
     // The call's env argument, and every assignment its own words and shell text make (fix brief 2, H3).
     const forms = commandFormsOf(effect)
     const assigned = assignedVariables(effect, forms)
@@ -187,7 +188,10 @@ export function createJudgeGate(input: {
     const scriptForm = !standardScript ? null : standardForm(typed) ? typed : running.length === 1 ? running[0]! : null
     const scriptName = scriptForm === null ? null : packageScriptName(scriptForm)
     const script = scriptName === null ? null : packageScript(scriptName, cwd, input.view)
-    if (script !== null && typeof script !== 'string') return script.refused
+    // An ask whose script text cannot be read goes to a person (addendum 3 R3). An allowed command screened under `all` is
+    // rated on its command line instead, with no scriptText, as before R3: screen() is unchanged (R2), and the agent
+    // writes package.json, so a file it makes unreadable must not switch the screen off (fix brief 8, B24).
+    if (script !== null && typeof script !== 'string' && !screened) return script.refused
     const shownCwd = sandboxName(cwd)
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.
     const program = effect.shownAs ?? effect.command
@@ -200,7 +204,7 @@ export function createJudgeGate(input: {
       packagesTruncated: false,
       truncated: false,
       standardScript,
-      ...(script === null ? {} : { scriptText: clippedReasoning(script) }),
+      ...(typeof script === 'string' ? { scriptText: clippedReasoning(script) } : {}),
       policy: lists,
       cwd: shownCwd,
       mounts: [{ target: shownRoot, access: 'read-write' }, ...paths.mounts.filter(mount => !mount.scratch && mount.target !== mount.source).map(mount => ({ target: mount.target, access: mount.access === 'rw' ? 'read-write' as const : 'read-only' as const }))],
@@ -346,7 +350,7 @@ export function createJudgeGate(input: {
         if (!call.asked.has(subject) && !commands.has(subject)) commands.set(subject, effect)
       }
       return Promise.all([...commands].map(async ([subject, effect]): Promise<JudgedAsk> => {
-        const asked = shown(effect, call, true, null)
+        const asked = shown(effect, call, true, null, true)
         if (typeof asked === 'string') return { ...unread(subject, asked, 'quick'), screened: true }
         const command = prepared(asked, call.signal)
         const rating = await quick(command, call.signal)
