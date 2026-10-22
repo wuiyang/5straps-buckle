@@ -77,6 +77,13 @@ const QuestionDetailsSchema = z.object({
   judge: z.string().optional(),
 })
 
+/**
+ * How close to its expiry a question that ends still timed out: the requester's timer is set from the clock, and on a
+ * busy loop it fires up to a millisecond before the clock reaches the expiry (fix brief 1, H3). Far below the 400 ms poll
+ * that withdraws an expired ask, so an answer given elsewhere this late is the rare case.
+ */
+const TIMER_JITTER_MS = 50
+
 /** The terminal's consumer, told when the process stops, so a question it drops then says so on its prompt row (C4). */
 export interface TerminalConsumer extends CliConsumer {
   /** setupCli's close is under way: a question dropped from now on ends with `[stopped]`. */
@@ -117,12 +124,13 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
 
   /**
    * Why a question on screen ended unanswered: nothing after Ctrl-C, as the shutdown lines follow; `[timeout]` by the
-   * clock, since the poll that withdraws an expired ask often ends its question before the requester's own timer does;
+   * clock, within TIMER_JITTER_MS, since the poll that withdraws an expired ask often ends its question before the
+   * requester's own timer does;
    * `[stopped]` once the process stops; `[no longer waiting]` for an answer given elsewhere or a call withdrawn.
    */
   const ending = (question: ApprovalQuestion): string | null => {
     if (interrupted.signal.aborted) return null
-    if (remainingMs(question.expiresAt) === 0) return '[timeout]'
+    if (remainingMs(question.expiresAt) <= TIMER_JITTER_MS) return '[timeout]'
     return stopping ? '[stopped]' : '[no longer waiting]'
   }
 

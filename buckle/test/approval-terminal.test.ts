@@ -639,6 +639,16 @@ describe('the serve terminal\'s question', () => {
     expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[timeout\]\n$/)
   })
 
+  // Fix brief 1, H3: the requester's timer, set from the clock, can fire a millisecond before the clock reaches the expiry.
+  it.each<[number, string]>([[1, '[timeout]'], [200, '[no longer waiting]']])('ends a question %d ms before its expiry with %s', async (early, tag) => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const ask = approval('t1', 60_000)
+    const { terminal, end } = await shownQuestion(named(ask))
+    vi.setSystemTime(Date.parse(ask.expiresAt) - early)
+    await end()
+    expect(terminal.shown().endsWith(`[The site] Your choice: ${tag}\n`)).toBe(true)
+  })
+
   it('writes the ending back on the prompt row at a terminal, clearing what was half typed', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const terminal = keyboardTerminal()
