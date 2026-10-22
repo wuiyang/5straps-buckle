@@ -587,8 +587,8 @@ describe('the serve terminal\'s question', () => {
   it.each<[string, string, string, RegExp]>([
     ['a number stays as typed', '1', 'once', /Your choice: \S*1\r\n$/],
     ['n stays as typed', 'n', 'deny', /Your choice: \S*n\r\n$/],
-    ['Enter adds [deny]', '', 'deny', /Your choice: \S*\r\n\u001b\[1A\u001b\[25G\[deny\]\n$/],
-    ['an unknown key adds [deny]', 'x', 'deny', /Your choice: \S*x\r\n\u001b\[1A\u001b\[26G \[deny\]\n$/],
+    ['Enter adds [deny]', '', 'deny', /Your choice: \S*\r\n\u001b\[1A\u001b\[1G\u001b\[0J\[The site\] Your choice: \[deny\]\n$/],
+    ['an unknown key adds [deny]', 'x', 'deny', /Your choice: \S*x\r\n\u001b\[1A\u001b\[1G\u001b\[0J\[The site\] Your choice: x \[deny\]\n$/],
   ])('keeps the answer on its row at a terminal: %s', async (_, key, choice, row) => {
     const terminal = keyboardTerminal()
     const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
@@ -627,6 +627,56 @@ describe('the serve terminal\'s question', () => {
     stop.abort()
     await asked
     expect(terminal.shown()).toMatch(/12\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[timeout\]\n$/)
+  })
+
+  // Fix brief 1, H1: the logger writes an event a microtask after it is logged, and the setup face's withdrawal logs in the
+  // turn it ends the question, so the writer holds such a line until the ending is on the prompt row.
+  it.each(['before', 'after'] as const)('writes a line logged in the turn the question ends below its ending, the ending on the prompt row: logged %s the abort', async (side) => {
+    const terminal = keyboardTerminal()
+    const writer = createConsoleWriter({ output: terminal.output, dates: false })
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(named(approval('t1', 600_000)), { signal: stop.signal }).catch(() => undefined)
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    const log = () => { void Promise.resolve().then(() => writer.write(['22:22:05 [info] Withdrew a call\'s approvals withdrawn=1'], new Date())) }
+    if (side === 'before') log()
+    stop.abort()
+    if (side === 'after') log()
+    await asked
+    expect(terminal.shown()).toMatch(/Your choice: \S*\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[no longer waiting\]\n22:22:05 \[info\] Withdrew a call's approvals withdrawn=1\n$/)
+  })
+
+  // H1: a workspace name in wide characters takes two columns a character, so the row is placed by readline's display width.
+  const wide = (ask: ApprovalRequest) => questionFor({ approval: ask, workspaceId: 'w-2', workspaceName: '\u8bbe\u8ba1\u7a3f', node: 'node-1', context: { correlationId: 'c', sessionId: 's', call: recordedCall } })
+
+  it('writes an ending at the prompt\'s display width where the workspace name is in wide characters', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const terminal = keyboardTerminal()
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(wide(approval('t1', 60_000)), { signal: stop.signal }).catch(() => undefined)
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    vi.setSystemTime(Date.now() + 61_000)
+    stop.abort()
+    await asked
+    // `[\u8bbe\u8ba1\u7a3f] Your choice: ` is 19 code units and 22 columns.
+    expect(terminal.shown()).toMatch(/\r\n\u001b\[1A\u001b\[23G\u001b\[0J\[timeout\]\n$/)
+  })
+
+  it('draws the prompt row again with an unknown key and [deny] where the workspace name is in wide characters', async () => {
+    const terminal = keyboardTerminal()
+    const asked = setupCli({ terminal }).requestCli(wide(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    terminal.input.write('x\r')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/x\r\n\u001b\[1A\u001b\[1G\u001b\[0J\[\u8bbe\u8ba1\u7a3f\] Your choice: x \[deny\]\n$/))
+  })
+
+  it('puts [deny] on the prompt row where a paste carries Enter twice', async () => {
+    const terminal = keyboardTerminal()
+    const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    terminal.input.write('x\r\r')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/x\r\n\r\n\u001b\[2A\u001b\[1G\u001b\[0J\[The site\] Your choice: x \[deny\]\n$/))
   })
 
   it('ends the row with [no longer waiting] where it ends before its expiry: answered elsewhere, or the call withdrawn', async () => {
