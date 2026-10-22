@@ -835,6 +835,71 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     })
   })
 
+  // Guards of the walk and the alternates reader that no row pinned: each row below fails with its guard reverted (git pack
+  // recheck 4, held[3]).
+  describe('guards the walk and the alternates reader keep', () => {
+    const UNRESOLVED = 'cannot resolve as git does'
+    async function refusalFor(made: ReturnType<typeof workspace>, line: string) {
+      alternates(join(made.repo, '.git', 'objects'), line.replace('<root>', made.root))
+      const refusal = await refusalOf(() => gitPack(made.root, answeringAt(plain(made.repo))).call('git_log', { repo: 'repo' }))
+      expect(String(refusal)).not.toContain(made.outside)
+      return refusal
+    }
+
+    // An earlier name absent means git reads no store there; the fold is the same text, so it is refused with the reason
+    // for a place Buckle cannot resolve, not run as the normal case of a store not made yet.
+    it.each([['absolute', '<root>/missing/sub'], ['relative', '../../../missing/sub']])('refuses a line with an earlier name absent inside the root, written %s', async (_, line) => {
+      expect(await refusalFor(workspace(), line)).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(UNRESOLVED) })
+    })
+
+    // A store not made yet is a last name absent, but only where the system finds the same folder above it: climbing out of
+    // a file with `..` reaches a folder git sees and realpath(3) refuses.
+    it.each([['a link to a file', '<root>/inside-file-link/../later'], ['the file itself', '<root>/shared/HEAD/../later']])('refuses a store not made yet reached by climbing out of a file inside the root: %s', async (_, line) => {
+      const made = workspace()
+      writeFileSync(join(made.root, 'shared', 'HEAD'), 'ref: refs/heads/main\n')
+      symlinkSync(join(made.root, 'shared', 'HEAD'), join(made.root, 'inside-file-link'))
+      expect(await refusalFor(made, line)).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(UNRESOLVED) })
+    })
+
+    // git reads a folder named alternates as none (it warns it is a directory, and runs), so a folder there is no refusal.
+    it('runs where info/alternates is a folder, in the repository\'s own store and in a store it names', async () => {
+      const { root, repo } = workspace()
+      mkdirSync(join(repo, '.git', 'objects', 'info', 'alternates'))
+      const runs = answeringAt(plain(repo))
+      await gitPack(root, runs).call('git_log', { repo: 'repo' })
+      rmdirSync(join(repo, '.git', 'objects', 'info', 'alternates'))
+      alternates(join(repo, '.git', 'objects'), join(root, 'shared'))
+      mkdirSync(join(root, 'shared', 'info', 'alternates'))
+      await gitPack(root, runs).call('git_log', { repo: 'repo' })
+      expect(logOf(runs)).toHaveLength(2)
+    })
+
+    // The walk's cap of 40 links is checked before the roots are, so a chain to a store outside is refused as unresolved at
+    // 41 and as borrowing at 40. Inside, the system's own answer refuses the 41st with the same reason and hid the cap.
+    it('refuses a chain of 41 links to a store outside as unresolved, and a chain of 40 as borrowing from outside', async () => {
+      const made = workspace()
+      const chain = (count: number) => {
+        for (let index = 0; index < count; index++) symlinkSync(index === count - 1 ? made.outside : `chain-${count}-${index + 1}`, join(made.root, `chain-${count}-${index}`))
+        return join(made.root, `chain-${count}-0`)
+      }
+      expect(await refusalFor(made, chain(40))).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(BORROWS) })
+      expect(await refusalFor(made, chain(41))).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(UNRESOLVED) })
+    })
+
+    // A name the walk cannot read is no store, as one that is absent is: the opened reading below ends in a file's child, and
+    // the fold lands on a folder of that name inside, so the call runs. Read as an absent last name it would land outside.
+    it('runs a line whose opened reading ends in a name under a file, where the fold lands inside', async () => {
+      const made = workspace()
+      writeFileSync(join(made.outside, 'file'), 'not a folder\n')
+      mkdirSync(join(made.root, 'file'))
+      symlinkSync(join(made.outside, 'info'), join(made.root, 'link'))
+      alternates(join(made.repo, '.git', 'objects'), `${made.root}/link/../file/x`)
+      const runs = answeringAt(plain(made.repo))
+      await gitPack(made.root, runs).call('git_log', { repo: 'repo' })
+      expect(logOf(runs)).toHaveLength(1)
+    })
+  })
+
   // Each row below fails with its guard reverted (git pack recheck 3, held[4]).
   it.each([['absolute', '<root>-sibling/objects'], ['relative', '../../../../root-sibling/objects']])('refuses a store in a sibling folder whose name starts with the root\'s, written %s', async (_, line) => {
     const { root, repo, outside } = workspace()
