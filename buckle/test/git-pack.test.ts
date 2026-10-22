@@ -167,6 +167,7 @@ describe.skipIf(hostGit === null)('a git tool reads only a repository inside the
     return { home, workspace }
   }
   const tools = [['git_status', {}], ['git_diff', {}], ['git_log', {}], ['git_branch', {}]] as const
+  const KEEPS = 'keeps its files or history outside the root'
 
   it.each([[null, '.'], ['/workspace', '/workspace']] as const)('refuses status, diff, log, and branch from a workspace inside another repository, mounted at %s, with nothing of it shown', async (mount, repo) => {
     const { workspace } = enclosed()
@@ -182,7 +183,53 @@ describe.skipIf(hostGit === null)('a git tool reads only a repository inside the
     const { home, workspace } = enclosed()
     writeFileSync(join(workspace, '.git'), `gitdir: ${join(home, '.git')}\n`)
     const { call } = gitPack(workspace, hostRunProcess, null, hostGit!)
-    for (const [tool, args] of tools) await expect(call(tool, { ...args, repo: '.' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    for (const [tool, args] of tools) await expect(call(tool, { ...args, repo: '.' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(KEEPS) })
+  })
+
+  // Only the boundary check refuses these: without it, core.worktree outside ran status, diff, and log on the outside
+  // files, and the objects check refused the rest with another reason (git pack recheck 3, held[3]).
+  const fresh = () => realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-boundary-')))
+  async function keptOutside(call: ReturnType<typeof gitPack>['call'], repo: string) {
+    for (const [tool, args] of [['git_status', {}], ['git_log', {}], ['git_diff', {}]] as const) {
+      const refusal = await refusalOf(() => call(tool, { ...args, repo }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(KEEPS) })
+      expect(String(refusal)).not.toMatch(/outer/)
+    }
+  }
+
+  it.each<[string, (root: string, outside: string) => string]>([
+    ['core.worktree naming a folder outside the root', (root, outside) => {
+      repository(join(root, 'repo'), 'inner.txt')
+      repository(outside, 'outer.txt')
+      git(join(root, 'repo'), 'config', 'core.worktree', outside)
+      return 'repo'
+    }],
+    ['a linked worktree whose main repository is outside the root', (root, outside) => {
+      repository(outside, 'outer.txt')
+      git(outside, 'worktree', 'add', '-q', '-b', 'linked', join(root, 'wt'))
+      return 'wt'
+    }],
+    ['a commondir file naming the git folder of a repository outside the root', (root, outside) => {
+      repository(join(root, 'repo'), 'inner.txt')
+      repository(outside, 'outer.txt')
+      writeFileSync(join(root, 'repo', '.git', 'commondir'), `${join(outside, '.git')}\n`)
+      return 'repo'
+    }],
+  ])('refuses status, log, and diff of a repository with %s, with nothing of it shown', async (_, build) => {
+    const root = fresh()
+    const repo = build(root, join(fresh(), 'outer'))
+    await keptOutside(gitPack(root, hostRunProcess, null, hostGit!).call, repo)
+  })
+
+  it('refuses a .git file naming a git folder in another root the node reaches, outside the root holding the repository', async () => {
+    const root = fresh()
+    const scratch = fresh()
+    repository(join(scratch, 'outer'), 'outer.txt')
+    mkdirSync(join(root, 'repo'))
+    writeFileSync(join(root, 'repo', '.git'), `gitdir: ${join(scratch, 'outer', '.git')}\n`)
+    const pack = createGitPack({ paths: createPathView({ root, mount: null, scratchRoots: [scratch] }), runProcess: hostRunProcess, stateDirectory: mkdtempSync(join(tmpdir(), 'git-pack-state-')), git: { path: hostGit!, argv0: 'git', args: [] } })
+    const call = (name: string, args: Record<string, JsonValue>) => pack.tools.find(tool => tool.capability.name === name)!.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 5_000, signal: AbortSignal.timeout(5_000) })
+    await keptOutside(call, 'repo')
   })
 
   it('still reads a workspace that is a repository, from its root or a folder in it, and a repository nested inside it', async () => {
@@ -411,6 +458,33 @@ describe('a git tool runs against the directories its repository query resolved 
     }
     const runProcess = racing({ config: swap }, [join(root, 'side'), join(main, 'worktrees', 'side'), main])
     const refusal = await refusalOf(() => gitPack(root, runProcess).call('git_status', { repo: 'side' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
+    expect(String(refusal)).not.toContain(root)
+    expect(commandOf(runProcess)).toEqual([])
+  })
+
+  // Each pinned place is checked by its real path and identity alone, so each needs a row of its own: the folder above
+  // the repository moved under a link to its original keeps its identity, and a separate work tree, or a common
+  // directory the git directory does not lie under, is no ancestor of another pinned place (git pack recheck 3, held[4]).
+  it.each<[string, string, (root: string, outside: string) => { places: string[]; swap: () => void }]>([
+    ['the folder above the repository, swapped for a link to its renamed original', 'outer/repo', root => {
+      mkdirSync(join(root, 'outer', 'repo', '.git'), { recursive: true })
+      const repo = join(root, 'outer', 'repo')
+      return { places: [repo, join(repo, '.git'), join(repo, '.git')], swap: () => { renameSync(join(root, 'outer'), join(root, 'moved-outer')); symlinkSync(join(root, 'moved-outer'), join(root, 'outer')) } }
+    }],
+    ['a separate work tree, swapped for a link to a folder outside', 'repo', (root, outside) => {
+      mkdirSync(join(root, 'work'))
+      return { places: [join(root, 'work'), join(root, 'repo', '.git'), join(root, 'repo', '.git')], swap: () => { renameSync(join(root, 'work'), join(root, 'moved-work')); symlinkSync(outside, join(root, 'work')) } }
+    }],
+    ['a common directory the git directory does not lie under, swapped for a link to a folder outside', 'side', (root, outside) => {
+      for (const directory of ['side', 'side-git', join('main', '.git')]) mkdirSync(join(root, directory), { recursive: true })
+      return { places: [join(root, 'side'), join(root, 'side-git'), join(root, 'main', '.git')], swap: () => { renameSync(join(root, 'main', '.git'), join(root, 'main', 'moved-git')); symlinkSync(outside, join(root, 'main', '.git')) } }
+    }],
+  ])('refuses with the constant reason, running no command, when %s at the config step', async (_, repo, layout) => {
+    const { root, outside } = repositories()
+    const { places, swap } = layout(root, outside)
+    const runProcess = racing({ config: swap }, places)
+    const refusal = await refusalOf(() => gitPack(root, runProcess).call('git_status', { repo }))
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('changed while Buckle checked it') })
     expect(String(refusal)).not.toContain(root)
     expect(commandOf(runProcess)).toEqual([])
@@ -712,6 +786,57 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     } finally { chmodSync(join(root, 'locked'), 0o755) }
   })
 
+  // Each row below fails with its guard reverted (git pack recheck 3, held[4]).
+  it.each([['absolute', '<root>-sibling/objects'], ['relative', '../../../../root-sibling/objects']])('refuses a store in a sibling folder whose name starts with the root\'s, written %s', async (_, line) => {
+    const { root, repo, outside } = workspace()
+    mkdirSync(join(`${root}-sibling`, 'objects', 'info'), { recursive: true })
+    alternates(join(repo, '.git', 'objects'), line.replace('<root>', root))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  // The objects folder and five stores below it are six levels, as deep as git reads alternates.
+  it.each([['three', ['s1', 's2']], ['six', ['s1', 's2', 's3', 's4', 's5']]])('refuses a chain of %s stores whose last borrows from outside', async (_, names) => {
+    const { root, repo, outside } = workspace()
+    for (const name of names) mkdirSync(join(root, name, 'info'), { recursive: true })
+    alternates(join(repo, '.git', 'objects'), join(root, names[0]!))
+    names.forEach((name, index) => alternates(join(root, name), index === names.length - 1 ? outside : join(root, names[index + 1]!)))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('refuses a 70 KiB alternates file, though it names only a store inside', async () => {
+    const { root, repo, outside } = workspace()
+    alternates(join(repo, '.git', 'objects'), `# ${'x'.repeat(70 * 1024)}`, join(root, 'shared'))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('refuses an alternates file that is a link to a device', async () => {
+    const { root, repo, outside } = workspace()
+    symlinkSync('/dev/null', join(repo, '.git', 'objects', 'info', 'alternates'))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  // After the two rows above, so a regression that reads the pipe fails there before this one hangs.
+  it.skipIf(process.platform === 'win32')('refuses an alternates file that is a named pipe, without reading it', async () => {
+    const { root, repo, outside } = workspace()
+    execFileSync('mkfifo', [join(repo, '.git', 'objects', 'info', 'alternates')])
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it('reads a comment line as a comment, even one whose text would climb outside, and runs with the store inside', async () => {
+    const { root, repo } = workspace()
+    alternates(join(repo, '.git', 'objects'), '#/../../../../../elsewhere', join(root, 'shared'))
+    const runs = answeringAt(plain(repo))
+    await gitPack(root, runs).call('git_log', { repo: 'repo' })
+    expect(logOf(runs)).toHaveLength(1)
+  })
+
+  it('refuses a line holding a backslash off Windows, even naming a folder inside by that name', async () => {
+    const { root, repo, outside } = workspace()
+    mkdirSync(join(root, 'sha\\red'))
+    alternates(join(repo, '.git', 'objects'), join(root, 'sha\\red'))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
   // Stores each naming every other held the node's single thread for seconds, three times a call, and one file of 32,768
   // short lines for as long: a check reads at most 32 stores, counts at most 256 lines before resolving any, and walks at
   // most 8,192 names (git pack recheck 3, held[1]).
@@ -815,6 +940,25 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-shared/)
     expect(await call('git_log', { repo: 'sharing' })).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+  })
+
+  it('refuses a clone that shares the objects of a sibling folder whose name starts with the root\'s', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' }).toString()
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-sibling-')))
+    const sibling = join(parent, 'root-sibling')
+    mkdirSync(sibling)
+    writeFileSync(join(sibling, 'a.txt'), 'history kept in the sibling\n')
+    git(sibling, 'init', '-q')
+    git(sibling, 'add', 'a.txt')
+    git(sibling, 'commit', '-qm', 'history kept in the sibling')
+    const root = join(parent, 'root')
+    mkdirSync(root)
+    git(root, 'clone', '-q', '--shared', sibling, 'borrowing')
+    expect(git(join(root, 'borrowing'), 'log', '--format=%s')).toContain('history kept in the sibling')
+    const refusal = await refusalOf(() => gitPack(root, hostRunProcess, null, hostGit!).call('git_log', { repo: 'borrowing' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
+    expect(String(refusal)).not.toMatch(/history kept in the sibling|git-pack-sibling/)
   })
 
   it('reads a repository outside the workspace once a read of it is approved', async () => {
