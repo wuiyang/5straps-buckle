@@ -900,6 +900,130 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     })
   })
 
+  // git reads each line of an alternates file as a C string: a NUL byte ends the name, and git reads the part before it.
+  // Buckle's two readings both keep the NUL as a name of its own, and the fold cancels that name with a `..`, so a line
+  // of an outside store, a NUL, and `/../` back inside folded inside while git opened the store outside. Node's lstat
+  // refused a NUL name by accident until a failed lstat became no store (git pack recheck 5, J3 regression). A line
+  // holding one is refused whole, before any line is walked, and an lstat failure that says nothing of what git reads
+  // refuses rather than reads as no store.
+  describe('a line git reads as a C string, and an lstat failure that says nothing of what git reads', () => {
+    const UNRESOLVED = 'cannot resolve as git does'
+    const NUL = '\u0000'
+    type Made = ReturnType<typeof workspace>
+    /** The refusal for `lines` written as the repository's alternates, with git never run and no host path in it. */
+    async function refusalFor(made: Made, ...lines: string[]) {
+      alternates(join(made.repo, '.git', 'objects'), ...lines)
+      const runs = answeringAt(plain(made.repo))
+      const refusal = await refusalOf(() => gitPack(made.root, runs).call('git_log', { repo: 'repo' }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
+      expect(logOf(runs)).toHaveLength(0)
+      expect(String(refusal)).not.toContain(dirname(made.root))
+      return refusal as Error
+    }
+
+    // Each is a line git reads as a store outside, or as no store, and Buckle would have run with the fold inside.
+    it.each<[string, (made: Made) => string]>([
+      ['with an outside store before it, written absolute', made => `${made.outside}${NUL}/../root/shared`],
+      ['with an outside store before it, written relative', () => `../../../../elsewhere${NUL}/../root/shared`],
+      ['with an outside store alone before it', made => `${made.outside}${NUL}`],
+      ['after names the walk never reaches, written absolute', made => `${made.outside}/nosuchdir/sub${NUL}/../../../root/shared`],
+      ['after names the walk never reaches, written relative', () => `../../../../elsewhere/nosuchdir/sub${NUL}/../../../root/shared`],
+      ['inside a quoted line', made => `"${made.outside}${NUL}/../root/shared"`],
+      ['written as an octal escape in a quoted line', made => `"${made.outside}/nosuchdir/sub\\000/../../../root/shared"`],
+      ['in a line whose quoting is broken', made => `"${made.outside}${NUL}/../root/shared`],
+    ])('refuses a line holding a NUL byte, %s, as a place Buckle cannot resolve as git does', async (_, line) => {
+      const made = workspace()
+      expect((await refusalFor(made, line(made))).message).toContain(UNRESOLVED)
+    })
+
+    it('refuses a NUL line among others that name a store inside, whichever comes first', async () => {
+      const made = workspace()
+      for (const lines of [[`${made.root}/shared`, `${made.outside}${NUL}/../root/shared`], [`${made.outside}${NUL}/../root/shared`, `${made.root}/shared`]]) {
+        expect((await refusalFor(made, ...lines)).message).toContain(UNRESOLVED)
+      }
+    })
+
+    it('has Node refuse a path holding a NUL byte before any system call, as the walk relied on until a failed lstat read as no store', () => {
+      let code: unknown
+      try { nodeFs.lstatSync(Buffer.from(`${tmpdir()}/a${NUL}b`)) } catch (error) { code = (error as NodeJS.ErrnoException).code }
+      expect(code).toBe('ERR_INVALID_ARG_VALUE')
+    })
+
+    describe.skipIf(process.platform === 'win32')('where the walk is on a POSIX file system', () => {
+      /** The paths lstat was asked for while `body` ran, and `failing` the code lstat fails with for a path: the sources import it by name, so the ESM exports are synced. */
+      async function lstatted<Result>(body: () => Promise<Result>, failing: (path: string) => string | null = () => null): Promise<{ result: Result; paths: string[] }> {
+        const fs = nodeFs as unknown as { lstatSync: (...args: unknown[]) => unknown }
+        const original = fs.lstatSync
+        const paths: string[] = []
+        fs.lstatSync = (...args) => {
+          const path = String(args[0])
+          paths.push(path)
+          const code = failing(path)
+          if (code !== null) throw Object.assign(new Error(`${code}: lstat '${path}'`), { code })
+          return original(...args)
+        }
+        syncBuiltinESMExports()
+        try { return { result: await body(), paths } } finally { fs.lstatSync = original; syncBuiltinESMExports() }
+      }
+      function places() {
+        const made = workspace()
+        mkdirSync(join(made.outside, 'existingdir'))
+        writeFileSync(join(made.outside, 'file'), 'not a folder\n')
+        return made
+      }
+
+      it('reads every line of a file for a NUL before it walks any', async () => {
+        const made = places()
+        alternates(join(made.repo, '.git', 'objects'), `${made.root}/shared`, `${made.outside}/nosuchdir${NUL}`)
+        const runs = answeringAt(plain(made.repo))
+        const { result: refusal, paths } = await lstatted(() => refusalOf(() => gitPack(made.root, runs).call('git_log', { repo: 'repo' })))
+        expect((refusal as Error).message).toContain(UNRESOLVED)
+        expect(paths.filter(path => path.includes(`${made.root}/shared`) || path.includes(made.outside))).toEqual([])
+      })
+
+      // A name too long, a loop of links, and a path the system rejects say nothing of what git reads there; only a name that is
+      // absent, a file where a folder was walked into at the last name, and a folder the node cannot search mean no store.
+      it.each([
+        ['a last name over the system name length', (made: Made) => `${made.outside}/${'a'.repeat(300)}`],
+        ['an earlier name over the system name length', (made: Made) => `${made.outside}/${'a'.repeat(300)}/zzz`],
+        ['a file in the middle with more than one name after it', (made: Made) => `${made.outside}/file/zzz/yyy`],
+      ])('refuses a line with %s, outside every root, as a place Buckle cannot resolve as git does', async (_, line) => {
+        const made = places()
+        const refusal = await refusalFor(made, line(made))
+        expect(refusal.message).toContain(UNRESOLVED)
+        expect(refusal.message).not.toContain(BORROWS)
+      })
+
+      it.each([
+        ['a file in the middle with one name after it', (made: Made) => `${made.outside}/file/zzz`],
+        ['an earlier name absent', (made: Made) => `${made.outside}/nosuchdir/zzz`],
+      ])('still refuses a line with %s, outside every root, as a plain outside line is', async (_, line) => {
+        const made = places()
+        const plainOutside = (await refusalFor(made, made.outside)).message
+        expect(plainOutside).toContain(BORROWS)
+        expect((await refusalFor(made, line(made))).message).toBe(plainOutside)
+      })
+
+      it.each([['ELOOP'], ['EINVAL'], ['ERR_INVALID_ARG_VALUE'], ['EIO']])('refuses a line as a place Buckle cannot resolve as git does where lstat fails with %s', async code => {
+        const made = places()
+        alternates(join(made.repo, '.git', 'objects'), `${made.outside}/existingdir/marked`)
+        const runs = answeringAt(plain(made.repo))
+        const { result: refusal } = await lstatted(() => refusalOf(() => gitPack(made.root, runs).call('git_log', { repo: 'repo' })), path => path.endsWith('/marked') ? code : null)
+        expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(UNRESOLVED) })
+        expect(String(refusal)).not.toContain(dirname(made.root))
+        expect(logOf(runs)).toHaveLength(0)
+      })
+
+      it.each([['EACCES'], ['EPERM']])('still reads a line as a plain outside one where lstat fails with %s, a name the node cannot search', async code => {
+        const made = places()
+        const plainOutside = (await refusalFor(made, made.outside)).message
+        alternates(join(made.repo, '.git', 'objects'), `${made.outside}/existingdir/marked`)
+        const { result: refusal } = await lstatted(() => refusalOf(() => gitPack(made.root, answeringAt(plain(made.repo))).call('git_log', { repo: 'repo' })), path => path.endsWith('/marked') ? code : null)
+        expect((refusal as Error).message).toBe(plainOutside)
+      })
+    })
+  })
+
   // Each row below fails with its guard reverted (git pack recheck 3, held[4]).
   it.each([['absolute', '<root>-sibling/objects'], ['relative', '../../../../root-sibling/objects']])('refuses a store in a sibling folder whose name starts with the root\'s, written %s', async (_, line) => {
     const { root, repo, outside } = workspace()
@@ -1209,6 +1333,32 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
       const refusal = await refusalOf(() => call('git_log', { repo: 'borrowing' }))
       expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
       expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-named-store/)
+    }
+  })
+
+  // git reads a line as a C string, so a NUL ends the store it names, and a `..` after the NUL name folded the line inside.
+  it.skipIf(process.platform !== 'linux')('refuses a store named up to a NUL byte, where the line folds inside and git reads the store outside', async () => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-nul-store-')))
+    const elsewhere = join(parent, 'elsewhere')
+    mkdirSync(elsewhere)
+    writeFileSync(join(elsewhere, 'a.txt'), 'history kept elsewhere\n')
+    git(elsewhere, 'init', '-q')
+    git(elsewhere, 'add', 'a.txt')
+    git(elsewhere, 'commit', '-qm', 'history kept elsewhere')
+    const root = join(parent, 'root')
+    mkdirSync(join(root, 'shared'), { recursive: true })
+    git(root, 'clone', '-q', '--shared', elsewhere, 'borrowing')
+    const borrowing = join(root, 'borrowing')
+    const file = join(borrowing, '.git', 'objects', 'info', 'alternates')
+    const { call } = gitPack(root, hostRunProcess, null, hostGit!)
+    for (const line of [`${elsewhere}/.git/objects\u0000/../../../root/shared`, '../../../../elsewhere/.git/objects\u0000/../../../root/shared']) {
+      writeFileSync(file, `${line}\n`)
+      expect(execFileSync('git', ['log', '--format=%s'], { cwd: borrowing, env: quiet }).toString()).toContain('history kept elsewhere')
+      const refusal = await refusalOf(() => call('git_log', { repo: 'borrowing' }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('cannot resolve as git does') })
+      expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-nul-store/)
     }
   })
 

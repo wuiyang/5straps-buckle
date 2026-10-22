@@ -531,14 +531,15 @@ type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; 
 /**
  * `place`, an absolute path, walked as git's strbuf_realpath walks it, in this process and never by changing its working
  * directory: name by name from the root, a link replaced by its target, a `..` dropping the last name reached, so it
- * climbs from where a link points, even out of a file. Only a last name may be absent; where an earlier one is, or any
- * name cannot be read, git reads no store there, and the walk says where it reached (`reached`) rather than refuse, so
+ * climbs from where a link points, even out of a file. Only a last name may be absent; where an earlier one is, or a
+ * name cannot be searched, git reads no store there, and the walk says where it reached (`reached`) rather than refuse, so
  * the caller's reason depends on that place and never on whether the walk could finish. Refused, with a constant
  * reason, where the walk reaches a place that names another in git's process, `/proc` (its `self`, `thread-self`, and
  * their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target starts with `/proc/` or `/dev/`: git changes into
  * the work tree first, so `/proc/self/cwd` was the node's working directory here and the work tree there (git pack
- * recheck 3, held[0]). Refused too past STORE_LINKS links. Each name taken is spent (`spendName`), at the depth reached,
- * so a deep path is refused after a few hundred names rather than walked whole.
+ * recheck 3, held[0]). Refused too past STORE_LINKS links, and where lstat fails otherwise than as meansNoStore says.
+ * Each name taken is spent (`spendName`), at the depth reached, so a deep path is refused after a few hundred names
+ * rather than walked whole.
  */
 function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
   const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
@@ -555,7 +556,9 @@ function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
     const path = pathOf(resolved)
     let isLink: boolean
     try { isLink = lstatSync(path).isSymbolicLink() } catch (error) {
-      if (codeOf(error) === 'ENOENT' && pending.length === 0) return { kind: 'absent', real: path, parent: pathOf(resolved.slice(0, -1)) }
+      const code = codeOf(error)
+      if (code === 'ENOENT' && pending.length === 0) return { kind: 'absent', real: path, parent: pathOf(resolved.slice(0, -1)) }
+      if (!meansNoStore(code, pending.length === 0)) throw unresolved()
       return { kind: 'no-store', reached: path }
     }
     if (!isLink) continue
@@ -568,6 +571,16 @@ function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
     for (const next of namesOf(target).reverse()) pending.push(next)
   }
   return { kind: 'found', real: pathOf(resolved) }
+}
+
+/**
+ * Whether an lstat failure on a name says git reads no store there: the name is absent (a last one is the store not made
+ * yet, which the walk answers before), it lies under a file where it is the last (`last`), or the node cannot search the
+ * folder above it. Any other failure (a name over the system's length, a loop of links, a path the system rejects, a fault of the disk)
+ * says nothing of what git reads, so the line is refused rather than read as no store.
+ */
+function meansNoStore(code: unknown, last: boolean): boolean {
+  return code === 'ENOENT' || code === 'EACCES' || code === 'EPERM' || (code === 'ENOTDIR' && last)
 }
 
 const DOT = Buffer.from('.')
@@ -683,10 +696,13 @@ function storePlaces(store: Buffer, line: Buffer, platform: NodeJS.Platform): { 
 /**
  * The stores one object store's `info/alternates` names, each line as git reads it, as bytes; none where it has no such
  * file. The file is read whole up to ALTERNATES_BYTES and refused past it, and refused where it is no regular file (a
- * device or a pipe, which git would read without end); a folder of that name is none, as git reads none.
+ * device or a pipe, which git would read without end); a folder of that name is none, as git reads none. A line holding
+ * a NUL byte, written raw or as a `\000` escape, is refused with the reason for a place Buckle cannot resolve as git does,
+ * naming no path and no value.
  */
 function alternatesOf(store: Buffer): Buffer[] {
   const refused = () => new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+  const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
   const file = Buffer.concat([store, Buffer.from('/info/alternates')])
   let bytes: Buffer
   try {
@@ -701,12 +717,17 @@ function alternatesOf(store: Buffer): Buffer[] {
   }
   if (bytes.length > ALTERNATES_BYTES) throw refused()
   return linesOf(bytes).filter(line => line.length > 0 && line[0] !== HASH).map(line => {
+    // Every line is read before any is walked: git reads a line as a C string, so a NUL byte ends the store it names, and
+    // either reading of the line would keep the NUL as a name of its own that a `..` after it cancels.
+    if (line.includes(NUL)) throw unresolved()
     const path = line[0] === QUOTE ? unquoted(line) : line
     if (path === null) throw refused()
+    if (path.includes(NUL)) throw unresolved()
     return path
   })
 }
 
+const NUL = 0x00
 const HASH = 0x23
 const QUOTE = 0x22
 const BACKSLASH = 0x5c
