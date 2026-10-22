@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -668,7 +668,7 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     await refused(root, answeringAt(plain(repo)), outside)
   })
 
-  it.each([['a plain line inside', '<root>/shared'], ['a `..` after a link that stays inside', '<root>/inside-link/..'], ['the same, relative', '../../../inside-link/..'], ['a line git cannot normalize, its text inside', '<root>/nonexistent/../store/.git/objects']])('runs %s, as before: %s', async (_, line) => {
+  it.each([['a plain line inside', '<root>/shared'], ['a `..` after a link that stays inside', '<root>/inside-link/..'], ['the same, relative', '../../../inside-link/..'], ['a line git cannot normalize, its text inside', '<root>/nonexistent/../store/.git/objects'], ['a store not made yet, inside', '<root>/later']])('runs %s, as before: %s', async (_, line) => {
     const { root, repo } = workspace()
     symlinkSync(join(root, 'shared', 'info'), join(root, 'inside-link'))
     mkdirSync(join(root, 'store', '.git', 'objects'), { recursive: true })
@@ -687,6 +687,46 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     symlinkSync(join(root, 'a', 'b', 'c'), join(root, 'deep'))
     alternates(join(repo, '.git', 'objects'), line.replace('<root>', root))
     await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  // git climbs out of a file with `..` where the system refuses to, so the two answers differ even inside the root.
+  it('refuses a line whose `..` climbs out of a file inside the root, where the system\'s real path is not git\'s', async () => {
+    const { root, repo, outside } = workspace()
+    writeFileSync(join(root, 'shared', 'HEAD'), 'ref: refs/heads/main\n')
+    symlinkSync(join(root, 'shared', 'HEAD'), join(root, 'inside-file-link'))
+    alternates(join(repo, '.git', 'objects'), `${root}/inside-file-link/..`)
+    const refusal = await refusalOf(() => gitPack(root, answeringAt(plain(repo))).call('git_log', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('cannot resolve as git does') })
+    expect(String(refusal)).not.toContain(outside)
+  })
+
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('refuses a line through a folder it cannot search, with the constant reason', async () => {
+    const { root, repo } = workspace()
+    mkdirSync(join(root, 'locked', 'store'), { recursive: true })
+    chmodSync(join(root, 'locked'), 0o000)
+    try {
+      alternates(join(repo, '.git', 'objects'), join(root, 'locked', 'store'))
+      const refusal = await refusalOf(() => gitPack(root, answeringAt(plain(repo))).call('git_log', { repo: 'repo' }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('cannot resolve as git does') })
+      expect(String(refusal)).not.toContain(root)
+    } finally { chmodSync(join(root, 'locked'), 0o755) }
+  })
+
+  // Each place is walked name by name as git walks it, following as many links as Linux does and no more.
+  it('runs a line through a chain of 40 links inside, and refuses one through 41 with the constant reason', async () => {
+    const { root, repo, outside } = workspace()
+    const chain = (count: number) => {
+      for (let index = 0; index < count; index++) symlinkSync(index === count - 1 ? 'shared' : `chain-${count}-${index + 1}`, join(root, `chain-${count}-${index}`))
+      return join(root, `chain-${count}-0`)
+    }
+    alternates(join(repo, '.git', 'objects'), chain(40))
+    const runs = answeringAt(plain(repo))
+    await gitPack(root, runs).call('git_log', { repo: 'repo' })
+    expect(logOf(runs)).toHaveLength(1)
+    alternates(join(repo, '.git', 'objects'), chain(41))
+    const refusal = await refusalOf(() => gitPack(root, answeringAt(plain(repo))).call('git_log', { repo: 'repo' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('cannot resolve as git does') })
+    expect(String(refusal)).not.toContain(outside)
   })
 })
 
@@ -776,6 +816,93 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
     // Folded as text this line is the store outside; git climbs out of a folder that does not exist and reads no store.
     writeFileSync(file, `${root}/nonexistent/../../elsewhere/.git/objects\n`)
     expect(() => execFileSync('git', ['log', '--format=%s'], { cwd: borrowing, env: quiet, stdio: 'pipe' })).toThrow(/unable to normalize alternate object path/)
+  })
+})
+
+// `/proc/self/cwd` names the working directory of the process reading it: Buckle's for the check, and the work tree for
+// git, which changes into it before it reads alternates. With the node started inside the root, a line through it, or
+// through a link to it, landed inside for Buckle while git borrowed from outside (git pack recheck 3, held[0]).
+describe.skipIf(hostGit === null || process.platform !== 'linux')('an alternates line through a per-process place, against the installed git', () => {
+  const UNRESOLVED = 'cannot resolve as git does'
+  const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' }).toString()
+  const seeded = (directory: string, subject: string) => {
+    mkdirSync(directory, { recursive: true })
+    writeFileSync(join(directory, 'a.txt'), `${subject}\n`)
+    git(directory, 'init', '-q')
+    git(directory, 'add', 'a.txt')
+    git(directory, 'commit', '-qm', subject)
+  }
+  /** `borrowing` shares an outside repository's objects and `sharing` an inside one's; `<root>/store` is a real folder, and the work tree's `store` a link outside. */
+  function repositories() {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-per-process-')))
+    const root = join(parent, 'root')
+    seeded(join(parent, 'elsewhere'), 'history kept elsewhere')
+    seeded(join(root, 'origin'), 'history kept inside')
+    git(root, 'clone', '-q', '--shared', join(parent, 'elsewhere'), 'borrowing')
+    git(root, 'clone', '-q', '--shared', join(root, 'origin'), 'sharing')
+    mkdirSync(join(root, 'store'))
+    symlinkSync(join(parent, 'elsewhere', '.git', 'objects'), join(root, 'borrowing', 'store'))
+    const alternates = (repo: string, line: string) => writeFileSync(join(root, repo, '.git', 'objects', 'info', 'alternates'), `${line.replace('<root>', root)}\n`)
+    return { parent, root, alternates }
+  }
+  /** git_log on `repo` with the node working in `cwd`, as a node started there by `buckle serve` would. */
+  async function logFrom(cwd: string, root: string, repo: string): Promise<unknown> {
+    const before = process.cwd()
+    process.chdir(cwd)
+    try { return await gitPack(root, hostRunProcess, null, hostGit!).call('git_log', { repo }) } finally { process.chdir(before) }
+  }
+  async function refusedFrom(cwd: string, root: string, parent: string, reason?: string) {
+    const refusal = await refusalOf(() => logFrom(cwd, root, 'borrowing'))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', ...(reason ? { message: expect.stringContaining(reason) } : {}) })
+    expect(String(refusal)).not.toMatch(/history kept elsewhere/)
+    expect(String(refusal)).not.toContain(parent)
+  }
+
+  it.each([
+    { line: '/proc/self/cwd/store', link: null, form: 'written as it is' },
+    { line: '/proc/thread-self/cwd/store', link: null, form: 'written as it is' },
+    { line: '<root>/lnk', link: '/proc/self/cwd/store', form: 'a link to /proc/self/cwd/store' },
+    { line: '../../../lnk', link: '/proc/self/cwd/store', form: 'a link to /proc/self/cwd/store' },
+  ])('refuses the line $line, $form, which git reads from its own working directory, with the node working in the root', async ({ line, link }) => {
+    const { parent, root, alternates } = repositories()
+    if (link) symlinkSync(link, join(root, 'lnk'))
+    alternates('borrowing', line)
+    expect(git(join(root, 'borrowing'), 'log', '--format=%s')).toContain('history kept elsewhere')
+    await refusedFrom(root, root, parent, UNRESOLVED)
+  })
+
+  it('refuses a line through a link whose target starts with /dev/, with the constant reason', async () => {
+    const { parent, root, alternates } = repositories()
+    symlinkSync('/dev/null', join(root, 'lnk'))
+    alternates('borrowing', '<root>/lnk')
+    await refusedFrom(root, root, parent, UNRESOLVED)
+  })
+
+  it('refuses a line through /dev/fd, which names the descriptors of the process reading it', async () => {
+    const { parent, root, alternates } = repositories()
+    const descriptor = openSync(root, 'r')
+    try {
+      alternates('borrowing', `/dev/fd/${descriptor}/store`)
+      await refusedFrom(root, root, parent, UNRESOLVED)
+    } finally { closeSync(descriptor) }
+  })
+
+  it('refuses the line /proc/self/cwd/store with the node working outside the root, as before', async () => {
+    const { parent, root, alternates } = repositories()
+    alternates('borrowing', '/proc/self/cwd/store')
+    await refusedFrom(parent, root, parent)
+  })
+
+  it('still reads a plain line inside, and one through a chain of ordinary links inside, written absolute or relative', async () => {
+    const { root, alternates } = repositories()
+    expect(await logFrom(root, root, 'sharing')).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+    symlinkSync('second', join(root, 'first'))
+    symlinkSync('origin/.git/objects', join(root, 'second'))
+    for (const line of ['<root>/first', '../../../first']) {
+      alternates('sharing', line)
+      expect(await logFrom(root, root, 'sharing')).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
+    }
   })
 })
 

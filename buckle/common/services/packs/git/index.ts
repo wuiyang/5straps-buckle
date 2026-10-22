@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { posix } from 'node:path'
 import { isAbsolute, join, normalize, relative } from 'pathe'
 import { z } from 'zod'
@@ -10,7 +10,7 @@ import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
-import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
+import { resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
@@ -39,6 +39,10 @@ const OUTSIDE_REPOSITORY = 'Refused: a path outside the repository, which the gi
 const REPOSITORY_MOVED = 'The repository changed while Buckle checked it, so nothing git read from it is shown; send the call again'
 /** Constant as well: where a repository borrows objects from is the owner's business, never shown to the agent. */
 const BORROWS_OUTSIDE = 'The repository borrows objects from outside the workspace, so git is not run there'
+/** Constant again: a store reached through a place that names another in git's process, or that Buckle cannot walk as git does. */
+const UNRESOLVED_STORE = 'The repository borrows objects through a place Buckle cannot resolve as git does, so git is not run there'
+/** The most links one store's place may pass through, as Linux allows (SYMLOOP_MAX). */
+const STORE_LINKS = 40
 /** How many levels of an object store's own alternates git follows (it ignores those nested deeper), and one more. */
 const ALTERNATES_DEPTH = 6
 /** The most of one alternates file read; a longer one is refused rather than read in part. */
@@ -389,24 +393,24 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
  * the bytes git opens (storePlaces), resolved by its real path as git resolves it, so a `..` climbs from where a link
  * points (landingOf). A line passes only where both readings land inside, the bytes git opens and the line folded as
  * text, as a git that folds a line reads it: folded first, a `..` after a link landed inside while git read a store
- * outside (git pack recheck 2, held[2]). Where git cannot normalize a line it reads no store there (namesNoStore), and
- * the fold must still land inside. An absent file is the normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too,
- * which it never has here (withOwnGitVariables).
+ * outside (git pack recheck 2, held[2]). Where git cannot normalize the bytes it opens it reads no store there, and the
+ * fold must still land inside. An absent file is the normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which
+ * it never has here (withOwnGitVariables).
  */
 function assertObjectsInside(repository: Repository, boundary: string, paths: PathView, platform: NodeJS.Platform): void {
-  const roots = [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary]
-  const landing = (place: Buffer): Buffer => {
-    const real = landingOf(place, { roots, shares: paths.shares, platform })
-    if (real === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
-    return real
+  const reach = { roots: [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary], shares: paths.shares, platform }
+  const inside = (landing: Landing): Buffer => {
+    if (landing === NO_STORE) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
+    if (landing === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
+    return landing
   }
   const named = (store: Buffer, line: Buffer): Buffer[] => {
     const { opened, folded } = storePlaces(store, line, platform)
-    const opening = platform !== 'win32' && namesNoStore(opened) ? [] : [landing(opened)]
-    return [...opening, landing(folded)]
+    const opening = landingOf(opened, reach)
+    return [...(opening === NO_STORE ? [] : [inside(opening)]), inside(landingOf(folded, reach))]
   }
   const read = new Set<string>()
-  let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => landing(Buffer.from(join(directory, 'objects'))))
+  let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => inside(landingOf(Buffer.from(join(directory, 'objects')), reach)))
   for (let depth = 0; depth < ALTERNATES_DEPTH && stores.length > 0; depth++) {
     stores = stores.flatMap(store => {
       const key = store.toString('latin1')
@@ -417,32 +421,130 @@ function assertObjectsInside(repository: Repository, boundary: string, paths: Pa
   }
 }
 
+/** Where a store lands: its real path inside the roots; null outside them; NO_STORE where git reads no store there. */
+type Landing = Buffer | null | typeof NO_STORE
+const NO_STORE = Symbol('no store')
+
 /**
- * Where a store lands, by its real path, when that lies inside one of `roots`; null otherwise, or where it cannot be
- * found. The real path is the one git resolves a line to: each name in turn, a `..` climbing from where a link points,
- * never folded as text first. Off Windows a name is bytes, which git opens as they are, so the store is resolved as
- * bytes and compared with each root's own bytes: a name that is not UTF-8 is checked where git reads it, never as the
- * text it decodes to. A store that does not exist yet lands where it would be made (resolveTarget, which climbs a `..`
- * the same way), which only a name that is UTF-8 text can be read for; any other is refused. On Windows git reads a line as UTF-8, so one that is not is refused, and the text is
- * resolved as every other path is.
+ * Where a store lands, by its real path, when that lies inside one of `roots`; null otherwise. Off Windows the place is
+ * walked as git walks it (walkAsGit), as bytes, which git opens as they are, and compared with each root's own bytes,
+ * then checked against the system's own answer (walkedAsTheSystem). On Windows git reads a line as UTF-8, so one that is
+ * not is refused, and the text is resolved as every other path is, a store not made yet where it would be made.
  */
-function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Buffer | null {
-  const planned = () => {
-    const text = utf8Of(place)
-    if (text === null) return null
-    try {
-      const real = resolveTarget(text, { shares: input.shares, platform: input.platform })
-      return isInsideAny(input.roots, real, input.platform) ? Buffer.from(real) : null
-    } catch { return null }
-  }
-  if (input.platform === 'win32') return planned()
-  let real: Buffer
+function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Landing {
+  if (input.platform === 'win32') return windowsLanding(place, input)
+  const walked = walkAsGit(place)
+  if (walked.kind === 'no-store') return NO_STORE
+  if (!input.roots.some(root => insideBytes(Buffer.from(root), walked.real))) return null
+  if (!walkedAsTheSystem(place, walked)) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
+  return walked.real
+}
+
+function windowsLanding(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Buffer | null {
+  const text = utf8Of(place)
+  if (text === null) return null
   try {
-    real = realpathSync.native(place, { encoding: 'buffer' })
-  } catch (error) {
-    return isMissingPathError(error) ? planned() : null
+    const real = resolveTarget(text, { shares: input.shares, platform: input.platform })
+    return isInsideAny(input.roots, real, input.platform) ? Buffer.from(real) : null
+  } catch { return null }
+}
+
+/** A place as git resolved it: an existing one, one whose last name is absent (a store made while git runs), or none. */
+type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; parent: Buffer } | { kind: 'no-store' }
+
+/**
+ * `place`, an absolute path, walked as git's strbuf_realpath walks it, in this process and never by changing its working
+ * directory: name by name from the root, a link replaced by its target, a `..` dropping the last name reached, so it
+ * climbs from where a link points, even out of a file. Only a last name may be absent; where an earlier one is, git
+ * reads no store there. Refused, with a constant reason, where the walk reaches a place that names another in git's
+ * process, `/proc` (its `self`, `thread-self`, and their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target
+ * starts with `/proc/` or `/dev/`: git changes into the work tree first, so `/proc/self/cwd` was the node's working
+ * directory here and the work tree there (git pack recheck 3, held[0]). Refused too past STORE_LINKS links, and where
+ * any name cannot be read for another reason than being absent.
+ */
+function walkAsGit(place: Buffer): Walked {
+  const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
+  const resolved: Buffer[] = []
+  const pending = namesOf(place).reverse()
+  let links = 0
+  while (pending.length > 0) {
+    const name = pending.pop()!
+    if (name.length === 0 || name.equals(DOT)) continue
+    if (name.equals(DOT_DOT)) { resolved.pop(); continue }
+    resolved.push(name)
+    if (namesPerProcess(resolved)) throw unresolved()
+    const path = pathOf(resolved)
+    let isLink: boolean
+    try { isLink = lstatSync(path).isSymbolicLink() } catch (error) {
+      if (codeOf(error) !== 'ENOENT') throw unresolved()
+      return pending.length === 0 ? { kind: 'absent', real: path, parent: pathOf(resolved.slice(0, -1)) } : { kind: 'no-store' }
+    }
+    if (!isLink) continue
+    if (++links > STORE_LINKS) throw unresolved()
+    let target: Buffer
+    try { target = readlinkSync(path, { encoding: 'buffer' }) } catch { throw unresolved() }
+    if (PER_PROCESS_TARGETS.some(prefix => target.subarray(0, prefix.length).equals(prefix))) throw unresolved()
+    resolved.pop()
+    if (target[0] === SLASH) resolved.length = 0
+    for (const next of namesOf(target).reverse()) pending.push(next)
   }
-  return input.roots.some(root => insideBytes(Buffer.from(root), real)) ? real : null
+  return { kind: 'found', real: pathOf(resolved) }
+}
+
+const DOT = Buffer.from('.')
+const DOT_DOT = Buffer.from('..')
+const PER_PROCESS_TARGETS = [Buffer.from('/proc/'), Buffer.from('/dev/')]
+
+/** Whether the names walked so far lie in `/proc` or `/dev/fd`, which name the reading process's own places. */
+function namesPerProcess(resolved: readonly Buffer[]): boolean {
+  const [first, second] = resolved
+  return first?.equals(PROC) === true || (first?.equals(DEV) === true && second?.equals(FD) === true)
+}
+
+const PROC = Buffer.from('proc')
+const DEV = Buffer.from('dev')
+const FD = Buffer.from('fd')
+
+/** The names of a path split on `/`, as bytes, empty ones kept: one after the last name means more follows it. */
+function namesOf(path: Buffer): Buffer[] {
+  const names: Buffer[] = []
+  let start = 0
+  for (let end = path.indexOf(SLASH); end !== -1; end = path.indexOf(SLASH, start)) {
+    names.push(path.subarray(start, end))
+    start = end + 1
+  }
+  names.push(path.subarray(start))
+  return names
+}
+
+/** The absolute path of `names`, from the root. */
+function pathOf(names: readonly Buffer[]): Buffer {
+  return names.length === 0 ? SEPARATOR : Buffer.concat(names.flatMap(name => [SEPARATOR, name]))
+}
+
+const SEPARATOR = Buffer.from('/')
+
+/**
+ * Whether the system's own real path (realpath(3)) of `place` is the walk's, so a place the walk read otherwise than the
+ * system follows it is refused: for a place whose last name is absent, the system finds it absent and its folder where
+ * the walk did.
+ */
+function walkedAsTheSystem(place: Buffer, walked: Exclude<Walked, { kind: 'no-store' }>): boolean {
+  if (walked.kind === 'found') return sameReal(place, walked.real)
+  return systemReal(place) === 'absent' && sameReal(walked.parent, walked.parent)
+}
+
+function sameReal(place: Buffer, real: Buffer): boolean {
+  const answer = systemReal(place)
+  return Buffer.isBuffer(answer) && answer.equals(real)
+}
+
+function systemReal(place: Buffer): Buffer | 'absent' | 'unreadable' {
+  try { return realpathSync.native(place, { encoding: 'buffer' }) } catch (error) { return codeOf(error) === 'ENOENT' ? 'absent' : 'unreadable' }
+}
+
+function codeOf(error: unknown): unknown {
+  return error instanceof Error && 'code' in error ? error.code : undefined
 }
 
 /** Whether the real path `real` is the real directory `root` or lies beneath it, compared byte for byte. */
@@ -488,22 +590,6 @@ function storePlaces(store: Buffer, line: Buffer, platform: NodeJS.Platform): { 
     opened: absolute ? line : Buffer.concat([store, Buffer.from('/'), line]),
     folded: Buffer.from(absolute ? posix.normalize(named) : posix.join(store.toString('latin1'), named), 'latin1'),
   }
-}
-
-/**
- * Whether git reads no store at `place`, which a line names off Windows: git resolves it name by name, and only a last
- * plain name may be absent, a store made while git runs; where an earlier one is, git reports "unable to normalize
- * alternate object path" and reads none there. Only an absent name counts (ENOENT): git climbs out of a file with `..`
- * where the system refuses to (ENOTDIR), so such a place is left to landingOf, which refuses it.
- */
-function namesNoStore(place: Buffer): boolean {
-  const absent = (path: Buffer) => {
-    try { realpathSync.native(path); return false } catch (error) { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
-  }
-  if (!absent(place)) return false
-  const slash = place.lastIndexOf(SLASH)
-  const last = place.subarray(slash + 1).toString('latin1')
-  return last === '' || last === '.' || last === '..' || absent(slash === 0 ? Buffer.from('/') : place.subarray(0, slash))
 }
 
 /**
