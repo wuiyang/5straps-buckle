@@ -1,4 +1,7 @@
-import { defineScoped, type CliRequest, type PendingInteraction, type RequestCli, type ScopedDefinition } from '@5straps/runtime'
+import { defineScoped, type CliRequest, type PendingInteraction, type RequestCli, type ScopedDefinition, type UnavailableReason } from '@5straps/runtime'
+import { APPROVAL_PENDING } from '../../domain/action-phrase.js'
+import { reviewCommand } from '../../domain/approval-instruction.js'
+import { logger } from '../../runtime/log.js'
 
 /**
  * How long a gated call is held for an answer:
@@ -51,6 +54,32 @@ export async function approvalPending(request: CliRequest): Promise<PendingInter
   const approve = request.action.details?.approve
   if (request.kind !== APPROVAL_REQUEST_KIND || typeof approve !== 'string') return undefined
   return { id: request.id, instructions: approve }
+}
+
+/**
+ * approvalPending for a node (`buckle serve`, `buckle mcp`), which also logs one line where nobody can be asked now: no
+ * terminal is attached, or no listener (the CLI display slice, C5). The line names the tool, the rule, the offered scopes,
+ * the workspace, and the command that shows the whole action; never the subject, the description, or a token, which no
+ * log line carries (`Approval granted` keeps the same rule). A question dropped as the process stops, or by Ctrl-C, was
+ * already on a person's screen or is no news, so it logs none.
+ */
+export async function nodeApprovalPending(request: CliRequest, reason: UnavailableReason): Promise<PendingInteraction | undefined> {
+  const pending = await approvalPending(request)
+  if (pending && (reason === 'no_consumer' || reason === 'no_listener')) logger.info(APPROVAL_PENDING, pendingFields(request.action.details ?? {}))
+  return pending
+}
+
+function pendingFields(details: Readonly<Record<string, string | number | boolean>>): Record<string, unknown> {
+  const text = (key: string) => (typeof details[key] === 'string' ? details[key] : undefined)
+  const workspaceId = text('workspace')
+  const workspaceName = text('workspaceName')
+  return {
+    tool: text('tool'),
+    rule: text('rule'),
+    scopes: text('scopes')?.split(','),
+    workspace: workspaceName ?? workspaceId,
+    review: reviewCommand({ ...(workspaceId === undefined ? {} : { workspaceId }), ...(workspaceName === undefined ? {} : { workspaceName }) }),
+  }
 }
 
 function createInteractionPort(): InteractionPort {

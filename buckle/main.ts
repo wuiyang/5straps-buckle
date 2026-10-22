@@ -199,7 +199,7 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminal ? { askName: question => askAtTerminal(question) } : {}) })
   common.owner.onClose('sinks', 'logger', () => logging.flush())
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
-  const cli = setupCli({ terminal })
+  const cli = setupCli({ terminal, logPending: true })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   const shutdown = closeOnSignals({ common, logging })
   try {

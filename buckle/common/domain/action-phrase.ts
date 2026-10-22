@@ -39,6 +39,12 @@ const PHRASES: Readonly<Record<string, string>> = {
   env_validate: 'check the environment',
 }
 
+/**
+ * The message a node logs for a question nobody can be asked (the CLI display slice, C5), which a person's console tags
+ * `[approval]` and words with the phrase above.
+ */
+export const APPROVAL_PENDING = 'Approval pending'
+
 /** The words for a tool, or its own name, escaped, for a tool the list does not know. */
 export function actionPhrase(tool: string): string {
   return Object.hasOwn(PHRASES, tool) ? PHRASES[tool]! : printable(tool)

@@ -1,4 +1,5 @@
 import type { LogEvent, LogLevel, NormalizedError } from '@5straps/runtime'
+import { actionPhrase, APPROVAL_PENDING } from '../domain/action-phrase.js'
 import { printable } from '../domain/approval-instruction.js'
 import { localDate, localTime } from '../domain/local-time.js'
 
@@ -67,6 +68,7 @@ function shownEvent(event: LogEvent, options: RenderOptions): Shown | null {
   const fields = event.fields ?? {}
   if (event.message === 'request completed') return requestCompleted(event, fields, options)
   if (event.message === 'request finished') return requestFinished(event, fields, options)
+  if (event.message === APPROVAL_PENDING) return approvalPending(event, fields, options)
   return { tag: event.level, text: printable(event.message), fields }
 }
 
@@ -90,6 +92,18 @@ function requestFinished(event: LogEvent, fields: Record<string, unknown>, optio
   if (fields.actor !== undefined) return null
   const { route, status, durationMs, ...rest } = fields
   return { tag: event.level, text: `${typeof route === 'string' ? printable(route) : 'no route'} ${scalar(status)} (${scalar(durationMs)}ms)`, fields: options.verbose ? rest : {} }
+}
+
+/**
+ * A node's line for a question nobody can be asked (C5), tagged as a question is on the serve terminal:
+ * `[approval] [site] action pending approval: write a file (write_scope: once, session); see it with buckle approvals --workspace site`.
+ */
+function approvalPending(event: LogEvent, fields: Record<string, unknown>, options: RenderOptions): Shown {
+  const { tool, rule, scopes, workspace, review, ...rest } = fields
+  if (typeof tool !== 'string' || typeof rule !== 'string' || typeof review !== 'string') return { tag: event.level, text: printable(event.message), fields }
+  const mark = typeof workspace === 'string' ? `[${printable(workspace)}] ` : ''
+  const offered = Array.isArray(scopes) ? scopes.map(String).join(', ') : ''
+  return { tag: 'approval', text: `${mark}action pending approval: ${actionPhrase(tool)} (${printable(rule)}: ${printable(offered)}); see it with ${printable(review)}`, fields: options.verbose ? rest : {} }
 }
 
 function multiline(value: unknown): value is string {

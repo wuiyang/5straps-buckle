@@ -1,5 +1,5 @@
 import { createCliConsumerSlot, createCliRequester, type CliConsumerSlot, type RequestCli } from '@5straps/runtime'
-import { approvalPending } from '../common/services/approvals/interaction.js'
+import { approvalPending, nodeApprovalPending } from '../common/services/approvals/interaction.js'
 import { createTerminalConsumer, interruptSelf, type TerminalConsumer, type TerminalOptions } from './terminal-consumer.js'
 
 export interface CliSetup {
@@ -14,8 +14,9 @@ export interface CliSetup {
 /**
  * Main owns this (nitro/coordination.md): one requester per process, with the terminal attached only
  * when there is one. Under `buckle mcp` stdin carries the protocol, so no terminal is attached there.
+ * `logPending`: a node logs each question nobody can be asked (C5); a one-shot command relays the ask itself.
  */
-export function setupCli(input: { terminal: TerminalOptions | null }): CliSetup {
+export function setupCli(input: { terminal: TerminalOptions | null; logPending?: boolean }): CliSetup {
   const slot = createCliConsumerSlot()
   let consumer: TerminalConsumer | undefined
   if (input.terminal) {
@@ -25,7 +26,7 @@ export function setupCli(input: { terminal: TerminalOptions | null }): CliSetup 
     const detach = slot.attach(terminal)
     consumer = terminal
   }
-  const requester = createCliRequester({ slot, onUnavailable: approvalPending })
+  const requester = createCliRequester({ slot, onUnavailable: input.logPending ? nodeApprovalPending : approvalPending })
   // A question still on screen as the process stops says so on its row (the CLI display slice, C4).
   return { requestCli: requester.requestCli, slot, close: () => { consumer?.stopping(); return requester.close() } }
 }

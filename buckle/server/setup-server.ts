@@ -7,7 +7,7 @@ import { bindHost, createRequestCli, registerCliListener } from '@5straps/runtim
 import type { NitroApp } from 'nitro/types'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { PACKAGE_ROOT } from '../common/runtime/package-root.js'
-import { approvalPending } from '../common/services/approvals/interaction.js'
+import { nodeApprovalPending } from '../common/services/approvals/interaction.js'
 import type { BuckleHttpServices } from '../common/types/ports/mcp-http.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import type { BuiltEntry } from './built-entry.js'
@@ -41,7 +41,7 @@ export function builtEntryPath(): string {
 export async function setupServer(input: { common: BuckleCommon; logger: Logger; requestCli: RequestCli; entryPath: string }): Promise<BuckleServer> {
   const { common } = input
   const entry = await import(pathToFileURL(input.entryPath).href) as BuiltEntry
-  const requestCli = createRequestCli(entry.nitroApp, { onUnavailable: approvalPending, logger: input.logger })
+  const requestCli = createRequestCli(entry.nitroApp, { onUnavailable: nodeApprovalPending, logger: input.logger })
   // The MCP face's handlers are the server's: kept per workspace runtime, closed with the connections.
   const mcpHandlers = createMcpHttpHandlers()
   common.owner.onClose('streams', 'mcp http handlers', () => mcpHandlers.close())
