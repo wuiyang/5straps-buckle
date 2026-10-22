@@ -1373,6 +1373,48 @@ describe('a program named by an absolute path holding a dot segment or a process
   })
 })
 
+describe('a name whose .. follows a link (fix brief 9, B29)', () => {
+  // The kernel follows a link before it applies the `..` after it, so with `l` a link to `d0/d1`, python, perl, the
+  // shells' `<` and `source`, and every lookup through the kernel open d0/job.py for `l/../job.py`, while the view folded
+  // the name to job.py (python3, perl, bash, and dash ran the d0 copy). node resolves its own names as text, so
+  // `node l/../job.js` runs job.js.
+  const dotdot = { kind: 'refused', reason: CODE_REFUSALS.dotdotAfterLink, truncated: false }
+  const files = {
+    'job.py': 'print(1)\n', 'd0/job.py': 'print(2)\n', 'job.pl': 'print 1;\n', 'd0/job.pl': 'print 2;\n', 'job.js': 'console.log(1)\n', 'd0/job.js': 'console.log(2)\n',
+    'src.sh': 'echo one\n', 'd0/src.sh': 'echo two\n', 'run.sh': 'source l/../src.sh\n', 'run2.sh': '. ./l/../src.sh\n', 'helper.py': 'print(3)\n', 'd0/d1/.keep': '', 'sub/.keep': '',
+  }
+  const linked = () => {
+    const made = workspace(files)
+    symlinkSync('d0/d1', join(made.root, 'l'))
+    return made
+  }
+
+  it('refuses an operand, relative and absolute, a < feed, shell text, a sourced file, and a module candidate', () => {
+    const { call, shell } = linked()
+    expect(call('python3', 'l/../job.py')).toEqual(dotdot)
+    expect(call('python3', '/workspace/l/../job.py')).toEqual(dotdot)
+    expect(call('perl', 'l/../job.pl')).toEqual(dotdot)
+    expect(shell('python3 l/../job.py')).toEqual(dotdot)
+    expect(shell('python3 < l/../job.py')).toEqual(dotdot)
+    expect(call('busybox', 'sh', 'run.sh')).toEqual(dotdot)
+    expect(call('busybox', 'sh', 'run2.sh')).toEqual(dotdot)
+    expect(call('python3', '-m', 'helper', 'l/../job.py')).toEqual(dotdot)
+  })
+
+  it('still shows node its own lexical reading and a .. with no link as before', () => {
+    const { call } = linked()
+    expect(paths(call('node', 'l/../job.js'))).toEqual(['/workspace/job.js'])
+    expect(paths(call('python3', 'sub/../job.py'))).toEqual(['/workspace/job.py'])
+  })
+
+  it('answers dotdot from the view for the kernel reading and the folded name for the lexical one', () => {
+    const { view, root } = linked()
+    expect(view.locate('l/../job.py', root)).toBe('dotdot')
+    expect(view.locate('l/../job.py', root, { lexical: true })).toEqual({ real: join(root, 'job.py') })
+    expect(view.locate('sub/../job.py', root)).toEqual({ real: join(root, 'job.py') })
+  })
+})
+
 describe('a runner package whose version part names a folder (fix brief 8, B22)', () => {
   // npm-package-arg reads a spec whose part after the name's @ starts with `.` as a directory, so npm 11.19.0 ran the
   // working directory's bin for `npx eslint@.` and `.decoy`'s for `npx eslint@.decoy`, while the reader named the registry

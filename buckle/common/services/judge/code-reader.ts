@@ -43,6 +43,7 @@ export const CODE_REFUSALS = Object.freeze({
   splitWords: 'the call splits a word into words the reader does not read again',
   runnerSource: 'the runner runs a package from a path or a source the reader does not show',
   xargsWords: 'the call hands the interpreter words it reads from a file or puts in place of its own',
+  dotdotAfterLink: 'a path climbs with .. past a link or a missing folder, so the program may open another file than the reader would show',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -55,9 +56,11 @@ export type CodeRead = { kind: 'read'; reading: CodeReading } | { kind: 'refused
 export interface CodeView {
   /**
    * Where a name lands, a relative one from `base` (a real folder): the real regular file, `none` where it names no
-   * regular file, or `outside` where it lands beyond every place the agent's view reaches.
+   * regular file, `outside` where it lands beyond every place the agent's view reaches, or `dotdot` where the name holds a
+   * `..` the kernel applies after a link to land elsewhere than the name folded as text does (fix brief 9, B29). With
+   * `lexical`, for node's own lookups, which fold `..` as text as node does, the folded name alone is followed.
    */
-  locate(name: string, base: string): Located
+  locate(name: string, base: string, options?: { lexical?: boolean }): Located
   /** Whether the agent may read the real file without asking. */
   readable(real: string): boolean
   /** The file's bytes, opened beneath its parent and never through a link; null where it holds more than `limit` bytes. */
@@ -77,14 +80,15 @@ export interface CodeView {
   named(name: string, base: string): string | 'outside' | 'unnamed'
 }
 
-export type Located = { real: string } | 'none' | 'outside'
+export type Located = { real: string } | 'none' | 'outside' | 'dotdot'
 
 /** Where an interpreter's own lookup lands: a real file, nothing, or a refusal with its reason. */
 type Entry = { real: string } | 'none' | { refused: string }
 
-/** A located name as an entry: one beyond every place the agent's view reaches refuses. */
+/** A located name as an entry: one beyond every place the agent's view reaches refuses, as does one a link moves (dotdot). */
 function entryOf(located: Located): Entry {
-  return located === 'outside' ? { refused: CODE_REFUSALS.unreadable } : located
+  if (located === 'outside') return { refused: CODE_REFUSALS.unreadable }
+  return located === 'dotdot' ? { refused: CODE_REFUSALS.dotdotAfterLink } : located
 }
 
 type Language = 'js' | 'python' | 'shell' | null
@@ -307,6 +311,8 @@ function programOutsideView(name: string, base: string, view: CodeView): boolean
   if (named === 'unnamed') return false
   if (view.rootOf(named) !== null) return false
   const located = view.locate(name, base)
+  // A name a link moves may land on a file the agent placed.
+  if (located === 'dotdot') return false
   return located === 'outside' || (located !== 'none' && view.rootOf(located.real) === null)
 }
 
@@ -429,8 +435,11 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
       if (name.includes('/')) return CODE_REFUSALS.unreadable
       continue
     }
-    const located = view.locate(name, cwd)
+    // node resolves its own script operand as text; every other word is a name the kernel may resolve (fix brief 9, B29).
+    const lexical = read.operand !== null && read.operand.runtime === 'node' && name === read.operand.name
+    const located = view.locate(name, cwd, { lexical })
     if (located === 'outside') return CODE_REFUSALS.unreadable
+    if (located === 'dotdot') return CODE_REFUSALS.dotdotAfterLink
     if (typeof located === 'object') queue.push({ real: located.real, language, runtime })
   }
   for (const code of read.inline) {
@@ -449,6 +458,7 @@ function gatherForm(planned: Planned, into: Gathered, place: Pick<CodeInput, 'cw
     if (literalBackslash(feed.name)) return CODE_REFUSALS.unreadable
     const located = view.locate(feed.name, cwd)
     if (located === 'outside') return CODE_REFUSALS.unreadable
+    if (located === 'dotdot') return CODE_REFUSALS.dotdotAfterLink
     if (located === 'none') return CODE_REFUSALS.notFound
     queue.push({ real: located.real, language, runtime })
     return null
@@ -1109,7 +1119,7 @@ function preloadOf(runtime: string, preload: Preload, place: { cwd: string; view
     return null
   }
   // node's -r is a require from the working directory; --import and the loaders are ES module loads.
-  const entry = runtime !== 'node' ? scriptEntry(runtime, specifier, place.cwd, place.view) : preload.esm ? entryOf(place.view.locate(specifier, place.cwd)) : nodeEntry(specifier, place.cwd, place.view, 'require')
+  const entry = runtime !== 'node' ? scriptEntry(runtime, specifier, place.cwd, place.view) : preload.esm ? entryOf(place.view.locate(specifier, place.cwd, { lexical: true })) : nodeEntry(specifier, place.cwd, place.view, 'require')
   if (entry === 'none') return CODE_REFUSALS.notFound
   return 'refused' in entry ? entry.refused : entry
 }
@@ -1212,6 +1222,7 @@ function bunfigPreloadsOf(configs: readonly string[], cwd: string, view: CodeVie
   const named = configs.at(-1)
   const located = view.locate(named ?? 'bunfig.toml', cwd)
   if (located === 'outside') return CODE_REFUSALS.unreadable
+  if (located === 'dotdot') return CODE_REFUSALS.dotdotAfterLink
   if (located === 'none') return named === undefined ? [] : CODE_REFUSALS.notFound
   if (!view.readable(located.real)) return CODE_REFUSALS.unreadable
   const buffer = view.read(located.real, MANIFEST_LIMIT)
@@ -1370,7 +1381,7 @@ function tomlValue(source: string, from: number): { value: TomlValue; end: numbe
  * file past a manifest it could not read whole.
  */
 function packageMain(folder: string, base: string, view: CodeView): string | null | { refused: string } {
-  const located = view.locate(join(folder, 'package.json'), base)
+  const located = view.locate(join(folder, 'package.json'), base, { lexical: true })
   if (typeof located !== 'object') return null
   if (!view.readable(located.real)) return { refused: CODE_REFUSALS.unreadable }
   const buffer = view.read(located.real, MANIFEST_LIMIT)
@@ -1535,7 +1546,7 @@ function jsImports(code: string, place: Place): Found | string {
   const base = place.file === null ? place.cwd : dirname(place.file)
   const node = place.runtime === 'node'
   const statements: Array<{ pattern: RegExp; esm: boolean; resolve: (specifier: string) => Entry }> = [
-    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, esm: true, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base) : firstLocated(place.view, jsCandidates(specifier), base)) })),
+    ...JS_MODULE_SPECIFIERS.map(pattern => ({ pattern, esm: true, resolve: (specifier: string) => entryOf(node ? place.view.locate(specifier, base, { lexical: true }) : firstLocated(place.view, jsCandidates(specifier), base)) })),
     { pattern: JS_REQUIRE_SPECIFIER, esm: false, resolve: (specifier: string) => (node ? nodeEntry(specifier, base, place.view, 'require') : entryOf(firstLocated(place.view, jsCandidates(specifier), base))) },
   ]
   for (const { pattern, esm, resolve } of statements) {
@@ -1710,6 +1721,7 @@ function shellSources(code: string, place: Place): Found | string {
     if (name.includes('$') || name.includes('`')) continue
     if (literalBackslash(name)) return CODE_REFUSALS.unreadable
     const located = [place.view.locate(name, place.cwd), ...(place.file === null ? [] : [place.view.locate(name, dirname(place.file))])]
+    if (located.includes('dotdot')) return CODE_REFUSALS.dotdotAfterLink
     const file = located.find(item => typeof item === 'object')
     if (file) found.push({ real: file.real, language: 'shell' })
     else return located.includes('outside') ? CODE_REFUSALS.unreadable : CODE_REFUSALS.missing
@@ -1739,14 +1751,31 @@ export function createCodeView(input: { paths: PathView; canRead: (real: string)
       return error instanceof Error && error.message === outsideMountReason({ named: path, displayRoots: paths.displayRoots }) ? 'outside' : 'unnamed'
     }
   }
+  const landing = (path: string): string | null => {
+    try { return resolveTarget(path, { shares: paths.shares }) } catch { return null }
+  }
+  // Where the kernel lands a name holding `..`: the part before its first `..` through the view, then the rest as written,
+  // which the C library's realpath walks as the kernel does, each `..` after the link it follows (fix brief 9, B29).
+  const kernelLanding = (name: string, base: string): string | null => {
+    const segments = (process.platform === 'win32' ? name.replaceAll('\\', '/') : name).split('/')
+    const at = segments.indexOf('..')
+    const head = segments.slice(0, at).join('/')
+    const named = namedPath(head === '' ? (segments[0] === '' && at > 0 ? '/' : '.') : head, base)
+    if (named === 'outside' || named === 'unnamed') return null
+    return landing(`${named.replace(/\/$/, '')}/${segments.slice(at).join('/')}`)
+  }
   return {
     named: namedPath,
-    locate(name, base) {
+    locate(name, base, options = {}) {
       const named = namedPath(name, base)
       // A name the view cannot place lands on no file the reader may show, so it is refused as a path beyond the view is.
       if (named === 'outside' || named === 'unnamed') return 'outside'
+      const real = landing(named)
+      // The view folds `..` as text; where the kernel, following a link first, lands elsewhere, the file the program opens
+      // is not the one the view names, so the name refuses. node folds its own names as text (lexical).
+      if (!options.lexical && dotDotSegment(name) && kernelLanding(name, base) !== real) return 'dotdot'
+      if (real === null) return 'none'
       try {
-        const real = resolveTarget(named, { shares: paths.shares })
         return statSync(real).isFile() ? { real } : 'none'
       } catch {
         return 'none'
@@ -1781,6 +1810,11 @@ export function createCodeView(input: { paths: PathView; canRead: (real: string)
       }
     },
   }
+}
+
+/** Whether a name holds a `..` segment, split on `/`, and on `\\` too on Windows. */
+function dotDotSegment(name: string): boolean {
+  return name.split(process.platform === 'win32' ? /[\\/]/ : '/').includes('..')
 }
 
 function joinShown(target: string, rest: string): string {

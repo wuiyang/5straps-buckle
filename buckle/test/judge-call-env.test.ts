@@ -788,6 +788,23 @@ describe('a program named by an absolute path that climbs out of a link (fix bri
   })
 })
 
+describe('a script operand whose .. follows a link (fix brief 9, B29)', () => {
+  it('is not rated: the ask ends approval_required, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    mkdirSync(join(config.cwd, 'd0', 'd1'), { recursive: true })
+    symlinkSync('d0/d1', join(config.cwd, 'l'))
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    writeFileSync(join(config.cwd, 'd0', 'job.py'), 'print(2)\n')
+    const runtime = await runtimeOf(config, { judge })
+    const { response, entry, ran } = await call(runtime, {}, ['python3', 'l/../job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.dotdotAfterLink, passed: false })
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
 describe('a runner package whose version part names a folder (fix brief 8, B22)', () => {
   it('is not rated: npx eslint@.decoy asks with the runner reason, the judge never called', async () => {
     const judge = fakeJudge()
