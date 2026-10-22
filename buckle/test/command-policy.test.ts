@@ -2212,6 +2212,18 @@ describe('a line continuation inside the &> or << the splitter reads (fix brief 
     expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
   })
 
+  // A continuation in the delimiter word quotes nothing (fix brief 9, A7), so under `<<E\<newline>OF` a body line ending in
+  // a backslash-newline joins the next line, the `EOF` line is swallowed, and the find line stays heredoc text, whose
+  // single-quoted substitution runs (bash 5.2.21 and dash printed `x EOF`, then the find line with the substitution run).
+  it.each(shells)('%s -c reads a body line continued over the EOF line under a continued delimiter as unquoted heredoc text', (shell) => {
+    const text = "cat <<E\\\nOF\nx \\\nEOF\nfind . -maxdepth 0 -exec true '$(python3 x.py)' \\;\nEOF"
+    const allow = [`${shell} -c *`]
+    const ask = evaluate(shell, ['-c', text], { allow })
+    expect(ask.kind).toBe('ask')
+    if (ask.kind === 'ask') expect(ask.asks[0]).toMatchObject({ rule: 'destructive_command', cause: 'interpreter' })
+    expect(evaluate(shell, ['-c', text], { allow, deny: ['python3 *'] }).kind).toBe('deny')
+  })
+
   it('reads the heredoc whole: its delimiter line ends the body, and the command after it is a statement', () => {
     expect(shellStatementList("cat <\\\n<'EOF'\n'\nEOF\npython3 x.py").statements).toContain('python3 x.py')
     expect(shellStatementList('cat <<E\\\nOF\nbody\nEOF\npython3 x.py').statements).not.toContain('EOF')
