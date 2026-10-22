@@ -54,6 +54,8 @@ export interface JudgedAsk {
   bound?: CodeBinding
   /** The code a pass rated changed before the program started, so the pass ran nothing and a person decides (B31). */
   changed?: true
+  /** Why the reader did not read a screened allowed command's code, which the quick stage then rated on its command line (B35). */
+  codeUnread?: string
 }
 
 /** The part of a call the decision AI reads: its effects, the tool and arguments, and the caller's signal. */
@@ -204,19 +206,36 @@ export function createJudgeGate(input: {
     // rated on its command line instead, with no scriptText, as before R3: screen() is unchanged (R2), and the agent
     // writes package.json, so a file it makes unreadable must not switch the screen off (fix brief 8, B24).
     if (script !== null && typeof script !== 'string' && !screened) return script.refused
-    const shownCwd = sandboxName(cwd)
+    return {
+      ...commandLine(effect, call, interpreters, reason),
+      ...code.reading,
+      env: shownVariables(joined),
+      standardScript,
+      ...(typeof script === 'string' ? { scriptText: clippedReasoning(script) } : {}),
+    }
+  }
+
+  /**
+   * A command as its command line alone shows it: the command and its words, where it runs, what it can reach, the
+   * lists in force, and the node's summary, with no code, no packages, and no variables. What a screened allowed command
+   * is rated on where the reader could not read its code whole (fix brief 9, B35), as a standard script's unread
+   * package.json is (fix brief 8, B24).
+   */
+  function commandLine(effect: Exec, call: CallView, interpreters: string[], reason: string | null): JudgeInput {
+    const shownCwd = sandboxName(workingDirectory(call.args))
     // A host path Buckle supplies itself is shown as the program's name; the agent's own command stays as typed.
     const program = effect.shownAs ?? effect.command
     return {
       command: shownCommand(program, effect.args),
       argv: shownWords(program, effect.args),
       interpreters,
-      ...code.reading,
-      env: shownVariables(joined),
+      inline: null,
+      files: [],
+      packages: [],
+      env: [],
       packagesTruncated: false,
       truncated: false,
-      standardScript,
-      ...(typeof script === 'string' ? { scriptText: clippedReasoning(script) } : {}),
+      standardScript: false,
       policy: lists,
       cwd: shownCwd,
       mounts: [{ target: shownRoot, access: 'read-write' }, ...paths.mounts.filter(mount => !mount.scratch && mount.target !== mount.source).map(mount => ({ target: mount.target, access: mount.access === 'rw' ? 'read-write' as const : 'read-only' as const }))],
@@ -370,11 +389,13 @@ export function createJudgeGate(input: {
         if (!call.asked.has(subject) && !commands.has(subject)) commands.set(subject, effect)
       }
       return Promise.all([...commands].map(async ([subject, effect]): Promise<JudgedAsk> => {
-        const asked = shown(effect, call, true, null, true)
-        if (typeof asked === 'string') return { ...unread(subject, asked, 'quick'), screened: true }
+        const read = shown(effect, call, true, null, true)
+        // Whatever the reader could not read, the screen still rates the command on its command line, so no word the agent
+        // adds switches it off; the reason is kept beside the rating (fix brief 9, B35). An ask's refusal stands (route).
+        const asked = typeof read === 'string' ? commandLine(effect, call, commandFormsOf(effect).interpreters.filter(name => !input.allowedInterpreters.has(name)), null) : read
         const command = prepared(asked, call.signal)
         const rating = await quick(command, call.signal)
-        return finished({ subject, input: asked, quick: rating, screened: true, ...(ratedDanger(rating.result) ? { flagged: true as const } : {}) }, command)
+        return finished({ subject, input: asked, quick: rating, screened: true, ...(ratedDanger(rating.result) ? { flagged: true as const } : {}), ...(typeof read === 'string' ? { codeUnread: clippedReason(read) } : {}) }, command)
       }))
     },
     async rateOnRequest(call) {
@@ -548,7 +569,7 @@ export function judgeAuditOf(judged: readonly JudgedAsk[]): JudgeAudit | undefin
 /** One rating as an audit entry keeps it; `passed` says whether it ran or approved the call (on request: whether the owner's command approved it). */
 export function auditOf(item: JudgedAsk, passed = item.passedBy !== undefined): JudgeAudit {
   const quick = item.quick ? quickAuditOf(item.quick) : undefined
-  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}), ...(item.socket ? { socket: item.socket } : {}), ...(item.changed ? { changed: true as const } : {}) }
+  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}), ...(item.socket ? { socket: item.socket } : {}), ...(item.changed ? { changed: true as const } : {}), ...(item.codeUnread ? { codeUnread: item.codeUnread } : {}) }
   if (item.thorough) {
     const { provider, model, result } = item.thorough
     const beside = { ...(quick ? { quick } : {}), ...marks }

@@ -16,9 +16,10 @@ export type QuickAudit =
  * How a rating acted: the thorough stage, whose safe verdict alone runs or approves a call (`passedBy`; addendum 3 R1), an
  * allowed command the quick stage made ask, or one it let run; `socket: 'unavailable'` where the Socket lookup for its
  * packages failed, so its verdict was not kept; and `changed` where the code it rated changed before the program
- * started, so its pass ran nothing and a person decides (fix brief 9, B31).
+ * started, so its pass ran nothing and a person decides (fix brief 9, B31); and `codeUnread`, why the reader did not read
+ * a screened allowed command's code, which the quick stage then rated on its command line (fix brief 9, B35).
  */
-interface JudgeMarks { passedBy?: 'thorough'; flagged?: true; screened?: true; socket?: 'unavailable'; changed?: true }
+interface JudgeMarks { passedBy?: 'thorough'; flagged?: true; screened?: true; socket?: 'unavailable'; changed?: true; codeUnread?: string }
 
 /**
  * What the decision AI said of a call (D91): the thorough stage's verdict and whether a stage passed the call, or why it

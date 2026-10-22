@@ -68,6 +68,54 @@ async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePol
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 
+describe('an allowed command whose code the reader cannot read whole, under all (fix brief 9, B35)', () => {
+  // A reader refusal used to switch the screen off for an allowed command, so one added word let it run with Jev never
+  // asked; it is now rated on its command line, its plan absent and the refusal kept beside the rating in the audit entry.
+  // For an ask the refusal stands and a person decides.
+  const forms: Array<[string, string[]]> = [
+    ['xargs', ['mkdir', 'out']],
+    ['npm', ['run', 'build', '-w', 'a']],
+    ['npm', ['run', 'build', '--prefix', 'a']],
+    ['npm', ['run', 'build', '--prefi=sub']],
+    ['npm', ['run', 'build', '--node-options=x']],
+  ]
+
+  it.each(forms)('%s %j is rated on its command line once, and a danger turns it into an ask', async (command, args) => {
+    const judges = fakes(quick('danger', 0.95))
+    const runtime = await runtimeOf(node(), judges)
+    await withPolicy(runtime, { allow: [`${command} *`] })
+    const { response, entry, ran } = await call(runtime, command, args)
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(judges.quickJudge.quick).toHaveBeenCalledTimes(1)
+    const shown = vi.mocked(judges.quickJudge.quick).mock.calls[0]![0]
+    expect(shown).toMatchObject({ files: [], packages: [], inline: null, standardScript: false, reason: null })
+    expect(shown).not.toHaveProperty('scriptText')
+    expect(entry.judge).toMatchObject({ quick: { level: 'danger', confidence: 0.95 }, passed: false, flagged: true, screened: true, codeUnread: expect.any(String) })
+  })
+
+  it.each(forms)('%s %j still runs where Jev rates it safe', async (command, args) => {
+    const judges = fakes(quick('safe', 0.95))
+    const runtime = await runtimeOf(node(), judges)
+    await withPolicy(runtime, { allow: [`${command} *`] })
+    const { response, ran } = await call(runtime, command, args)
+    expect(ran).toBe(true)
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(judges.quickJudge.quick).toHaveBeenCalledTimes(1)
+  })
+
+  it.each(forms)('%s %j as an ask keeps its refusal: a person decides, no stage asked', async (command, args) => {
+    const judges = fakes(quick('safe', 0.95))
+    const runtime = await runtimeOf(node(), judges)
+    await withPolicy(runtime, { destructive: [`${command} *`] })
+    const { response, ran } = await call(runtime, command, args)
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(judges.quickJudge.quick).not.toHaveBeenCalled()
+    expect(judges.judge.judge).not.toHaveBeenCalled()
+  })
+})
+
 describe('an allowed command, with the quick stage on for all', () => {
   it('asks where Jev rates it danger at 0.8 or above, the verdict beside the action and the level alone in the agent\'s reason', async () => {
     const judges = fakes(quick('danger', 0.91))

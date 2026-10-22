@@ -101,14 +101,14 @@ describe('the variables that change what code runs', () => {
     expect(JSON.stringify(response)).not.toContain('evil')
   })
 
-  it('leave an allowed command to run as before under scope all, with nothing screened', async () => {
+  it('leave an allowed command rated on its command line under scope all, the reason kept beside the rating (fix brief 9, B35)', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'danger' as const, confidence: 0.99, probabilities: { safe: 0, warning: 0.01, danger: 0.99 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'all' }), { quickJudge })
     await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['cat *'], deny: [] } })
     const { ran, entry } = await call(runtime, { env: { LD_PRELOAD: './evil.so' } }, ['cat', 'build.js'])
-    expect(ran).toBe(true)
-    expect(quickJudge.quick).not.toHaveBeenCalled()
-    expect(entry.judge).toMatchObject({ quick: { unavailable: 'the call sets LD_PRELOAD, which changes what code runs; the decision AI does not rate it' }, passed: false, screened: true })
+    expect(ran).toBe(false)
+    expect(quickJudge.quick).toHaveBeenCalledTimes(1)
+    expect(entry.judge).toMatchObject({ quick: { level: 'danger' }, passed: false, flagged: true, screened: true, codeUnread: 'the call sets LD_PRELOAD, which changes what code runs; the decision AI does not rate it' })
   })
 })
 
@@ -239,14 +239,14 @@ describe('a call that changes its working directory before its code runs (fix br
     expect((await call(runtime, {}, ['env', 'node', '-C', 'development', 'build.js'])).ran).toBe(true)
   })
 
-  it('leaves an allowed command to run as before under scope all, with nothing screened', async () => {
+  it('leaves an allowed command rated on its command line under scope all, the reason kept beside the rating (fix brief 9, B35)', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'danger' as const, confidence: 0.99, probabilities: { safe: 0, warning: 0.01, danger: 0.99 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'all' }), { quickJudge })
     await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *', 'cd *', 'cat *'], deny: [] } })
     const { ran, entry } = await call(runtime, {}, ['bash', '-c', 'cd . && cat build.js'])
-    expect(ran).toBe(true)
-    expect(quickJudge.quick).not.toHaveBeenCalled()
-    expect(entry.judge).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, screened: true })
+    expect(ran).toBe(false)
+    expect(quickJudge.quick).toHaveBeenCalledTimes(1)
+    expect(entry.judge).toMatchObject({ quick: { level: 'danger' }, flagged: true, screened: true, codeUnread: CHANGES_DIRECTORY })
   })
 })
 
