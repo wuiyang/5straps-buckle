@@ -29,6 +29,29 @@ export function loadsEnvFile(forms: CommandForms): boolean {
   })
 }
 
+/** Why a call that sets an npm option changing what code runs is not rated (fix brief 9, B33). */
+export const NPM_CODE_OPTION = 'the call sets an npm option that changes what code runs; the decision AI does not rate it'
+
+/**
+ * npm's options that load code no stage sees: `--node-options` reaches node as NODE_OPTIONS, `--script-shell` names the
+ * shell a script runs in, and `--userconfig` and `--globalconfig` name a config file that may set either (npm 11.19.0 ran
+ * a planted preload or shell for each), as the `npm_config_*` variables of the same names do, which are refused too.
+ */
+const NPM_CODE_OPTIONS = ['--node-options', '--script-shell', '--userconfig', '--globalconfig']
+
+/**
+ * Whether an npm form sets one of NPM_CODE_OPTIONS before a `--` (fix brief 9, B33), read as npm reads an option
+ * (selectsOption): bare or with `=value`, or by a prefix of three or more letters (`--node-opt=`, `--userconf=`). pnpm,
+ * yarn, bun, and npx read none of these as npm does, so their forms are left alone.
+ */
+export function setsNpmCodeOption(forms: CommandForms): boolean {
+  return allForms(forms).some((form) => {
+    if (baseCommand(form[0] ?? '') !== 'npm') return false
+    const end = form.indexOf('--')
+    return form.slice(1, end < 0 ? form.length : end).some(word => NPM_CODE_OPTIONS.some(option => selectsOption(word, option)))
+  })
+}
+
 /**
  * The shell builtins that change the working directory of every statement after them: `cd`, `pushd`, and `popd`, and
  * `chdir`, which dash, zsh, mksh, busybox ash, and tcsh take as `cd`, and fish's `prevd`, `nextd`, and `cdh` (fix brief

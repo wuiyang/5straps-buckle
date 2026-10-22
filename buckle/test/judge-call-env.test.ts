@@ -5,7 +5,7 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
-import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, selectsOption, wrapperWords } from '../common/services/judge/call-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, NPM_CODE_OPTION, selectsOption, setsNpmCodeOption, wrapperWords } from '../common/services/judge/call-forms.js'
 import { allForms, commandForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
@@ -209,6 +209,22 @@ describe('a call that changes its working directory before its code runs (fix br
       expect(selects(words), words.join(' ')).toBe(true)
     }
     for (const words of [['npm', 'run', 'build', '--', '--prefi=sub'], ['npm', 'run', 'build', '--production']]) expect(selects(words), words.join(' ')).toBe(false)
+  })
+
+  it('counts an npm option that loads code no stage sees, by its prefix too, before a -- and for npm alone (fix brief 9, B33)', () => {
+    // npm 11.19.0 ran a planted preload for --node-options, --userconfig, and --globalconfig, and a planted shell for
+    // --script-shell, and took --node-opt=, --script-sh=, and --userconf= as those; pnpm and yarn read none of them.
+    const sets = (words: string[]) => setsNpmCodeOption(commandFormsOf({ command: words[0]!, args: words.slice(1) }))
+    for (const option of ['--node-options', '--script-shell', '--userconfig', '--globalconfig']) {
+      expect(sets(['npm', 'run', 'build', `${option}=x`]), option).toBe(true)
+      expect(sets(['npm', 'run', 'build', option, 'x']), option).toBe(true)
+      expect(sets(['npm', option, 'x', 'run', 'build']), option).toBe(true)
+    }
+    for (const word of ['--node-opt=x', '--script-sh=x', '--userconf=x']) expect(sets(['npm', 'run', 'build', word]), word).toBe(true)
+    for (const words of [['npm', 'run', 'build', '--', '--node-options=x'], ['npm', 'run', 'build', '--loglevel=silent'], ['pnpm', 'run', 'build', '--node-options=x'], ['yarn', 'run', 'build', '--node-options=x'], ['bun', 'run', 'build', '--node-options=x'], ['npx', 'tsc', '--node-options=x']]) {
+      expect(sets(words), words.join(' ')).toBe(false)
+    }
+    expect(NPM_CODE_OPTION).toBe('the call sets an npm option that changes what code runs; the decision AI does not rate it')
   })
 
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {

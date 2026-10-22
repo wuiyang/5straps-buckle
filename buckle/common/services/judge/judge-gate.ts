@@ -17,7 +17,7 @@ import { clippedReasoning, clippedResult, type Judge, type JudgeInput, type Judg
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
-import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile } from './call-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile, NPM_CODE_OPTION, setsNpmCodeOption } from './call-forms.js'
 import { CODE_REFUSALS, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
@@ -153,7 +153,8 @@ export function createJudgeGate(input: {
    * allowed command (`allowed`), the code of every interpreter it runs. A reason in place of it where the code cannot be
    * read whole, where the call sets a variable that changes what code runs, which no stage could see run, where it
    * changes its working directory before the code runs, so the code read at its own may not be the code that runs, or
-   * where its runtime loads variables from a file the reader does not follow (fix brief 3, F2). `screened` says the
+   * where its runtime loads variables from a file the reader does not follow (fix brief 3, F2), or where it sets an npm
+   * option that loads code no stage sees (fix brief 9, B33). `screened` says the
    * quick stage screens an allowed command under `all`, which a standard script's unread package.json does not refuse.
    */
   function shown(effect: Exec, call: CallView, allowed: boolean, reason: string | null, screened = false): JudgeInput | string {
@@ -170,6 +171,7 @@ export function createJudgeGate(input: {
     if (assigned.unread) return CODE_REFUSALS.truncated
     if (changesDirectory(forms)) return CHANGES_DIRECTORY
     if (loadsEnvFile(forms)) return LOADS_ENV_FILE
+    if (setsNpmCodeOption(forms)) return NPM_CODE_OPTION
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
     const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))

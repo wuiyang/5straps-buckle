@@ -5,7 +5,7 @@ import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
-import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
+import { CHANGES_DIRECTORY, NPM_CODE_OPTION } from '../common/services/judge/call-forms.js'
 import { SCRIPT_TEXT_REFUSAL } from '../common/services/judge/code-reader.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
@@ -413,6 +413,26 @@ describe('the quick stage\'s scope', () => {
     await call(await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'off' }), fakes), 'python3', ['job.py'])
     expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
     expect(fakes.judge.judge).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('an npm option that loads code no stage sees (fix brief 9, B33)', () => {
+  it('refuses each option, bare and with =value, and by its prefix, under quick scope asks with npm on the destructive list, Jev never asked', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'package.json'), JSON.stringify({ scripts: { build: 'tsc -p .' } }))
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['npm *'] })
+    const refused = [...['--node-options', '--script-shell', '--userconfig', '--globalconfig'].flatMap(option => [['run', 'build', `${option}=./marker`], ['run', 'build', option, './marker']]), ['run', 'build', '--node-opt=./marker'], ['run', 'build', '--script-sh=./marker'], ['run', 'build', '--userconf=./marker']]
+    for (const args of refused) {
+      const { response, entry } = await call(runtime, 'npm', args)
+      expect(response, args.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(entry.judge, args.join(' ')).toMatchObject({ quick: { unavailable: NPM_CODE_OPTION }, passed: false })
+    }
+    expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
+    await call(runtime, 'npm', ['run', 'build', '--', '--node-options=x'])
+    await call(runtime, 'npm', ['run', 'build', '--loglevel=silent'])
+    expect(fakes.shownQuick.map(input => [input.command, input.scriptText])).toEqual([['npm run build -- --node-options=x', 'tsc -p .'], ['npm run build --loglevel=silent', 'tsc -p .']])
   })
 })
 
