@@ -25,8 +25,9 @@ function screen(isTTY: boolean) {
 }
 
 /**
- * A readline on `output` with TERM pinned to a capable terminal: Node's readline reads TERM when it is created, and
- * under TERM=dumb it redraws a prompt without the text typed after it, so a row would pass or fail by the caller's shell.
+ * A readline on `output` with TERM pinned to a capable terminal: Node's readline checks TERM when it is created and
+ * again on every prompt(), and under TERM=dumb it redraws a prompt without the text typed after it. So the stub must
+ * hold for the whole row (it does, until the afterEach unstubs), or a row would pass or fail by the caller's shell.
  */
 function interfaceOn(input: PassThrough, output: PassThrough) {
   vi.stubEnv('TERM', 'xterm-256color')
