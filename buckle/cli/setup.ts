@@ -1,6 +1,6 @@
 import { createCliConsumerSlot, createCliRequester, type CliConsumerSlot, type RequestCli } from '@5straps/runtime'
 import { approvalPending } from '../common/services/approvals/interaction.js'
-import { createTerminalConsumer, interruptSelf, type TerminalOptions } from './terminal-consumer.js'
+import { createTerminalConsumer, interruptSelf, type TerminalConsumer, type TerminalOptions } from './terminal-consumer.js'
 
 export interface CliSetup {
   /** The process's one requester: questions queue here and reach the terminal one at a time. */
@@ -17,11 +17,15 @@ export interface CliSetup {
  */
 export function setupCli(input: { terminal: TerminalOptions | null }): CliSetup {
   const slot = createCliConsumerSlot()
+  let consumer: TerminalConsumer | undefined
   if (input.terminal) {
     const { onInterrupt = () => interruptSelf() } = input.terminal
     // Ctrl-C detaches the terminal first, which drops every queued question, then stops the process.
-    const detach = slot.attach(createTerminalConsumer({ ...input.terminal, onInterrupt: () => { detach(); onInterrupt() } }))
+    const terminal = createTerminalConsumer({ ...input.terminal, onInterrupt: () => { detach(); onInterrupt() } })
+    const detach = slot.attach(terminal)
+    consumer = terminal
   }
   const requester = createCliRequester({ slot, onUnavailable: approvalPending })
-  return { requestCli: requester.requestCli, slot, close: () => requester.close() }
+  // A question still on screen as the process stops says so on its row (the CLI display slice, C4).
+  return { requestCli: requester.requestCli, slot, close: () => { consumer?.stopping(); return requester.close() } }
 }

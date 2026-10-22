@@ -228,10 +228,11 @@ export interface ShownAsk {
 
 /**
  * What every route that decides shows before a decision, so the serve terminal, `buckle approvals --watch`,
- * `buckle approve` and MCP elicitation read alike (owner decision D17): the ask, then its whole action.
+ * `buckle approve` and MCP elicitation read alike (owner decision D17): the ask, then its whole action. `expiry` words
+ * the request expiry: ISO UTC by default, the serve terminal's local time where it passes describeLocalExpiry (C4).
  */
-export function describeAsk(ask: ShownAsk): string[] {
-  const head = askHead(ask)
+export function describeAsk(ask: ShownAsk, expiry: (expiresAt: string) => string = describeExpiry): string[] {
+  const head = askHead(ask, expiry)
   const { call } = ask
   if (!call) return [...head, `  ${RECORDED_BEFORE_NOTE}`]
   const workspace = ask.workspaceId === undefined && ask.workspaceName === undefined ? undefined : workspaceLabel(ask.workspaceId ?? '', ask.workspaceName)
@@ -261,12 +262,12 @@ export function describeCallAsks(requests: ReadonlyArray<{ token: string; rule: 
   return [`  asks:     this call makes ${requests.length}, each decided on its own`, ...requests.map(request => `            ${printable(request.token)}  ${printable(request.rule)}: ${printable(request.subject)}`)]
 }
 
-function askHead(ask: ShownAsk): string[] {
+function askHead(ask: ShownAsk, expiry: (expiresAt: string) => string = describeExpiry): string[] {
   return [
     `${printable(ask.tool)} needs approval${ask.workspaceId === undefined ? '' : ` in workspace ${workspaceLabel(ask.workspaceId, ask.workspaceName)}`}`,
     `  ${printable(ask.reason)}`,
     `  subject: ${printable(ask.subject)}`,
-    `  ${describeExpiry(ask.expiresAt)}`,
+    `  ${expiry(ask.expiresAt)}`,
   ]
 }
 

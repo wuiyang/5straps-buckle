@@ -1,10 +1,13 @@
-import { createInterface } from 'node:readline/promises'
+import { clearScreenDown, cursorTo, moveCursor } from 'node:readline'
+import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { CliConsumer, CliRequest } from '@5straps/runtime'
 import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
-import { remainingMs } from '../common/domain/approval-deadline.js'
+import { actionPhrase } from '../common/domain/action-phrase.js'
+import { describeLocalExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
+import { localTime } from '../common/domain/local-time.js'
 import { createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
@@ -74,6 +77,12 @@ const QuestionDetailsSchema = z.object({
   judge: z.string().optional(),
 })
 
+/** The terminal's consumer, told when the process stops, so a question it drops then says so on its prompt row (C4). */
+export interface TerminalConsumer extends CliConsumer {
+  /** setupCli's close is under way: a question dropped from now on ends with `[stopped]`. */
+  stopping(): void
+}
+
 /**
  * The one interactive terminal, attached to the process's requester: questions reach it one at a
  * time, in order, and each answer belongs to the question on screen. It answers with a choice only;
@@ -85,18 +94,20 @@ const QuestionDetailsSchema = z.object({
  * denies once the prompt is showing.
  *
  * A question ends when its request expires, which is the deadline of a terminal someone is sitting
- * at; the requester times it out from the request's own wait.
+ * at; the requester times it out from the request's own wait. A question that ends unanswered says why
+ * on its prompt row (the CLI display slice, C4).
  *
  * Ctrl-C at a question stops the process, not just that question: every gated call queues its own,
  * so dropping one at a time would take a key press per question to stop `buckle serve`. The first
  * Ctrl-C closes the terminal and calls `onInterrupt`, whose caller detaches this consumer, which
  * drops every queued question, and interrupts the process again for it to shut down as usual.
  */
-export function createTerminalConsumer(options: TerminalOptions = {}): CliConsumer {
+export function createTerminalConsumer(options: TerminalOptions = {}): TerminalConsumer {
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stderr
   const writer = options.console ?? createConsoleWriter({ output, dates: false })
   const interrupted = new AbortController()
+  let stopping = false
   const onInterrupt = options.onInterrupt ?? (() => interruptSelf())
   const interrupt = () => {
     if (interrupted.signal.aborted) return
@@ -104,7 +115,21 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
     onInterrupt()
   }
 
+  /**
+   * Why a question on screen ended unanswered: nothing after Ctrl-C, as the shutdown lines follow; `[timeout]` by the
+   * clock, since the poll that withdraws an expired ask often ends its question before the requester's own timer does;
+   * `[stopped]` once the process stops; `[no longer waiting]` for an answer given elsewhere or a call withdrawn.
+   */
+  const ending = (question: ApprovalQuestion): string | null => {
+    if (interrupted.signal.aborted) return null
+    if (remainingMs(question.expiresAt) === 0) return '[timeout]'
+    return stopping ? '[stopped]' : '[no longer waiting]'
+  }
+
   return {
+    stopping() {
+      stopping = true
+    },
     async prompt(request, { signal }) {
       const question = approvalQuestion(request)
       const cancelled = AbortSignal.any([signal, interrupted.signal])
@@ -119,27 +144,44 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
         readline.close()
         interrupt()
       })
+      // Closed the moment the question ends, before the requester opens the next one on the same input: a close after
+      // that would pause the input the next question reads.
+      cancelled.addEventListener('abort', () => readline.close(), { once: true })
+      const row = promptRow({ question, output, readline, writer })
       try {
+        const at = new Date()
         // After every line logged before it (C3).
-        await writer.block(describeQuestion(question).slice(0, -1).split('\n'), new Date())
+        await writer.block(approvalBlock(question, at), at)
         await keys.quiet(QUIET_MS, cancelled)
         cancelled.throwIfAborted()
         discardTypedLine(readline)
-        // While the prompt is open, a line logged lands above it and the prompt is drawn again below.
-        const release = writer.asking(readline)
-        let typed: string
-        try {
-          typed = await readline.question(`${marked(question, [''])[0]}  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })
-        } finally {
-          release()
-        }
-        return { status: 'answered', answer: { choice: choiceFor(question, typed.trim().toLowerCase()) } }
+        const typed = await row.ask(cancelled)
+        const answer = typed.trim().toLowerCase()
+        const choice = choiceFor(question, answer)
+        row.answered(typed, choice === 'deny' && answer !== 'n')
+        return { status: 'answered', answer: { choice } }
+      } catch (error) {
+        if (cancelled.aborted) row.ended(ending(question))
+        throw error
       } finally {
         keys.stop()
         readline.close()
       }
     },
   }
+}
+
+/**
+ * A question as the serve terminal shows it (the CLI display slice, C4): a head line with the time, the `[approval]`
+ * tag, the workspace, and what the tool does in Buckle's words; then the ask and its whole action as every route shows
+ * them (owner decision D17), the expiry on this device's clock; then the choices it takes. Every line carries the
+ * workspace's `[<name>]` (D85, Q15).
+ */
+export function approvalBlock(question: ApprovalQuestion, at: Date): string[] {
+  return [
+    `${localTime(at)} [approval] ${markOf(question)}action pending approval: ${actionPhrase(question.tool)}`,
+    ...marked(question, [...describeAsk(question, describeLocalExpiry), choicesLine(question)]),
+  ]
 }
 
 /**
@@ -160,6 +202,66 @@ export function marked(question: Pick<ApprovalQuestion, 'workspaceId' | 'workspa
   return handle === undefined ? lines : lines.map(line => `[${printable(handle)}] ${line}`)
 }
 
+/** `[<name>] ` for the workspace a question waits in, or nothing where it names none. */
+function markOf(question: Pick<ApprovalQuestion, 'workspaceId' | 'workspaceName'>): string {
+  return marked(question, [''])[0]!
+}
+
+/**
+ * A question's one prompt row, `[<name>] Your choice: `, short enough to fit a row of a terminal so a log line can be
+ * drawn above it (C3), and what is written on it once the question ends (C4). Readline echoes what is typed at a
+ * terminal and ends the row on Enter and on an abort; the tag of a denial by Enter or an unknown key, or of an ending
+ * with no answer, is then written back on the row it ended, the half-typed text cleared. Where the output is no
+ * terminal, readline echoes nothing, and the row is written whole.
+ */
+function promptRow(input: { question: ApprovalQuestion; output: Writable; readline: Interface; writer: ConsoleWriter }) {
+  const { output, readline } = input
+  const text = `${markOf(input.question)}Your choice: `
+  const terminal = (output as { isTTY?: boolean }).isTTY === true
+  const columns = () => (output as { columns?: number }).columns || 80
+  let shown = false
+  let typedAtEnd = ''
+  return {
+    async ask(signal: AbortSignal): Promise<string> {
+      const release = input.writer.asking(readline)
+      // Before readline's own listener, which clears the line it holds as the question is cancelled; the writer lets go
+      // at once, so no line logged after this draws a prompt that is gone.
+      signal.addEventListener('abort', () => {
+        typedAtEnd = readline.line
+        release()
+      }, { once: true })
+      shown = true
+      try {
+        return await readline.question(text, { signal })
+      } finally {
+        release()
+      }
+    },
+    answered(typed: string, denied: boolean): void {
+      const tag = denied ? `${typed === '' ? '' : ' '}[deny]` : ''
+      if (!terminal) {
+        output.write(`${printable(typed)}${tag}\n`)
+        return
+      }
+      if (!denied) return
+      moveCursor(output, 0, -1)
+      cursorTo(output, (text.length + typed.length) % columns())
+      output.write(`${tag}\n`)
+    },
+    ended(tag: string | null): void {
+      if (tag === null) return
+      if (!shown || !terminal) {
+        output.write(`${text}${tag}\n`)
+        return
+      }
+      moveCursor(output, 0, -(Math.floor((text.length + typedAtEnd.length) / columns()) + 1))
+      cursorTo(output, text.length)
+      clearScreenDown(output)
+      output.write(`${tag}\n`)
+    },
+  }
+}
+
 function approvalQuestion(request: CliRequest): ApprovalQuestion {
   if (request.kind !== APPROVAL_REQUEST_KIND) throw new Error(`The terminal answers approval questions only, not ${request.kind}`)
   const details = QuestionDetailsSchema.parse(request.action.details)
@@ -171,12 +273,15 @@ function approvalQuestion(request: CliRequest): ApprovalQuestion {
   }
 }
 
-function scopeChoices(question: ApprovalQuestion): string {
-  return question.offeredScopes.map((scope, index) => `${index + 1}) ${scopeLabel(scope)}`).join('  ')
-}
-
-function denyChoices(question: ApprovalQuestion): string {
-  return question.rule === 'sensitive_path' ? 'n) deny  ds) deny this session  da) always deny' : 'n) deny'
+/**
+ * The choices in the owner's words, numbered over the scopes the rule offers alone, so no `(3)` shows where it offers
+ * no `always`, as at the destructive floor (BUCKLE-D05); `ds` and `da` for a sensitive file; an ask recorded before
+ * this build offers its denials alone.
+ */
+function choicesLine(question: ApprovalQuestion): string {
+  const scopes = question.call ? question.offeredScopes.map((scope, index) => `(${index + 1}) ${scopeLabel(scope)}`) : []
+  const denials = question.rule === 'sensitive_path' ? ['(n) deny', '(ds) deny this session', '(da) always deny'] : ['(n) deny']
+  return [...scopes, ...denials].join('  ')
 }
 
 /** Enter and anything unrecognised deny once; a number picks an offered scope, where the whole action was shown. */
@@ -188,9 +293,9 @@ function choiceFor(question: ApprovalQuestion, answer: string): ApprovalChoice {
 }
 
 function scopeLabel(scope: GrantScope): string {
-  if (scope === 'once') return 'allow once'
-  if (scope === 'session') return 'allow this session'
-  return 'always allow'
+  if (scope === 'once') return 'approve once'
+  if (scope === 'session') return 'approve this session'
+  return 'always approve'
 }
 
 /**

@@ -1,4 +1,5 @@
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
+import { localDate, localTime } from './local-time.js'
 
 /**
  * An approval has two deadlines, and they are not the same one:
@@ -26,6 +27,19 @@ export function describeExpiry(expiresAt: string): string {
   const remaining = remainingMs(expiresAt)
   if (remaining === 0) return `expired (${expiresAt})`
   return `expires in ${describeDuration(remaining)} (${expiresAt})`
+}
+
+/**
+ * The serve terminal's reading of the request expiry (the CLI display slice, C4): `expires in 9m 58s (at 22:32:00)`, on
+ * this device's clock, with the date where it is not today's. Every other route, the relayed text and a person's
+ * device among them, keeps describeExpiry's ISO UTC.
+ */
+export function describeLocalExpiry(expiresAt: string): string {
+  const at = new Date(expiresAt)
+  if (expiresAt === APPROVAL_NO_DEADLINE || Number.isNaN(at.getTime())) return describeExpiry(expiresAt)
+  const clock = `at ${localDate(at) === localDate(new Date()) ? '' : `${localDate(at)} `}${localTime(at)}`
+  const remaining = remainingMs(expiresAt)
+  return remaining === 0 ? `expired (${clock})` : `expires in ${describeDuration(remaining)} (${clock})`
 }
 
 function describeDuration(ms: number): string {

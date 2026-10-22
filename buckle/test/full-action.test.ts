@@ -10,7 +10,7 @@ import { describeAsk } from '../common/domain/approval-instruction.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 import { requestFingerprint } from '../common/services/invocation/executions.js'
 import { runCli } from './support/cli.js'
-import { describeQuestion } from '../cli/terminal-consumer.js'
+import { approvalBlock, describeQuestion } from '../cli/terminal-consumer.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -192,7 +192,7 @@ describe('a URL followed later by an unrelated @ shows whole on every approval r
       await vi.waitFor(() => expect(webhook.bodies.some(body => body.approvals)).toBe(true))
       const callFiles = join(dirname(approvalsPath(config)), 'approval-calls')
       const seen: Record<string, unknown> = {
-        response: asked, waiting, challenge, terminal: describeQuestion(shown), elicitation: describeAsk(shown).join('\n'),
+        response: asked, waiting, challenge, terminal: describeQuestion(shown), serve: approvalBlock(shown, new Date()).join('\n'), elicitation: describeAsk(shown).join('\n'),
         question: questionFor({ approval: ask, workspaceId: 'default', node: config.serverId, context: { correlationId: 'c', sessionId: 'chat-1', call: waiting.call! } }),
         webhook: webhook.bodies.filter(body => body.approvals), callFile: readdirSync(callFiles).map(name => readFileSync(join(callFiles, name), 'utf8')),
       }
@@ -287,9 +287,10 @@ describe('every approval field a person or a relay reads is redacted (owner deci
     const waiting = runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!
     const challenge = runtime.approvalService.challengeListing().challenges.find(entry => entry.token === ask.token)!.challenge!
     const terminal = describeQuestion({ ...ask, workspaceId: 'default', call: waiting.call! })
+    const serve = approvalBlock({ ...ask, workspaceId: 'default', call: waiting.call! }, new Date()).join('\n')
     const question = questionFor({ approval: ask, workspaceId: 'default', node: config.serverId, context: { correlationId: 'c', sessionId: 'chat-1', call: waiting.call! } })
     const seen: Record<string, unknown> = {
-      response: asked, waiting, challenge, terminal, question, queue: readFileSync(approvalsPath(config), 'utf8'), audit: runtime.actions.read(200),
+      response: asked, waiting, challenge, terminal, serve, question, queue: readFileSync(approvalsPath(config), 'utf8'), audit: runtime.actions.read(200),
     }
     for (const [where, value] of Object.entries(seen)) expect(JSON.stringify(value), where).not.toMatch(/5ecret/)
     expect(challenge.subject).toContain('[redacted]@github.com')
@@ -463,7 +464,7 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
     const shown = { ...ask, workspaceId: 'default', node: input.config.serverId, call: waiting.call! }
     const callFiles = join(dirname(approvalsPath(input.config)), 'approval-calls')
     return {
-      subject: ask.subject, waiting: JSON.stringify(waiting), challenge: JSON.stringify(challenge), terminal: describeQuestion(shown), elicitation: describeAsk(shown).join('\n'),
+      subject: ask.subject, waiting: JSON.stringify(waiting), challenge: JSON.stringify(challenge), terminal: describeQuestion(shown), serve: approvalBlock(shown, new Date()).join('\n'), elicitation: describeAsk(shown).join('\n'),
       question: JSON.stringify(questionFor({ approval: ask, workspaceId: 'default', node: input.config.serverId, context: { correlationId: 'c', sessionId: 'chat-1', call: waiting.call! } })),
       callFile: readdirSync(callFiles).map(name => readFileSync(join(callFiles, name), 'utf8')).join('\n'),
     }
@@ -490,7 +491,7 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
     const response = await run(runtime, 'bash', ['-c', body])
     expectRawIdentity(runtime, response, ['bash', '-c', body])
     for (const [where, value] of Object.entries(await routes({ runtime, config, response }))) {
-      const unescaped = where === 'subject' || where === 'terminal' || where === 'elicitation' ? value.replaceAll(`'\\''`, "'") : value.replaceAll('\\"', '"').replaceAll(`'\\\\''`, "'")
+      const unescaped = where === 'subject' || where === 'terminal' || where === 'serve' || where === 'elicitation' ? value.replaceAll(`'\\''`, "'") : value.replaceAll('\\"', '"').replaceAll(`'\\\\''`, "'")
       expect(unescaped, where).toContain(visible)
       expect(value, where).not.toContain('[redacted]')
     }
@@ -654,7 +655,7 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
       const response = await run(runtime, 'git', argv.slice(1))
       expectRawIdentity(runtime, response, argv)
       for (const [where, value] of Object.entries(await routes({ runtime, config, response }))) {
-        const unescaped = where === 'subject' || where === 'terminal' || where === 'elicitation' ? value.replaceAll(`'\\''`, "'") : value
+        const unescaped = where === 'subject' || where === 'terminal' || where === 'serve' || where === 'elicitation' ? value.replaceAll(`'\\''`, "'") : value
         expect(unescaped, where).toContain(shown)
       }
     }

@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { CliRequest, RequestCli } from '@5straps/runtime'
-import type { ApprovalDecision, ApprovalRequest, ApprovalWait } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, type ApprovalDecision, type ApprovalRequest, type ApprovalWait } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
-import { remainingMs } from '../common/domain/approval-deadline.js'
+import { describeLocalExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
@@ -250,7 +250,7 @@ describe('the terminal, attached to the process\'s one requester', () => {
 })
 
 describe('keys meant for another terminal question', () => {
-  const prompts = (terminal: ReturnType<typeof keyboardTerminal>) => terminal.shown().match(/n\) deny > /g)?.length ?? 0
+  const prompts = (terminal: ReturnType<typeof keyboardTerminal>) => terminal.shown().match(/Your choice: /g)?.length ?? 0
   const prompted = (terminal: ReturnType<typeof keyboardTerminal>, times: number) => vi.waitFor(() => expect(prompts(terminal)).toBe(times), { timeout: 3_000 })
 
   it('does not let a double press answer the next queued question', async () => {
@@ -322,7 +322,7 @@ describe('keys meant for another terminal question', () => {
     const asked = cli.requestCli(questionFor({ approval: approval('pre-build', 600_000), workspaceId: 'default', context: { correlationId: 'c-pre', sessionId: 's' } }))
     await prompted(terminal, 1)
     expect(terminal.shown()).toContain('recorded before this build')
-    expect(terminal.shown()).not.toContain('allow once')
+    expect(terminal.shown()).not.toContain('approve once')
     terminal.input.write('1\r')
     expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
   })
@@ -348,12 +348,12 @@ describe('a log line written while a terminal question is open', () => {
     const terminal = keyboardTerminal()
     const writer = createConsoleWriter({ output: terminal.output, dates: false })
     const asked = setupCli({ terminal: { ...terminal, console: writer } }).requestCli(question('t1', 600_000))
-    await vi.waitFor(() => expect(terminal.shown()).toMatch(/n\) deny > \S*$/), { timeout: 3_000 })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
     terminal.input.write('2')
     await vi.waitFor(() => expect(terminal.shown()).toMatch(/2$/))
     writer.write(['22:22:05 [info] /mcp request completed (3ms)'], new Date())
     expect(terminal.shown()).toContain('\u001b[2K\u001b[1G22:22:05 [info] /mcp request completed (3ms)\n')
-    expect(terminal.shown().split('22:22:05 [info] /mcp request completed (3ms)\n')[1]).toMatch(/n\) deny > \S*2/)
+    expect(terminal.shown().split('22:22:05 [info] /mcp request completed (3ms)\n')[1]).toMatch(/Your choice: \S*2/)
     terminal.input.write('\r')
     expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'session' } })
   })
@@ -363,11 +363,11 @@ describe('a log line written while a terminal question is open', () => {
     const writer = createConsoleWriter({ output: terminal.output, dates: false })
     const stop = new AbortController()
     const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(question('t1', 600_000), { signal: stop.signal })
-    await vi.waitFor(() => expect(terminal.shown()).toMatch(/n\) deny > $/), { timeout: 3_000 })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
     writer.write(['22:22:05 [info] plain'], new Date())
     stop.abort()
     await asked.catch(() => undefined)
-    expect(terminal.shown()).toContain('n) deny > 22:22:05 [info] plain\n')
+    expect(terminal.shown()).toContain('Your choice: 22:22:05 [info] plain\n')
     expect(terminal.shown()).not.toContain('\u001b')
   })
 })
@@ -417,6 +417,8 @@ describe('Ctrl-C at a terminal question', () => {
       expect.objectContaining({ status: 'unavailable', reason: 'consumer_detached' }),
     ])
     expect(onInterrupt).toHaveBeenCalledTimes(1)
+    // C4: Ctrl-C tags no row; the shutdown lines follow.
+    expect(terminal.shown()).not.toMatch(/\[(timeout|stopped|no longer waiting)\]/)
     // Only the first question was ever shown; the queued ones were dropped, not asked in turn.
     expect(terminal.shown().match(/needs approval/g)).toHaveLength(1)
     // The readline is closed: it no longer listens for key presses on the terminal.
@@ -516,7 +518,144 @@ describe('a terminal question shows the whole action (owner decision D17)', () =
     expect(size).toBeLessThan(lines.findIndex(line => line.startsWith('[The site]   node:')))
     expect(lines).toContain('[The site] fs_read needs approval in workspace The site')
     for (const expected of ['  node:     node-1', '  workspace: The site', '  in:       /workspace', '  effects:  exec sh -c ...', '            write /workspace']) expect(lines).toContain(`[The site] ${expected}`)
-    expect(lines.filter(line => line.trim() !== '' && !line.startsWith('[The site] '))).toEqual([])
+    // C4: the head line carries the time and the [approval] tag before the mark.
+    expect(lines.filter(line => line.trim() !== '' && !/^(\d\d:\d\d:\d\d \[approval\] )?\[The site\] /.test(line))).toEqual([])
     expect(terminal.shown()).toContain(JSON.stringify(script))
+  })
+})
+
+// The CLI display slice, C4: the serve terminal's own layout. A head line with the time, the [approval] tag, the
+// workspace, and Buckle's words for the tool; the ask and the whole action, every line marked; the choices in the
+// owner's words over the offered scopes alone; a short prompt row; and what happened, written on that row.
+describe('the serve terminal\'s question', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const named = (ask: ApprovalRequest, call: typeof recordedCall | null = recordedCall) =>
+    questionFor({ approval: ask, workspaceId: 'w-1', workspaceName: 'The site', node: 'node-1', context: { correlationId: 'c', sessionId: 's', ...(call ? { call } : {}) } })
+
+  /** A question on a silent terminal, shown up to its prompt row, and a way to end it as an abort with no reason does. */
+  async function shownQuestion(request: CliRequest) {
+    const terminal = silentTerminal()
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(request, { signal: stop.signal }).catch(() => undefined)
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    return { terminal, end: async () => { stop.abort(); await asked } }
+  }
+
+  it('heads it with the time, [approval], the workspace, and Buckle\'s words for the tool, every line after it marked', async () => {
+    const { terminal, end } = await shownQuestion(named(approval('t1')))
+    await end()
+    const lines = terminal.shown().split('\n')
+    expect(lines[0]).toMatch(/^\d\d:\d\d:\d\d \[approval\] \[The site\] action pending approval: read a file$/)
+    expect(lines).toContain('[The site] fs_read needs approval in workspace The site')
+    expect(lines).toContain('[The site]   does:     Read "/shots/a.png"')
+    expect(lines.slice(1).filter(line => line !== '' && !line.startsWith('[The site] '))).toEqual([])
+  })
+
+  it('shows the expiry on this device\'s clock, while the watch and the relayed text keep ISO UTC', async () => {
+    vi.stubEnv('TZ', 'Asia/Kuala_Lumpur')
+    const ask = approval('t1', 600_000)
+    const { terminal, end } = await shownQuestion(named(ask))
+    await end()
+    expect(terminal.shown()).toContain(`[The site]   ${describeLocalExpiry(ask.expiresAt)}\n`)
+    expect(terminal.shown()).toMatch(/\[The site\] {3}expires in \d+m \d+s \(at (\d{4}-\d\d-\d\d )?\d\d:\d\d:\d\d\)\n/)
+    expect(describeQuestion({ ...ask, workspaceName: 'The site', call: recordedCall })).toContain(`(${ask.expiresAt})`)
+    expect(describeApprovalRequest({ request: ask }).join('\n')).toContain(`(${ask.expiresAt})`)
+  })
+
+  it('words the local expiry with the date where it is not today\'s', () => {
+    vi.stubEnv('TZ', 'Asia/Kuala_Lumpur')
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-21T14:22:02Z'))
+    expect(describeLocalExpiry('2026-10-21T14:32:00.000Z')).toBe('expires in 9m 58s (at 22:32:00)')
+    expect(describeLocalExpiry('2026-10-21T17:00:00.000Z')).toBe('expires in 157m 58s (at 2026-10-22 01:00:00)')
+    expect(describeLocalExpiry('2026-10-21T14:00:00.000Z')).toBe('expired (at 22:00:00)')
+    expect(describeLocalExpiry(APPROVAL_NO_DEADLINE)).toBe('no expiry; waiting for an owner decision')
+  })
+
+  it.each<[string, Partial<ApprovalRequest>, boolean, string]>([
+    ['every scope a read outside the workspace offers', {}, true, '[The site] (1) approve once  (2) approve this session  (3) always approve  (n) deny'],
+    ['no always at the destructive floor (BUCKLE-D05)', { rule: 'destructive_command', offeredScopes: ['once', 'session'] }, true, '[The site] (1) approve once  (2) approve this session  (n) deny'],
+    ['once and the remembered denials for a sensitive file', { rule: 'sensitive_path', offeredScopes: ['once'] }, true, '[The site] (1) approve once  (n) deny  (ds) deny this session  (da) always deny'],
+    ['the denial alone for an ask recorded before this build', {}, false, '[The site] (n) deny'],
+  ])('numbers its choices over the offered scopes alone, then asks on a short row of its own: %s', async (_, change, withCall, choices) => {
+    const { terminal, end } = await shownQuestion(named({ ...approval('t1'), ...change }, withCall ? recordedCall : null))
+    await end()
+    expect(terminal.shown()).toContain(`\n${choices}\n[The site] Your choice: `)
+  })
+
+  it.each<[string, string, string, RegExp]>([
+    ['a number stays as typed', '1', 'once', /Your choice: \S*1\r\n$/],
+    ['n stays as typed', 'n', 'deny', /Your choice: \S*n\r\n$/],
+    ['Enter adds [deny]', '', 'deny', /Your choice: \S*\r\n\u001b\[1A\u001b\[25G\[deny\]\n$/],
+    ['an unknown key adds [deny]', 'x', 'deny', /Your choice: \S*x\r\n\u001b\[1A\u001b\[26G \[deny\]\n$/],
+  ])('keeps the answer on its row at a terminal: %s', async (_, key, choice, row) => {
+    const terminal = keyboardTerminal()
+    const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    terminal.input.write(`${key}\r`)
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice } })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(row))
+  })
+
+  it('writes the answer and its [deny] after the prompt where the output is no terminal, which echoes nothing', async () => {
+    const terminal = silentTerminal()
+    const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    terminal.input.write('x\n')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/\[The site\] Your choice: x \[deny\]\n$/))
+  })
+
+  it('ends the row with [timeout] by the clock, whatever ended the question', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const { terminal, end } = await shownQuestion(named(approval('t1', 60_000)))
+    vi.setSystemTime(Date.now() + 61_000)
+    await end()
+    expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[timeout\]\n$/)
+  })
+
+  it('writes the ending back on the prompt row at a terminal, clearing what was half typed', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const terminal = keyboardTerminal()
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(named(approval('t1', 60_000)), { signal: stop.signal }).catch(() => undefined)
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    terminal.input.write('12')
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/12$/))
+    vi.setSystemTime(Date.now() + 61_000)
+    stop.abort()
+    await asked
+    expect(terminal.shown()).toMatch(/12\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[timeout\]\n$/)
+  })
+
+  it('ends the row with [no longer waiting] where it ends before its expiry: answered elsewhere, or the call withdrawn', async () => {
+    const { terminal, end } = await shownQuestion(named(approval('t1', 600_000)))
+    await end()
+    expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[no longer waiting\]\n$/)
+  })
+
+  it('ends the row with [stopped] where the process stops with the question open', async () => {
+    const terminal = silentTerminal()
+    const cli = setupCli({ terminal })
+    const asked = cli.requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    await cli.close()
+    expect(await asked).toMatchObject({ status: 'unavailable', reason: 'closed' })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/\[The site\] Your choice: \[stopped\]\n$/))
+  })
+
+  // The 400 ms poll withdraws a question whose ask left the queue, and the queue drops an expired ask, so at its expiry a
+  // question often ends cancelled before the requester's own timer fires: the clock decides, not the outcome.
+  it('shows [timeout] where the poll withdraws an expired question before the requester\'s own timer', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    const terminal = silentTerminal()
+    const queue = stubQueue([approval('t1', 60_000)])
+    const call = waitingService({ registry: queue.registry, graceMs: 200, requestCli: setupCli({ terminal }).requestCli })()
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    // Past the expiry on the clock, with the requester's timer still a minute out.
+    vi.setSystemTime(Date.now() + 61_000)
+    await vi.waitFor(() => expect(terminal.shown()).toContain('Your choice: [timeout]\n'), { timeout: 3_000 })
+    expect(await call).toMatchObject({ settled: false })
   })
 })
