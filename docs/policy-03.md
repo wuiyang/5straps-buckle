@@ -7,13 +7,14 @@ refused under any deny glob and asked about at the
 
 ## Expansions
 
-A word an expansion supplies (`$x`, `"$(...)"`, a glob such as `*.log`, or a brace expansion)
+A word an expansion supplies (`$x`, `"$(...)"`, a glob such as `*.log`, a brace expansion, or a
+word starting with an unquoted `=`, which zsh turns into the path of the command it names, `=rm`)
 exists only once the shell runs, so Buckle cannot know it.
 
 - As a command word it leaves the call unread (expansion): `$cmd push origin main`,
-  `x=git; $x push`, `{git,true} push`, and a lone `~`, `~-`, `~+`, or `~user`, which HOME,
-  OLDPWD, PWD, or a home supplies whole (`HOME=/usr/bin/git; ~ push`). A tilde path keeps the
-  name it types (`~/bin/tool`).
+  `x=git; $x push`, `{git,true} push`, `=git push` in any shell's text, and a lone `~`, `~-`,
+  `~+`, or `~user`, which HOME, OLDPWD, PWD, or a home supplies whole
+  (`HOME=/usr/bin/git; ~ push`). A tilde path keeps the name it types (`~/bin/tool`).
 - Among the words a wrapper, `xargs`, `find`, `ssh`, `su`, or a shell reads before the command it
   runs, it may become an option, an option's value, or several words, and so move that command
   (`v="1 git"; timeout $v push`). The call is unread, ordinary shapes included: `timeout $T cmd`,

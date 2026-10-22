@@ -1,10 +1,11 @@
-# The decision AI: its instructions, cache, and cost
+# The decision AI: its instructions, settings, cache, and cost
 
 How the [decision AI](judge.md), the optional model check Buckle (the approval and sandbox runtime
 on this machine) runs with the node's own keys, asks its two stages, what it keeps of their
-verdicts, and what a rating costs. The stages are Jev (TypeSafe AI's quick decision model) and the
-thorough model behind an OpenAI-compatible endpoint. [What it reads and sends](judge-02.md) and
-[what it keeps and shows](judge-03.md) come before this page.
+verdicts, its settings, and what a rating costs. The stages are Jev (TypeSafe AI's quick decision
+model) and the thorough model behind an OpenAI-compatible endpoint. [What it reads and
+sends](judge-02.md) and [what it keeps and shows](judge-03.md) come before this page, and [why it
+rates nothing](judge-05.md) after it.
 
 ## The fixed instructions
 
@@ -23,6 +24,24 @@ without it. Each `<image:` in it is sent as `<image :`, which TypeSafe's SDK wou
 Jev's verdict is a rating alone: it never runs a call, and on request it never approves one. The
 thorough model's `safe` at 0.8 or above runs or approves an interpreter ask, approves on request an
 allowed command Jev turned into an ask under `all`, and nothing at the destructive floor.
+
+## Settings
+
+Each is a workspace setting (`buckle workspace set <key> <value>`), else the node's default in
+`buckle.env` (`buckle settings set <alias> <value>`), else Buckle's own:
+
+| Workspace key | Node default | Buckle's own |
+|---|---|---|
+| `approval.judge` | `BUCKLE_APPROVAL_JUDGE` | `off` |
+| `approval.judgeProvider` | `BUCKLE_APPROVAL_JUDGE_PROVIDER` | `openai-compatible` |
+| `approval.judgeModel` | `BUCKLE_APPROVAL_JUDGE_MODEL` | `gpt-6-luna` |
+| `approval.judgeStandardScripts` | `BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS` | [the standard scripts](judge.md#standard-development-scripts) |
+| `approval.quickJudge` | `BUCKLE_APPROVAL_QUICK_JUDGE` | `off` |
+| `approval.quickJudgeProvider` | none | `typesafe` |
+| `approval.quickJudgeModel` | `BUCKLE_APPROVAL_QUICK_JUDGE_MODEL` | `jev-latest` |
+
+Set the model your gateway serves: it may name `gpt-6-luna` differently. The keys and addresses
+are the node's alone, as the next section says.
 
 ## The node's keys
 

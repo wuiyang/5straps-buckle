@@ -40,20 +40,8 @@ script's text is shown as context.
 
 It reads only what the agent could read without asking, through the file tools' checks. No stage
 is asked where it cannot show the code that runs; an ask then goes to a person, and an allowed
-command under `approval.quickJudge all` runs unscreened. That covers shell text that is not one
-simple command; a variable that changes what code runs, such as `PATH`, `NODE_OPTIONS`,
-`PYTHONPATH`, `SHELL`, `HOME`, `ARGV0`, or npm's `npm_config_node_options` (the audit entry names
-it, never its value); a change of working directory (`cd`, `chdir`, `pushd`, `env -C`, `sudo -D`,
-or `--cwd`), or a word selecting another workspace package (npm `-w`, bun `--filter`); a program
-named by a path inside the workspace or a mount, an interpreter, wrapper, shell, or runner alike, by
-any relative path holding a separator, or by an absolute path holding a backslash, or a command word
-that reads as an assignment (`FOO=fv/x`); an interpreter behind `xargs`; a runner package named by
-anything but a registry name and version (`npx ./tool`, `npx eslint@.`); an option, subcommand,
-`python3 -m` module (`runpy`, `pydoc`, and other runners, or a second `-m`), interactive flag,
-import, or config file the reader does not model; compiled Python beside a module it would show,
-or in a folder it cannot list; code on an input nothing feeds (`python3 -`); code past 50 files or
-512 KiB; and a script, import, or argument it cannot find, may not read, or finds is not text.
-[Known limits, part six](known-limits-06.md) lists each.
+command under `approval.quickJudge all` is rated on its command line alone. [Why it rates
+nothing](judge-05.md) lists each case and the reason it gives.
 
 ## Packages and Socket
 

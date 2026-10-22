@@ -45,48 +45,24 @@ carries the same with `passed: false`, or `unavailable` in place of a verdict, i
 characters; Jev's verdict alone stands where the thorough model was not asked. `flagged: true` marks
 an allowed command Jev turned into an ask, and `screened: true` one it rated and let run, recorded
 `passed: false, screened: true` because no ask was passed. `socket: 'unavailable'` marks a rating
-made while the Socket lookup failed, whose verdict was not kept. `promptDigest` is the sha256 of the
-model, the prompt, and the JSON sent, kept in place of them. The reasoning is the model's, with the
+made while the Socket lookup failed, whose verdict was not kept. `changed: true` marks a pass whose
+code changed before the program started, so the call did not run and a person decides, and
+`codeUnread` names why the reader could not read a screened allowed command's code, which Jev then
+rated on its command line. `promptDigest` is the sha256 of the model, the prompt, and the JSON sent,
+kept in place of them. The reasoning is the model's, with the
 credentials the display hides hidden wherever it is kept or shown, the cache included, then cut to
 2,000 characters (ending `[cut]` on a line of its own). The report to Rings does not carry the
 verdict yet.
 
-## Why no stage was shown a call
-
-An `unavailable` reason says why no stage rated a command; the ask then goes to a person, and an
-allowed command under `approval.quickJudge all` runs unscreened. Shell text is rated only as one
-simple command, as [what it reads](judge-02.md) describes. Besides a variable that changes what
-code runs (npm's `npm_config_*` among them), a change of working directory, code past the caps, and
-a file it cannot find or read,
-the reader's reasons include: "shell text the reader does not rate whole", "an option the
-reader does not know", "a subcommand the reader does not model", "an interactive flag reads
-standard input as code", "a module that discovers or evaluates code the reader does not show",
-"the code the interpreter runs comes from standard input the reader cannot place", "an import the
-reader does not model", "the code runs compiled Python the reader cannot show", "a config file the
-reader could not parse", "the interpreter is a program inside the workspace", "the call sets the
-program name the interpreter reads", "the call splits a word into words the reader does not read
-again", "the runner runs a package from a path or a source the reader does not show", "the call hands
-the interpreter words it reads from a file or puts in place of its own", and "the package.json script
-the standard script names could not be read".
-
-The shell-text reason also covers `flock -c` text, a heredoc a shell reads as its script (`busybox
-sh <<EOF`), one fed to another interpreter holding a line that starts with an interpreter's name,
-and, inside shell text, a wrapper that sets the program name or splits a word (`exec -a`, `env -a`,
-`env -S`) and a quoted or `+=` command word that reads as an assignment. The local-program reason
-covers a wrapper, a shell, and a runner named by a path inside the workspace or a mount, any relative
-program path holding a separator, an absolute one holding a backslash, and a command word that reads
-as an assignment; the runner reason, a version part naming a folder (`npx eslint@.`); the
-working-directory reason, a word selecting another workspace package (npm `-w`, bun `--filter`). The
-interactive reason covers `php -a` after `-f` and `python3 -m pdb`, `code`,
-`asyncio`, or `idlelib`; the module reason, `-m unittest`, `pytest`, `timeit`, `runpy`, `pydoc`,
-`inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, and `pickletools`, and a second
-`-m`; the unknown-option reason, a `python3 -X` value off the reader's short list (`pycache_prefix`
-and `frozen_modules` among them); the import reason, an ES module specifier holding a control, a
-tab, or a leading or trailing space; and the compiled-Python reason, a folder the reader cannot
-list. A reason is cut to 500 characters, never inside an escape it quotes.
+## What the on-request command refuses
 
 `buckle approvals judge` refuses a call the policy now denies, asking no stage: "The policy now
-denies this call; the decision AI never rates a deny".
+denies this call; the decision AI never rates a deny". It refuses one whose ask keeps its arguments
+with a credential hidden, a URL's password or a `--token=` value, since the call cannot be rebuilt
+from them: "The ask's recorded arguments hide a credential, so the decision AI cannot rebuild the
+call to read it; approve or deny it yourself, or run the workspace in automated mode, which rates
+the call as sent".
 
-What a rating costs is on [its cost](judge-04.md#cost), and the limits are on [Known
-limits, part six](known-limits-06.md) and [part seven](known-limits-07.md).
+[Why it rates nothing](judge-05.md) lists what no stage is shown, and the reason it gives. What a
+rating costs is on [its cost](judge-04.md#cost), and the limits are on [Known limits, part
+six](known-limits-06.md) and [part seven](known-limits-07.md).

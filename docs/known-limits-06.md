@@ -32,7 +32,7 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   and its command, behind `env`, `timeout`, `nice`, `nohup`, `stdbuf`, `exec`, or `command`, is the
   interpreter. Anything else is not rated: `cat job.py | python3`, `cd sub && node x.js`, and
   `python3 $(echo a).py` each ask a person, and an allowed command under `approval.quickJudge all`
-  then runs unscreened. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text.
+  is then rated on its command line alone, as is one whatever else the reader could not read. A here-string is read only in bash, rbash, zsh, ksh, mksh, and yash text.
   The `-c` text of a C shell, fish, or a busybox shell applet is never rated, nor text a shell runs
   with an option such as `-i`, `-l`, `-k`, or `-x`, nor `flock -c` text, which runs under `$SHELL`,
   nor a heredoc fed to a shell that reads it as its script (`busybox sh <<EOF`).
@@ -48,7 +48,7 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   as [part seven](known-limits-07.md) details; `exec` is read only bare.
 - The reader fails closed on what it does not model, with the same result: an interpreter option it
   does not know, an option before a runner's package, or before the operand of a package that is no
-  runtime (`npx eslint --fix .`); a subcommand that runs code it does not follow (`bun test`,
+  runtime (`npx cowsay --fix .`); a subcommand that runs code it does not follow (`bun test`,
   `deno task`, `bun x`, or node's `inspect` and `debug`); an interactive flag (`python3 -i`,
   `node -i -e`, `lua -i`, or `php -a`, including `php -a` after `-f`), and `python3 -m` of `pdb`,
   `code`, `asyncio`, `idlelib`, `unittest`, `pytest`, `timeit`, or a module that runs another by
@@ -65,18 +65,18 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   the registry (`npx ./tool`, `npx eslint@file:./tool`, `npx user/repo`); `python3 -m` of `runpy`,
   `pydoc`, `inspect`, `cProfile`, `profile`, `trace`, `doctest`, `pickle`, or `pickletools`, or a
   second `-m` among a module's arguments; npm's config variables (`npm_config_node_options`,
-  `NPM_CONFIG_USERCONFIG`); and a quoted or `+=` command word the rules read as an assignment.
+  `NPM_CONFIG_USERCONFIG`) and the same settings as npm options (`--node-options`,
+  `--script-shell`, `--userconfig`, or `--globalconfig`, by any prefix npm takes); and a quoted or
+  `+=` command word the rules read as an assignment.
 - An interpreter behind `xargs`, whose words come from a file (`-a`) or a replace string (`-I`), is
   not rated.
+- A name whose `..` follows a link is not rated: python, perl, and a shell's `<` and `source` climb
+  from where the link points (`l/../job.py`); node resolves its own names as text, so
+  `node l/../job.js` is rated.
 - Compiled Python beside a module the reader would show (`__pycache__/<name>.*.pyc`, `<name>.pyc`,
   or an extension module), in a folder the reader cannot list, or moved by `-X pycache_prefix`, is
   not rated either, since Python may run it in place of the source. Python writes those caches
   itself, so a tree it has already run asks a person until they are removed.
-- `node .` at the root of the workspace or a mount asks: node tries the file beside that folder
-  first, which lies beyond what the reader sees.
-- `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
-  under `approval.quickJudge all` in automated mode, or, under `asks` or `all`, when the destructive
-  list names them; a person still decides.
 
 The round's further refusals, and the limits that are not about reading, are on [part
 seven](known-limits-07.md).

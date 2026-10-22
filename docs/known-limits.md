@@ -28,6 +28,10 @@ depth, [part two](known-limits-02.md) the programs it starts itself,
   that names `npm`. `npx`, `pnpx`, and `bunx` are interpreters ([policy](policy-02.md#interpreters)).
 - Interpreter names match exactly: `buckle policy allow-interpreter python3` does not allow
   `python3.12`.
+- A word ending in a parenthesised list holding an `e` or a `+` leaves the call unread (glob
+  qualifier) in any shell's text, since zsh may run code from it once for each file it matches
+  (`echo *(e:'...':)`). An extended glob of that shape is unread too, so under a deny rule
+  `ls @(one|three)` is refused.
 
 ## Credential hiding
 
@@ -48,6 +52,9 @@ decision binds the whole call, whatever the display hides.
 - In tool arguments, a value under such a key is hidden even when it is a script: an `env` entry
   `X_SECRET_SETUP` holding `touch x; rm -rf build` reads `[redacted]`, so the approver cannot see
   what it runs.
+- An ask keeps its call's arguments with such values hidden, so `buckle approvals judge` cannot
+  rebuild a call holding one (a URL's password, `--token=<value>`) and rates nothing, saying so;
+  the [decision AI](judge.md) in automated mode rates the call as sent.
 
 ## Paths and Windows
 

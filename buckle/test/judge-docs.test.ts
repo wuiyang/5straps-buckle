@@ -6,9 +6,12 @@ import { QUICK_TIMEOUT_MS } from '../common/adapters/judge/typesafe.js'
 import { JUDGE_TIMEOUT_MS } from '../common/adapters/judge/verdict.js'
 import { SOCKET_TIMEOUT_MS } from '../common/adapters/package-scan/socket.js'
 import { FLOOR_WARNING } from '../common/domain/approval-instruction.js'
-import { isInterpreter } from '../common/domain/command-forms.js'
+import { isInterpreter, READ_LIMITS } from '../common/domain/command-forms.js'
+import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
+import { NPM_CODE_OPTION } from '../common/services/judge/call-forms.js'
 import { CODE_REFUSALS, SCRIPT_TEXT_REFUSAL } from '../common/services/judge/code-reader.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
+import { CREDENTIAL_HIDDEN } from '../common/services/workspaces/workspace-runtime.js'
 
 // What the decision AI's pages say of standard scripts (D91, addendum 2, defect 5): bun is an interpreter, so `bun run`
 // asks on its own and `bun run *` applies; no page may call it an ordinary command.
@@ -40,11 +43,16 @@ describe('bun run on the pages', () => {
 })
 
 describe('the reasons a reading refuses with', () => {
-  it('are quoted on judge-03.md as an approver reads them (fix brief 4; fix brief 6, B9; fix brief 7, D7; fix brief 8, D8)', () => {
-    const page = pages.find(item => item.name === 'judge-03.md')!.text
-    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, CODE_REFUSALS.xargsWords, SCRIPT_TEXT_REFUSAL]) {
+  it('are quoted on judge-05.md as an approver reads them (fix brief 4; fix brief 6, B9; fix brief 7, D7; fix brief 8, D8; fix brief 9, D9)', () => {
+    const page = pages.find(item => item.name === 'judge-05.md')!.text
+    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, CODE_REFUSALS.xargsWords, CODE_REFUSALS.dotdotAfterLink, NPM_CODE_OPTION, SCRIPT_TEXT_REFUSAL, READ_LIMITS.qualifier]) {
       expect(page, reason).toContain(`"${reason}"`)
     }
+  })
+
+  it('quote the on-request refusal of a call whose kept arguments hide a credential, and the reason a changed file sends a pass to a person (fix brief 9, D9)', () => {
+    expect(pages.find(item => item.name === 'judge-03.md')!.text).toContain(`"${CREDENTIAL_HIDDEN}"`)
+    expect(pages.find(item => item.name === 'judge.md')!.text).toContain(`"${CODE_CHANGED_REASON}"`)
   })
 
   it('quote the floor\'s warning line where judge.md and judge-03.md describe a floor ask (addendum 3 R2 and R4)', () => {

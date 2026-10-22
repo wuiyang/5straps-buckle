@@ -31,6 +31,13 @@ node's applies again:
 | `shell.isolation` | `on` or `off`: each shell command runs on a private copy of the folder | on |
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
+| `approval.judge` | the [decision AI](judge.md), an optional model check: `off`, `on-request`, or `automated` | `off` |
+| `approval.judgeProvider` | the thorough model's provider: `openai-compatible` | `openai-compatible` |
+| `approval.judgeModel` | the thorough model's name, as your AI gateway serves it | `gpt-6-luna` |
+| `approval.judgeStandardScripts` | commands rated on their command line alone, globs separated by `;;` | [the standard scripts](judge.md#standard-development-scripts) |
+| `approval.quickJudge` | what Jev, TypeSafe AI's quick decision model, rates: `off`, `interpreters`, `asks`, or `all` | `off` |
+| `approval.quickJudgeProvider` | Jev's provider: `typesafe` | `typesafe` |
+| `approval.quickJudgeModel` | Jev's model name | `jev-latest` |
 
 The browser's mode is one setting: a workspace that sets its own `browser.cdp` or
 `browser.profile` takes both from itself, never the node's other one, and under an attached Chrome

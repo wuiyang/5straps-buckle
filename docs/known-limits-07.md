@@ -16,6 +16,10 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 - An absolute program path holding a backslash is not rated on Linux and macOS, where the backslash
   is part of the file's name (`/workspace/fv\python3`), so the file is one the agent could have
   placed.
+- An absolute program path holding a `.` or `..` segment, or lying under `/proc` or `/dev/fd`, is
+  not rated: the kernel follows a link before the `..` after it, so
+  `/workspace/l/../../usr/bin/python3` may run a file the agent placed, and `/proc/self/cwd` is the
+  caller's own folder.
 - Any relative program path holding a separator is not rated, even one that seems to leave the
   workspace: the sandbox runs the call at `/workspace` under a root holding each mount at its
   target, so `../data/fv/bin/python3` reaches the mount at `/data`, and `../workspace/x` the
@@ -27,7 +31,8 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 - A runner package named by anything but a registry name, with an optional version or range, is
   not rated: a path (`./tool`, `/abs`, `~/tool`), `file:`, `link:`, a git or other scheme, GitHub
   shorthand (`user/repo`), or a tarball, alone or after the name's `@` (`npx tsx@file:./tool`), and
-  a version part that starts with a dot, which names a folder (`npx eslint@.`, `npx tsx@. job.ts`).
+  a version part that starts with a dot, which names a folder (`npx eslint@.`, `npx tsx@. job.ts`),
+  and a scope or name that is not URL-safe, which npm reads as a folder (`npx @scope/x#y`).
 
 ## Another package's script
 
@@ -36,7 +41,13 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
   or with `=value`, run the selected package's script while the working directory's `package.json`
   names another. The words after a `--` are the script's own, and pnpm hands an option after the
   script name to the script, so `npm run build -- -w a` and `pnpm run build --filter a` are rated
-  with the root's text.
+  with the root's text. npm also reads a unique prefix of a long option and a short letter after
+  `--` (`--prefi=sub`, `--C sub`, `--w a`), so every prefix of three or more letters is refused.
+- npm, pnpm, and yarn classic also run `pre<name>` and `post<name>` beside the named script unless
+  configured off, and the stages see only the named script's text; bun is unconfirmed.
+- `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only
+  under `approval.quickJudge all` in automated mode, or, under `asks` or `all`, when the destructive
+  list names them; a person still decides.
 
 ## Over-refusals kept
 
@@ -55,6 +66,8 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 
 ## Not yet read
 
+- `node .` at the root of the workspace or a mount asks: node tries the file beside that folder
+  first, which lies beyond what the reader sees.
 - A project `.npmrc` holding `node-options` preloads code under `npx` with no variable set, and one
   holding `workspace=` or `workspaces=` runs another package's script under `npm run` with no option
   typed; the reader does not read `.npmrc`. Writing one asks, as a sensitive file does.
@@ -65,6 +78,9 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 
 - Socket is advisory and looks at 50 packages a rating; with no key, a timeout, or an error, the
   rating runs without it, and a verdict reached while its lookup failed is not kept.
+- A pass binds to the code it rated, read again under the write lock just before the program
+  starts; a write the lock does not hold back (a process still running from an earlier call) can
+  land after that check.
 - No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
 - No Rings view of the verdict yet: Rings, the 5straps agent control plane, drops the webhook's
   `judge` field in its approvals reader, and the report to Rings carries none.

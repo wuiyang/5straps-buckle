@@ -10,7 +10,8 @@ approval and sandbox runtime on this machine, asks one or two models with the no
 
 Both answer `safe`, `warning`, or `danger` with a confidence from 0 to 1. Everything is off until
 the owner turns it on. [What it reads and sends](judge-02.md), [what it keeps and
-shows](judge-03.md), and [its instructions, cache, and cost](judge-04.md) continue on the next pages.
+shows](judge-03.md), [its instructions, settings, cache, and cost](judge-04.md), and [why it rates
+nothing](judge-05.md) continue on the next pages.
 
 ## Modes
 
@@ -33,7 +34,7 @@ scope covers. `approval.quickJudge` sets what Jev rates:
 | `off` | Nothing: the default. |
 | `interpreters` | The interpreter asks the thorough model rates. |
 | `asks` | Every command ask a person would see at the [destructive floor](approvals.md#the-destructive-floor): an interpreter, the built-in floor (`sudo`, `rm -rf`), and the workspace's destructive list. |
-| `all` | Every command, allowed ones too, in automated mode only: an allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask. |
+| `all` | Every command, allowed ones too, in automated mode only: an allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask; one whose code the reader cannot read whole is rated on its command line. |
 
 Jev's verdict is a rating alone and never runs a call. An ask at the destructive floor, from the
 built-in floor or the destructive list, always goes to a person whatever either model says, its
@@ -50,9 +51,11 @@ through is not rated.
 
 The thorough model's `safe` at 0.8 or above lifts an interpreter ask, and the call runs once no
 other ask remains, named in the audit entry and at the serve terminal; any other answer asks, with
-both verdicts beside the action. A `warning` never runs a call. The
-agent reads the level alone in the ask's reason ("the decision AI rated it danger"), never the
-reasoning, which would show it how to steer the next rating.
+both verdicts beside the action. A pass binds to the code it rated: Buckle reads that code again
+under the write lock just before the program starts, and where it changed the call does not run,
+the ask going to a person with "the code changed after the decision AI rated it". A `warning`
+never runs a call. The agent reads the level alone in the ask's reason ("the decision AI rated it
+danger"), never the reasoning, which would show it how to steer the next rating.
 
 ## On request
 
@@ -65,28 +68,13 @@ The command prepares the call again from the arguments its ask kept, reads its c
 every stage that applies rate it, and prints the whole action as `buckle approvals show` does, with
 each verdict, confidence, model, and the thorough reasoning. With `--approve-if-safe`, the
 thorough model's `safe` at 0.8 or above approves once an interpreter ask, or an allowed command Jev
-turned into an ask under `all`, recorded as decided by the thorough stage and its model. Jev's
-verdict alone approves nothing, and an ask at the destructive floor never: the command prints the
-floor's line. Anything else approves nothing and exits 0; no verdict exits 1. Each run is audited. It
-takes `--workspace <name>` and works in automated mode too.
-
-## Settings
-
-Each is a workspace setting (`buckle workspace set <key> <value>`), else the node's default in
-`buckle.env` (`buckle settings set <alias> <value>`), else Buckle's own:
-
-| Workspace key | Node default | Buckle's own |
-|---|---|---|
-| `approval.judge` | `BUCKLE_APPROVAL_JUDGE` | `off` |
-| `approval.judgeProvider` | `BUCKLE_APPROVAL_JUDGE_PROVIDER` | `openai-compatible` |
-| `approval.judgeModel` | `BUCKLE_APPROVAL_JUDGE_MODEL` | `gpt-6-luna` |
-| `approval.judgeStandardScripts` | `BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS` | the list below |
-| `approval.quickJudge` | `BUCKLE_APPROVAL_QUICK_JUDGE` | `off` |
-| `approval.quickJudgeProvider` | none | `typesafe` |
-| `approval.quickJudgeModel` | `BUCKLE_APPROVAL_QUICK_JUDGE_MODEL` | `jev-latest` |
-
-Set the model your gateway serves: it may name `gpt-6-luna` differently. The keys and addresses
-are the node's alone ([the node's keys](judge-04.md#the-nodes-keys)).
+turned into an ask under `all`, recorded as decided by the thorough stage and its model and bound
+to the code it rated: a retry after that code changed spends nothing and asks again. Jev's verdict
+alone approves nothing, and an ask at the destructive floor never: the command prints the floor's
+line. Where only Jev holds a key, an ask's line offers no approval. Anything else approves nothing
+and exits 0; no verdict exits 1. A call whose kept arguments hide a credential is not rated
+([why](judge-03.md#what-the-on-request-command-refuses)). Each run is audited. It takes
+`--workspace <name>` and works in automated mode too.
 
 ## Standard development scripts
 
