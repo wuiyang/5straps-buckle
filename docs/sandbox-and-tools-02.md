@@ -39,6 +39,7 @@ browser would:
 
 The result's `body` holds the first 2 MiB of the response at most. `truncated` is set when the
 response held more than that, whether its `content-length` said so or a byte followed the 2 MiB.
+A `content-length` on a compressed response counts the compressed bytes, so it is ignored there.
 A response of exactly 2 MiB is not truncated. A response that neither ends nor sends more for a
 second after the 2 MiB, or fails there, is not shown complete, so it is marked truncated too, and
 the 2 MiB already read is returned.

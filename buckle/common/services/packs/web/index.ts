@@ -137,8 +137,13 @@ async function readBounded(response: Response): Promise<{ body: string; truncate
   return { body: Buffer.concat(chunks).toString('utf8'), truncated }
 }
 
-/** The content-length header as a number, or 0 where it is absent or not a plain count. */
+/**
+ * The content-length header as a number, or 0 where it is absent, not a plain count, or the body is content-coded: fetch
+ * decodes the body but keeps the coded length, which the cap, counting decoded bytes, cannot be compared with.
+ */
 function declaredLength(response: Response): number {
+  const encoding = response.headers.get('content-encoding')?.trim().toLowerCase()
+  if (encoding !== undefined && encoding !== '' && encoding !== 'identity') return 0
   const value = response.headers.get('content-length')
   return value !== null && /^\d+$/.test(value) ? Number(value) : 0
 }

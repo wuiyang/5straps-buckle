@@ -1,3 +1,7 @@
+import { randomBytes } from 'node:crypto'
+import { createServer, type Server, type ServerResponse } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 import { createWebPack } from '../common/services/packs/web/index.js'
@@ -44,13 +48,25 @@ function streamOf(parts: Uint8Array[], tail: 'close' | 'stall' | 'empties' | 'er
   return { stream, state }
 }
 
-async function fetched(body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}): Promise<Fetched> {
-  vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200, headers })))
-  const tool = createWebPack({ approved: compileUrlPatterns(['decoy.example.test']) }).tools.find(candidate => candidate.capability.name === 'web_fetch')!
-  const result = await tool.prepare({ url: 'http://decoy.example.test/data' }).execute({
+async function webFetch(url: string, host: string): Promise<Fetched> {
+  const tool = createWebPack({ approved: compileUrlPatterns([host]) }).tools.find(candidate => candidate.capability.name === 'web_fetch')!
+  const result = await tool.prepare({ url }).execute({
     requestId: 'bounded', sessionId: 'bounded', timeoutMs: 5_000, signal: new AbortController().signal,
   })
   return result as unknown as Fetched
+}
+
+async function fetched(body: ReadableStream<Uint8Array>, headers: Record<string, string> = {}): Promise<Fetched> {
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { status: 200, headers })))
+  return webFetch('http://decoy.example.test/data', 'decoy.example.test')
+}
+
+/** A local server answering every request with `reply`, closed by the caller. */
+function serving(reply: (response: ServerResponse) => void): Promise<{ server: Server; host: string }> {
+  return new Promise(resolve => {
+    const server = createServer((_request, response) => reply(response))
+    server.listen(0, '127.0.0.1', () => resolve({ server, host: `127.0.0.1:${(server.address() as AddressInfo).port}` }))
+  })
 }
 
 afterEach(() => {
@@ -154,6 +170,38 @@ describe('web_fetch against the 2 MiB response cap', () => {
     expect(result.body).toHaveLength(CAP)
     expect(result.truncated).toBe(true)
     expect(state.cancelled).toBe(true)
+  })
+
+  it('ignores a content-length over the cap where the body is content-coded, since it counts the coded bytes', async () => {
+    const { stream } = streamOf(blocks(31))
+    const result = await fetched(stream, { 'content-length': String(CAP + 1_000), 'content-encoding': 'gzip' })
+    expect(result.body).toHaveLength(31 * CHUNK)
+    expect(result.truncated).toBe(false)
+  })
+
+  it('still trusts a content-length over the cap where the content-encoding is identity', async () => {
+    for (const encoding of ['identity', ' Identity ']) {
+      const result = await fetched(streamOf(blocks(3)).stream, { 'content-length': String(CAP + 1), 'content-encoding': encoding })
+      expect(result.truncated).toBe(true)
+    }
+  })
+
+  it('returns a gzip-encoded body whose decoded size is under the cap whole, though its encoded content-length is over it', async () => {
+    const plain = randomBytes(2_097_000)
+    const encoded = gzipSync(plain)
+    expect(plain.byteLength).toBeLessThan(CAP)
+    expect(encoded.byteLength).toBeGreaterThan(CAP)
+    const { server, host } = await serving(response => {
+      response.writeHead(200, { 'content-encoding': 'gzip', 'content-length': encoded.byteLength })
+      response.end(encoded)
+    })
+    try {
+      const result = await webFetch(`http://${host}/data`, host)
+      expect(result.body).toBe(plain.toString('utf8'))
+      expect(result.truncated).toBe(false)
+    } finally {
+      server.close()
+    }
   })
 
   it('does not mark truncated a content-length of exactly the cap, or one that is not a number', async () => {
