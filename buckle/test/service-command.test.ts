@@ -489,4 +489,43 @@ describe('buckle service logs at a terminal', () => {
     stop.abort()
     expect(await following).toEqual({ exitCode: 0 })
   })
+
+  // Fix brief 1, H5: a reader can catch the node mid-write. The JSON a file stores leaves C1 and bidi characters raw, so a
+  // line cut in two, each half no event, reached the terminal raw; the cut line now waits until it is whole.
+  const whole = '{"timestamp":"2026-10-21T14:22:00.000Z","level":"info","component":"buckle","message":"5straps Buckle listening","fields":{"port":4320}}'
+  const cut = ['{"timestamp":"2026-10-21T14:22:01.000Z","level":"warn","component":"buckle","message":"Could not read",', '"fields":{"path":"/workspace/a\u009b2J\u202etxt"}}']
+
+  function following(target: Node, stdoutIsTerminal: boolean) {
+    const stop = new AbortController()
+    let out = ''
+    const done = serviceCommand({ argv: ['logs', '-f', '-n', '0'], environment: target.environment, platform: 'linux', cwd: target.root, run: vi.fn(), mainScript: target.main, manager: () => null, out: text => { out += text }, err: () => {}, signal: stop.signal, stdoutIsTerminal })
+    return { out: () => out, stop: async () => { stop.abort(); return done } }
+  }
+
+  it('prints a line cut by the node\'s write once, whole, rendered and escaped, never its halves raw', async () => {
+    vi.stubEnv('TZ', 'UTC')
+    const target = node()
+    mkdirSync(join(target.state, 'logs'))
+    const file = serviceLogPath(target.state)
+    writeFileSync(file, `${whole}\n${cut[0]}`)
+    const run = following(target, true)
+    await new Promise(resolve => setTimeout(resolve, 600))
+    appendFileSync(file, `${cut[1]}\n`)
+    await vi.waitFor(() => expect(run.out()).toBe('--- 2026-10-21 ---\n14:22:01 [warn] Could not read path=/workspace/a\\u009b2J\\u202etxt\n'), { timeout: 5_000 })
+    expect(await run.stop()).toEqual({ exitCode: 0 })
+    expect(run.out()).not.toMatch(/[\u009b\u202e]/)
+  })
+
+  it('prints no half of a cut line where piped, and the line as stored once it is whole', async () => {
+    const target = node()
+    mkdirSync(join(target.state, 'logs'))
+    const file = serviceLogPath(target.state)
+    writeFileSync(file, `${whole}\n${cut[0]}`)
+    expect((await service(target, ['logs'], null)).out).toBe(`${whole}\n`)
+    const run = following(target, false)
+    await new Promise(resolve => setTimeout(resolve, 600))
+    appendFileSync(file, `${cut[1]}\n`)
+    await vi.waitFor(() => expect(run.out()).toBe(`${cut.join('')}\n`), { timeout: 5_000 })
+    expect(await run.stop()).toEqual({ exitCode: 0 })
+  })
 })

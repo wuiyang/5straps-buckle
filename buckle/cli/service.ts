@@ -438,9 +438,10 @@ async function logs(context: ServiceContext, options: { follow: boolean; lines: 
   }
   let offset = 0
   if (existsSync(file)) {
-    const text = readFileSync(file, 'utf8')
-    offset = Buffer.byteLength(text)
-    const lines = text.split('\n').filter(Boolean)
+    // Whole lines alone: a line the node is still writing is left to follow(), which prints it once it ends (fix brief 1, H5).
+    const bytes = readFileSync(file)
+    offset = bytes.lastIndexOf(10) + 1
+    const lines = bytes.subarray(0, offset).toString('utf8').split('\n').filter(Boolean)
     if (count > 0) context.out(shown(lines.slice(-count).map(line => `${line}\n`).join('')))
   }
   if (!options.follow) return { exitCode: 0 }

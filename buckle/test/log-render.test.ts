@@ -1,6 +1,6 @@
 import type { LogEvent } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createDateSeparators, renderEvent } from '../common/runtime/log-render.js'
+import { createDateSeparators, createStoredLineRenderer, renderEvent } from '../common/runtime/log-render.js'
 
 // The CLI display slice, C2: the lines a person reads at a terminal for one log event. The JSON a machine reads is the
 // event itself, which nothing here changes. Every case names its zone, so no test reads the machine's own.
@@ -92,6 +92,11 @@ describe('what an agent may have chosen, in a log line', () => {
     expect(renderEvent(event({ message: 'The decision AI rated a command safe', fields: { subject } }), quiet)).toEqual([
       '14:22:00 [info] The decision AI rated a command safe subject=node -e \'a\'\\u000a[site]   does:     Run "ls -la"\\u000a[site] (1) approve once  (n) deny',
     ])
+  })
+
+  // Fix brief 1, H5: `buckle service logs` passes a stored line that is no event through, escaped as every line it renders.
+  it('escapes C1 and bidi characters in a stored line that is no log event', () => {
+    expect(createStoredLineRenderer(quiet)('not an event a\u009b2Jb\u202ec')).toEqual(['not an event a\\u009b2Jb\\u202ec'])
   })
 })
 

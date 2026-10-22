@@ -74,13 +74,14 @@ export function createDateSeparators(): (at: Date) => string[] {
 
 /**
  * `buckle service logs` at a terminal (the CLI display slice, C6): each stored line as the console renders it, with date
- * separators across the lines it prints; a line that is not a log event passes through as stored.
+ * separators across the lines it prints; a line that is not a log event passes through with its control and format
+ * characters escaped, as every line a person reads there is (fix brief 1, H5).
  */
 export function createStoredLineRenderer(options: RenderOptions): (line: string) => string[] {
   const separators = createDateSeparators()
   return (line) => {
     const event = storedEvent(line)
-    if (event === null) return [line]
+    if (event === null) return [printable(line)]
     const lines = renderEvent(event, options)
     return lines === null ? [] : [...separators(new Date(event.timestamp)), ...lines]
   }
