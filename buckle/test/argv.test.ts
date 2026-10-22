@@ -89,6 +89,10 @@ describe('holdsExpansion', () => {
     ['"$(echo x)"', true], ['"$x"', true], ['$x', true], ['`id`', true], ['*.sh', true], ['a?', true], ['[ab]', true], ["{'a b',c}", true],
     ['{1..3}', true], ['~/bin', true], ["'$x'", false], ["$'a\\'b'", false], ['\\$x', false], ['"\\$x"', false], ['{}', false], ["'*'", false],
     ['"*"', false], ['plain', false], ['a~b', false],
+    // zsh's EQUALS option (on by default) expands a word that starts with an unquoted `=` to the path of the named
+    // command (fix brief 9, A5); `=` alone, a quoted or escaped `=`, an assignment, and `--opt=value` stay as written.
+    ['=rm', true], ['=git', true], ["'=rm'", false], ['"=rm"', false], ['\\=rm', false], ['=', false], ['a=b', false], ['FOO=1', false],
+    ['--opt=value', false], ['-m=x', false],
   ])('reads %s as holding an expansion: %s', (raw, expanded) => {
     expect(holdsExpansion(raw)).toBe(expanded)
   })
@@ -103,6 +107,8 @@ describe('expansionShape', () => {
     ['"${a[*]}"', false, ''], ['{1,2}', true, ''], ['*.ts', true, ''], ['a?', true, 'a'], ['~/x', false, ''], ['--signal="$s"', false, '--signal='],
     ['-n"$v"', false, '-n'], ['-n$v', true, '-n'], ['user@"$HOST"', false, 'user@'], ['"user@$HOST"', false, 'user@'], ['X=$v', true, 'X='],
     ['FOO="$BAR"', false, 'FOO='], ["'-'\"$x\"", false, '-'], ['"$(a)"$b', true, ''], ['"$a"*', true, ''], ['x<$()', false, 'x'], ["$'\\x2d'\"$v\"", false, '-'],
+    // zsh's `=name` names one path, so it does not split, and nothing of the word before it is its own (fix brief 9, A5).
+    ['=rm', false, ''], ['=rm$v', true, ''],
   ])('reads %s as splitting: %s, its own text first: %j', (raw, splits, prefix) => {
     expect(expansionShape(raw)).toEqual({ splits, prefix })
   })

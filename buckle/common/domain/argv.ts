@@ -2055,10 +2055,12 @@ const EXPANSION_CHARACTERS = /[$`*?[{~]/
 /**
  * Whether a word as written holds an expansion the shell makes before the command receives it, so its value is not the
  * text Buckle reads: a `$` (other than `$'`) or a backtick outside single quotes, and outside any quotes a glob
- * character (`*`, `?`, `[`), a brace expansion, or a leading `~`. Single quotes, `$'...'`, and a backslash keep text as
- * written.
+ * character (`*`, `?`, `[`), a brace expansion, a leading `~`, or a leading `=` before a name, which zsh's EQUALS option
+ * (on by default) turns into the path of the named command (`=rm`). Single quotes, `$'...'`, and a backslash keep text
+ * as written; an `=` later in a word (an assignment, `--opt=value`) is no expansion.
  */
 export function holdsExpansion(raw: string): boolean {
+  if (raw.length > 1 && raw[0] === '=') return true
   if (!EXPANSION_CHARACTERS.test(raw)) return false
   let quote: null | "'" | "$'" | '"' = null
   for (let index = 0; index < raw.length; index++) {
@@ -2095,7 +2097,7 @@ export interface ExpansionShape {
  * is split on blanks and globbed, and a pattern or a brace expansion may name several words, so the word may become
  * several or none; inside them each is one word, but for `"$@"` and an array's elements (`"${a[@]}"`, `"${@:2}"`,
  * `"${!a[@]}"`), which are a word each, so any `@` in a `${...}` but its length counts as several. A leading tilde names
- * one directory and a process substitution one path: neither splits. `prefix` is the text before the first expansion.
+ * one directory, and a process substitution and zsh's `=name` one path: none of them splits. `prefix` is the text before the first expansion.
  * A word in which no expansion is found is read as one that may split, from its start.
  */
 export function expansionShape(raw: string): ExpansionShape {
@@ -2134,7 +2136,7 @@ export function expansionShape(raw: string): ExpansionShape {
       continue
     }
     if (!quoted && ('*?['.includes(character) || (character === '{' && /,|\.\./.test(raw.slice(index + 1))))) met(index, true)
-    else if (!quoted && character === '~' && index === 0) met(index, false)
+    else if (!quoted && (character === '~' || (character === '=' && raw.length > 1)) && index === 0) met(index, false)
     index++
   }
   return first < 0 ? { splits: true, prefix: '' } : { splits, prefix: unquote(raw.slice(0, first)) }

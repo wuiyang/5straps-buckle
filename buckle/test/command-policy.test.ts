@@ -2223,6 +2223,47 @@ describe('a line continuation inside the &> or << the splitter reads (fix brief 
   })
 })
 
+describe("zsh's =name expansion of a command word (fix brief 9, A5)", () => {
+  // zsh's EQUALS option, on by default, expands a word that starts with an unquoted `=` to the full path of the named
+  // command (zshexpn, Filename Expansion; zsh 5.9 ran `=git push --force origin main` as git), so the word is a command
+  // word an expansion supplies: unread, refused under a deny list and asked at the floor with none.
+  const expansion = READ_LIMITS.expansion
+  const texts: Array<[string, string, string]> = [
+    ['zsh', '=rm -rf x', 'rm -rf *'],
+    ['zsh', 'nice =rm -rf x', 'rm -rf *'],
+    ['zsh', 'timeout 5 =rm -rf x', 'rm -rf *'],
+    ['zsh', 'env =rm -rf x', 'rm -rf *'],
+    ['zsh', 'sudo =rm -rf x', 'rm -rf *'],
+    ['zsh', 'xargs =rm -rf x', 'rm -rf *'],
+    ['zsh', 'FOO=1 =rm -rf x', 'rm -rf *'],
+    ['zsh', '=git push --force origin main', 'git push *'],
+    ['bash', "zsh -c '=git push --force origin main'", 'git push *'],
+    ['bash', "zsh -c '=rm -rf x'", 'rm -rf *'],
+    ['bash', "zsh <<'EOF'\n=git push --force origin main\nEOF", 'git push *'],
+  ]
+
+  it.each(texts)('%s -c %j is refused under a deny list naming the limit', (shell, text, deny) => {
+    expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread).toBe('expansion')
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: [deny] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain(expansion)
+  })
+
+  it.each(texts.filter(([, text]) => !text.includes('sudo')))('%s -c %j asks at the floor with no deny list', (shell, text) => {
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  it('leaves assignments, an option value, a quoted or escaped =, and a lone = as written', () => {
+    const allow = { allow: ['zsh -c *'], deny: ['rm -rf *'] }
+    for (const text of ['FOO=1 echo x', 'echo --opt=value', 'git commit -m=x', "'=rm' -rf x", '"=rm" -rf x', '\\=rm -rf x', 'echo = x', 'echo a=b']) {
+      expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread).toBeNull()
+      expect(evaluate('zsh', ['-c', text], allow).kind).toBe('allow')
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
