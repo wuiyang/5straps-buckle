@@ -9,6 +9,7 @@ import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand } from '../../domain/argv.js'
+import { OWN_PROCESS_PLACES } from '../../domain/executable.js'
 import { outsideMountReason, type PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
@@ -249,10 +250,11 @@ const PATH_SEPARATOR = /[\\/]/
 
 /**
  * Whether a typed command word may name a program the agent placed: one named by a path runs the file at that path, not
- * the program its basename names, unless it is an absolute name lying outside the workspace and every mount; a word the
- * chain does not show (null) fails closed (fix brief 6, B1). A relative name holding a separator is never judged by the
- * view: the sandbox resolves it from /workspace under a root holding each mount at its target, so `../data/x` reaches a
- * mount and `../workspace/x` the workspace, wherever the host keeps them (fix brief 7, B14).
+ * the program its basename names, unless it is an absolute name lying outside the workspace and every mount, with no `.`
+ * or `..` segment and not under /proc or /dev/fd (fix brief 9, B28); a word the chain does not show (null) fails closed
+ * (fix brief 6, B1). A relative name holding a separator is never judged by the view: the sandbox resolves it from
+ * /workspace under a root holding each mount at its target, so `../data/x` reaches a mount and `../workspace/x` the
+ * workspace, wherever the host keeps them (fix brief 7, B14).
  */
 function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
   // A NAME=value command word is a program a direct exec, or a wrapper that execs its command, runs by that name, while
@@ -262,7 +264,25 @@ function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
   // which no view names as pathe reads the backslash as a separator (fix brief 8, B21).
   if (literalBackslash(word)) return true
   if (!PATH_SEPARATOR.test(word)) return false
-  return !absoluteName(word) || !programOutsideView(word, cwd, view)
+  if (!absoluteName(word)) return true
+  // The kernel follows a link before it applies the `..` after it, while the view folds `.` and `..` as text, so
+  // `/workspace/<link>/../../usr/bin/python3` may run a planted file the view names as the system one; a path through
+  // /proc or /dev/fd names a place of whichever process reads it (fix brief 9, B28).
+  if (dotSegment(word) || processPlace(word)) return true
+  return !programOutsideView(word, cwd, view)
+}
+
+/** Whether a path holds a `.` or `..` segment, split on `/`, and on `\` too on Windows. */
+function dotSegment(word: string): boolean {
+  return word.split(process.platform === 'win32' ? /[\\/]/ : '/').some(segment => segment === '.' || segment === '..')
+}
+
+/** Folders whose entries name places of a process, its own (OWN_PROCESS_PLACES) or another's under /proc. */
+const PROCESS_PLACES = ['/proc', ...OWN_PROCESS_PLACES]
+
+/** Whether an absolute path lies under /proc or /dev/fd. */
+function processPlace(word: string): boolean {
+  return PROCESS_PLACES.some(place => word === place || word.startsWith(`${place}/`))
 }
 
 /** An absolute name: from the root, or on Windows from a drive or a share as pathe reads one. */

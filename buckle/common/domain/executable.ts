@@ -505,7 +505,7 @@ function placesOf(path: string, walked: LinkWalk): string[] {
 }
 
 /** Folders that name a place of whichever process reads them: its working directory, root, and open files. */
-const OWN_PROCESS_PLACES = ['/proc/self', '/proc/thread-self', '/dev/fd']
+export const OWN_PROCESS_PLACES = ['/proc/self', '/proc/thread-self', '/dev/fd']
 
 function namesOwnProcess(place: string, platform: NodeJS.Platform): boolean {
   return OWN_PROCESS_PLACES.some(folder => isInsideComparable(folder, place, ignoresCase(platform), platform))

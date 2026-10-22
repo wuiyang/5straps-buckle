@@ -1330,6 +1330,49 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
   })
 })
 
+describe('a program named by an absolute path holding a dot segment or a process place (fix brief 9, B28)', () => {
+  // The kernel follows a link before it applies the `..` after it, while the view folds `..` as text, so
+  // `/workspace/l/../../usr/bin/python3`, with `l` a link to `a/b`, runs the planted /workspace/usr/bin/python3 while the
+  // view named /usr/bin/python3, outside every mount. A path through /proc or /dev/fd names a place of the process that
+  // reads it. Such a word is taken for a program the agent may have placed.
+  const planted = '#!/bin/sh\necho planted\n'
+  const local = { kind: 'refused', reason: CODE_REFUSALS.localInterpreter, truncated: false }
+  const files = { 'a/b/.keep': '', 'usr/bin/python3': planted, 'usr/bin/env': planted, 'usr/bin/npx': planted, 'job.py': 'print(1)\n', 'job.js': 'console.log(1)\n' }
+  const climbing = (name: string) => `/workspace/l/../../usr/bin/${name}`
+
+  const linked = (options: { mount?: string | null } = {}) => {
+    const made = workspace(files, options)
+    symlinkSync('a/b', join(made.root, 'l'))
+    return made
+  }
+
+  it('refuses the word typed directly, behind env, in shell text, behind a wrapper, and as a runner', () => {
+    const { call, shell } = linked()
+    expect(call(climbing('python3'), 'job.py')).toEqual(local)
+    expect(call(climbing('env'), 'python3', 'job.py')).toEqual(local)
+    expect(shell(`${climbing('python3')} job.py`)).toEqual(local)
+    expect(call('timeout', '5', climbing('python3'), 'job.py')).toEqual(local)
+    expect(call(climbing('npx'), 'tsx', 'job.js')).toEqual(local)
+  })
+
+  it('refuses a . segment, a /proc place, and a /dev/fd place, and under no mount too', () => {
+    const { call } = linked()
+    expect(call('/usr/bin/./python3', 'job.py')).toEqual(local)
+    expect(call('/proc/self/cwd/usr/bin/python3', 'job.py')).toEqual(local)
+    expect(call('/proc/1/root/usr/bin/python3', 'job.py')).toEqual(local)
+    expect(call('/dev/fd/3', 'job.py')).toEqual(local)
+    const bare = linked({ mount: null })
+    expect(bare.call(`${bare.root}/l/../../usr/bin/python3`, 'job.py')).toEqual(local)
+  })
+
+  it('still reads a system interpreter named plainly', () => {
+    const { call, shell } = linked()
+    expect(paths(call('/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('/usr/bin/env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('/usr/bin/python3 job.py'))).toEqual(['/workspace/job.py'])
+  })
+})
+
 describe('a runner package whose version part names a folder (fix brief 8, B22)', () => {
   // npm-package-arg reads a spec whose part after the name's @ starts with `.` as a directory, so npm 11.19.0 ran the
   // working directory's bin for `npx eslint@.` and `.decoy`'s for `npx eslint@.decoy`, while the reader named the registry

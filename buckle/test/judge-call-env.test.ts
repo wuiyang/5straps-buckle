@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
@@ -746,6 +746,36 @@ describe('a program named by an absolute path holding a backslash (fix brief 8, 
       [[], [join(config.cwd, 'fv\\python3'), 'job.py']],
       [['bash -c *'], ['bash', '-c', `'${join(config.cwd, 'fv\\python3')}' job.py`]],
       [['npx *'], [join(config.cwd, 'fv\\npx'), 'vitest', 'run']],
+    ]
+    for (const [allow, command] of rows) {
+      await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow, deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, command.join(' ')).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.localInterpreter, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})
+
+describe('a program named by an absolute path that climbs out of a link (fix brief 9, B28)', () => {
+  it('is not rated, typed directly or in shell text, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    // A link one level deeper than the workspace path: the view folds its `..` segments to /usr/bin/python3, while the
+    // kernel, which follows the link first, lands on the workspace, where the planted file sits.
+    const depth = config.cwd.split('/').filter(Boolean).length + 1
+    const deep = Array.from({ length: depth }, (_, at) => `d${at}`).join('/')
+    mkdirSync(join(config.cwd, deep), { recursive: true })
+    symlinkSync(deep, join(config.cwd, 'l'))
+    mkdirSync(join(config.cwd, 'usr', 'bin'), { recursive: true })
+    writeFileSync(join(config.cwd, 'usr', 'bin', 'python3'), '#!/bin/sh\necho planted\n')
+    writeFileSync(join(config.cwd, 'job.py'), 'print(1)\n')
+    const word = `${config.cwd}/l/${'../'.repeat(depth)}usr/bin/python3`
+    const runtime = await runtimeOf(config, { judge })
+    const rows: Array<[string[], string[]]> = [
+      [[], [word, 'job.py']],
+      [['bash -c *'], ['bash', '-c', `${word} job.py`]],
     ]
     for (const [allow, command] of rows) {
       await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow, deny: [] } })
