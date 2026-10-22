@@ -49,6 +49,11 @@ forge pack.
   pack file, `objects/pack`, a folder of loose objects, or `refs`. Only the work tree, the git
   folder, the common folder, each `objects` folder, and the stores `objects/info/alternates` names
   are checked.
+- The `git` pack shows nothing of a submodule's changes or history, but git still opens its
+  `HEAD`, config, and refs through the `.git` pointer in its folder to compare the recorded commit,
+  even where that pointer leads outside the workspace, and an error there can name that place. A
+  planned follow-up will refuse a submodule whose pointer leads outside the workspace and its
+  mounts.
 
 ## Windows shims
 

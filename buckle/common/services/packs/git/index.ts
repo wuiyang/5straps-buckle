@@ -47,10 +47,13 @@ const ALTERNATES_BYTES = 64 * 1024
 const GIT_VARIABLE = /^GIT_/i
 /**
  * A submodule's repository is reached through the `.git` pointer in its work-tree folder, which no check here reads and
- * which may lead outside the workspace, so git never enters one (git pack recheck 1, held[1]). The command line is the
- * guard, since it outranks every config the repository or `.gitmodules` sets: status and diff take this flag. The keys
- * below are a second layer, read after the repository's own config. git_log prints no patch and git_blame reads no
- * gitlink, so neither takes the flag.
+ * which may lead outside the workspace, so no call shows a submodule's changes or history (git pack recheck 1,
+ * held[1]). The command line is the guard, since it outranks every config the repository or `.gitmodules` sets: status
+ * and diff take this flag. The keys below are a second layer, read after the repository's own config. git_log prints no
+ * patch and git_blame reads no gitlink, so neither takes the flag. Whatever the flag says, git still opens the
+ * submodule's HEAD, config, and refs to compare the recorded commit, so a call still runs where that folder cannot be
+ * read, and an error in those files can name it (git pack recheck 2, held[1]; known-limits-02). Refusing a gitlink
+ * whose pointer leads outside the roots is a follow-up.
  */
 const IGNORE_SUBMODULES = '--ignore-submodules=all'
 const SUBMODULE_CONFIG: GitConfig[] = [

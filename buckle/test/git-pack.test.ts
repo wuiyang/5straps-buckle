@@ -846,7 +846,7 @@ describe.skipIf(hostGit === null)('a git tool never enters a submodule, against 
     expect(await call('git_diff', { repo: 'repo', staged: true })).toEqual({ diff: '' })
   })
 
-  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('reads nothing of the outside repository: with its git folder unreadable, git_diff and git_status still run', async () => {
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('still runs git_diff and git_status when the outside repository\'s git folder is unreadable', async () => {
     const { root, elsewhere } = submodule('log')
     chmodSync(join(elsewhere, '.git'), 0)
     try {
