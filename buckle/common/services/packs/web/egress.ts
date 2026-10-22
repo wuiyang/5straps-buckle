@@ -4,11 +4,17 @@ import { ToolExecutionError, type NetworkVerdict } from '../../../domain/tool.js
 import { starredHostRefusal, type UrlMatcher } from '../../../domain/url-pattern.js'
 
 const MAX_REDIRECTS = 5
+/** Headers that describe a request body, removed with it. */
+const BODY_HEADERS = ['content-type', 'content-length', 'content-encoding', 'content-language', 'content-location']
+/** Headers that carry the caller's credentials, removed on a hop to another origin as browsers and Node's fetch do. */
+const CREDENTIAL_HEADERS = ['authorization', 'cookie', 'proxy-authorization']
 
 /**
  * Fetch with the redirect chain walked by hand, resolving and re-checking every hop. A
  * hostname that passed the permission rule can still resolve into a reserved range, and a
- * public URL can redirect into one.
+ * public URL can redirect into one. Each hop follows the fetch standard: a 303 answer to anything
+ * but GET or HEAD, and a 301 or 302 answer to POST, becomes GET without the body; 307 and 308
+ * repeat the method and body; a hop to another origin drops the credential headers.
  */
 export async function guardedFetch(input: {
   url: URL
@@ -26,24 +32,32 @@ export async function guardedFetch(input: {
   judge?: (url: URL) => Promise<NetworkVerdict>
 }): Promise<Response> {
   let current = input.url
+  let method = input.method
+  let body = input.body
+  const headers = new Headers(input.headers)
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
     await assertReachable(current, input.approved, input.judge)
-    const response = await fetch(current, {
-      method: input.method,
-      headers: input.headers,
-      body: input.body,
-      redirect: 'manual',
-      signal: input.signal,
-    })
+    const response = await fetch(current, { method, headers, body, redirect: 'manual', signal: input.signal })
 
     const location = response.headers.get('location')
     if (!isRedirect(response.status) || !location) return response
+    await response.body?.cancel().catch(() => undefined)
 
-    current = new URL(location, current)
-    if (current.protocol !== 'http:' && current.protocol !== 'https:') {
-      throw new ToolExecutionError(`Redirect to a non-HTTP scheme: ${current.protocol}`, { code: 'EGRESS_BLOCKED' })
+    const next = new URL(location, current)
+    if (next.protocol !== 'http:' && next.protocol !== 'https:') {
+      throw new ToolExecutionError(`Redirect to a non-HTTP scheme: ${next.protocol}`, { code: 'EGRESS_BLOCKED' })
     }
+
+    if (dropsBody(response.status, method)) {
+      method = 'GET'
+      body = undefined
+      for (const name of BODY_HEADERS) headers.delete(name)
+    }
+    if (next.origin !== current.origin) {
+      for (const name of CREDENTIAL_HEADERS) headers.delete(name)
+    }
+    current = next
   }
 
   throw new ToolExecutionError(`Exceeded ${MAX_REDIRECTS} redirects`, { code: 'TOO_MANY_REDIRECTS' })
@@ -85,6 +99,11 @@ async function resolveAll(host: string): Promise<string[]> {
 
 function blocked(host: string, range: string): ToolExecutionError {
   return new ToolExecutionError(`${host} is in the ${range} range`, { code: 'EGRESS_BLOCKED' })
+}
+
+function dropsBody(status: number, method: string): boolean {
+  if (status === 303) return method !== 'GET' && method !== 'HEAD'
+  return (status === 301 || status === 302) && method === 'POST'
 }
 
 function isRedirect(status: number): boolean {

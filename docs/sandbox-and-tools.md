@@ -120,4 +120,4 @@ in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_A
 (`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
 rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
 
-[Part two](sandbox-and-tools-02.md) covers the browser's allowed hosts and the change history.
+[Part two](sandbox-and-tools-02.md) covers the browser's allowed hosts, `web_fetch` redirects, and the change history.

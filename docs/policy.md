@@ -72,7 +72,7 @@ a list, they reach only what it names. An entry naming a host exactly, or a URL 
 resolves into one. Browser navigation and forge pushes judge the name as written and never resolve
 it ([known limits](known-limits-04.md#the-url-list)). Without a list, public hosts are reachable,
 and loopback, private, and other reserved addresses ask, per host and port. `web_fetch` checks every resolved address and every redirect hop, up to
-five. With no public-suffix list, `*.com` would cover every `.com` name. An empty approved list is
+five ([how it follows them](sandbox-and-tools-02.md#fetching-urls)). With no public-suffix list, `*.com` would cover every `.com` name. An empty approved list is
 no list: `buckle policy remove` warns when it takes out the last entry.
 
 `buckle check-url <url|host>` shows what an address would meet, with no node running; it exits 0

@@ -1,7 +1,7 @@
 # Sandbox and tools, part two
 
 More of how Buckle, the approval and sandbox runtime on your machine, runs its tools: the
-browser's allowed hosts and the change history. [Part one](sandbox-and-tools.md) covers the packs,
+browser's allowed hosts, how `web_fetch` follows redirects, and the change history. [Part one](sandbox-and-tools.md) covers the packs,
 sandboxing per platform, shell isolation, and host Git.
 
 ## The browser's allowed hosts
@@ -23,6 +23,19 @@ host names only, so inside a page an allowed host is reachable on any port and p
 page a command opens is still judged with port and path. With no approved list, no flag is passed
 and public hosts are open. When a list has no usable host, Buckle does not start the browser and
 says which list to fix.
+
+## Fetching URLs
+
+`web_fetch` follows up to five redirects, one hop at a time, and checks every hop against the
+[approved list](policy.md#network) and the permission rules. It follows each answer as a
+browser would:
+
+- A 303 answer to any method but GET or HEAD, and a 301 or 302 answer to a POST, is followed with
+  GET and no body. The request's `content-type`, `content-length`, `content-encoding`,
+  `content-language`, and `content-location` headers go with the body.
+- A 307 or 308 answer repeats the method and the body.
+- A hop to another origin (scheme, host, or port) drops the `authorization`, `cookie`, and
+  `proxy-authorization` headers, and a later hop back to the first origin does not restore them.
 
 ## Change history
 
