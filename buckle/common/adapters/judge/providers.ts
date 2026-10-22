@@ -26,7 +26,11 @@ export function createProviderJudge(options: { provider: JudgeProvider } & Provi
   let loaded: Promise<Judge> | undefined
   const load = (): Promise<Judge> => {
     const { provider, ...settings } = options
-    loaded ??= Promise.all([import('./ai-sdk.js'), PROVIDERS[provider]()]).then(([adapter, models]) => adapter.createAiSdkJudge({ model: models(settings) }))
+    // A load that failed is tried again at the next rating, not kept for the life of the node (fix brief 9, B36).
+    loaded ??= Promise.all([import('./ai-sdk.js'), PROVIDERS[provider]()]).then(([adapter, models]) => adapter.createAiSdkJudge({ model: models(settings) })).catch((error: unknown) => {
+      loaded = undefined
+      throw error
+    })
     return loaded
   }
   return { judge: async (input, judging) => (await load()).judge(input, judging) }

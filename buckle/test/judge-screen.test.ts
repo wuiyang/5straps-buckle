@@ -68,6 +68,21 @@ async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePol
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 
+describe('a quick stage port that throws, under all (fix brief 9, B36)', () => {
+  it.each<[string, () => never | Promise<never>]>([
+    ['throws', () => { throw new Error('port broke') }],
+    ['rejects', () => Promise.reject(new Error('port broke'))],
+  ])('lets an allowed command run as before when the port %s', async (_how, fail) => {
+    const quickJudge: QuickJudge = { quick: vi.fn(fail) }
+    const runtime = await runtimeOf(node(), { quickJudge, judge: fakes(quick('safe', 0.9)).judge })
+    await withPolicy(runtime, { allow: ['cat *'] })
+    const { response, entry, ran } = await call(runtime, 'cat', ['notes.txt'])
+    expect(ran).toBe(true)
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(entry.judge).toMatchObject({ quick: { unavailable: 'the request failed' }, screened: true })
+  })
+})
+
 describe('an allowed command whose code the reader cannot read whole, under all (fix brief 9, B35)', () => {
   // A reader refusal used to switch the screen off for an allowed command, so one added word let it run with Jev never
   // asked; it is now rated on its command line, its plan absent and the refusal kept beside the rating in the audit entry.

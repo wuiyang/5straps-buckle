@@ -14,7 +14,11 @@ export function createProviderQuickJudge(options: { provider: QuickJudgeProvider
   let loaded: Promise<QuickJudge> | undefined
   const load = (): Promise<QuickJudge> => {
     const { provider, ...settings } = options
-    loaded ??= QUICK_PROVIDERS[provider]().then(build => build(settings))
+    // A load that failed is tried again at the next rating, not kept for the life of the node (fix brief 9, B36).
+    loaded ??= QUICK_PROVIDERS[provider]().then(build => build(settings)).catch((error: unknown) => {
+      loaded = undefined
+      throw error
+    })
     return loaded
   }
   return { quick: async (input, options) => (await load()).quick(input, options) }

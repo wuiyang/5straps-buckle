@@ -110,6 +110,34 @@ describe('a call a stage passed', () => {
   })
 })
 
+describe('a stage port that throws (fix brief 9, B36)', () => {
+  // Every failure of a stage is no verdict: a port that throws or rejects leaves the ask to a person, never an error.
+  const failures: Array<[string, () => never | Promise<never>]> = [
+    ['throws', () => { throw new Error('port broke') }],
+    ['rejects', () => Promise.reject(new Error('port broke'))],
+  ]
+
+  it.each(failures)('a thorough stage that %s sends an interpreter ask to a person with no verdict', async (_how, fail) => {
+    const judge: Judge = { judge: vi.fn(fail) }
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'off' }), { judge, quickJudge: judges({}).quickJudge })
+    const { response, ran, entry } = await call(runtime, 'python3', ['job.py'])
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    if (response.outcome === 'approval_required') expect(response.approvals[0]!.reason).toContain('the decision AI gave no verdict')
+    expect(entry.judge).toMatchObject({ unavailable: 'the request failed', passed: false })
+  })
+
+  it.each(failures)('a quick stage that %s goes on to the thorough stage, which answers', async (_how, fail) => {
+    const quickJudge: QuickJudge = { quick: vi.fn(fail) }
+    const fakes = judges({ thorough: thorough('danger', 0.9) })
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters' }), { judge: fakes.judge, quickJudge })
+    const { response, entry } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(fakes.judge.judge).toHaveBeenCalledTimes(1)
+    expect(entry.judge).toMatchObject({ level: 'danger', quick: { unavailable: 'the request failed' }, passed: false })
+  })
+})
+
 describe('a standard script', () => {
   /** What the quick stage was shown of each call, under scope asks, which rates the floor's asks too. */
   async function shown(calls: Array<[string, string[]]>) {

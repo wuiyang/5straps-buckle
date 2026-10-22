@@ -310,7 +310,7 @@ export function createJudgeGate(input: {
     const kept = input.cache.get(key)
     if (kept && 'reasoning' in kept) return { provider, model, result: clippedResult(kept) }
     // Clipped whichever adapter answered, before it is kept, so every reader downstream sees the same bounded text.
-    const result = clippedResult(await input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) }))
+    const result = clippedResult(await guarded(signal, async () => input.judge!.judge(await command.sent(), { model, ...(signal ? { signal } : {}) })))
     if (result.kind === 'verdict' && !command.socketFailed()) await input.cache.set(key, result)
     return { provider, model, result }
   }
@@ -323,7 +323,7 @@ export function createJudgeGate(input: {
     const state = await command.sent()
     // Jev reads 64k tokens a request: past the budget it is not asked at all, and the routing goes on without it.
     if (Buffer.byteLength(JSON.stringify(state)) > QUICK_STATE_BUDGET_BYTES) return { provider, model, result: { kind: 'unavailable', reason: QUICK_OVER_BUDGET } }
-    const result = await input.quickJudge!.quick(state, { model, ...(signal ? { signal } : {}) })
+    const result = await guarded(signal, () => input.quickJudge!.quick(state, { model, ...(signal ? { signal } : {}) }))
     if (result.kind === 'verdict' && !command.socketFailed()) await input.cache.set(key, result)
     return { provider, model, result }
   }
@@ -424,6 +424,19 @@ export function createJudgeGate(input: {
         return false
       }
     },
+  }
+}
+
+/**
+ * A stage port's answer, any exception it throws or rejects with read as no verdict, as its adapters read their own
+ * failures: the cancelled reason where the call's signal fired, else the request's (fix brief 9, B36). An ask then goes to
+ * a person, and a screened allowed command runs as before.
+ */
+async function guarded<R>(signal: AbortSignal | undefined, ask: () => Promise<R>): Promise<R | { kind: 'unavailable'; reason: string }> {
+  try {
+    return await ask()
+  } catch {
+    return { kind: 'unavailable', reason: signal?.aborted ? 'the call was cancelled while the judge rated it' : 'the request failed' }
   }
 }
 
