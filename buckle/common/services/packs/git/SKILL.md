@@ -40,5 +40,7 @@ Buckle-owned directory, and every repository key that names a program emptied or
 `core.fsmonitor`, a pager, an editor, a credential helper, an external diff or textconv driver,
 and a clean or smudge filter. A read tool never runs workspace code.
 
-The one visible effect: where a repository defines a content filter, `git_diff` and `git_blame`
-show the bytes on disk rather than the converted form, so a Git LFS path reads as its pointer.
+Two visible effects. Where a repository defines a content filter, `git_diff` and `git_blame` show
+the bytes on disk rather than the converted form, so a Git LFS path reads as its pointer. And
+`git_blame` is refused where the repository's config names a file for it to read
+(`blame.ignoreRevsFile`), as no check judges that read.

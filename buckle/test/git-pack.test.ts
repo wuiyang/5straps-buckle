@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import nodeFs, { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import nodeFs, { appendFileSync, chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -1211,6 +1211,94 @@ describe.skipIf(hostGit === null || process.platform !== 'linux')('an alternates
       alternates('sharing', line)
       expect(await logFrom(root, root, 'sharing')).toMatchObject({ commits: [{ subject: 'history kept inside' }] })
     }
+  })
+})
+
+// `blame.ignoreRevsFile` names a file git blame reads as object ids and dies quoting the first line that is none, so a
+// repository's own config printed the first line of any file the node's user can read, in the error the agent gets, with
+// no read of that file judged (git pack recheck 4, held[1]). No later config value empties the list, so the command line
+// is the guard (`--no-ignore-revs-file`), and a config that names the key refuses git_blame.
+describe('git_blame and a repository config that names a file for it to read', () => {
+  const NAMES_A_FILE = 'names a file for git blame to read'
+  /** The config entries a request carries in its environment, as the pack hands them to git. */
+  const configOf = (request: ProcessRequest) => Array.from({ length: Number(request.environment.GIT_CONFIG_COUNT ?? 0) }, (_, index) => [request.environment[`GIT_CONFIG_KEY_${index}`], request.environment[`GIT_CONFIG_VALUE_${index}`]])
+  /** A git that answers the query as a repository of its own, and the config listing with `keys`. */
+  function listing(keys: string[]) {
+    return vi.fn<ProcessRunner>(async request => {
+      const answer = (stdout: string, exitCode = 0) => ({ exitCode, signal: null, stderr: '', truncated: false, timedOut: false, stdout })
+      if (request.args[0] === 'rev-parse') return answer(`${request.cwd}\n${request.cwd}/.git\n${request.cwd}/.git\n`)
+      if (request.args[0] === 'config') return answer(keys.map(key => `${key}\0`).join(''))
+      return request.args[0] === 'blame' ? answer(`${'a'.repeat(40)} 1 1 1\nauthor t\n\tline\n`) : answer('')
+    })
+  }
+  function repository() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-blame-config-')))
+    mkdirSync(join(root, 'repo', '.git'), { recursive: true })
+    return root
+  }
+  const blameOf = (runProcess: ReturnType<typeof listing>) => runProcess.mock.calls.map(([request]) => request).filter(request => request.args[0] === 'blame')
+
+  it('hands git --no-ignore-revs-file beside --no-textconv, and an empty blame.ignoreRevsFile to the blame alone', async () => {
+    const root = repository()
+    const runProcess = listing(['core.filemode'])
+    await gitPack(root, runProcess).call('git_blame', { repo: 'repo', path: 'a.txt' })
+    const requests = runProcess.mock.calls.map(([request]) => request)
+    const [blame] = blameOf(runProcess)
+    expect(blame!.args.slice(0, 4)).toEqual(['blame', '--line-porcelain', '--no-textconv', '--no-ignore-revs-file'])
+    expect(configOf(blame!)).toContainEqual(['blame.ignoreRevsFile', ''])
+    // The listing runs under the same scope without it: it would name the key in every repository, and refuse them all.
+    for (const request of requests.filter(request => request.args[0] !== 'blame')) expect(configOf(request).map(([key]) => key)).not.toContain('blame.ignoreRevsFile')
+  })
+
+  it.each(['blame.ignorerevsfile', 'Blame.IgnoreRevsFile'])('refuses git_blame, with a constant reason and no blame run, where the config lists %s', async key => {
+    const root = repository()
+    const runProcess = listing(['core.filemode', key])
+    const refusal = await refusalOf(() => gitPack(root, runProcess).call('git_blame', { repo: 'repo', path: 'a.txt' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(NAMES_A_FILE) })
+    expect(String(refusal)).not.toContain(root)
+    expect(runProcess.mock.calls.map(([request]) => request.args[0])).toEqual(['rev-parse', 'config'])
+  })
+
+  it.each([['git_status', {}], ['git_diff', {}], ['git_log', {}], ['git_branch', {}]] as const)('still runs %s where the config lists it, as only blame reads the file', async (tool, args) => {
+    const root = repository()
+    const runProcess = listing(['blame.ignorerevsfile'])
+    await gitPack(root, runProcess).call(tool, { ...args, repo: 'repo' })
+    expect(runProcess.mock.calls.map(([request]) => request.args[0])).toEqual(['rev-parse', 'config', tool.replace('git_', '')])
+  })
+})
+
+describe.skipIf(hostGit === null)('git_blame and a repository config that names a file for it to read, against the installed git', () => {
+  const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' }).toString()
+  /** A committed repository inside the root, and a readable file beside the root that is no revision list. */
+  function repository() {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-blame-live-')))
+    const root = join(parent, 'root')
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    writeFileSync(join(repo, 'a.txt'), 'hello\n')
+    git(repo, 'init', '-q')
+    git(repo, 'add', 'a.txt')
+    git(repo, 'commit', '-qm', 'first')
+    writeFileSync(join(parent, 'outside-notes.txt'), 'neutral-secret-value-one\nsecond line\n')
+    return { parent, root, repo, notes: join(parent, 'outside-notes.txt') }
+  }
+  const blame = (root: string) => gitPack(root, hostRunProcess, null, hostGit!).call('git_blame', { repo: 'repo', path: 'a.txt' })
+
+  it('blames a plain repository', async () => {
+    const { root } = repository()
+    expect(await blame(root)).toMatchObject({ lines: [{ author: 't', text: 'hello' }] })
+  })
+
+  it('refuses a config naming a readable file outside, and shows no line of that file', async () => {
+    const { parent, root, repo, notes } = repository()
+    appendFileSync(join(repo, '.git', 'config'), `[blame]\n\tignoreRevsFile = ${notes}\n`)
+    // The read this closes: git itself dies quoting the first line of the file.
+    expect(() => git(repo, 'blame', '--line-porcelain', '--', 'a.txt')).toThrow(/neutral-secret-value-one/)
+    const refusal = await refusalOf(() => blame(root))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('names a file for git blame to read') })
+    expect(String(refusal)).not.toMatch(/neutral-secret-value-one|second line|outside-notes/)
+    expect(String(refusal)).not.toContain(parent)
   })
 })
 

@@ -9,7 +9,7 @@ import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
-import { configuredFilterPrograms, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
+import { configuredKeyNames, ensureHooksDirectory, filterProgramOverrides, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, type GitConfig } from '../git-isolation.js'
 import { resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -75,6 +75,17 @@ const GIT_VARIABLE = /^GIT_/i
  * whose pointer leads outside the roots is a follow-up.
  */
 const IGNORE_SUBMODULES = '--ignore-submodules=all'
+/**
+ * `blame.ignoreRevsFile` names a file git blame reads as object ids and dies quoting the first line that is none, so a
+ * repository's config could have the first line of any file the node's user can read in the error the agent gets, with
+ * no read of that file judged (git pack recheck 4, held[1]). No config value empties the list, since git keeps it sorted,
+ * so the command line is the guard: `--no-ignore-revs-file` clears it. A config that names the key refuses the call too,
+ * with a constant reason, as only git_blame reads the file. The empty value is set on the command alone, never in the
+ * scope the config listing runs under, which would then name the key in every repository.
+ */
+const BLAME_IGNORE_REVS_KEY = 'blame.ignorerevsfile'
+const BLAME_NAMES_A_FILE = 'The repository config names a file for git blame to read, which Buckle does not judge, so git_blame is not run there'
+const BLAME_CONFIG: GitConfig[] = [{ key: 'blame.ignoreRevsFile', value: '' }]
 const SUBMODULE_CONFIG: GitConfig[] = [
   { key: 'diff.ignoreSubmodules', value: 'all' },
   { key: 'diff.submodule', value: 'short' },
@@ -141,6 +152,10 @@ export function createGitPack(options: GitPackOptions): Pack {
     repo: string
     args: string[] | ((repository: string) => string[])
     refreshesIndex?: boolean
+    /** A config key, lowercase, that refuses this command where the repository lists it, and the constant reason (no path, no value). */
+    refusesKey?: { key: string; reason: string }
+    /** Config for the command alone: the listing runs under the isolation without it. */
+    commandConfig?: GitConfig[]
   }): Promise<string> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
     const args = typeof input.args === 'function' ? input.args(cwd) : input.args
@@ -159,11 +174,12 @@ export function createGitPack(options: GitPackOptions): Pack {
       assertUnchanged()
       return spawnHere(args, config, { ...pinned.environment, ...extra })
     }
-    const keys = await configuredFilterPrograms({
+    const keys = await configuredKeyNames({
       spawn: args => spawnPinned(args, isolation),
       describeFailure: result => describeProcessFailure('git config --list', result),
     })
-    const config = [...isolation, ...filterProgramOverrides(keys)]
+    if (input.refusesKey && keys.some(key => key.toLowerCase() === input.refusesKey!.key)) throw new ToolInputError(input.refusesKey.reason, { code: 'PERMISSION_DENIED' })
+    const config = [...isolation, ...filterProgramOverrides(keys), ...(input.commandConfig ?? [])]
     const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
     const index = readOnly ? privateIndex({ repository, stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
     try {
@@ -242,10 +258,11 @@ export function createGitPack(options: GitPackOptions): Pack {
       effects: input => [{ kind: 'read_path', path: input.repo }, { kind: 'read_path', path: named(input.repo, input.path) }],
       run: async (input, context): Promise<JsonValue> => {
         // git is handed the judged real file, named from the judged real repository it runs in, never the agent's string.
-        const args = ['blame', '--line-porcelain', '--no-textconv']
+        const args = ['blame', '--line-porcelain', '--no-textconv', '--no-ignore-revs-file']
         if (input.startLine) args.push('-L', `${input.startLine},${input.endLine ?? input.startLine}`)
         const file = named(input.repo, input.path)
-        return { lines: parseBlame(await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, [file], context)], ...context })) }
+        const guard = { refusesKey: { key: BLAME_IGNORE_REVS_KEY, reason: BLAME_NAMES_A_FILE }, commandConfig: BLAME_CONFIG }
+        return { lines: parseBlame(await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, [file], context)], ...guard, ...context })) }
       },
     }),
     defineTool(PACK_ID, {

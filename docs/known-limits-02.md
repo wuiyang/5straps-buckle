@@ -44,20 +44,19 @@ its commands write, and the forge pack.
   with no credential-file ask about that file; `git_log` with no path lists the commits of every
   file. Buckle filters neither, as a filtered diff would misreport the tree to the agent: name each
   file to have it judged, or leave `packs.hostGit` off for a repository that tracks a credential file.
-- Two changes to a repository go unseen by the `git` pack: a folder swapped and swapped back while
-  git runs, and a link anywhere inside the git folder, to a file or a folder outside it, such as a
-  pack file, `objects/pack`, a folder of loose objects, or `refs`. Only the work tree, the git
-  folder, the common folder, each `objects` folder, and the stores `objects/info/alternates` names
-  are checked.
-- The `git` pack resolves each alternates line as git does and refuses one through `/proc`,
-  `/dev/fd`, or a link into `/proc/` or `/dev/`, which git's own process reads as other places. It
-  also refuses a repository that borrows from over 32 stores, names over 256 lines, walks over
-  8,192 path names, or reaches places hundreds of folders deep, rather than check it all.
+- The `git` pack checks the work tree, the git folder, the common folder, each `objects` folder,
+  and the stores `objects/info/alternates` names, resolving each line as git does. It refuses a
+  line through `/proc`, `/dev/fd`, or a link into `/proc/` or `/dev/`, which git's own process
+  reads as other places, and a repository that borrows from over 32 stores, names over 256 lines,
+  walks over 8,192 path names, or reaches places hundreds of folders deep. Two changes go unseen:
+  a folder swapped and swapped back while git runs, and a link anywhere inside the git folder, to
+  a file or a folder outside it, such as a pack file, `objects/pack`, a folder of loose objects, or
+  `refs`.
 - The `git` pack shows nothing of a submodule's changes or history, but git still opens its
   `HEAD`, config, and refs through the `.git` pointer in its folder to compare the recorded commit,
-  even where that pointer leads outside the workspace, and an error there can name that place. A
-  planned follow-up will refuse a submodule whose pointer leads outside the workspace and its
-  mounts.
+  even where that pointer leads outside the workspace. A planned follow-up will refuse a submodule
+  whose pointer leads outside the workspace and its mounts. The git tools' error text is git's own
+  and can name a host path, such as the pointer's target; scrubbing it is a later item.
 
 ## Windows shims
 

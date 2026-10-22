@@ -14,7 +14,7 @@ export interface GitConfig {
   value: string
 }
 
-/** As much of a `git config --list` answer as the caller of `configuredFilterPrograms` needs. */
+/** As much of a `git config --list` answer as the caller of `configuredKeyNames` needs. */
 export interface ConfigListing {
   exitCode: number | null
   stdout: string
@@ -71,7 +71,7 @@ export const ISOLATION_ENVIRONMENT: Record<string, string> = {
  *   cost is one entry and the cost of a curl-style spelling one day being honoured is the
  *   credential.
  *
- * Two holes this scope cannot close on its own, because neither is one key:
+ * Three holes this scope cannot close on its own:
  * - `diff.<driver>.command` and `diff.<driver>.textconv` run a program for a path its
  *   `.gitattributes` gives a `diff` attribute, and an empty `diff.external` does not stop
  *   either. A call that generates a patch passes `--no-ext-diff --no-textconv` instead; a call
@@ -80,6 +80,11 @@ export const ISOLATION_ENVIRONMENT: Record<string, string> = {
  *   ones a repository actually defines, which is what the read-only pack does; the forge pack
  *   refuses the repository instead, because emptying a clean filter while staging would commit
  *   content the repository means to convert.
+ * - `blame.ignoreRevsFile` names a file `git blame` opens as a list of object ids, and quotes the first line that is
+ *   none in its error, so the key can print a line of any file the node's user can read. It is a list that no later
+ *   value empties (git keeps it sorted, so an empty entry comes first), and the config listing below would name it in
+ *   every repository if this scope held it. `git_blame` passes `--no-ignore-revs-file`, which does clear the list,
+ *   and refuses a repository whose config names the key (git pack recheck 4, held[1]).
  */
 export function isolationConfig(hooksDirectory: string): GitConfig[] {
   return [
@@ -190,17 +195,17 @@ export function filterProgramOverrides(configuredKeys: string[]): GitConfig[] {
 }
 
 /**
- * Which filter programs this repository defines, asked of git under the isolation scope rather
- * than parsed out of `.git/config`: git resolves an `include` and the `.git/config.worktree` that
- * `extensions.worktreeConfig` turns on, and neither is named in the text of the file a parser
- * reads. The system and global scopes are hidden by `ISOLATION_ENVIRONMENT`, so an operator's own
- * git-lfs configuration is not one of these keys.
+ * Which keys this repository's config holds, asked of git under the isolation scope rather than parsed out of
+ * `.git/config`: git resolves an `include` and the `.git/config.worktree` that `extensions.worktreeConfig` turns on,
+ * and neither is named in the text of the file a parser reads. The section and the key are lowercase, as git lists
+ * them. The system and global scopes are hidden by `ISOLATION_ENVIRONMENT`, so an operator's own git-lfs configuration
+ * is not one of these keys. The pack's own command-line scope is listed too, so a key a caller refuses is never set in it.
  *
- * `spawn` runs git with that scope in force and no repository program in reach. Exit 1 is git
- * saying nothing is configured, which is an answer; a listing that did not complete is a refusal,
- * because an unread key is a program that would run.
+ * `spawn` runs git with that scope in force and no repository program in reach. Exit 1 is git saying nothing is
+ * configured, which is an answer; a listing that did not complete is a refusal, because an unread key is a program that
+ * would run.
  */
-export async function configuredFilterPrograms<Listing extends ConfigListing>(input: {
+export async function configuredKeyNames<Listing extends ConfigListing>(input: {
   spawn: (args: string[]) => Promise<Listing>
   describeFailure: (result: Listing) => string
 }): Promise<string[]> {
@@ -211,7 +216,15 @@ export async function configuredFilterPrograms<Listing extends ConfigListing>(in
   if (result.truncated) {
     throw new ToolExecutionError('This repository has more git config than Buckle reads in one pass, so the tools cannot prove no filter program is defined; the repository is refused rather than one being run', { code: 'GIT_ISOLATION_UNAVAILABLE' })
   }
-  return result.stdout.split('\0').filter(key => FILTER_PROGRAM_KEY.test(key))
+  return result.stdout.split('\0').filter(Boolean)
+}
+
+/** The filter programs this repository defines: the keys `filterProgramOverrides` empties. */
+export async function configuredFilterPrograms<Listing extends ConfigListing>(input: {
+  spawn: (args: string[]) => Promise<Listing>
+  describeFailure: (result: Listing) => string
+}): Promise<string[]> {
+  return (await configuredKeyNames(input)).filter(key => FILTER_PROGRAM_KEY.test(key))
 }
 
 /** Config git reads after every file, so nothing the workspace wrote can override it. */
