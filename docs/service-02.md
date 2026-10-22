@@ -57,7 +57,9 @@ and `install --now` refuse beside it, `status` shows it, and `stop` says to pres
 
 A node with no terminal asks nobody at a prompt: an ask waits for `approvalWaitMs`, then the agent
 gets a token to retry with. Answer from any terminal with `buckle approvals --watch`, which answers
-the workspace holding the current directory, or `--all` for every online one.
+the workspace holding the current directory, or `--all` for every online one. The node logs each
+such ask as `Approval pending`, naming the tool, the rule, the scopes, the workspace, and the
+command that shows the whole action, never its subject.
 
 `buckle serve` typed while the node runs this way starts nothing: it says Buckle is already running
 in service mode, prints that command, and exits 1 ([Troubleshooting](troubleshooting.md)).
@@ -67,7 +69,9 @@ in service mode, prints that command, and exits 1 ([Troubleshooting](troubleshoo
 A node with no terminal writes its own log, `logs/buckle.log` in the state directory, as JSON lines:
 owner-only (folder 700, file 600), rotated at 10 MiB with five earlier files kept. Buckle's file
 tools refuse it, as they refuse the whole state directory, and a process sandbox hides it from
-shell commands.
+shell commands. At a terminal, `buckle service logs` prints each line as `buckle serve` would, in
+your local time with a date line when the day changes; piped, or with `BUCKLE_LOG_FORMAT=json`, it
+prints the lines as stored, in UTC.
 
 `buckle service status` shows the definition and whether it starts at login, the running node's pid
 and address, whether `/health` and `/health/ready` answer, the running version against the

@@ -13,7 +13,7 @@ let root: LoggerRoot | undefined
 
 /**
  * The process's root logger, on the runtime logger: seven levels, child bindings, redaction of
- * secrets and content keys, and a stderr JSON sink (stdout stays for machine output and MCP frames).
+ * secrets and content keys, and a stderr sink, JSON or human lines (stdout stays for machine output and MCP frames).
  */
 export const logger: Logger = delegate(() => rootLogger().logger)
 

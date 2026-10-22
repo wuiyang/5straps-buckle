@@ -1,8 +1,8 @@
 # Troubleshooting
 
 The failures people meet first with Buckle, the approval and sandbox runtime on their machine,
-each with the message it prints and the fix. Buckle logs as JSON lines on stderr; a one-shot
-command prints its reason on one line and exits 1.
+each with the message it prints and the fix. Buckle logs text at terminals, JSON elsewhere; a
+one-shot command prints its reason on one line and exits 1.
 [Refused commands](troubleshooting-02.md), such as a shell wrapper, an interpreter, or a call
 Buckle cannot read whole, continue on the next page.
 
@@ -43,14 +43,14 @@ or `buckle mcp` restarts, and a workspace setting at the workspace's next call. 
 
 ## The port is in use
 
-`buckle serve` exits 1 after a log line like:
+`buckle serve` exits 1 after logging:
 
-```json
-{"level":"fatal","component":"buckle","message":"Buckle failed to start","error":{"code":"EADDRINUSE","message":"listen EADDRINUSE: address already in use 127.0.0.1:4320"}}
+```
+22:22:00 [fatal] Buckle failed to start: Error: listen EADDRINUSE: address already in use 127.0.0.1:4320 (EADDRINUSE)
 ```
 
-Another process holds port 4320, often an earlier `buckle serve`. Stop it, or pick another port
-for this start with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` line in
+Another process holds port 4320, often an earlier `buckle serve`. Stop it, or start on another
+port with `BUCKLE_PORT=4321 buckle serve`, or edit the `BUCKLE_PORT` line in
 `buckle.env`. The shell's value wins over the file's.
 
 ## Buckle is already running in service mode

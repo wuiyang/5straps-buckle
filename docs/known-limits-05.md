@@ -1,8 +1,8 @@
 # Known limits, part five
 
-What running Buckle as a service ([part one](service.md) and [part two](service-02.md)) does not
-yet cover. Buckle is the approval and sandbox runtime that runs an AI agent's tool calls on your
-machine; the [first part](known-limits.md) lists the other limits.
+What running Buckle as a service ([part one](service.md) and [part two](service-02.md)), or at a
+terminal, does not yet cover. Buckle is the approval and sandbox runtime that runs an AI agent's
+tool calls on your machine; the [first part](known-limits.md) lists the other limits.
 
 ## Tested without the service managers
 
@@ -50,3 +50,18 @@ machine; the [first part](known-limits.md) lists the other limits.
   the service's log file; a crash before even that goes to the systemd journal on Linux, to
   `logs/launchd.log` on macOS, which nothing rotates and `buckle service logs` does not show, and
   nowhere on Windows or for `buckle serve --background`.
+
+## A serve at a terminal
+
+- Closing the terminal sends SIGHUP, which Buckle handles on Windows alone. On Linux and macOS a
+  `buckle serve` then stops at once, with any open question unanswered, and runs none of its close
+  steps. Stop it with Ctrl-C instead. This is recorded, not fixed.
+- The terminal's log is for people: local time, a date line when the day changes, one line per
+  request, and the startup and shutdown steps only at `BUCKLE_LOG_LEVEL=debug` or `trace`.
+  Machines read the JSON lines, which Buckle writes wherever stderr is not a terminal and to the
+  service log; `BUCKLE_LOG_FORMAT=json` writes them at a terminal too.
+- A line logged while a question is open is drawn above its prompt only while the prompt fits one
+  row: a long workspace name on a narrow terminal wraps it, and the redraw then lands a row off.
+  A question a one-shot command asks at a terminal is not redrawn at all.
+- Lines logged before the node reads `buckle.env` follow the terminal and the shell's
+  `BUCKLE_LOG_FORMAT`, not the file's.

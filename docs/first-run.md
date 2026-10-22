@@ -160,10 +160,11 @@ Approval required: Writing to /workspace is not yet approved
 At a terminal, the same command shows the whole action and asks in place:
 
 ```
-  1) allow once  2) allow this session  3) always allow  n) deny >
+[my-project] (1) approve once  (2) approve this session  (3) always approve  (n) deny
+[my-project] Your choice:
 ```
 
-Enter, or anything not on offer, denies. Choose `2` and the write goes ahead, as do later writes
-in that directory or below in the same session. Every CLI call shares one
+Enter, or anything not on offer, denies. Choose `2` and the write, and later writes in that
+directory or below, go ahead this session. Every CLI call shares one
 session, so for the CLI that lasts until `buckle grants revoke <id>`. [Approvals](approvals.md)
 covers every question Buckle asks and every way to answer one.

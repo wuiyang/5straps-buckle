@@ -11,7 +11,7 @@ logs and status, upgrades, and removal.
 | `buckle service install` | writes the definition and enables it at login; `--now` starts it too |
 | `buckle service start`, `stop`, `restart` | starts, stops, or restarts the node |
 | `buckle service status` | what is installed and running; `--json` for a script |
-| `buckle service logs` | the last 50 lines of its log; `-n <lines>` for another count, `-f` to follow |
+| `buckle service logs` | the last 50 lines of its log, readable at a terminal and as stored when piped; `-n <lines>` for another count, `-f` to follow |
 | `buckle service uninstall` | stops it and removes the definition; the state directory stays |
 | `buckle serve --background` | starts the node detached from this terminal, once |
 

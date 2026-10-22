@@ -76,8 +76,8 @@ ask whose whole call was not recorded can be denied, never approved.
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, get text pointing to `buckle approvals` |
 
-A question ignores keys until the keyboard rests half a second; `buckle serve` prefixes each line
-`[<name>]`. `buckle approvals`, `--watch`, and `buckle approve` take the
+A question ignores keys until the keyboard rests half a second; [`buckle serve`](approvals-02.md)
+prefixes each line `[<name>]`. `buckle approvals`, `--watch`, and `buckle approve` take the
 [workspace](workspaces.md) holding the current directory, `--workspace <name>`, or every online
 one with `--all`.
 
