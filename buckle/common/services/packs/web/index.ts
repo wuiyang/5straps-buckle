@@ -8,6 +8,9 @@ import { guardedFetch } from './egress.js'
 
 const PACK_ID = 'web'
 const MAX_RESPONSE_BYTES = 2 * 1_048_576
+/** Reads, and time, spent at the cap on learning whether the stream ends there. */
+const CAP_PROBE_READS = 8
+const CAP_PROBE_MS = 1_000
 
 const fetchInput = z.object({
   url: z.url(),
@@ -105,22 +108,57 @@ export function createWebPack(options: WebPackOptions): Pack {
   return { id: PACK_ID, version: '1.0.0', tools, skills: [loadPackSkill(PACK_ID)], unavailableReason: null }
 }
 
+/**
+ * Reads at most MAX_RESPONSE_BYTES and says whether the response held more. A body that ends exactly at the cap is
+ * complete, so at the cap the stream is read on until it ends, or a non-empty chunk shows more.
+ */
 async function readBounded(response: Response): Promise<{ body: string; truncated: boolean }> {
   if (!response.body) return { body: '', truncated: false }
   const reader = response.body.getReader()
   const chunks: Buffer[] = []
   let size = 0
-  let truncated = false
+  let ended = false
+  let truncated = declaredLength(response) > MAX_RESPONSE_BYTES
 
   while (size < MAX_RESPONSE_BYTES) {
     const next = await reader.read()
-    if (next.done) break
+    if (next.done) {
+      ended = true
+      break
+    }
     const slice = next.value.subarray(0, MAX_RESPONSE_BYTES - size)
     if (slice.byteLength < next.value.byteLength) truncated = true
     chunks.push(Buffer.from(slice))
     size += slice.byteLength
   }
+  if (!ended && !truncated) truncated = await moreFollows(reader)
   await reader.cancel().catch(() => undefined)
 
   return { body: Buffer.concat(chunks).toString('utf8'), truncated }
+}
+
+/** The content-length header as a number, or 0 where it is absent or not a plain count. */
+function declaredLength(response: Response): number {
+  const value = response.headers.get('content-length')
+  return value !== null && /^\d+$/.test(value) ? Number(value) : 0
+}
+
+/**
+ * Whether a stream read to the cap holds more: true at the first non-empty chunk, false where it ends. A stream that
+ * neither ends nor sends data within a few reads or CAP_PROBE_MS is not shown complete, so it counts as more.
+ */
+async function moreFollows(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
+  let timer: NodeJS.Timeout | undefined
+  const expired = new Promise<'expired'>(resolve => { timer = setTimeout(resolve, CAP_PROBE_MS, 'expired') })
+  try {
+    for (let reads = 0; reads < CAP_PROBE_READS; reads += 1) {
+      const next = await Promise.race([reader.read(), expired])
+      if (next === 'expired') return true
+      if (next.done) return false
+      if (next.value.byteLength > 0) return true
+    }
+    return true
+  } finally {
+    clearTimeout(timer)
+  }
 }

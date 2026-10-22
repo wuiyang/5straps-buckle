@@ -37,6 +37,11 @@ browser would:
 - A hop to another origin (scheme, host, or port) drops the `authorization`, `cookie`, and
   `proxy-authorization` headers, and a later hop back to the first origin does not restore them.
 
+The result's `body` holds the first 2 MiB of the response at most. `truncated` is set when the
+response held more than that, whether its `content-length` said so or a byte followed the 2 MiB.
+A response of exactly 2 MiB is not truncated. A response that neither ends nor sends more for a
+second after the 2 MiB is not shown complete, so it is marked truncated too.
+
 ## Change history
 
 Tool writes and shell publications are recorded as checkpoints under `history/`, kept up to

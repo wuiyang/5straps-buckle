@@ -23,5 +23,5 @@ covers is refused where it resolves into one.
 
 ## Responses
 
-Bodies are capped at 2 MB with `truncated` set when the cap is hit. `web_search` is only
-present when a Brave Search key is configured on the node.
+Bodies are capped at 2 MiB, with `truncated` set when the response held more than that.
+`web_search` is only present when a Brave Search key is configured on the node.
