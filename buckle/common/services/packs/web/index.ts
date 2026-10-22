@@ -40,7 +40,7 @@ export function createWebPack(options: WebPackOptions): Pack {
   const tools = [
     defineTool(PACK_ID, {
       name: 'web_fetch',
-      description: 'Fetch an HTTP or HTTPS URL. Redirects are followed one hop at a time and re-checked, with a browser\'s rules: a 303 answer (or a 301 or 302 answer to a POST) is followed with GET and no body, and another origin gets no authorization or cookie.',
+      description: 'Fetch an HTTP or HTTPS URL. Redirects are followed one hop at a time and re-checked, with a browser\'s rules: a 303 answer to anything but GET or HEAD, or a 301 or 302 answer to a POST, is followed with GET and no body, and another origin gets no authorization or cookie.',
       risk: 'network',
       tags: ['web', 'network'],
       input: fetchInput,
