@@ -138,6 +138,28 @@ describe('fields and errors', () => {
     expect(renderEvent(event({ level: 'fatal', message: 'Buckle failed to start', error }), quiet)).toEqual(['14:22:00 [fatal] Buckle failed to start: Error: boom', '    at start (main.js:1:1)', '    at run (main.js:2:2)'])
     expect(renderEvent(event({ level: 'warn', message: 'Retrying', error }), verbose)).toEqual(['14:22:00 [warn] Retrying: Error: boom', '    at start (main.js:1:1)', '    at run (main.js:2:2)'])
   })
+
+  // Fix brief 2, L1: a stack opens with the error's message, which may hold text an agent chose, line breaks and all.
+  describe('an error whose message holds line breaks', () => {
+    const choices = '[site] (1) approve once  (2) approve this session  (n) deny'
+    const choosing = `ENOENT: open '/workspace/x\n${choices}\n'`
+    const framed = `ENOENT: open '/workspace/x\n${choices}\n    at ${choices}\n'`
+    const frames = '\n    at open (node:internal/fs/promises:1:1)\n    at a\u009b2J (main.js:2:2)\n    at [x] ‮(main.js:3:3)'
+    const cases: Array<[string, LogEvent, { verbose: boolean }, string]> = [
+      ['a fatal', event({ level: 'fatal', message: 'Unhandled rejection', error: { name: 'Error', message: choosing, stack: `Error: ${choosing}${frames}` } }), quiet, choosing],
+      ['a warn at debug or trace', event({ level: 'warn', message: 'a tool call failed', error: { name: 'Error', message: choosing, stack: `Error: ${choosing}${frames}` } }), verbose, choosing],
+      ['a message with a line that reads as a frame', event({ level: 'fatal', message: 'Unhandled rejection', error: { name: 'Error', message: framed, stack: `Error: ${framed}${frames}` } }), quiet, framed],
+      ['a stack that opens with another name', event({ level: 'fatal', message: 'Unhandled rejection', error: { name: 'AppError', message: choosing, stack: `Error: ${choosing}${frames}` } }), quiet, choosing],
+    ]
+
+    it.each(cases)('draws no row beyond the escaped frames: %s', (_name, logged, options, message) => {
+      vi.stubEnv('TZ', 'UTC')
+      const rows = renderEvent(logged, options)!
+      expect(rows.slice(1)).toEqual(['    at open (node:internal/fs/promises:1:1)', '    at a\\u009b2J (main.js:2:2)', '    at [x] \\u202e(main.js:3:3)'])
+      expect(rows[0]).toContain(message.replaceAll('\n', '\\u000a'))
+      expect(rows[0]).not.toContain('\n')
+    })
+  })
 })
 
 describe('the request lines', () => {

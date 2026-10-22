@@ -40,8 +40,8 @@ interface Shown {
  * One log event as the lines a person reads at a terminal (the CLI display slice, C2), or null where the console leaves
  * it to the JSON: `22:22:00 [info] message key=value`, the time on this device's clock from the event's own timestamp,
  * the level in lower case, and no component column. An error follows the message as `Name: message (code)`, with its
- * stack indented below at fatal, or at every level when verbose; a value of several lines Buckle writes goes on indented
- * lines of its own (ROW_FIELDS), and an object on one line as JSON. Every piece of text passes through printable(), so
+ * stack's frames indented below at fatal, or at every level when verbose; a value of several lines Buckle writes goes on
+ * indented lines of its own (ROW_FIELDS), and an object on one line as JSON. Every piece of text passes through printable(), so
  * the console is never weaker than the JSON line, which leaves DEL, C1, and bidi characters raw. The JSON a machine reads
  * is unchanged.
  */
@@ -159,10 +159,15 @@ function errorLine(error: NormalizedError): string {
   return `${printable(error.name)}${error.message ? `: ${printable(error.message)}` : ''}${error.code === undefined ? '' : ` (${printable(String(error.code))})`}`
 }
 
-/** The stack's frames, indented, without the first line where it only repeats the name and message. */
+/**
+ * The stack's frames, indented. Its first lines are the error's message, which the headline row already shows with its
+ * line breaks escaped: a message holding agent text would otherwise draw rows of its own between an open question's
+ * choices and its prompt (fix brief 2, L1). So the message is cut off the top where the stack opens with it, and only
+ * lines that are frames (`at ...`) stay.
+ */
 function stackLines(error: NormalizedError): string[] {
   if (!error.stack) return []
-  const lines = error.stack.split(/\r?\n/)
-  const frames = lines[0] === `${error.name}${error.message ? `: ${error.message}` : ''}` ? lines.slice(1) : lines
-  return frames.filter(line => line.trim() !== '').map(line => `    ${printable(line.trim())}`)
+  const header = `${error.name}${error.message ? `: ${error.message}` : ''}`
+  const frames = error.stack.startsWith(header) ? error.stack.slice(header.length) : error.stack
+  return frames.split(/\r?\n/).filter(line => /^\s*at /.test(line)).map(line => `    ${printable(line.trim())}`)
 }
