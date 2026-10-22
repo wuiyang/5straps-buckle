@@ -47,6 +47,17 @@ const STORE_LINKS = 40
 const ALTERNATES_DEPTH = 6
 /** The most of one alternates file read; a longer one is refused rather than read in part. */
 const ALTERNATES_BYTES = 64 * 1024
+/**
+ * What one check spends at most, each refused past rather than spent: the object stores it reads, the alternates lines
+ * it resolves, and the names it walks over all of their places. The check runs on the node's single thread three times
+ * a call, so stores each naming every other held it for seconds (git pack recheck 3, held[1]); git itself follows a
+ * handful of stores.
+ */
+const ALTERNATES_STORES = 32
+const ALTERNATES_LINES = 256
+const ALTERNATES_NAMES = 8192
+/** Constant as well: how much a repository borrows is the owner's business. */
+const TOO_MANY_STORES = 'The repository borrows objects from more stores, or through longer paths, than Buckle checks, so git is not run there'
 /** The variables git finds a repository, its objects, its index, or its config by: always the pack's own, never its caller's. */
 const GIT_VARIABLE = /^GIT_/i
 /**
@@ -398,7 +409,8 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
  * it never has here (withOwnGitVariables).
  */
 function assertObjectsInside(repository: Repository, boundary: string, paths: PathView, platform: NodeJS.Platform): void {
-  const reach = { roots: [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary], shares: paths.shares, platform }
+  const budget = alternatesBudget()
+  const reach = { roots: [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary], shares: paths.shares, platform, spendName: budget.name }
   const inside = (landing: Landing): Buffer => {
     if (landing === NO_STORE) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
     if (landing === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
@@ -416,8 +428,25 @@ function assertObjectsInside(repository: Repository, boundary: string, paths: Pa
       const key = store.toString('latin1')
       if (read.has(key)) return []
       read.add(key)
-      return alternatesOf(store).flatMap(line => named(store, line))
+      budget.store()
+      const lines = alternatesOf(store)
+      budget.lines(lines.length)
+      return lines.flatMap(line => named(store, line))
     })
+  }
+}
+
+/** One check's spending: each store read, each line counted before any is resolved, and each name walked. */
+function alternatesBudget(): { store: () => void; lines: (count: number) => void; name: () => void } {
+  const spent = { stores: 0, lines: 0, names: 0 }
+  const spend = (kind: keyof typeof spent, count: number, cap: number) => {
+    spent[kind] += count
+    if (spent[kind] > cap) throw new ToolInputError(TOO_MANY_STORES, { code: 'PERMISSION_DENIED' })
+  }
+  return {
+    store: () => spend('stores', 1, ALTERNATES_STORES),
+    lines: count => spend('lines', count, ALTERNATES_LINES),
+    name: () => spend('names', 1, ALTERNATES_NAMES),
   }
 }
 
@@ -431,9 +460,9 @@ const NO_STORE = Symbol('no store')
  * then checked against the system's own answer (walkedAsTheSystem). On Windows git reads a line as UTF-8, so one that is
  * not is refused, and the text is resolved as every other path is, a store not made yet where it would be made.
  */
-function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Landing {
+function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform; spendName: () => void }): Landing {
   if (input.platform === 'win32') return windowsLanding(place, input)
-  const walked = walkAsGit(place)
+  const walked = walkAsGit(place, input.spendName)
   if (walked.kind === 'no-store') return NO_STORE
   if (!input.roots.some(root => insideBytes(Buffer.from(root), walked.real))) return null
   if (!walkedAsTheSystem(place, walked)) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
@@ -460,15 +489,16 @@ type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; 
  * process, `/proc` (its `self`, `thread-self`, and their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target
  * starts with `/proc/` or `/dev/`: git changes into the work tree first, so `/proc/self/cwd` was the node's working
  * directory here and the work tree there (git pack recheck 3, held[0]). Refused too past STORE_LINKS links, and where
- * any name cannot be read for another reason than being absent.
+ * any name cannot be read for another reason than being absent. Each name taken is spent (`spendName`).
  */
-function walkAsGit(place: Buffer): Walked {
+function walkAsGit(place: Buffer, spendName: () => void): Walked {
   const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
   const resolved: Buffer[] = []
   const pending = namesOf(place).reverse()
   let links = 0
   while (pending.length > 0) {
     const name = pending.pop()!
+    spendName()
     if (name.length === 0 || name.equals(DOT)) continue
     if (name.equals(DOT_DOT)) { resolved.pop(); continue }
     resolved.push(name)

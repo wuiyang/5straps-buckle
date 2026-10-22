@@ -1,11 +1,11 @@
 # Known limits, part two
 
 More of what Buckle, the approval and sandbox runtime on this machine, does not yet handle: the
-programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents, and the
-files a browser command writes. [Known limits](known-limits.md) covers reading commands, credential
-hiding, and paths, [part three](known-limits-03.md) code mode, the command line, and workspaces, and
-[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the
-forge pack.
+programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents.
+[Known limits](known-limits.md) covers reading commands, credential hiding, and paths,
+[part three](known-limits-03.md) code mode, the command line, and workspaces, and
+[part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser and the files
+its commands write, and the forge pack.
 
 ## Where programs come from
 
@@ -49,6 +49,9 @@ forge pack.
   pack file, `objects/pack`, a folder of loose objects, or `refs`. Only the work tree, the git
   folder, the common folder, each `objects` folder, and the stores `objects/info/alternates` names
   are checked.
+- The `git` pack refuses a repository that borrows objects from more than 32 stores, names more
+  than 256 alternates lines, or reaches its stores through more than 8,192 path names in all,
+  rather than check them all.
 - The `git` pack shows nothing of a submodule's changes or history, but git still opens its
   `HEAD`, config, and refs through the `.git` pointer in its folder to compare the recorded commit,
   even where that pointer leads outside the workspace, and an error there can name that place. A
@@ -76,9 +79,3 @@ forge pack.
   language server like `typescript-language-server` or `pyright-langserver`, needs npm's shim or a
   native `.exe` where Buckle looks: on Windows, install it with `npm i -g`. `buckle init` does not
   check language servers, so a refused one shows only when a call needs it.
-
-## Files a browser command writes
-
-- A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
-  file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
-  target, so a per-file ACL on the old one is not kept.

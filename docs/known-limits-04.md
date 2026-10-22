@@ -67,6 +67,9 @@ pack's git tools.
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
   setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
   as [Rings](rings.md), the 5straps control plane for agents, reads that field.
+- A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
+  file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
+  target, so a per-file ACL on the old one is not kept.
 
 ## The forge pack
 

@@ -712,6 +712,71 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     } finally { chmodSync(join(root, 'locked'), 0o755) }
   })
 
+  // Stores each naming every other held the node's single thread for seconds, three times a call, and one file of 32,768
+  // short lines for as long: a check reads at most 32 stores, counts at most 256 lines before resolving any, and walks at
+  // most 8,192 names (git pack recheck 3, held[1]).
+  describe('within what one check reads', () => {
+    const TOO_MANY = 'more stores, or through longer paths, than Buckle checks'
+    /** The refusal, with the system's real path asked at most as often as 256 lines resolved three ways in three checks. */
+    async function refusedCheaply(root: string, repo: string) {
+      const native = vi.spyOn(realpathSync, 'native')
+      try {
+        const refusal = await refusalOf(() => gitPack(root, answeringAt(plain(repo))).call('git_log', { repo: 'repo' }))
+        expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(TOO_MANY) })
+        expect(String(refusal)).not.toContain(root)
+        expect(native.mock.calls.length).toBeLessThanOrEqual(256 * 3 * 3)
+      } finally { native.mockRestore() }
+    }
+
+    it('refuses 70 stores, each named by the repository and each naming the next', async () => {
+      const { root, repo } = workspace()
+      const stores = Array.from({ length: 70 }, (_, index) => join(root, 'stores', String(index)))
+      for (const store of stores) mkdirSync(join(store, 'info'), { recursive: true })
+      stores.forEach((store, index) => { if (index < stores.length - 1) alternates(store, stores[index + 1]!) })
+      alternates(join(repo, '.git', 'objects'), ...stores)
+      await refusedCheaply(root, repo)
+    })
+
+    it('refuses one alternates file of 32,768 lines of `.`, at its 64 KiB cap', async () => {
+      const { root, repo } = workspace()
+      writeFileSync(join(repo, '.git', 'objects', 'info', 'alternates'), '.\n'.repeat(32_768))
+      await refusedCheaply(root, repo)
+    })
+
+    it('refuses a line through 40 links, each holding long runs of `..`, past the names one check walks', async () => {
+      const { root, repo } = workspace()
+      mkdirSync(join(root, 'x'))
+      // Short targets, as some file systems hold a link of at most 1 KiB.
+      for (let index = 0; index < 40; index++) symlinkSync(`${'x/../'.repeat(190)}${index === 39 ? 'shared' : `hop-${index + 1}`}`, join(root, `hop-${index}`))
+      alternates(join(repo, '.git', 'objects'), join(root, 'hop-0'))
+      await refusedCheaply(root, repo)
+    })
+
+    it('runs at the caps and refuses one past each: 31 stores named, then 32, and 256 lines, then 257', async () => {
+      const { root, repo } = workspace()
+      const stores = Array.from({ length: 32 }, (_, index) => join(root, 'stores', String(index)))
+      for (const store of stores) mkdirSync(join(store, 'info'), { recursive: true })
+      const runs = answeringAt(plain(repo))
+      for (const [lines, outcome] of [[stores.slice(0, 31), 'runs'], [stores, 'refused'], [Array(256).fill('.'), 'runs'], [Array(257).fill('.'), 'refused']] as const) {
+        alternates(join(repo, '.git', 'objects'), ...lines)
+        const refusal = await refusalOf(() => gitPack(root, runs).call('git_log', { repo: 'repo' }))
+        if (outcome === 'runs') expect(refusal).toBeNull()
+        else expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(TOO_MANY) })
+      }
+      expect(logOf(runs)).toHaveLength(2)
+    })
+
+    it.each([1, 2, 3])('runs a repository borrowing from %i stores inside', async count => {
+      const { root, repo } = workspace()
+      const stores = Array.from({ length: count }, (_, index) => join(root, 'stores', String(index)))
+      for (const store of stores) mkdirSync(join(store, 'info'), { recursive: true })
+      alternates(join(repo, '.git', 'objects'), ...stores)
+      const runs = answeringAt(plain(repo))
+      await gitPack(root, runs).call('git_log', { repo: 'repo' })
+      expect(logOf(runs)).toHaveLength(1)
+    })
+  })
+
   // Each place is walked name by name as git walks it, following as many links as Linux does and no more.
   it('runs a line through a chain of 40 links inside, and refuses one through 41 with the constant reason', async () => {
     const { root, repo, outside } = workspace()
