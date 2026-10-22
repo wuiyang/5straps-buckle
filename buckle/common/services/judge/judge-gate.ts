@@ -10,7 +10,7 @@ import type { PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import { logger } from '../../runtime/log.js'
 import type { AskCause, PermissionDecision } from '../../domain/permission/decision.js'
-import { floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
+import { CODE_CHANGED_REASON, type CodeBinding, floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
 import { FLOOR_WARNING, type JudgeNote, type QuickNote } from '../../domain/approval-instruction.js'
 import { clippedReasoning, clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
@@ -50,6 +50,10 @@ export interface JudgedAsk {
   screened?: true
   /** The Socket lookup for its packages failed, so a verdict it reached was used and not kept (fix brief 2, H11). */
   socket?: 'unavailable'
+  /** What a pass binds to: the code the thorough stage rated, read again before the program starts (fix brief 9, B31). */
+  bound?: CodeBinding
+  /** The code a pass rated changed before the program started, so the pass ran nothing and a person decides (B31). */
+  changed?: true
 }
 
 /** The part of a call the decision AI reads: its effects, the tool and arguments, and the caller's signal. */
@@ -75,6 +79,12 @@ export interface JudgeGate {
   screen(call: CallView & { asked: ReadonlySet<string> }): Promise<JudgedAsk[]>
   /** On the owner's request: every stage that applies to one waiting ask, or to an allowed command flagged earlier (`ask` null). */
   rateOnRequest(call: CallView & { subject: string; ask: Ask | null }): Promise<JudgedAsk | null>
+  /**
+   * Whether a pass still holds for one command of a call (fix brief 9, B31): what the stages would be shown of it now
+   * keys as `binding` says the rated code did, its files read again through the view. Asked under the write lock just
+   * before the program starts, and when a retry spends a once the thorough stage gave on request.
+   */
+  holds(binding: CodeBinding, call: CallView & { subject: string }): boolean
 }
 
 export interface JudgeSettings {
@@ -308,6 +318,11 @@ export function createJudgeGate(input: {
       : { subject, input: null, thorough: { provider: settings.provider, model: settings.model, result } }
   }
 
+  /** The key a pass binds to: the thorough stage's cache key of what it is shown (fix brief 9, B31). */
+  function bindingOf(asked: JudgeInput, allowed: boolean): CodeBinding {
+    return { key: judgeCacheKey({ provider: settings.provider, model: settings.model, policyUpdatedAt: input.policy.updatedAt, asked }), allowed }
+  }
+
   /** The routing of addendum 2 B, as addendum 3 changes it, for one ask in automated mode. */
   async function route(ask: Ask, effect: Exec, call: CallView): Promise<JudgedAsk> {
     const quickFirst = quickReady && quickCovers(settings.quick, ask)
@@ -323,7 +338,10 @@ export function createJudgeGate(input: {
     // Any other answer goes on to the thorough stage where it applies, an interpreter ask, and otherwise to a person.
     if (thoroughReady && judgeable(ask)) {
       judged.thorough = await thorough(command, call.signal)
-      if (judgePasses(judged.thorough.result)) judged.passedBy = 'thorough'
+      if (judgePasses(judged.thorough.result)) {
+        judged.passedBy = 'thorough'
+        judged.bound = bindingOf(asked, false)
+      }
     }
     return finished(judged, command)
   }
@@ -371,7 +389,17 @@ export function createJudgeGate(input: {
       // verdict approves (addendum 3 R1), and never a floor ask (R2).
       const [quickRating, thoroughRating] = await Promise.all([quickApplies ? quick(command, call.signal) : undefined, thoroughApplies ? thorough(command, call.signal) : undefined])
       const passedBy = thoroughRating && judgePasses(thoroughRating.result) && !floorCause(call.ask?.cause) ? 'thorough' as const : undefined
-      return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy } : {}) }, command)
+      return finished({ subject: call.subject, ...(call.ask?.cause ? { cause: call.ask.cause } : {}), input: asked, ...(quickRating ? { quick: quickRating } : {}), ...(thoroughRating ? { thorough: thoroughRating } : {}), ...(passedBy ? { passedBy, bound: bindingOf(asked, call.ask === null) } : {}) }, command)
+    },
+    holds(binding, call) {
+      const effect = execOf(call.effects, call.subject)
+      if (!effect) return false
+      try {
+        const asked = shown(effect, call, binding.allowed, null)
+        return typeof asked !== 'string' && bindingOf(asked, binding.allowed).key === binding.key
+      } catch {
+        return false
+      }
     },
   }
 }
@@ -468,6 +496,8 @@ export function judgeNoteOf(judged: JudgedAsk): JudgeNote {
   const quick = judged.quick ? quickNoteOf(judged.quick) : undefined
   const warned = floorCause(judged.cause) ? FLOOR_NOTE : {}
   const beside = quick ? { quick, ...warned } : warned
+  // A verdict on code that changed since is no rating of the code that would run (fix brief 9, B31).
+  if (judged.changed) return { subject, unavailable: CODE_CHANGED_REASON, ...beside }
   if (judged.thorough) {
     const { result, model } = judged.thorough
     return result.kind === 'verdict'
@@ -490,6 +520,7 @@ function quickNoteOf(rating: StageRating<QuickResult>): QuickNote {
 export function withJudgeReason(ask: Ask, judged: readonly JudgedAsk[]): Ask {
   const rating = ask.rule === 'destructive_command' && ask.cause !== 'judge' ? judged.find(item => item.subject === ask.subject && !item.screened) : undefined
   if (!rating) return ask
+  if (rating.changed) return { ...ask, reason: `${ask.reason}; ${CODE_CHANGED_REASON}` }
   const result = rating.thorough?.result ?? rating.quick?.result
   if (!result) return ask
   return { ...ask, reason: `${ask.reason}; ${result.kind === 'verdict' ? `the decision AI rated it ${result.level}` : 'the decision AI gave no verdict'}` }
@@ -498,7 +529,7 @@ export function withJudgeReason(ask: Ask, judged: readonly JudgedAsk[]): Ask {
 /** A gate for a workspace whose decision AI is off: it rates nothing, and reads no setting, file, or cache. */
 export const JUDGE_OFF: JudgeGate = {
   mode: 'off', ready: false, screens: false, covers: () => false,
-  rate: () => Promise.resolve([]), screen: () => Promise.resolve([]), rateOnRequest: () => Promise.resolve(null),
+  rate: () => Promise.resolve([]), screen: () => Promise.resolve([]), rateOnRequest: () => Promise.resolve(null), holds: () => false,
 }
 
 /**
@@ -515,7 +546,7 @@ export function judgeAuditOf(judged: readonly JudgedAsk[]): JudgeAudit | undefin
 /** One rating as an audit entry keeps it; `passed` says whether it ran or approved the call (on request: whether the owner's command approved it). */
 export function auditOf(item: JudgedAsk, passed = item.passedBy !== undefined): JudgeAudit {
   const quick = item.quick ? quickAuditOf(item.quick) : undefined
-  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}), ...(item.socket ? { socket: item.socket } : {}) }
+  const marks = { ...(item.passedBy ? { passedBy: item.passedBy } : {}), ...(item.flagged ? { flagged: true as const } : {}), ...(item.screened ? { screened: true as const } : {}), ...(item.socket ? { socket: item.socket } : {}), ...(item.changed ? { changed: true as const } : {}) }
   if (item.thorough) {
     const { provider, model, result } = item.thorough
     const beside = { ...(quick ? { quick } : {}), ...marks }

@@ -592,7 +592,8 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
     return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
   }
   const decidedBy = `judge:${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`.slice(0, 200)
-  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', decidedBy })
+  // The once binds to the code the thorough stage rated: a retry after that code changed does not spend it (fix brief 9, B31).
+  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
   if (!answered.ok) return { ...fail(`${answered.reason} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
   process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's ${judged.passedBy} stage's safe verdict, as you asked.\n`)
   return { exitCode: 0, detail: `judge ${token} safe, approved once`, judge: auditOf(judged, true) }

@@ -6,6 +6,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, renameSync
 import { dirname, join, relative, resolve } from 'pathe'
 import { setMode } from '../../adapters/file-modes.js'
 import { isInside, isInsideAny, isPlainName, parentDirectory } from '../../domain/paths.js'
+import { CodeChangedError } from '../../domain/permission/judged.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
@@ -26,6 +27,8 @@ interface ShellRunInput<T> {
   readOnlyPaths?: string[]
   readOnlyOverlayPaths?: string[]
   details: Omit<HistoryInput, 'roots'>
+  /** Called under the workspace lock once the copy is taken, before the program runs; a throw runs nothing (ToolContext.beginRun). */
+  beforeRun?: () => void
   execute: (copyRoot: string) => Promise<T>
 }
 
@@ -54,6 +57,9 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     const copied = relocate(before, input.sourceRoot, copyRoot)
     applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
     writeFileSync(join(directory, 'before.json'), JSON.stringify(before), { mode: 0o600 })
+    // The copy is the code the program runs, taken under the lock: a pass of the decision AI is confirmed against it here,
+    // so no write lands between the check and the run (fix brief 9, B31).
+    input.beforeRun?.()
     record('running')
     started = true
     const result = await input.execute(copyRoot)
@@ -66,6 +72,11 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     }
     return result
   } catch (error) {
+    // The code a pass rated changed: nothing ran, so the private copy goes and the reason stays the caller's to answer.
+    if (!started && error instanceof CodeChangedError) {
+      removePrivateWorkspace(directory)
+      throw error
+    }
     if (!started) {
       logger.error('Isolated shell preparation failed', { id, directory, message: error instanceof Error ? error.message : 'Unknown error' })
       removePrivateWorkspace(directory)

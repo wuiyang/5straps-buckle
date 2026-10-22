@@ -1,6 +1,7 @@
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CodeChangedError } from '../common/domain/permission/judged.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
@@ -294,5 +295,24 @@ describe('owner retained workspace recovery', () => {
     writeFileSync(join(isolation.directory, record.id, 'run.json'), JSON.stringify({ ...record, sourceRoot: '/outside' }))
     await expect(recovery.discard(record.id)).rejects.toThrow('does not belong')
     expect(existsSync(join(isolation.directory, record.id))).toBe(true)
+  })
+})
+
+describe('the hook a pass of the decision AI is confirmed in (fix brief 9, B31)', () => {
+  it('is called once the copy is taken, before the program runs', async () => {
+    const { sourceRoot, input, isolation } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'rated')
+    const order: string[] = []
+    await runIsolatedShell({ ...input, beforeRun: () => { order.push(`confirm ${readdirSync(isolation.directory).length}`) }, execute: async copy => { order.push(readFileSync(join(copy, 'file'), 'utf8')) } })
+    expect(order).toEqual(['confirm 1', 'rated'])
+  })
+
+  it('stops the run where the hook refuses, with its own error, and removes the private copy', async () => {
+    const { sourceRoot, input, isolation } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'x')
+    const execute = vi.fn(async () => {})
+    await expect(runIsolatedShell({ ...input, beforeRun: () => { throw new CodeChangedError() }, execute })).rejects.toBeInstanceOf(CodeChangedError)
+    expect(execute).not.toHaveBeenCalled()
+    expect(readdirSync(isolation.directory)).toEqual([])
   })
 })

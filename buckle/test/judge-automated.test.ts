@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { describeAsk } from '../common/domain/approval-instruction.js'
+import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { judgeCachePath } from '../common/services/judge/judge-cache.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
@@ -90,6 +91,66 @@ describe('a safe verdict at 0.8 or above', () => {
     expect(response).toMatchObject({ outcome: 'ok' })
     expect(entry.approvedBy).toEqual(['write_scope', 'judge'])
     expect(entry.grantUses).toEqual([{ rule: 'write_scope', scope: 'always' }])
+  })
+})
+
+describe('a pass bound to the code it rated (fix brief 9, B31)', () => {
+  // The thorough stage takes seconds, and a write in that time made the call run code no stage saw: the files are read
+  // again under the write lock just before the program starts, and a pass whose code changed sends the ask to a person.
+  const rated = ['import helper\nprint(helper.VALUE)\n', 'VALUE = 1\n']
+
+  it('does not run a call whose file changed after the rating, and asks a person with the reason', async () => {
+    const config = node()
+    const judge = fakeJudge(() => { writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = 2\n'); return verdict('safe', 0.97) })
+    const runtime = await runtimeOf(config, judge)
+    const { response, entry, ran } = await call(runtime, 'python3', ['job.py'])
+    expect(judge.shown[0]!.files.map(file => file.content)).toEqual(rated)
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    if (response.outcome === 'approval_required') expect(response.approvals).toEqual([expect.objectContaining({ rule: 'destructive_command', subject: expect.stringMatching(/^python3 job\.py/), reason: expect.stringContaining(CODE_CHANGED_REASON) })])
+    expect(entry.approvedBy ?? []).not.toContain('judge')
+    expect(entry.judge).toMatchObject({ level: 'safe', passed: false, changed: true })
+    expect(entry.judge).not.toHaveProperty('passedBy')
+    expect(runtime.approvalService.listing().filter(item => item.subject.startsWith('python3 job.py'))).toHaveLength(1)
+  })
+
+  it('runs an unchanged call once, a rewrite to the same bytes included', async () => {
+    const config = node()
+    const judge = fakeJudge(() => { writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = 1\n'); return verdict('safe', 0.97) })
+    const runtime = await runtimeOf(config, judge)
+    const { response, entry, ran } = await call(runtime, 'python3', ['job.py'])
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(ran).toBe(true)
+    expect(entry.judge).toMatchObject({ passed: true, passedBy: 'thorough' })
+  })
+
+  it('confirms through the run hook for a tool that takes the write lock itself, before the program starts', async () => {
+    const config = node()
+    const judge = fakeJudge(() => { writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = 2\n'); return verdict('safe', 0.97) })
+    const runtime = await runtimeOf(config, judge)
+    const started = vi.fn()
+    const execute = vi.fn(async (context: { beginRun?: () => void }) => { context.beginRun?.(); started(); return 'executed' })
+    vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['job.py'] }], execute, managesHistory: true })
+    const response = await runtime.invoke({ request: { requestId: 'hooked', approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'judge', approvalWait: { mode: 'none' } })
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(execute).toHaveBeenCalledTimes(1)
+    expect(started).not.toHaveBeenCalled()
+  })
+
+  it('never runs the changed code through the real shell, and runs the rated code', async () => {
+    const config = node()
+    let rewrite = true
+    const judge = fakeJudge(() => { if (rewrite) writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = "planted"\n'); return verdict('safe', 0.97) })
+    const runtime = await runtimeOf(config, judge)
+    await runtime.grants.grant({ sessionId: 'judge', rule: 'write_scope', subject: config.cwd, scope: 'always' })
+    const send = (requestId: string) => runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'shell_exec', args: { command: 'python3', args: ['job.py'] } }, sessionId: 'judge', approvalWait: { mode: 'none' } })
+    const changed = await send('real-changed')
+    expect(changed).toMatchObject({ outcome: 'approval_required' })
+    expect(JSON.stringify(changed)).not.toContain('planted')
+    rewrite = false
+    writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = 1\n')
+    const kept = await send('real-kept')
+    expect(kept).toMatchObject({ outcome: 'ok', output: { stdout: '1\n' } })
   })
 })
 

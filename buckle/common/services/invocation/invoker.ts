@@ -12,7 +12,7 @@ import type { GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import { passKey, QUICK_FLAG_REASON, withFlagged, withJudged } from '../../domain/permission/judged.js'
+import { CODE_CHANGED_REASON, CodeChangedError, JUDGE, passKey, QUICK_FLAG_REASON, withFlagged, withJudged, type CodeBinding } from '../../domain/permission/judged.js'
 import { announcePass, judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
@@ -150,8 +150,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const key = executionKey({ request, sessionId })
       // The key's one execution, once the gate claims it; settled below whatever happens after.
       const held: { claim?: ExecutionClaim } = {}
-      // What the decision AI said of the call's command asks, for its audit entry (D91).
-      const judgment: { judged: JudgedAsk[] } = { judged: [] }
+      // What the decision AI said of the call's command asks, for its audit entry (D91), and the onces the thorough stage
+      // gave on request that this call may spend, with the subjects whose bound code changed since (fix brief 9, B31).
+      const judgment: Judgment = { judged: [], codes: [], stale: new Set() }
       let replayed = false
       let ran = false
       // The caller leaving or the runtime shutting down: either stops a running tool.
@@ -199,14 +200,38 @@ export function createInvoker(options: InvokerOptions): Invoker {
           await auditUses(gate.approvedBy)
           // The folder may have changed while the call waited for its approval: nothing runs where it lands now.
           options.checkFolder?.()
-          const execute = () => {
+          // The tool begins to run once. A pass of the decision AI, and a once its thorough stage gave on request, binds to
+          // the code it rated: that code is read again under the write lock, just before the program starts, and where it
+          // changed nothing runs and a person decides (fix brief 9, B31). A tool that takes the lock itself, the isolated
+          // shell, is handed the check to call once its copy of the workspace is taken.
+          let begun = false
+          const markStarted = () => {
+            if (begun) return
+            begun = true
             owned.started()
             ran = true
             onExecute?.()
+          }
+          const beginRun = () => {
+            if (begun) return
+            const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args } })
+            if (changed.length > 0) throw new CodeChangedError(changed)
+            markStarted()
+          }
+          const execute = async () => {
+            if (!prepared.managesHistory) beginRun()
             // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
             const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
             const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
-            return executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting, via })
+            try {
+              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}) })
+              markStarted()
+              return output
+            } catch (error) {
+              // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check.
+              if (!(error instanceof CodeChangedError)) markStarted()
+              throw error
+            }
           }
           const writes = effects.filter(effect => effect.kind === 'write_path')
           const roots = [...options.historyRoots?.() ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
@@ -226,6 +251,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
             meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
           }
         } catch (error) {
+          // The code a pass rated changed before the program started: nothing ran, so the claim is settled unstarted (a
+          // re-send asks again) and the asks the passes lifted go to a person with the reason (fix brief 9, B31).
+          if (error instanceof CodeChangedError && !ran && !options.shutdown?.aborted) {
+            const after = await askAfterChange({ options, request, sessionId, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}) })
+            const lifted = new Set(error.subjects.map(subject => `${JUDGE}:destructive_command:${subject}`))
+            gate = { ...gate, asked: after.asked, approvedBy: gate.approvedBy.filter(item => !lifted.has(item)) }
+            return after.response
+          }
           // A script whose call needs a person answers as that call would (owner decision D82, point 6): the asks are the
           // nested call's own, recorded whole by it, and the outer call is audited as approval_required.
           if (error instanceof NestedApprovalRequired && !options.shutdown?.aborted) {
@@ -531,7 +564,7 @@ async function clearPermissions(input: {
   holdUntil?: number
   key: ExecutionKey
   held: { claim?: ExecutionClaim }
-  judgment: { judged: JudgedAsk[] }
+  judgment: Judgment
   via?: NestedOrigin
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects, held } = input
@@ -546,6 +579,14 @@ async function clearPermissions(input: {
   const evaluate = (tokens: string[]) => options.approvals.evaluate({
     tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
     spent: (deciders) => { decidedBy = deciders },
+    // A once the thorough stage gave on request is spent only while the code it rated is the code this call would run;
+    // the run reads it again before the program starts (fix brief 9, B31).
+    holds: (subject, code) => {
+      const holds = subject.rule === 'destructive_command' && (options.judge?.holds(code, { effects, tool: request.tool, args: request.args, subject: subject.subject }) ?? false)
+      if (!holds) input.judgment.stale.add(subject.subject)
+      else if (!input.judgment.codes.some(item => item.subject === subject.subject && item.binding.key === code.key)) input.judgment.codes.push({ subject: subject.subject, binding: code })
+      return holds
+    },
     check: subjects => {
       // The registry's last check carries the approvals the call uses, a superset of earlier ones.
       consumed = subjects
@@ -614,7 +655,7 @@ async function clearPermissions(input: {
   const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   const waited = await options.approvalService.request({
-    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withJudgeReason(ask, input.judgment.judged)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
+    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), fingerprint: input.key.fingerprint, call,
   })
   // A re-send joined to asks already answered has none still waiting: it is told what it asked.
@@ -646,6 +687,77 @@ async function clearPermissions(input: {
   // Nobody denied it: the asks expired, were withdrawn, or another call spent the `once`. Only a
   // recorded denial is reported as one (review M1).
   return { response: failed(request, UNANSWERED), asked, approvedBy: [...new Set(approvedBy)] }
+}
+
+/**
+ * What a call learns of the decision AI as its permissions clear (D91): the ratings for its audit entry, the onces the
+ * thorough stage gave on request that it may spend with the code each binds to, and the subjects of such onces whose code
+ * changed since, which a person then decides (fix brief 9, B31).
+ */
+interface Judgment {
+  judged: JudgedAsk[]
+  codes: Array<{ subject: string; binding: CodeBinding }>
+  stale: Set<string>
+}
+
+/**
+ * The commands whose rated code is no longer the code the call would run (fix brief 9, B31): each a stage passed in
+ * automated mode, and each with a once the thorough stage gave on request, read again through the gate's view. A pass
+ * with no binding fails closed.
+ */
+function changedCode(input: { options: InvokerOptions; judgment: Judgment; call: { effects: readonly ResolvedEffect[]; tool: string; args: InvokeRequest['args'] } }): string[] {
+  const gate = input.options.judge
+  const passes = input.judgment.judged.filter(item => item.passedBy !== undefined)
+  const bound = [...passes.map(item => ({ subject: item.subject, binding: item.bound })), ...input.judgment.codes]
+  const changed = bound.filter(({ subject, binding }) => binding === undefined || !(gate?.holds(binding, { ...input.call, subject }) ?? false))
+  return [...new Set(changed.map(item => item.subject))]
+}
+
+/** An ask whose once the thorough stage gave on request no longer covers the code: its reason says so (fix brief 9, B31). */
+function withStaleReason<A extends { subject: string; reason: string }>(ask: A, stale: ReadonlySet<string>): A {
+  return stale.has(ask.subject) && !ask.reason.includes(CODE_CHANGED_REASON) ? { ...ask, reason: `${ask.reason}; ${CODE_CHANGED_REASON}` } : ask
+}
+
+/** What a call answers when the code a pass rated changed and no ask is left to put to a person. */
+const CODE_CHANGED = { code: 'CODE_CHANGED_AFTER_RATING', message: 'The code changed after the decision AI rated it, so this call did not run; send it again and it is asked about anew', retryable: true }
+
+/**
+ * The asks a pass lifted, put to a person once the code it rated changed before the program started (fix brief 9, B31):
+ * each changed command's rating stays as it was with its pass taken away (`changed`), and its ask, as the rules make it
+ * with no grant spent, waits with the reason, answered at once with approval_required, whatever wait the call asked for,
+ * since nothing runs in this call. A re-send with the token runs once a person approves it.
+ */
+async function askAfterChange(input: {
+  options: InvokerOptions
+  request: InvokeRequest
+  sessionId: string
+  effects: ResolvedEffect[]
+  judgment: Judgment
+  subjects: readonly string[]
+  key: ExecutionKey
+  signal?: AbortSignal
+  isCancel?: (reason: unknown) => boolean
+  via?: NestedOrigin
+}): Promise<{ response: InvokeResponse; asked: string[] }> {
+  const { options, request, sessionId, effects, judgment } = input
+  const changed = new Set(input.subjects)
+  judgment.judged = judgment.judged.map(item => {
+    if (!changed.has(item.subject) || item.passedBy === undefined) return item
+    const { passedBy: _passedBy, bound: _bound, ...rest } = item
+    return { ...rest, changed: true as const }
+  })
+  for (const subject of changed) judgment.stale.add(subject)
+  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }) })
+  const asks = outcome.kind === 'ask' ? outcome.asks.filter(ask => ask.rule === 'destructive_command' && changed.has(ask.subject)) : []
+  if (asks.length === 0) return { response: failed(request, CODE_CHANGED), asked: [] }
+  const cwd = options.paths.displayRoot
+  const judge = judgeNotes({ gate: options.judge, asks, judged: judgment.judged })
+  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
+  const waited = await options.approvalService.request({
+    sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: asks.map(ask => withStaleReason(withJudgeReason(ask, judgment.judged), judgment.stale)),
+    ...(input.signal ? { signal: input.signal } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait: { mode: 'none' }, fingerprint: input.key.fingerprint, call,
+  })
+  return { response: { requestId: request.requestId, outcome: 'approval_required', approvals: waited.approvals }, asked: waited.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
 }
 
 /** How a re-send of a call stopped by an audit failure is answered: retryable, so it runs once the storage is repaired. */
@@ -707,6 +819,8 @@ async function executeWithTimeout(input: {
   nesting?: Nesting
   /** For a call a script made: the call that sent the script, which its history stage falls back to. */
   via?: NestedOrigin
+  /** For a tool that takes the write lock itself: the check it calls just before its program starts (ToolContext.beginRun). */
+  beginRun?: () => void
 }): Promise<JsonValue> {
   const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
   const judgedReads = judged('read_path')
@@ -729,6 +843,7 @@ async function executeWithTimeout(input: {
       historyStage: historyStage(input.request, input.via),
       timeoutMs,
       signal,
+      ...(input.beginRun ? { beginRun: input.beginRun } : {}),
       ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false

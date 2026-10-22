@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FLOOR_WARNING } from '../common/domain/approval-instruction.js'
+import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
@@ -96,7 +97,7 @@ async function node(input: { url: string; judge?: string; quickUrl?: string; qui
   const { runtime } = await byName(manager, 'site')
   // The folder's writes are granted, so the call's one ask is the interpreter's.
   await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: folder, scope: 'always' })
-  return { buckle, runtime, manager }
+  return { buckle, runtime, manager, folder }
 }
 
 async function ask(runtime: BuckleRuntime, requestId = 'on-request-1', call: { command: string; args: string[] } = { command: 'python3', args: ['job.py'] }) {
@@ -132,6 +133,23 @@ describe('buckle approvals judge', () => {
     const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
     expect(result?.decidedBy).toEqual(['judge:thorough:openai-compatible:GPT-6-luna'])
     expect(shown.out + approved.out).not.toContain(KEY)
+    await manager.close()
+  })
+
+  it('leaves the once unspent where the code changed after the rating, and asks again with the reason (fix brief 9, B31)', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.91 })
+    const { buckle, runtime, manager, folder } = await node({ url: judge.url })
+    const { request, token } = await ask(runtime)
+    expect((await buckle(['approvals', 'judge', token, '--approve-if-safe'])).out).toContain(`Approved ${token} once`)
+    writeFileSync(join(folder, 'job.py'), 'print("planted")\n')
+    const changed = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent', approvalWait: { mode: 'none' } })
+    expect(changed).toMatchObject({ outcome: 'approval_required' })
+    if (changed.outcome === 'approval_required') expect(changed.approvals).toEqual([expect.objectContaining({ rule: 'destructive_command', reason: expect.stringContaining(CODE_CHANGED_REASON) })])
+    expect(runtime.actions.read(100).some(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome === 'ok')).toBe(false)
+    // The once still holds for the code it was given for.
+    writeFileSync(join(folder, 'job.py'), 'print(1)\n')
+    const kept = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent', approvalWait: { mode: 'none' } })
+    expect(kept).toMatchObject({ outcome: 'ok', output: { stdout: '1\n' } })
     await manager.close()
   })
 

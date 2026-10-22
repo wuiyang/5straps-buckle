@@ -7,6 +7,7 @@ import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, App
 import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
+import type { CodeBinding } from '../../domain/permission/judged.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
 import { FLOOR_WARNING, RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
@@ -86,9 +87,11 @@ const decidedBy = { decidedBy: z.string().optional() }
 // call inline, in `call`.
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional() })
+// code: the code a once the decision AI's thorough stage gave on request binds to (fix brief 9, B31).
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
   sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(), ...fingerprint, ...decidedBy,
+  code: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/), allowed: z.boolean() }).optional(),
 })
 const resolvedSchema = z.object({
   workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
@@ -308,6 +311,8 @@ export interface ResolveOptions {
   decidedBy?: string
   /** Authenticated device proof deadline; the body never supplies it. */
   consumeNotAfter?: number
+  /** The code an approved `once` binds to: the decision AI's thorough stage approved it on request (fix brief 9, B31). */
+  code?: CodeBinding
 }
 
 /**
@@ -350,6 +355,11 @@ export interface ApprovalRegistry {
     admit?: () => boolean
     /** Told, when the call clears, who decided each `once` it spent (key:<fingerprint>), for its audit entry. */
     spent?: (decidedBy: string[]) => void
+    /**
+     * Whether the code a `once` binds to (ResolveOptions.code) is still the code the call would run; a `once` it does not
+     * hold for is left unspent, as is every bound one where none is given (fix brief 9, B31).
+     */
+    holds?: (subject: GrantSubject, code: CodeBinding) => boolean
   }): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
@@ -633,6 +643,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
         const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
+        const coded = options.code === undefined ? {} : { code: options.code }
         // A once covers the call that asked and no other, whichever route decided it: the terminal,
         // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
         // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
@@ -656,7 +667,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           ...(decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(options.consumeNotAfter).toISOString() } : {}),
         })
         if (decision.approved) {
-          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider })
+          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
           else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
           // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
           logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
@@ -667,7 +678,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
-    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent }) {
+    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent, holds }) {
       // An ordinary call carries no token and the rules settle it without a once, so no once could be spent and the
       // queue is not locked (review M5). It reads the small index only after another process replaced it, to learn
       // when the earliest ask expires, and rewrites it only to drop what expired; a damaged index fails neither the
@@ -682,7 +693,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       }
       return update(state => {
         // A once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25, item 1).
-        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint))
+        // A once bound to code holds only while that code is what the call would run (fix brief 9, B31).
+        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint) && (entry.code === undefined || (holds?.(entry.subject, entry.code) ?? false)))
         const usable = bound.filter(entry => tokens.includes(entry.token))
         let used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
         // The last check is the one the caller acts on, so it sees only the approvals this call uses.

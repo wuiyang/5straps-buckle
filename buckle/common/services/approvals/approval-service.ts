@@ -8,6 +8,7 @@ import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
+import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { listedApprovals, type ListedApproval } from './approval-listing.js'
@@ -85,6 +86,8 @@ export interface ApprovalAnswer {
   /** key:<fingerprint> for a decision a person's enrolled key signed; recorded with it and its grant. */
   decidedBy?: string
   consumeNotAfter?: number
+  /** The code an approved `once` binds to, where the decision AI's thorough stage approved it on request (fix brief 9, B31). */
+  code?: CodeBinding
 }
 
 /**
@@ -317,6 +320,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => [false, true].some((named) => { const shown = challengeOf(ask, createCallShapes(), named); return shown !== null && challengeBytes(shown).digest === challenge }) }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
         ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
+        ...(input.code === undefined ? {} : { code: input.code }),
       })
       if (!result.ok) return result
       if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })

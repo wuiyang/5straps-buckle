@@ -16,6 +16,13 @@ export interface ToolContext {
   timeoutMs: number
   signal: AbortSignal
   /**
+   * Set by the invoker on a tool that takes the workspace's write lock itself (`managesHistory`, the isolated shell): called
+   * once that lock is held and the tool's copy of the workspace is taken, just before its program starts. It throws
+   * CodeChangedError where the code a pass of the decision AI rated has changed since, and the tool then runs nothing
+   * (fix brief 9, B31).
+   */
+  beginRun?: () => void
+  /**
    * Whether the rules allow reading an absolute host path the tool reached mid-call (a listed child
    * beneath its judged directory, a searched file), judged where it lands now; never an agent's name.
    */

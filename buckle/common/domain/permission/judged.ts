@@ -55,6 +55,23 @@ export function floorCause(cause: AskCause | undefined): boolean {
   return cause === 'floor' || cause === 'destructive-list'
 }
 
+/**
+ * What a pass binds to (fix brief 9, B31): the cache key of what the stages were shown of the command, its files' sha256
+ * among it, and whether they were shown it as an allowed command, so the same view can be read again before the run.
+ */
+export interface CodeBinding { key: string; allowed: boolean }
+
+/** Why a pass did not run its call: the code it rated changed before the program started (fix brief 9, B31). */
+export const CODE_CHANGED_REASON = 'the code changed after the decision AI rated it'
+
+/** Thrown before a call's program starts where the code a pass rated changed (`subjects`): nothing ran, and a person decides. */
+export class CodeChangedError extends Error {
+  constructor(readonly subjects: readonly string[] = []) {
+    super(CODE_CHANGED_REASON)
+    this.name = 'CodeChangedError'
+  }
+}
+
 /** What a stage's pass is kept under: the cause and the subject of the ask it rated, so it lifts that ask and no other. */
 export function passKey(ask: { cause?: AskCause | undefined; subject: string }): string {
   return `${ask.cause ?? 'none'}:${ask.subject}`

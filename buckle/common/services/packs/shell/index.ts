@@ -183,6 +183,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       // The invoker's history stage, which a script's call files under its parent request, as its other writes are
       // (recheck of the final review of 0.1.4, finding shell index.ts:151).
       details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool },
+      ...(input.context.beginRun ? { beforeRun: input.context.beginRun } : {}),
       execute: run,
     })
     return toJson(result, options.sandbox.mode, heldReadOnly)
