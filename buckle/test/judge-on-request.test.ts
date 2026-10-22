@@ -10,7 +10,7 @@ import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
-import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { CREDENTIAL_HIDDEN, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, workspacesOf } from './support/workspaces.js'
 
@@ -150,6 +150,24 @@ describe('buckle approvals judge', () => {
     writeFileSync(join(folder, 'job.py'), 'print(1)\n')
     const kept = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent', approvalWait: { mode: 'none' } })
     expect(kept).toMatchObject({ outcome: 'ok', output: { stdout: '1\n' } })
+    await manager.close()
+  })
+
+  it('says so where the ask\'s recorded arguments hide a credential, rating nothing and leaving the ask waiting (fix brief 9, B34)', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.91 })
+    const { buckle, runtime, manager } = await node({ url: judge.url })
+    for (const [index, hidden] of ['https://me:decoyvalue123@example.com/x', '--token=decoyvalue123'].entries()) {
+      const { token } = await ask(runtime, `hidden-${index}`, { command: 'python3', args: ['job.py', hidden] })
+      for (const argv of [['approvals', 'judge', token], ['approvals', 'judge', token, '--approve-if-safe']]) {
+        const result = await buckle(argv)
+        expect(result.exitCode, hidden).toBe(1)
+        expect(result.err + result.out, hidden).toContain(CREDENTIAL_HIDDEN)
+        expect(result.err + result.out, hidden).not.toContain('decoyvalue123')
+      }
+      expect(runtime.approvalService.waitingAsk(token), hidden).toBeDefined()
+    }
+    expect(judge.seen).toHaveLength(0)
+    expect(CREDENTIAL_HIDDEN).toBe('The ask\'s recorded arguments hide a credential, so the decision AI cannot rebuild the call to read it; approve or deny it yourself, or run the workspace in automated mode, which rates the call as sent')
     await manager.close()
   })
 

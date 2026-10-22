@@ -70,7 +70,7 @@ import { createApprovalService, type ApprovalService } from '../approvals/approv
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
-import { createExecutionBudget, createExecutions, type ExecutionBudget } from '../invocation/executions.js'
+import { createExecutionBudget, createExecutions, requestFingerprint, type ExecutionBudget } from '../invocation/executions.js'
 import { createInvoker, InvocationsClosedError, recordRefusedCall, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
@@ -101,6 +101,12 @@ const NO_GRANTS: GrantLookup = { subjectsFor: () => [] }
 
 /** Why the decision AI rates no ask its stages do not cover (D91). */
 const NOT_JUDGEABLE = 'The decision AI rates an ask about running a command, an interpreter the policy does not allow or one the quick stage\'s scope covers, and this ask is about something else'
+/**
+ * Why `buckle approvals judge` rates nothing where the ask's recorded arguments are not the call as sent (fix brief 9, B34):
+ * the record keeps them with every credential hidden, and the decision AI rates only the call that runs. The raw
+ * arguments are never stored beside the ask.
+ */
+export const CREDENTIAL_HIDDEN = 'The ask\'s recorded arguments hide a credential, so the decision AI cannot rebuild the call to read it; approve or deny it yourself, or run the workspace in automated mode, which rates the call as sent'
 /** Why `buckle approvals judge` rates nothing once the policy refuses the call its token names (fix brief 7, B18). */
 const POLICY_NOW_DENIES = 'The policy now denies this call; the decision AI never rates a deny'
 
@@ -484,6 +490,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       const call = ask.call
       const args = call?.complete && call.arguments !== null && typeof call.arguments === 'object' && !Array.isArray(call.arguments) ? call.arguments : null
       if (ask.request.rule !== 'destructive_command' || args === null || !settled.registry.has(ask.request.tool)) return refused(NOT_JUDGEABLE)
+      // The record keeps the arguments with credentials hidden: where they no longer name the call the ask was made for,
+      // the call cannot be rebuilt to rate (fix brief 9, B34).
+      if (ask.fingerprint !== undefined && requestFingerprint({ tool: ask.request.tool, args }) !== ask.fingerprint) return refused(CREDENTIAL_HIDDEN)
       // Prepared again from the arguments the ask kept, as an approver saw them, and judged as a new call would be.
       let effects
       try { effects = await resolveEffects({ effects: settled.registry.get(ask.request.tool).prepare(args).effects, paths: settled.paths }) } catch { return refused(NOT_JUDGEABLE) }
