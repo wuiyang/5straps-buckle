@@ -20,12 +20,17 @@ export interface ConsoleWriter {
   block(lines: readonly string[], at: Date): Promise<void>
   /** A question's prompt is on screen from now until it is released. */
   asking(question: Interface): PromptRelease
+  /**
+   * A question whose block is on screen and whose prompt is not yet: nothing to draw again, so a line logged meanwhile is
+   * written at once, and only `hold()`, as the question ends, makes the lines that follow wait (fix brief 2, L2).
+   */
+  holding(): PromptRelease
 }
 
 /**
  * Ends a question's hold on the writer; idempotent. `hold()` first, as the question ends: the prompt is gone, and every
  * line written from then on waits, accepted at once so the logger never waits, until the release writes them in one go
- * below the ending the question writes on its row (fix brief 1, H1).
+ * below the ending the question writes on its row (fix brief 1, H1). One hold at a time.
  */
 export interface PromptRelease {
   (): void
@@ -44,6 +49,18 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
   let question: Interface | undefined
   let held: string[] | undefined
   let turn: Promise<void> = Promise.resolve()
+
+  /** Every write waits from now until the returned release writes them in one go; the release is idempotent. */
+  function startHolding(): () => void {
+    const mine: string[] = []
+    held = mine
+    return () => {
+      if (held !== mine) return
+      held = undefined
+      const text = mine.join('')
+      if (text !== '') output.write(text)
+    }
+  }
 
   function write(lines: readonly string[], at: Date): boolean {
     const text = [...(input.dates ? separators(at) : []), ...lines].map(line => `${line}\n`).join('')
@@ -72,21 +89,29 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
     },
     asking(next) {
       question = next
-      let holding = false
+      let stopHolding: (() => void) | undefined
       const release = () => {
         if (question === next) question = undefined
-        if (!holding || held === undefined) return
-        holding = false
-        const text = held.join('')
-        held = undefined
-        if (text !== '') output.write(text)
+        stopHolding?.()
       }
       return Object.assign(release, {
         hold() {
           if (question !== next) return
           question = undefined
-          holding = true
-          held = []
+          stopHolding = startHolding()
+        },
+      })
+    },
+    holding() {
+      let released = false
+      let stopHolding: (() => void) | undefined
+      return Object.assign(() => {
+        released = true
+        stopHolding?.()
+      }, {
+        hold() {
+          if (released || stopHolding !== undefined) return
+          stopHolding = startHolding()
         },
       })
     },

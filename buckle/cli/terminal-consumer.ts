@@ -160,6 +160,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
         const at = new Date()
         // After every line logged before it (C3).
         await writer.block(approvalBlock(question, at), at)
+        row.blockShown(cancelled)
         await keys.quiet(QUIET_MS, cancelled)
         cancelled.throwIfAborted()
         discardTypedLine(readline)
@@ -232,11 +233,25 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
   const text = `${markOf(input.question)}Your choice: `
   const terminal = (output as { isTTY?: boolean }).isTTY === true
   let prompted: PromptRelease | undefined
+  let waiting: PromptRelease | undefined
   let promptColumns = 0
   let rowsTypedAtEnd = 0
   let extraLines = 0
   return {
+    /**
+     * The block is on screen and the prompt is not, for the half second of quiet: a line logged now is written at once,
+     * as it always was, but a question that ends here holds the lines that follow, so its ending comes straight below the
+     * choices line and what was logged in its turn below the ending (fix brief 2, L2).
+     */
+    blockShown(signal: AbortSignal): void {
+      const quiet = input.writer.holding()
+      waiting = quiet
+      if (signal.aborted) quiet.hold()
+      else signal.addEventListener('abort', quiet.hold, { once: true })
+    },
     async ask(signal: AbortSignal): Promise<string> {
+      // The quiet is over: the hold the abort below takes is the one that counts from here.
+      waiting?.()
       const held = input.writer.asking(readline)
       prompted = held
       // Before readline's own listener, which clears the line it holds as the question is cancelled: the rows the typed
@@ -280,6 +295,7 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
       output.write(`${tag}\n`)
     },
     release(): void {
+      waiting?.()
       prompted?.()
     },
   }

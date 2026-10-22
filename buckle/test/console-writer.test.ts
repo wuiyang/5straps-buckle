@@ -82,6 +82,42 @@ describe('the console writer', () => {
     }
   })
 
+  // Fix brief 2, L2: a question whose block is shown and whose prompt is not has nothing on screen to draw again.
+  describe('a question with no prompt yet', () => {
+    it('writes lines at once until the question ends, then keeps the lines that follow and writes them in one go as it is released', () => {
+      const terminal = screen(true)
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      const write = vi.spyOn(terminal.output, 'write')
+      const question = writer.holding()
+      writer.write(['before'], new Date())
+      expect(terminal.shown()).toBe('before\n')
+      question.hold()
+      expect(writer.write(['first'], new Date())).toBe(true)
+      expect(writer.write(['second'], new Date())).toBe(true)
+      expect(terminal.shown()).toBe('before\n')
+      write.mockClear()
+      question()
+      expect(write.mock.calls).toEqual([['first\nsecond\n']])
+      expect(terminal.shown()).toBe('before\nfirst\nsecond\n')
+    })
+
+    it('holds nothing once released, and writes what it kept only once', () => {
+      const terminal = screen(true)
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      const ended = writer.holding()
+      ended()
+      ended.hold()
+      writer.write(['after'], new Date())
+      expect(terminal.shown()).toBe('after\n')
+      const held = writer.holding()
+      held.hold()
+      writer.write(['kept'], new Date())
+      held()
+      held()
+      expect(terminal.shown()).toBe('after\nkept\n')
+    })
+  })
+
   it('writes plainly where its output is no terminal: no cursor control, and no prompt drawn again', async () => {
     const terminal = screen(false)
     const input = new PassThrough()

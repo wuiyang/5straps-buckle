@@ -719,6 +719,47 @@ describe('the serve terminal\'s question', () => {
     expect(terminal.shown()).toMatch(/Your choice: \S*\r\n\u001b\[1A\u001b\[25G\u001b\[0J\[no longer waiting\]\n22:22:05 \[info\] Withdrew a call's approvals withdrawn=1\n$/)
   })
 
+  // Fix brief 2, L2: the same turn, but with the prompt not yet drawn, in the half second of quiet after the block.
+  describe('a question that ends in the quiet before its prompt', () => {
+    async function endedInQuiet(logInTurn: boolean) {
+      const terminal = keyboardTerminal()
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      const stop = new AbortController()
+      const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(named(approval('t1', 600_000)), { signal: stop.signal }).catch(() => undefined)
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/\(n\) deny\n$/), { timeout: 3_000 })
+      if (logInTurn) void Promise.resolve().then(() => writer.write(['22:22:05 [info] Withdrew a call\'s approvals withdrawn=1'], new Date()))
+      stop.abort()
+      await asked
+      return terminal.shown()
+    }
+
+    it('writes its ending straight below the choices line, and a line logged in the turn it ends below the ending', async () => {
+      expect(await endedInQuiet(true)).toMatch(/\(n\) deny\n\[The site\] Your choice: \[no longer waiting\]\n22:22:05 \[info\] Withdrew a call's approvals withdrawn=1\n$/)
+    })
+
+    it('holds the lines that follow too where it ended before its block was written', async () => {
+      const terminal = keyboardTerminal()
+      let finishFlush: (() => void) | undefined
+      const base = createConsoleWriter({ output: terminal.output, dates: false, flush: () => new Promise<void>((resolve) => { finishFlush = resolve }) })
+      // A line the logger writes in the turn after the block lands, as the question is found ended.
+      const writer = { ...base, holding: () => { const quiet = base.holding(); queueMicrotask(() => base.write(['22:22:05 [info] Withdrew a call\'s approvals withdrawn=1'], new Date())); return quiet } }
+      const stop = new AbortController()
+      const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(named(approval('t1', 600_000)), { signal: stop.signal }).catch(() => undefined)
+      await vi.waitFor(() => expect(finishFlush).toBeDefined())
+      stop.abort()
+      finishFlush!()
+      await asked
+      expect(terminal.shown()).toMatch(/\(n\) deny\n\[The site\] Your choice: \[no longer waiting\]\n22:22:05 \[info\] Withdrew a call's approvals withdrawn=1\n$/)
+    })
+
+    // Moving the cursor up from here would erase the line logged just above, which is why an ending with no prompt is written plainly.
+    it('writes its ending as a plain row, with no cursor control, where no prompt was drawn', async () => {
+      const shown = await endedInQuiet(false)
+      expect(shown).toMatch(/\(n\) deny\n\[The site\] Your choice: \[no longer waiting\]\n$/)
+      expect(shown).not.toContain('\u001b')
+    })
+  })
+
   // H1: a workspace name in wide characters takes two columns a character, so the row is placed by readline's display width.
   const wide = (ask: ApprovalRequest) => questionFor({ approval: ask, workspaceId: 'w-2', workspaceName: '\u8bbe\u8ba1\u7a3f', node: 'node-1', context: { correlationId: 'c', sessionId: 's', call: recordedCall } })
 
