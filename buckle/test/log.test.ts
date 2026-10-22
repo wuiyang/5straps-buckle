@@ -1,10 +1,10 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
-import { configureRootLogger, flushLogs, logger, loggerConfigFrom, withoutCause } from '../common/runtime/log.js'
+import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, withoutCause } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
 async function captureStderr(write: () => void): Promise<Array<Record<string, unknown>>> {
@@ -72,6 +72,97 @@ describe('the Buckle root logger', () => {
       logger.warn('loud')
     })
     expect(lines.map(line => line.message)).toEqual(['loud'])
+  })
+})
+
+// The CLI display slice, C1: human lines for a person at a terminal, JSON wherever stderr is not one, so every pipe,
+// test, service, and MCP client reads what it read before; one override, BUCKLE_LOG_FORMAT; the service file always JSON.
+describe('the format of the log on stderr', () => {
+  const terminal = (isTTY: boolean) => Object.defineProperty(process.stderr, 'isTTY', { value: isTTY, configurable: true, writable: true })
+  afterEach(() => {
+    Reflect.deleteProperty(process.stderr, 'isTTY')
+    vi.unstubAllEnvs()
+  })
+
+  async function stderrText(write: () => void): Promise<string> {
+    let text = ''
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { text += String(chunk); return true })
+    try {
+      write()
+      await flushLogs()
+    } finally {
+      spy.mockRestore()
+    }
+    return text
+  }
+
+  it('reads BUCKLE_LOG_FORMAT, json or human, by its own function, refusing any other value', () => {
+    expect(logFormatFrom({})).toBeUndefined()
+    expect(logFormatFrom({ BUCKLE_LOG_FORMAT: '' })).toBeUndefined()
+    expect(logFormatFrom({ BUCKLE_LOG_FORMAT: ' human ' })).toBe('human')
+    expect(logFormatFrom({ BUCKLE_LOG_FORMAT: 'json' })).toBe('json')
+    expect(() => logFormatFrom({ BUCKLE_LOG_FORMAT: 'pretty' })).toThrow('BUCKLE_LOG_FORMAT must be json or human')
+    // The logger's own config does not carry it: an unset environment still reads as {}.
+    expect(loggerConfigFrom({ BUCKLE_LOG_FORMAT: 'human' })).toEqual({})
+  })
+
+  it('is human where stderr is a terminal and JSON where it is not, unless the override names one', () => {
+    expect(stderrFormat(undefined, { isTTY: true })).toBe('human')
+    expect(stderrFormat(undefined, {})).toBe('json')
+    expect(stderrFormat('json', { isTTY: true })).toBe('json')
+    expect(stderrFormat('human', { isTTY: false })).toBe('human')
+  })
+
+  it('writes a time-stamped human line to a terminal, and a JSON line to a pipe', async () => {
+    terminal(true)
+    configureRootLogger({})
+    expect(await stderrText(() => logger.info('to a person'))).toMatch(/^\d\d:\d\d:\d\d \[info\] to a person\n$/)
+    terminal(false)
+    configureRootLogger({})
+    expect(JSON.parse(await stderrText(() => logger.info('to a machine')))).toMatchObject({ level: 'info', component: 'buckle', message: 'to a machine' })
+  })
+
+  it('follows the shell\'s override before buckle.env is read, and the format main names after', async () => {
+    vi.stubEnv('BUCKLE_LOG_FORMAT', 'human')
+    configureRootLogger({})
+    expect(await stderrText(() => logger.warn('before the file'))).toMatch(/^\d\d:\d\d:\d\d \[warn\] before the file\n$/)
+    // A value it does not know leaves the TTY rule in place here; main refuses it once it reads the file.
+    vi.stubEnv('BUCKLE_LOG_FORMAT', 'pretty')
+    configureRootLogger({})
+    expect(JSON.parse(await stderrText(() => logger.info('unknown value')))).toMatchObject({ message: 'unknown value' })
+    terminal(true)
+    configureRootLogger({}, { format: 'json' })
+    expect(JSON.parse(await stderrText(() => logger.info('named json')))).toMatchObject({ message: 'named json' })
+  })
+
+  it('writes the service file as JSON lines whatever the format says', async () => {
+    vi.stubEnv('BUCKLE_LOG_FORMAT', 'human')
+    terminal(true)
+    const root = mkdtempSync(join(tmpdir(), 'buckle-log-format-'))
+    try {
+      const file = join(root, 'logs', 'buckle.log')
+      configureRootLogger({}, { file })
+      logger.info('to the file')
+      await flushLogs()
+      expect(readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as unknown)).toEqual([expect.objectContaining({ level: 'info', message: 'to the file' })])
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps the logger\'s fallback line JSON when the human sink fails', async () => {
+    configureRootLogger({}, { format: 'human' })
+    let text = ''
+    const spy = vi.spyOn(process.stderr, 'write')
+      .mockImplementationOnce(() => { throw new Error('stderr is gone') })
+      .mockImplementation(chunk => { text += String(chunk); return true })
+    try {
+      logger.info('lost line')
+      await flushLogs()
+    } finally {
+      spy.mockRestore()
+    }
+    expect(JSON.parse(text)).toMatchObject({ level: 'error', component: 'logger', message: 'Log sink stderr-human failed', dropped: { level: 'info', message: 'lost line' } })
   })
 })
 

@@ -11,7 +11,7 @@ import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
-import { configureRootLogger, flushLogs, logger, loggerConfigFrom, type LogOutput } from './common/runtime/log.js'
+import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
 import { AlreadyServingError, holdServe, refusedServeExit, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
 import { besideService } from './common/services/node-service/attach.js'
@@ -150,7 +150,8 @@ function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr
   // What the process was started with, before the file fills in the rest: migration reads the file alone (MigrationInput).
   const caller = { ...process.env }
   const environment = loadEnvironmentFile()
-  const logging = configureRootLogger(loggerConfigFrom(process.env), output)
+  // The CLI display slice, C1: once the file is read, its BUCKLE_LOG_FORMAT names stderr's format too; the service file stays JSON.
+  const logging = configureRootLogger(loggerConfigFrom(process.env), output === 'stderr' ? { format: stderrFormat(logFormatFrom(process.env)) } : output)
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
   const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller, defaultsFromFileAlone: true }

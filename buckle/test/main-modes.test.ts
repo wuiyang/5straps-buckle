@@ -315,6 +315,19 @@ describe('main', () => {
     expect(entry.serveHttp).not.toHaveBeenCalled()
   })
 
+  // The CLI display slice, C1: the log's format is read once buckle.env is, and a value it does not know is refused there.
+  it('refuses a BUCKLE_LOG_FORMAT other than json or human before the command runs, with the fixed message', async () => {
+    vi.stubEnv('BUCKLE_LOG_FORMAT', 'pretty')
+    const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    try {
+      expect(await main(['fs', 'read', 'notes.txt'])).toBe(1)
+    } finally {
+      vi.unstubAllEnvs()
+    }
+    expect(String(refused.mock.calls[0]![0])).toBe('BUCKLE_LOG_FORMAT must be json or human\n')
+    expect(entry.runCli).not.toHaveBeenCalled()
+  })
+
   // Phase 3, item 1: serve ignored every option it did not take, --background among them, and served in the foreground.
   it.each([[['serve', '--bogus'], "Unknown option '--bogus'"], [['serve', '--state-dir', '/srv/state'], 'what a service definition passes']])('refuses %j with the reason, reading no configuration and starting nothing', async (argv, reason) => {
     const refused = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)

@@ -47,7 +47,8 @@ function logLines(node: Node): Array<{ level: string; message: string; fields?: 
 
 describe('buckle serve --background', () => {
   it('starts a node detached from the terminal, records its pid, logs to the state directory alone, and stops on a stop request', async () => {
-    const node = await prepareNode()
+    // The CLI display slice, C1: the file stays JSON lines whatever the log's format says.
+    const node = await prepareNode('BUCKLE_LOG_FORMAT=human\n')
     const run = buckle(node, ['serve', '--background'])
     expect(run.stderr).toBe('')
     expect(run.status).toBe(0)

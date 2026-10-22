@@ -1,5 +1,7 @@
+import { once } from 'node:events'
 import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
 import { parseList } from './config.js'
+import { renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
 /** The service log's bounds: five files of about 10 MiB, so a node left running for months keeps its disk use bounded. */
@@ -20,10 +22,19 @@ export function rootLogger(): LoggerRoot {
 }
 
 /**
+ * How stderr's log lines read (the CLI display slice, C1): JSON for a machine, and human lines in this device's local
+ * time for a person at a terminal. The rotating service file is JSON whatever this says.
+ */
+export type LogFormat = 'json' | 'human'
+const LOG_FORMATS: readonly LogFormat[] = ['json', 'human']
+
+/**
  * Where the process's log lines go: stderr, or, for a node running with no terminal (`buckle service`, `buckle serve
  * --background`), the one rotating file under its state directory alone, which no agent tool reads (Phase 3, item 6).
+ * Plain `stderr` takes its format by the TTY rule and the shell's BUCKLE_LOG_FORMAT, as every line logged before main
+ * reads buckle.env does; main names the format once it has read the file.
  */
-export type LogOutput = { file: string } | 'stderr'
+export type LogOutput = { file: string } | 'stderr' | { format: LogFormat }
 
 /** Main calls this once, before anything else logs; a default root made earlier is flushed and replaced. */
 export function configureRootLogger(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
@@ -65,13 +76,53 @@ export function loggerConfigFrom(environment: NodeJS.ProcessEnv): LoggerConfig {
   }
 }
 
+/**
+ * BUCKLE_LOG_FORMAT, the one override of the TTY rule (C1), set in the shell or buckle.env: json or human; undefined where
+ * unset. Read apart from loggerConfigFrom, as the logger's own config is the runtime's and carries no format.
+ */
+export function logFormatFrom(environment: NodeJS.ProcessEnv): LogFormat | undefined {
+  const format = environment.BUCKLE_LOG_FORMAT?.trim()
+  if (!format) return undefined
+  if (!LOG_FORMATS.includes(format as LogFormat)) throw new Error('BUCKLE_LOG_FORMAT must be json or human')
+  return format as LogFormat
+}
+
+/**
+ * The format stderr's lines take: the override where one is set, else human where stderr is a terminal and JSON where
+ * it is not, so every pipe, test, service, and MCP client reads the JSON it read before (C1).
+ */
+export function stderrFormat(override: LogFormat | undefined, stream: { isTTY?: boolean } = process.stderr): LogFormat {
+  return override ?? (stream.isTTY === true ? 'human' : 'json')
+}
+
 function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
   return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output)] })
 }
 
 function sinkFor(output: LogOutput): LogSink {
-  if (output === 'stderr') return createStderrJsonSink()
-  return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
+  if (typeof output === 'object' && 'file' in output) return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
+  const format = output === 'stderr' ? stderrFormat(shellFormat()) : output.format
+  return format === 'json' ? createStderrJsonSink() : createHumanSink()
+}
+
+/** Before main reads buckle.env, the shell's override where it names a format; main itself refuses any other value. */
+function shellFormat(): LogFormat | undefined {
+  try {
+    return logFormatFrom(process.env)
+  } catch {
+    return undefined
+  }
+}
+
+/** Human lines on stderr. A sink that fails leaves the logger's fallback line, which stays JSON. */
+function createHumanSink(): LogSink {
+  const stream = process.stderr
+  return {
+    name: 'stderr-human',
+    async write(event) {
+      if (!stream.write(renderEvent(event).map(line => `${line}\n`).join(''))) await once(stream, 'drain')
+    },
+  }
 }
 
 // Resolved on every call, so a logger taken at import time follows the root main configures later.
