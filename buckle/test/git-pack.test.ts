@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import nodeFs, { chmodSync, closeSync, mkdirSync, mkdtempSync, openSync, realpathSync, renameSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -899,6 +900,104 @@ describe('a git tool refuses a repository that borrows objects from outside the 
       const runs = answeringAt(plain(repo))
       await gitPack(root, runs).call('git_log', { repo: 'repo' })
       expect(logOf(runs)).toHaveLength(1)
+    })
+
+    // The caps above count; they did not weigh. Each name costs the depth of the path so far (lstat walks every
+    // component, the system's real path is quadratic in depth), so one call with a deep path held the node's single
+    // thread for 12 to 25 s with every count far under its cap (git pack recheck 4, held[0]). Each name is charged its
+    // depth against a second budget, and a repository's own places are charged the same before they are resolved.
+    describe.skipIf(process.platform !== 'linux')('within what one check costs', () => {
+      const UNITS = 262_144
+      const nested = (base: string, levels: number) => {
+        const path = join(base, ...Array<string>(levels).fill('a'))
+        mkdirSync(path, { recursive: true })
+        return path
+      }
+      /** The names of an absolute path, and what walking it costs: the empty one before the first `/` at one unit, then each at its depth. */
+      const namesIn = (path: string) => path.split('/').filter(Boolean).length
+      const walkCost = (path: string) => 1 + (namesIn(path) * (namesIn(path) + 1)) / 2
+      /** Counts the lstat calls a body makes: the sources import the function by name, so the ESM exports are synced. */
+      async function countingLstat<Result>(body: () => Promise<Result>): Promise<{ result: Result; lstats: number }> {
+        const fs = nodeFs as unknown as { lstatSync: (...args: unknown[]) => unknown }
+        const original = fs.lstatSync
+        let lstats = 0
+        fs.lstatSync = (...args) => { lstats++; return original(...args) }
+        syncBuiltinESMExports()
+        try {
+          const result = await body()
+          return { result, lstats }
+        } finally { fs.lstatSync = original; syncBuiltinESMExports() }
+      }
+      /**
+       * A call's refusal, with the walk's lstat calls counted and the system asked for the real path of a place over
+       * 500 bytes long at most `resolved` times: the resolver that judges the repository's own folder asks once, the pack none.
+       */
+      async function refusedBeforeWalkingAll(root: string, repo: string, places: ReturnType<typeof plain>, resolved: number) {
+        const native = vi.spyOn(realpathSync, 'native')
+        const started = performance.now()
+        try {
+          const { result: refusal, lstats } = await countingLstat(() => refusalOf(() => gitPack(root, answeringAt(places)).call('git_log', { repo })))
+          expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(TOO_MANY) })
+          expect(String(refusal)).not.toContain(root)
+          expect(native.mock.calls.filter(([place]) => String(place).length > 500).length).toBeLessThanOrEqual(resolved)
+          expect(lstats).toBeLessThan(1_000)
+          expect(performance.now() - started).toBeLessThan(2_000)
+        } finally { native.mockRestore() }
+      }
+
+      it('refuses a line through 1,800 nested folders, the walk stopped by its cost and the system never asked for its real path', async () => {
+        const { root, repo } = workspace()
+        alternates(join(repo, '.git', 'objects'), nested(join(root, 'deep'), 1_800))
+        await refusedBeforeWalkingAll(root, 'repo', plain(repo), 0)
+      })
+
+      it('refuses a repository 1,800 folders deep, its places charged before any is resolved', async () => {
+        const { root } = workspace()
+        const deep = nested(join(root, 'deep'), 1_800)
+        mkdirSync(join(deep, '.git', 'objects', 'info'), { recursive: true })
+        await refusedBeforeWalkingAll(root, deep, plain(deep), 1)
+      })
+
+      // The query is charged for the places git names; the pins resolve their real ones again and again, so a link to a
+      // deep place is charged there. The link's target is short, as some file systems hold one of at most 1 KiB.
+      it('refuses a repository that git names by a link to a place 480 folders deep, the pins charged for its real places', async () => {
+        const { root } = workspace()
+        const deep = nested(join(root, 'deep'), 480)
+        mkdirSync(join(deep, '.git', 'objects', 'info'), { recursive: true })
+        symlinkSync(deep.slice(root.length + 1), join(root, 'linked'))
+        await refusedBeforeWalkingAll(root, 'linked', plain(join(root, 'linked')), 0)
+      })
+
+      it.each([300, 6])('still runs a store, and a repository, %i folders deep', async levels => {
+        const { root, repo } = workspace()
+        const store = nested(join(root, 'store'), levels)
+        alternates(join(repo, '.git', 'objects'), store)
+        const deep = nested(join(root, 'repository'), levels)
+        mkdirSync(join(deep, '.git', 'objects', 'info'), { recursive: true })
+        const runs = answeringAt(plain(repo))
+        await gitPack(root, runs).call('git_log', { repo: 'repo' })
+        const inDeep = answeringAt(plain(deep))
+        await gitPack(root, inDeep).call('git_log', { repo: deep })
+        expect(logOf(runs)).toHaveLength(1)
+        expect(logOf(inDeep)).toHaveLength(1)
+      })
+
+      it('runs lines up to the unit cap and refuses one past it, each name charged its depth', async () => {
+        const { root, repo } = workspace()
+        const store = nested(root, 128 - namesIn(root))
+        const objects = join(repo, '.git', 'objects')
+        // Each line is walked twice, as git opens it and folded, and the objects folder is walked once.
+        const fits = Math.floor((UNITS - walkCost(objects)) / (2 * walkCost(store)))
+        expect(fits).toBeGreaterThan(5)
+        const runs = answeringAt(plain(repo))
+        alternates(objects, ...Array<string>(fits).fill(store))
+        await gitPack(root, runs).call('git_log', { repo: 'repo' })
+        expect(logOf(runs)).toHaveLength(1)
+        alternates(objects, ...Array<string>(fits + 1).fill(store))
+        const refusal = await refusalOf(() => gitPack(root, runs).call('git_log', { repo: 'repo' }))
+        expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining(TOO_MANY) })
+        expect(logOf(runs)).toHaveLength(1)
+      })
     })
   })
 

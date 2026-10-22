@@ -49,10 +49,10 @@ its commands write, and the forge pack.
   pack file, `objects/pack`, a folder of loose objects, or `refs`. Only the work tree, the git
   folder, the common folder, each `objects` folder, and the stores `objects/info/alternates` names
   are checked.
-- The `git` pack resolves each alternates line as git does, and refuses one that passes through
-  `/proc` or `/dev/fd`, or a link into `/proc/` or `/dev/`, as git's own process reads those as
-  other places. It refuses a repository that borrows from over 32 stores, names over 256 lines, or
-  walks over 8,192 path names in all, rather than check them all.
+- The `git` pack resolves each alternates line as git does and refuses one through `/proc`,
+  `/dev/fd`, or a link into `/proc/` or `/dev/`, which git's own process reads as other places. It
+  also refuses a repository that borrows from over 32 stores, names over 256 lines, walks over
+  8,192 path names, or reaches places hundreds of folders deep, rather than check it all.
 - The `git` pack shows nothing of a submodule's changes or history, but git still opens its
   `HEAD`, config, and refs through the `.git` pointer in its folder to compare the recorded commit,
   even where that pointer leads outside the workspace, and an error there can name that place. A

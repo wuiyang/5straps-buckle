@@ -49,13 +49,17 @@ const ALTERNATES_DEPTH = 6
 const ALTERNATES_BYTES = 64 * 1024
 /**
  * What one check spends at most, each refused past rather than spent: the object stores it reads, the alternates lines
- * it resolves, and the names it walks over all of their places. The check runs on the node's single thread three times
- * a call, so stores each naming every other held it for seconds (git pack recheck 3, held[1]); git itself follows a
- * handful of stores.
+ * it resolves, the names it walks over all of their places, and the units those names cost. The check runs on the node's
+ * single thread three times a call, so stores each naming every other held it for seconds (git pack recheck 3,
+ * held[1]); git itself follows a handful of stores. A name costs the depth of the path so far, since lstat walks every
+ * component of it and the system's real path is quadratic in depth: one call with a path 1,800 folders deep held the
+ * thread for 12 to 25 s with every count far under its cap (git pack recheck 4, held[0]). Walking a name at depth d
+ * costs d + 1 units, so a path of 100 names costs about 5,000 and one of 724 names uses the whole budget.
  */
 const ALTERNATES_STORES = 32
 const ALTERNATES_LINES = 256
 const ALTERNATES_NAMES = 8192
+const ALTERNATES_UNITS = 262_144
 /** Constant as well: how much a repository borrows is the owner's business. */
 const TOO_MANY_STORES = 'The repository borrows objects from more stores, or through longer paths, than Buckle checks, so git is not run there'
 /** The variables git finds a repository, its objects, its index, or its config by: always the pack's own, never its caller's. */
@@ -360,7 +364,9 @@ function ceilingEnvironment(boundary: string): Record<string, string> {
  */
 function assertRepositoryInside(input: { answer: ProcessResult; boundary: string; repo: string; platform: NodeJS.Platform }): Repository {
   if (input.answer.exitCode !== 0) throw new ToolExecutionError(`git finds no repository with a work tree at ${input.repo} inside the root it lies in`, { code: 'GIT_NO_REPOSITORY' })
-  const places = input.answer.stdout.split('\n').filter(Boolean).map(place => realPlace(place, input.platform))
+  const answered = input.answer.stdout.split('\n').filter(Boolean)
+  chargePlaces(answered)
+  const places = answered.map(place => realPlace(place, input.platform))
   const [workTree, gitDirectory, commonDirectory] = places
   if (places.length === 3 && places.every(place => place !== null && isInside(input.boundary, place, input.platform))) return { workTree: workTree!, gitDirectory: gitDirectory!, commonDirectory: commonDirectory! }
   throw new ToolInputError(`The repository git finds at ${input.repo} keeps its files or history outside the root it lies in, where no permission check looked, so git is not run there`, { code: 'PERMISSION_DENIED' })
@@ -380,7 +386,10 @@ interface Repository { workTree: string; gitDirectory: string; commonDirectory: 
  */
 function pinRepository(repository: Repository, platform: NodeJS.Platform): { environment: Record<string, string>; assertUnchanged: () => void } {
   const places = [repository.workTree, repository.gitDirectory, repository.commonDirectory]
-  const identities = () => places.map(place => directoryIdentity(place, platform))
+  const identities = () => {
+    chargePlaces(places)
+    return places.map(place => directoryIdentity(place, platform))
+  }
   const known = identities()
   const assertUnchanged = () => {
     const now = identities()
@@ -409,7 +418,7 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
  * it never has here (withOwnGitVariables).
  */
 function assertObjectsInside(repository: Repository, boundary: string, paths: PathView, platform: NodeJS.Platform): void {
-  const budget = alternatesBudget()
+  const budget = checkBudget()
   const reach = { roots: [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary], shares: paths.shares, platform, spendName: budget.name }
   const inside = (landing: Landing): Buffer => {
     if (landing === NO_STORE) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
@@ -436,9 +445,12 @@ function assertObjectsInside(repository: Repository, boundary: string, paths: Pa
   }
 }
 
-/** One check's spending: each store read, each line counted before any is resolved, and each name walked. */
-function alternatesBudget(): { store: () => void; lines: (count: number) => void; name: () => void } {
-  const spent = { stores: 0, lines: 0, names: 0 }
+/**
+ * One check's spending: each store read, each line counted before any is resolved, each name walked, and the units
+ * each costs, its depth plus one. A repository's own places are charged what walking them would cost (chargePlaces).
+ */
+function checkBudget(): { store: () => void; lines: (count: number) => void; name: (depth: number) => void; place: (place: string) => void } {
+  const spent = { stores: 0, lines: 0, names: 0, units: 0 }
   const spend = (kind: keyof typeof spent, count: number, cap: number) => {
     spent[kind] += count
     if (spent[kind] > cap) throw new ToolInputError(TOO_MANY_STORES, { code: 'PERMISSION_DENIED' })
@@ -446,8 +458,22 @@ function alternatesBudget(): { store: () => void; lines: (count: number) => void
   return {
     store: () => spend('stores', 1, ALTERNATES_STORES),
     lines: count => spend('lines', count, ALTERNATES_LINES),
-    name: () => spend('names', 1, ALTERNATES_NAMES),
+    name: depth => { spend('names', 1, ALTERNATES_NAMES); spend('units', depth + 1, ALTERNATES_UNITS) },
+    place: place => {
+      const names = place.split('/').filter(Boolean).length
+      spend('units', (names * (names + 1)) / 2, ALTERNATES_UNITS)
+    },
   }
+}
+
+/**
+ * Refused, before the system is asked for the real path of any, where the places of a repository are together so deep
+ * that resolving them is costly: each is charged what walking it name by name would cost, as one check's budget.
+ * The query, and each pin that compares the places again, resolve them with realpath(3), which is quadratic in depth.
+ */
+function chargePlaces(places: readonly string[]): void {
+  const budget = checkBudget()
+  for (const place of places) budget.place(place)
 }
 
 /** Where a store lands: its real path inside the roots; null outside them; NO_STORE where git reads no store there. */
@@ -460,7 +486,7 @@ const NO_STORE = Symbol('no store')
  * then checked against the system's own answer (walkedAsTheSystem). On Windows git reads a line as UTF-8, so one that is
  * not is refused, and the text is resolved as every other path is, a store not made yet where it would be made.
  */
-function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform; spendName: () => void }): Landing {
+function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform; spendName: (depth: number) => void }): Landing {
   if (input.platform === 'win32') return windowsLanding(place, input)
   const walked = walkAsGit(place, input.spendName)
   if (walked.kind === 'no-store') return NO_STORE
@@ -489,16 +515,17 @@ type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; 
  * process, `/proc` (its `self`, `thread-self`, and their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target
  * starts with `/proc/` or `/dev/`: git changes into the work tree first, so `/proc/self/cwd` was the node's working
  * directory here and the work tree there (git pack recheck 3, held[0]). Refused too past STORE_LINKS links, and where
- * any name cannot be read for another reason than being absent. Each name taken is spent (`spendName`).
+ * any name cannot be read for another reason than being absent. Each name taken is spent (`spendName`), at the depth
+ * reached, so a deep path is refused after a few hundred names rather than walked whole.
  */
-function walkAsGit(place: Buffer, spendName: () => void): Walked {
+function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
   const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
   const resolved: Buffer[] = []
   const pending = namesOf(place).reverse()
   let links = 0
   while (pending.length > 0) {
     const name = pending.pop()!
-    spendName()
+    spendName(resolved.length)
     if (name.length === 0 || name.equals(DOT)) continue
     if (name.equals(DOT_DOT)) { resolved.pop(); continue }
     resolved.push(name)
@@ -547,9 +574,18 @@ function namesOf(path: Buffer): Buffer[] {
   return names
 }
 
-/** The absolute path of `names`, from the root. */
+/** The absolute path of `names`, from the root, copied once: the walk builds one for every name it takes. */
 function pathOf(names: readonly Buffer[]): Buffer {
-  return names.length === 0 ? SEPARATOR : Buffer.concat(names.flatMap(name => [SEPARATOR, name]))
+  if (names.length === 0) return SEPARATOR
+  let length = names.length
+  for (const name of names) length += name.length
+  const path = Buffer.allocUnsafe(length)
+  let at = 0
+  for (const name of names) {
+    path[at++] = SLASH
+    at += name.copy(path, at)
+  }
+  return path
 }
 
 const SEPARATOR = Buffer.from('/')
