@@ -67,7 +67,7 @@ export function runSettingsCommand(argv: string[]): Promise<CliResult> {
  */
 export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?: boolean } = {}): Promise<CliResult> {
   const environment = process.env
-  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}),
+  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}), stdoutIsTerminal: process.stdout.isTTY === true,
     manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) })
 }
 

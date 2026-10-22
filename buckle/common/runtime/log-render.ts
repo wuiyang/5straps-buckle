@@ -1,4 +1,4 @@
-import type { LogEvent, LogLevel, NormalizedError } from '@5straps/runtime'
+import { LOG_LEVELS, type LogEvent, type LogLevel, type NormalizedError } from '@5straps/runtime'
 import { actionPhrase, APPROVAL_PENDING } from '../domain/action-phrase.js'
 import { printable } from '../domain/approval-instruction.js'
 import { localDate, localTime } from '../domain/local-time.js'
@@ -62,6 +62,36 @@ export function createDateSeparators(): (at: Date) => string[] {
     last = date
     return [`--- ${date} ---`]
   }
+}
+
+/**
+ * `buckle service logs` at a terminal (the CLI display slice, C6): each stored line as the console renders it, with date
+ * separators across the lines it prints; a line that is not a log event passes through as stored.
+ */
+export function createStoredLineRenderer(options: RenderOptions): (line: string) => string[] {
+  const separators = createDateSeparators()
+  return (line) => {
+    const event = storedEvent(line)
+    if (event === null) return [line]
+    const lines = renderEvent(event, options)
+    return lines === null ? [] : [...separators(new Date(event.timestamp)), ...lines]
+  }
+}
+
+/** A stored line read back as a log event, or null where it is not one in the shape the logger writes. */
+function storedEvent(line: string): LogEvent | null {
+  let value: unknown
+  try {
+    value = JSON.parse(line)
+  } catch {
+    return null
+  }
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const { timestamp, level, component, message, fields, error } = value as Record<string, unknown>
+  if (typeof timestamp !== 'string' || Number.isNaN(Date.parse(timestamp)) || !LOG_LEVELS.includes(level as LogLevel) || typeof component !== 'string' || typeof message !== 'string') return null
+  if (fields !== undefined && (typeof fields !== 'object' || fields === null || Array.isArray(fields))) return null
+  if (error !== undefined && (typeof error !== 'object' || error === null || typeof (error as NormalizedError).name !== 'string' || typeof (error as NormalizedError).message !== 'string')) return null
+  return value as LogEvent
 }
 
 function shownEvent(event: LogEvent, options: RenderOptions): Shown | null {

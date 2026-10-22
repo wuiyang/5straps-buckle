@@ -6,6 +6,8 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { SKIP_OWNER_ONLY_FLAG } from '../common/domain/global-flags.js'
 import { actionsPath } from '../common/runtime/config.js'
 import { defaultEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
+import { logFormatFrom } from '../common/runtime/log.js'
+import { createStoredLineRenderer } from '../common/runtime/log-render.js'
 import { addressOf, atTerminal } from '../common/services/node-service/attach.js'
 import { requestStop, runningNode, serviceLogPath, waitForStop, type RunningNode, type ServeRecord } from '../common/services/node-service/serve-record.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
@@ -51,6 +53,8 @@ export interface ServiceCommandInput {
   signal?: AbortSignal
   /** Whether the command line carried --skip-owner-only-check, which `install` writes into the definition. */
   skipOwnerOnlyCheck?: boolean
+  /** Whether `out` is a terminal, where `logs` renders the stored lines for a person (the CLI display slice, C6). */
+  stdoutIsTerminal?: boolean
 }
 
 interface ServiceContext {
@@ -425,6 +429,8 @@ function upgradeStep(record: ServeRecord): string {
 async function logs(context: ServiceContext, options: { follow: boolean; lines: string | undefined }): Promise<CliResult> {
   if (options.lines !== undefined && !/^\d{1,9}$/.test(options.lines)) return fail(context.err, '-n takes a count of lines, 0 or more')
   const count = options.lines === undefined ? DEFAULT_LOG_LINES : Number(options.lines)
+  let shown: (text: string) => string
+  try { shown = storedLines(context) } catch (error) { return fail(context.err, error instanceof Error ? error.message : String(error)) }
   const file = serviceLogPath(context.location.stateDirectory)
   if (!existsSync(file) && !options.follow) {
     context.out('No service log yet: a node writes it once it runs under buckle service or buckle serve --background.\n')
@@ -435,18 +441,30 @@ async function logs(context: ServiceContext, options: { follow: boolean; lines: 
     const text = readFileSync(file, 'utf8')
     offset = Buffer.byteLength(text)
     const lines = text.split('\n').filter(Boolean)
-    if (count > 0) context.out(lines.slice(-count).map(line => `${line}\n`).join(''))
+    if (count > 0) context.out(shown(lines.slice(-count).map(line => `${line}\n`).join('')))
   }
   if (!options.follow) return { exitCode: 0 }
-  await follow(context, file, offset)
+  await follow(context, file, offset, shown)
   return { exitCode: 0 }
+}
+
+/**
+ * How `logs` prints what the file stores (C6): as a serve's console shows it, in this device's local time with date
+ * separators across what it prints, where its output is a terminal; as stored where it is piped, or where
+ * BUCKLE_LOG_FORMAT, read from the shell before buckle.env is, says json. The file itself stays JSON lines in UTC.
+ */
+function storedLines(context: ServiceContext): (text: string) => string {
+  const format = logFormatFrom(context.input.environment) ?? (context.input.stdoutIsTerminal === true ? 'human' : 'json')
+  if (format === 'json') return text => text
+  const render = createStoredLineRenderer({ verbose: false })
+  return text => text.split('\n').filter(Boolean).flatMap(render).map(line => `${line}\n`).join('')
 }
 
 /**
  * Prints what the log gains until the signal ends it: lines added since the last look, and, after the file rotates
  * (it was renamed and a new one begun), the new file from its start.
  */
-async function follow(context: ServiceContext, file: string, from: number): Promise<void> {
+async function follow(context: ServiceContext, file: string, from: number, shown: (text: string) => string): Promise<void> {
   let offset = from
   let inode = existsSync(file) ? statSync(file).ino : null
   const signal = context.input.signal
@@ -462,7 +480,7 @@ async function follow(context: ServiceContext, file: string, from: number): Prom
     const added = readFileSync(file).subarray(offset)
     const complete = added.lastIndexOf(10) + 1
     if (complete === 0) continue
-    context.out(added.subarray(0, complete).toString('utf8'))
+    context.out(shown(added.subarray(0, complete).toString('utf8')))
     offset += complete
   }
 }

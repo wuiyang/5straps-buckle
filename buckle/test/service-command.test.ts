@@ -2,7 +2,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realp
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { createRuntimeOwner } from '@5straps/runtime'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { serviceCommand, SERVICE_USAGE, type ServiceCommandInput } from '../cli/service.js'
 import { holdServe, runningNode, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { startInBackground } from '../server/service-mode.js'
@@ -429,6 +429,63 @@ describe('buckle service logs', () => {
     renameSync(file, `${file}.1`)
     writeFileSync(file, '{"n":4}\n')
     await vi.waitFor(() => expect(out).toBe('{"n":2}\n{"n":3}\n{"n":4}\n'), { timeout: 5_000 })
+    stop.abort()
+    expect(await following).toEqual({ exitCode: 0 })
+  })
+})
+
+// The CLI display slice, C6: at a terminal, `buckle service logs` prints what a serve's console prints, in this device's
+// local time, with date separators across the lines it prints; piped, or with BUCKLE_LOG_FORMAT=json, the lines as
+// stored. The file stays JSON lines in UTC either way.
+describe('buckle service logs at a terminal', () => {
+  afterEach(() => { vi.unstubAllEnvs() })
+
+  const stored = [
+    '{"timestamp":"2026-10-21T15:59:59.000Z","level":"info","component":"buckle","message":"5straps Buckle listening","fields":{"port":4320}}',
+    '{"n":58}',
+    '{"timestamp":"2026-10-21T16:00:01.000Z","level":"warn","component":"buckle","message":"late\\u009bline"}',
+    'not a log event',
+  ]
+
+  function logged(): Node {
+    const target = node()
+    mkdirSync(join(target.state, 'logs'))
+    writeFileSync(serviceLogPath(target.state), `${stored.join('\n')}\n`)
+    return target
+  }
+
+  it('renders each stored event as the console does, with date separators, and passes every other line through', async () => {
+    vi.stubEnv('TZ', 'Asia/Kuala_Lumpur')
+    expect((await service(logged(), ['logs'], null, { stdoutIsTerminal: true })).out).toBe([
+      '--- 2026-10-21 ---',
+      '23:59:59 [info] 5straps Buckle listening port=4320',
+      '{"n":58}',
+      '--- 2026-10-22 ---',
+      '00:00:01 [warn] late\\u009bline',
+      'not a log event',
+      '',
+    ].join('\n'))
+  })
+
+  it('prints the lines as stored where BUCKLE_LOG_FORMAT is json, and refuses a format it does not know', async () => {
+    const target = logged()
+    expect((await service({ ...target, environment: { ...target.environment, BUCKLE_LOG_FORMAT: 'json' } }, ['logs'], null, { stdoutIsTerminal: true })).out).toBe(`${stored.join('\n')}\n`)
+    expect(await service({ ...target, environment: { ...target.environment, BUCKLE_LOG_FORMAT: 'pretty' } }, ['logs'], null, { stdoutIsTerminal: true })).toMatchObject({ exitCode: 1, err: 'BUCKLE_LOG_FORMAT must be json or human\n' })
+  })
+
+  it('follows with -f, rendering whole lines as they are added', async () => {
+    vi.stubEnv('TZ', 'UTC')
+    const target = node()
+    mkdirSync(join(target.state, 'logs'))
+    const file = serviceLogPath(target.state)
+    writeFileSync(file, '')
+    const stop = new AbortController()
+    let out = ''
+    const following = serviceCommand({ argv: ['logs', '-f', '-n', '0'], environment: target.environment, platform: 'linux', cwd: target.root, run: vi.fn(), mainScript: target.main, manager: () => null, out: text => { out += text }, err: () => {}, signal: stop.signal, stdoutIsTerminal: true })
+    appendFileSync(file, `${stored[0]}\n{"n":`)
+    await vi.waitFor(() => expect(out).toBe('--- 2026-10-21 ---\n15:59:59 [info] 5straps Buckle listening port=4320\n'), { timeout: 5_000 })
+    appendFileSync(file, '1}\n')
+    await vi.waitFor(() => expect(out).toBe('--- 2026-10-21 ---\n15:59:59 [info] 5straps Buckle listening port=4320\n{"n":1}\n'), { timeout: 5_000 })
     stop.abort()
     expect(await following).toEqual({ exitCode: 0 })
   })
