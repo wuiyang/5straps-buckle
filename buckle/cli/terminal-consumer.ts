@@ -299,12 +299,15 @@ function choicesLine(question: ApprovalQuestion): string {
   return [...scopes, ...denials].join('  ')
 }
 
-/** Enter and anything unrecognised deny once; a number picks an offered scope, where the whole action was shown. */
+/**
+ * Enter and anything not on offer deny once; exactly the one digit shown beside an offered scope picks it, where the
+ * whole action was shown. `1x`, `3.`, or `01` is no key on offer, so it denies (fix brief 1, H2).
+ */
 function choiceFor(question: ApprovalQuestion, answer: string): ApprovalChoice {
   if (question.rule === 'sensitive_path' && answer === 'ds') return 'deny_session'
   if (question.rule === 'sensitive_path' && answer === 'da') return 'deny_always'
-  if (!question.call) return 'deny'
-  return question.offeredScopes[Number.parseInt(answer, 10) - 1] ?? 'deny'
+  if (!question.call || !/^[1-9]$/.test(answer)) return 'deny'
+  return question.offeredScopes[Number(answer) - 1] ?? 'deny'
 }
 
 function scopeLabel(scope: GrantScope): string {

@@ -598,6 +598,30 @@ describe('the serve terminal\'s question', () => {
     await vi.waitFor(() => expect(terminal.shown()).toMatch(row))
   })
 
+  // Fix brief 1, H2: a scope is chosen by the one digit shown beside it alone; anything else typed is not on offer and denies.
+  it.each(['1x', '2n', '2 please', '3.', '1e9', '01', '3)', '1 2', '+1', '02'])('denies %j, which no choice offers, with [deny]', async (typed) => {
+    const terminal = silentTerminal()
+    const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    terminal.input.write(`${typed}\n`)
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+    await vi.waitFor(() => expect(terminal.shown().endsWith(`[The site] Your choice: ${typed} [deny]\n`)).toBe(true))
+  })
+
+  it.each<[string, Partial<ApprovalRequest>, string]>([
+    ['1', {}, 'once'],
+    ['2', {}, 'session'],
+    ['3', {}, 'always'],
+    ['3', { rule: 'destructive_command', offeredScopes: ['once', 'session'] }, 'deny'],
+  ])('reads %j as the scope it numbers, and a digit beyond the offered scopes as a denial: %j', async (typed, change, choice) => {
+    const terminal = silentTerminal()
+    const asked = setupCli({ terminal }).requestCli(named({ ...approval('t1', 600_000), ...change }))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    terminal.input.write(`${typed}\n`)
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice } })
+    await vi.waitFor(() => expect(terminal.shown().endsWith(`[The site] Your choice: ${typed}${choice === 'deny' ? ' [deny]' : ''}\n`)).toBe(true))
+  })
+
   it('writes the answer and its [deny] after the prompt where the output is no terminal, which echoes nothing', async () => {
     const terminal = silentTerminal()
     const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
