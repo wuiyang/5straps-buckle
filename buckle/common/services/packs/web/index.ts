@@ -145,7 +145,8 @@ function declaredLength(response: Response): number {
 
 /**
  * Whether a stream read to the cap holds more: true at the first non-empty chunk, false where it ends. A stream that
- * neither ends nor sends data within a few reads or CAP_PROBE_MS is not shown complete, so it counts as more.
+ * neither ends nor sends data within a few reads or CAP_PROBE_MS, or fails on a read, is not shown complete, so it
+ * counts as more and the cap already read is kept.
  */
 async function moreFollows(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<boolean> {
   let timer: NodeJS.Timeout | undefined
@@ -157,6 +158,8 @@ async function moreFollows(reader: ReadableStreamDefaultReader<Uint8Array>): Pro
       if (next.done) return false
       if (next.value.byteLength > 0) return true
     }
+    return true
+  } catch {
     return true
   } finally {
     clearTimeout(timer)

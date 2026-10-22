@@ -18,9 +18,9 @@ function blocks(count: number): Uint8Array[] {
 
 /**
  * A pull-based stream, so the end of it is learned only by reading once more, as on a network. After `parts`, `tail`
- * closes it, never answers, or yields empty chunks without end.
+ * closes it, never answers, yields empty chunks without end, or fails it as a dropped connection does.
  */
-function streamOf(parts: Uint8Array[], tail: 'close' | 'stall' | 'empties' = 'close') {
+function streamOf(parts: Uint8Array[], tail: 'close' | 'stall' | 'empties' | 'error' = 'close') {
   const state = { cancelled: false, pulls: 0 }
   let next = 0
   const stream = new ReadableStream<Uint8Array>({
@@ -33,6 +33,8 @@ function streamOf(parts: Uint8Array[], tail: 'close' | 'stall' | 'empties' = 'cl
         controller.close()
       } else if (tail === 'empties') {
         controller.enqueue(new Uint8Array(0))
+      } else if (tail === 'error') {
+        controller.error(new Error('connection reset after the cap'))
       } else {
         return new Promise<void>(() => undefined)
       }
@@ -125,6 +127,18 @@ describe('web_fetch against the 2 MiB response cap', () => {
     expect(result.body).toHaveLength(CAP)
     expect(result.truncated).toBe(true)
     expect(state.cancelled).toBe(true)
+  })
+
+  it('keeps the cap already read and marks truncated when the stream fails on the read just after it', async () => {
+    const { stream } = streamOf(blocks(32), 'error')
+    const result = await fetched(stream)
+    expect(result.body).toHaveLength(CAP)
+    expect(result.truncated).toBe(true)
+  })
+
+  it('still fails where the stream errors before the cap, as no body was read to keep', async () => {
+    const { stream } = streamOf(blocks(3), 'error')
+    await expect(fetched(stream)).rejects.toThrow('connection reset after the cap')
   })
 
   it('marks truncated a response whose content-length is over the cap, even where its body ends short', async () => {
