@@ -16,6 +16,13 @@ export function isVerbose(level: LogLevel): boolean {
   return level === 'debug' || level === 'trace'
 }
 
+/**
+ * The fields whose value Buckle writes itself and shows on rows of its own: the workspace list a node with no terminal
+ * logs. Every other value stays on its line, a line break escaped, as the approval block and the JSON show it, so agent
+ * text cannot draw rows that read as Buckle's own between a question's choices and its prompt (fix brief 1, H4).
+ */
+const ROW_FIELDS: ReadonlySet<string> = new Set(['workspaces'])
+
 /** Startup and shutdown steps: the JSON keeps every one; a person sees them at debug or trace. */
 const STEP_MESSAGES: ReadonlySet<string> = new Set(['cli:call listener registered', 'close step'])
 
@@ -33,17 +40,18 @@ interface Shown {
  * One log event as the lines a person reads at a terminal (the CLI display slice, C2), or null where the console leaves
  * it to the JSON: `22:22:00 [info] message key=value`, the time on this device's clock from the event's own timestamp,
  * the level in lower case, and no component column. An error follows the message as `Name: message (code)`, with its
- * stack indented below at fatal, or at every level when verbose; a value of several lines goes on indented lines of its
- * own, and an object on one line as JSON. Every piece of text passes through printable(), so the console is never
- * weaker than the JSON line, which leaves DEL, C1, and bidi characters raw. The JSON a machine reads is unchanged.
+ * stack indented below at fatal, or at every level when verbose; a value of several lines Buckle writes goes on indented
+ * lines of its own (ROW_FIELDS), and an object on one line as JSON. Every piece of text passes through printable(), so
+ * the console is never weaker than the JSON line, which leaves DEL, C1, and bidi characters raw. The JSON a machine reads
+ * is unchanged.
  */
 export function renderEvent(event: LogEvent, options: RenderOptions): string[] | null {
   if (STEP_MESSAGES.has(event.message) && !options.verbose) return null
   const shown = shownEvent(event, options)
   if (shown === null) return null
   const fields = Object.entries(shown.fields).filter(([, value]) => value !== undefined)
-  const inline = fields.filter(([, value]) => !multiline(value)).map(([key, value]) => ` ${printable(key)}=${scalar(value)}`)
-  const blocks = fields.filter(([, value]) => multiline(value)).flatMap(([key, value]) => [`  ${printable(key)}:`, ...String(value).split(/\r?\n/).map(line => `    ${printable(line)}`)])
+  const inline = fields.filter(([key, value]) => !onRows(key, value)).map(([key, value]) => ` ${printable(key)}=${scalar(value)}`)
+  const blocks = fields.filter(([key, value]) => onRows(key, value)).flatMap(([key, value]) => [`  ${printable(key)}:`, ...String(value).split(/\r?\n/).map(line => `    ${printable(line)}`)])
   const correlation = options.verbose && event.correlationId ? ` correlationId=${printable(event.correlationId)}` : ''
   const error = event.error ? `: ${errorLine(event.error)}` : ''
   const stack = event.error && (event.level === 'fatal' || options.verbose) ? stackLines(event.error) : []
@@ -136,8 +144,8 @@ function approvalPending(event: LogEvent, fields: Record<string, unknown>, optio
   return { tag: 'approval', text: `${mark}action pending approval: ${actionPhrase(tool)} (${printable(rule)}: ${printable(offered)}); see it with ${printable(review)}`, fields: options.verbose ? rest : {} }
 }
 
-function multiline(value: unknown): value is string {
-  return typeof value === 'string' && value.includes('\n')
+function onRows(key: string, value: unknown): boolean {
+  return ROW_FIELDS.has(key) && typeof value === 'string' && value.includes('\n')
 }
 
 function scalar(value: unknown): string {
