@@ -820,3 +820,30 @@ describe('a runner package whose version part names a folder (fix brief 8, B22)'
     expect(judge.judge).not.toHaveBeenCalled()
   })
 })
+
+describe('a runner package whose name is not URL-safe (fix brief 9, B30)', () => {
+  it('is not rated through npx, pnpx, bunx, or shell text with the folder planted, the judge never called', async () => {
+    const judge = fakeJudge()
+    const config = node()
+    for (const folder of ['@scope/x#y', '@s/x$y', '@s/x?y']) {
+      mkdirSync(join(config.cwd, folder), { recursive: true })
+      writeFileSync(join(config.cwd, folder, 'package.json'), '{"name":"x","bin":{"x":"cli.js"}}\n')
+      writeFileSync(join(config.cwd, folder, 'cli.js'), 'console.log(1)\n')
+    }
+    const runtime = await runtimeOf(config, { judge })
+    const rows: Array<[string[], string[]]> = [
+      [[], ['npx', '@scope/x#y']],
+      [[], ['pnpx', '@s/x$y']],
+      [[], ['bunx', '@s/x?y']],
+      [['bash -c *'], ['bash', '-c', "npx '@scope/x#y'"]],
+    ]
+    for (const [allow, command] of rows) {
+      await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow, deny: [] } })
+      const { response, entry, ran } = await call(runtime, {}, command)
+      expect(response, command.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, command.join(' ')).toBe(false)
+      expect(entry.judge, command.join(' ')).toMatchObject({ unavailable: CODE_REFUSALS.runnerSource, passed: false })
+    }
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+})

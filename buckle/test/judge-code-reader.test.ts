@@ -1437,3 +1437,27 @@ describe('a runner package whose version part names a folder (fix brief 8, B22)'
     expect(paths(call('npx', 'tsx@^4', 'job.ts'))).toEqual(['/workspace/job.ts'])
   })
 })
+
+describe('a runner package whose name is not URL-safe (fix brief 9, B30)', () => {
+  // npm-package-arg reads a scoped word whose scope or name fails validate-npm-package-name (a `#`, `%`, `$`, or `?` in
+  // it) as a folder by its slash, so npx runs that folder's bin while the reader named a registry package; a scope or
+  // name that encodeURIComponent changes, one starting with `_`, and the names node_modules and favicon.ico refuse.
+  const files = { '@scope/x#y/package.json': '{"name":"x","bin":{"x":"cli.js"}}\n', '@scope/x#y/cli.js': 'console.log(1)\n' }
+  const source = { kind: 'refused', reason: CODE_REFUSALS.runnerSource, truncated: false }
+  const words = ['@a#b/c', '@a%b/x', '@scope/x#y', '@scope/x%2fy', '@s/x$y', '@s/x?y', '@%2e%2e/x', '_x', '@_s/x', '@s/_x', 'node_modules', 'favicon.ico']
+
+  it('refuses each through npx, pnpx, bunx, and quoted shell text', () => {
+    const { call, shell } = workspace(files)
+    for (const runner of ['npx', 'pnpx', 'bunx']) {
+      for (const word of words) expect(call(runner, word), `${runner} ${word}`).toEqual(source)
+    }
+    for (const word of words) expect(shell(`npx '${word}'`), word).toEqual(source)
+  })
+
+  it('still names a scoped package, a versioned one, and a dotted name', () => {
+    const { call } = workspace(files)
+    for (const [word, name] of [['@scope/pkg', '@scope/pkg'], ['@scope/pkg@1', '@scope/pkg'], ['lodash.merge', 'lodash.merge']]) {
+      expect(reading(call('npx', word!)).packages.map(item => item.name), word).toEqual([name])
+    }
+  })
+})

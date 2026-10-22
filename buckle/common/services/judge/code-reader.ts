@@ -994,12 +994,21 @@ function runnerArguments(args: readonly string[]): Arguments {
  * working directory's bin for `npx eslint@.`, and `.decoy`'s for `npx eslint@.decoy`), and `~/`, `/`, `\`, and a drive
  * letter's colon are no characters of a version, a range, or a tag, nor is anything outside the set a version, a range,
  * or a tag npm-package-arg reads as a registry spec holds (a space among them, which fails closed; fix brief 8, B22).
+ * registrySpec also refuses a scope or a name that is not URL-safe (fix brief 9, B30).
  */
 const REGISTRY_SPEC = /^(?:@[^\s/\\:@]+\/)?[^\s/\\:@.~][^\s/\\:@]*(?:@(?!\.)[A-Za-z0-9\-_.!~*'()<>=^|+]*)?$/
 const TARBALL = /\.(?:tgz|tar\.gz|tar)$/i
 
+/** Names validate-npm-package-name refuses whatever their spelling: npm-package-arg reads such a word as no registry name. */
+const RESERVED_PACKAGE_NAMES = new Set(['node_modules', 'favicon.ico'])
+
 function registrySpec(word: string): boolean {
-  return REGISTRY_SPEC.test(word) && !TARBALL.test(word)
+  if (!REGISTRY_SPEC.test(word) || TARBALL.test(word)) return false
+  // A scope or a name that is not URL-safe fails validate-npm-package-name, and npm-package-arg then reads a scoped word
+  // as a folder by its slash, so npm exec runs that folder's bin (npm 11.19.0; fix brief 9, B30); so does one starting
+  // with `_`, and the reserved names.
+  const parts = packageName(word).replace(/^@/, '').split('/')
+  return parts.every(part => encodeURIComponent(part) === part && !part.startsWith('_')) && !RESERVED_PACKAGE_NAMES.has(parts.at(-1)!)
 }
 
 /**
