@@ -64,5 +64,7 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
   prompt's row, only while the prompt and what was typed fit one row: a long workspace name on a
   narrow terminal, or typing past the row's end, wraps it, and the redraw or the tag then lands a
   row off. A question a one-shot command asks at a terminal is not redrawn at all.
+- Where `TERM` is `dumb`, the line still lands above the prompt, but the prompt comes back without
+  the text already typed. The typed answer still counts: the next keys and Enter add to it.
 - Lines logged before the node reads `buckle.env` follow the terminal and the shell's
   `BUCKLE_LOG_FORMAT`, not the file's.

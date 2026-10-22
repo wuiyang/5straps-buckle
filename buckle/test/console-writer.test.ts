@@ -24,6 +24,15 @@ function screen(isTTY: boolean) {
   return { output, shown: () => shown }
 }
 
+/**
+ * A readline on `output` with TERM pinned to a capable terminal: Node's readline reads TERM when it is created, and
+ * under TERM=dumb it redraws a prompt without the text typed after it, so a row would pass or fail by the caller's shell.
+ */
+function interfaceOn(input: PassThrough, output: PassThrough) {
+  vi.stubEnv('TERM', 'xterm-256color')
+  return createInterface({ input, output })
+}
+
 describe('the console writer', () => {
   it('writes the date separator lazily: before the first line, and again whenever a line\'s local date changes', () => {
     vi.stubEnv('TZ', 'Asia/Kuala_Lumpur')
@@ -62,7 +71,7 @@ describe('the console writer', () => {
   it('draws a line written during a question on the prompt\'s row, then the prompt and the typed text again below it', async () => {
     const terminal = screen(true)
     const input = new PassThrough()
-    const readline = createInterface({ input, output: terminal.output })
+    const readline = interfaceOn(input, terminal.output)
     const writer = createConsoleWriter({ output: terminal.output, dates: false })
     try {
       readline.question('[site] Your choice: ', () => {})
@@ -88,7 +97,7 @@ describe('the console writer', () => {
     // The human sink awaits a drain whenever write() says false, and a held write emits none.
     it('accepts a write while an ending is held, and writes it, with the rest, when the question is released', () => {
       const terminal = screen(true)
-      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const readline = interfaceOn(new PassThrough(), terminal.output)
       const writer = createConsoleWriter({ output: terminal.output, dates: false })
       try {
         const release = writer.asking(readline)
@@ -105,7 +114,7 @@ describe('the console writer', () => {
 
     it('does not stall the logger while an ending is held: a flush still returns, and returns again after the release', async () => {
       const terminal = screen(true)
-      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const readline = interfaceOn(new PassThrough(), terminal.output)
       const writer = createConsoleWriter({ output: terminal.output, dates: false })
       configureRootLogger({}, { format: 'human', console: writer })
       const flushed = async () => {
@@ -145,7 +154,7 @@ describe('the console writer', () => {
 
     it('reads the logger\'s queue before a block even when the block before it failed to write', async () => {
       const terminal = screen(true)
-      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const readline = interfaceOn(new PassThrough(), terminal.output)
       const flush = vi.fn(async () => {})
       const writer = createConsoleWriter({ output: terminal.output, dates: false, flush })
       readline.close()
@@ -198,7 +207,7 @@ describe('the console writer', () => {
   it('writes plainly where its output is no terminal: no cursor control, and no prompt drawn again', async () => {
     const terminal = screen(false)
     const input = new PassThrough()
-    const readline = createInterface({ input, output: terminal.output })
+    const readline = interfaceOn(input, terminal.output)
     const writer = createConsoleWriter({ output: terminal.output, dates: false })
     try {
       readline.question('[site] Your choice: ', () => {})
