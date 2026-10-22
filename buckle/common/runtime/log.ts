@@ -1,7 +1,7 @@
 import { once } from 'node:events'
 import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
 import { parseList } from './config.js'
-import { renderEvent } from './log-render.js'
+import { isVerbose, renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
 /** The service log's bounds: five files of about 10 MiB, so a node left running for months keeps its disk use bounded. */
@@ -96,13 +96,13 @@ export function stderrFormat(override: LogFormat | undefined, stream: { isTTY?: 
 }
 
 function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
-  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output)] })
+  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output, config.level ?? 'info')] })
 }
 
-function sinkFor(output: LogOutput): LogSink {
+function sinkFor(output: LogOutput, level: LogLevel): LogSink {
   if (typeof output === 'object' && 'file' in output) return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
   const format = output === 'stderr' ? stderrFormat(shellFormat()) : output.format
-  return format === 'json' ? createStderrJsonSink() : createHumanSink()
+  return format === 'json' ? createStderrJsonSink() : createHumanSink(level)
 }
 
 /** Before main reads buckle.env, the shell's override where it names a format; main itself refuses any other value. */
@@ -114,13 +114,15 @@ function shellFormat(): LogFormat | undefined {
   }
 }
 
-/** Human lines on stderr. A sink that fails leaves the logger's fallback line, which stays JSON. */
-function createHumanSink(): LogSink {
+/** Human lines on stderr, at debug or trace with every step and stack. A sink that fails leaves the logger's fallback line, which stays JSON. */
+function createHumanSink(level: LogLevel): LogSink {
   const stream = process.stderr
+  const options = { verbose: isVerbose(level) }
   return {
     name: 'stderr-human',
     async write(event) {
-      if (!stream.write(renderEvent(event).map(line => `${line}\n`).join(''))) await once(stream, 'drain')
+      const lines = renderEvent(event, options)
+      if (lines !== null && !stream.write(lines.map(line => `${line}\n`).join(''))) await once(stream, 'drain')
     },
   }
 }

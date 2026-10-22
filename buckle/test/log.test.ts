@@ -164,6 +164,22 @@ describe('the format of the log on stderr', () => {
     }
     expect(JSON.parse(text)).toMatchObject({ level: 'error', component: 'logger', message: 'Log sink stderr-human failed', dropped: { level: 'info', message: 'lost line' } })
   })
+
+  // C2: the human sink renders the event the logger already redacted, so no sink can show more than the JSON does.
+  it('keeps credentials out of a human line, as out of a JSON one', async () => {
+    configureRootLogger({}, { format: 'human' })
+    const text = await stderrText(() => logger.warn('forge refused', { authorization: 'Bearer live-agent-credential-value', detail: 'forge answered 401 for ghp_abcdefghijklmnopqrstuvwxyz0123', path: 'notes.txt' }))
+    expect(text).not.toContain('live-agent-credential-value')
+    expect(text).not.toContain('ghp_abcdefghijklmnopqrstuvwxyz0123')
+    expect(text).toMatch(/^\d\d:\d\d:\d\d \[warn\] forge refused authorization=\[redacted\] detail=forge answered 401 for \S+ path=notes\.txt\n$/)
+  })
+
+  it('shows the startup and shutdown steps only where the log is at debug or trace', async () => {
+    configureRootLogger({}, { format: 'human' })
+    expect(await stderrText(() => logger.info('close step', { stage: 'accept', name: 'http server' }))).toBe('')
+    configureRootLogger({ level: 'debug' }, { format: 'human' })
+    expect(await stderrText(() => logger.info('close step', { stage: 'accept', name: 'http server' }))).toMatch(/^\d\d:\d\d:\d\d \[info\] close step stage=accept name=http server\n$/)
+  })
 })
 
 // Slice 7 review R7-RR-3: a state file's parse failure carries V8's SyntaxError as its cause, whose message quotes the
