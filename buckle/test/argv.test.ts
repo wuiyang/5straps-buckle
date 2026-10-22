@@ -410,6 +410,24 @@ describe('a word an unquoted < or > ends (fix brief 6, A3)', () => {
 
 // A substitution, an array, an extended glob, or arithmetic cuts the statement it sits in, so no piece shows which word
 // is the command word; the command is also kept whole, as a head, each body replaced by `$()`.
+// zsh's e and +name glob qualifiers run code once per matching file (fix brief 9, A6): a ( glued to the word before it
+// whose body holds either sets `qualifier`; a ( after a blank, $(, $((, and a reading no shell runs do not.
+describe('a parenthesised list zsh may read as glob qualifiers', () => {
+  it.each([
+    ["echo *(e:'x':)", true], ["echo a(e:'x':)", true], ["echo *.txt(.e:'x':)", true], ['echo *(+f)', true], ["echo **/*(e['x'])", true],
+    ['echo *(.)', false], ['echo *(om[1])', false], ['echo x; (cd e)', false], ['echo $(echo e)', false], ['echo $(( 1 + 2 ))', false],
+    ['(( x + 1 ))', false], ['a=(one two)', false],
+  ])('reads %j as holding a qualifier that may run code: %s', (text, qualifier) => {
+    expect(shellStatementList(text).qualifier).toBe(qualifier)
+  })
+
+  it('reads a heredoc body fed to no shell as text that runs nothing, and one fed to a shell as shell text', () => {
+    const feedsShell = (owner: string) => !owner.startsWith('cat')
+    expect(shellStatementList("cat <<'EOF'\nf(e)\nEOF", undefined, feedsShell).qualifier).toBe(false)
+    expect(shellStatementList("zsh <<'EOF'\necho *(e:'x':)\nEOF", undefined, feedsShell).qualifier).toBe(true)
+  })
+})
+
 describe('the commands a substitution cuts, kept whole', () => {
   const headsOf = (text: string) => [...shellStatementList(text).heads.keys()]
 

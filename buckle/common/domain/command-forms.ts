@@ -22,6 +22,7 @@ export const READ_LIMITS = {
   comment: 'A # follows a ) that a case pattern or an extended glob may have closed, so Buckle cannot tell whether the rest of the line is a comment (comment)',
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
   expansion: 'Runs a command word or shell text an expansion supplies, or a command an expansion among a wrapper\'s own words may move, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)", timeout $t cmd), so Buckle cannot read it (expansion)',
+  qualifier: 'A zsh glob qualifier may run shell code: a word ends in a parenthesised list holding an e or a +, which zsh may read as qualifiers that run code once for each file the pattern matches, and Buckle does not read that code (glob qualifier)',
   ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
   scriptData: 'A shell takes its script, or a startup file it runs first, from a pipe, a redirection, a descriptor, an expansion, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
@@ -849,7 +850,7 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     return { groups: [], unread: null, scriptData: false, heads: [], startup }
   }
   const meter = { characters: budget.characters }
-  const { statements, seen, heads, deep, overDepth, unsureComment, overBudget } = shellStatementList(text, meter, feedsShell)
+  const { statements, seen, heads, deep, overDepth, unsureComment, qualifier, overBudget } = shellStatementList(text, meter, feedsShell)
   budget.characters = meter.characters
   const groups: CommandGroup[] = []
   const judged: string[][] = []
@@ -858,7 +859,7 @@ function textCommands(text: string, budget: Budget, around: Pick<Place, 'sure' |
     budget.spent = true
     return { groups, unread: null, scriptData: false, heads: judged, startup }
   }
-  let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : null
+  let unread: UnreadLimit | null = overDepth ? 'depth' : deep ? 'substitutions' : unsureComment ? 'comment' : qualifier ? 'qualifier' : null
   let scriptData = false
   for (const statement of statements) {
     const form = statementForm(statement, budget)

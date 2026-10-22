@@ -2264,6 +2264,68 @@ describe("zsh's =name expansion of a command word (fix brief 9, A5)", () => {
   })
 })
 
+describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () => {
+  // zsh reads a word's trailing parenthesised list as glob qualifiers (BARE_GLOB_QUAL, on by default), and its e
+  // qualifier and +name run shell code once for each file the pattern matches (zshexpn, Glob Qualifiers). The splitter
+  // does not know which shell reads the text, so a ( glued to the word before it whose body holds an e or a + leaves
+  // the call unread: refused under a deny list and asked at the floor with none.
+  const qualifier = READ_LIMITS.qualifier
+  const marker = "'git push --force origin main'"
+  const texts: Array<[string, string]> = [
+    ['zsh', `echo *(e:${marker}:)`],
+    ['zsh', `echo ?(e:${marker}:)`],
+    ['zsh', `echo @(e:${marker}:)`],
+    ['zsh', `echo +(e:${marker}:)`],
+    ['zsh', `echo *.txt(e:${marker}:)`],
+    ['zsh', `echo a(e:${marker}:)`],
+    ['zsh', `echo *(.e:${marker}:)`],
+    ['zsh', `echo **/*(e:${marker}:)`],
+    ['zsh', `echo *(e[${marker}])`],
+    ['zsh', `echo *(e{${marker}})`],
+    ['zsh', 'echo *(e:git\\ push\\ --force\\ origin\\ main:)'],
+    ['zsh', 'echo *(+marker)'],
+    ['bash', `zsh -c "echo *(e:${marker}:)"`],
+  ]
+
+  it.each(texts)('%s -c %j is refused under a deny list naming the limit', (shell, text) => {
+    expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread).toBe('qualifier')
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain(qualifier)
+  })
+
+  it.each(texts)('%s -c %j asks at the floor with no deny list', (shell, text) => {
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${qualifier}; asked rather than guessed at`]])
+  })
+
+  it('asks about a floor command inside a qualifier, directly and nested', () => {
+    for (const [shell, text] of [['zsh', "echo *(e:'sudo ls':)"], ['bash', `zsh -c "echo *(e:'sudo ls':)"`]] as const) {
+      expect(evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] }).kind).toBe('ask')
+    }
+  })
+
+  it('reads a glob with no code qualifier, an extended glob, a subshell after a blank, a substitution, and arithmetic as before', () => {
+    const rows: Array<[string, string]> = [
+      ['zsh', 'echo *.log'],
+      ['zsh', 'echo *(N)'],
+      ['zsh', 'echo *(om[1])'],
+      ['bash', 'echo @(a|b)'],
+      ['bash', 'echo x; (cd sub && make)'],
+      ['bash', 'echo $(ls)'],
+      ['bash', '(( x = 1 + 2 ))'],
+      ['bash', 'echo $(( 1 + 2 ))'],
+      ['bash', "cat > x.js <<'EOF'\nfunction handle(e) { return e + 1 }\nEOF"],
+    ]
+    for (const [shell, text] of rows) {
+      expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread, text).toBeNull()
+      const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+      expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

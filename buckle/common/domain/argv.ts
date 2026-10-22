@@ -581,6 +581,11 @@ const OPERATOR_CHARACTERS = new Set([';', '&', '|', '<', '>'])
  * extended globs `@(`, `?(`, `*(`, `+(` and `!(`. Its `)` then ends no word, so a `#` after it is word text.
  */
 const WORD_PAREN_BEFORE = new Set(['$', '<', '>', '=', '@', '?', '*', '+', '!'])
+/**
+ * Characters before a glued `(` whose body is no glob qualifier list: a command or process substitution (`$(`, `<(`,
+ * `>(`), zsh's `=(`, and an array assignment `a=(`.
+ */
+const NO_QUALIFIER_BEFORE = new Set(['$', '<', '>', '='])
 /** A `case` word anywhere in the text: its patterns close with a `)` that no `(` opened, which a count of parentheses cannot place. */
 const CASE_WORD = /(?:^|[^A-Za-z0-9_])case(?:$|[^A-Za-z0-9_])/
 /**
@@ -606,7 +611,8 @@ export const MAX_DEPTH = 8
  * anywhere in the text, a heredoc body included, so some text was read only as part of the statement around it, and
  * `overDepth` that heredoc bodies read whole nest past MAX_DEPTH, so one was left unread (slice 7f review R7F-HR-4).
  * `unsureComment` says a `#` followed a `)` that Buckle cannot tell closes a word or a command (CASE_WORD, `!(`), so
- * whether the rest of its line is a comment is unknown; that `#` is read as word text. Every pass over the text, the
+ * whether the rest of its line is a comment is unknown; that `#` is read as word text. `qualifier` says a `(` glued to
+ * the word before it opens a body zsh may read as glob qualifiers that run shell code (qualifierMayRun). Every pass over the text, the
  * first and each re-reading of a line, a joined run, a heredoc body, or a backtick body, is charged against `meter`,
  * the characters the caller's read budget has left; a pass that would run past it reads nothing and sets
  * `overBudget`, so a request under the size cap cannot hold the reader for seconds (the 7h to 7k review: eight
@@ -723,15 +729,16 @@ const SUBSTITUTED = '$()'
 export interface CharacterMeter { characters: number }
 
 /** What a reading of shell text met that it could not read whole, as shellStatementList names each. */
-export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment: boolean; overBudget: boolean }
+export interface SplitLimits { deep: boolean; overDepth: boolean; unsureComment: boolean; qualifier: boolean; overBudget: boolean }
 
-const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false, overBudget: false })
+const noLimits = (): SplitLimits => ({ deep: false, overDepth: false, unsureComment: false, qualifier: false, overBudget: false })
 
 /** Adds the limits one reading met to those of the reading around it. */
 function meet(into: SplitLimits, from: SplitLimits): void {
   into.deep ||= from.deep
   into.overDepth ||= from.overDepth
   into.unsureComment ||= from.unsureComment
+  into.qualifier ||= from.qualifier
   into.overBudget ||= from.overBudget
 }
 
@@ -951,6 +958,42 @@ function arithmeticAt(text: string, at: number, meter: CharacterMeter): boolean 
   }
   meter.characters -= stop === text.length ? text.length - at : stop - at + 1
   return false
+}
+
+/**
+ * Whether the body the glued `(` at `open` opens, up to its matching `)` or the end of the text, holds an `e` or a `+`
+ * anywhere, quoted or not: zsh's `e` qualifier (`e:code:`, `e[code]`, also after other qualifiers, as in `.e:code:`) and
+ * `+name` run shell code once for each file the pattern matches (zshexpn, Glob Qualifiers), which the splitter does not
+ * read, so any such body is taken to run code (fix brief 9, A6). Single and double quotes and a backslash are passed
+ * over in finding the `)`. The characters passed over are charged to the meter.
+ */
+function qualifierMayRun(text: string, open: number, meter: CharacterMeter): boolean {
+  let depth = 0
+  let quote: null | "'" | '"' = null
+  let index = open + 1
+  let runs = false
+  for (; index < text.length && index - open <= meter.characters; index++) {
+    const character = text[index]!
+    if (character === 'e' || character === '+') {
+      runs = true
+      break
+    }
+    if (quote === "'") {
+      if (character === "'") quote = null
+    } else if (character === '\\') {
+      index++
+      if (text[index] === 'e' || text[index] === '+') {
+        runs = true
+        break
+      }
+    } else if (quote === '"') {
+      if (character === '"') quote = null
+    } else if (character === "'" || character === '"') quote = character
+    else if (character === '(') depth++
+    else if (character === ')' && depth-- === 0) break
+  }
+  meter.characters -= index - open
+  return runs
 }
 
 /**
@@ -1315,6 +1358,10 @@ function unquotedSplit(text: string, mode: SplitMode, depth: number, meter: Char
       // `>|`, `>;`, or `||` (fix brief 6, A2; fix brief 7, A2b).
       level.previous = ''
     } else if (character === '(') {
+      // zsh reads a word's trailing `(...)` as glob qualifiers (BARE_GLOB_QUAL, on by default), and the splitter does not
+      // know the shell, so a `(` glued to the word before it is checked in every shell text a shell runs (fix brief 9, A6).
+      if (wordStart === false && !NO_QUALIFIER_BEFORE.has(previous) && (flags & SAFETY_NET) === 0 && qualifierMayRun(text, index, meter)) limits.qualifier = true
+      if (meter.characters < 0) return { ...limits, overBudget: true }
       // `!(` at a word start is a negated subshell, or an extended glob when extglob is on, which the text need not say.
       const kind: ParenKind = !WORD_PAREN_BEFORE.has(previous) ? 'command' : previous === '!' && previousStarted ? 'unsure' : 'word'
       // A case pattern's own opening parenthesis opens no subshell, and the pattern's `)` closes nothing.
