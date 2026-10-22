@@ -60,8 +60,9 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
   request, and the startup and shutdown steps only at `BUCKLE_LOG_LEVEL=debug` or `trace`.
   Machines read the JSON lines, which Buckle writes wherever stderr is not a terminal and to the
   service log; `BUCKLE_LOG_FORMAT=json` writes them at a terminal too.
-- A line logged while a question is open is drawn above its prompt only while the prompt fits one
-  row: a long workspace name on a narrow terminal wraps it, and the redraw then lands a row off.
-  A question a one-shot command asks at a terminal is not redrawn at all.
+- A line logged while a question is open is drawn above its prompt, and a tag written back on the
+  prompt's row, only while the prompt and what was typed fit one row: a long workspace name on a
+  narrow terminal, or typing past the row's end, wraps it, and the redraw or the tag then lands a
+  row off. A question a one-shot command asks at a terminal is not redrawn at all.
 - Lines logged before the node reads `buckle.env` follow the terminal and the shell's
   `BUCKLE_LOG_FORMAT`, not the file's.
