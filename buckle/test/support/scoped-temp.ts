@@ -13,6 +13,8 @@ import { plainTempRoot } from './plain-temp.js'
 const systemTemp = process.env.BUCKLE_TEST_SYSTEM_TMPDIR ??= tmpdir()
 const scope = mkdtempSync(join(plainTempRoot(systemTemp), 'buckle-test-'))
 process.env.TMPDIR = scope
+// Tests read stderr's log format by the TTY rule alone, whatever a developer's shell exports (fix brief 1, H8).
+delete process.env.BUCKLE_LOG_FORMAT
 
 afterAll(() => {
   process.env.TMPDIR = systemTemp

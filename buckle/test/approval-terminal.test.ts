@@ -555,6 +555,8 @@ describe('the serve terminal\'s question', () => {
 
   it('shows the expiry on this device\'s clock, while the watch and the relayed text keep ISO UTC', async () => {
     vi.stubEnv('TZ', 'Asia/Kuala_Lumpur')
+    // The block's expiry and the one worded here again read one clock (fix brief 1, H8).
+    vi.useFakeTimers({ toFake: ['Date'] })
     const ask = approval('t1', 600_000)
     const { terminal, end } = await shownQuestion(named(ask))
     await end()
