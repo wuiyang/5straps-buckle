@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type { LogEvent } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { configureRootLogger, flushLogs } from '../common/runtime/log.js'
 import { renderEvent } from '../common/runtime/log-render.js'
 import { questionFor } from '../common/services/approvals/approval-service.js'
+import { setupServer } from '../server/setup-server.js'
 
 // The CLI display slice, C5: a node with nobody at a prompt logs one line for each question it cannot ask, saying what
 // the ask is about and where to see it whole, and carrying no subject, description, or token, which no log line does.
@@ -59,6 +63,24 @@ describe('a pending approval on a node with no terminal', () => {
   it('logs none for a one-shot command, which relays the ask itself', async () => {
     configureRootLogger({})
     expect(await logged(() => setupCli({ terminal: null }).requestCli(ask('t-cli')))).toEqual([])
+  })
+
+  // Fix brief 1, H6: HTTP's requester, once the app's one cli:call listener is gone, finds no listener and logs the line too.
+  it('logs one Approval pending line for a question HTTP asks where the app has no listener', async () => {
+    configureRootLogger({})
+    const built = mkdtempSync(join(tmpdir(), 'buckle-pending-entry-'))
+    const entryPath = join(built, 'index.mjs')
+    // The two things a built entry exports, with the hooks the runtime's requester calls its observers through.
+    writeFileSync(entryPath, 'export const nitroApp = { hooks: { callHook: async () => {} } }\nexport const middleware = () => {}\n')
+    const common = { owner: { onClose: () => {} }, services: {} }
+    try {
+      const server = await setupServer({ common: common as never, logger: { info: vi.fn(), warn: vi.fn() } as never, requestCli: async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }), entryPath })
+      server.release()
+      const lines = await logged(() => server.requestCli(ask('t-http')))
+      expect(lines).toEqual([expect.objectContaining({ level: 'info', message: 'Approval pending', fields: expect.objectContaining({ tool: 'fs_write', workspace: 'The site' }) })])
+    } finally {
+      rmSync(built, { recursive: true, force: true })
+    }
   })
 
   it('reads with the [approval] tag on a person\'s console', () => {

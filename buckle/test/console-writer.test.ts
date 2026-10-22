@@ -1,7 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createInterface } from 'node:readline'
 import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { loadConfig } from '../common/runtime/config.js'
 import { createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
+import type { ServeHttpInput } from '../server/serve.js'
+import { serveHttp } from '../server/serve.js'
 import { consoleRoster, rosterLines } from '../server/roster.js'
 
 // The CLI display slice, C3: buckle serve's log lines, workspace list, and approval questions share one writer, which
@@ -111,5 +117,50 @@ describe('the workspace list on a person\'s console', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  // Fix brief 1, H6: buckle serve lists its workspaces through the console it is handed, and on stderr as listed without one.
+  describe('from buckle serve', () => {
+    const none = 'No workspace is online: buckle workspace init serves a folder, and buckle workspace enable <id> serves one again.'
+
+    async function served(extra: Partial<ServeHttpInput>): Promise<void> {
+      const state = mkdtempSync(join(tmpdir(), 'buckle-console-serve-'))
+      const config = { ...loadConfig({ BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none' }), host: '127.0.0.1', port: 0 }
+      const closers: Array<() => unknown> = []
+      const workspaces = { list: () => [], closeUnserved: async () => {} }
+      const common = { owner: { onClose: (...args: unknown[]) => { closers.push(args.at(-1) as () => unknown) } }, start: async () => {}, services: { getWorkspaces: async () => workspaces } }
+      try {
+        await serveHttp({ config, common: common as never, logger: { info: vi.fn(), warn: vi.fn() } as never, server: { middleware: (_request: unknown, response: { end(): void }) => response.end() } as never, ...extra })
+      } finally {
+        for (const close of closers.reverse()) await close()
+        rmSync(state, { recursive: true, force: true })
+      }
+    }
+
+    it('goes through the console it is handed, its first line stamped with the time and [info]', async () => {
+      vi.stubEnv('TZ', 'UTC')
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-21T14:22:00Z'))
+      const terminal = screen(false)
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      try {
+        await served({ console: createConsoleWriter({ output: terminal.output, dates: false }) })
+        await vi.waitFor(() => expect(terminal.shown()).toBe(`14:22:00 [info] ${none}\n`))
+        expect(stderr.mock.calls.map(([chunk]) => String(chunk)).join('')).not.toContain(none)
+      } finally {
+        stderr.mockRestore()
+        vi.useRealTimers()
+      }
+    })
+
+    it('goes to stderr as listed where it is handed no console', async () => {
+      const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      try {
+        await served({})
+        expect(stderr.mock.calls.map(([chunk]) => String(chunk))).toContain(`${none}\n`)
+      } finally {
+        stderr.mockRestore()
+      }
+    })
   })
 })

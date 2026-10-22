@@ -1,8 +1,10 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'pathe'
+import type { RequestCli } from '@5straps/runtime'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
+import type { ConsoleWriter } from '../common/runtime/console.js'
 
 const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state', cwd: process.cwd() } as BuckleConfig
 const entry = vi.hoisted(() => ({
@@ -44,8 +46,16 @@ vi.mock('../common/runtime/log.js', async importOriginal => {
   }
   return { ...original, configureRootLogger }
 })
+// The real requester, with what main hands it kept, so a test reads the terminal it attaches (fix brief 1, H6).
+vi.mock('../cli/setup.js', async importOriginal => {
+  const original = await importOriginal<typeof import('../cli/setup.js')>()
+  return { ...original, setupCli: vi.fn(original.setupCli) }
+})
 
 const { main, selectMode, stopSignals, takeGlobalFlags } = await import('../main.js')
+const { setupCli } = await import('../cli/setup.js')
+const { flushLogs, logger } = await import('../common/runtime/log.js')
+const { questionFor } = await import('../common/services/approvals/approval-service.js')
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -384,6 +394,52 @@ describe('main', () => {
       terminals(false)
       await main(['serve'])
       expect(((entry.serveHttp.mock.calls as unknown[][])[0]![0] as { console?: unknown }).console).toBeUndefined()
+    })
+
+    // Fix brief 1, H6: each line that joins the console to buckle serve, held by a test of its own.
+    const served = () => ((entry.serveHttp.mock.calls as unknown[][])[0]![0] as { console: ConsoleWriter }).console
+    const stderrText = (written: { mock: { calls: unknown[][] } }) => written.mock.calls.map(([chunk]) => String(chunk)).join('')
+
+    it('writes the date separator before the first line it writes', async () => {
+      terminals(true)
+      const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      await main(['serve'])
+      served().write(['14:22:00 [info] the first line'], new Date())
+      await flushLogs()
+      expect(String(written.mock.calls[0]![0])).toMatch(/^--- \d{4}-\d\d-\d\d ---\n/)
+    })
+
+    it('writes a block after the log lines logged before it', async () => {
+      terminals(true)
+      const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      await main(['serve'])
+      for (let index = 1; index <= 20; index += 1) logger.info(`logged before the block, line ${index}`)
+      await served().block(['one block of lines'], new Date())
+      await flushLogs()
+      const text = stderrText(written)
+      expect(text).toContain('logged before the block, line 20\n')
+      expect(text.indexOf('one block of lines\n')).toBeGreaterThan(text.indexOf('logged before the block, line 20\n'))
+    })
+
+    it('asks its approval questions through the same console', async () => {
+      terminals(true)
+      await main(['serve'])
+      expect(vi.mocked(setupCli).mock.calls[0]![0].terminal?.console).toBe(served())
+    })
+
+    // The CLI display slice, C5: with nobody at its terminal, a node logs each question it cannot ask.
+    it('logs Approval pending for a question a serve with no terminal cannot ask', async () => {
+      terminals(false)
+      const written = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+      await main(['serve'])
+      const { requestCli } = (entry.setupServer.mock.calls as unknown[][])[0]![0] as { requestCli: RequestCli }
+      await requestCli(questionFor({
+        approval: { token: 't-headless', rule: 'write_scope', subject: '/outside/a.md', reason: 'outside the workspace', tool: 'fs_write', offeredScopes: ['once'], expiresAt: new Date(Date.now() + 60_000).toISOString() },
+        workspaceId: 'w-1', workspaceName: 'site', context: { correlationId: 'c-headless', sessionId: 's' },
+      }))
+      await flushLogs()
+      const lines = stderrText(written).split('\n').filter(line => line.startsWith('{')).map(line => JSON.parse(line) as { message: string })
+      expect(lines).toContainEqual(expect.objectContaining({ level: 'info', message: 'Approval pending', fields: expect.objectContaining({ tool: 'fs_write', workspace: 'site' }) }))
     })
   })
 

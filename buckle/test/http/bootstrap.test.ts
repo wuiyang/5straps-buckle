@@ -215,6 +215,8 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       body: JSON.stringify({ requestId: 'held-write', tool: 'fs_write', args: { path: 'held.md', content: 'must not land' } }) })
     await expect.poll(pendingTokens, { timeout: 20_000 }).toHaveLength(1)
     const [token] = pendingTokens()
+    // A node with nobody at its terminal logs each question it cannot ask (the CLI display slice, C5; fix brief 1, H6).
+    expect(await buckle.waitForLine(line => line.message === 'Approval pending')).toMatchObject({ level: 'info', fields: expect.objectContaining({ tool: 'fs_write' }) })
 
     buckle.child.kill('SIGTERM')
 
