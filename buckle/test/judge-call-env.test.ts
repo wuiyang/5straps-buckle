@@ -5,7 +5,7 @@ import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { callVariables, CODE_LOADING_VARIABLES, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from '../common/services/judge/call-env.js'
-import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, wrapperWords } from '../common/services/judge/call-forms.js'
+import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, selectsOption, wrapperWords } from '../common/services/judge/call-forms.js'
 import { allForms, commandForms, commandFormsOf } from '../common/domain/command-forms.js'
 import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
@@ -193,6 +193,22 @@ describe('a call that changes its working directory before its code runs (fix br
     }
     // After a `--` the words are the script's own, and pnpm hands an option after the script name to the script.
     for (const words of [['npm', 'run', 'build', '--', '-w', 'a'], ['pnpm', 'run', 'build', '--filter', 'a'], ['npm', 'run', 'build']]) expect(selects(words), words.join(' ')).toBe(false)
+  })
+
+  it('reads an option as npm\'s nopt does: a prefix of three or more letters after --, and a short letter after -- (fix brief 9, B32)', () => {
+    // npm 11.19.0 ran sub's script for `--prefi=sub`, `--prefi sub`, `--C sub`, and `--C=sub`, and workspace a's for `--w a`
+    // and `--w=a`; pnpm 10.33.2 took `--prefi` as `--prefix`.
+    const selecting: Array<[string, string]> = [['--prefi=sub', '--prefix'], ['--prefi', '--prefix'], ['--pre', '--prefix'], ['--workspac', '--workspace'], ['--C', '-C'], ['--C=sub', '-C'], ['--w', '-w'], ['--w=a', '-w'], ['--prefix', '--prefix'], ['--prefix=sub', '--prefix'], ['-Csub', '-C']]
+    for (const [word, option] of selecting) expect(selectsOption(word, option), `${word} ${option}`).toBe(true)
+    const other: Array<[string, string]> = [['--pr', '--prefix'], ['--production', '--prefix'], ['--prefixes', '--prefix'], ['--Cx', '-C'], ['-x', '-C']]
+    for (const [word, option] of other) {
+      expect(selectsOption(word, option), `${word} ${option}`).toBe(false)
+    }
+    const selects = (words: string[]) => changesDirectory(commandFormsOf({ command: words[0]!, args: words.slice(1) }))
+    for (const words of [['npm', 'run', 'build', '--prefi=sub'], ['npm', 'run', 'build', '--prefi', 'sub'], ['npm', 'run', 'build', '--C', 'sub'], ['npm', 'run', 'build', '--C=sub'], ['npm', 'run', 'build', '--w', 'a'], ['npm', 'run', 'build', '--w=a'], ['npm', '--prefi=sub', 'run', 'build'], ['npm', 'run', '--prefi', 'sub', 'build'], ['pnpm', '--prefi', 'sub', 'run', 'build']]) {
+      expect(selects(words), words.join(' ')).toBe(true)
+    }
+    for (const words of [['npm', 'run', 'build', '--', '--prefi=sub'], ['npm', 'run', 'build', '--production']]) expect(selects(words), words.join(' ')).toBe(false)
   })
 
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {

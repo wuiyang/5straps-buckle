@@ -459,4 +459,22 @@ describe('a standard form that selects another workspace package (fix brief 8, B
     await call(runtime, 'pnpm', ['run', 'build', '--filter', 'a'])
     expect(fakes.shownQuick.map(input => [input.command, input.standardScript, input.scriptText])).toEqual([['npm run build -- -w a', true, 'tsc -p .'], ['pnpm run build --filter a', true, 'tsc -p .']])
   })
+
+  it('refuses a unique prefix and a double-dash short letter as npm reads them, and still shows the root text past a -- or for --production (fix brief 9, B32)', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    workspaced(config)
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['npm *', 'pnpm *'] })
+    const refused: Array<[string, string[]]> = [['npm', ['run', 'build', '--prefi=a']], ['npm', ['run', 'build', '--prefi', 'a']], ['npm', ['run', 'build', '--C', 'a']], ['npm', ['run', 'build', '--C=a']], ['npm', ['run', 'build', '--w', 'a']], ['npm', ['run', 'build', '--w=a']], ['npm', ['--prefi=a', 'run', 'build']], ['npm', ['run', '--prefi', 'a', 'build']], ['pnpm', ['--prefi', 'a', 'run', 'build']]]
+    for (const [program, args] of refused) {
+      const { response, entry } = await call(runtime, program, args)
+      expect(response, args.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(entry.judge, args.join(' ')).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    }
+    expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
+    await call(runtime, 'npm', ['run', 'build', '--', '--prefi=a'])
+    await call(runtime, 'npm', ['run', 'build', '--production'])
+    expect(fakes.shownQuick.map(input => [input.command, input.scriptText])).toEqual([['npm run build -- --prefi=a', 'tsc -p .'], ['npm run build --production', 'tsc -p .']])
+  })
 })

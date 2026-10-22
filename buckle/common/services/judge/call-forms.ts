@@ -42,8 +42,9 @@ const DIRECTORY_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'prevd', 'ne
  * managers that take a folder to run in, and the words that select another workspace package, whose script then runs in
  * that package's folder while the working directory's package.json names another: npm's `-w`, `--workspace`,
  * `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root` (npm 11.19.0 ran the selected package's script for each,
- * bare or as `=value`), and bun's `--filter` and `-F` (fix brief 8, B23). Each is read anywhere before a `--`, bare, with
- * `=value`, or by its short letter's prefix, which fails closed for a script's own argument.
+ * bare or as `=value`), and bun's `--filter` and `-F` (fix brief 8, B23). Each is read anywhere before a `--` as npm's
+ * option parser reads it (selectsOption): bare, with `=value`, a long one by any prefix of three or more letters, a short
+ * one by its letter's prefix or after `--` (`--C`, `--w`), which fails closed for a script's own argument (fix brief 9, B32).
  */
 const WRAPPER_CHDIR: Readonly<Record<string, string>> = { env: 'C', sudo: 'D' }
 const PROGRAM_CHDIR: Readonly<Record<string, readonly string[]>> = {
@@ -68,8 +69,21 @@ export function changesDirectory(forms: CommandForms): boolean {
     const options = PROGRAM_CHDIR[program]
     if (options === undefined) return false
     const end = form.indexOf('--')
-    return form.slice(1, end < 0 ? form.length : end).some(word => options.some(option => word === option || word.startsWith(option.startsWith('--') ? `${option}=` : option)))
+    return form.slice(1, end < 0 ? form.length : end).some(word => options.some(option => selectsOption(word, option)))
   })
+}
+
+/**
+ * Whether a word names an option as npm's option parser (nopt) reads one (fix brief 9, B32): the option itself, bare or with
+ * `=value`; a long option by a prefix of three or more letters after `--`, which nopt takes where it is unique (npm 11.19.0
+ * ran sub's script for `--prefi=sub`, and pnpm 10.33.2 read `--prefi` as `--prefix`), every such prefix read as one,
+ * which fails closed; and a short option by its letter's prefix (`-Csub`, `-w=a`) or by nopt's double-dash spelling of
+ * the letter (`--C sub`, `--w=a`, which npm ran with no warning).
+ */
+export function selectsOption(word: string, option: string): boolean {
+  const typed = word.split('=')[0]!
+  if (option.startsWith('--')) return typed === option || (typed.length >= 5 && typed.startsWith('--') && option.startsWith(typed))
+  return word.startsWith(option) || typed === `-${option}`
 }
 
 /**
