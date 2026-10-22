@@ -654,6 +654,40 @@ describe('a git tool refuses a repository that borrows objects from outside the 
       await refused(root, answeringAt(plain(repo)), outside)
     }
   })
+
+  // git reads a line by its real path, so a `..` after a link climbs from where the link points, while the check folded
+  // the line as text first: `<root>/link/..`, the link leading to a folder outside, borrowed from outside with no
+  // refusal (git pack recheck 2, held[2]). git climbs out of a link to a file too, where the system refuses to. Each
+  // line is written as text, never joined, which would fold it; `<root>` stands for the root.
+  it.each([['<root>/link/..'], ['<root>/link/../'], ['../../../link/..'], ['<root>/file-link/..'], ['../../../file-link/..']])('refuses the line %s, whose `..` climbs out of a link to a folder or a file outside', async line => {
+    const { root, repo, outside } = workspace()
+    writeFileSync(join(outside, 'HEAD'), 'ref: refs/heads/main\n')
+    symlinkSync(join(outside, 'info'), join(root, 'link'))
+    symlinkSync(join(outside, 'HEAD'), join(root, 'file-link'))
+    alternates(join(repo, '.git', 'objects'), line.replace('<root>', root))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
+
+  it.each([['a plain line inside', '<root>/shared'], ['a `..` after a link that stays inside', '<root>/inside-link/..'], ['the same, relative', '../../../inside-link/..'], ['a line git cannot normalize, its text inside', '<root>/nonexistent/../store/.git/objects']])('runs %s, as before: %s', async (_, line) => {
+    const { root, repo } = workspace()
+    symlinkSync(join(root, 'shared', 'info'), join(root, 'inside-link'))
+    mkdirSync(join(root, 'store', '.git', 'objects'), { recursive: true })
+    alternates(join(repo, '.git', 'objects'), line.replace('<root>', root))
+    const runs = answeringAt(plain(repo))
+    await gitPack(root, runs).call('git_log', { repo: 'repo' })
+    expect(logOf(runs)).toHaveLength(1)
+  })
+
+  // A line passes only where it lands inside both as git reads it and folded as text, so a git that folds the line is
+  // covered too; the cost is a line inside by its real path but outside as text, refused though git reads inside.
+  it.each([['<root>/deep/../../elsewhere'], ['../../../deep/../../elsewhere']])('refuses the line %s, inside by its real path but outside folded as text', async line => {
+    const { root, repo, outside } = workspace()
+    mkdirSync(join(root, 'a', 'b', 'c'), { recursive: true })
+    mkdirSync(join(root, 'a', 'elsewhere', 'info'), { recursive: true })
+    symlinkSync(join(root, 'a', 'b', 'c'), join(root, 'deep'))
+    alternates(join(repo, '.git', 'objects'), line.replace('<root>', root))
+    await refused(root, answeringAt(plain(repo)), outside)
+  })
 })
 
 describe.skipIf(hostGit === null)('a repository that borrows objects, against the installed git', () => {
@@ -715,6 +749,33 @@ describe.skipIf(hostGit === null)('a repository that borrows objects, against th
       expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
       expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-named-store/)
     }
+  })
+
+  it.each([['<root>/link/..'], ['../../../link/..'], ['<root>/file-link/../objects']])('refuses a store reached by the line %s, a `..` after a link to a folder or a file, as git itself reads it', async line => {
+    const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+    const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-link-store-')))
+    const elsewhere = join(parent, 'elsewhere')
+    mkdirSync(elsewhere)
+    writeFileSync(join(elsewhere, 'a.txt'), 'history kept elsewhere\n')
+    git(elsewhere, 'init', '-q')
+    git(elsewhere, 'add', 'a.txt')
+    git(elsewhere, 'commit', '-qm', 'history kept elsewhere')
+    const root = join(parent, 'root')
+    mkdirSync(root)
+    git(root, 'clone', '-q', '--shared', elsewhere, 'borrowing')
+    symlinkSync(join(elsewhere, '.git', 'objects', 'info'), join(root, 'link'))
+    symlinkSync(join(elsewhere, '.git', 'HEAD'), join(root, 'file-link'))
+    const borrowing = join(root, 'borrowing')
+    const file = join(borrowing, '.git', 'objects', 'info', 'alternates')
+    writeFileSync(file, `${line.replace('<root>', root)}\n`)
+    expect(execFileSync('git', ['log', '--format=%s'], { cwd: borrowing, env: quiet }).toString()).toContain('history kept elsewhere')
+    const refusal = await refusalOf(() => gitPack(root, hostRunProcess, null, hostGit!).call('git_log', { repo: 'borrowing' }))
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('borrows objects from outside the workspace') })
+    expect(String(refusal)).not.toMatch(/history kept elsewhere|git-pack-link-store/)
+    // Folded as text this line is the store outside; git climbs out of a folder that does not exist and reads no store.
+    writeFileSync(file, `${root}/nonexistent/../../elsewhere/.git/objects\n`)
+    expect(() => execFileSync('git', ['log', '--format=%s'], { cwd: borrowing, env: quiet, stdio: 'pipe' })).toThrow(/unable to normalize alternate object path/)
   })
 })
 

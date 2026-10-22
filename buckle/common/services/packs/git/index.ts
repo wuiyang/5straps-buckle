@@ -381,10 +381,14 @@ function pinRepository(repository: Repository, platform: NodeJS.Platform): { env
  * approval judged is that folder (repositoryBoundary; D77, objects/info/alternates): the objects folder of the git
  * directory and of the common one, which may be a link, each object store their `info/alternates` names, and in turn
  * each of those stores' own, as deep as git follows them. A
- * line is a path, absolute or, as git reads it, relative to the real objects folder holding the file and folded as
- * text; one starting with `"` is C-quoted and is refused where its quoting is not whole; a blank line and a `#` line
- * name none. Each is the bytes git opens (storePlace), and lands where its links lead (landingOf). An absent file is the
- * normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too, which it never has here (withOwnGitVariables).
+ * line is a path, absolute or, as git reads it, relative to the real objects folder holding the file; one starting
+ * with `"` is C-quoted and is refused where its quoting is not whole; a blank line and a `#` line name none. Each is
+ * the bytes git opens (storePlaces), resolved by its real path as git resolves it, so a `..` climbs from where a link
+ * points (landingOf). A line passes only where both readings land inside, the bytes git opens and the line folded as
+ * text, as a git that folds a line reads it: folded first, a `..` after a link landed inside while git read a store
+ * outside (git pack recheck 2, held[2]). Where git cannot normalize a line it reads no store there (namesNoStore), and
+ * the fold must still land inside. An absent file is the normal case. git reads GIT_ALTERNATE_OBJECT_DIRECTORIES too,
+ * which it never has here (withOwnGitVariables).
  */
 function assertObjectsInside(repository: Repository, boundary: string, paths: PathView, platform: NodeJS.Platform): void {
   const roots = [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary]
@@ -393,22 +397,30 @@ function assertObjectsInside(repository: Repository, boundary: string, paths: Pa
     if (real === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
     return real
   }
+  const named = (store: Buffer, line: Buffer): Buffer[] => {
+    const { opened, folded } = storePlaces(store, line, platform)
+    const opening = platform !== 'win32' && namesNoStore(opened) ? [] : [landing(opened)]
+    return [...opening, landing(folded)]
+  }
   const read = new Set<string>()
   let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => landing(Buffer.from(join(directory, 'objects'))))
   for (let depth = 0; depth < ALTERNATES_DEPTH && stores.length > 0; depth++) {
-    stores = stores.filter(store => !read.has(store.toString('latin1'))).flatMap(store => {
-      read.add(store.toString('latin1'))
-      return alternatesOf(store).map(line => landing(storePlace(store, line, platform)))
+    stores = stores.flatMap(store => {
+      const key = store.toString('latin1')
+      if (read.has(key)) return []
+      read.add(key)
+      return alternatesOf(store).flatMap(line => named(store, line))
     })
   }
 }
 
 /**
  * Where a store lands, by its real path, when that lies inside one of `roots`; null otherwise, or where it cannot be
- * found. Off Windows a name is bytes, which git opens as they are, so the store is resolved as bytes and compared with
- * each root's own bytes: a name that is not UTF-8 is checked where git reads it, never as the text it decodes to. A
- * store that does not exist yet lands where it would be made (resolveTarget), which only a name that is UTF-8 text can be
- * read for; any other is refused. On Windows git reads a line as UTF-8, so one that is not is refused, and the text is
+ * found. The real path is the one git resolves a line to: each name in turn, a `..` climbing from where a link points,
+ * never folded as text first. Off Windows a name is bytes, which git opens as they are, so the store is resolved as
+ * bytes and compared with each root's own bytes: a name that is not UTF-8 is checked where git reads it, never as the
+ * text it decodes to. A store that does not exist yet lands where it would be made (resolveTarget, which climbs a `..`
+ * the same way), which only a name that is UTF-8 text can be read for; any other is refused. On Windows git reads a line as UTF-8, so one that is not is refused, and the text is
  * resolved as every other path is.
  */
 function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform }): Buffer | null {
@@ -447,24 +459,48 @@ function utf8Of(bytes: Buffer): string | null {
 const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
 
 /**
- * The store a line names, as the bytes git opens: an absolute line as written, a relative one after the real objects
- * folder holding the file, folded as text as git folds it. Off Windows the bytes are folded one for one (read as
- * latin1, where each byte is one character), and a backslash, which is part of a name there, or a leading drive letter
- * refuses the line, as before. On Windows the line is UTF-8 (refused where it is not), its backslashes are separators,
- * and it is folded as any other Windows path.
+ * The store a line names, two ways. `opened` is the bytes git opens: an absolute line as written, a relative one after
+ * the real objects folder holding the file and a `/`, never folded, so its real path climbs each `..` from where a link
+ * points, as git resolves it. `folded` is the same folded as text, as a git that folds a line reads it. Off Windows the
+ * bytes are kept one for one (folded as latin1, where each byte is one character), and a backslash, which is part of a
+ * name there, or a leading drive letter refuses the line, as before. On Windows the line is UTF-8 (refused where it is
+ * not), its backslashes are separators, and it is folded as any other Windows path.
  */
-function storePlace(store: Buffer, line: Buffer, platform: NodeJS.Platform): Buffer {
+function storePlaces(store: Buffer, line: Buffer, platform: NodeJS.Platform): { opened: Buffer; folded: Buffer } {
   const refused = () => new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
   if (platform === 'win32') {
     const text = utf8Of(line)
     if (text === null) throw refused()
     let named: string
     try { named = withForwardSlashes(text, platform) } catch { throw refused() }
-    return Buffer.from(isAbsolute(named) ? normalize(named) : join(store.toString('utf8'), named))
+    const base = store.toString('utf8')
+    return isAbsolute(named)
+      ? { opened: Buffer.from(named), folded: Buffer.from(normalize(named)) }
+      : { opened: Buffer.from(`${base}/${named}`), folded: Buffer.from(join(base, named)) }
   }
   const named = line.toString('latin1')
   try { withForwardSlashes(named, platform) } catch { throw refused() }
-  return Buffer.from(named.startsWith('/') ? posix.normalize(named) : posix.join(store.toString('latin1'), named), 'latin1')
+  const absolute = named.startsWith('/')
+  return {
+    opened: absolute ? line : Buffer.concat([store, Buffer.from('/'), line]),
+    folded: Buffer.from(absolute ? posix.normalize(named) : posix.join(store.toString('latin1'), named), 'latin1'),
+  }
+}
+
+/**
+ * Whether git reads no store at `place`, which a line names off Windows: git resolves it name by name, and only a last
+ * plain name may be absent, a store made while git runs; where an earlier one is, git reports "unable to normalize
+ * alternate object path" and reads none there. Only an absent name counts (ENOENT): git climbs out of a file with `..`
+ * where the system refuses to (ENOTDIR), so such a place is left to landingOf, which refuses it.
+ */
+function namesNoStore(place: Buffer): boolean {
+  const absent = (path: Buffer) => {
+    try { realpathSync.native(path); return false } catch (error) { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
+  }
+  if (!absent(place)) return false
+  const slash = place.lastIndexOf(SLASH)
+  const last = place.subarray(slash + 1).toString('latin1')
+  return last === '' || last === '.' || last === '..' || absent(slash === 0 ? Buffer.from('/') : place.subarray(0, slash))
 }
 
 /**
