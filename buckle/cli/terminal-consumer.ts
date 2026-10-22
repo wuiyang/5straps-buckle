@@ -5,6 +5,7 @@ import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantSc
 import { z } from 'zod'
 import { remainingMs } from '../common/domain/approval-deadline.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
+import { createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -18,6 +19,8 @@ export interface TerminalOptions {
    * (interruptSelf), so it stops exactly as it would have with no question open.
    */
   onInterrupt?: () => void
+  /** The writer its questions share with the process's log lines and workspace list (`buckle serve`, the CLI display slice C3); their own otherwise. */
+  console?: ConsoleWriter
 }
 
 /** What interrupting the process needs of it; the process itself unless a test hands in its own. */
@@ -92,6 +95,7 @@ const QuestionDetailsSchema = z.object({
 export function createTerminalConsumer(options: TerminalOptions = {}): CliConsumer {
   const input = options.input ?? process.stdin
   const output = options.output ?? process.stderr
+  const writer = options.console ?? createConsoleWriter({ output, dates: false })
   const interrupted = new AbortController()
   const onInterrupt = options.onInterrupt ?? (() => interruptSelf())
   const interrupt = () => {
@@ -116,12 +120,20 @@ export function createTerminalConsumer(options: TerminalOptions = {}): CliConsum
         interrupt()
       })
       try {
-        output.write(describeQuestion(question))
+        // After every line logged before it (C3).
+        await writer.block(describeQuestion(question).slice(0, -1).split('\n'), new Date())
         await keys.quiet(QUIET_MS, cancelled)
         cancelled.throwIfAborted()
         discardTypedLine(readline)
-        const answer = (await readline.question(`${marked(question, [''])[0]}  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })).trim().toLowerCase()
-        return { status: 'answered', answer: { choice: choiceFor(question, answer) } }
+        // While the prompt is open, a line logged lands above it and the prompt is drawn again below.
+        const release = writer.asking(readline)
+        let typed: string
+        try {
+          typed = await readline.question(`${marked(question, [''])[0]}  ${question.call ? `${scopeChoices(question)}  ` : ''}${denyChoices(question)} > `, { signal: cancelled })
+        } finally {
+          release()
+        }
+        return { status: 'answered', answer: { choice: choiceFor(question, typed.trim().toLowerCase()) } }
       } finally {
         keys.stop()
         readline.close()

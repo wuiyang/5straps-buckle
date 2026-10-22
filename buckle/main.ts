@@ -11,6 +11,7 @@ import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
+import { createConsoleWriter, type ConsoleWriter } from './common/runtime/console.js'
 import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
 import { AlreadyServingError, holdServe, refusedServeExit, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
@@ -144,14 +145,18 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: { ski
   return (await runCli({ argv: mode.argv, config: configureProcess('cli').config })).exitCode
 }
 
-function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr'): { config: NodeConfig; logging: LoggerRoot } {
+function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr'): { config: NodeConfig; logging: LoggerRoot; console?: ConsoleWriter } {
   // An MCP client starts buckle mcp, from a config an agent may write: it reads no settings file but the node's own.
   if (kind === 'mcp') refuseForeignEnvironmentFile()
   // What the process was started with, before the file fills in the rest: migration reads the file alone (MigrationInput).
   const caller = { ...process.env }
   const environment = loadEnvironmentFile()
   // The CLI display slice, C1: once the file is read, its BUCKLE_LOG_FORMAT names stderr's format too; the service file stays JSON.
-  const logging = configureRootLogger(loggerConfigFrom(process.env), output === 'stderr' ? { format: stderrFormat(logFormatFrom(process.env)) } : output)
+  const format = output === 'stderr' ? stderrFormat(logFormatFrom(process.env)) : null
+  // C3: a serve whose stderr a person reads shares one writer, which owns the date separator, between its log lines, its
+  // workspace list, and its approval questions.
+  const writer = kind === 'serve' && format === 'human' ? createConsoleWriter({ output: process.stderr, dates: true, flush: flushLogs }) : undefined
+  const logging = configureRootLogger(loggerConfigFrom(process.env), format === null ? output : { format, ...(writer ? { console: writer } : {}) })
   // Warn only for now: whether a loose file refuses to start is the owner's call (review M4).
   if (environment.openToOthers && environment.file) logging.logger.warn(`The environment file ${environment.file} can be read by other users; run chmod 600 ${environment.file}`)
   const layers = { file: environment.file === null ? null : { path: environment.file, values: environment.values }, caller, defaultsFromFileAlone: true }
@@ -159,7 +164,7 @@ function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr
   const unread = unreadWorkspaceDefaults(layers)
   const were = `${wordList(unread)} ${unread.length === 1 ? 'is' : 'are'} set in this command's environment`
   if (unread.length > 0) logging.logger.warn(`Not read: ${were}${environment.file === null ? ', but this node has no buckle.env' : ` to another value than ${environment.file} holds`}. A node takes every workspace's defaults, and the decision AI's keys and addresses, from its environment file alone, so a shell's or an MCP config's env cannot change them; ${environment.file === null ? 'run buckle init to write the file, then set them' : 'change them'} with buckle settings set, or a decision AI key or address in buckle.env by hand.`)
-  return { config: loadConfig(process.env, process.platform, layers), logging }
+  return { config: loadConfig(process.env, process.platform, layers), logging, ...(writer ? { console: writer } : {}) }
 }
 
 const SERVICE_USAGE: Record<ServiceKind, string> = {
@@ -185,12 +190,12 @@ function refuseCommand(error: unknown): number {
 }
 
 // One common runtime for the process; main owns its signals and closes it stage by stage.
-async function runService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; logging: LoggerRoot }): Promise<void> {
+async function runService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; logging: LoggerRoot; console?: ConsoleWriter }): Promise<void> {
   const { logging } = input
   trapUnhandledRejections(logging.logger)
   // At a terminal, `buckle serve` may ask for the node folder's name while it moves a 0.1 node onto workspaces (D85, Q15), as
   // every other command does, before the approval terminal starts; `buckle mcp` cannot, as stdin carries the protocol.
-  const terminal = input.service === null ? terminalFor(input.kind) : null
+  const terminal = input.service === null ? terminalFor(input.kind, input.console) : null
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminal ? { askName: question => askAtTerminal(question) } : {}) })
   common.owner.onClose('sinks', 'logger', () => logging.flush())
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
@@ -210,7 +215,7 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
   }
 }
 
-async function startService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli }): Promise<void> {
+async function startService(input: { kind: ServiceKind; options: string[]; service: ServiceManagerKind | null; config: NodeConfig; common: BuckleCommon; logger: Logger; shutdown: Shutdown; requestCli: RequestCli; console?: ConsoleWriter }): Promise<void> {
   if (input.kind === 'serve') {
     // Before anything else, so a second node on this state directory is refused before it builds anything.
     const held = await holdService(input)
@@ -249,9 +254,9 @@ async function holdService(input: { config: NodeConfig; common: BuckleCommon; lo
 
 // A terminal running `buckle serve` can answer directly; under mcp, stdin carries the protocol. The question is
 // shown on stderr, so both ends must be a terminal: with stderr redirected a key would answer an action never seen
-// (review L2 of the continuation review).
-function terminalFor(kind: ServiceKind): TerminalOptions | null {
-  return kind === 'serve' && process.stdin.isTTY && process.stderr.isTTY ? { input: process.stdin, output: process.stderr } : null
+// (review L2 of the continuation review). Its questions go through the writer its log lines do, where there is one (C3).
+function terminalFor(kind: ServiceKind, writer: ConsoleWriter | undefined): TerminalOptions | null {
+  return kind === 'serve' && process.stdin.isTTY && process.stderr.isTTY ? { input: process.stdin, output: process.stderr, ...(writer ? { console: writer } : {}) } : null
 }
 
 /**

@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
 import { parseList } from './config.js'
+import { createConsoleWriter, type ConsoleWriter } from './console.js'
 import { isVerbose, renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
@@ -32,9 +33,10 @@ const LOG_FORMATS: readonly LogFormat[] = ['json', 'human']
  * Where the process's log lines go: stderr, or, for a node running with no terminal (`buckle service`, `buckle serve
  * --background`), the one rotating file under its state directory alone, which no agent tool reads (Phase 3, item 6).
  * Plain `stderr` takes its format by the TTY rule and the shell's BUCKLE_LOG_FORMAT, as every line logged before main
- * reads buckle.env does; main names the format once it has read the file.
+ * reads buckle.env does; main names the format once it has read the file, and a serve at a terminal hands in the
+ * console writer its workspace list and approval questions share (C3).
  */
-export type LogOutput = { file: string } | 'stderr' | { format: LogFormat }
+export type LogOutput = { file: string } | 'stderr' | { format: LogFormat; console?: ConsoleWriter }
 
 /** Main calls this once, before anything else logs; a default root made earlier is flushed and replaced. */
 export function configureRootLogger(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
@@ -101,8 +103,10 @@ function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerR
 
 function sinkFor(output: LogOutput, level: LogLevel): LogSink {
   if (typeof output === 'object' && 'file' in output) return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
-  const format = output === 'stderr' ? stderrFormat(shellFormat()) : output.format
-  return format === 'json' ? createStderrJsonSink() : createHumanSink(level)
+  const chosen = output === 'stderr' ? { format: stderrFormat(shellFormat()) } : output
+  if (chosen.format === 'json') return createStderrJsonSink()
+  // A one-shot command's lines carry the time and no date separator; a serve's console writes the separator.
+  return createHumanSink({ console: chosen.console ?? createConsoleWriter({ output: process.stderr, dates: false }), level })
 }
 
 /** Before main reads buckle.env, the shell's override where it names a format; main itself refuses any other value. */
@@ -114,15 +118,18 @@ function shellFormat(): LogFormat | undefined {
   }
 }
 
-/** Human lines on stderr, at debug or trace with every step and stack. A sink that fails leaves the logger's fallback line, which stays JSON. */
-function createHumanSink(level: LogLevel): LogSink {
-  const stream = process.stderr
-  const options = { verbose: isVerbose(level) }
+/**
+ * Human lines on stderr through a console writer, at debug or trace with every step and stack. Never held for an open
+ * question: the writer draws the line above its prompt. A sink that fails leaves the logger's fallback line, which
+ * stays JSON.
+ */
+function createHumanSink(input: { console: ConsoleWriter; level: LogLevel }): LogSink {
+  const options = { verbose: isVerbose(input.level) }
   return {
     name: 'stderr-human',
     async write(event) {
       const lines = renderEvent(event, options)
-      if (lines !== null && !stream.write(lines.map(line => `${line}\n`).join(''))) await once(stream, 'drain')
+      if (lines !== null && !input.console.write(lines, new Date(event.timestamp))) await once(input.console.output, 'drain')
     },
   }
 }

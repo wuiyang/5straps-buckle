@@ -289,6 +289,19 @@ describe('the workspaces buckle serve lists', () => {
     expect(text).toMatch(/packs {3}.*\bfs\b/)
   })
 
+  // The CLI display slice, C3: the folder, each mount, and why a workspace would not open are escaped as its name is.
+  it('escapes the folder, each mount, and the reason a workspace would not open', async () => {
+    const hostile = '/srv/a\u001b[2Jb\u009b'
+    const shown = '/srv/a\\u001b[2Jb\\u009b'
+    const runtime = { takeUpSettings: async () => {}, manifest: () => ({ packs: [] }), policy: { effective: () => ({ mount: '/workspace', network: { allow: [] } }) }, paths: () => ({ mounts: [{ source: hostile, target: '/data\u202e', access: 'ro', scratch: false }] }) }
+    const listing = (resolve: () => Promise<unknown>) => describeOnline({ list: () => [{ id: 'w-1', name: 'Site', dir: hostile, online: true }], resolve } as unknown as WorkspaceManager)
+    const listed = await listing(async () => ({ runtime }))
+    expect(listed).toContain(`    folder  /workspace from ${shown}\n`)
+    expect(listed).toContain(`    mount   /data\\u202e from ${shown}, read-only\n`)
+    const refused = await listing(async () => { throw new Error(`cannot read ${hostile}`) })
+    expect(refused).toContain(`could not open, so it answers each call with the reason: cannot read ${shown}`)
+  })
+
   // Phase 2 item 1: every mount of the table, at its target from its source; the system folders are never listed (Q1).
   it('names each mount of a workspace, where it shows and from where, and how it is shared', async () => {
     mkdirSync(join(base, 'data'), { recursive: true })

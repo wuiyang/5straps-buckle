@@ -365,6 +365,28 @@ describe('main', () => {
     })
   })
 
+  // The CLI display slice, C3: at a terminal, the log lines, the workspace list, and the questions share one writer.
+  describe('the console of buckle serve', () => {
+    const terminals = (isTTY: boolean) => {
+      for (const stream of [process.stdin, process.stderr]) Object.defineProperty(stream, 'isTTY', { value: isTTY, configurable: true, writable: true })
+    }
+    afterEach(() => { for (const stream of [process.stdin, process.stderr]) Reflect.deleteProperty(stream, 'isTTY') })
+
+    it('is one writer at a terminal, which the workspace list goes through', async () => {
+      terminals(true)
+      await main(['serve'])
+      const served = (entry.serveHttp.mock.calls as unknown[][])[0]![0] as { console?: unknown; write?: unknown }
+      expect(served.console).toEqual(expect.objectContaining({ write: expect.any(Function), block: expect.any(Function), asking: expect.any(Function) }))
+      expect(served.write).toBeUndefined()
+    })
+
+    it('is none where stderr is no terminal, so the list is written as before', async () => {
+      terminals(false)
+      await main(['serve'])
+      expect(((entry.serveHttp.mock.calls as unknown[][])[0]![0] as { console?: unknown }).console).toBeUndefined()
+    })
+  })
+
   // Fix brief 4, findings 34 and 49: a workspace is typed by its name, not the UUID Buckle assigns.
   it('names the workspace buckle mcp serves by --workspace <name>', async () => {
     const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)

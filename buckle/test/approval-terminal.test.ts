@@ -12,6 +12,7 @@ import { createApprovalRegistry, type ApprovalRegistry } from '../common/service
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
+import { createConsoleWriter } from '../common/runtime/console.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
@@ -337,6 +338,37 @@ describe('keys meant for another terminal question', () => {
 
     expect(await call).toMatchObject({ settled: true })
     expect(registry.unspent('s').map(entry => entry.subject)).toEqual([{ rule: 'read_scope', subject: '/shots' }])
+  })
+})
+
+// The CLI display slice, C3: a line logged while a question is open goes through the writer the question shares with
+// the log, above the prompt; on a terminal the prompt and the typed key are drawn again below it.
+describe('a log line written while a terminal question is open', () => {
+  it('lands above the prompt, which is drawn again with the key typed, on a terminal', async () => {
+    const terminal = keyboardTerminal()
+    const writer = createConsoleWriter({ output: terminal.output, dates: false })
+    const asked = setupCli({ terminal: { ...terminal, console: writer } }).requestCli(question('t1', 600_000))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/n\) deny > \S*$/), { timeout: 3_000 })
+    terminal.input.write('2')
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/2$/))
+    writer.write(['22:22:05 [info] /mcp request completed (3ms)'], new Date())
+    expect(terminal.shown()).toContain('\u001b[2K\u001b[1G22:22:05 [info] /mcp request completed (3ms)\n')
+    expect(terminal.shown().split('22:22:05 [info] /mcp request completed (3ms)\n')[1]).toMatch(/n\) deny > \S*2/)
+    terminal.input.write('\r')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'session' } })
+  })
+
+  it('is written plainly where the output is no terminal', async () => {
+    const terminal = silentTerminal()
+    const writer = createConsoleWriter({ output: terminal.output, dates: false })
+    const stop = new AbortController()
+    const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(question('t1', 600_000), { signal: stop.signal })
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/n\) deny > $/), { timeout: 3_000 })
+    writer.write(['22:22:05 [info] plain'], new Date())
+    stop.abort()
+    await asked.catch(() => undefined)
+    expect(terminal.shown()).toContain('n) deny > 22:22:05 [info] plain\n')
+    expect(terminal.shown()).not.toContain('\u001b')
   })
 })
 

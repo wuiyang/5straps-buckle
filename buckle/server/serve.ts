@@ -1,10 +1,11 @@
 import type { AddressInfo } from 'node:net'
 import type { Logger } from '@5straps/runtime'
 import type { NodeConfig } from '../common/runtime/config.js'
+import type { ConsoleWriter } from '../common/runtime/console.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import type { WorkspaceDescriptor, WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { judgeSetupNotice } from '../common/services/judge/judge-setup.js'
-import { describeOnline, watchOnline } from './roster.js'
+import { consoleRoster, describeOnline, watchOnline } from './roster.js'
 import { createHttpServer, type BuckleServer } from './setup-server.js'
 
 /**
@@ -22,6 +23,8 @@ export interface ServeHttpInput {
   onListening?: (address: AddressInfo) => void | Promise<void>
   /** Where the online workspaces are listed: the terminal's stderr by default. */
   write?: (text: string) => void
+  /** The console a person reads this terminal through (the CLI display slice, C3), which the list then goes through. */
+  console?: ConsoleWriter
 }
 
 export async function serveHttp(input: ServeHttpInput): Promise<void> {
@@ -33,7 +36,7 @@ export async function serveHttp(input: ServeHttpInput): Promise<void> {
   const workspaces = await common.services.getWorkspaces()
   logListening({ logger: input.logger, config, workspaces: workspaces.list(), address })
   // On the terminal the questions are asked on, the online workspaces, and again after each change (item 6).
-  const write = input.write ?? ((text: string) => void process.stderr.write(text))
+  const write = input.write ?? (input.console ? consoleRoster(input.console) : (text: string) => void process.stderr.write(text))
   write(await describeOnline(workspaces))
   common.owner.onClose('jobs', 'workspace list', watchOnline({ workspaces, write, watchPath: config.stateDirectory }))
   const judgeNotice = judgeSetupNotice({ config, workspaces: judgedWorkspaces(workspaces) })

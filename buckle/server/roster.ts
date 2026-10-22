@@ -1,5 +1,7 @@
 import { watch, type FSWatcher } from 'node:fs'
 import { printable } from '../common/domain/approval-instruction.js'
+import { localTime } from '../common/domain/local-time.js'
+import type { ConsoleWriter } from '../common/runtime/console.js'
 import { logger } from '../common/runtime/log.js'
 import { WorkspaceError, type WorkspaceDescriptor, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
@@ -11,7 +13,8 @@ export const ROSTER_POLL_MS = 2_000
 /**
  * The online workspaces as `buckle serve` lists them, at start and after each change (the workspace-model brief, item
  * 6): each one's name and id, where the agent sees its folder and from where, its URL mode, and the packs it offers. A
- * workspace that will not open is listed with its reason, and the rest are served. The owner's terminal, so paths show.
+ * workspace that will not open is listed with its reason, and the rest are served. The owner's terminal, so paths show,
+ * escaped as the name is (the CLI display slice, C3): a folder's name or an error's text can carry what a terminal acts on.
  */
 export async function describeOnline(workspaces: WorkspaceManager): Promise<string> {
   const online = workspaces.list().filter(workspace => workspace.online)
@@ -38,18 +41,32 @@ async function describeWorkspace(workspaces: WorkspaceManager, workspace: Worksp
     effective = runtime.policy.effective()
     mounts = runtime.paths().mounts
   } catch (error) {
-    return [head, `    could not open, so it answers each call with the reason: ${error instanceof Error ? error.message : String(error)}`]
+    return [head, `    could not open, so it answers each call with the reason: ${printable(error instanceof Error ? error.message : String(error))}`]
   }
   const urls = effective.network.allow.length
   return [
     head,
-    `    folder  ${effective.mount ? `${effective.mount} from ${workspace.dir}` : `${workspace.dir}, at its real path`}`,
+    `    folder  ${effective.mount ? `${printable(effective.mount)} from ${printable(workspace.dir)}` : `${printable(workspace.dir)}, at its real path`}`,
     // Every mount the agent's view reaches (Phase 2 item 1); the system folders every sandbox binds are never listed (Q1).
-    ...mounts.map(mount => `    mount   ${mount.scratch ? `${mount.source}, a scratch root` : `${mount.target} from ${mount.source}`}, ${mount.access === 'rw' ? 'read-write' : 'read-only'}`),
+    ...mounts.map(mount => `    mount   ${mount.scratch ? `${printable(mount.source)}, a scratch root` : `${printable(mount.target)} from ${printable(mount.source)}`}, ${mount.access === 'rw' ? 'read-write' : 'read-only'}`),
     `    URLs    ${urls === 0 ? 'no approved list' : `an approved list of ${urls} entr${urls === 1 ? 'y' : 'ies'}`}`,
     `    packs   ${packs}`,
-    ...(waiting === null ? [] : [`    note    ${waiting}`]),
+    ...(waiting === null ? [] : [`    note    ${printable(waiting)}`]),
   ]
+}
+
+/** The list on a person's console (C3): its first line stamped with the time and an `[info]` tag, the rest as listed. */
+export function rosterLines(text: string, at: Date): string[] {
+  const [first = '', ...rest] = text.trimEnd().split('\n')
+  return [`${localTime(at)} [info] ${first}`, ...rest]
+}
+
+/** Writes each list through the console writer, in turn after the log lines logged before it. */
+export function consoleRoster(writer: ConsoleWriter): (text: string) => void {
+  return (text) => {
+    const at = new Date()
+    void writer.block(rosterLines(text, at), at)
+  }
 }
 
 /**
