@@ -429,8 +429,8 @@ function upgradeStep(record: ServeRecord): string {
 async function logs(context: ServiceContext, options: { follow: boolean; lines: string | undefined }): Promise<CliResult> {
   if (options.lines !== undefined && !/^\d{1,9}$/.test(options.lines)) return fail(context.err, '-n takes a count of lines, 0 or more')
   const count = options.lines === undefined ? DEFAULT_LOG_LINES : Number(options.lines)
-  let shown: (text: string) => string
-  try { shown = storedLines(context) } catch (error) { return fail(context.err, error instanceof Error ? error.message : String(error)) }
+  let view: LogView
+  try { view = logView(context) } catch (error) { return fail(context.err, error instanceof Error ? error.message : String(error)) }
   const file = serviceLogPath(context.location.stateDirectory)
   if (!existsSync(file) && !options.follow) {
     context.out('No service log yet: a node writes it once it runs under buckle service or buckle serve --background.\n')
@@ -442,23 +442,33 @@ async function logs(context: ServiceContext, options: { follow: boolean; lines: 
     const bytes = readFileSync(file)
     offset = bytes.lastIndexOf(10) + 1
     const lines = bytes.subarray(0, offset).toString('utf8').split('\n').filter(Boolean)
-    if (count > 0) context.out(shown(lines.slice(-count).map(line => `${line}\n`).join('')))
+    if (count > 0) context.out(view.last(lines, count))
   }
   if (!options.follow) return { exitCode: 0 }
-  await follow(context, file, offset, shown)
+  await follow(context, file, offset, view.added)
   return { exitCode: 0 }
+}
+
+/** What `logs` prints of the file: its last lines, and then what it gains, which share one state (the date separators). */
+interface LogView {
+  /** The last `count` of the whole lines the file holds. */
+  last(lines: string[], count: number): string
+  /** Whole lines the file gained, as text. */
+  added(text: string): string
 }
 
 /**
  * How `logs` prints what the file stores (C6): as a serve's console shows it, in this device's local time with date
- * separators across what it prints, where its output is a terminal; as stored where it is piped, or where
- * BUCKLE_LOG_FORMAT, read from the shell before buckle.env is, says json. The file itself stays JSON lines in UTC.
+ * separators across what it prints, where its output is a terminal, and then `-n` counts the entries it shows, not the
+ * stored lines; as stored where it is piped, or where BUCKLE_LOG_FORMAT, read from the shell before buckle.env is, says
+ * json, and then `-n` counts stored lines. The file itself stays JSON lines in UTC.
  */
-function storedLines(context: ServiceContext): (text: string) => string {
+function logView(context: ServiceContext): LogView {
   const format = logFormatFrom(context.input.environment) ?? (context.input.stdoutIsTerminal === true ? 'human' : 'json')
-  if (format === 'json') return text => text
+  if (format === 'json') return { last: (lines, count) => lines.slice(-count).map(line => `${line}\n`).join(''), added: text => text }
   const render = createStoredLineRenderer({ verbose: false })
-  return text => text.split('\n').filter(Boolean).flatMap(render).map(line => `${line}\n`).join('')
+  const printed = (rows: string[]) => rows.map(row => `${row}\n`).join('')
+  return { last: (lines, count) => printed(render.last(lines, count)), added: text => printed(text.split('\n').filter(Boolean).flatMap(render)) }
 }
 
 /**

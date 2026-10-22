@@ -72,19 +72,55 @@ export function createDateSeparators(): (at: Date) => string[] {
   }
 }
 
+/** What `buckle service logs` prints at a terminal: one stored line at a time, or the last entries among a file's lines. */
+export interface StoredLineRenderer {
+  /** The rows of one stored line, a date separator first where its date is not the last one printed; none where the console leaves it to the JSON. */
+  (line: string): string[]
+  /**
+   * The rows of the last `count` entries among whole stored lines, the separators run over those alone. An entry is a
+   * line the console shows, so the lines it leaves to the JSON do not count against `-n` (fix brief 2, L3).
+   */
+  last(lines: readonly string[], count: number): string[]
+}
+
+/** One stored line as the console shows it: when it was logged, for the date separator, and its rows. */
+interface StoredEntry {
+  at: Date | null
+  rows: string[]
+}
+
 /**
  * `buckle service logs` at a terminal (the CLI display slice, C6): each stored line as the console renders it, with date
  * separators across the lines it prints; a line that is not a log event passes through with its control and format
- * characters escaped, as every line a person reads there is (fix brief 1, H5).
+ * characters escaped, as every line a person reads there is (fix brief 1, H5), and is one entry without a date.
  */
-export function createStoredLineRenderer(options: RenderOptions): (line: string) => string[] {
+export function createStoredLineRenderer(options: RenderOptions): StoredLineRenderer {
   const separators = createDateSeparators()
-  return (line) => {
-    const event = storedEvent(line)
-    if (event === null) return [printable(line)]
-    const lines = renderEvent(event, options)
-    return lines === null ? [] : [...separators(new Date(event.timestamp)), ...lines]
-  }
+  const printed = (entry: StoredEntry) => entry.at === null ? entry.rows : [...separators(entry.at), ...entry.rows]
+  return Object.assign(
+    (line: string) => {
+      const entry = storedEntry(line, options)
+      return entry === null ? [] : printed(entry)
+    },
+    {
+      last(lines: readonly string[], count: number) {
+        const kept: StoredEntry[] = []
+        for (let index = lines.length - 1; index >= 0 && kept.length < count; index -= 1) {
+          const entry = storedEntry(lines[index]!, options)
+          if (entry !== null) kept.push(entry)
+        }
+        return kept.reverse().flatMap(printed)
+      },
+    },
+  )
+}
+
+/** A stored line as it is shown, or null where the console leaves it to the JSON; a line that is no event is one row. */
+function storedEntry(line: string, options: RenderOptions): StoredEntry | null {
+  const event = storedEvent(line)
+  if (event === null) return { at: null, rows: [printable(line)] }
+  const rows = renderEvent(event, options)
+  return rows === null ? null : { at: new Date(event.timestamp), rows }
 }
 
 /** A stored line read back as a log event, or null where it is not one in the shape the logger writes. */

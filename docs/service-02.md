@@ -71,9 +71,11 @@ owner-only (folder 700, file 600), rotated at 10 MiB with five earlier files kep
 tools refuse it, as they refuse the whole state directory, and a process sandbox hides it from
 shell commands. At a terminal, `buckle service logs` prints each line as `buckle serve` at the info
 level would, in your local time with a date line when the day changes; piped, or with
-`BUCKLE_LOG_FORMAT=json` set in the shell, it prints the lines as stored, in UTC. It never reads that
-setting from `buckle.env`, and the startup and shutdown steps, correlation ids, and the stack of any
-error short of fatal show only in the stored lines.
+`BUCKLE_LOG_FORMAT=json` set in the shell, it prints the lines as stored, in UTC. At a terminal,
+`-n` counts the lines it shows, so the lines it hides, a request's second line among them, do not
+use up the count; piped, it counts stored lines. It never reads that setting from `buckle.env`,
+and the startup and shutdown steps, correlation ids, and the stack of any error short of fatal show
+only in the stored lines.
 
 `buckle service status` shows the definition and whether it starts at login, the running node's pid
 and address, whether `/health` and `/health/ready` answer, the running version against the

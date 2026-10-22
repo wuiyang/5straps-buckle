@@ -513,10 +513,10 @@ describe('buckle service logs at a terminal', () => {
   const whole = '{"timestamp":"2026-10-21T14:22:00.000Z","level":"info","component":"buckle","message":"5straps Buckle listening","fields":{"port":4320}}'
   const cut = ['{"timestamp":"2026-10-21T14:22:01.000Z","level":"warn","component":"buckle","message":"Could not read",', '"fields":{"path":"/workspace/a\u009b2J\u202etxt"}}']
 
-  function following(target: Node, stdoutIsTerminal: boolean) {
+  function following(target: Node, stdoutIsTerminal: boolean, lines = '0') {
     const stop = new AbortController()
     let out = ''
-    const done = serviceCommand({ argv: ['logs', '-f', '-n', '0'], environment: target.environment, platform: 'linux', cwd: target.root, run: vi.fn(), mainScript: target.main, manager: () => null, out: text => { out += text }, err: () => {}, signal: stop.signal, stdoutIsTerminal })
+    const done = serviceCommand({ argv: ['logs', '-f', '-n', lines], environment: target.environment, platform: 'linux', cwd: target.root, run: vi.fn(), mainScript: target.main, manager: () => null, out: text => { out += text }, err: () => {}, signal: stop.signal, stdoutIsTerminal })
     return { out: () => out, stop: async () => { stop.abort(); return done } }
   }
 
@@ -545,5 +545,65 @@ describe('buckle service logs at a terminal', () => {
     appendFileSync(file, `${cut[1]}\n`)
     await vi.waitFor(() => expect(run.out()).toBe(`${cut.join('')}\n`), { timeout: 5_000 })
     expect(await run.stop()).toEqual({ exitCode: 0 })
+  })
+
+  // Fix brief 2, L3: each request leaves two stored lines, `request completed` and `request finished` with an actor, and
+  // the console shows the first alone, so -n counted the second against the rows asked for.
+  describe('-n', () => {
+    const stamp = (second: number, day: number) => `2026-10-${day}T14:22:${String(second).padStart(2, '0')}.000Z`
+    const completed = (second: number, day = 21) => `{"timestamp":"${stamp(second, day)}","level":"info","component":"buckle","message":"request completed","fields":{"method":"POST","path":"/mcp","outcome":"ok","durationMs":${second}}}`
+    const finished = (second: number, day = 21) => `{"timestamp":"${stamp(second, day)}","level":"info","component":"buckle","message":"request finished","fields":{"method":"POST","route":"/mcp","status":200,"durationMs":${second},"actor":"agent:node","workspaceId":"w-1"}}`
+    const request = (second: number, day = 21) => [completed(second, day), finished(second, day)]
+    const row = (second: number) => `14:22:${String(second).padStart(2, '0')} [info] /mcp request completed (${second}ms)`
+
+    function written(lines: string[]): Node {
+      const target = node()
+      mkdirSync(join(target.state, 'logs'))
+      writeFileSync(serviceLogPath(target.state), `${lines.join('\n')}\n`)
+      return target
+    }
+
+    const sixty = Array.from({ length: 60 }, (_, second) => request(second)).flat()
+    const terminal = { stdoutIsTerminal: true }
+
+    it('counts the entries a terminal shows: as many rows as asked for, 50 by default', async () => {
+      vi.stubEnv('TZ', 'UTC')
+      const target = written(sixty)
+      expect((await service(target, ['logs', '-n', '10'], null, terminal)).out).toBe(['--- 2026-10-21 ---', ...Array.from({ length: 10 }, (_, index) => row(50 + index)), ''].join('\n'))
+      const fifty = (await service(target, ['logs'], null, terminal)).out.split('\n').filter(Boolean)
+      expect(fifty).toHaveLength(51)
+      expect(fifty.slice(0, 2)).toEqual(['--- 2026-10-21 ---', row(10)])
+    })
+
+    it('counts stored lines where the output is piped, or BUCKLE_LOG_FORMAT is json', async () => {
+      const target = written(sixty)
+      const lastTen = `${sixty.slice(-10).join('\n')}\n`
+      expect((await service(target, ['logs', '-n', '10'], null)).out).toBe(lastTen)
+      expect((await service({ ...target, environment: { ...target.environment, BUCKLE_LOG_FORMAT: 'json' } }, ['logs', '-n', '10'], null, terminal)).out).toBe(lastTen)
+    })
+
+    it('runs the date separators over the entries it prints alone', async () => {
+      vi.stubEnv('TZ', 'UTC')
+      const target = written([...request(1, 20), ...request(2), ...request(3)])
+      expect((await service(target, ['logs', '-n', '3'], null, terminal)).out).toBe(['--- 2026-10-20 ---', row(1), '--- 2026-10-21 ---', row(2), row(3), ''].join('\n'))
+      expect((await service(target, ['logs', '-n', '2'], null, terminal)).out).toBe(['--- 2026-10-21 ---', row(2), row(3), ''].join('\n'))
+    })
+
+    it('counts a line that is no event as one entry, and -n 0 prints nothing', async () => {
+      vi.stubEnv('TZ', 'UTC')
+      const target = written([...request(1), 'not a log event', ...request(2)])
+      expect((await service(target, ['logs', '-n', '2'], null, terminal)).out).toBe(['not a log event', '--- 2026-10-21 ---', row(2), ''].join('\n'))
+      expect((await service(target, ['logs', '-n', '0'], null, terminal)).out).toBe('')
+    })
+
+    it('leaves -f as it was: the last entries first, then what the file gains, under the same separator', async () => {
+      vi.stubEnv('TZ', 'UTC')
+      const target = written([...request(1), ...request(2)])
+      const run = following(target, true, '1')
+      await vi.waitFor(() => expect(run.out()).toBe(`--- 2026-10-21 ---\n${row(2)}\n`), { timeout: 5_000 })
+      appendFileSync(serviceLogPath(target.state), `${request(3).join('\n')}\n`)
+      await vi.waitFor(() => expect(run.out()).toBe(`--- 2026-10-21 ---\n${row(2)}\n${row(3)}\n`), { timeout: 5_000 })
+      expect(await run.stop()).toEqual({ exitCode: 0 })
+    })
   })
 })
