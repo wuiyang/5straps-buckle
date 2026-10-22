@@ -438,14 +438,16 @@ function assertObjectsInside(repository: Repository, boundary: string, paths: Pa
   const budget = checkBudget()
   const reach = { roots: [...paths.reachableRoots.map(root => realPathOr(root, platform)), boundary], shares: paths.shares, platform, spendName: budget.name }
   const inside = (landing: Landing): Buffer => {
-    if (landing === NO_STORE) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
+    // The reason follows where the walk reached, never whether it could finish: outside every root, a place that cannot
+    // be walked reads as one that lands there, so no host place outside them is told from another (git pack recheck 4, held[2]).
+    if (isNoStore(landing)) throw new ToolInputError(reach.roots.some(root => insideBytes(Buffer.from(root), landing.reached)) ? UNRESOLVED_STORE : BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
     if (landing === null) throw new ToolInputError(BORROWS_OUTSIDE, { code: 'PERMISSION_DENIED' })
     return landing
   }
   const named = (store: Buffer, line: Buffer): Buffer[] => {
     const { opened, folded } = storePlaces(store, line, platform)
     const opening = landingOf(opened, reach)
-    return [...(opening === NO_STORE ? [] : [inside(opening)]), inside(landingOf(folded, reach))]
+    return [...(isNoStore(opening) ? [] : [inside(opening)]), inside(landingOf(folded, reach))]
   }
   const read = new Set<string>()
   let stores = [...new Set([repository.gitDirectory, repository.commonDirectory])].map(directory => inside(landingOf(Buffer.from(join(directory, 'objects')), reach)))
@@ -493,9 +495,11 @@ function chargePlaces(places: readonly string[]): void {
   for (const place of places) budget.place(place)
 }
 
-/** Where a store lands: its real path inside the roots; null outside them; NO_STORE where git reads no store there. */
-type Landing = Buffer | null | typeof NO_STORE
-const NO_STORE = Symbol('no store')
+/** Where a store lands: its real path inside the roots; null outside them; a NoStore where git reads no store there. */
+type Landing = Buffer | null | NoStore
+/** `reached` is the place the walk got to, the last name it took, where it could go no further. */
+interface NoStore { reached: Buffer }
+const isNoStore = (landing: Landing): landing is NoStore => landing !== null && !Buffer.isBuffer(landing)
 
 /**
  * Where a store lands, by its real path, when that lies inside one of `roots`; null otherwise. Off Windows the place is
@@ -506,7 +510,7 @@ const NO_STORE = Symbol('no store')
 function landingOf(place: Buffer, input: { roots: string[]; shares: readonly string[]; platform: NodeJS.Platform; spendName: (depth: number) => void }): Landing {
   if (input.platform === 'win32') return windowsLanding(place, input)
   const walked = walkAsGit(place, input.spendName)
-  if (walked.kind === 'no-store') return NO_STORE
+  if (walked.kind === 'no-store') return { reached: walked.reached }
   if (!input.roots.some(root => insideBytes(Buffer.from(root), walked.real))) return null
   if (!walkedAsTheSystem(place, walked)) throw new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
   return walked.real
@@ -521,19 +525,20 @@ function windowsLanding(place: Buffer, input: { roots: string[]; shares: readonl
   } catch { return null }
 }
 
-/** A place as git resolved it: an existing one, one whose last name is absent (a store made while git runs), or none. */
-type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; parent: Buffer } | { kind: 'no-store' }
+/** A place as git resolved it: an existing one, one whose last name is absent (a store made while git runs), or none, with where the walk reached. */
+type Walked = { kind: 'found'; real: Buffer } | { kind: 'absent'; real: Buffer; parent: Buffer } | { kind: 'no-store'; reached: Buffer }
 
 /**
  * `place`, an absolute path, walked as git's strbuf_realpath walks it, in this process and never by changing its working
  * directory: name by name from the root, a link replaced by its target, a `..` dropping the last name reached, so it
- * climbs from where a link points, even out of a file. Only a last name may be absent; where an earlier one is, git
- * reads no store there. Refused, with a constant reason, where the walk reaches a place that names another in git's
- * process, `/proc` (its `self`, `thread-self`, and their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target
- * starts with `/proc/` or `/dev/`: git changes into the work tree first, so `/proc/self/cwd` was the node's working
- * directory here and the work tree there (git pack recheck 3, held[0]). Refused too past STORE_LINKS links, and where
- * any name cannot be read for another reason than being absent. Each name taken is spent (`spendName`), at the depth
- * reached, so a deep path is refused after a few hundred names rather than walked whole.
+ * climbs from where a link points, even out of a file. Only a last name may be absent; where an earlier one is, or any
+ * name cannot be read, git reads no store there, and the walk says where it reached (`reached`) rather than refuse, so
+ * the caller's reason depends on that place and never on whether the walk could finish. Refused, with a constant
+ * reason, where the walk reaches a place that names another in git's process, `/proc` (its `self`, `thread-self`, and
+ * their `cwd` and `fd`) or `/dev/fd`, or follows a link whose target starts with `/proc/` or `/dev/`: git changes into
+ * the work tree first, so `/proc/self/cwd` was the node's working directory here and the work tree there (git pack
+ * recheck 3, held[0]). Refused too past STORE_LINKS links. Each name taken is spent (`spendName`), at the depth reached,
+ * so a deep path is refused after a few hundred names rather than walked whole.
  */
 function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
   const unresolved = () => new ToolInputError(UNRESOLVED_STORE, { code: 'PERMISSION_DENIED' })
@@ -550,8 +555,8 @@ function walkAsGit(place: Buffer, spendName: (depth: number) => void): Walked {
     const path = pathOf(resolved)
     let isLink: boolean
     try { isLink = lstatSync(path).isSymbolicLink() } catch (error) {
-      if (codeOf(error) !== 'ENOENT') throw unresolved()
-      return pending.length === 0 ? { kind: 'absent', real: path, parent: pathOf(resolved.slice(0, -1)) } : { kind: 'no-store' }
+      if (codeOf(error) === 'ENOENT' && pending.length === 0) return { kind: 'absent', real: path, parent: pathOf(resolved.slice(0, -1)) }
+      return { kind: 'no-store', reached: path }
     }
     if (!isLink) continue
     if (++links > STORE_LINKS) throw unresolved()

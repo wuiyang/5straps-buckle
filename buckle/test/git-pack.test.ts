@@ -787,6 +787,54 @@ describe('a git tool refuses a repository that borrows objects from outside the 
     } finally { chmodSync(join(root, 'locked'), 0o755) }
   })
 
+  // Which constant reason a refusal carries depends on where the walk reached, never on whether it could finish. Outside
+  // every root, a line the walk could not finish (an earlier name absent, a file in the middle, a folder the node cannot
+  // search) was told from one that landed, so the reason was one bit of the host file system per call, with no path in
+  // it (git pack recheck 4, held[2]). Inside a root the wording stays.
+  describe('the reason for a line the walk cannot finish', () => {
+    /** The message the call is refused with for `line`, read as text with `<outside>` and `<root>` filled in. */
+    async function messageFor(places: { root: string; repo: string; outside: string }, line: string): Promise<string> {
+      alternates(join(places.repo, '.git', 'objects'), line.replace('<outside>', places.outside).replace('<root>', places.root))
+      const refusal = await refusalOf(() => gitPack(places.root, answeringAt(plain(places.repo))).call('git_log', { repo: 'repo' }))
+      expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED' })
+      return (refusal as Error).message
+    }
+    function places() {
+      const made = workspace()
+      mkdirSync(join(made.outside, 'existingdir'))
+      writeFileSync(join(made.outside, 'file'), 'not a folder\n')
+      mkdirSync(join(made.outside, 'locked', 'store'), { recursive: true })
+      writeFileSync(join(made.root, 'shared', 'HEAD'), 'ref: refs/heads/main\n')
+      return made
+    }
+
+    it.each([
+      ['an earlier name absent', '<outside>/nosuchdir/zzz'],
+      ['an earlier name absent, written relative', '../../../../elsewhere/nosuchdir/zzz'],
+      ['an existing folder with the last name absent', '<outside>/existingdir/zzz'],
+      ['a file in the middle', '<outside>/file/zzz'],
+    ])('outside every root, %s, is refused as a plain outside line is', async (_, line) => {
+      const made = places()
+      const plainOutside = await messageFor(made, '<outside>')
+      expect(plainOutside).toContain(BORROWS)
+      const message = await messageFor(made, line)
+      expect(message).toBe(plainOutside)
+      expect(message).not.toContain(made.outside)
+    })
+
+    it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('outside every root, a folder the node cannot search is refused as a plain outside line is', async () => {
+      const made = places()
+      const plainOutside = await messageFor(made, '<outside>')
+      chmodSync(join(made.outside, 'locked'), 0o000)
+      try { expect(await messageFor(made, '<outside>/locked/store')).toBe(plainOutside) } finally { chmodSync(join(made.outside, 'locked'), 0o755) }
+    })
+
+    it('inside a root, a file in the middle keeps the reason that names a place Buckle cannot resolve as git does', async () => {
+      const made = places()
+      expect(await messageFor(made, '<root>/shared/HEAD/sub')).toContain('cannot resolve as git does')
+    })
+  })
+
   // Each row below fails with its guard reverted (git pack recheck 3, held[4]).
   it.each([['absolute', '<root>-sibling/objects'], ['relative', '../../../../root-sibling/objects']])('refuses a store in a sibling folder whose name starts with the root\'s, written %s', async (_, line) => {
     const { root, repo, outside } = workspace()
