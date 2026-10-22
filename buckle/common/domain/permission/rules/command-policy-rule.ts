@@ -182,13 +182,17 @@ const WRAPPER_REFUSAL = 'A shell wrapper hides its command from the word globs, 
  * Why a shell wrapper no allow rule admits is refused, naming the rule that would (wrapperRule). A path glob meets only
  * a command word written plainly (meetsAsSpelled), so for one that is not (`/usr//bin/sh`, `/bin/./sh`, `./x/../bash`,
  * `~/bin/sh`) a rule echoing the word admits nothing, and once stored the call was refused again with the same rule, a
- * loop (git pack recheck 1, the C4 regression and held[3]). There the rule named spells the word by its basename, which
- * admits the bare call and leaves this one to the floor's ask; with no basename, no rule is named.
+ * loop (git pack recheck 1, the C4 regression and held[3]). The same holds on Linux and macOS for a word with a `\` and
+ * no `/` (`C:\Git\bin\bash`, `tools\sh`, `.\bash`): the call comes here as spelled (asSpelled), so a `\` is left only
+ * where it is part of a name, and the rule's word, holding no separator, meets a basename alone (git pack recheck 2,
+ * held[0]). There the rule named spells the word by its basename, which admits the bare call and leaves this one to the
+ * floor's ask; with no basename, no rule is named.
  */
 function wrapperRefusal(typed: readonly string[], shell: readonly string[]): string {
   const [command = '', ...args] = typed
-  if (writtenPlainly(command)) return `${WRAPPER_REFUSAL}: buckle policy allow-command '${wrapperRule(typed, shell)}'`
-  const plainly = `${WRAPPER_REFUSAL}; no allow rule admits a command word written with a . or .. step, a doubled slash, or a leading ~, so write it plainly`
+  const spellable = writtenPlainly(command) && !(command.includes('\\') && !command.includes('/'))
+  if (spellable) return `${WRAPPER_REFUSAL}: buckle policy allow-command '${wrapperRule(typed, shell)}'`
+  const plainly = `${WRAPPER_REFUSAL}; no allow rule admits a command word written with a . or .. step, a doubled slash, a leading ~, or a backslash on Linux and macOS, so write it plainly`
   const bare = baseCommand(command)
   return bare === '' ? plainly : `${plainly}, or allow it by its bare name: buckle policy allow-command '${wrapperRule([bare, ...args], shell)}'`
 }
