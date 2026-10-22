@@ -473,6 +473,24 @@ describe('buckle service logs at a terminal', () => {
     expect(await service({ ...target, environment: { ...target.environment, BUCKLE_LOG_FORMAT: 'pretty' } }, ['logs'], null, { stdoutIsTerminal: true })).toMatchObject({ exitCode: 1, err: 'BUCKLE_LOG_FORMAT must be json or human\n' })
   })
 
+  // Fix brief 1, H7: a line in the logger's shape but for its level or its time is no event, so it passes through, with
+  // no separator for a date it does not have.
+  it('passes through a stored line with no level, no timestamp, or a timestamp that does not parse', async () => {
+    vi.stubEnv('TZ', 'UTC')
+    const lines = [
+      '{"message":"x"}',
+      '{"timestamp":"2026-10-21T14:22:00.000Z","component":"buckle","message":"no level"}',
+      '{"level":"info","component":"buckle","message":"no timestamp"}',
+      '{"timestamp":"not a time","level":"info","component":"buckle","message":"bad timestamp"}',
+    ]
+    const target = node()
+    mkdirSync(join(target.state, 'logs'))
+    writeFileSync(serviceLogPath(target.state), `${lines.join('\n')}\n`)
+    const out = (await service(target, ['logs'], null, { stdoutIsTerminal: true })).out
+    expect(out).toBe(`${lines.join('\n')}\n`)
+    expect(out).not.toContain('NaN')
+  })
+
   it('follows with -f, rendering whole lines as they are added', async () => {
     vi.stubEnv('TZ', 'UTC')
     const target = node()

@@ -11,7 +11,8 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
-import { createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
+import { approvalBlock, createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
+import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createConsoleWriter } from '../common/runtime/console.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
@@ -620,6 +621,43 @@ describe('the serve terminal\'s question', () => {
     terminal.input.write(`${typed}\n`)
     expect(await asked).toMatchObject({ status: 'answered', answer: { choice } })
     await vi.waitFor(() => expect(terminal.shown().endsWith(`[The site] Your choice: ${typed}${choice === 'deny' ? ' [deny]' : ''}\n`)).toBe(true))
+  })
+
+  // Fix brief 1, H7: the workspace's name and an unknown tool's name reach the head line, every mark, and the prompt row
+  // escaped; the name is the owner's, and may come from a folder's.
+  const control = /[\u0000-\u0009\u000b-\u001f\u007f-\u009f\u202e]/
+  const hostileName = 'The\u001b[2J\u009b\u202e site'
+  const shownName = 'The\\u001b[2J\\u009b\\u202e site'
+
+  it('escapes a workspace name and an unknown tool on the head line and every marked line of the serve terminal\'s block', async () => {
+    const lines = approvalBlock({ ...approval('t1'), tool: 'x\u009b2J_tool', workspaceId: 'w-1', workspaceName: hostileName, call: recordedCall }, new Date())
+    expect(lines.join('\n')).not.toMatch(control)
+    expect(lines[0]).toMatch(/^\d\d:\d\d:\d\d \[approval\] /)
+    expect(lines[0]!.endsWith(`[${shownName}] action pending approval: x\\u009b2J_tool`)).toBe(true)
+    for (const line of lines.slice(1).filter(line => line !== '')) expect(line.startsWith(`[${shownName}] `)).toBe(true)
+    expect(actionPhrase('unknown\u001b[2J')).toBe('unknown\\u001b[2J')
+    expect(actionPhrase('shell_exec')).toBe('run command')
+    const { terminal, end } = await shownQuestion(questionFor({ approval: approval('t1'), workspaceId: 'w-1', workspaceName: hostileName, node: 'node-1', context: { correlationId: 'c', sessionId: 's', call: recordedCall } }))
+    await end()
+    // Readline ends the row it cancels with CR LF, its own.
+    expect(terminal.shown().replaceAll('\r\n', '\n')).not.toMatch(control)
+    expect(terminal.shown()).toContain(`[${shownName}] Your choice: `)
+  })
+
+  it('escapes the workspace name on every line of the watch\'s question', () => {
+    const shown = describeQuestion({ ...approval('t1'), workspaceName: hostileName, call: recordedCall })
+    expect(shown).not.toMatch(control)
+    for (const line of shown.split('\n').filter(line => line !== '')) expect(line.startsWith(`[${shownName}] `)).toBe(true)
+  })
+
+  it('escapes what was typed where it writes the answer itself, as the output is no terminal', async () => {
+    const terminal = silentTerminal()
+    const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+    terminal.input.write('x\u009b2J\n')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+    await vi.waitFor(() => expect(terminal.shown().endsWith('[The site] Your choice: x\\u009b2J [deny]\n')).toBe(true))
+    expect(terminal.shown()).not.toContain('\u009b')
   })
 
   it('writes the answer and its [deny] after the prompt where the output is no terminal, which echoes nothing', async () => {

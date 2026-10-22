@@ -73,6 +73,23 @@ describe('what an agent may have chosen, in a log line', () => {
     expect(lines).toContain(`    at ${shown}`)
   })
 
+  // Fix brief 1, H7: each piece of the renderings the slice added is escaped, and a test fails where one is not.
+  it('escapes the workspace, the unknown tool, the rule, the scopes, and the command of an Approval pending line', () => {
+    vi.stubEnv('TZ', 'UTC')
+    const pending = (tool: string) => renderEvent(event({ message: 'Approval pending', fields: { tool, rule: hostile, scopes: [hostile, 'once'], workspace: hostile, review: `buckle approvals --workspace ${hostile}` } }), quiet)!
+    for (const tool of [hostile, 'fs_write']) for (const line of pending(tool)) expect(line).not.toMatch(control)
+    expect(pending(hostile)).toEqual([`14:22:00 [approval] [${shown}] action pending approval: ${shown} (${shown}: ${shown}, once); see it with buckle approvals --workspace ${shown}`])
+    expect(pending('fs_write')).toEqual([`14:22:00 [approval] [${shown}] action pending approval: write a file (${shown}: ${shown}, once); see it with buckle approvals --workspace ${shown}`])
+  })
+
+  it('escapes the route of request finished, the outcome of request completed, the correlation id, and a key with a multi-line value', () => {
+    vi.stubEnv('TZ', 'UTC')
+    expect(renderEvent(event({ message: 'request finished', fields: { route: hostile, status: 404, durationMs: 1 } }), quiet)).toEqual([`14:22:00 [info] ${shown} 404 (1ms)`])
+    expect(renderEvent(event({ message: 'request completed', fields: { path: '/mcp', outcome: hostile, durationMs: 3 } }), quiet)).toEqual([`14:22:00 [info] /mcp request completed (3ms), ${shown}`])
+    expect(renderEvent(event({ correlationId: hostile }), verbose)).toEqual([`14:22:00 [info] something happened correlationId=${shown}`])
+    expect(renderEvent(event({ fields: { [hostile]: 'one\ntwo' } }), quiet)).toEqual([`14:22:00 [info] something happened ${shown}=one\\u000atwo`])
+  })
+
   it('splits a multi-line value onto indented lines, each escaped, so a carriage return cannot rewrite one', () => {
     vi.stubEnv('TZ', 'UTC')
     expect(renderEvent(event({ message: 'Workspaces served', fields: { workspaces: 'Serving 1 workspace:\n  site\r  forged\n    id      w-1' } }), quiet)).toEqual([
@@ -142,6 +159,32 @@ describe('the request lines', () => {
     // A guard's refusal, before any operation: the only line it gets.
     expect(finished({ status: 401, durationMs: 2 })).toEqual(['14:22:00 [info] /mcp 401 (2ms)'])
     expect(finished({ route: null, status: 404, durationMs: 1 })).toEqual(['14:22:00 [info] no route 404 (1ms)'])
+  })
+
+  // Fix brief 1, H7: build-report choice 3, the fields a request line does not word, at debug or trace alone.
+  it('adds the fields the request lines and Approval pending do not word at debug or trace, and not at info', () => {
+    vi.stubEnv('TZ', 'UTC')
+    const lines = (options: { verbose: boolean }) => [
+      renderEvent(event({ message: 'request completed', fields: { method: 'POST', path: '/mcp', outcome: 'ok', durationMs: 3 } }), options),
+      renderEvent(event({ message: 'request finished', fields: { method: 'GET', route: '/health', status: 200, durationMs: 1 } }), options),
+      renderEvent(event({ message: 'Approval pending', fields: { tool: 'fs_write', rule: 'write_scope', scopes: ['once'], workspace: 'site', review: 'buckle approvals --workspace site', extra: 'kept' } }), options),
+    ]
+    expect(lines(verbose)).toEqual([
+      ['14:22:00 [info] /mcp request completed (3ms) method=POST'],
+      ['14:22:00 [info] /health 200 (1ms) method=GET'],
+      ['14:22:00 [approval] [site] action pending approval: write a file (write_scope: once); see it with buckle approvals --workspace site extra=kept'],
+    ])
+    expect(lines(quiet)).toEqual([
+      ['14:22:00 [info] /mcp request completed (3ms)'],
+      ['14:22:00 [info] /health 200 (1ms)'],
+      ['14:22:00 [approval] [site] action pending approval: write a file (write_scope: once); see it with buckle approvals --workspace site'],
+    ])
+  })
+
+  it('renders a request completed with no path or no time as any other line', () => {
+    vi.stubEnv('TZ', 'UTC')
+    expect(renderEvent(event({ message: 'request completed', fields: { path: '/mcp', outcome: 'ok', extra: 1 } }), quiet)).toEqual(['14:22:00 [info] request completed path=/mcp outcome=ok extra=1'])
+    expect(renderEvent(event({ message: 'request completed', fields: { outcome: 'ok', durationMs: 3 } }), quiet)).toEqual(['14:22:00 [info] request completed outcome=ok durationMs=3'])
   })
 
   it('escapes the path a caller chose', () => {

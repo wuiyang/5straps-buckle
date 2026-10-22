@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
-import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { openWorkspaceManager, WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import { describeOnline, watchOnline } from '../server/roster.js'
 import { logger } from '../common/runtime/log.js'
@@ -289,8 +289,9 @@ describe('the workspaces buckle serve lists', () => {
     expect(text).toMatch(/packs {3}.*\bfs\b/)
   })
 
-  // The CLI display slice, C3: the folder, each mount, and why a workspace would not open are escaped as its name is.
-  it('escapes the folder, each mount, and the reason a workspace would not open', async () => {
+  // The CLI display slice, C3: the folder from its source, a mount's target and source, and why a workspace would not open
+  // are escaped as its name is.
+  it('escapes the folder from its source, a mount\'s target and source, and the reason a workspace would not open', async () => {
     const hostile = '/srv/a\u001b[2Jb\u009b'
     const shown = '/srv/a\\u001b[2Jb\\u009b'
     const runtime = { takeUpSettings: async () => {}, manifest: () => ({ packs: [] }), policy: { effective: () => ({ mount: '/workspace', network: { allow: [] } }) }, paths: () => ({ mounts: [{ source: hostile, target: '/data\u202e', access: 'ro', scratch: false }] }) }
@@ -300,6 +301,26 @@ describe('the workspaces buckle serve lists', () => {
     expect(listed).toContain(`    mount   /data\\u202e from ${shown}, read-only\n`)
     const refused = await listing(async () => { throw new Error(`cannot read ${hostile}`) })
     expect(refused).toContain(`could not open, so it answers each call with the reason: cannot read ${shown}`)
+  })
+
+  // Fix brief 1, H7: the rest of the list's text the owner's state carries: the mount target, the folder at its real path,
+  // a scratch root, and the note a workspace waiting on its settings shows.
+  it('escapes the mount target of the folder row, the folder at its real path, a scratch root, and the note', async () => {
+    const hostile = '/srv/a\u001b[2Jb\u009b\u202e'
+    const shown = '/srv/a\\u001b[2Jb\\u009b\\u202e'
+    const runtime = (mount: string | null, waits: boolean) => ({
+      takeUpSettings: async () => { if (waits) throw new WorkspaceError('wait\u001b[2J\u202e', 409) },
+      manifest: () => ({ packs: [] }),
+      policy: { effective: () => ({ mount, network: { allow: [] } }) },
+      paths: () => ({ mounts: [{ source: hostile, target: hostile, access: 'rw', scratch: true }] }),
+    })
+    const listing = (mount: string | null, waits: boolean) => describeOnline({ list: () => [{ id: 'w-1', name: 'Site', dir: hostile, online: true }], resolve: async () => ({ runtime: runtime(mount, waits) }) } as unknown as WorkspaceManager)
+    const mounted = await listing('/w\u202e', true)
+    expect(mounted).toContain(`    folder  /w\\u202e from ${shown}\n`)
+    expect(mounted).toContain(`    mount   ${shown}, a scratch root, read-write\n`)
+    expect(mounted).toContain('    note    wait\\u001b[2J\\u202e\n')
+    expect(await listing(null, false)).toContain(`    folder  ${shown}, at its real path\n`)
+    for (const text of [mounted, await listing(null, false)]) expect(text).not.toMatch(/[\u001b\u009b\u202e]/)
   })
 
   // Phase 2 item 1: every mount of the table, at its target from its source; the system folders are never listed (Q1).
