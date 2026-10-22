@@ -6,6 +6,7 @@ import { PassThrough } from 'node:stream'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { createConsoleWriter, type ConsoleWriter } from '../common/runtime/console.js'
+import { configureRootLogger, flushLogs, logger } from '../common/runtime/log.js'
 import type { ServeHttpInput } from '../server/serve.js'
 import { serveHttp } from '../server/serve.js'
 import { consoleRoster, rosterLines } from '../server/roster.js'
@@ -80,6 +81,82 @@ describe('the console writer', () => {
     } finally {
       readline.close()
     }
+  })
+
+  // Fix brief 2, L4: the contracts the logger and the next block lean on, which no earlier test read.
+  describe('what the logger and the next block rely on', () => {
+    // The human sink awaits a drain whenever write() says false, and a held write emits none.
+    it('accepts a write while an ending is held, and writes it, with the rest, when the question is released', () => {
+      const terminal = screen(true)
+      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      try {
+        const release = writer.asking(readline)
+        release.hold()
+        expect(writer.write(['22:22:05 [info] first'], new Date())).toBe(true)
+        expect(writer.write(['22:22:06 [info] second'], new Date())).toBe(true)
+        expect(terminal.shown()).toBe('')
+        release()
+        expect(terminal.shown()).toBe('22:22:05 [info] first\n22:22:06 [info] second\n')
+      } finally {
+        readline.close()
+      }
+    })
+
+    it('does not stall the logger while an ending is held: a flush still returns, and returns again after the release', async () => {
+      const terminal = screen(true)
+      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      configureRootLogger({}, { format: 'human', console: writer })
+      const flushed = async () => {
+        let timer: NodeJS.Timeout | undefined
+        try {
+          return await Promise.race([flushLogs().then(() => 'flushed'), new Promise<string>((resolve) => { timer = setTimeout(() => resolve('stalled'), 1_000) })])
+        } finally {
+          clearTimeout(timer)
+        }
+      }
+      try {
+        const release = writer.asking(readline)
+        release.hold()
+        logger.info('logged while held')
+        expect(await flushed()).toBe('flushed')
+        expect(terminal.shown()).toBe('')
+        release()
+        expect(terminal.shown()).toMatch(/\[info\] logged while held\n$/)
+        logger.info('logged after the release')
+        expect(await flushed()).toBe('flushed')
+        expect(terminal.shown()).toMatch(/\[info\] logged after the release\n$/)
+      } finally {
+        readline.close()
+        configureRootLogger({})
+      }
+    })
+
+    it('writes a block whose flush fails, and the blocks after it', async () => {
+      const terminal = screen(false)
+      let flushes = 0
+      const writer = createConsoleWriter({ output: terminal.output, dates: false, flush: async () => { flushes += 1; if (flushes === 1) throw new Error('flush failed') } })
+      await writer.block(['first block'], new Date())
+      await writer.block(['second block'], new Date())
+      expect(terminal.shown()).toBe('first block\nsecond block\n')
+      expect(flushes).toBe(2)
+    })
+
+    it('reads the logger\'s queue before a block even when the block before it failed to write', async () => {
+      const terminal = screen(true)
+      const readline = createInterface({ input: new PassThrough(), output: terminal.output })
+      const flush = vi.fn(async () => {})
+      const writer = createConsoleWriter({ output: terminal.output, dates: false, flush })
+      readline.close()
+      // A question that is still registered when its readline is closed: drawing the prompt again throws.
+      const release = writer.asking(readline)
+      await expect(writer.block(['lost block'], new Date())).rejects.toThrow()
+      release()
+      await writer.block(['next block'], new Date())
+      expect(flush).toHaveBeenCalledTimes(2)
+      expect(terminal.shown()).toMatch(/next block\n$/)
+    })
   })
 
   // Fix brief 2, L2: a question whose block is shown and whose prompt is not has nothing on screen to draw again.
