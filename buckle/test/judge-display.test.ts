@@ -42,14 +42,14 @@ function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
 const verdict = (level: 'safe' | 'warning' | 'danger', confidence: number): JudgeResult => ({ kind: 'verdict', level, confidence, reasoning: `It deletes files. ${level}.`, model: 'claude-opus-5-5', latencyMs: 30, promptDigest: 'e'.repeat(64) })
 
 /** A runtime whose terminal questions and webhook posts are kept; one call asks about python3 job.py. */
-async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv; quickJudge?: QuickJudge; command?: [string, string[]]; destructive?: string[] }) {
+async function asked(input: { answer?: JudgeResult; environment?: NodeJS.ProcessEnv; quickJudge?: QuickJudge; command?: [string, string[]]; destructive?: string[]; noThorough?: true }) {
   const webhook = await captureWebhook()
   closing.push(() => webhook.close())
   const questions: CliRequest[] = []
   const requestCli = vi.fn(async (request: CliRequest) => { questions.push(request); return { status: 'unavailable' as const, requestId: request.id, reason: 'no_consumer' as const } })
   const judge: Judge = { judge: vi.fn(async () => input.answer ?? verdict('danger', 0.92)) }
   const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, ...input.environment })
-  const runtime: BuckleRuntime = await createRuntime({ config, judge, ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+  const runtime: BuckleRuntime = await createRuntime({ config, ...(input.noThorough ? {} : { judge }), ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
   closing.push(async () => { await runtime.approvalService.close(); await runtime.history.close() })
   if (input.destructive) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: input.destructive } })
   const [command, args] = input.command ?? ['python3', ['job.py']]
@@ -134,6 +134,14 @@ describe('an ask in a workspace whose judge rates on request', () => {
     expect(question.action.details?.judge).toBe(`not asked; ${command} asks it, and with --approve-if-safe approves a safe verdict once`)
     expect(body.approvals[0]!.judge).toEqual({ onRequest: true, command })
     expect(approval.reason).not.toContain('decision AI')
+  })
+
+  it('never promises an approval where only the quick stage holds a key, since Jev\'s verdict approves nothing (fix brief 9, B37)', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async (): Promise<QuickResult> => ({ kind: 'verdict', level: 'safe', confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 120 })) }
+    const { runtime, approval, question } = await asked({ noThorough: true, quickJudge, environment: { BUCKLE_APPROVAL_JUDGE: 'on-request', BUCKLE_APPROVAL_QUICK_JUDGE: 'interpreters' } })
+    const command = `buckle approvals judge ${approval.token} --workspace ${runtime.workspaceName()}`
+    expect(question.action.details?.judge).toBe(`not asked; ${command} asks it`)
+    expect(runtime.judgeApproves()).toBe(false)
   })
 })
 

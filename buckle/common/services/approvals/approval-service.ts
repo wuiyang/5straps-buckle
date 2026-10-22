@@ -184,6 +184,11 @@ export interface ApprovalServiceOptions {
   /** The current operation's interaction; an unbound operation asks nobody. */
   interaction: InteractionSource
   /**
+   * Whether the decision AI's thorough stage can rate in this workspace, read when a question is shown: an on-request
+   * line promises that --approve-if-safe approves a safe verdict only where it can (fix brief 9, B37).
+   */
+  judgeApproves?: () => boolean
+  /**
    * Told once an ask is issued, from every entry point, so a person can be reached away from the machine: the
    * requests and, when it was kept whole, the one call they all came from (review M1).
    */
@@ -496,7 +501,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       ask.questions.set(approval.token, question)
       let outcome: CliOutcome
       try {
-        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, ...(options.workspaceName === undefined ? {} : { workspaceName: options.workspaceName }), node: options.serverId, context: input.context }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
+        outcome = await input.interaction.requestCli(questionFor({ approval, workspaceId: options.workspaceId, ...(options.workspaceName === undefined ? {} : { workspaceName: options.workspaceName }), node: options.serverId, context: input.context, ...(options.judgeApproves ? { approves: options.judgeApproves() } : {}) }), { signal: AbortSignal.any([ask.stop.signal, question.signal]) })
       } finally {
         ask.questions.delete(approval.token)
       }
@@ -686,7 +691,7 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
  * The question the terminal shows: what the call wants, the whole call it came from (owner decision D17)
  * and the command that answers it elsewhere.
  */
-export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext }): CliRequest {
+export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext; approves?: boolean }): CliRequest {
   const { approval, workspaceId, context } = input
   const { call } = context
   return {
@@ -704,7 +709,7 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
         ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
         approve: approveCommand({ request: approval, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
         ...(input.node === undefined ? {} : { node: input.node }),
-        ...judgeDetail({ approval, call, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
+        ...judgeDetail({ approval, call, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) }),
         ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),
       },
     },
@@ -713,9 +718,9 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
 }
 
 /** The decision AI's line for one question (D91), where the call it came from carries a note about its command. */
-function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string }): { judge?: string } {
+function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string; approves?: boolean }): { judge?: string } {
   const note = judgeNoteFor(input.call?.judge, input.approval)
-  return note === undefined ? {} : { judge: judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }) }
+  return note === undefined ? {} : { judge: judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) }) }
 }
 
 /** A question lasts as long as its request: a terminal someone sits at, not the call's grace period. */

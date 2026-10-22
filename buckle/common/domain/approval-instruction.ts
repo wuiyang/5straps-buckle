@@ -111,14 +111,14 @@ export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rul
  * there is no verdict, or the command that asks for one; with the quick stage's verdict first where it rated, as
  * `quick: warning (0.90, jev-1.13.0, 120 ms); thorough: danger (0.92, gpt-6-luna, 900 ms): <reasoning>`. Every route passes it through printable() as it does the rest.
  */
-export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
+export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
   const rated = ratingLine(note, input)
   // A floor ask's note leads with its one constant warning line (addendum 3 R2).
   return note.warning === undefined ? rated : rated === '' ? note.warning : `${note.warning}; ${rated}`
 }
 
 /** A note's ratings as one line: judgeLine without the floor warning. */
-function ratingLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined }): string {
+function ratingLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
   if ('onRequest' in note) return note.warning === undefined ? onRequestLine(input) : floorRequestLine(input)
   const quick = 'quick' in note && note.quick ? `quick: ${'level' in note.quick ? `${note.quick.level} (${note.quick.confidence.toFixed(2)}, ${note.quick.model}, ${note.quick.latencyMs} ms)` : `no verdict: ${note.quick.unavailable}`}` : null
   const thorough = 'level' in note ? `${note.level} (${note.confidence.toFixed(2)}, ${note.model}${note.latencyMs === undefined ? '' : `, ${note.latencyMs} ms`}): ${note.reasoning}` : 'unavailable' in note ? `no verdict: ${note.unavailable}` : null
@@ -131,9 +131,15 @@ function floorRequestLine(input: NamedWorkspace & { token?: string | undefined }
   return input.token === undefined ? 'not asked; the decision AI rates it on request' : `not asked; ${judgeCommand({ ...input, request: { token: input.token } })} rates it`
 }
 
-/** That a waiting ask's command was not rated yet, and the command that rates it on request. */
-function onRequestLine(input: NamedWorkspace & { token?: string | undefined }): string {
-  return input.token === undefined ? 'not asked; the decision AI rates it on request' : `not asked; ${judgeCommand({ ...input, request: { token: input.token } })} asks it, and with --approve-if-safe approves a safe verdict once`
+/**
+ * That a waiting ask's command was not rated yet, and the command that rates it on request; that its --approve-if-safe
+ * approves a safe verdict once only where the thorough stage can rate (`approves`, read when the line is shown), since
+ * the quick stage's verdict approves nothing (fix brief 9, B37).
+ */
+function onRequestLine(input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
+  if (input.token === undefined) return 'not asked; the decision AI rates it on request'
+  const command = judgeCommand({ ...input, request: { token: input.token } })
+  return input.approves === false ? `not asked; ${command} asks it` : `not asked; ${command} asks it, and with --approve-if-safe approves a safe verdict once`
 }
 
 /**

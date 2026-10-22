@@ -67,7 +67,7 @@ async function quickStandIn(answer: { choice: 'safe' | 'warning' | 'danger'; con
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, seen }
 }
 
-async function node(input: { url: string; judge?: string; quickUrl?: string; quick?: string }) {
+async function node(input: { url: string; judge?: string; quickUrl?: string; quick?: string; noThorough?: true }) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-on-request-')))
   roots.push(root)
   const folder = join(root, 'site')
@@ -77,7 +77,7 @@ async function node(input: { url: string; judge?: string; quickUrl?: string; qui
     BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ADMIN_TOKEN: 'on-request-admin-credential', BUCKLE_SANDBOX: 'none',
     BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_APPROVAL_TIMEOUT_MS: '1',
     BUCKLE_APPROVAL_JUDGE: input.judge ?? 'on-request', BUCKLE_APPROVAL_JUDGE_PROVIDER: 'openai-compatible', BUCKLE_APPROVAL_JUDGE_MODEL: 'GPT-6-luna',
-    BUCKLE_JUDGE_API_KEY: KEY, BUCKLE_JUDGE_BASE_URL: input.url,
+    ...(input.noThorough ? {} : { BUCKLE_JUDGE_API_KEY: KEY }), BUCKLE_JUDGE_BASE_URL: input.url,
     ...(input.quickUrl ? { BUCKLE_APPROVAL_QUICK_JUDGE: input.quick ?? 'interpreters', BUCKLE_QUICK_JUDGE_API_KEY: QUICK_KEY, BUCKLE_QUICK_JUDGE_BASE_URL: input.quickUrl } : {}),
   })
   let out = ''
@@ -169,6 +169,28 @@ describe('buckle approvals judge', () => {
     expect(judge.seen).toHaveLength(0)
     expect(CREDENTIAL_HIDDEN).toBe('The ask\'s recorded arguments hide a credential, so the decision AI cannot rebuild the call to read it; approve or deny it yourself, or run the workspace in automated mode, which rates the call as sent')
     await manager.close()
+  })
+
+  it('says only the thorough stage can approve where it did not rate the ask, and that it gave no verdict where it failed (fix brief 9, B37)', async () => {
+    const judge = await standIn({ status: 500 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.95 })
+    const quickOnly = await node({ url: judge.url, quickUrl: jev.url, noThorough: true })
+    const first = await ask(quickOnly.runtime)
+    const alone = await quickOnly.buckle(['approvals', 'judge', first.token, '--approve-if-safe'])
+    expect(alone.exitCode).toBe(0)
+    expect(alone.out).toContain(`Only the thorough stage can approve; it did not rate this ask, so nothing is approved; ${first.token} is still waiting`)
+    expect(alone.out).not.toContain('Not safe')
+    expect(quickOnly.runtime.approvalService.waitingAsk(first.token)).toBeDefined()
+    expect(quickOnly.runtime.actions.read(100).some(entry => entry.judge?.passed === true)).toBe(false)
+    await quickOnly.manager.close()
+
+    const both = await node({ url: judge.url, quickUrl: jev.url })
+    const second = await ask(both.runtime)
+    const failed = await both.buckle(['approvals', 'judge', second.token, '--approve-if-safe'])
+    expect(failed.exitCode).toBe(0)
+    expect(failed.out).toContain(`The thorough stage gave no verdict, so nothing is approved; ${second.token} is still waiting`)
+    expect(both.runtime.approvalService.waitingAsk(second.token)).toBeDefined()
+    await both.manager.close()
   })
 
   it('runs both stages the settings name, prints both verdicts, and approves on the thorough stage\'s safe verdict alone (addendum 3 R1)', async () => {

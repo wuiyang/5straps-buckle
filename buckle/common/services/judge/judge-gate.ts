@@ -71,6 +71,8 @@ export interface JudgeGate {
   readonly mode: JudgeMode
   /** Whether any stage can rate here: the decision AI is on and the node holds a key for a stage the settings use. */
   readonly ready: boolean
+  /** Whether the thorough stage can rate here, the only stage whose verdict runs or approves a call (fix brief 9, B37). */
+  readonly thoroughReady: boolean
   /** Whether the quick stage screens allowed commands too (approval.quickJudge all, with its key, in automated mode). */
   readonly screens: boolean
   /** Whether a stage rates this ask: an interpreter ask for the thorough stage, or a command ask the quick stage's scope covers. */
@@ -370,6 +372,7 @@ export function createJudgeGate(input: {
   return {
     mode: settings.mode,
     ready: thoroughReady || quickReady,
+    thoroughReady,
     screens,
     covers,
     async rate(call) {
@@ -564,7 +567,7 @@ export function withJudgeReason(ask: Ask, judged: readonly JudgedAsk[]): Ask {
 
 /** A gate for a workspace whose decision AI is off: it rates nothing, and reads no setting, file, or cache. */
 export const JUDGE_OFF: JudgeGate = {
-  mode: 'off', ready: false, screens: false, covers: () => false,
+  mode: 'off', ready: false, thoroughReady: false, screens: false, covers: () => false,
   rate: () => Promise.resolve([]), screen: () => Promise.resolve([]), rateOnRequest: () => Promise.resolve(null), holds: () => false,
 }
 

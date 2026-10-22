@@ -203,6 +203,8 @@ export interface BuckleRuntime {
    * nothing by that token waits, the ask is not about an interpreter the policy does not allow, or the judge is off or not set up.
    */
   judgeAsk(token: string, options?: { signal?: AbortSignal }): Promise<JudgeAskResult>
+  /** Whether the decision AI's thorough stage can rate here, so --approve-if-safe can approve (fix brief 9, B37). */
+  judgeApproves(): boolean
   invoke(input: InvokeInput): Promise<InvokeResponse>
   /**
    * Shutdown's in-flight tool calls step (B19): cancels every call still running here, a shell among
@@ -303,6 +305,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     get graceMs() { return config.approvalTimeoutMs },
     get workspaceName() { return config.serverName },
     interaction: input.interaction ?? (async () => undefined),
+    judgeApproves: () => inForce().judge.thoroughReady,
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
@@ -479,6 +482,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
+
+    judgeApproves: () => inForce().judge.thoroughReady,
 
     async judgeAsk(token, options = {}) {
       const refused = (reason: string): JudgeAskResult => ({ kind: 'refused', reason })

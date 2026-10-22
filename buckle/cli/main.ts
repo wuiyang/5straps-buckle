@@ -586,6 +586,16 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
     process.stdout.write(`${FLOOR_WARNING[0]!.toUpperCase()}${FLOOR_WARNING.slice(1)}, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
     return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
   }
+  // Only the thorough stage approves: where it did not rate the ask, or gave no verdict, that is what the owner is told,
+  // never "not safe" under a safe quick verdict (fix brief 9, B37).
+  if (input.approveIfSafe && judged.thorough === undefined) {
+    process.stdout.write(`Only the thorough stage can approve; it did not rate this ask, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
+    return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
+  }
+  if (input.approveIfSafe && judged.thorough?.result.kind === 'unavailable') {
+    process.stdout.write(`The thorough stage gave no verdict, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
+    return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
+  }
   const passing = judged.passedBy === 'thorough' ? judged.thorough : undefined
   if (!input.approveIfSafe || passing === undefined) {
     process.stdout.write(`${input.approveIfSafe ? 'Not safe at 0.8 or above, so nothing is approved' : 'Nothing is approved'}; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
@@ -670,7 +680,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
 /** The decision AI's line for a waiting ask, where its call carries a note about its command (D91). */
 function judgeOfAsk(input: { call: PendingAsk['call']; request: PendingAsk['request']; runtime: BuckleRuntime }): { judge?: string } {
   const note = judgeNoteFor(input.call?.judge, input.request)
-  return note === undefined ? {} : { judge: judgeLine(note, { token: input.request.token, ...named(input.runtime) }) }
+  return note === undefined ? {} : { judge: judgeLine(note, { token: input.request.token, ...named(input.runtime), approves: input.runtime.judgeApproves() }) }
 }
 
 /** The workspace a printed command names: by its name (D85, Q15), beside the id the listing carries. */
