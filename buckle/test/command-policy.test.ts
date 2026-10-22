@@ -146,6 +146,14 @@ describe('a refused shell wrapper names the allow rule that admits it', () => {
     ['flock', ['/tmp/lock', '-c', 'pnpm build'], 'flock /tmp/lock -c *'],
     ['xargs', ['-n', '1', 'bash', '-c', 'pnpm build'], 'xargs -n 1 bash -c *'],
     ['env', ['-S', 'bash -c ls'], 'env -S bash*-c*ls'],
+    // A bare glob meets the command word lowercased, so a first word typed in capitals is named lowercased, and one
+    // written as a path as typed (git pack recheck 3, held[2]).
+    ['Bash', ['-c', 'ls'], 'bash -c *'],
+    ['SH', ['-c', 'ls'], 'sh -c *'],
+    ['ENV', ['bash', '-c', 'ls'], 'env bash -c *'],
+    ['Sudo', ['bash', '-c', 'ls'], 'sudo bash -c *'],
+    ['/bin/BASH', ['-c', 'ls'], '/bin/BASH -c *'],
+    ['nice', ['Bash', '-c', 'ls'], 'nice Bash -c *'],
   ])('refuses %s %j naming %j, a rule that admits the call once stored', (command, args, rule) => {
     expect(ruleIn(reasonOf(evaluate(command, args)))).toBe(rule)
     const outcome = evaluate(command, args, { allow: [rule] })
@@ -183,6 +191,18 @@ describe('a refused shell wrapper names the allow rule that admits it', () => {
     const response = await stored(rule, command, args)
     expect(response.outcome).toBe(outcome)
     if (response.outcome === 'approval_required') expect(response.approvals.map(approval => approval.rule)).toEqual(['destructive_command'])
+  })
+
+  it.each<[string, string[], string, string]>([
+    ['Bash', ['-c', 'ls'], 'bash -c *', 'ok'],
+    ['SH', ['-c', 'ls'], 'sh -c *', 'ok'],
+    ['ENV', ['bash', '-c', 'ls'], 'env bash -c *', 'ok'],
+    ['Sudo', ['bash', '-c', 'ls'], 'sudo bash -c *', 'approval_required'],
+  ])('admits %s %j, its first word typed in capitals, once buckle policy allow-command stores the rule its refusal names, %j', async (command, args, named, outcome) => {
+    const rule = ruleIn(reasonOf(evaluate(command, args)))
+    expect(rule).toBe(named)
+    expect((await stored(rule, command, args)).outcome).toBe(outcome)
+    expect(evaluate(command.toLowerCase(), args, { allow: [rule] }).kind).not.toBe('deny')
   })
 
   // A path glob meets only a command word written plainly, so for one that is not the refusal named a rule that, once
