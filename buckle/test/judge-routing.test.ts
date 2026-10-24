@@ -546,4 +546,22 @@ describe('a standard form that selects another workspace package (fix brief 8, B
       ['pnpm run build --filter a', true, 'tsc -p .'], ['pnpm run build -F a', true, 'tsc -p .'], ['pnpm run build -r', true, 'tsc -p .'], ['pnpm run build --recursive', true, 'tsc -p .'],
     ])
   })
+
+  it('refuses an npx workspace option before the command and ruby -x under quick scope asks, Jev never asked, and still shows the command where the words are its own (standalone round 2, npx and ruby folder options)', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'job.rb'), 'puts 1\n')
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['npx *', 'ruby *'] })
+    const refused: Array<[string, string[]]> = [['npx', ['-w', 'a', 'tsc']], ['npx', ['--workspace=a', 'tsc']], ['npx', ['--workspaces', 'tsc']], ['npx', ['-ws', 'tsc']], ['npx', ['--ws', 'tsc']], ['npx', ['--include-workspace-root', 'tsc']], ['npx', ['-qw', 'a', 'tsc']], ['ruby', ['-x', 'job.rb']], ['ruby', ['-xsub', 'job.rb']], ['ruby', ['-wx', 'job.rb']]]
+    for (const [program, args] of refused) {
+      const { response, entry, ran } = await call(runtime, program, args)
+      expect(response, `${program} ${args.join(' ')}`).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, `${program} ${args.join(' ')}`).toBe(false)
+      expect(entry.judge, `${program} ${args.join(' ')}`).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    }
+    expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
+    for (const args of [['tsc', '-w'], ['tsc', '--workspaces']]) await call(runtime, 'npx', args)
+    expect(fakes.shownQuick.map(input => input.command)).toEqual(['npx tsc -w', 'npx tsc --workspaces'])
+  })
 })

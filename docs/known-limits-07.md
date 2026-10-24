@@ -36,13 +36,14 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 
 ## Another package's script
 
-- A standard form that selects another workspace package is not rated: npm's `-w`, `--workspace`,
-  `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root`, and bun's `--filter` and `-F`, bare
-  or with `=value`, run the selected package's script while the working directory's `package.json`
-  names another. The words after a `--` are the script's own, and pnpm hands an option after the
-  script name to the script, so `npm run build -- -w a` and `pnpm run build --filter a` are rated
-  with the root's text. npm also reads a unique prefix of a long option and a short letter after
-  `--` (`--prefi=sub`, `--C sub`, `--w a`), so every prefix of three or more letters is refused.
+- A standard form that selects another package's script is not rated: npm's and npx's `-w`,
+  `--workspace`, `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root`, bun's `--filter` and
+  `-F`, pnpm's `--filter`, `-F`, `--filter-prod`, `-r`, `--recursive`, `--parallel`, `-w`,
+  `--workspace-root`, and `--config.` keys, and ruby's `-x`. Each is read as npm reads it: under
+  any dashes, a long one by a prefix of three letters or more, in a cluster (`-qw a`), after `no-`,
+  or as `--C sub`. The words after a `--`, npx's command, or pnpm's script name are the script's own
+  (`npx tsc -w`, `pnpm run build --filter a`), so those are rated; after an option without
+  `=value` that name is unknown, so every word counts (`npx -y tsc -w`).
 - npm, pnpm, and yarn classic also run `pre<name>` and `post<name>` beside the named script unless
   configured off, and the stages see only the named script's text; bun is unconfirmed.
 - `npm`, `pnpm`, and `yarn` never ask on their own, so their standard scripts reach a stage only

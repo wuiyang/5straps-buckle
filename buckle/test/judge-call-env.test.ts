@@ -361,6 +361,42 @@ describe('a call that changes its working directory before its code runs (fix br
     for (const words of [['--silent', 'run', 'build', '--filter', 'a'], ['run', '--if-present', 'build', '--filter', 'a']]) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
   })
 
+  // npm 11.19.0's npx, run in a scratch workspace of the packages a and b with a local command that prints its folder: each npx
+  // option below, typed before the command, ran it in a (or once in each package), where the same word after the command reached
+  // it as its own argument (`npx tsc -w` is tsc's watch mode). ruby's -x[directory] is from ruby(1), not run: ruby is not installed
+  // here (standalone round 2, npx and ruby folder options).
+  const npxForms = (words: string[]) => commandFormsOf({ command: 'npx', args: words })
+
+  it('counts an npx option that selects another workspace package before the command: -w, --workspace, --workspaces, -ws, --ws, and --include-workspace-root, as npm reads them', () => {
+    const selecting = [
+      ['-w', 'a', 'tsc'], ['--workspace=a', 'tsc'], ['--workspace', 'a', 'tsc'], ['--workspaces', 'tsc'], ['-ws', 'tsc'], ['--ws', 'tsc'], ['-w=a', 'tsc'],
+      ['--include-workspace-root', '-w', 'a', 'tsc'], ['--include-workspace-root', 'tsc'], ['-iwr', '-w', 'a', 'tsc'], ['--iwr', 'tsc'],
+      ['-qw', 'a', 'tsc'], ['-sw', 'a', 'tsc'], ['---w', 'a', 'tsc'], ['-workspace', 'a', 'tsc'], ['--no-no-workspaces', 'tsc'], ['--workspac', 'a', 'tsc'], ['--w', 'a', 'tsc'],
+      ['--package', 'typescript', '-w', 'a', 'tsc'], ['--package=typescript', '--workspace', 'a', 'tsc'], ['-c', 'pwd', '-w', 'a'],
+    ]
+    for (const words of selecting) expect(changesDirectory(npxForms(words)), `npx ${words.join(' ')}`).toBe(true)
+  })
+
+  it('reads an npx workspace option after the command as the command\'s own, and any after a --', () => {
+    const own = [
+      ['tsc', '-w'], ['tsc', '--watch'], ['tsc', '-w', 'a'], ['vitest', '--workspace=a'], ['tsc', '--workspaces'], ['tsc', '--ws'], ['--package=typescript', 'tsc', '-w'],
+      ['--', 'tsc', '-w', 'a'], ['-y', '--', 'tsc', '-w'], ['tsc'], ['-c', 'pwd'], ['tsc', '--include-workspace-root'],
+    ]
+    for (const words of own) expect(changesDirectory(npxForms(words)), `npx ${words.join(' ')}`).toBe(false)
+    // The kept over-refusal: an option typed without =value may take the next word, so the command is not found and a selector anywhere counts.
+    for (const words of [['-y', 'tsc', '-w'], ['--yes', 'tsc', '--workspaces'], ['-p', 'typescript', 'tsc', '-w']]) expect(changesDirectory(npxForms(words)), `npx ${words.join(' ')}`).toBe(true)
+  })
+
+  it('counts ruby -x, bare, with a directory, or in a cluster, as it counts -C and -X: ruby switches to the directory before the script', () => {
+    const selects = (words: string[]) => changesDirectory(commandFormsOf({ command: 'ruby', args: words }))
+    for (const words of [['-x', 'job.rb'], ['-xsub', 'job.rb'], ['-x/tmp/sub', 'job.rb'], ['-wx', 'job.rb'], ['-xsub', '-w', 'job.rb'], ['-C', 'sub', 'job.rb'], ['-Csub', 'job.rb'], ['-X', 'sub', 'job.rb']]) {
+      expect(selects(words), `ruby ${words.join(' ')}`).toBe(true)
+    }
+    for (const words of [['job.rb'], ['-w', 'job.rb'], ['-rjson', 'job.rb'], ['-e', 'puts 1'], ['-Ilib', 'job.rb'], ['job.rb', '--', '-x'], ['--yjit', 'job.rb'], ['--disable-gems', 'job.rb']]) {
+      expect(selects(words), `ruby ${words.join(' ')}`).toBe(false)
+    }
+  })
+
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
