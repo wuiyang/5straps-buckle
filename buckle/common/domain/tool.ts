@@ -23,6 +23,13 @@ export interface ToolContext {
    */
   beginRun?: () => void
   /**
+   * Set beside `beginRun`: runs `wait`, the tool's wait for the workspace's write lock and its work under that lock before
+   * the program starts, outside the call's timer, as the invoker's own wait for the lock and its checkpoint are, under the
+   * signal it hands `wait`, the caller's cancel and the shutdown alone. The timer then goes on with the time it had left
+   * (D91 follow-ups, F4 residue).
+   */
+  untimed?: <T>(wait: (signal: AbortSignal | undefined) => Promise<T>) => Promise<T>
+  /**
    * Whether the rules allow reading an absolute host path the tool reached mid-call (a listed child
    * beneath its judged directory, a searched file), judged where it lands now; never an agent's name.
    */

@@ -821,7 +821,10 @@ async function executeWithTimeout(input: {
   nesting?: Nesting
   /** For a call a script made: the call that sent the script, which its history stage falls back to. */
   via?: NestedOrigin
-  /** For a tool that takes the write lock itself: the check it calls just before its program starts (ToolContext.beginRun). */
+  /**
+   * For a tool that takes the write lock itself: the check it calls just before its program starts (ToolContext.beginRun),
+   * handed beside its wait for that lock outside the timer (ToolContext.untimed).
+   */
   beginRun?: () => void
 }): Promise<JsonValue> {
   const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
@@ -833,8 +836,24 @@ async function executeWithTimeout(input: {
   // Past a script's deadline the script has ended: a call of its that hears this backstop before the pack's own cancel,
   // as when the main thread stalls across both, is cut for that reason too, and audited SCRIPT_ENDED (re-check of
   // round 3, finding late-ask-audit invoker.ts:635).
-  const timer = setTimeout(() => controller.abort(input.nesting ? new ScriptEndedError() : undefined), input.nesting ? timeoutMs + NESTED_DEADLINE_GRACE_MS : timeoutMs)
+  const expire = () => controller.abort(input.nesting ? new ScriptEndedError() : undefined)
+  let left = input.nesting ? timeoutMs + NESTED_DEADLINE_GRACE_MS : timeoutMs
+  let armedAt = performance.now()
+  let timer = setTimeout(expire, left)
+  let ended = false
   const signal = input.signal ? AbortSignal.any([controller.signal, input.signal]) : controller.signal
+  // A tool's own wait for the write lock is not timed, as the invoker's wait and its checkpoint are not: the timer stops
+  // for it and goes on with the time it had left, so a long write neither fails the call nor shortens its run (D91
+  // follow-ups, F4 residue). A call already cut waits for nothing.
+  const untimed = async <T>(wait: (signal: AbortSignal | undefined) => Promise<T>): Promise<T> => {
+    signal.throwIfAborted()
+    clearTimeout(timer)
+    left -= performance.now() - armedAt
+    try { return await wait(input.signal) } finally {
+      armedAt = performance.now()
+      if (!ended) timer = setTimeout(expire, Math.max(0, left))
+    }
+  }
   try {
     return await input.execute({
       requestId: input.request.requestId,
@@ -845,7 +864,7 @@ async function executeWithTimeout(input: {
       historyStage: historyStage(input.request, input.via),
       timeoutMs,
       signal,
-      ...(input.beginRun ? { beginRun: input.beginRun } : {}),
+      ...(input.beginRun ? { beginRun: input.beginRun, untimed } : {}),
       ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false
@@ -866,6 +885,7 @@ async function executeWithTimeout(input: {
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {
+    ended = true
     clearTimeout(timer)
   }
 }

@@ -32,8 +32,10 @@ interface ShellRunInput<T> {
    * throw runs nothing (ToolContext.beginRun).
    */
   beforeRun?: () => void
-  /** The call's signal, which stops the wait for the write lock. */
+  /** The call's signal, which stops the wait for the write lock where `untimed` is not given. */
   signal?: AbortSignal
+  /** Runs the wait for the write lock, and the copy under it, outside the call's timer (ToolContext.untimed). */
+  untimed?: <R>(wait: (signal: AbortSignal | undefined) => Promise<R>) => Promise<R>
   execute: (copyRoot: string) => Promise<T>
 }
 
@@ -62,9 +64,11 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     // The copy is the code the program runs. It is taken, and a pass of the decision AI confirmed against it, under the
     // workspace's write lock, the one a brokered write takes, so no such write lands between the copy and the check
     // (fix brief 9, B31; D91 follow-ups, F4). The lock is this run's own first, then the write lock, as promote takes
-    // them, and the write lock is released before the program runs, for promote takes it again.
+    // them, and the write lock is released before the program runs, for promote takes it again. The wait is not timed,
+    // as the shell's wait outside isolation is not (D91 follow-ups, F4 residue).
+    const untimed = input.untimed ?? (<R>(wait: (signal: AbortSignal | undefined) => Promise<R>) => wait(input.signal))
     waiting = true
-    const before = await input.isolation.history.exclusive(async () => {
+    const before = await untimed(signal => input.isolation.history.exclusive(async () => {
       waiting = false
       const taken = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
       const copied = relocate(taken, input.sourceRoot, copyRoot)
@@ -72,7 +76,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
       writeFileSync(join(directory, 'before.json'), JSON.stringify(taken), { mode: 0o600 })
       input.beforeRun?.()
       return taken
-    }, input.signal)
+    }, signal))
     record('running')
     started = true
     const result = await input.execute(copyRoot)

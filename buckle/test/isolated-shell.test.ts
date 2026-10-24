@@ -424,18 +424,23 @@ describe('a wait for the write lock that ends before the copy (D91 follow-ups, F
     })
 
     /** shell_exec through the real invoker and the shell pack under isolation over `history`; the process is imitated. */
-    async function isolatedCall(options: { lockDeadlineMs?: number } = {}) {
+    async function isolatedCall(options: { lockDeadlineMs?: number; hang?: boolean } = {}) {
       const root = mkdtempSync('/tmp/buckle-isolated-invoke-'); roots.push(root)
       const workspace = join(root, 'workspace'); mkdirSync(workspace)
       const state = join(root, 'state')
       const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell' })
       const runtime = await createRuntime({ config }); runtimes.push(runtime)
-      const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30, ...options }); histories.push(history)
+      const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30, ...(options.lockDeadlineMs ? { lockDeadlineMs: options.lockDeadlineMs } : {}) }); histories.push(history)
       const spawned: Array<{ aborted: boolean }> = []
       const pack = createShellPack({
         paths: createPathView({ root: config.cwd, mount: '/workspace' }), isolation: { directory: join(root, 'isolated'), maxBytes: 1_000_000, history },
         sandbox: createBubblewrapSandbox('/usr/bin/bwrap'), writableRoots: [config.cwd], hiddenPaths: [state], readOnlyPaths: [], unavailableReason: null,
-        runProcess: async request => { spawned.push({ aborted: request.signal?.aborted === true }); return { exitCode: 0, signal: null, stdout: 'ran', stderr: '', truncated: false, timedOut: false } },
+        runProcess: async request => {
+          spawned.push({ aborted: request.signal?.aborted === true })
+          // A program that runs until the call's timer stops it.
+          if (options.hang) await new Promise(resolve => request.signal?.addEventListener('abort', resolve, { once: true }))
+          return { exitCode: 0, signal: null, stdout: 'ran', stderr: '', truncated: false, timedOut: options.hang === true }
+        },
       })
       vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockImplementation(args => pack.tools[0]!.prepare(args))
       await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: config.cwd, scope: 'always' })
@@ -469,6 +474,28 @@ describe('a wait for the write lock that ends before the copy (D91 follow-ups, F
       expect(spawned).toHaveLength(0)
       expect(await send('cancelled')).toMatchObject({ outcome: 'ok' })
       expect(spawned).toHaveLength(1)
+    })
+
+    // The invoker's own wait for the lock is not timed, and the tool's timer starts once the lock is held: the copy's wait
+    // is the same, so a call that waits longer than its timeout for a long write still runs, with its whole time to run.
+    it('waits for the lock outside the call\'s timer, then runs with the time its timer had left', async () => {
+      const { history, spawned, send } = await isolatedCall()
+      const lock = await holdLock(history)
+      setTimeout(() => lock.release(), 600)
+      const response = await send('long-wait', { timeoutMs: 200 })
+      await lock.held
+      expect(response).toMatchObject({ outcome: 'ok', output: { stdout: 'ran' } })
+      expect(spawned).toEqual([{ aborted: false }])
+    })
+
+    it('still stops a program at the time its timer had left once the wait ends', async () => {
+      const { history, spawned, send } = await isolatedCall({ hang: true })
+      const lock = await holdLock(history)
+      setTimeout(() => lock.release(), 300)
+      const response = await send('timed', { timeoutMs: 200 })
+      await lock.held
+      expect(response).toMatchObject({ outcome: 'ok', output: { timedOut: true } })
+      expect(spawned).toEqual([{ aborted: false }])
     })
   })
 })

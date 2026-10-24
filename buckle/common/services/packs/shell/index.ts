@@ -184,6 +184,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       // (recheck of the final review of 0.1.4, finding shell index.ts:151).
       details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool },
       ...(input.context.beginRun ? { beforeRun: input.context.beginRun } : {}),
+      ...(input.context.untimed ? { untimed: input.context.untimed } : {}),
       signal: input.signal,
       execute: run,
     })
