@@ -55,9 +55,9 @@ exists only once the shell runs, so Buckle cannot know it.
 
 ## Other programs and run-time text
 
-- A program outside the wrapper list that runs a command, such as `watch` or `parallel`, is judged
-  by its own words only: `watch git push origin main` does not meet `git push *`, and the floor
-  does not read past it. Deny the program itself, or leave it off an allow list.
+- A program outside the wrapper list that runs a command, such as `parallel`, is judged by its own
+  words only: `parallel git push origin ::: main` does not meet `git push *`, and the floor does
+  not read past it. Deny the program itself, or leave it off an allow list.
 - Text bash builds and evaluates at run time, which the call does not spell out, is not read:
   `p='$(git'; x="a[$p push origin main)]"; (( x ))` runs a push through arithmetic on a variable's
   text, and so can `PS4` under `set -x`. Text the call spells out is read:

@@ -41,8 +41,9 @@ A shell wrapper (`bash -c`, or `-c` with `sh`, `zsh`, `dash`, `ksh`, `fish`, `rb
 `mksh`, `yash`, or `posh`) that a call starts with, or reaches through a prefix such as `sudo`,
 `env`, or `xargs`, hides its command from word globs, so it needs its own allow rule, such as
 `buckle policy allow-command 'bash -c *'`, even with no allow list; `script_run` with the `bash`
-runtime is one. Behind a prefix the rule names the prefix as typed, `sudo bash -c *`, since
-`bash -c *` alone does not admit `sudo bash -c ls`; the refusal names that rule
+runtime is one, and so is `watch` without `-x`, which hands its words to `sh -c`. Behind a prefix
+the rule names the prefix as typed, `sudo bash -c *`, since `bash -c *` alone does not admit
+`sudo bash -c ls`; the refusal names that rule
 ([Troubleshooting](troubleshooting-02.md#a-bash-script-is-refused)). A shell reached through
 `find -exec`, `su -c`, `sudo -s`, or an `ssh` remote command needs no such rule: the deny rules
 and the destructive floor judge its commands.

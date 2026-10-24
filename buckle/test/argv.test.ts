@@ -93,6 +93,10 @@ describe('holdsExpansion', () => {
     // command (fix brief 9, A5); `=` alone, a quoted or escaped `=`, an assignment, and `--opt=value` stay as written.
     ['=rm', true], ['=git', true], ["'=rm'", false], ['"=rm"', false], ['\\=rm', false], ['=', false], ['a=b', false], ['FOO=1', false],
     ['--opt=value', false], ['-m=x', false],
+    // The shell removes a line continuation before it reads the word, so one or more of them before an `=` or a `~`
+    // leave it leading the word (D91 follow-ups, F1); an `=` or a `~` after them that is quoted or alone stays as written.
+    ['\\\n=rm', true], ['\\\n\\\n=rm', true], ['\\\n~/bin', true], ['\\\n~', true], ['\\\n=', false], ['\\\n\\=rm', false],
+    ["\\\n'=rm'", false], ['\\\na=b', false], ['\\\n--opt=value', false],
   ])('reads %s as holding an expansion: %s', (raw, expanded) => {
     expect(holdsExpansion(raw)).toBe(expanded)
   })
@@ -109,6 +113,8 @@ describe('expansionShape', () => {
     ['FOO="$BAR"', false, 'FOO='], ["'-'\"$x\"", false, '-'], ['"$(a)"$b', true, ''], ['"$a"*', true, ''], ['x<$()', false, 'x'], ["$'\\x2d'\"$v\"", false, '-'],
     // zsh's `=name` names one path, so it does not split, and nothing of the word before it is its own (fix brief 9, A5).
     ['=rm', false, ''], ['=rm$v', true, ''],
+    // A line continuation before them leaves nothing of the word's own (D91 follow-ups, F1).
+    ['\\\n=rm', false, ''], ['\\\n\\\n=rm', false, ''], ['\\\n~/x', false, ''],
   ])('reads %s as splitting: %s, its own text first: %j', (raw, splits, prefix) => {
     expect(expansionShape(raw)).toEqual({ splits, prefix })
   })

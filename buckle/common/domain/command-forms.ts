@@ -1,4 +1,4 @@
-import { baseCommand, writtenAsPath, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, writtenAsPath, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, ownStart, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 import type { CommandGlob } from './command-glob.js'
 
 /**
@@ -80,6 +80,13 @@ interface Wrapper {
   shellCommand?: readonly string[]
   /** Short options whose value is a string replaced in the command's words (`xargs -I X`), so it changes what runs. */
   replaces?: string
+  /** A zsh precommand modifier (`noglob`, `nocorrect`, `-`), which takes no option: the word after it is the command word. */
+  noOptions?: true
+  /**
+   * The command words are joined with blanks into a string `sh -c` runs (procps watch), unless this option hands them to
+   * exec as they stand (`watch -x`, `--exec`).
+   */
+  joinsWords?: { short: string; long: string }
 }
 
 /**
@@ -87,8 +94,11 @@ interface Wrapper {
  * git push --force` passed the destructive floor and the command policy; slice 7 review F1; owner decision D25,
  * default (a)). Their option tables follow each program's getopt string (coreutils env, nice, nohup, timeout and
  * stdbuf; GNU time; findutils xargs; util-linux ionice, chrt, setsid and flock; sudo 1.9 and OpenDoas; the shell's
- * `command`, `exec` and `builtin`; and the multi-call busybox and toybox, which run the applet they are given). `sudo git push` was read as `sudo` alone, so under the dangerously-allow switch its
- * ask became an allow past a deny glob on `git push *` (slice 7i residual, owner decision D7).
+ * `command`, `exec` and `builtin`; zsh's precommand modifiers `noglob`, `nocorrect`, and `-`; procps watch 4.0, which
+ * hands its words to `sh -c` unless `-x`; and the multi-call busybox and toybox, which run the applet they are given).
+ * `sudo git push` was read as `sudo` alone, so under the dangerously-allow switch its ask became an allow past a deny
+ * glob on `git push *` (slice 7i residual, owner decision D7). `noglob git push` and `watch git push` were read by their
+ * own words (D91 follow-ups, F1).
  *
  * Read the same way, though not in the table: a statement's leading NAME=value assignments (`A=1 git push
  * --force`); `eval`, whose words are read again as shell text, and asked about when that text holds an expansion
@@ -97,7 +107,7 @@ interface Wrapper {
  * text (sshInvocation, suInvocation). An ssh or su with no command, and `sudo -i`, `sudo -s` or `doas -s` with none,
  * opens an interactive session, an unread call (READ_LIMITS.session).
  *
- * Any other program that runs a command (`watch`, `parallel`) is judged by its own words only: the destructive floor
+ * Any other program that runs a command (`parallel`) is judged by its own words only: the destructive floor
  * does not read past it, the deny list meets it by its leading words, and an allow list refuses it unless a glob
  * admits the call as typed. Nothing here changes what a policy means.
  */
@@ -121,9 +131,13 @@ const WRAPPERS: Readonly<Record<string, Wrapper>> = {
   command: { runsNothing: { short: 'vV', long: [] } },
   exec: { shortValues: 'a' },
   builtin: {},
+  noglob: { noOptions: true },
+  nocorrect: { noOptions: true },
+  '-': { noOptions: true },
   setsid: {},
   flock: { shortValues: 'wE', longValues: ['timeout', 'wait', 'conflict-exit-code'], operands: 1, shellCommand: ['-c', '--command'] },
   xargs: { shortValues: 'aEILnsPd', shortOptional: 'eil', longValues: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'], replaces: 'Ii' },
+  watch: { shortValues: 'nq', shortOptional: 'd', longValues: ['interval', 'equexit'], joinsWords: { short: 'x', long: 'exec' } },
   busybox: { applets: true, runsNothing: { short: '', long: ['help', 'list', 'list-full', 'install', 'show'] } },
   toybox: { applets: true, runsNothing: { short: '', long: ['help', 'version', 'long'] } },
 }
@@ -1327,9 +1341,10 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
   const words = [...args]
   let index = 0
   let session = false
+  let execs = false
   let unread: UnreadLimit | null = null
   let unsure = false
-  while (index < words.length) {
+  while (!wrapper.noOptions && index < words.length) {
     const word = words[index]!
     const expansion = expanded.get(words[index] ?? '')
     if (word === '--') {
@@ -1355,6 +1370,7 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     }
     if (option.runsNothing) return marked(unsure, { command: null, unread })
     session ||= option.session === true
+    execs ||= option.exec === true
     index = option.next
     if (option.split !== undefined) {
       const split = splitValue(option.split, expanded)
@@ -1377,17 +1393,27 @@ function innerCommand(wrapper: Wrapper, args: readonly string[], expanded: Expan
     const shell = shellSessionCommand(words.slice(index))
     return marked(unsure, { command: shell.command, unread: firstLimit(unread, shell.unread) })
   }
+  if (index < words.length && wrapper.joinsWords && !execs) return joinedCommand(words.slice(index), expanded, unsure, unread)
   if (index < words.length) return marked(unsure, { command: words.slice(index), unread })
   return marked(unsure, session ? { command: 'session', unread } : { command: null, unread, open: true })
 }
 
 /**
- * An option as a wrapper reads it: where the reading goes on, whether nothing runs past it, the value it splits into
- * words (env -S), whether it opens a session, and, for one that takes a value, where that value is (`at`, the offset in
- * the option's word where an attached value starts, or null for the next word) and whether it changes what runs (env -S,
- * xargs -I).
+ * The command a wrapper that joins its words runs (joinsWords): `sh -c` with the words joined by blanks, as procps watch
+ * builds it. sh reads that string again, so an expansion among the words, whose value the string then holds, may run
+ * anything, and marks the reading unsure.
  */
-interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true; value?: { at: number | null; runs: boolean } }
+function joinedCommand(words: readonly string[], expanded: Expanded, unsure: boolean, unread: UnreadLimit | null): Unwrapped {
+  return marked(unsure || words.some(word => expanded.has(word)), { command: ['sh', '-c', words.join(' ')], unread })
+}
+
+/**
+ * An option as a wrapper reads it: where the reading goes on, whether nothing runs past it, the value it splits into
+ * words (env -S), whether it opens a session, whether it hands a joining wrapper's words to exec as they stand
+ * (joinsWords), and, for one that takes a value, where that value is (`at`, the offset in the option's word where an
+ * attached value starts, or null for the next word) and whether it changes what runs (env -S, xargs -I).
+ */
+interface ReadOption { next: number; runsNothing?: true; split?: string; session?: true; exec?: true; value?: { at: number | null; runs: boolean } }
 
 /**
  * A long option as getopt_long matches it: a name typed whole is that option (`sudo --login` opens a session, though
@@ -1400,6 +1426,8 @@ function readLong(wrapper: Wrapper, words: readonly string[], index: number): Re
   const begins = (name: string) => typed.length > 0 && name.startsWith(typed)
   if (wrapper.runsNothing?.long.includes(typed)) return { next: index + 1, runsNothing: true }
   if (wrapper.session?.long.includes(typed)) return { next: index + 1, session: true }
+  // Only a name no option taking a value also begins hands the words to exec; any other leaves them joined, read more.
+  if (wrapper.joinsWords && begins(wrapper.joinsWords.long) && !wrapper.longValues?.some(begins)) return { next: index + 1, exec: true }
   const exact = wrapper.longValues?.includes(typed) ? typed : undefined
   if (exact === undefined && wrapper.runsNothing?.long.some(begins)) return { next: index + 1, runsNothing: true }
   const name = exact ?? wrapper.longValues?.find(begins)
@@ -1413,22 +1441,25 @@ function readLong(wrapper: Wrapper, words: readonly string[], index: number): Re
 function readShort(wrapper: Wrapper, words: readonly string[], index: number): ReadOption {
   const word = words[index]!
   let session = false
+  let exec = false
+  const flags = () => ({ ...(session ? { session: true as const } : {}), ...(exec ? { exec: true as const } : {}) })
   for (let offset = 1; offset < word.length; offset++) {
     const character = word.charAt(offset)
     if (wrapper.runsNothing?.short.includes(character)) return { next: index + 1, runsNothing: true }
     session ||= wrapper.session?.short.includes(character) === true
+    exec ||= wrapper.joinsWords?.short.includes(character) === true
     const runs = character === wrapper.split?.short || wrapper.replaces?.includes(character) === true
     // An optional value is only ever the rest of the cluster.
-    if (wrapper.shortOptional?.includes(character)) return { next: index + 1, value: { at: offset + 1, runs }, ...(session ? { session: true } : {}) }
+    if (wrapper.shortOptional?.includes(character)) return { next: index + 1, value: { at: offset + 1, runs }, ...flags() }
     if (!wrapper.shortValues?.includes(character)) continue
     const attached = word.slice(offset + 1)
     const value = attached.length > 0 ? attached : words[index + 1]
     const next = attached.length > 0 ? index + 1 : index + 2
     const read = { at: attached.length > 0 ? offset + 1 : null, runs }
     if (character === wrapper.split?.short && value !== undefined) return { next, split: value, value: read }
-    return { next, value: read, ...(session ? { session: true } : {}) }
+    return { next, value: read, ...flags() }
   }
-  return { next: index + 1, ...(session ? { session: true } : {}) }
+  return { next: index + 1, ...flags() }
 }
 
 /** A redirection of a statement's input (`<file`, `0<<<text`, `<&3`); STDIN_HEREDOC when it is a heredoc. */
@@ -1494,7 +1525,8 @@ function statementWords(tokens: readonly ShellToken[], clobber: boolean): { word
         // A word that expands more than a leading tilde before a typed basename may name another command: a lone `~`,
         // `~+`, `~-`, `~2`, or `~user` is the whole name, which HOME, PWD, OLDPWD, the directory stack, or a home holds,
         // and the call may set the first three; a word seen two ways may do what either does (mergedExpansion).
-        met = { command: !raw.startsWith('~') || holdsExpansion(raw.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
+        const own = raw.slice(ownStart(raw))
+        met = { command: !own.startsWith('~') || holdsExpansion(own.slice(1)) || !TYPED_BASENAME.test(word), ...expansionShape(raw) }
         shapes.set(raw, met)
       }
       if (met !== undefined) {

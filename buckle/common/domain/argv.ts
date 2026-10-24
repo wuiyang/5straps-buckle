@@ -2099,15 +2099,28 @@ function heredocBodiesEnd(text: string, from: number, heredocs: readonly Heredoc
 /** The characters with which an expansion starts; a word holding none of them holds none. */
 const EXPANSION_CHARACTERS = /[$`*?[{~]/
 
+/** The line continuations a word as written starts with: each a backslash and a newline, which the shell removes. */
+const LEADING_CONTINUATIONS = /^(?:\\\n)+/
+
+/**
+ * Where a word's own text starts once the line continuations before it are removed, as the shell removes them before it
+ * reads the word, so a `~` or an `=` after them leads it (D91 follow-ups, F1).
+ */
+export function ownStart(raw: string): number {
+  return LEADING_CONTINUATIONS.exec(raw)?.[0].length ?? 0
+}
+
 /**
  * Whether a word as written holds an expansion the shell makes before the command receives it, so its value is not the
  * text Buckle reads: a `$` (other than `$'`) or a backtick outside single quotes, and outside any quotes a glob
  * character (`*`, `?`, `[`), a brace expansion, a leading `~`, or a leading `=` before a name, which zsh's EQUALS option
- * (on by default) turns into the path of the named command (`=rm`). Single quotes, `$'...'`, and a backslash keep text
- * as written; an `=` later in a word (an assignment, `--opt=value`) is no expansion.
+ * (on by default) turns into the path of the named command (`=rm`). Leading means after any line continuations
+ * (ownStart). Single quotes, `$'...'`, and a backslash keep text as written; an `=` later in a word (an assignment,
+ * `--opt=value`) is no expansion.
  */
 export function holdsExpansion(raw: string): boolean {
-  if (raw.length > 1 && raw[0] === '=') return true
+  const start = ownStart(raw)
+  if (raw.length > start + 1 && raw[start] === '=') return true
   if (!EXPANSION_CHARACTERS.test(raw)) return false
   let quote: null | "'" | "$'" | '"' = null
   for (let index = 0; index < raw.length; index++) {
@@ -2124,7 +2137,7 @@ export function holdsExpansion(raw: string): boolean {
       index++
     } else if (character === '$' || character === '`') return true
     else if (quote === null && (character === "'" || character === '"')) quote = character
-    else if (quote === null && ('*?['.includes(character) || (character === '~' && index === 0))) return true
+    else if (quote === null && ('*?['.includes(character) || (character === '~' && index === start))) return true
     // A brace expansion needs a comma or a `..` sequence after its `{`; `{}` alone is a word, as find hands it on.
     else if (quote === null && character === '{' && /,|\.\./.test(raw.slice(index + 1))) return true
   }
@@ -2148,6 +2161,7 @@ export interface ExpansionShape {
  * A word in which no expansion is found is read as one that may split, from its start.
  */
 export function expansionShape(raw: string): ExpansionShape {
+  const start = ownStart(raw)
   let quoted = false
   let first = -1
   let splits = false
@@ -2183,7 +2197,7 @@ export function expansionShape(raw: string): ExpansionShape {
       continue
     }
     if (!quoted && ('*?['.includes(character) || (character === '{' && /,|\.\./.test(raw.slice(index + 1))))) met(index, true)
-    else if (!quoted && (character === '~' || (character === '=' && raw.length > 1)) && index === 0) met(index, false)
+    else if (!quoted && (character === '~' || (character === '=' && raw.length > start + 1)) && index === start) met(index, false)
     index++
   }
   return first < 0 ? { splits: true, prefix: '' } : { splits, prefix: unquote(raw.slice(0, first)) }

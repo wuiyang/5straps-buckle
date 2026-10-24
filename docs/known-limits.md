@@ -19,9 +19,8 @@ forge pack,
 - A script file on disk, and text bash builds at run time, are not read: `bash deploy.sh` is judged
   by those two words, and `p='$(git'; x="a[$p push origin main)]"; (( x ))` runs a push no rule
   meets.
-- A program outside the [wrapper list](policy-02.md#what-buckle-reads), such as `watch` or
-  `parallel`, is judged by its own words: `watch git push origin main` does not meet
-  `git push *`.
+- A program outside the [wrapper list](policy-02.md#what-buckle-reads), such as `parallel`, is
+  judged by its own words: `parallel git push origin ::: main` does not meet `git push *`.
 - A startup file that reaches bash through a shebang script or `make` is not marked:
   `BASH_ENV=<(echo ...) ./deploy.sh` reads as complete, and no rule meets what the file runs.
 - `npm exec`, `pnpm dlx`, and `yarn dlx` run a package's code as `npx` does, but are ordinary

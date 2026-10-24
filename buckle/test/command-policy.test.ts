@@ -2388,6 +2388,81 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
   })
 })
 
+describe("a line continuation before zsh's =name, and zsh's precommand modifiers and watch (D91 follow-ups, F1)", () => {
+  // The shell removes a backslash-newline before it reads a word, so a run of them before an `=` leaves the word one that
+  // zsh's EQUALS option expands to a command's path (zsh 5.9 ran a stub after the continuation at a command's start).
+  const expansion = READ_LIMITS.expansion
+  const continued: Array<[string, string]> = [
+    ['\\\n=rm -rf x', 'rm -rf *'],
+    ['\\\n\\\n=rm -rf x', 'rm -rf *'],
+    ['echo a; \\\n=git push --force origin main', 'git push *'],
+    ['echo a &&\\\n=rm -rf x', 'rm -rf *'],
+    ['nice \\\n=rm -rf x', 'rm -rf *'],
+    ['FOO=1 \\\n=rm -rf x', 'rm -rf *'],
+    ['noglob =rm -rf x', 'rm -rf *'],
+    ['nocorrect =rm -rf x', 'rm -rf *'],
+    ['noglob \\\n=rm -rf x', 'rm -rf *'],
+    ['watch =rm -rf x', 'rm -rf *'],
+    ['echo a; - =rm -rf x', 'rm -rf *'],
+  ]
+
+  it.each(continued)('zsh -c %j is refused under a deny list naming the limit', (text, deny) => {
+    expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread).toBe('expansion')
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: [deny] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain(expansion)
+  })
+
+  it.each(continued)('zsh -c %j asks at the floor with no deny list', text => {
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${expansion}; asked rather than guessed at`]])
+  })
+
+  // zsh's noglob, nocorrect, and - run the word after them as the command (zshmisc, Precommand Modifiers), and procps
+  // watch joins its words with blanks for `sh -c`, or with -x runs them as they stand, so the deny list and the floor
+  // meet what runs behind each.
+  const modified = ['noglob rm -rf x', 'nocorrect rm -rf x', 'nocorrect noglob rm -rf x', 'watch rm -rf x', "watch 'rm -rf x'", 'watch -n 1 rm -rf x',
+    'watch -tn 0.5 rm -rf x', 'watch -d -q 3 rm -rf x', 'watch --interval=1 -- rm -rf x', 'watch -x rm -rf x', 'watch --exec rm -rf x', "watch 'echo a; rm -rf x'",
+    'watch echo a\\; rm -rf x', 'noglob watch rm -rf x', 'noglob - rm -rf x', 'nocorrect - rm -rf x', 'echo a; - rm -rf x']
+
+  it.each(modified)('zsh -c %j is refused under a deny list on what runs behind it', text => {
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain('rm -rf *')
+  })
+
+  it.each(modified)('zsh -c %j asks at the floor as a recursive delete', text => {
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => ask.rule)).toEqual(['destructive_command'])
+  })
+
+  it('leaves an expansion among the words watch hands to sh -c unread, since sh reads their values again', () => {
+    for (const text of ['watch ls *.log', 'watch rm "$f"', 'watch -n $n ls']) {
+      expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread, text).toBe('expansion')
+      expect(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['git push *'] }).kind, text).toBe('deny')
+    }
+  })
+
+  it('reads a watch call as a shell wrapper unless -x runs its words as they stand', () => {
+    expect(reasonOf(evaluate('watch', ['-n', '1', 'git', 'status']))).toContain('A shell wrapper hides its command')
+    expect(evaluate('watch', ['-n', '1', 'git', 'status'], { allow: ['watch *'] }).kind).toBe('allow')
+    expect(evaluate('watch', ['-x', 'git', 'status']).kind).toBe('allow')
+    expect(evaluate('watch', ['-x', 'rm', '-rf', 'x']).kind).toBe('ask')
+  })
+
+  it('reads the plain forms as before: a continuation before other words, an escaped or quoted =, and a modifier before a plain command', () => {
+    const rows = ['\\\nls -l', 'echo \\\n=rm', '\\\n\\=rm -rf x', "\\\n'=rm' -rf x", '\\\nFOO=1 echo x', '\\\n~/bin/tool x', 'noglob echo *.txt',
+      'nocorrect git status', 'noglob git log --oneline', 'watch -n 1 git status', 'watch -n "$n" git status', 'watch -x ls -l', "watch 'git status; git log'", 'echo a; - echo b']
+    for (const text of rows) {
+      expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread, text).toBeNull()
+      const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *', 'git push *'] })
+      expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')

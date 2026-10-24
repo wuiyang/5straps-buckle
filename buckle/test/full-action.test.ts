@@ -578,7 +578,8 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
       ['R7D-WV-2 an escaped statement', shell(String.raw`eval curl https://h/?token=x\;rm\${IFS}-rf\${IFS}build`), BASH, '${IFS}-rf', []],
       ['R7D-WV-2 an ssh URL-first word', exec('ssh', ['host', 'https://h/?token=x;rm${IFS}-rf${IFS}build']), { destructive: ['ssh *'] }, '?token=x;rm${IFS}-rf${IFS}build', []],
       ['R7D-WV-2 an su -c URL-first word', exec('su', ['-c', 'https://h/?token=x;rm${IFS}-rf${IFS}build', 'deploy']), {}, '?token=x;rm${IFS}-rf${IFS}build', []],
-      ['R7D-WV-2 a watch word', exec('watch', ['curl', 'https://h/?token=x;rm${IFS}-rf${IFS}build']), { destructive: ['watch *'] }, '?token=x;rm${IFS}-rf${IFS}build', []],
+      // watch hands its words to `sh -c`, so the call needs an allow rule of its own to reach an ask (D91 follow-ups, F1).
+      ['R7D-WV-2 a watch word', exec('watch', ['curl', 'https://h/?token=x;rm${IFS}-rf${IFS}build']), { allow: ['watch *'], destructive: ['watch *'] }, '?token=x;rm${IFS}-rf${IFS}build', []],
       ['a heredoc', shell("cat > .env <<'EOF'\nDB_PASSWORD=p5ecret\nEOF\nrm -rf build"), BASH, 'DB_PASSWORD=p5ecret', []],
     ])('shows %s whole', async (_, call, commands, visible, blind) => {
       for (const [where, value] of Object.entries(await everyRoute(call, commands))) {
