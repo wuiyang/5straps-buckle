@@ -2329,8 +2329,8 @@ describe("zsh's =name expansion of a command word (fix brief 9, A5)", () => {
 describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () => {
   // zsh reads a word's trailing parenthesised list as glob qualifiers (BARE_GLOB_QUAL, on by default), and its e
   // qualifier and +name run shell code once for each file the pattern matches (zshexpn, Glob Qualifiers). The splitter
-  // does not know which shell reads the text, so a ( glued to the word before it whose body holds an e or a + leaves
-  // the call unread: refused under a deny list and asked at the floor with none.
+  // does not know which shell reads the text, so a ( glued to the word before it whose body holds an e, a +, a $, or a
+  // backtick leaves the call unread: refused under a deny list and asked at the floor with none.
   const qualifier = READ_LIMITS.qualifier
   const marker = "'git push --force origin main'"
   const texts: Array<[string, string]> = [
@@ -2362,12 +2362,44 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
     if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${qualifier}; asked rather than guessed at`]])
   })
 
-  // The recorded limit (docs/known-limits.md): any glued body holding an e or a + is read as one that may run code, so an
-  // ordinary extended glob or a body inside a substitution of that shape is unread too (D91 follow-ups, F5).
+  // The recorded limit (docs/known-limits.md): any glued body holding an e, a +, a $, or a backtick is read as one that
+  // may run code, so an ordinary extended glob or a body inside a substitution of that shape is unread too (D91
+  // follow-ups, F5).
   it.each(['ls *.@(png|jpeg)', 'echo $(echo a(e))'])('leaves zsh -c %j unread, refused under a deny list and asked at the floor', text => {
     expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread).toBe('qualifier')
     expect(reasonOf(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['git push *'] }))).toContain(qualifier)
     expect(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] }).kind).toBe('ask')
+  })
+
+  // zsh reads the qualifiers after parameter expansion and command substitution (zshexpn, Glob Qualifiers), so a glued
+  // body that a `$` or a backtick may fill can hold e:code: that the text never spells; it is read as one that may run
+  // code, quoted or not.
+  const filled: Array<[string, string]> = [
+    ['zsh', 'v="e:rm -rf x:"; echo *($v)'],
+    ['zsh', 'echo *(${v})'],
+    ['zsh', 'echo *("$v")'],
+    ['zsh', 'echo *($1)'],
+    ['zsh', 'echo **/*($v)'],
+    ['zsh', 'echo ?($v)'],
+    ['zsh', 'echo *(.$v)'],
+    ['zsh', 'echo *(N$v)'],
+    ['zsh', 'echo *($(printf %s "$v"))'],
+    ['zsh', 'echo *(`printf %s "$v"`)'],
+    ['zsh', "echo *($'\\x65:rm -rf x:')"],
+    ['bash', "zsh -c 'echo *($v)'"],
+  ]
+
+  it.each(filled)('%s -c %j, a body an expansion fills, is refused under a deny list naming the limit', (shell, text) => {
+    expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread).toBe('qualifier')
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain(qualifier)
+  })
+
+  it.each(filled)('%s -c %j, a body an expansion fills, asks at the floor with no deny list', (shell, text) => {
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${qualifier}; asked rather than guessed at`]])
   })
 
   it('asks about a floor command inside a qualifier, directly and nested', () => {
@@ -2387,6 +2419,10 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
       ['bash', '(( x = 1 + 2 ))'],
       ['bash', 'echo $(( 1 + 2 ))'],
       ['bash', "cat > x.js <<'EOF'\nfunction handle(e) { return e + 1 }\nEOF"],
+      ['zsh', 'a=($x $y)'],
+      ['zsh', 'echo $(ls $d)'],
+      ['zsh', 'echo $(( $x + 1 ))'],
+      ['zsh', 'echo "f($x)"'],
     ]
     for (const [shell, text] of rows) {
       expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread, text).toBeNull()

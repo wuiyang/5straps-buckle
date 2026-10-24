@@ -961,11 +961,18 @@ function arithmeticAt(text: string, at: number, meter: CharacterMeter): boolean 
 }
 
 /**
- * Whether the body the glued `(` at `open` opens, up to its matching `)` or the end of the text, holds an `e` or a `+`
- * anywhere, quoted or not: zsh's `e` qualifier (`e:code:`, `e[code]`, also after other qualifiers, as in `.e:code:`) and
- * `+name` run shell code once for each file the pattern matches (zshexpn, Glob Qualifiers), which the splitter does not
- * read, so any such body is taken to run code (fix brief 9, A6). Single and double quotes and a backslash are passed
- * over in finding the `)`. The characters passed over are charged to the meter.
+ * Characters in a glued body that make it one that may run code: zsh's `e` qualifier (`e:code:`, `e[code]`, also after
+ * other qualifiers, as in `.e:code:`) and `+name` run shell code once for each file the pattern matches (zshexpn, Glob
+ * Qualifiers), and zsh reads the qualifiers after parameter expansion and command substitution, so a `$` or a backtick
+ * may fill the body with either (`v=e:code:; echo *($v)` runs the code).
+ */
+const QUALIFIER_MAY_RUN = new Set(['e', '+', '$', '`'])
+
+/**
+ * Whether the body the glued `(` at `open` opens, up to its matching `)` or the end of the text, holds a character of
+ * QUALIFIER_MAY_RUN anywhere, quoted or not, which the splitter does not read, so any such body is taken to run code
+ * (fix brief 9, A6; residue of the D91 follow-ups for `$` and the backtick). Single and double quotes and a backslash are
+ * passed over in finding the `)`. The characters passed over are charged to the meter.
  */
 function qualifierMayRun(text: string, open: number, meter: CharacterMeter): boolean {
   let depth = 0
@@ -974,7 +981,7 @@ function qualifierMayRun(text: string, open: number, meter: CharacterMeter): boo
   let runs = false
   for (; index < text.length && index - open <= meter.characters; index++) {
     const character = text[index]!
-    if (character === 'e' || character === '+') {
+    if (QUALIFIER_MAY_RUN.has(character)) {
       runs = true
       break
     }
@@ -982,7 +989,7 @@ function qualifierMayRun(text: string, open: number, meter: CharacterMeter): boo
       if (character === "'") quote = null
     } else if (character === '\\') {
       index++
-      if (text[index] === 'e' || text[index] === '+') {
+      if (QUALIFIER_MAY_RUN.has(text[index] ?? '')) {
         runs = true
         break
       }

@@ -73,11 +73,12 @@ holding a control, a tab, or a leading or trailing space; and the compiled-Pytho
 the reader cannot list. A reason is cut to 500 characters, never inside an escape it quotes.
 
 The command rules leave a call unread on their own where a word ends in a parenthesised list
-holding an `e` or a `+`, which zsh may read as glob qualifiers that run code (`*(e:'...':)`), in
-any shell's text: "A zsh glob qualifier may run shell code: a word ends in a parenthesised list
-holding an e or a +, which zsh may read as qualifiers that run code once for each file the pattern
-matches, and Buckle does not read that code (glob qualifier)". Such a call is refused under a deny
-list and asks at the floor with none.
+holding an `e`, a `+`, a `$`, or a backtick, which zsh may read as glob qualifiers that run code
+(`*(e:'...':)`, or `*($v)`, since zsh fills in an expansion first), in any shell's text: "A zsh
+glob qualifier may run shell code: a word ends in a parenthesised list holding an e, a +, a $, or a
+backtick, which zsh may read as qualifiers that run code once for each file the pattern matches,
+and Buckle does not read that code (glob qualifier)". Such a call is refused under a deny list and
+asks at the floor with none.
 
 The limits are on [Known limits, part six](known-limits-06.md) and [part
 seven](known-limits-07.md).

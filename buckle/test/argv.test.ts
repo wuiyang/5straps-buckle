@@ -426,6 +426,12 @@ describe('a parenthesised list zsh may read as glob qualifiers', () => {
     // The recorded limit (docs/known-limits.md): an extended glob, or a body a substitution holds, of the same shape is
     // read the same way, so these ordinary words leave the call unread too (D91 follow-ups, F5).
     ['ls *.@(png|jpeg)', true], ['echo $(echo a(e))', true],
+    // zsh reads the qualifiers after parameter expansion and command substitution (zshexpn, Glob Qualifiers), so a body
+    // that a `$` or a backtick may fill is read as one that may run code; an array, a substitution, arithmetic, and a
+    // function's empty () keep their reading.
+    ['echo *($v)', true], ['echo *(${v})', true], ['echo *("$v")', true], ['echo *($1)', true], ['echo *(.$v)', true],
+    ['echo *(`printf x`)', true], ['echo *($(printf x))', true], ["echo *($'\\x65:x:')", true],
+    ['a=($x $y)', false], ['arr=($(ls))', false], ['echo $(ls $d)', false], ['echo $(( $x + 1 ))', false], ['f() { echo $1; }', false],
   ])('reads %j as holding a qualifier that may run code: %s', (text, qualifier) => {
     expect(shellStatementList(text).qualifier).toBe(qualifier)
   })

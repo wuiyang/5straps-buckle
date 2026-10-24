@@ -28,10 +28,10 @@ forge pack,
   that names `npm`. `npx`, `pnpx`, and `bunx` are interpreters ([policy](policy-02.md#interpreters)).
 - Interpreter names match exactly: `buckle policy allow-interpreter python3` does not allow
   `python3.12`.
-- A word ending in a parenthesised list holding an `e` or a `+` leaves the call unread (glob
-  qualifier) in any shell's text, since zsh may run code from it once for each file it matches
-  (`echo *(e:'...':)`). An extended glob of that shape is unread too, so under a deny rule
-  `ls @(one|three)` is refused.
+- A word ending in a parenthesised list holding an `e`, a `+`, a `$`, or a backtick leaves the
+  call unread (glob qualifier) in any shell's text, since zsh may run code from it once for each
+  file it matches (`echo *(e:'...':)`, or `echo *($v)` once zsh fills in `$v`). An extended glob of
+  that shape is unread too, so under a deny rule `ls @(one|three)` is refused.
 
 ## Credential hiding
 
