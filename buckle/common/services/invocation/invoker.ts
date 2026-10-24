@@ -187,7 +187,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const prepared = options.registry.get(request.tool).prepare(request.args)
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
-          gate = await clearPermissions({ options, request, sessionId, effects, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via })
+          // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
+          const fromCopy = prepared.managesHistory === true
+          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via })
           // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
           // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
           // finding deadline-announce invoker.ts:175).
@@ -214,7 +216,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           }
           const beginRun = () => {
             if (begun) return
-            const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args } })
+            const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args, fromCopy } })
             if (changed.length > 0) throw new CodeChangedError(changed)
             markStarted()
           }
@@ -559,6 +561,8 @@ async function clearPermissions(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
+  /** The call's program runs in a copy of the workspace's folder, which the decision AI is told (judge-gate.ts CallView). */
+  fromCopy: boolean
   effects: ResolvedEffect[]
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
@@ -584,7 +588,7 @@ async function clearPermissions(input: {
     // A once the thorough stage gave on request is spent only while the code it rated is the code this call would run;
     // the run reads it again before the program starts (fix brief 9, B31).
     holds: (subject, code) => {
-      const holds = subject.rule === 'destructive_command' && (options.judge?.holds(code, { effects, tool: request.tool, args: request.args, subject: subject.subject }) ?? false)
+      const holds = subject.rule === 'destructive_command' && (options.judge?.holds(code, { effects, tool: request.tool, args: request.args, subject: subject.subject, fromCopy: input.fromCopy }) ?? false)
       if (!holds) input.judgment.stale.add(subject.subject)
       else if (!input.judgment.codes.some(item => item.subject === subject.subject && item.binding.key === code.key)) input.judgment.codes.push({ subject: subject.subject, binding: code })
       return holds
@@ -612,7 +616,7 @@ async function clearPermissions(input: {
     const before = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }) })
     if (before.kind !== 'deny') {
       const asked = new Set(before.kind === 'ask' ? before.asks.filter(item => item.rule === 'destructive_command').map(item => item.subject) : [])
-      input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })
+      input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, fromCopy: input.fromCopy, ...(input.signal ? { signal: input.signal } : {}) })
       flagged = input.judgment.judged.filter(item => item.flagged).map(item => ({ kind: 'ask' as const, rule: 'destructive_command' as const, subject: item.subject, reason: QUICK_FLAG_REASON, offeredScopes: ['once' as const, 'session' as const], cause: 'judge' as const }))
     }
   }
@@ -621,7 +625,7 @@ async function clearPermissions(input: {
   // (D91 and its addenda): a deny returned above, and the dangerously-allow switch already turned what it covers. What a
   // stage passes, the check above takes out, so the call is checked again with them gone.
   if (judging && outcome.kind === 'ask' && outcome.asks.some(ask => judging.covers(ask))) {
-    input.judgment.judged = [...input.judgment.judged, ...await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, ...(input.signal ? { signal: input.signal } : {}) })]
+    input.judgment.judged = [...input.judgment.judged, ...await judging.rate({ asks: outcome.asks, effects, tool: request.tool, args: request.args, fromCopy: input.fromCopy, ...(input.signal ? { signal: input.signal } : {}) })]
     passed = new Set(input.judgment.judged.filter(item => item.passedBy !== undefined).map(passKey))
     if (passed.size > 0) outcome = await evaluate(request.approvalTokens)
     // Announced once the call is checked again, so the line says whether it now runs or still waits (fix brief 2, H9).
@@ -707,7 +711,7 @@ interface Judgment {
  * automated mode, and each with a once the thorough stage gave on request, read again through the gate's view. A pass
  * with no binding fails closed.
  */
-function changedCode(input: { options: InvokerOptions; judgment: Judgment; call: { effects: readonly ResolvedEffect[]; tool: string; args: InvokeRequest['args'] } }): string[] {
+function changedCode(input: { options: InvokerOptions; judgment: Judgment; call: { effects: readonly ResolvedEffect[]; tool: string; args: InvokeRequest['args']; fromCopy: boolean } }): string[] {
   const gate = input.options.judge
   const passes = input.judgment.judged.filter(item => item.passedBy !== undefined)
   const bound = [...passes.map(item => ({ subject: item.subject, binding: item.bound })), ...input.judgment.codes]

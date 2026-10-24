@@ -104,6 +104,11 @@ export interface NestedCall {
 export type NetworkVerdict = { kind: 'granted' } | { kind: 'allowed' } | { kind: 'refused'; reason: string }
 
 export interface ToolDefinition<TInput, TJudged = undefined> {
+  /**
+   * Takes the workspace's write lock itself and checkpoints its own changes: the isolated shell, whose program runs in a
+   * copy of the workspace's folder. It is handed `beginRun` and `untimed`, and no stage of the decision AI rates code it
+   * would read from outside that folder (judge-gate.ts, CallView fromCopy).
+   */
   managesHistory?: boolean
   /**
    * Runs under the workspace's history write lock even where it declares no write, so no other call writes

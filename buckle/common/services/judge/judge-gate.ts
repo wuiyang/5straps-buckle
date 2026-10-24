@@ -64,6 +64,11 @@ interface CallView {
   tool: string
   args: JsonObject
   signal?: AbortSignal
+  /**
+   * The call's program runs in a copy of the workspace's folder (the isolated shell, a tool that takes the write lock
+   * itself), where each mount is bound live: no stage rates code read from outside the folder (D91 follow-ups, F4 residue).
+   */
+  fromCopy?: boolean
 }
 
 /** A workspace's decision AI as one call meets it, built from the settings in force when the call started. */
@@ -183,9 +188,14 @@ export function createJudgeGate(input: {
     // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
     // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
     const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
+    // The isolated shell runs its program in a copy of the workspace's folder and binds each mount live, and releases the
+    // write lock before the program starts: a file read from outside the folder could change after the check, before or
+    // while the program runs, so no stage rates code that reads one there (D91 follow-ups, F4 residue).
+    const read: string[] = []
+    const view: CodeView = call.fromCopy ? { ...input.view, read: (real, limit) => { read.push(real); return input.view.read(real, limit) } } : input.view
     // Every program the call runs is placed first, the call as typed, each wrapper, and each interpreter form, from shell
     // text too, so a runner named by a path inside the workspace or a mount is never a standard script (fix brief 7, B12).
-    const placed = planRefusal({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
+    const placed = planRefusal({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view })
     if (placed !== null) return placed
     // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
     // npm runs no interpreter Buckle names; or, inside shell text or behind a wrapper, where every interpreter form it runs
@@ -198,16 +208,17 @@ export function createJudgeGate(input: {
     // A standard script's own code is not read, but what bun loads before it is: its preloads and its bunfig.toml's (fix brief 3, R15).
     // The chain tells the reader which forms the call runs itself and which come from shell text, which it reads only as
     // one simple command (fix brief 4, P).
-    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view: input.view })
+    const code = standardScript ? readBunScriptPreloads({ forms: allForms(forms), chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view }) : readInterpreterCode({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view })
     if (code.kind === 'refused') return code.reason
     // A standard script naming a package.json script is shown that script's text, as context (addendum 3 R3).
     const scriptForm = !standardScript ? null : standardForm(typed) ? typed : running.length === 1 ? running[0]! : null
     const scriptName = scriptForm === null ? null : packageScriptName(scriptForm)
-    const script = scriptName === null ? null : packageScript(scriptName, cwd, input.view)
+    const script = scriptName === null ? null : packageScript(scriptName, cwd, view)
     // An ask whose script text cannot be read goes to a person (addendum 3 R3). An allowed command screened under `all` is
     // rated on its command line instead, with no scriptText, as before R3: screen() is unchanged (R2), and the agent
     // writes package.json, so a file it makes unreadable must not switch the screen off (fix brief 8, B24).
     if (script !== null && typeof script !== 'string' && !screened) return script.refused
+    if (read.some(real => !isInside(paths.root, real))) return CODE_REFUSALS.outsideCopy
     return {
       ...commandLine(effect, call, interpreters, reason),
       ...code.reading,

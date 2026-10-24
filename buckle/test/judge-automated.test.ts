@@ -4,9 +4,13 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { describeAsk } from '../common/domain/approval-instruction.js'
+import { createPathView } from '../common/domain/path-view.js'
 import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
+import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
-import { judgeCachePath } from '../common/services/judge/judge-cache.js'
+import { CODE_REFUSALS, createCodeView } from '../common/services/judge/code-reader.js'
+import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
+import { createJudgeGate } from '../common/services/judge/judge-gate.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
@@ -151,6 +155,79 @@ describe('a pass bound to the code it rated (fix brief 9, B31)', () => {
     writeFileSync(join(config.cwd, 'helper.py'), 'VALUE = 1\n')
     const kept = await send('real-kept')
     expect(kept).toMatchObject({ outcome: 'ok', output: { stdout: '1\n' } })
+  })
+})
+
+describe('code a mount holds, where the program runs in a copy of the workspace folder (D91 follow-ups, F4 residue)', () => {
+  // The isolated shell copies the workspace's folder alone and binds each mount live, and releases the write lock before
+  // the program starts: code read from a mount could change after the check, before or while the program runs, so no
+  // stage rates it there and the ask goes to a person.
+  async function mounted(judge: Judge) {
+    const store = mkdtempSync(join(tmpdir(), 'buckle-judge-auto-store-')); roots.push(store)
+    writeFileSync(join(store, 'job.py'), 'print(1)\n')
+    return runtimeOf(node({ BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_MOUNTS: JSON.stringify([{ source: store, target: '/data' }]) }), judge)
+  }
+
+  // Without bubblewrap the mounts withhold the shell's tools, so a file tool stands in for one, prepared as the shell is.
+  async function send(runtime: BuckleRuntime, fromCopy: boolean) {
+    const execute = vi.fn(async (context: { beginRun?: () => void }) => { context.beginRun?.(); return 'executed' })
+    vi.spyOn(runtime.registry().get('fs_read'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['/data/job.py'] }], execute, ...(fromCopy ? { managesHistory: true } : {}) })
+    const requestId = `mounted-${fromCopy}`
+    const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'fs_read', args: {} }, sessionId: 'judge', approvalWait: { mode: 'none' } })
+    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    return { response, entry, ran: execute.mock.calls.length > 0 }
+  }
+
+  it('is rated as before where the program runs in the folder itself', async () => {
+    const judge = fakeJudge()
+    const { response, ran } = await send(await mounted(judge), false)
+    expect(judge.shown.map(input => input.files.map(file => file.path))).toEqual([['/data/job.py']])
+    expect(response).toMatchObject({ outcome: 'ok' })
+    expect(ran).toBe(true)
+  })
+
+  it('is not rated for a tool that runs its program in a copy of the folder, and the ask goes to a person with the reason', async () => {
+    const judge = fakeJudge()
+    const { response, entry, ran } = await send(await mounted(judge), true)
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.outsideCopy, passed: false })
+  })
+
+  it('is not rated at the owner\'s request either, for such a tool\'s waiting ask', async () => {
+    const judge = fakeJudge()
+    const runtime = await mounted(judge)
+    const { response } = await send(runtime, true)
+    if (response.outcome !== 'approval_required') throw new Error('expected an ask')
+    const result = await runtime.judgeAsk(response.approvals[0]!.token)
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ kind: 'rated', judged: { input: null } })
+  })
+
+  it('holds no pass bound to it once the program runs in a copy of the folder', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-judge-auto-gate-')); roots.push(root)
+    const workspace = join(root, 'workspace'); mkdirSync(workspace)
+    const store = join(root, 'store'); mkdirSync(store)
+    writeFileSync(join(store, 'job.py'), 'print(1)\n')
+    writeFileSync(join(workspace, 'job.py'), 'print(1)\n')
+    const paths = createPathView({ root: workspace, mount: '/workspace', mounts: [{ source: store, target: '/data', access: 'rw' }] })
+    const gate = createJudgeGate({
+      judge: fakeJudge(), quickJudge: null, policy: emptyWorkspacePolicy(), allowedInterpreters: new Set(), paths,
+      settings: { mode: 'automated', provider: 'openai-compatible', model: 'claude-opus-5-5', standardScripts: [], quick: 'off', quickProvider: 'typesafe', quickModel: 'jev' },
+      view: createCodeView({ paths, canRead: () => true, protectedRoots: [] }),
+      cache: openJudgeCache({ filePath: join(root, 'judge-cache.json') }), scanner: { scan: async () => ({ summaries: new Map(), failed: false }) },
+    })
+    const holds = async (script: string) => {
+      const effects = [{ kind: 'exec' as const, command: 'python3', args: [script] }]
+      const ask = createDestructiveCommandRule({ added: [] }).evaluate({ tool: 'shell_exec', effect: effects[0]!, grants: { subjectsFor: () => [] } })
+      if (ask?.kind !== 'ask') throw new Error('expected an ask')
+      const [judged] = await gate.rate({ asks: [ask], effects, tool: 'shell_exec', args: {} })
+      const call = { effects, tool: 'shell_exec', args: {}, subject: ask.subject }
+      return [gate.holds(judged!.bound!, call), gate.holds(judged!.bound!, { ...call, fromCopy: true })]
+    }
+    expect(await holds('/data/job.py')).toEqual([true, false])
+    expect(await holds('/workspace/job.py')).toEqual([true, true])
   })
 })
 

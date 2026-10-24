@@ -508,14 +508,20 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       if (ask.fingerprint !== undefined && requestFingerprint({ tool: ask.request.tool, args }) !== ask.fingerprint) return refused(CREDENTIAL_HIDDEN)
       // Prepared again from the arguments the ask kept, as an approver saw them, and judged as a new call would be.
       let effects
-      try { effects = await resolveEffects({ effects: settled.registry.get(ask.request.tool).prepare(args).effects, paths: settled.paths }) } catch { return refused(NOT_JUDGEABLE) }
+      // A tool that takes the write lock itself runs its program in a copy of the folder, which the stages are told.
+      let fromCopy = false
+      try {
+        const prepared = settled.registry.get(ask.request.tool).prepare(args)
+        fromCopy = prepared.managesHistory === true
+        effects = await resolveEffects({ effects: prepared.effects, paths: settled.paths })
+      } catch { return refused(NOT_JUDGEABLE) }
       const outcome = settled.permissions.evaluate({ tool: ask.request.tool, effects, grants: NO_GRANTS })
       // A deny is never rated, so no stage is asked about a call the policy now refuses (fix brief 7, B18).
       if (outcome.kind === 'deny') return refused(POLICY_NOW_DENIES)
       const asks = outcome.kind === 'ask' ? outcome.asks.filter(item => settled.judge.covers(item)) : []
       // The ask the token names; an allowed command the quick stage flagged is no rule's ask, and is rated as one.
       const chosen = asks.find(item => item.subject === ask.request.subject) ?? null
-      const judged = await settled.judge.rateOnRequest({ subject: ask.request.subject, ask: chosen, effects, tool: ask.request.tool, args, ...(options.signal ? { signal: options.signal } : {}) })
+      const judged = await settled.judge.rateOnRequest({ subject: ask.request.subject, ask: chosen, effects, tool: ask.request.tool, args, fromCopy, ...(options.signal ? { signal: options.signal } : {}) })
       return judged ? { kind: 'rated', ask, judged } : refused(NOT_JUDGEABLE)
     },
 

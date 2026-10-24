@@ -38,6 +38,7 @@ export const CODE_REFUSALS = Object.freeze({
   subcommand: 'a subcommand the reader does not model',
   discoveringModule: 'a module that discovers or evaluates code the reader does not show',
   stdin: 'the code the interpreter runs comes from standard input the reader cannot place',
+  outsideCopy: 'the code lies outside the workspace folder the isolated shell copies, so it could change after the check',
   localInterpreter: 'the interpreter is a program inside the workspace',
   programName: 'the call sets the program name the interpreter reads',
   splitWords: 'the call splits a word into words the reader does not read again',
