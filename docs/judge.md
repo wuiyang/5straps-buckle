@@ -53,9 +53,11 @@ The thorough model's `safe` at 0.8 or above lifts an interpreter ask, and the ca
 other ask remains, named in the audit entry and at the serve terminal; any other answer asks, with
 both verdicts beside the action. A pass binds to the code it rated: Buckle reads that code again
 under the write lock just before the program starts, and where it changed the call does not run,
-the ask going to a person with "the code changed after the decision AI rated it". A `warning`
-never runs a call. The agent reads the level alone in the ask's reason ("the decision AI rated it
-danger"), never the reasoning, which would show it how to steer the next rating.
+the ask going to a person with "the code changed after the decision AI rated it". Under shell
+isolation the program runs in a copy of the workspace folder while each mount stays live, so no
+stage rates code read from a mount there: the ask goes to a person. A `warning` never runs a call.
+The agent reads the level alone in the ask's reason ("the decision AI rated it danger"), never the
+reasoning, which would show it how to steer the next rating.
 
 ## Standard development scripts
 

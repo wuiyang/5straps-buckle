@@ -52,8 +52,9 @@ interpreter reads", "the call splits a word into words the reader does not read 
 runs a package from a path or a source the reader does not show", "the call hands the interpreter
 words it reads from a file or puts in place of its own", "a path climbs with .. past a link or a
 missing folder, so the program may open another file than the reader would show", "the call sets an
-npm option that changes what code runs; the decision AI does not rate it", and "the package.json
-script the standard script names could not be read".
+npm option that changes what code runs; the decision AI does not rate it", "the code lies outside
+the workspace folder the isolated shell copies, so it could change after the check", and "the
+package.json script the standard script names could not be read".
 
 The shell-text reason also covers `flock -c` text, a heredoc a shell reads as its script (`busybox
 sh <<EOF`), one fed to another interpreter holding a line that starts with an interpreter's name,

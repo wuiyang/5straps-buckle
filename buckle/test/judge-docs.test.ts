@@ -48,7 +48,7 @@ describe('bun run on the pages', () => {
 describe('the reasons a reading refuses with', () => {
   it('are quoted on judge-05.md as an approver reads them (fix brief 4; fix brief 6, B9; fix brief 7, D7; fix brief 8, D8; fix brief 9, D9)', () => {
     const page = pages.find(item => item.name === 'judge-05.md')!.text
-    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, CODE_REFUSALS.xargsWords, CODE_REFUSALS.dotdotAfterLink, NPM_CODE_OPTION, SCRIPT_TEXT_REFUSAL, READ_LIMITS.qualifier]) {
+    for (const reason of [SHELL_TEXT_REFUSAL, CODE_REFUSALS.unknownOption, CODE_REFUSALS.subcommand, CODE_REFUSALS.interactive, CODE_REFUSALS.discoveringModule, CODE_REFUSALS.stdin, CODE_REFUSALS.unmodelledImport, CODE_REFUSALS.compiledPython, CODE_REFUSALS.config, CODE_REFUSALS.localInterpreter, CODE_REFUSALS.programName, CODE_REFUSALS.splitWords, CODE_REFUSALS.runnerSource, CODE_REFUSALS.xargsWords, CODE_REFUSALS.dotdotAfterLink, CODE_REFUSALS.outsideCopy, NPM_CODE_OPTION, SCRIPT_TEXT_REFUSAL, READ_LIMITS.qualifier]) {
       expect(page, reason).toContain(`"${reason}"`)
     }
   })
@@ -63,9 +63,9 @@ describe('the reasons a reading refuses with', () => {
   })
 })
 
-// The lines round 9's docs commit (fix brief 9, D9) and the F6 follow-up added are pinned by their exact sentences, each
-// against the page that holds it; the quoted reasons above pin the reasons alone (D91 follow-up F7). The page text has its
-// whitespace collapsed, so a sentence wrapped in the source is one line here.
+// The lines round 9's docs commit (fix brief 9, D9), the F6 follow-up, and the F4 residue added are pinned by their exact
+// sentences, each against the page that holds it; the quoted reasons above pin the reasons alone (D91 follow-up F7). The
+// page text has its whitespace collapsed, so a sentence wrapped in the source is one line here.
 
 const defaults = BUILT_IN_SETTINGS.approval
 const code = (value: string) => `\`${value}\``
@@ -88,6 +88,8 @@ const PINNED: PinnedLine[] = [
   { page: 'workspaces-03.md', what: 'the node aliases of the thorough stage\'s settings', text: '| `approval-judge`, `approval-judge-provider`, `approval-judge-model`, and `approval-judge-standard-scripts` (`BUCKLE_APPROVAL_JUDGE*`) | `approval.judge`, `approval.judgeProvider`, `approval.judgeModel`, and `approval.judgeStandardScripts` |' },
   { page: 'workspaces-03.md', what: 'the node aliases of Jev\'s settings', text: '| `approval-quick-judge` and `approval-quick-judge-model` (`BUCKLE_APPROVAL_QUICK_JUDGE*`) | `approval.quickJudge` and `approval.quickJudgeModel`; `approval.quickJudgeProvider` has no node default |' },
   { page: 'judge-03.md', what: 'the F6 line that an ask\'s line offers no approval where only Jev holds a key', text: 'Where only Jev holds a key, an ask\'s line offers no approval on any route that shows it.' },
+  { page: 'judge.md', what: 'the F4 residue line that no stage rates code a mount holds under shell isolation', text: 'Under shell isolation the program runs in a copy of the workspace folder while each mount stays live, so no stage rates code read from a mount there: the ask goes to a person.' },
+  { page: 'known-limits-07.md', what: 'the F4 residue clause on a write from another workspace through a shared mount', text: '(a process still running from an earlier call, or another workspace writing through a shared mount) can land after that check.' },
 ]
 
 /** The pins whose sentence its page does not hold exactly once. */

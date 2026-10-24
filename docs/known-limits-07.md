@@ -79,8 +79,8 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
 - Socket is advisory and looks at 50 packages a rating; with no key, a timeout, or an error, the
   rating runs without it, and a verdict reached while its lookup failed is not kept.
 - A pass binds to the code it rated, read again under the write lock just before the program
-  starts; a write the lock does not hold back (a process still running from an earlier call) can
-  land after that check.
+  starts; a write the lock does not hold back (a process still running from an earlier call, or
+  another workspace writing through a shared mount) can land after that check.
 - No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
 - No Rings view of the verdict yet: Rings, the 5straps agent control plane, drops the webhook's
   `judge` field in its approvals reader, and the report to Rings carries none.
