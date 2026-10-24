@@ -80,7 +80,10 @@ interface Wrapper {
   shellCommand?: readonly string[]
   /** Short options whose value is a string replaced in the command's words (`xargs -I X`), so it changes what runs. */
   replaces?: string
-  /** A zsh precommand modifier (`noglob`, `nocorrect`, `-`), which takes no option: the word after it is the command word. */
+  /**
+   * A zsh precommand modifier (`noglob`, `nocorrect`, `-`) or zsh's `repeat` (SHORT_LOOPS), which take no option: the
+   * word after them, and after `repeat`'s count (`operands`), is the command word.
+   */
   noOptions?: true
   /**
    * The command words are joined with blanks into a string `sh -c` runs (procps watch), unless this option hands them to
@@ -94,11 +97,12 @@ interface Wrapper {
  * git push --force` passed the destructive floor and the command policy; slice 7 review F1; owner decision D25,
  * default (a)). Their option tables follow each program's getopt string (coreutils env, nice, nohup, timeout and
  * stdbuf; GNU time; findutils xargs; util-linux ionice, chrt, setsid and flock; sudo 1.9 and OpenDoas; the shell's
- * `command`, `exec` and `builtin`; zsh's precommand modifiers `noglob`, `nocorrect`, and `-`; procps watch 4.0, which
- * hands its words to `sh -c` unless `-x`; and the multi-call busybox and toybox, which run the applet they are given).
+ * `command`, `exec` and `builtin`; zsh's precommand modifiers `noglob`, `nocorrect`, and `-`, and its `repeat COUNT
+ * COMMAND`; procps watch 4.0, which hands its words to `sh -c` unless `-x`; and the multi-call busybox and toybox, which
+ * run the applet they are given).
  * `sudo git push` was read as `sudo` alone, so under the dangerously-allow switch its ask became an allow past a deny
  * glob on `git push *` (slice 7i residual, owner decision D7). `noglob git push` and `watch git push` were read by their
- * own words (D91 follow-ups, F1).
+ * own words (D91 follow-ups, F1), and `repeat 1 git push` after them (the F1 residue).
  *
  * Read the same way, though not in the table: a statement's leading NAME=value assignments (`A=1 git push
  * --force`); `eval`, whose words are read again as shell text, and asked about when that text holds an expansion
@@ -134,6 +138,7 @@ const WRAPPERS: Readonly<Record<string, Wrapper>> = {
   noglob: { noOptions: true },
   nocorrect: { noOptions: true },
   '-': { noOptions: true },
+  repeat: { noOptions: true, operands: 1 },
   setsid: {},
   flock: { shortValues: 'wE', longValues: ['timeout', 'wait', 'conflict-exit-code'], operands: 1, shellCommand: ['-c', '--command'] },
   xargs: { shortValues: 'aEILnsPd', shortOptional: 'eil', longValues: ['arg-file', 'delimiter', 'max-args', 'max-procs', 'max-chars', 'process-slot-var'], replaces: 'Ii' },

@@ -11,7 +11,8 @@ The deny list and the destructive floor judge every command a call runs:
 
 - the call as typed, and the command behind a prefix: `sudo`, `doas`, `env`, `nice`, `nohup`,
   `time`, `timeout`, `stdbuf`, `ionice`, `chrt`, `setsid`, `flock`, `xargs`, `watch`, `command`,
-  `exec`, `builtin`, `noglob`, `nocorrect`, zsh's `-`, or leading `NAME=value` assignments;
+  `exec`, `builtin`, `noglob`, `nocorrect`, zsh's `-`, zsh's `repeat` and its count, or leading
+  `NAME=value` assignments;
 - the applet `busybox` or `toybox` runs, so `busybox env git push` is read as `env git push`; a
   shell applet such as `busybox sh` is an [interpreter](#interpreters);
 - each statement of a shell body (`-c` with `bash`, `sh`, `zsh`, `dash`, `ksh`, `fish`, `rbash`,

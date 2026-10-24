@@ -2471,6 +2471,60 @@ describe("a line continuation before zsh's =name, and zsh's precommand modifiers
   })
 })
 
+describe("zsh's repeat before a command (D91 follow-ups, residue of F1)", () => {
+  // Under zsh's SHORT_LOOPS, `repeat WORD COMMAND` runs the command after the count (zshmisc, Complex Commands, repeat), so
+  // the word after the count is the command word, as it is after noglob; the brace and do forms run it from behind `{` or
+  // `do`. zsh is not installed on the test machine: the rows rest on the zsh manual and on a live run the review recorded.
+  const repeated = ['repeat 1 rm -rf x', 'repeat 3 rm -rf x', 'repeat 1 { rm -rf x; }', 'repeat 1 do rm -rf x; done', 'true && repeat 1 noglob rm -rf x',
+    'echo a; repeat 2 rm -rf x', 'repeat 1 repeat 2 rm -rf x', 'repeat 1 time rm -rf x', 'repeat 1 nocorrect rm -rf x', 'noglob repeat 1 rm -rf x',
+    'repeat 2 sudo rm -rf x', 'repeat 1 (rm -rf x)', 'repeat 1 { repeat 1 rm -rf x; }', 'repeat -1 rm -rf x', 'repeat 1 \\\nrm -rf x']
+
+  it.each(repeated)('zsh -c %j is refused under a deny list on what runs behind it', text => {
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain('rm -rf *')
+  })
+
+  it.each(repeated)('zsh -c %j asks at the floor as a recursive delete', text => {
+    const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => ask.rule)).toEqual(['destructive_command'])
+  })
+
+  // A word the shell expands in the count's or the command's place may name any command, or may be several words that move
+  // it (a glob, SH_WORD_SPLIT), so the call is unread.
+  const expanded = ['repeat 1 =rm -rf x', 'repeat 1 \\\n=rm -rf x', 'repeat $n rm -rf x', 'repeat "$n" rm -rf x', 'repeat $n echo hi', 'repeat a* rm -rf x',
+    'repeat 1 $cmd -rf x', 'repeat 1 "$(echo rm)" -rf x', 'repeat 1 r* -rf x', 'repeat $n']
+
+  it.each(expanded)('zsh -c %j is unread, refused under a deny list and asked at the floor', text => {
+    expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread, text).toBe('expansion')
+    const denied = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['git push *'] })
+    expect(denied.kind, text).toBe('deny')
+    expect(reasonOf(denied)).toContain(READ_LIMITS.expansion)
+    const floor = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] })
+    expect(floor.kind, text).toBe('ask')
+  })
+
+  it('reads the call on its own as a program that runs the command after the count', () => {
+    expect(evaluate('repeat', ['1', 'rm', '-rf', 'x'], { allow: ['repeat *'], deny: ['rm -rf *'] }).kind).toBe('deny')
+    expect(evaluate('repeat', ['1', 'rm', '-rf', 'x'], { allow: ['repeat *'] }).kind).toBe('ask')
+  })
+
+  // A separator ends the repeat before the command, which is then a statement of its own; as an argument the word runs nothing.
+  it.each(['repeat 1; rm -rf x', 'repeat 1\nrm -rf x'])('zsh -c %j is still refused, its command a statement of its own', text => {
+    expect(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *'] }).kind).toBe('deny')
+  })
+
+  it('reads the plain forms as before: a count and a command that run nothing the rules name', () => {
+    const rows = ['repeat 3 echo hi', 'repeat 2 git status', 'repeat 1 { echo a; }', 'repeat 1 do ls -l; done', 'repeat 3 echo *.txt', 'repeat 2 noglob git log --oneline',
+      "repeat 'a b' echo hi", 'echo repeat 1 rm -rf x', 'echo repeat', 'git log --grep repeat', 'repeat 2 time git status']
+    for (const text of rows) {
+      const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *', 'git push *'] })
+      expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
+    }
+  })
+})
+
 describe('what no pattern can change', () => {
   it('never lets a tool administer the node that runs it', () => {
     expect(reasonOf(evaluate('buckle', ['approve', 'abc'], { allow: ['*'] }))).toContain('cannot administer')
