@@ -271,7 +271,7 @@ function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
   if (!absoluteName(word)) return true
   // The kernel follows a link before it applies the `..` after it, while the view folds `.` and `..` as text, so
   // `/workspace/<link>/../../usr/bin/python3` may run a planted file the view names as the system one; a path through
-  // /proc or /dev/fd names a place of whichever process reads it (fix brief 9, B28).
+  // /proc or /dev/fd, however its slashes are spelled, names a place of whichever process reads it (fix brief 9, B28).
   if (dotSegment(word) || processPlace(word)) return true
   return !programOutsideView(word, cwd, view)
 }
@@ -284,9 +284,18 @@ function dotSegment(word: string): boolean {
 /** Folders whose entries name places of a process, its own (OWN_PROCESS_PLACES) or another's under /proc. */
 const PROCESS_PLACES = ['/proc', ...OWN_PROCESS_PLACES]
 
-/** Whether an absolute path lies under /proc or /dev/fd. */
+/**
+ * Whether an absolute path lies under /proc or /dev/fd as the kernel walks it, which reads a run of slashes as one and a
+ * `.` segment as nothing, so `//proc/self/cwd/...` and `/dev//fd/3` are such places (D91 follow-ups, F3).
+ */
 function processPlace(word: string): boolean {
-  return PROCESS_PLACES.some(place => word === place || word.startsWith(`${place}/`))
+  const place = foldedPath(word)
+  return PROCESS_PLACES.some(folder => place === folder || place.startsWith(`${folder}/`))
+}
+
+/** A path's text with each run of slashes made one and each `.` segment dropped; a `..` stays, since only the file system knows where it leads. */
+function foldedPath(word: string): string {
+  return word.replace(/\/+/g, '/').split('/').filter(segment => segment !== '.').join('/')
 }
 
 /** An absolute name: from the root, or on Windows from a drive or a share as pathe reads one. */

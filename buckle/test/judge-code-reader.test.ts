@@ -1371,6 +1371,26 @@ describe('a program named by an absolute path holding a dot segment or a process
     expect(paths(call('/usr/bin/env', 'python3', 'job.py'))).toEqual(['/workspace/job.py'])
     expect(paths(shell('/usr/bin/python3 job.py'))).toEqual(['/workspace/job.py'])
   })
+
+  // The kernel walks a run of slashes as one and a `.` segment as nothing, so `//proc/self/cwd/usr/bin/python3` runs the
+  // planted file as /proc/self/cwd/usr/bin/python3 does; the place is tested on the path folded so, its `..` kept
+  // (D91 follow-ups, F3).
+  it.each([
+    ['//proc/self/cwd/usr/bin/python3', 'job.py'], ['///proc/self/cwd/usr/bin/python3', 'job.py'], ['/proc//self/cwd/usr/bin/python3', 'job.py'],
+    ['//proc//1/root/usr/bin/python3', 'job.py'], ['/proc/./self/cwd/usr/bin/python3', 'job.py'], ['/dev/./fd/3', 'job.py'], ['/dev//fd/3', 'job.py'],
+    ['//dev/fd/3', 'job.py'], ['//dev//fd//3/usr/bin/python3', 'job.py'], ['timeout', '5', '//proc/self/cwd/usr/bin/python3', 'job.py'],
+    ['//proc/self/cwd/usr/bin/env', 'python3', 'job.py'], ['bash', '-c', '//proc/self/cwd/usr/bin/python3 job.py'],
+  ])('refuses a /proc or /dev/fd place spelled with doubled slashes or a . segment: %s %s', (command, ...args) => {
+    expect(linked().call(command, ...args)).toEqual(local)
+  })
+
+  it('still reads a system interpreter named with doubled slashes outside /proc and /dev/fd', () => {
+    const { call, shell } = linked()
+    expect(paths(call('//usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('/usr//bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(shell('//usr/bin/python3 job.py'))).toEqual(['/workspace/job.py'])
+    expect(paths(call('/procfs/usr/bin/python3', 'job.py'))).toEqual(['/workspace/job.py'])
+  })
 })
 
 describe('a name whose .. follows a link (fix brief 9, B29)', () => {
