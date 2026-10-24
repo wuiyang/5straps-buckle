@@ -68,7 +68,8 @@ const DIRECTORY_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'prevd', 'ne
  * bare or as `=value`), and bun's `--filter` and `-F` (fix brief 8, B23). Each is read anywhere before a `--` as npm's
  * option parser reads it (selectsOption): bare, with `=value`, under any number of leading dashes, a long one by any prefix
  * of three or more letters, a short one by its letter's prefix, in a cluster of letters, or after `--` (`--C`, `-qw`), which
- * fails closed for a script's own argument (fix brief 9, B32; D91 follow-up F2).
+ * fails closed for a script's own argument (fix brief 9, B32; D91 follow-up F2). pnpm's selectors are read apart, by position
+ * (selectsPnpmPackage).
  */
 const WRAPPER_CHDIR: Readonly<Record<string, string>> = { env: 'C', sudo: 'D' }
 /** npm's `--include-workspace-root`, and its shorthand `iwr` with the abbreviations of that (`iw`, `i`) nopt takes for it (npm 11.19.0). */
@@ -95,8 +96,48 @@ export function changesDirectory(forms: CommandForms): boolean {
     const options = PROGRAM_CHDIR[program]
     if (options === undefined) return false
     const end = form.indexOf('--')
-    return form.slice(1, end < 0 ? form.length : end).some(word => options.some(option => selectsOption(word, option)))
+    const words = form.slice(1, end < 0 ? form.length : end)
+    return words.some(word => options.some(option => selectsOption(word, option))) || (program === 'pnpm' && selectsPnpmPackage(words))
   })
+}
+
+/**
+ * pnpm's options that run another package's script, or every package's, or the workspace root's (pnpm 10.33.2, probed in a
+ * scratch workspace of packages a and b): `--filter` and `-F`, `--filter-prod`, `--recursive` and `-r`, `--parallel`, which
+ * implies a recursive run, and `--workspace-root` and `-w`, which runs the root's script from inside a package.
+ */
+const PNPM_SELECTORS = ['--filter', '-F', '--filter-prod', '--recursive', '-r', '--parallel', '--workspace-root', '-w']
+/** `--config.<key>=value`, which sets any pnpm option from the command line (`--config.dir=sub`, `--config.filter=a`), under any dashes. */
+const PNPM_CONFIG_KEY = /^-+(?:no-)*config\./i
+/** pnpm's commands that run a script or a program, which reads options up to its name and hands every word after it to it. */
+const PNPM_RUNNERS: ReadonlySet<string> = new Set(['run', 'run-script', 'exec'])
+/** The script names, or commands, that pnpm hands every word after the first to the script as its own. */
+const PNPM_SCRIPT_WORDS: ReadonlySet<string> = new Set(['dev', 'build', 'test', 't', 'tst', 'start', 'stop', 'restart'])
+
+/**
+ * Whether the words of a pnpm form select another package before the script runs, read by position as pnpm reads them
+ * (pnpm 10.33.2): a PNPM_SELECTORS option or a `--config.` key before the script name does, and the same word after it, or
+ * after `exec`'s program, reaches the script as its own argument (`pnpm run build --filter a` runs the root's script with
+ * `--filter a`). Any other command reads every word as its own option (`pnpm install --filter a`). The options' own types
+ * are not modeled, so a bare word after an option typed without `=value` may be that option's value: from the first such
+ * option on, the reading does not stop at a script name and a selector anywhere counts (`pnpm run --reporter silent --filter a
+ * build`), which fails closed for `pnpm --silent run build --filter a`, and for a script of another name (`pnpm lint -r`).
+ */
+function selectsPnpmPackage(words: readonly string[]): boolean {
+  let command: string | undefined
+  let loose = false
+  for (const word of words) {
+    if (word.startsWith('-')) {
+      if (PNPM_CONFIG_KEY.test(word) || PNPM_SELECTORS.some(option => selectsOption(word, option))) return true
+      loose ||= !word.includes('=')
+      continue
+    }
+    if (command === undefined) {
+      if (PNPM_SCRIPT_WORDS.has(word) && !loose) return false
+      command = word
+    } else if (PNPM_RUNNERS.has(command) && !loose) return false
+  }
+  return false
 }
 
 /**

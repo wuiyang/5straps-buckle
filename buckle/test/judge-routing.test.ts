@@ -525,4 +525,25 @@ describe('a standard form that selects another workspace package (fix brief 8, B
     await call(runtime, 'npm', ['run', 'build', '--production'])
     expect(fakes.shownQuick.map(input => [input.command, input.scriptText])).toEqual([['npm run build -- --prefi=a', 'tsc -p .'], ['npm run build --production', 'tsc -p .']])
   })
+
+  it('refuses a pnpm option that selects another package before the script name, Jev never asked, and still shows the root text where the script runs in the root (standalone round 2, pnpm package selectors)', async () => {
+    const fakes = judges({ quick: quick('warning', 0.9) })
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    workspaced(config)
+    const runtime = await runtimeOf(config, fakes)
+    await withPolicy(runtime, { destructive: ['pnpm *'] })
+    const refused = [['--filter', 'a', 'build'], ['-F', 'a', 'build'], ['--filter=a', 'build'], ['-r', 'build'], ['--recursive', 'build'], ['--parallel', 'build'], ['-w', 'build'], ['--config.dir=a', 'build'], ['run', '--filter', 'a', 'build'], ['run', '-F', 'a', 'build'], ['run', '-r', 'build'], ['run', '--recursive', 'build'], ['--filter', 'a', 'run', 'build'], ['-r', 'run', 'build'], ['-r', 'exec', 'pwd']]
+    for (const args of refused) {
+      const { response, entry, ran } = await call(runtime, 'pnpm', args)
+      expect(response, args.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, args.join(' ')).toBe(false)
+      expect(entry.judge, args.join(' ')).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    }
+    expect(fakes.quickJudge.quick).not.toHaveBeenCalled()
+    // After the script name pnpm 10.33.2 hands each of these to the script, so the root's script runs and its text is shown.
+    for (const args of [['run', 'build', '--filter', 'a'], ['run', 'build', '-F', 'a'], ['run', 'build', '-r'], ['run', 'build', '--recursive']]) await call(runtime, 'pnpm', args)
+    expect(fakes.shownQuick.map(input => [input.command, input.standardScript, input.scriptText])).toEqual([
+      ['pnpm run build --filter a', true, 'tsc -p .'], ['pnpm run build -F a', true, 'tsc -p .'], ['pnpm run build -r', true, 'tsc -p .'], ['pnpm run build --recursive', true, 'tsc -p .'],
+    ])
+  })
 })

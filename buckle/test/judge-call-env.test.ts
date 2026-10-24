@@ -324,6 +324,43 @@ describe('a call that changes its working directory before its code runs (fix br
     for (const [word, option] of other) expect(selectsOption(word, option), `${word} ${option}`).toBe(false)
   })
 
+  // pnpm 10.33.2, run in a scratch workspace of the packages a and b: each form below that selects ran a's script (or every
+  // package's), where the same word after the script name, or after `exec`'s program, reached it as its own argument
+  // (standalone round 2, pnpm package selectors).
+  const pnpmForms = (words: string[]) => commandFormsOf({ command: 'pnpm', args: words })
+
+  it('counts a pnpm option that selects another package before the script name: --filter, -F, --filter-prod, -r, --recursive, --parallel, -w, --workspace-root, and any --config. key', () => {
+    const selecting = [
+      ['--filter', 'a', 'build'], ['-F', 'a', 'build'], ['--filter=a', 'build'], ['--filter-prod', 'a', 'build'], ['--filter-prod=a', 'build'],
+      ['-r', 'build'], ['--recursive', 'build'], ['--parallel', 'build'], ['-w', 'build'], ['--workspace-root', 'build'],
+      ['--config.dir=sub', 'build'], ['--config.filter=a', 'build'], ['--config.recursive=true', 'build'], ['-config.dir=sub', 'build'], ['---config.dir=sub', 'build'],
+      ['run', '--filter', 'a', 'build'], ['run', '-F', 'a', 'build'], ['run', '-r', 'build'], ['run', '--recursive', 'build'], ['run', '-w', 'build'], ['run-script', '--filter', 'a', 'build'],
+      ['--filter', 'a', 'run', 'build'], ['-r', 'run', 'build'], ['-r', 'run-script', 'build'], ['-rF', 'a', 'build'], ['-r', 'exec', 'pwd'], ['--filter', 'a', 'exec', 'pwd'],
+      ['--rec', 'build'], ['--recurs', 'build'], ['--filter-p', 'a', 'build'], ['---filter', 'a', 'build'], ['-filter', 'a', 'build'], ['--no-no-recursive', 'build'],
+      ['install', '--filter', 'a'], ['install', '-r'], ['add', 'left-pad', '-F', 'a'], ['lint', '--filter', 'a'],
+    ]
+    for (const words of selecting) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+  })
+
+  it('reads a pnpm selector after the script name, or after exec\'s program, as the script\'s own, and any after a --', () => {
+    const own = [
+      ['run', 'build', '--filter', 'a'], ['run', 'build', '-F', 'a'], ['run', 'build', '-r'], ['run', 'build', '--recursive'], ['run', 'build', '-w', '--parallel'], ['run', 'build', '--workspace-root'],
+      ['run-script', 'build', '--filter', 'a'], ['build', '--filter', 'a'], ['build', '-r'], ['dev', '--filter', 'a'], ['test', '--filter', 'a'], ['test', '-r'], ['start', '--filter', 'a'],
+      ['exec', 'echo', 'hi', '--filter', 'a'], ['exec', 'echo', 'hi', '-r'], ['run', 'build', '--', '--filter', 'a'], ['run', '--', '-r'], ['--reporter=silent', 'run', 'build', '--filter', 'a'], ['run', '--reporter=silent', 'build', '-r'],
+      ['run', 'build'], ['install', '--frozen-lockfile'], ['install', '--prod'], ['run', 'build', '--production'],
+    ]
+    for (const words of own) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(false)
+  })
+
+  it('does not stop reading at a word an option without =value may take as its own value, so a later command word cannot hide a selector before the real script name', () => {
+    // pnpm's own option types are not modeled: `--reporter silent` takes `silent` and `--silent` takes nothing, so a bare word
+    // after either is read as possibly a value, and the whole call is scanned, where a selector anywhere ends the reading.
+    const selecting = [['run', '--reporter', 'silent', '--filter', 'a', 'build'], ['--silent', 'run', '--filter', 'a', 'build'], ['--silent', 'add', 'build', '-F', 'a'], ['--reporter=silent', '--filter', 'a', 'run', 'build']]
+    for (const words of selecting) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+    // The kept over-refusal: pnpm 10.33.2 handed `--filter a` to the script here, but which bare word is the script name is not read.
+    for (const words of [['--silent', 'run', 'build', '--filter', 'a'], ['run', '--if-present', 'build', '--filter', 'a']]) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+  })
+
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
