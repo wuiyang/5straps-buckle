@@ -69,7 +69,7 @@ describe('the reasons a reading refuses with', () => {
 
 const defaults = BUILT_IN_SETTINGS.approval
 const code = (value: string) => `\`${value}\``
-const either = (values: readonly string[]) => values.length === 1 ? code(values[0]!) : `${values.slice(0, -1).map(code).join(', ')}, or ${code(values.at(-1)!)}`
+const either = (values: readonly string[]) => values.length <= 2 ? values.map(code).join(' or ') : `${values.slice(0, -1).map(code).join(', ')}, or ${code(values.at(-1)!)}`
 
 interface PinnedLine { page: string; what: string; text: string }
 
@@ -107,6 +107,14 @@ describe('the lines round 9 added to the pages (fix brief 9, D9; follow-up F7)',
     expect(notHeld(page(`before ${line.text.slice(0, -2)}XX after`), [line])).toEqual([line])
     expect(notHeld(page(`${line.text} ${line.text}`), [line])).toEqual([line])
     expect(notHeld([], [line])).toEqual([line])
+  })
+
+  // The helper that writes a settings row's list of values follows the house rule: two values take `or` and no comma, three
+  // or more take the Oxford comma (workspaces-02.md writes the two-value `packs.shell` row as `on` or `off`).
+  it('writes a list of one value as it is, two with `or` and no comma, and more with the Oxford comma', () => {
+    expect(either(['a'])).toBe('`a`')
+    expect(either(['a', 'b'])).toBe('`a` or `b`')
+    expect(either(['a', 'b', 'c'])).toBe('`a`, `b`, or `c`')
   })
 
   it('has a pinned row for each of the node\'s approval settings, in the order the page lists them', () => {
