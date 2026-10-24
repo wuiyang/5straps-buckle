@@ -425,7 +425,7 @@ describe('a parenthesised list zsh may read as glob qualifiers', () => {
     ['(( x + 1 ))', false], ['a=(one two)', false],
     // The recorded limit (docs/known-limits.md): an extended glob, or a body a substitution holds, of the same shape is
     // read the same way, so these ordinary words leave the call unread too (D91 follow-ups, F5).
-    ['ls *.@(png|jpeg)', true], ['echo $(echo a(e))', true],
+    ['ls *.@(png|jpeg)', true], ['echo $(echo a(e))', true], ['$(echo a(e))', true],
     // zsh reads the qualifiers after parameter expansion and command substitution (zshexpn, Glob Qualifiers), so a body
     // that a `$` or a backtick may fill is read as one that may run code; an array, a substitution, arithmetic, and a
     // function's empty () keep their reading.

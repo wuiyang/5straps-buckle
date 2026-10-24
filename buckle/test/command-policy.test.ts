@@ -2371,6 +2371,19 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
     expect(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] }).kind).toBe('ask')
   })
 
+  // The F5 brief's bare string: its command word is a substitution, so the expansion limit names it before the qualifier
+  // limit is reached; the call is unread all the same, refused under a deny list and asked at the floor in each shell.
+  it.each(['zsh', 'bash', 'sh'])('leaves %s -c $(echo a(e)) unread as an expansion, refused under a deny list and asked at the floor', shell => {
+    const text = '$(echo a(e))'
+    expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread).toBe('expansion')
+    const denied = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+    expect(denied.kind).toBe('deny')
+    expect(reasonOf(denied)).toContain(READ_LIMITS.expansion)
+    const asked = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+    expect(asked.kind).toBe('ask')
+    if (asked.kind === 'ask') expect(asked.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${READ_LIMITS.expansion}; asked rather than guessed at`]])
+  })
+
   // zsh reads the qualifiers after parameter expansion and command substitution (zshexpn, Glob Qualifiers), so a glued
   // body that a `$` or a backtick may fill can hold e:code: that the text never spells; it is read as one that may run
   // code, quoted or not.
