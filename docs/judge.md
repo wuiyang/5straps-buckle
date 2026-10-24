@@ -55,9 +55,9 @@ both verdicts beside the action. A pass binds to the code it rated: Buckle reads
 under the write lock just before the program starts, and where it changed the call does not run,
 the ask going to a person with "the code changed after the decision AI rated it". Under shell
 isolation the program runs in a copy of the workspace folder while each mount stays live, so no
-stage rates code read from a mount there: the ask goes to a person. A `warning` never runs a call.
-The agent reads the level alone in the ask's reason ("the decision AI rated it danger"), never the
-reasoning, which would show it how to steer the next rating.
+stage rates an ask whose code is read from a mount: it goes to a person. A `warning` never runs a
+call. The agent reads the level alone in the ask's reason ("the decision AI rated it danger"), never
+the reasoning, which would show it how to steer the next rating.
 
 ## Standard development scripts
 

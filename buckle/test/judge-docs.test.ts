@@ -88,7 +88,7 @@ const PINNED: PinnedLine[] = [
   { page: 'workspaces-03.md', what: 'the node aliases of the thorough stage\'s settings', text: '| `approval-judge`, `approval-judge-provider`, `approval-judge-model`, and `approval-judge-standard-scripts` (`BUCKLE_APPROVAL_JUDGE*`) | `approval.judge`, `approval.judgeProvider`, `approval.judgeModel`, and `approval.judgeStandardScripts` |' },
   { page: 'workspaces-03.md', what: 'the node aliases of Jev\'s settings', text: '| `approval-quick-judge` and `approval-quick-judge-model` (`BUCKLE_APPROVAL_QUICK_JUDGE*`) | `approval.quickJudge` and `approval.quickJudgeModel`; `approval.quickJudgeProvider` has no node default |' },
   { page: 'judge-03.md', what: 'the F6 line that an ask\'s line offers no approval where only Jev holds a key', text: 'Where only Jev holds a key, an ask\'s line offers no approval on any route that shows it.' },
-  { page: 'judge.md', what: 'the F4 residue line that no stage rates code a mount holds under shell isolation', text: 'Under shell isolation the program runs in a copy of the workspace folder while each mount stays live, so no stage rates code read from a mount there: the ask goes to a person.' },
+  { page: 'judge.md', what: 'the F4 residue line that no stage rates code a mount holds under shell isolation', text: 'Under shell isolation the program runs in a copy of the workspace folder while each mount stays live, so no stage rates an ask whose code is read from a mount: it goes to a person.' },
   { page: 'known-limits-07.md', what: 'the F4 residue clause on a write from another workspace through a shared mount', text: '(a process still running from an earlier call, or another workspace writing through a shared mount) can land after that check.' },
 ]
 
