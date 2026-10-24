@@ -11,7 +11,7 @@ import { sensitivePathReason } from '../../domain/permission/rules/sensitive-pat
 import { ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
 import { applySnapshot, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
-import type { ChangeHistory, HistoryInput } from '../history/journal.js'
+import { type ChangeHistory, HistoryBusyError, type HistoryInput } from '../history/journal.js'
 
 export interface IsolatedShellOptions {
   directory: string
@@ -27,8 +27,13 @@ interface ShellRunInput<T> {
   readOnlyPaths?: string[]
   readOnlyOverlayPaths?: string[]
   details: Omit<HistoryInput, 'roots'>
-  /** Called under the workspace lock once the copy is taken, before the program runs; a throw runs nothing (ToolContext.beginRun). */
+  /**
+   * Called under the workspace's write lock once the copy is taken, before the lock is released and the program runs; a
+   * throw runs nothing (ToolContext.beginRun).
+   */
   beforeRun?: () => void
+  /** The call's signal, which stops the wait for the write lock. */
+  signal?: AbortSignal
   execute: (copyRoot: string) => Promise<T>
 }
 
@@ -53,13 +58,18 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
   let started = false
   try {
     record('preparing')
-    const before = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
-    const copied = relocate(before, input.sourceRoot, copyRoot)
-    applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
-    writeFileSync(join(directory, 'before.json'), JSON.stringify(before), { mode: 0o600 })
-    // The copy is the code the program runs, taken under the lock: a pass of the decision AI is confirmed against it here,
-    // so no write lands between the check and the run (fix brief 9, B31).
-    input.beforeRun?.()
+    // The copy is the code the program runs. It is taken, and a pass of the decision AI confirmed against it, under the
+    // workspace's write lock, the one a brokered write takes, so no such write lands between the copy and the check
+    // (fix brief 9, B31; D91 follow-ups, F4). The lock is this run's own first, then the write lock, as promote takes
+    // them, and the write lock is released before the program runs, for promote takes it again.
+    const before = await input.isolation.history.exclusive(async () => {
+      const taken = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
+      const copied = relocate(taken, input.sourceRoot, copyRoot)
+      applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
+      writeFileSync(join(directory, 'before.json'), JSON.stringify(taken), { mode: 0o600 })
+      input.beforeRun?.()
+      return taken
+    }, input.signal)
     record('running')
     started = true
     const result = await input.execute(copyRoot)
@@ -72,8 +82,9 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     }
     return result
   } catch (error) {
-    // The code a pass rated changed: nothing ran, so the private copy goes and the reason stays the caller's to answer.
-    if (!started && error instanceof CodeChangedError) {
+    // The code a pass rated changed, or the write lock stayed busy past its wait: nothing ran, so the private copy goes and
+    // the reason stays the caller's to answer, a busy lock as the shell outside isolation answers one (STATE_BUSY).
+    if (!started && (error instanceof CodeChangedError || error instanceof HistoryBusyError)) {
       removePrivateWorkspace(directory)
       throw error
     }

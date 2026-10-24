@@ -2,7 +2,7 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodeChangedError } from '../common/domain/permission/judged.js'
-import { openChangeHistory } from '../common/services/history/journal.js'
+import { HistoryBusyError, openChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
 import { createPathView } from '../common/domain/path-view.js'
@@ -11,11 +11,11 @@ import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
-async function fixture() {
+async function fixture(options: { lockDeadlineMs?: number } = {}) {
   const root = mkdtempSync('/tmp/buckle-isolated-shell-'); roots.push(root)
   const sourceRoot = join(root, 'source'); mkdirSync(sourceRoot)
   const state = join(root, 'state')
-  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30 })
+  const history = await openChangeHistory({ directory: join(state, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30, ...options })
   const isolation = { directory: join(state, 'shell'), maxBytes: 1_000_000, history }
   const input = { isolation, sourceRoot, writableRoots: [sourceRoot], excluded: [state], details: { sessionId: 'caller', stageId: 'message', tool: 'shell_exec' } }
   return { root, sourceRoot, state, history, isolation, input }
@@ -312,6 +312,63 @@ describe('the hook a pass of the decision AI is confirmed in (fix brief 9, B31)'
     writeFileSync(join(sourceRoot, 'file'), 'x')
     const execute = vi.fn(async () => {})
     await expect(runIsolatedShell({ ...input, beforeRun: () => { throw new CodeChangedError() }, execute })).rejects.toBeInstanceOf(CodeChangedError)
+    expect(execute).not.toHaveBeenCalled()
+    expect(readdirSync(isolation.directory)).toEqual([])
+  })
+})
+
+describe('the workspace write lock over the copy and the confirm step (D91 follow-ups, F4)', () => {
+  // A brokered write takes the workspace's write lock (history.run), so the copy and the pass's confirm step take it too:
+  // a write in flight lands before the copy, which then holds it and is what the confirm step reads, and none lands
+  // between the copy and the confirm step, from this process or another holding the same history.
+  it('waits for a brokered write that holds the lock, then copies and confirms what it wrote', async () => {
+    const { sourceRoot, input, history } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'rated')
+    const order: string[] = []
+    let holding!: () => void
+    let release!: () => void
+    const locked = new Promise<void>(resolve => { holding = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    const write = history.run({ ...input.details, tool: 'fs_write', roots: [sourceRoot] }, async () => {
+      holding()
+      await released
+      writeFileSync(join(sourceRoot, 'file'), 'changed')
+      order.push('write')
+    })
+    await locked
+    let confirmed!: () => void
+    const reached = new Promise<void>(resolve => { confirmed = resolve })
+    const run = runIsolatedShell({ ...input, beforeRun: () => { order.push(`confirm ${readFileSync(join(sourceRoot, 'file'), 'utf8')}`); confirmed() }, execute: async copy => { order.push(`run ${readFileSync(join(copy, 'file'), 'utf8')}`) } })
+    await Promise.race([reached, new Promise(resolve => setTimeout(resolve, 500))])
+    expect(order).toEqual([])
+    release()
+    await Promise.all([write, run])
+    expect(order).toEqual(['write', 'confirm changed', 'run changed'])
+  })
+
+  it('releases the lock before the program runs, so a brokered write during the run does not wait for it', async () => {
+    const { sourceRoot, input, history } = await fixture({ lockDeadlineMs: 1_000 })
+    writeFileSync(join(sourceRoot, 'file'), 'rated')
+    await runIsolatedShell({ ...input, execute: async () => {
+      await history.run({ ...input.details, tool: 'fs_write', roots: [sourceRoot] }, async () => { writeFileSync(join(sourceRoot, 'other'), 'brokered') })
+    } })
+    expect(readFileSync(join(sourceRoot, 'other'), 'utf8')).toBe('brokered')
+  })
+
+  it('answers busy, with nothing run and no private copy left, when the lock stays held past its wait', async () => {
+    const { sourceRoot, input, history, isolation } = await fixture({ lockDeadlineMs: 100 })
+    writeFileSync(join(sourceRoot, 'file'), 'rated')
+    let release!: () => void
+    let holding!: () => void
+    const locked = new Promise<void>(resolve => { holding = resolve })
+    const held = history.exclusive(() => new Promise<void>(resolve => { release = resolve; holding() }))
+    await locked
+    const execute = vi.fn(async () => {})
+    const beforeRun = vi.fn()
+    await expect(runIsolatedShell({ ...input, beforeRun, execute })).rejects.toBeInstanceOf(HistoryBusyError)
+    release()
+    await held
+    expect(beforeRun).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
     expect(readdirSync(isolation.directory)).toEqual([])
   })
