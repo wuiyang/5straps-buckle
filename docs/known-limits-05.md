@@ -64,7 +64,9 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
   prompt's row, only while the prompt and what was typed fit one row: a long workspace name on a
   narrow terminal, or typing past the row's end, wraps it, and the redraw or the tag then lands a
   row off. A question a one-shot command asks at a terminal is not redrawn at all.
-- Buckle does not read `TERM`. Where it is `dumb`, a question's redraw still sends the clear-line
+- The console writer decides by `isTTY` and does not read `TERM`; Buckle still passes `TERM` to child
+  processes and sets `xterm-256color` for shell commands. Where it is `dumb`, a question's redraw
+  still sends the clear-line
   and cursor escapes, and a terminal that does not act on them shows them as text: the logged line
   lands on the prompt's row after what was typed, not above it, and the prompt is written again
   below it without the typed text. The typed answer still counts: the next keys and Enter add to it.
