@@ -380,6 +380,37 @@ describe('the workspace write lock over the copy and the confirm step (D91 follo
   })
 })
 
+describe('a credential file a brokered write makes while the copy waits (D91 follow-ups, F4 residue)', () => {
+  // The shell pack scans for credential files before the copy waits for the write lock, so a write that held the lock
+  // then (an owner's restore of a deleted .env) lands after the scan and before the copy.
+  it('is left out of the copy, as the scan would have left it out, and the rest of that write is copied', async () => {
+    const { sourceRoot, input, history } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'before')
+    let holding!: () => void
+    let release!: () => void
+    const locked = new Promise<void>(resolve => { holding = resolve })
+    const released = new Promise<void>(resolve => { release = resolve })
+    const write = history.run({ ...input.details, tool: 'owner_restore', roots: [sourceRoot] }, async () => {
+      holding()
+      await released
+      writeFileSync(join(sourceRoot, '.env'), 'TOKEN=planted')
+      mkdirSync(join(sourceRoot, '.ssh'))
+      writeFileSync(join(sourceRoot, '.ssh', 'id_ed25519'), 'planted')
+      writeFileSync(join(sourceRoot, 'file'), 'after')
+    })
+    await locked
+    const seen: string[] = []
+    const run = runIsolatedShell({ ...input, execute: async copy => {
+      seen.push(readFileSync(join(copy, 'file'), 'utf8'), `.env ${existsSync(join(copy, '.env'))}`, `key ${existsSync(join(copy, '.ssh', 'id_ed25519'))}`)
+    } })
+    await new Promise(resolve => setTimeout(resolve, 200))
+    release()
+    await Promise.all([write, run])
+    expect(seen).toEqual(['after', '.env false', 'key false'])
+    expect(readFileSync(join(sourceRoot, '.env'), 'utf8')).toBe('TOKEN=planted')
+  })
+})
+
 /** Holds `history`'s write lock, as a brokered write or a git push would, until `release`. */
 async function holdLock(history: ChangeHistory) {
   let release!: () => void

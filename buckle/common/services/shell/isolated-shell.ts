@@ -70,7 +70,7 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     waiting = true
     const before = await untimed(signal => input.isolation.history.exclusive(async () => {
       waiting = false
-      const taken = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
+      const taken = withoutCredentials(snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save }))
       const copied = relocate(taken, input.sourceRoot, copyRoot)
       applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
       writeFileSync(join(directory, 'before.json'), JSON.stringify(taken), { mode: 0o600 })
@@ -106,6 +106,16 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     }
     throw new ToolExecutionError(started ? `Isolated shell changes need owner review (${id}); inspect the retained copy and checkpoint history` : 'Could not prepare an isolated workspace; inspect owner logs', { code: 'ISOLATED_WORKSPACE_FAILED' })
   }
+}
+
+/**
+ * A copy never holds a credential file. The caller's hidden list is taken before the wait for the write lock, so a file a
+ * brokered write made meanwhile (an owner's restore of a deleted .env) is left out here, with all it holds, as the list
+ * would have left it out (D91 follow-ups, F4 residue).
+ */
+function withoutCredentials(tree: Snapshot): Snapshot {
+  const credentials = Object.keys(tree).filter(path => sensitivePathReason(path) !== null)
+  return credentials.length === 0 ? tree : Object.fromEntries(Object.entries(tree).filter(([path]) => !isInsideAny(credentials, path)))
 }
 
 function relocate(source: Snapshot, from: string, to: string): Snapshot {
