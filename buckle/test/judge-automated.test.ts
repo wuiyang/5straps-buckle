@@ -14,6 +14,7 @@ import { createJudgeGate } from '../common/services/judge/judge-gate.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
+import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The decision AI in automated mode (D91, brief item 2 and addendum C): an interpreter call the destructive floor asks
@@ -162,10 +163,13 @@ describe('code a mount holds, where the program runs in a copy of the workspace 
   // The isolated shell copies the workspace's folder alone and binds each mount live, and releases the write lock before
   // the program starts: code read from a mount could change after the check, before or while the program runs, so no
   // stage rates it there and the ask goes to a person.
-  async function mounted(judge: Judge) {
+  async function mounted(judge: Judge, quickJudge?: QuickJudge) {
     const store = mkdtempSync(join(tmpdir(), 'buckle-judge-auto-store-')); roots.push(store)
     writeFileSync(join(store, 'job.py'), 'print(1)\n')
-    return runtimeOf(node({ BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_MOUNTS: JSON.stringify([{ source: store, target: '/data' }]) }), judge)
+    const config = node({ BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_MOUNTS: JSON.stringify([{ source: store, target: '/data' }]), ...(quickJudge ? { BUCKLE_APPROVAL_QUICK_JUDGE: 'all' } : {}) })
+    const runtime = await createRuntime({ config, judge, ...(quickJudge ? { quickJudge } : {}) })
+    runtimes.push(runtime)
+    return runtime
   }
 
   // Without bubblewrap the mounts withhold the shell's tools, so a file tool stands in for one, prepared as the shell is.
@@ -193,6 +197,20 @@ describe('code a mount holds, where the program runs in a copy of the workspace 
     expect(ran).toBe(false)
     expect(response).toMatchObject({ outcome: 'approval_required' })
     expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.outsideCopy, passed: false })
+  })
+
+  // A screen of an allowed command only ever adds an ask, so it is shown what it can be, wherever the code lies.
+  it('is still shown to the quick stage screening an allowed command, whose danger makes it an ask', async () => {
+    const danger = { kind: 'verdict' as const, level: 'danger' as const, confidence: 0.95, probabilities: { safe: 0.025, warning: 0.025, danger: 0.95 }, model: 'jev-1.13.0', latencyMs: 90 }
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => danger) }
+    const runtime = await mounted(fakeJudge(), quickJudge)
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), mount: '/workspace', commands: { allow: ['python3 *'], deny: [], destructive: [], allowedInterpreters: ['python3'] } })
+    const { response, entry, ran } = await send(runtime, true)
+    expect(vi.mocked(quickJudge.quick).mock.calls.map(([input]) => input.files.map(file => file.path))).toEqual([['/data/job.py']])
+    expect(ran).toBe(false)
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(entry.judge).toMatchObject({ flagged: true, screened: true })
+    expect(entry.judge).not.toHaveProperty('codeUnread')
   })
 
   it('is not rated at the owner\'s request either, for such a tool\'s waiting ask', async () => {

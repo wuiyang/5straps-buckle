@@ -190,7 +190,8 @@ export function createJudgeGate(input: {
     const typedWords = [effect.shownAs ?? effect.command, ...effect.args]
     // The isolated shell runs its program in a copy of the workspace's folder and binds each mount live, and releases the
     // write lock before the program starts: a file read from outside the folder could change after the check, before or
-    // while the program runs, so no stage rates code that reads one there (D91 follow-ups, F4 residue).
+    // while the program runs, so no stage rates code that reads one there for an ask (D91 follow-ups, F4 residue). A
+    // screen of an allowed command only ever adds an ask, so it is shown the code wherever it lies.
     const read: string[] = []
     const view: CodeView = call.fromCopy ? { ...input.view, read: (real, limit) => { read.push(real); return input.view.read(real, limit) } } : input.view
     // Every program the call runs is placed first, the call as typed, each wrapper, and each interpreter form, from shell
@@ -218,7 +219,7 @@ export function createJudgeGate(input: {
     // rated on its command line instead, with no scriptText, as before R3: screen() is unchanged (R2), and the agent
     // writes package.json, so a file it makes unreadable must not switch the screen off (fix brief 8, B24).
     if (script !== null && typeof script !== 'string' && !screened) return script.refused
-    if (read.some(real => !isInside(paths.root, real))) return CODE_REFUSALS.outsideCopy
+    if (!screened && read.some(real => !isInside(paths.root, real))) return CODE_REFUSALS.outsideCopy
     return {
       ...commandLine(effect, call, interpreters, reason),
       ...code.reading,
