@@ -423,6 +423,9 @@ describe('a parenthesised list zsh may read as glob qualifiers', () => {
     ["echo *(e:'x':)", true], ["echo a(e:'x':)", true], ["echo *.txt(.e:'x':)", true], ['echo *(+f)', true], ["echo **/*(e['x'])", true],
     ['echo *(.)', false], ['echo *(om[1])', false], ['echo x; (cd e)', false], ['echo $(echo e)', false], ['echo $(( 1 + 2 ))', false],
     ['(( x + 1 ))', false], ['a=(one two)', false],
+    // The recorded limit (docs/known-limits.md): an extended glob, or a body a substitution holds, of the same shape is
+    // read the same way, so these ordinary words leave the call unread too (D91 follow-ups, F5).
+    ['ls *.@(png|jpeg)', true], ['echo $(echo a(e))', true],
   ])('reads %j as holding a qualifier that may run code: %s', (text, qualifier) => {
     expect(shellStatementList(text).qualifier).toBe(qualifier)
   })

@@ -2362,6 +2362,14 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
     if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${qualifier}; asked rather than guessed at`]])
   })
 
+  // The recorded limit (docs/known-limits.md): any glued body holding an e or a + is read as one that may run code, so an
+  // ordinary extended glob or a body inside a substitution of that shape is unread too (D91 follow-ups, F5).
+  it.each(['ls *.@(png|jpeg)', 'echo $(echo a(e))'])('leaves zsh -c %j unread, refused under a deny list and asked at the floor', text => {
+    expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread).toBe('qualifier')
+    expect(reasonOf(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['git push *'] }))).toContain(qualifier)
+    expect(evaluate('zsh', ['-c', text], { allow: ['zsh -c *'] }).kind).toBe('ask')
+  })
+
   it('asks about a floor command inside a qualifier, directly and nested', () => {
     for (const [shell, text] of [['zsh', "echo *(e:'sudo ls':)"], ['bash', `zsh -c "echo *(e:'sudo ls':)"`]] as const) {
       expect(evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] }).kind).toBe('ask')
