@@ -8,10 +8,10 @@ import { setMode } from '../../adapters/file-modes.js'
 import { isInside, isInsideAny, isPlainName, parentDirectory } from '../../domain/paths.js'
 import { CodeChangedError } from '../../domain/permission/judged.js'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
-import { ToolExecutionError } from '../../domain/tool.js'
+import { LockWaitError, ToolExecutionError } from '../../domain/tool.js'
 import { logger } from '../../runtime/log.js'
 import { applySnapshot, changedPaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from '../history/snapshot.js'
-import { type ChangeHistory, HistoryBusyError, type HistoryInput } from '../history/journal.js'
+import type { ChangeHistory, HistoryInput } from '../history/journal.js'
 
 export interface IsolatedShellOptions {
   directory: string
@@ -56,13 +56,16 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
   }
   let publishing = false
   let started = false
+  let waiting = false
   try {
     record('preparing')
     // The copy is the code the program runs. It is taken, and a pass of the decision AI confirmed against it, under the
     // workspace's write lock, the one a brokered write takes, so no such write lands between the copy and the check
     // (fix brief 9, B31; D91 follow-ups, F4). The lock is this run's own first, then the write lock, as promote takes
     // them, and the write lock is released before the program runs, for promote takes it again.
+    waiting = true
     const before = await input.isolation.history.exclusive(async () => {
+      waiting = false
       const taken = snapshot({ roots: [input.sourceRoot], excluded: input.excluded, maxBytes: input.isolation.maxBytes, save })
       const copied = relocate(taken, input.sourceRoot, copyRoot)
       applySnapshot({ current: {}, target: copied, paths: Object.keys(copied), content, roots: [copyRoot] })
@@ -82,11 +85,12 @@ async function executeIsolatedShell<T>(input: ShellRunInput<T>, id: string): Pro
     }
     return result
   } catch (error) {
-    // The code a pass rated changed, or the write lock stayed busy past its wait: nothing ran, so the private copy goes and
-    // the reason stays the caller's to answer, a busy lock as the shell outside isolation answers one (STATE_BUSY).
-    if (!started && (error instanceof CodeChangedError || error instanceof HistoryBusyError)) {
+    // The code a pass rated changed, or the wait for the write lock ended, busy past its bound or cut by a cancel: nothing
+    // ran, so the private copy goes and the reason stays the caller's to answer, a wait as the invoker answers its own,
+    // never as a failed preparation (D91 follow-ups, F4 residue).
+    if (!started && (error instanceof CodeChangedError || waiting)) {
       removePrivateWorkspace(directory)
-      throw error
+      throw waiting ? new LockWaitError(error) : error
     }
     if (!started) {
       logger.error('Isolated shell preparation failed', { id, directory, message: error instanceof Error ? error.message : 'Unknown error' })

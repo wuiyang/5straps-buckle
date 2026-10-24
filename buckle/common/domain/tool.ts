@@ -180,6 +180,19 @@ export class ToolExecutionError extends Error {
 }
 
 /**
+ * Thrown by a tool that takes the workspace's write lock itself (`managesHistory`) where its wait for that lock ended
+ * before its run hook (`ToolContext.beginRun`), busy past its bound or cut by a cancel or the shutdown: nothing ran, so the
+ * invoker settles the call as one that never started, as it settles its own wait for the lock, and answers as `cause`
+ * does (D91 follow-ups, F4 residue).
+ */
+export class LockWaitError extends Error {
+  constructor(cause: unknown) {
+    super('The wait for the workspace\'s write lock ended before the program started', { cause })
+    this.name = 'LockWaitError'
+  }
+}
+
+/**
  * Thrown by a tool that reaches tools when a call it made needs a person (owner decision D82, point 6): the invoker
  * answers the outer call `approval_required` with these asks, each recorded whole by the nested call that made it.
  */

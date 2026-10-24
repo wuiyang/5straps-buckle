@@ -16,7 +16,7 @@ import { CODE_CHANGED_REASON, CodeChangedError, JUDGE, passKey, QUICK_FLAG_REASO
 import { announcePass, judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
-import { CODE_REPLAY_DIVERGED, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
+import { CODE_REPLAY_DIVERGED, LockWaitError, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
@@ -228,8 +228,10 @@ export function createInvoker(options: InvokerOptions): Invoker {
               markStarted()
               return output
             } catch (error) {
-              // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check.
-              if (!(error instanceof CodeChangedError)) markStarted()
+              // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
+              // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
+              // (D91 follow-ups, F4 residue).
+              if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
               throw error
             }
           }
@@ -958,6 +960,8 @@ function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
 }
 
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
+  // A tool's own wait for the write lock answers as the invoker's wait would: a busy lock as busy state, to retry.
+  if (error instanceof LockWaitError) return shapeError(error.cause, tool)
   if (error instanceof InvocationsClosedError) return { code: 'BUCKLE_SHUTTING_DOWN', message: 'Buckle shut down during this call and cancelled it; if it had started, its effects are unknown', retryable: false }
   if (error instanceof ScriptEndedError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }

@@ -2,12 +2,16 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CodeChangedError } from '../common/domain/permission/judged.js'
-import { HistoryBusyError, openChangeHistory } from '../common/services/history/journal.js'
+import { LockWaitError } from '../common/domain/tool.js'
+import { logger } from '../common/runtime/log.js'
+import { HistoryBusyError, openChangeHistory, type ChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -365,11 +369,106 @@ describe('the workspace write lock over the copy and the confirm step (D91 follo
     await locked
     const execute = vi.fn(async () => {})
     const beforeRun = vi.fn()
-    await expect(runIsolatedShell({ ...input, beforeRun, execute })).rejects.toBeInstanceOf(HistoryBusyError)
+    const failed = await runIsolatedShell({ ...input, beforeRun, execute }).catch((error: unknown) => error)
+    expect(failed).toBeInstanceOf(LockWaitError)
+    expect((failed as LockWaitError).cause).toBeInstanceOf(HistoryBusyError)
     release()
     await held
     expect(beforeRun).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
     expect(readdirSync(isolation.directory)).toEqual([])
+  })
+})
+
+/** Holds `history`'s write lock, as a brokered write or a git push would, until `release`. */
+async function holdLock(history: ChangeHistory) {
+  let release!: () => void
+  let holding!: () => void
+  const locked = new Promise<void>(resolve => { holding = resolve })
+  const held = history.exclusive(() => new Promise<void>(resolve => { release = resolve; holding() }))
+  await locked
+  return { held, release: () => release() }
+}
+
+describe('a wait for the write lock that ends before the copy (D91 follow-ups, F4 residue)', () => {
+  // The wait comes before the copy and the confirm step, so nothing has run when it ends: it is no failure of the
+  // preparation, and the call is settled as one that never started, as the invoker settles its own wait for the lock.
+  it('answers a wait the call\'s signal cuts as a lock wait, nothing run, with no preparation failure logged', async () => {
+    const { sourceRoot, input, history, isolation } = await fixture()
+    writeFileSync(join(sourceRoot, 'file'), 'rated')
+    const lock = await holdLock(history)
+    const failures = vi.spyOn(logger, 'error')
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 100)
+    const execute = vi.fn(async () => {})
+    const beforeRun = vi.fn()
+    const failed = await runIsolatedShell({ ...input, beforeRun, execute, signal: controller.signal }).catch((error: unknown) => error)
+    lock.release()
+    await lock.held
+    expect(failed).toBeInstanceOf(LockWaitError)
+    const logged = failures.mock.calls.map(([message]) => message)
+    failures.mockRestore()
+    expect(logged).not.toContain('Isolated shell preparation failed')
+    expect(beforeRun).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+    expect(readdirSync(isolation.directory)).toEqual([])
+  })
+
+  describe('through the invoker', () => {
+    const runtimes: BuckleRuntime[] = []
+    const histories: ChangeHistory[] = []
+    afterEach(async () => {
+      vi.restoreAllMocks()
+      for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+      for (const history of histories.splice(0)) await history.close()
+    })
+
+    /** shell_exec through the real invoker and the shell pack under isolation over `history`; the process is imitated. */
+    async function isolatedCall(options: { lockDeadlineMs?: number } = {}) {
+      const root = mkdtempSync('/tmp/buckle-isolated-invoke-'); roots.push(root)
+      const workspace = join(root, 'workspace'); mkdirSync(workspace)
+      const state = join(root, 'state')
+      const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell' })
+      const runtime = await createRuntime({ config }); runtimes.push(runtime)
+      const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [state], maxBytes: 1_000_000, retentionDays: 30, ...options }); histories.push(history)
+      const spawned: Array<{ aborted: boolean }> = []
+      const pack = createShellPack({
+        paths: createPathView({ root: config.cwd, mount: '/workspace' }), isolation: { directory: join(root, 'isolated'), maxBytes: 1_000_000, history },
+        sandbox: createBubblewrapSandbox('/usr/bin/bwrap'), writableRoots: [config.cwd], hiddenPaths: [state], readOnlyPaths: [], unavailableReason: null,
+        runProcess: async request => { spawned.push({ aborted: request.signal?.aborted === true }); return { exitCode: 0, signal: null, stdout: 'ran', stderr: '', truncated: false, timedOut: false } },
+      })
+      vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockImplementation(args => pack.tools[0]!.prepare(args))
+      await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: config.cwd, scope: 'always' })
+      const send = (requestId: string, extra: { signal?: AbortSignal; timeoutMs?: number } = {}) => runtime.invoke({
+        request: { requestId, approvalTokens: [], tool: 'shell_exec', args: { command: 'ls' }, ...(extra.timeoutMs ? { timeoutMs: extra.timeoutMs } : {}) },
+        sessionId: 'agent', approvalWait: { mode: 'none' }, ...(extra.signal ? { signal: extra.signal } : {}),
+      })
+      return { history, spawned, send }
+    }
+
+    it('answers a wait busy past its bound as busy to retry, nothing run, and a re-send runs the call', async () => {
+      const { history, spawned, send } = await isolatedCall({ lockDeadlineMs: 150 })
+      const lock = await holdLock(history)
+      const busy = await send('busy')
+      lock.release()
+      await lock.held
+      expect(busy).toMatchObject({ outcome: 'error', error: { code: 'STATE_BUSY', retryable: true } })
+      expect(spawned).toHaveLength(0)
+      expect(await send('busy')).toMatchObject({ outcome: 'ok' })
+      expect(spawned).toHaveLength(1)
+    })
+
+    it('settles a call its caller cancels during the wait as one that never started, so a re-send runs it', async () => {
+      const { history, spawned, send } = await isolatedCall()
+      const lock = await holdLock(history)
+      const controller = new AbortController()
+      setTimeout(() => controller.abort(new Error('cancelled')), 100)
+      await send('cancelled', { signal: controller.signal })
+      lock.release()
+      await lock.held
+      expect(spawned).toHaveLength(0)
+      expect(await send('cancelled')).toMatchObject({ outcome: 'ok' })
+      expect(spawned).toHaveLength(1)
+    })
   })
 })
