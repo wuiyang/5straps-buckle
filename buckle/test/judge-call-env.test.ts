@@ -49,6 +49,10 @@ function fakeJudge(answer: JudgeResult = SAFE): Judge & { shown: JudgeInput[] } 
   return { shown, judge: vi.fn(async (input: JudgeInput) => { shown.push(input); return answer }) }
 }
 
+function quickSafe(): QuickJudge {
+  return { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+}
+
 async function runtimeOf(config: BuckleConfig, judges: { judge?: Judge; quickJudge?: QuickJudge }): Promise<BuckleRuntime> {
   const runtime = await createRuntime({ config, ...judges })
   runtimes.push(runtime)
@@ -225,6 +229,99 @@ describe('a call that changes its working directory before its code runs (fix br
       expect(sets(words), words.join(' ')).toBe(false)
     }
     expect(NPM_CODE_OPTION).toBe('the call sets an npm option that changes what code runs; the decision AI does not rate it')
+  })
+
+  // npm's option parser (nopt 9.0.0, npm 11.19.0) strips every leading dash, reads a cluster of single-letter shorthands as
+  // each letter, toggles a leading `no-` once per `no-`, and takes an exact option name before any abbreviation; each
+  // string below was parsed by npm's own definitions (D91 follow-up F2).
+  const npmForms = (words: string[]) => commandFormsOf({ command: 'npm', args: words })
+
+  it('does not read an exact npm option as a prefix of a longer one: --include and --global are not --include-workspace-root or --globalconfig (D91 follow-up F2)', async () => {
+    const plain = [['install', '--include=dev'], ['ci', '--include=optional'], ['install', '--include', 'dev'], ['install', '---include=dev'], ['install', '-include=dev'], ['install', '--no-include'], ['install', '--global'], ['install', '-g'], ['install', '--no-global'], ['install', '---global']]
+    for (const words of plain) {
+      expect(changesDirectory(npmForms(words)), words.join(' ')).toBe(false)
+      expect(setsNpmCodeOption(npmForms(words)), words.join(' ')).toBe(false)
+    }
+    // The options those words begin still count, bare, with =value, by a longer prefix, and under any dashes.
+    for (const words of [['install', '--include-workspace-root'], ['install', '--include-workspace-root=true'], ['install', '--include-w'], ['install', '---include-workspace-root']]) expect(changesDirectory(npmForms(words)), words.join(' ')).toBe(true)
+    for (const words of [['install', '--globalconfig=x'], ['install', '--globalconfig', 'x'], ['install', '--globalc=x'], ['install', '---globalconfig=x']]) expect(setsNpmCodeOption(npmForms(words)), words.join(' ')).toBe(true)
+    // Through the permission pipeline the stage rates both commands the brief names, and neither reason is given.
+    const quickJudge = quickSafe()
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), { quickJudge, judge: fakeJudge() })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['npm *'] } })
+    for (const command of [['npm', 'install', '--include=dev'], ['npm', 'ci', '--include=optional']]) {
+      const { entry } = await call(runtime, {}, command)
+      expect(entry.judge, command.join(' ')).toBeDefined()
+      expect(entry.judge, command.join(' ')).not.toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY } })
+      expect(entry.judge, command.join(' ')).not.toMatchObject({ quick: { unavailable: NPM_CODE_OPTION } })
+    }
+    expect(quickJudge.quick).toHaveBeenCalledTimes(2)
+  })
+
+  it('reads the leading dashes, the single-dash clusters, and the no- toggles npm reads as the option they name, before a -- only (D91 follow-up F2)', async () => {
+    const refused = [
+      ['run', 'build', '-prefix', 'sub'], ['run', 'build', '-prefix=sub'], ['run', 'build', '-prefi', 'sub'], ['run', 'build', '----prefix=sub'],
+      ['run', 'build', '---C', 'sub'], ['run', 'build', '---C=sub'], ['run', 'build', '---w', 'a'], ['run', 'build', '----w=a'],
+      ['run', 'build', '---workspace=a'], ['run', 'build', '-workspaces'], ['run', 'build', '---ws'], ['run', 'build', '-ws'],
+      ['run', 'build', '-qw', 'a'], ['run', 'build', '-sw', 'a'], ['run', 'build', '-gw', 'a'], ['run', 'build', '-wq', 'a'], ['run', 'build', '-qC', 'sub'], ['-sw', 'a', 'run', 'build'],
+      ['run', 'build', '--no-no-workspaces'], ['run', 'build', '--no-workspace', 'a'], ['run', 'build', '--NO-no-workspaces'],
+      ['run', 'build', '--iwr'], ['run', 'build', '--iw'], ['run', 'build', '--i'], ['run', 'build', '-iwr'], ['run', 'build', '-i'],
+    ]
+    for (const words of refused) expect(changesDirectory(npmForms(words)), words.join(' ')).toBe(true)
+    // pnpm 10.33.2 parses with nopt too: each of these ran sub's script, with the option before the script name.
+    for (const words of [['-qC', 'sub', 'run', 'build'], ['---C', 'sub', 'run', 'build'], ['-dir', 'sub', 'run', 'build'], ['-prefix', 'sub', 'run', 'build'], ['---dir=sub', 'run', 'build'], ['--qC', 'sub', 'run', 'build']]) {
+      expect(changesDirectory(commandFormsOf({ command: 'pnpm', args: words })), `pnpm ${words.join(' ')}`).toBe(true)
+    }
+    for (const words of [['run', 'build', '--', '-prefix', 'sub'], ['run', 'build', '--', '---w', 'a'], ['run', 'build', '--', '-qw', 'a'], ['run', 'build', '--', '--no-no-workspaces'], ['run', 'build', '-s'], ['run', 'build', '-q'], ['run', 'build', '--loglevel=silent'], ['install', '-D', 'left-pad']]) {
+      expect(changesDirectory(npmForms(words)), words.join(' ')).toBe(false)
+    }
+    const quickJudge = quickSafe()
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), { quickJudge, judge: fakeJudge() })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['npm *'] } })
+    for (const words of refused) {
+      const { response, entry, ran } = await call(runtime, {}, ['npm', ...words])
+      expect(response, words.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, words.join(' ')).toBe(false)
+      expect(entry.judge, words.join(' ')).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+    }
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+  })
+
+  it('reads the leading dashes of an npm option that loads code too, for npm alone and before a -- (D91 follow-up F2, B33)', async () => {
+    const sets = (words: string[]) => setsNpmCodeOption(commandFormsOf({ command: words[0]!, args: words.slice(1) }))
+    const refused: string[][] = []
+    for (const option of ['node-options', 'script-shell', 'userconfig', 'globalconfig']) {
+      for (const dashes of ['-', '---', '----']) refused.push(['npm', 'run', 'build', `${dashes}${option}=x`], ['npm', 'run', 'build', `${dashes}${option}`, 'x'])
+    }
+    refused.push(['npm', 'run', 'build', '-node-opt=x'], ['npm', 'run', 'build', '---userconf=x'], ['npm', 'run', 'build', '---script-sh', 'x'], ['npm', '-node-options=x', 'run', 'build'], ['npm', 'run', 'build', '--no-no-node-options=x'])
+    for (const words of refused) expect(sets(words), words.join(' ')).toBe(true)
+    for (const words of [['npm', 'run', 'build', '--', '-node-options=x'], ['npm', 'run', 'build', '--', '---userconfig=x'], ['pnpm', 'run', 'build', '-node-options=x'], ['yarn', 'run', 'build', '---userconfig=x'], ['npm', 'run', 'build', '-loglevel=silent']]) {
+      expect(sets(words), words.join(' ')).toBe(false)
+    }
+    const quickJudge = quickSafe()
+    const runtime = await runtimeOf(node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' }), { quickJudge, judge: fakeJudge() })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['npm *'] } })
+    for (const words of [['npm', 'run', 'build', '-node-options=x'], ['npm', 'run', 'build', '---userconfig=x'], ['npm', 'run', 'build', '----script-shell', 'x'], ['npm', 'run', 'build', '-globalconfig=x']]) {
+      const { response, entry, ran } = await call(runtime, {}, words)
+      expect(response, words.join(' ')).toMatchObject({ outcome: 'approval_required' })
+      expect(ran, words.join(' ')).toBe(false)
+      expect(entry.judge, words.join(' ')).toMatchObject({ quick: { unavailable: NPM_CODE_OPTION }, passed: false })
+    }
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+  })
+
+  it('reads a word as nopt reads it: any number of dashes, a cluster of letters, no- toggles, and never an exact option as the prefix of another (D91 follow-up F2)', () => {
+    const selecting: Array<[string, string]> = [
+      ['-prefix', '--prefix'], ['---prefix=sub', '--prefix'], ['-prefi', '--prefix'], ['--no-no-prefix', '--prefix'], ['--NO-no-prefix', '--prefix'], ['---workspace', '--workspace'], ['-workspaces', '--workspaces'],
+      ['---C', '-C'], ['----C=sub', '-C'], ['-qC', '-C'], ['-Cq', '-C'], ['-qw', '-w'], ['-sw=a', '-w'], ['---w', '-w'], ['-ws', '-w'], ['-Csub', '-C'],
+      ['--include-w', '--include-workspace-root'], ['-include-workspace-root', '--include-workspace-root'], ['--globalc', '--globalconfig'],
+    ]
+    for (const [word, option] of selecting) expect(selectsOption(word, option), `${word} ${option}`).toBe(true)
+    const other: Array<[string, string]> = [
+      ['--include', '--include-workspace-root'], ['-include=dev', '--include-workspace-root'], ['--no-include', '--include-workspace-root'], ['--global', '--globalconfig'], ['---global=true', '--globalconfig'], ['--no-global', '--globalconfig'],
+      ['-', '-C'], ['---', '-C'], ['-=x', '-C'], ['--=x', '--prefix'], ['--no-', '--prefix'], ['-x', '-w'], ['-qx', '-w'], ['--no-no-pr', '--prefix'], ['prefix', '--prefix'], ['w', '-w'],
+    ]
+    for (const [word, option] of other) expect(selectsOption(word, option), `${word} ${option}`).toBe(false)
   })
 
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {

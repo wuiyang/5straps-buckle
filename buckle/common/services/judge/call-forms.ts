@@ -66,14 +66,17 @@ const DIRECTORY_COMMANDS = new Set(['cd', 'chdir', 'pushd', 'popd', 'prevd', 'ne
  * that package's folder while the working directory's package.json names another: npm's `-w`, `--workspace`,
  * `--workspaces`, `-ws`, `--ws`, and `--include-workspace-root` (npm 11.19.0 ran the selected package's script for each,
  * bare or as `=value`), and bun's `--filter` and `-F` (fix brief 8, B23). Each is read anywhere before a `--` as npm's
- * option parser reads it (selectsOption): bare, with `=value`, a long one by any prefix of three or more letters, a short
- * one by its letter's prefix or after `--` (`--C`, `--w`), which fails closed for a script's own argument (fix brief 9, B32).
+ * option parser reads it (selectsOption): bare, with `=value`, under any number of leading dashes, a long one by any prefix
+ * of three or more letters, a short one by its letter's prefix, in a cluster of letters, or after `--` (`--C`, `-qw`), which
+ * fails closed for a script's own argument (fix brief 9, B32; D91 follow-up F2).
  */
 const WRAPPER_CHDIR: Readonly<Record<string, string>> = { env: 'C', sudo: 'D' }
+/** npm's `--include-workspace-root`, and its shorthand `iwr` with the abbreviations of that (`iw`, `i`) nopt takes for it (npm 11.19.0). */
+const NPM_INCLUDE_ROOT = ['--include-workspace-root', '--iwr', '--iw', '--i']
 const PROGRAM_CHDIR: Readonly<Record<string, readonly string[]>> = {
   bun: ['--cwd', '--filter', '-F'], 'ts-node': ['--cwd'], ruby: ['-C', '-X'],
   npx: ['-C', '--prefix', '--dir', '--cwd'], pnpx: ['-C', '--prefix', '--dir', '--cwd'], bunx: ['-C', '--prefix', '--dir', '--cwd'],
-  npm: ['-C', '--prefix', '--dir', '--cwd', '-w', '--workspace', '--workspaces', '--ws', '--include-workspace-root'], pnpm: ['-C', '--prefix', '--dir', '--cwd'], yarn: ['-C', '--prefix', '--dir', '--cwd'],
+  npm: ['-C', '--prefix', '--dir', '--cwd', '-w', '--workspace', '--workspaces', '--ws', ...NPM_INCLUDE_ROOT], pnpm: ['-C', '--prefix', '--dir', '--cwd'], yarn: ['-C', '--prefix', '--dir', '--cwd'],
 }
 
 /**
@@ -97,16 +100,41 @@ export function changesDirectory(forms: CommandForms): boolean {
 }
 
 /**
- * Whether a word names an option as npm's option parser (nopt) reads one (fix brief 9, B32): the option itself, bare or with
- * `=value`; a long option by a prefix of three or more letters after `--`, which nopt takes where it is unique (npm 11.19.0
- * ran sub's script for `--prefi=sub`, and pnpm 10.33.2 read `--prefi` as `--prefix`), every such prefix read as one,
- * which fails closed; and a short option by its letter's prefix (`-Csub`, `-w=a`) or by nopt's double-dash spelling of
- * the letter (`--C sub`, `--w=a`, which npm ran with no warning).
+ * The single-letter shorthands of npm (npm 11.19.0) and pnpm (10.33.2), which both parse with nopt: nopt reads a word of
+ * these letters, after any number of dashes, as each letter's option, so `-qw a` and `---sw a` select workspace `a` and
+ * `pnpm --qC sub run build` runs in `sub`.
+ */
+const SINGLE_SHORTHANDS = 'dqsnacfgLlmpCSBDEOPHhvwy?riF'
+
+/**
+ * The exact npm option names that begin a longer option the rules read (npm 11.19.0): nopt takes an exact name before any
+ * abbreviation, so `--include` is not `--include-workspace-root` and `--global` is not `--globalconfig`.
+ */
+const EXACT_OPTIONS: ReadonlySet<string> = new Set(['include', 'global'])
+
+/**
+ * Whether a word names an option as npm's option parser (nopt) reads one (fix brief 9, B32; D91 follow-up F2): the option
+ * itself, bare or with `=value`, under any number of leading dashes, as nopt strips them all (`-prefix sub`, `---C sub`);
+ * a long option by a prefix of three or more letters, which nopt takes where it is unique (npm 11.19.0 ran sub's script for
+ * `--prefi=sub`, and pnpm 10.33.2 read `--prefi` as `--prefix`), every such prefix read as one, which fails closed, but
+ * never an exact npm option name (EXACT_OPTIONS); any run of `no-` before the name, since nopt toggles the value per `no-`
+ * and a string or list option takes its next word as the value after one (`--no-no-workspaces`, `--no-workspace a`); and a
+ * short option by its letter's prefix (`-Csub`, `-w=a`), by a cluster of single-letter shorthands holding the letter
+ * (`-qw a`, and `--sw a` under two or more dashes, where every letter must be one), or by the double-dash spelling of the
+ * letter (`--C sub`, `---w=a`, which npm ran with no warning). A bare run of dashes names none.
  */
 export function selectsOption(word: string, option: string): boolean {
   const typed = word.split('=')[0]!
-  if (option.startsWith('--')) return typed === option || (typed.length >= 5 && typed.startsWith('--') && option.startsWith(typed))
-  return word.startsWith(option) || typed === `-${option}`
+  const name = typed.replace(/^-+/, '')
+  const dashes = typed.length - name.length
+  if (dashes === 0 || name === '') return false
+  if (option.startsWith('--')) {
+    const long = option.slice(2)
+    const bare = name.replace(/^(?:no-)+/i, '')
+    return bare === long || (bare.length >= 3 && long.startsWith(bare) && !EXACT_OPTIONS.has(bare))
+  }
+  const letter = option.slice(1)
+  return name.includes(letter) && (dashes === 1 || [...name].every(each => each === letter || SINGLE_SHORTHANDS.includes(each)))
 }
 
 /**
