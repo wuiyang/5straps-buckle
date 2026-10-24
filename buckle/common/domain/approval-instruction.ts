@@ -224,6 +224,11 @@ export interface ShownAsk {
   token?: string
   /** The decision AI's line, where a route has it already put (the serve terminal's question); else read from the call. */
   judge?: string
+  /**
+   * Whether the thorough stage can approve here, read by the line a route builds from the call: false drops the promise
+   * that --approve-if-safe approves, which Jev's verdict never does (D91 follow-up F6). Absent keeps the promise.
+   */
+  approves?: boolean
 }
 
 /**

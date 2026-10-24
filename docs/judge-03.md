@@ -68,9 +68,9 @@ thorough model's `safe` at 0.8 or above approves once an interpreter ask, or an 
 turned into an ask under `all`, recorded as decided by the thorough stage and its model and bound
 to the code it rated: a retry after that code changed spends nothing and asks again. Jev's verdict
 alone approves nothing, and an ask at the destructive floor never: the command prints the floor's
-line. Where only Jev holds a key, an ask's line offers no approval. Anything else approves nothing
-and exits 0; no verdict exits 1. A call whose kept arguments hide a credential is not rated
-([why](#what-the-on-request-command-refuses)). Each run is audited. It takes
+line. Where only Jev holds a key, an ask's line offers no approval on any route that shows it.
+Anything else approves nothing and exits 0; no verdict exits 1. A call whose kept arguments hide a
+credential is not rated ([why](#what-the-on-request-command-refuses)). Each run is audited. It takes
 `--workspace <name>` and works in automated mode too.
 
 ## What the on-request command refuses

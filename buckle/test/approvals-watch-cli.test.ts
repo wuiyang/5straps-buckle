@@ -95,6 +95,22 @@ describe('buckle approvals --watch --all', () => {
     expect(await stop()).toBe(0)
   }, 30_000)
 
+  // D91 follow-up F6: where no thorough stage holds a key (here the workspace's judge is off), an unrated ask's line offers no approval.
+  it('shows an unrated ask\'s judge line without the promise of an approval where the thorough stage cannot approve', async () => {
+    const { runtime } = await byName(manager, 'Site one')
+    const subject = 'python3 job.py'
+    const [request] = (await runtime.approvals.ask({
+      tool: 'shell_exec', sessionId: 'chat', call: { arguments: { command: 'python3', args: ['job.py'] }, cwd: '/workspace', description: 'Run "python3 job.py"', effects: ['exec python3 job.py'], complete: true, judge: [{ subject, onRequest: true }] },
+      asks: [{ kind: 'ask', rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
+    })).requests
+    expect(runtime.judgeApproves()).toBe(false)
+    const stop = await startWatch()
+    await vi.waitFor(() => expect(out).toContain(`token: ${request!.token}`), { timeout: 10_000, interval: 25 })
+    expect(out).toContain(`judge:    not asked; buckle approvals judge ${request!.token} --workspace 'Site one' asks it\n`)
+    expect(out).not.toContain('--approve-if-safe')
+    expect(await stop()).toBe(0)
+  }, 30_000)
+
   it('says so when a workspace goes offline while it watches, and closes that workspace\'s runtime in its own process', async () => {
     await byName(manager, 'Site two')
     const stop = await startWatch()

@@ -622,7 +622,7 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName() }))
+    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), judgeApproves: () => runtime.judgeApproves() }))
     return await watchApprovals({ sources, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
@@ -779,7 +779,7 @@ function noTerminal(workspaceName?: string): string {
 /** One waiting ask, followed by its whole action before a decision. */
 function describeWaitingAsk(input: { ask: PendingAsk; node: string; runtime: BuckleRuntime }): string[] {
   const { request, call } = input.ask
-  return describeAsk({ ...request, workspaceId: input.runtime.workspaceId, workspaceName: input.runtime.workspaceName(), node: input.node, ...(call?.complete ? { call } : {}) })
+  return describeAsk({ ...request, workspaceId: input.runtime.workspaceId, workspaceName: input.runtime.workspaceName(), node: input.node, approves: input.runtime.judgeApproves(), ...(call?.complete ? { call } : {}) })
 }
 
 function reportResponse(input: { response: InvokeResponse; workspaceId: string; workspaceName: string }): CliResult {

@@ -533,3 +533,43 @@ it('marks an ask recorded before this build, grants nothing for an approving key
     expect(grantsOf(config)).toEqual([])
   } finally { terminal.type('\x03'); await done }
 })
+
+// D91 follow-up F6: an unrated ask's judge line promises that --approve-if-safe approves a safe verdict once only where the
+// workspace's thorough stage holds a key, which the source says (`judgeApproves`).
+describe('the judge line in buckle approvals --watch (follow-up F6)', () => {
+  const clause = ', and with --approve-if-safe approves a safe verdict once'
+
+  async function shownWith(judgeApproves: () => boolean) {
+    const config = node()
+    const registry = registryOf(config)
+    const subject = 'python3 job.py'
+    const [request] = (await registry.ask({
+      tool: 'shell_exec', sessionId: 'chat-1', call: { arguments: { command: 'python3', args: ['job.py'] }, cwd: '/workspace', description: 'Run "python3 job.py"', effects: ['exec python3 job.py'], complete: true, judge: [{ subject, onRequest: true }] },
+      asks: [{ kind: 'ask', rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
+    })).requests
+    const approvals = serviceOf(config)
+    const terminal = keyboardTerminal()
+    const done = watchApprovals({ sources: async () => [{ approvals, actions: scratchLog(), workspaceId: 'default', judgeApproves }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+    try {
+      await prompted(terminal)
+      return { token: request!.token, shown: terminal.shown() }
+    } finally {
+      terminal.type('\x03')
+      await done
+      await approvals.close()
+    }
+  }
+
+  it('offers --approve-if-safe where the workspace\'s thorough stage holds a key', async () => {
+    const { token, shown } = await shownWith(() => true)
+    expect(shown).toContain(`judge:    not asked; buckle approvals judge ${token} --workspace default asks it${clause}\n`)
+  })
+
+  it('offers no approval where it does not, and still shows the whole action', async () => {
+    const { token, shown } = await shownWith(() => false)
+    expect(shown).toContain(`judge:    not asked; buckle approvals judge ${token} --workspace default asks it\n`)
+    expect(shown).not.toContain('--approve-if-safe')
+    expect(shown).toContain('  does:     Run "python3 job.py"')
+    expect(shown).toContain('"command": "python3"')
+  })
+})

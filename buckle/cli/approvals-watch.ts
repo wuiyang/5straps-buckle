@@ -38,6 +38,8 @@ export interface WatchSource {
   actions: ActionLog
   workspaceId: string
   workspaceName?: string
+  /** Whether the workspace's thorough stage can approve, which an unrated ask's judge line says (D91 follow-up F6). */
+  judgeApproves?: () => boolean
 }
 
 export interface ApprovalWatchOptions {
@@ -166,7 +168,7 @@ async function askOne(context: AskContext): Promise<Ending> {
   const shown = call?.complete ? call : undefined
   const offered = shown ? SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope)) : []
   const prompt = `${marked(context, [''])[0]}  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
-  const question = { ...request, workspaceId: context.workspaceId, ...(context.workspaceName === undefined ? {} : { workspaceName: context.workspaceName }), ...(shown ? { call: shown } : {}) }
+  const question = { ...request, workspaceId: context.workspaceId, ...(context.workspaceName === undefined ? {} : { workspaceName: context.workspaceName }), ...(context.judgeApproves ? { approves: context.judgeApproves() } : {}), ...(shown ? { call: shown } : {}) }
   output.write(`${shown && context.shownWith !== undefined ? `\n${marked(question, describeAskOfShownCall(question, context.shownWith)).join('\n')}\n` : describeQuestion(question)}${marked(question, [`  token: ${request.token}`])[0]}\n`)
 
   // The requests alone: a question on screen checks every poll that its ask still waits, and reads no call to do it.

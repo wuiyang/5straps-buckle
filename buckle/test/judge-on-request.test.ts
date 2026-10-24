@@ -336,3 +336,40 @@ describe('buckle approvals judge', () => {
     await manager.close()
   })
 })
+
+// D91 follow-up F6: a waiting ask the judge has not rated yet says how to ask it, and that --approve-if-safe approves a
+// safe verdict once only where the thorough stage holds a key; every route that shows the line reads the same flag.
+describe('the line a waiting ask carries before it is rated, on every CLI route that shows it (follow-up F6)', () => {
+  const clause = ', and with --approve-if-safe approves a safe verdict once'
+  const routes = (token: string) => [['approvals'], ['approvals', 'show', token], ['approve', token]]
+
+  it('offers --approve-if-safe where the thorough stage holds a key, on the listing, on show, and on approve', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.91 })
+    const { buckle, runtime, manager } = await node({ url: judge.url })
+    const { token } = await ask(runtime)
+    expect(runtime.judgeApproves()).toBe(true)
+    for (const argv of routes(token)) {
+      const shown = await buckle(argv)
+      expect(shown.out, argv.join(' ')).toContain(`judge:    not asked; buckle approvals judge ${token} --workspace site asks it${clause}\n`)
+    }
+    await manager.close()
+  })
+
+  it('offers no approval where only Jev holds a key, on the listing, on show, and on approve, and still shows the whole action', async () => {
+    const judge = await standIn({ status: 500 })
+    const jev = await quickStandIn({ choice: 'safe', confidence: 0.95 })
+    const { buckle, runtime, manager } = await node({ url: judge.url, quickUrl: jev.url, noThorough: true })
+    const { token } = await ask(runtime)
+    expect(runtime.judgeApproves()).toBe(false)
+    for (const argv of routes(token)) {
+      const shown = await buckle(argv)
+      expect(shown.out, argv.join(' ')).toContain(`judge:    not asked; buckle approvals judge ${token} --workspace site asks it\n`)
+      expect(shown.out, argv.join(' ')).not.toContain('--approve-if-safe')
+      expect(shown.out, argv.join(' ')).toMatch(/does: +Run "python3 job\.py"/)
+      expect(shown.out, argv.join(' ')).toContain('"command": "python3"')
+    }
+    expect(judge.seen).toHaveLength(0)
+    expect(jev.seen).toHaveLength(0)
+    await manager.close()
+  })
+})

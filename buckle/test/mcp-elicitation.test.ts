@@ -33,7 +33,7 @@ const recorded: PendingAsk = {
   },
 }
 
-function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async () => ({ ok: true }), waiting: PendingAsk[] = [recorded]): McpServer {
+function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async () => ({ ok: true }), waiting: PendingAsk[] = [recorded], judgeApproves = true): McpServer {
   const registry = createToolRegistry([{
     capability: {
       name: 'gated_tool',
@@ -55,6 +55,7 @@ function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async 
     approvalService: { answer, waiting: () => waiting },
     workspaceId: 'default',
     workspaceName: () => 'Fixture workspace',
+    judgeApproves: () => judgeApproves,
   } as unknown as BuckleRuntime
 
   return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', trustedApprovalResponses: true })
@@ -227,5 +228,31 @@ describe('elicited answers', () => {
       mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
     } as unknown as ServerContext)
     expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, authority: 'admin' })
+  })
+})
+
+// D91 follow-up F6: an ask the judge has not rated yet says how to ask it, and that --approve-if-safe approves a safe
+// verdict once only where the thorough stage holds a key, in the form as on every other route.
+describe('the judge line in an approval form (follow-up F6)', () => {
+  const unrated = (): PendingAsk => {
+    const args = { command: 'python3', args: ['job.py'] }
+    const request = { ...approval, rule: 'destructive_command' as const, subject: commandSubject('python3', ['job.py']), reason: 'An interpreter the policy does not allow', tool: 'shell_exec' }
+    const call = { arguments: reviewableArguments(args), cwd: '/workspace', description: describeCall({ tool: 'shell_exec', args, cwd: '/workspace' }), effects: [summarizeEffect({ kind: 'exec', ...args })], complete: true as const, judge: [{ subject: request.subject, onRequest: true as const }] }
+    return { request, sessionId: 'unit', requestId: 'request-1', call }
+  }
+  const command = 'buckle approvals judge token-1 --workspace \'Fixture workspace\''
+
+  it('offers --approve-if-safe where the thorough stage holds a key', async () => {
+    const form = formOf(await gatedCall(gatedServer(undefined, [unrated()], true), elicitingContext()))
+    expect(form.message).toContain(`  judge:    not asked; ${command} asks it, and with --approve-if-safe approves a safe verdict once\n`)
+  })
+
+  it('offers no approval where only Jev holds a key, and still shows the whole action', async () => {
+    const form = formOf(await gatedCall(gatedServer(undefined, [unrated()], false), elicitingContext()))
+    expect(form.message).toContain(`  judge:    not asked; ${command} asks it\n`)
+    expect(form.message).not.toContain('--approve-if-safe')
+    expect(form.message).toContain('  does:     Run "python3 job.py"')
+    expect(form.message).toContain('"command": "python3"')
+    expect(form.requestedSchema.properties['approve']).toBeDefined()
   })
 })
