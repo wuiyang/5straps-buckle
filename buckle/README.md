@@ -5,7 +5,7 @@ harness can drive over CLI, MCP, or HTTP, which runs what its owner allows, asks
 before anything else runs, and refuses the rest.
 
 It gives an agent files, a shell, Git, web fetch, a browser (once agent-browser is installed),
-and language tools inside one workspace, and logs what it did.
+and language tools inside one workspace, and logs its actions.
 
 ## Install
 
@@ -37,7 +37,7 @@ buckle init
 `BUCKLE_STATE_DIR`. It serves the current directory as a workspace, shown to the agent as
 `/workspace`, and prints its agent token once. It asks about packs, the shell, host Git, and
 network lists; `--yes` takes the defaults. `buckle workspace set` and `buckle policy` change them
-later; `buckle init` in another project adds another workspace.
+later; another `buckle init` adds a workspace.
 
 The state directory holds each workspace's settings, grants, approvals, and action log.
 Buckle's file tools refuse to read it. Only a process sandbox, bubblewrap on Linux or Seatbelt on
@@ -82,7 +82,7 @@ and the decision binds the whole call.
 
 The answer can come from a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
-`buckle approve <token>` from another terminal. Buckle can also post each pending approval to
+`buckle approve <token>` from another terminal. Buckle can post each pending approval to
 the relay `BUCKLE_APPROVAL_WEBHOOK` names, for a person away from the machine. A
 call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a retry token.
 
@@ -103,9 +103,7 @@ buckle policy mount /workspace
 
 `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders ([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)).
 
-`buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
-allow, destructive commands included. Explicit deny rules and the mount boundary still refuse;
-a path outside the workspace still asks.
+`buckle policy dangerously-allow on` (level `command`) removes the person: every ask in that workspace is allowed except a secret file's, which still reaches a person. `all` allows that too. Deny rules and the mount boundary still refuse; a path outside the workspace still asks.
 Off by default;
 [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
@@ -122,8 +120,8 @@ documents it.
 On Linux, shell tools work on private workspace copies by default and publish
 changes through conflict-checked checkpoints; `shell.isolation` off selects shared-workspace
 execution (`BUCKLE_SHELL_ISOLATION=false` sets it for every workspace). Host Git and forge
-tools (`packs.hostGit`) and host language servers (`packs.hostLsp`) are off by default, because
-they run outside the sandbox. Without `rg`, `fs_search_content` is absent.
+tools (`packs.hostGit`) and host language servers (`packs.hostLsp`) are off by default: they
+run outside the sandbox. Without `rg`, `fs_search_content` is absent.
 
 ## Audit log
 
@@ -135,7 +133,7 @@ buckle log --json
 ```
 
 Arguments are trimmed for the log: every string becomes its length, like
-`[5 characters]`, and any value under a credential-named key reads `[redacted]`. The log is a plain append-only file,
+`[5 characters]`, and any value under a credential-named key reads `[redacted]`. The log is append-only,
 not tamper-proof.
 
 ## Rings
