@@ -32,6 +32,10 @@ forge pack,
   call unread (glob qualifier) in any shell's text, since zsh may run code from it once for each
   file it matches (`echo *(e:'...':)`, or `echo *($v)` once zsh fills in `$v`). An extended glob of
   that shape is unread too, so under a deny rule `ls @(one|three)` is refused.
+- Text where zsh may run code a parameter's value holds is unread too (glob substitution): `${~v}`,
+  `$~v`, a `setopt`, `set -o`, or `zsh -o` naming `globsubst`, and any `emulate` read the value as a
+  pattern whose qualifiers run code, and `${(e)v}` runs its substitutions. Under a deny rule
+  `emulate -L zsh` is refused.
 
 ## Credential hiding
 

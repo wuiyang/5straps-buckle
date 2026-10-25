@@ -8,7 +8,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { joinedOperator, shellStatementList, shellTokens } from '../common/domain/argv.js'
-import { allForms, commandFormsOf, READ_BUDGET, READ_LIMITS } from '../common/domain/command-forms.js'
+import { allForms, commandForms, commandFormsOf, READ_BUDGET, READ_LIMITS } from '../common/domain/command-forms.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
@@ -2443,6 +2443,121 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
       expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
     }
   })
+})
+
+describe('a zsh parameter read as a pattern, whose glob qualifiers the text does not spell (round 2, R6)', () => {
+  // Under GLOB_SUBST zsh reads the characters an expansion yields as a pattern, so `v="*(e:code:)"; echo $v` runs code
+  // once for each file the pattern matches, while the text holds no glued body the qualifier check could meet. `${~v}`
+  // turns the option on for one expansion; setopt, set -o, zsh's own -o, and the options array name it, any case, with
+  // or without underscores; `emulate sh` and `emulate ksh` turn it on (zshoptions, zshexpn). zsh is not installed here,
+  // so these rest on the zsh manual. Each leaves the call unread: refused under a deny list, asked at the floor.
+  const globSubst = READ_LIMITS.globSubst
+  const lead: Array<[string, string]> = [
+    ['zsh', 'v="*(e:x:)"; echo ${~v}'],
+    ['zsh', 'setopt globsubst; echo $v'],
+    ['zsh', 'set -o globsubst; echo $v'],
+    ['zsh', 'emulate sh; echo $v'],
+    ['zsh', 'emulate ksh; echo $v'],
+  ]
+  const forms: Array<[string, string]> = [
+    ['zsh', 'setopt GLOB_SUBST; echo $v'],
+    ['zsh', 'setopt Glob_Subst'],
+    ['zsh', 'setopt NO_GLOB_SUBST'],
+    ['zsh', 'unsetopt noglobsubst'],
+    ['zsh', 'set +o globsubst'],
+    ['zsh', 'setopt -o glob_subst'],
+    ['zsh', 'builtin setopt globsubst'],
+    ['zsh', "set'opt' glob\\_subst"],
+    ['zsh', 'setopt -m "*subst"'],
+    ['zsh', 'setopt $o'],
+    ['zsh', 'set -o $o'],
+    ['zsh', 'options[globsubst]=on; echo $v'],
+    ['zsh', 'options[$o]=on; echo $v'],
+    ['zsh', ': ${options[GLOB_SUBST]::=on}; echo $v'],
+    ['zsh', 'set -A options globsubst on'],
+    ['zsh', "ARGV0=sh zsh -c 'echo $v'"],
+    ['zsh', "exec -a sh zsh -c 'echo $v'"],
+    ['zsh', 'emulate -L zsh'],
+    ['zsh', 'e""mulate sh -c "echo $v"'],
+    ['zsh', 'f() { emulate -L sh; echo $v }'],
+    ['zsh', 'echo $~v'],
+    ['zsh', 'echo ${^~v}'],
+    ['zsh', 'echo ${=~v}'],
+    ['zsh', 'echo ${~~v}'],
+    ['zsh', 'echo "${~v}"'],
+    ['zsh', 'for f in ${~v}; do echo $f; done'],
+    ['zsh', 'echo $(echo ${~v})'],
+    ['zsh', 'echo ${(e)v}'],
+    ['zsh', 'echo ${(@e)v}'],
+    ['zsh', 'echo ${(s:):e)v}'],
+    ['bash', 'zsh -c "setopt globsubst; echo \\$v"'],
+    ['bash', "zsh <<'EOF'\nsetopt globsubst\necho $v\nEOF"],
+  ]
+
+  it.each([...lead, ...forms])('%s -c %j is refused under a deny list naming the limit', (shell, text) => {
+    expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread).toBe('globSubst')
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+    expect(outcome.kind).toBe('deny')
+    expect(reasonOf(outcome)).toContain(globSubst)
+  })
+
+  it.each(lead)('%s -c %j asks at the floor with no deny list', (shell, text) => {
+    const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`] })
+    expect(outcome.kind).toBe('ask')
+    if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${globSubst}; asked rather than guessed at`]])
+  })
+
+  it.each<[string[]]>([
+    [['-o', 'globsubst', '-c', 'echo $v']],
+    [['-o', 'GLOB_SUBST', '-c', 'echo $v']],
+    [['--glob-subst', '-c', 'echo $v']],
+    [['+o', 'noglobsubst', '-c', 'echo $v']],
+    [['--emulate', 'sh', '-c', 'echo $v']],
+  ])('zsh %j, the option on zsh\'s own command line, is unread', args => {
+    expect(commandFormsOf({ command: 'zsh', args }).unread).toBe('globSubst')
+    expect(evaluate('zsh', args, { allow: ['zsh *'], deny: ['git push *'] }).kind).toBe('deny')
+    expect(evaluate('zsh', args, { allow: ['zsh *'] }).kind).toBe('ask')
+  })
+
+  it('reads a plain expansion, setopt of another option, set of other options, and a tilde as before', () => {
+    const rows: Array<[string, string]> = [
+      ['zsh', 'echo ${v}'],
+      ['zsh', 'echo $v'],
+      ['zsh', 'setopt extendedglob; echo $v'],
+      ['zsh', 'unsetopt nomatch; echo *.log'],
+      ['zsh', 'set -o pipefail; echo $v'],
+      ['zsh', 'set -eo pipefail'],
+      ['zsh', 'set -A list $x; echo $list'],
+      ['bash', 'set -- $args; echo "$1"'],
+      ['bash', 'echo ${HOME:-~}/x ~/y'],
+      ['bash', 'echo ${v#~}'],
+      ['zsh', 'echo ${(f)v}'],
+      ['zsh', 'echo ${(j:,:)list}'],
+      ['zsh', "zsh -c 'ARGV0=other make build'"],
+      ['bash', "git commit -m 'emulate sh'"],
+    ]
+    for (const [shell, text] of rows) {
+      expect(commandFormsOf({ command: shell, args: ['-c', text] }).unread, text).toBeNull()
+      const outcome = evaluate(shell, ['-c', text], { allow: [`${shell} -c *`], deny: ['git push *'] })
+      expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
+    }
+    expect(commandFormsOf({ command: 'git', args: ['commit', '-m', 'set ${~v} and setopt globsubst'] }).unread).toBeNull()
+  })
+
+  // A guard, not a fail-first row: the check reads each word in one pass, so a 1 MB word of expansions costs no more
+  // than reading it.
+  it.each<[string, string, string | null]>([
+    ['flags groups', `echo ${'${(f)x}'.repeat(142_000)}`, null],
+    ['a flags group never closed', `echo ${'${('.repeat(330_000)}`, 'globSubst'],
+    ['a run of modifiers', `echo \${${'^'.repeat(1_000_000)}v}`, null],
+    ['short forms with no tilde', `echo ${'$^'.repeat(500_000)}`, null],
+  ])('reads a 1 MB word of %s within a second', (_, text, unread) => {
+    expect(text.length).toBeGreaterThan(990_000)
+    const { milliseconds, result } = leastProcessorTime(() => commandForms('zsh', ['-c', text]))
+    expect(milliseconds).toBeLessThan(1_000)
+    if (unread !== null) expect(result.unread).toBe(unread)
+    else expect(result.unread).not.toBe('globSubst')
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
 describe("a line continuation before zsh's =name, and zsh's precommand modifiers and watch (D91 follow-ups, F1)", () => {

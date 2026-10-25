@@ -24,6 +24,7 @@ export const READ_LIMITS = {
   session: 'Opens an interactive session Buckle cannot read: ssh or su with no command, or a sudo or doas shell (interactive session)',
   expansion: 'Runs a command word or shell text an expansion supplies, or a command an expansion among a wrapper\'s own words may move, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)", timeout $t cmd), so Buckle cannot read it (expansion)',
   qualifier: 'A zsh glob qualifier may run shell code: a word ends in a parenthesised list holding an e, a +, a $, or a backtick, which zsh may read as qualifiers that run code once for each file the pattern matches, and Buckle does not read that code (glob qualifier)',
+  globSubst: 'zsh may read a parameter\'s value as a pattern, whose glob qualifiers run code the text never spells: ${~v} or $~v does for one expansion, and setopt, set -o, zsh -o, or the options array naming globsubst, or emulate, which turns it on for sh and ksh, does for every one; ${(e)v} runs the substitutions a value holds. Buckle does not read that code (glob substitution)',
   ownParsing: 'A program reads an argument by rules of its own that Buckle does not read as shell words: an env -S escape, an ssh % token, or a sudo -s or -i command for a shell Buckle does not know (own parsing)',
   scriptData: 'A shell takes its script, or a startup file it runs first, from a pipe, a redirection, a descriptor, an expansion, xargs, or find, so the script arrives as data, which Buckle cannot read (script as data)',
   interpreter: 'Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter)',
@@ -398,7 +399,8 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const inner = innerCommands(chain.at(-1)!, budget, place)
   const interpreter = interpreterRunningCode(chain, place)
   const own = startupOf(words, chain, place)
-  const forms: Reading = { chain, nested: [], pieces: [], unread: firstLimit(unread, inner.unread), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
+  const substituted = place.sure && readsValueAsPattern(words, place) ? 'globSubst' : null
+  const forms: Reading = { chain, nested: [], pieces: [], unread: firstLimit(firstLimit(unread, inner.unread), substituted), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
   addStartup(forms.startup, inner.startup)
   for (const group of inner.groups) {
     if (budget.spent) break
@@ -448,6 +450,77 @@ function readNested(forms: Reading, command: string[], depth: number, budget: Bu
     }
   }
   return nested
+}
+
+/** `${~v}` and `$~v`, also with `^` or `=` beside the `~` or the `~` doubled: one expansion read as a pattern (zshexpn). */
+const TILDE_EXPANSION = /\$\{[\^=~#+]*~|\$[\^=]*~/
+
+/**
+ * A zsh expansion in a word that reads a parameter's value as a pattern (GLOB_SUBST) or runs what it holds: TILDE_EXPANSION,
+ * a flags group (`${(...)v}`) in a word holding a `~` anywhere, as Buckle does not read the group's delimiters, and a
+ * flags group holding `e` (`${(e)v}`), which runs the substitutions in the value (zshexpn, Parameter Expansion Flags).
+ * A group holding a delimiter (`${(s:):e)v}`, whose `)` may be a separator) is read on to the next `}`. `${v:-~}` and
+ * `${v#~}` keep their reading. One pass: each group is read once, and a group with no end is read as one that may.
+ */
+function holdsValueAsPattern(word: string): boolean {
+  if (TILDE_EXPANSION.test(word)) return true
+  let at = word.indexOf('${(')
+  if (at === -1) return false
+  if (word.includes('~', at)) return true
+  while (at !== -1) {
+    const close = word.indexOf(')', at + 3)
+    if (close === -1) return true
+    const group = word.slice(at + 3, close)
+    let end = close
+    if (!FLAG_LETTERS.test(group)) {
+      end = word.indexOf('}', close)
+      if (end === -1) return true
+    }
+    if (word.slice(at + 3, end).includes('e')) return true
+    at = word.indexOf('${(', end + 1)
+  }
+  return false
+}
+/** A flags group of letters and the flags zsh writes as marks alone, no delimiter among them. */
+const FLAG_LETTERS = /^[A-Za-z0-9@#%*^=~!-]*$/
+/** A word naming zsh's GLOB_SUBST, as zsh compares option names: any case, `_` ignored, and on its command line `-` too. */
+const namesGlobSubst = (word: string) => word.toLowerCase().replace(/[-_]/g, '').includes('globsubst')
+/** A word that reaches zsh's `options` array: an assignment to it, or an expansion that assigns it (`${options[x]::=on}`). */
+const OPTIONS_ARRAY = /(?:^|[^A-Za-z0-9_])options(?:\[|\+?=)/
+/** An option word of zsh's setopt or unsetopt that holds `m`: the names after it are patterns (`setopt -m '*subst'`). */
+const PATTERN_FLAG = /^[-+][A-Za-z]*m/
+/** An option word of set that holds `o`: the word after it names an option. */
+const NAMED_OPTION_FLAG = /^[-+][A-Za-z]*o[A-Za-z]*$/
+/** An option word of set that holds `A`, which assigns the array named after it (`set -A options globsubst on`). */
+const ARRAY_FLAG = /^[-+][A-Za-z]*A[A-Za-z]*$/
+/** An option word of exec that holds `a`, which names the zeroth argument the command starts with. */
+const ARGV0_FLAG = /^-[A-Za-z]*a[A-Za-z]*$/
+
+/**
+ * Whether words zsh may read turn a parameter's value into a pattern whose glob qualifiers run code the text never spells
+ * (round 2, R6; zshoptions GLOB_SUBST, zshexpn): `v='*(e:code:)'; echo ${~v}` runs code once for each file matched. In
+ * a statement of shell text: an expansion holdsValueAsPattern meets, or an `emulate` word anywhere, since sh and ksh
+ * emulation turn GLOB_SUBST on and the emulation another word names may be either. In any words that hold setopt,
+ * unsetopt, a zsh command, a set naming an option, or the options array: a word naming globsubst, zsh's `--emulate`,
+ * a setopt pattern flag, or a word an expansion supplies where the option it names cannot be known; before a zsh
+ * command in a statement, an ARGV0 assignment or exec -a, which may start it as sh. Buckle does not know which
+ * shell reads the text, so this holds in any shell's text, as the qualifier check does; bash reads none of these forms,
+ * and `setopt` of another option keeps its reading.
+ */
+function readsValueAsPattern(words: readonly string[], place: Place): boolean {
+  if (place.statement && words.some(word => word === 'emulate' || holdsValueAsPattern(word))) return true
+  const setopt = words.some(word => word === 'setopt' || word === 'unsetopt')
+  const zsh = words.some(word => baseCommand(word) === 'zsh')
+  const setsNamed = place.statement && words.includes('set') && words.some(word => NAMED_OPTION_FLAG.test(word))
+  const options = place.statement && (words.some(word => OPTIONS_ARRAY.test(word)) || (words.includes('set') && words.includes('options') && words.some(word => ARRAY_FLAG.test(word))))
+  if (!(setopt || zsh || setsNamed || options)) return false
+  if (words.some(word => namesGlobSubst(word) || /^--emulate(?:=|$)/.test(word))) return true
+  // zsh started as sh or ksh emulates it, GLOB_SUBST on: an ARGV0 assignment or exec -a before it names the zeroth
+  // argument it starts with. A word after it, such as its -c text, is no such name.
+  const before = words.slice(0, words.findIndex(word => baseCommand(word) === 'zsh'))
+  if (place.statement && before.some(word => word.startsWith('ARGV0=') || (ARGV0_FLAG.test(word) && before.includes('exec')))) return true
+  const supplied = words.some(word => place.expanded.has(word))
+  return (setopt && (supplied || words.some(word => PATTERN_FLAG.test(word)))) || ((setsNamed || options) && supplied)
 }
 
 /** CPython and PyPy, whose names may carry a build suffix (PYTHON_BUILD). */
