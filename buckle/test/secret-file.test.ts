@@ -1,8 +1,9 @@
-import { linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, linkSync, mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createPathView, type PathView } from '../common/domain/path-view.js'
+import { ToolInputError } from '../common/domain/tool.js'
 import { readDotenv } from '../common/services/secrets/dotenv.js'
 import { MAX_SECRET_FILE_BYTES, readSecretValues, resolveSecretFile } from '../common/services/secrets/secret-file.js'
 
@@ -135,6 +136,15 @@ describe('the file a reference names', () => {
     writeFileSync(join(state, 'buckle.env'), `BUCKLE_ADMIN_TOKEN=${DECOY}\n`)
     linkSync(join(state, 'buckle.env'), join(root, 'linked.env'))
     expect(() => readSecretValues({ real: resolveSecretFile('linked.env', view), written: 'linked.env', names: ['BUCKLE_ADMIN_TOKEN'], protectedRoots: [state], roots: [root] })).toThrow('hard link')
+  })
+
+  // A user's own file mode applies to a non-root user only: root opens a file of any mode.
+  it.skipIf(process.getuid?.() === 0)('refuses a file Buckle may not open, naming the file and the NAME, never a value', () => {
+    chmodSync(join(root, '.env.local'), 0o000)
+    let refusal: unknown
+    try { values('.env.local', ['API_TOKEN']) } catch (error) { refusal = error }
+    expect(refusal).toBeInstanceOf(ToolInputError)
+    expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: 'The secret file .env.local is not readable by Buckle (permission denied); the call reads API_TOKEN from it' })
   })
 
   it('refuses a file over the size bound and one that is not UTF-8', () => {

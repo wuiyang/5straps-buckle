@@ -84,15 +84,22 @@ function judgedSecretFile(written: string, names: readonly string[], view: PathV
 /**
  * The values a call's references name in one file, read at the moment the call runs (docs/secrets.md): the file is
  * opened where the rules judged it, beneath its pinned folder and never through a link, and read as dotenv. A link that
- * moved it since, a hard link on the disk that holds Buckle's state, a file over MAX_SECRET_FILE_BYTES, and a NAME it
- * does not define, or defines on a line Buckle cannot read, each refuse, naming the file and the NAME, never a value.
+ * moved it since, a hard link on the disk that holds Buckle's state, a file Buckle may not open, a file over
+ * MAX_SECRET_FILE_BYTES, and a NAME it does not define, or defines on a line Buckle cannot read, each refuse, naming the
+ * file and the NAME, never a value.
  */
 export function readSecretValues(input: { real: string; written: string; names: readonly string[]; protectedRoots: readonly string[]; roots: readonly string[] }): Map<string, string> {
   const { real, written } = input
   let now: string
   try { now = nativePath(realpathSync.native(real)) } catch { throw refused(`The secret file ${written} is gone since the call was judged`) }
   if (now !== real) throw refused(`The secret file ${written} moved since the call was judged, so nothing was read`)
-  const bytes = withFileBeneath(real, { flags: constants.O_RDONLY, shown: written, protectedRoots: input.protectedRoots, roots: input.roots }, descriptor => readBounded(descriptor, written))
+  let bytes: Buffer
+  try {
+    bytes = withFileBeneath(real, { flags: constants.O_RDONLY, shown: written, protectedRoots: input.protectedRoots, roots: input.roots }, descriptor => readBounded(descriptor, written))
+  } catch (error) {
+    if (isDenied(error)) throw refused(`The secret file ${written} is not readable by Buckle (permission denied); the call reads ${input.names.join(', ')} from it`)
+    throw error
+  }
   let text: string
   try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw refused(`The secret file ${written} is not UTF-8 text`) } finally { bytes.fill(0) }
   const reading = readDotenv(text)
@@ -122,6 +129,11 @@ function readBounded(descriptor: number, written: string): Buffer {
   const bytes = Buffer.from(buffer.subarray(0, size))
   buffer.fill(0)
   return bytes
+}
+
+/** Whether the system refused Buckle's open of a file for its mode or a policy, as for a file of mode 000. */
+function isDenied(error: unknown): boolean {
+  return error instanceof Error && 'code' in error && (error.code === 'EACCES' || error.code === 'EPERM')
 }
 
 function isMissing(error: unknown): boolean {
