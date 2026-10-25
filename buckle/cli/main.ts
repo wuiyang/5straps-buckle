@@ -338,7 +338,8 @@ function printUsage(): CliResult {
   buckle policy dangerously-allow on|off
                                    DANGEROUS: allow every ask in the workspace without a person,
                                    sensitive files and file writes included; each use is audited,
-                                   and deny rules still refuse. See buckle policy --help
+                                   deny rules still refuse, and a secret reference's file still
+                                   asks a person. See buckle policy --help
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
   buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
                                    Client keys trusted for signed setup and approvals, by scope

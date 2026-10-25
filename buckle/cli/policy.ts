@@ -39,7 +39,8 @@ Acts on the workspace named, or else on the one whose folder holds the current d
   buckle policy dangerously-allow on|off      DANGEROUS: allow every ask in the workspace without a
                                               person, sensitive files and file writes included, bound
                                               to the workspace root, or its mount when one is set;
-                                              each use is audited, and deny rules still refuse
+                                              each use is audited, deny rules still refuse, and a
+                                              secret reference's file still asks a person
 
 Exits 0 when done, 1 when the node refuses the change or the input, and 2 when the change conflicts
 with the node's state (the refusals the setup face answers 409): active work, or a policy file that
@@ -375,7 +376,7 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
  * What the switch covers, said the same way wherever it is shown (review L15 of B23-B25; owner decision
  * D7): asks about paths inside the boundary, and every ask that names no path, wherever it points.
  */
-const DANGEROUSLY_ALLOW_COVERS = 'Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included. Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
+const DANGEROUSLY_ALLOW_COVERS = "Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included, except that a secret reference's file still asks a person. Paths outside it keep their normal outcome: they ask, or the mount refuses them."
 
 function describeDangerously(state: { on: boolean; boundTo: string }): string {
   return state.on ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'off'

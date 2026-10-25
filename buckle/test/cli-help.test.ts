@@ -43,6 +43,8 @@ describe('buckle --help', () => {
     expect(result).toEqual({ exitCode: 0 })
     expect(io.out()).toContain('buckle policy dangerously-allow on|off')
     expect(io.out()).toContain('DANGEROUS')
+    // The switch never answers a secret reference's ask (docs/secrets.md), so its help says so (review of 6de734c).
+    expect(io.out().replace(/\s+/g, ' ')).toContain("deny rules still refuse, and a secret reference's file still asks a person")
   })
 
   it('names buckle client approve on the client line, as the settings reference and the approvals page do', () => {
@@ -61,6 +63,7 @@ describe('buckle policy --help', () => {
     const result = await policyCommand(runtime, [flag])
     expect(result.exitCode).toBe(0)
     expect(io.out()).toContain('buckle policy dangerously-allow on|off')
+    expect(io.out().replace(/\s+/g, ' ')).toContain("deny rules still refuse, and a secret reference's file still asks a person")
     expect(io.err()).toBe('')
   })
 

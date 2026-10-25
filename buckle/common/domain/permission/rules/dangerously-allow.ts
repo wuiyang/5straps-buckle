@@ -18,7 +18,8 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 /**
  * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28, owner decision D7 of
  * 2026-09-29): every ask becomes an allow, sensitive files and file writes included, reported as
- * `dangerously_allow:<rule>:<subject>` so the invoker audits each use. It is bound to the workspace:
+ * `dangerously_allow:<rule>:<subject>` so the invoker audits each use. A secret reference's file is the
+ * one ask it leaves to a person (covers, docs/secrets.md). It is bound to the workspace:
  * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
  * switch never opens the rest of the host. Asks that name no path (commands, hosts, process probes)
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
