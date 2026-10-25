@@ -5,6 +5,7 @@ import { ARGS_UNTRUSTED, browserArguments, chromiumSwitch } from '../../../domai
 import { browserBlockRefusal, parseBrowserCdp, type BrowserSettingNames } from '../../../runtime/config.js'
 import { placesOnTheWay, type StoredPath, type UntrustedRoots } from '../../../domain/executable.js'
 import { comparablePath, ignoresCase, isInsideComparable, typedPath } from '../../../domain/paths.js'
+import { referenceHint } from '../../../domain/secret-reference-hint.js'
 
 /**
  * Which browser `browser_command` drives, chosen by the owner's settings alone: a fresh one for each session (the
@@ -27,11 +28,13 @@ export const FRESH_BROWSER: BrowserMode = { kind: 'fresh' }
 /** The setting that chose each mode, which a status or a warning names in place of its value. */
 const MODE_SETTINGS: Record<BrowserModeName, string | null> = { fresh: null, profile: 'BUCKLE_BROWSER_PROFILE', attached: 'BUCKLE_BROWSER_CDP' }
 
+const HINT = referenceHint('browser_command')
+
 /** Fixed text per mode, so the agent reads what close keeps and what the browser holds to before it calls. */
 export const MODE_DESCRIPTIONS: Record<BrowserModeName, string> = {
-  fresh: 'Run one agent-browser command against an isolated browser session; close discards browser state.',
-  profile: 'Run one agent-browser command in the one browser on the owner\'s profile folder, which every session shares; logins and cookies outlive close. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list.',
-  attached: 'Run one agent-browser command in the owner\'s own Chrome over its DevTools port; every session shares that browser and its logins, and close only disconnects. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list.',
+  fresh: `Run one agent-browser command against an isolated browser session; close discards browser state. ${HINT}`,
+  profile: `Run one agent-browser command in the one browser on the owner's profile folder, which every session shares; logins and cookies outlive close. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list. ${HINT}`,
+  attached: `Run one agent-browser command in the owner's own Chrome over its DevTools port; every session shares that browser and its logins, and close only disconnects. Buckle still judges the page each command names, every file path, and every flag; only where a page goes after it loads is no longer held to the list. ${HINT}`,
 }
 
 /**

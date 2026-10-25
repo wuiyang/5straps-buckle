@@ -21,6 +21,13 @@ host) needs approval, and the grant is per host and port. With a list, only what
 reached, and a private address only through an entry naming its host exactly; a host a wildcard
 covers is refused where it resolves into one.
 
+## Secrets in headers
+
+To send a value from a dotenv file without seeing it, write `{{file:.env.local:API_TOKEN}}` in a header's
+value. Buckle asks a person once per file, puts the value in, shows you `[secret:NAME]` where the
+response echoes it, and drops the header on a redirect to another origin
+([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+
 ## Responses
 
 Bodies are capped at 2 MiB, with `truncated` set when the response held more than that.

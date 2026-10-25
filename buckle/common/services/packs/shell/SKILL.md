@@ -57,6 +57,13 @@ Undeclared sensitive files stay hidden. Buckle does not intercept filesystem sys
 if a script reports a missing sensitive input, retry with an explicit file request, not a
 changed path or relaxed sandbox. Interactive terminals do not support these per-call requests.
 
+## Secrets in a command
+
+When a command needs one value from a dotenv file, write `{{file:.env.local:API_TOKEN}}` in an argument, or
+inside quotes in a Bash `script_run` body, instead of reading the file. Buckle asks a person once per
+file, puts the value in as the command starts, and shows you `[secret:NAME]` in the output
+([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+
 ## Sandboxing
 
 These tools only exist on a node that can sandbox them. Where nothing is available, the pack is

@@ -3,8 +3,8 @@
 The policy is the owner's standing answer about what an agent may run and reach through Buckle,
 the approval and sandbox runtime on this machine. What it refuses is refused without a question.
 Buckle's file tools cannot read or change it. Only a process sandbox hides it from shell
-commands: with `BUCKLE_SANDBOX=none`, a shell command can read and change the files that hold it,
-and Buckle does not ask about them.
+commands: with `BUCKLE_SANDBOX=none`, a shell command can read and change its files without a
+question.
 
 ## Where it lives
 
@@ -14,7 +14,7 @@ its tool lists, its filesystem rules, and where the agent sees its folder. The n
 `buckle.env` are every workspace's defaults: an allow list a workspace has none of is the node's,
 and the node's deny and destructive lists apply to every workspace ([Node
 defaults](workspaces-03.md)). No other workspace's applies. `buckle policy` acts on the workspace `--workspace
-<name>` or `--dir <path>` names, or else on the one whose folder holds the current directory.
+<name>` or `--dir <path>` names, else the one whose folder holds the current directory.
 
 ## Commands
 
@@ -26,8 +26,8 @@ buckle policy destructive-command 'terraform destroy *'
 
 A pattern is a glob read one shell word at a time, never a regular expression. `*` inside a word
 matches any characters, and a `*` word matches one word, or the rest of the line when it comes
-last. `**` matches any run of words, and `{a,b}` one alternative. Buckle refuses the characters
-`^ $ ( ) | \ + ? [ ]` in a pattern.
+last. `**` matches any run of words, and `{a,b}` one alternative. A pattern holding
+`^ $ ( ) | \ + ? [ ]` is refused.
 
 - An allow list with an entry admits only command lines a glob covers whole, as typed, so a
   prefix such as `env` never carries another command past it. A command written as a path that a
@@ -91,7 +91,8 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
   one: anything under `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.config/gcloud`,
   `.password-store`, browser and mail profiles, or `keychains`; `.env` files except
   `.env.schema`; and names such as `.netrc`, `.npmrc`, `.git-credentials`, `id_rsa`, `*.pem`,
-  `*.key`, and `secrets.yaml`.
+  `*.key`, and `secrets.yaml`. A [secret reference](secrets.md) uses a value from one without
+  showing it, and asks once per file.
 - Filesystem rules exist only in a file loaded with `buckle policy import`:
   `{"version":1,"filesystem":{"rules":[{"path":"secrets","read":"deny","write":"deny"}]}}`. Each
   rule names a workspace-relative path and `allow`, `ask`, or `deny` for `read` and `write`; any

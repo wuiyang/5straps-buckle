@@ -39,7 +39,7 @@ for the agent: `buckle skills` lists them and `buckle skills buckle-shell` print
   Under Seatbelt, Buckle supports neither a workspace mount nor shell isolation.
 - Anywhere else, or Linux without `bwrap`: no sandbox, and the shell pack is withheld.
 
-`BUCKLE_SANDBOX=none` runs commands with no sandbox at all, on purpose. It still needs
+`BUCKLE_SANDBOX=none` runs commands with no sandbox, on purpose. It still needs
 `shell.isolation` off and no workspace mount before shell tools appear. Every shell result
 carries a `sandbox` field naming the mode it ran under.
 
@@ -72,13 +72,14 @@ A read-write mount is read-only to an isolated command, and its result says so.
 `shell.isolation` off runs commands in the workspace itself, under the same sandbox.
 
 Commands have no network unless `shell.network` is on and no approved list is set; the call must
-then also pass `allowNetwork: true`. The
+also pass `allowNetwork: true`. The
 [`web` tools](policy.md#network) are the scoped way to reach the network. A command runs for
 `BUCKLE_DEFAULT_TIMEOUT_MS` (30 seconds) unless the call asks for more, up to
 `BUCKLE_MAX_TIMEOUT_MS` (5 minutes).
 
 A command that needs a credential file declares it in `sensitiveFiles`, which asks once per call
 and mounts the approved file read-only for that call. This needs bubblewrap with shell isolation.
+A [secret reference](secrets.md) hands a command one dotenv value without showing it.
 
 ## Host Git, forge, and language servers
 
@@ -96,13 +97,13 @@ Each applies to that workspace alone. A filesystem `deny` or `ask` rule in its p
 all three packs again.
 
 `git_diff` and `git_log` judge each path they name as a read, as `git_blame` judges its file, so
-the credential-file check asks about a named `.env`. git reads each path literally, never as a
+a named `.env` asks. git reads each path literally, never as a
 pattern, and a path outside the repository is refused. A `git_diff` naming no path, or a folder,
 judges each file it lists: one the rules keep from the agent, such as a `.env`, shows its header
 and line counts, not its content. A `git_log` naming no path lists every file's commits
 ([known limits](known-limits-02.md#where-programs-come-from)).
 
-Each `git` pack call (`git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch`) runs against
+Each `git` pack call runs against
 the repository Buckle checked: git is handed the git directory, work tree, and common directory
 that check found, and the call is refused when any of them changes before or while git runs. It
 shows nothing of a submodule's changes or history: Buckle tells git to ignore submodules, but git
@@ -114,8 +115,8 @@ counts as well. The forge pack gets neither check
 ([known limits](known-limits-04.md#the-forge-pack)).
 
 Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
-an empty directory Buckle owns, and overrides the repository's program settings, so no hook or
-configured program from the repository runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
+an empty directory Buckle owns, and overrides the repository's program settings, so no
+repository hook or configured program runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
 in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_API_URL`
 (`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
 rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.

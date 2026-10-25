@@ -87,6 +87,10 @@ Browser file operations require explicit paths; screenshots and downloads are ch
 
 Never guess a ref. Take a snapshot and use what it returns.
 
+To enter a value from a dotenv file without seeing it, write `fill @e5 "{{file:.env.local:LOGIN_PASSWORD}}"`,
+or the same in `type`. Buckle asks a person once per file, enters the value, and shows you
+`[secret:NAME]` in its place, in this call and every later one ([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+
 ## Sessions
 
 Pass `session` to name a browser within the current caller. Buckle scopes the alias to the

@@ -6,6 +6,7 @@ import type { JsonObject } from '@5straps/protocol'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { browserEffects, refusedFlag } from '../common/services/packs/browser/effects.js'
 import { createPathView } from '../common/domain/path-view.js'
+import { referenceHint } from '../common/domain/secret-reference-hint.js'
 import { BROWSER_UNTRUSTED, createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
 import type { BrowserMode } from '../common/services/packs/browser/mode.js'
 import { loadPackSkill } from '../common/services/packs/pack-skill.js'
@@ -152,7 +153,7 @@ describe('the browser the owner\'s settings choose', () => {
 
   it('tells the agent in the tool description what close keeps in each mode', () => {
     const description = (mode: BrowserMode) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: PROFILE, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode }, runProcess: async () => stubResult() }).tools[0]!.capability.description
-    expect(description({ kind: 'fresh' })).toBe('Run one agent-browser command against an isolated browser session; close discards browser state.')
+    expect(description({ kind: 'fresh' })).toBe(`Run one agent-browser command against an isolated browser session; close discards browser state. ${referenceHint('browser_command')}`)
     expect(description(PROFILE_MODE)).toContain('logins and cookies outlive close')
     expect(description(ATTACHED)).toContain('every session shares that browser and its logins, and close only disconnects')
     // The approved list does not hold inside these browsers, and the description says what still is judged.

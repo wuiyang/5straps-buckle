@@ -12,6 +12,7 @@ import { buildChildEnvironment } from '../../../domain/environment.js'
 import { ownRoots, rootsOf, runnableCommand, type ProgramSearch, type UntrustedRoots } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
+import { referenceHint } from '../../../domain/secret-reference-hint.js'
 import { defineTool, ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessRunner, ProcessResult } from '../../../types/ports/process-runner.js'
 import type { Sandbox, SandboxBind } from '../../../types/ports/sandbox.js'
@@ -200,7 +201,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       defineTool(PACK_ID, {
         name: 'shell_exec',
         managesHistory: Boolean(options.isolation),
-        description: 'Run one program with an argument array. Declare sensitiveFiles before execution to request sensitive file access; undeclared credentials stay hidden.',
+        description: `Run one program with an argument array. Declare sensitiveFiles before execution to request sensitive file access; undeclared credentials stay hidden. ${referenceHint('shell_exec')}`,
         risk: 'execute',
         tags: ['shell', 'process'],
         input: execInput,

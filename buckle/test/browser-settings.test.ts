@@ -399,7 +399,7 @@ describe('a failing agent-browser in an owner-chosen mode', () => {
   it.each([
     ['a bare port', '9222', ['127.0.0.1:9222', '9222']],
     ['an http:// URL', 'http://cdp-host.test:9333', ['cdp-host.test:9333']],
-    ['a ws:// URL with a password and a browser id', 'ws://owner:secret@127.0.0.1:9222/devtools/browser/never-shown', ['secret', 'never-shown', '127.0.0.1:9222']],
+    ['a ws:// URL with a password and a browser id', 'ws://owner:decoy-password@127.0.0.1:9222/devtools/browser/never-shown', ['decoy-password', 'never-shown', '127.0.0.1:9222']],
   ])('shows BUCKLE_BROWSER_CDP in place of %s', async (_, endpoint, hidden) => {
     const { message, audit, logged, status, description, call } = await failing({ BUCKLE_BROWSER_CDP: endpoint })
     expect(call[call.indexOf('--cdp') + 1]).toBe(endpoint)

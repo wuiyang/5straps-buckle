@@ -38,6 +38,8 @@ node's applies again:
 | `approval.quickJudge` | what Jev, TypeSafe AI's quick decision model, rates: `off`, `interpreters`, `asks`, or `all` | `off` |
 | `approval.quickJudgeProvider` | Jev's provider: `typesafe` | `typesafe` |
 | `approval.quickJudgeModel` | Jev's model name | `jev-latest` |
+| `secrets.enabled` | `on` or `off`: whether Buckle reads [secret references](secrets.md) in shell words, browser fill text, and `web_fetch` headers | on |
+| `secrets.files` | files whose secret references need no ask, comma separated, such as `.env.local` | none |
 
 The browser's mode is one setting: a workspace that sets its own `browser.cdp` or
 `browser.profile` takes both from itself, never the node's other one, and under an attached Chrome
