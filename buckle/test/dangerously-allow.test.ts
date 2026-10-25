@@ -33,6 +33,8 @@ afterEach(async () => {
 
 interface Node { root: string; workspace: string; outside: string; config: BuckleConfig; runtime: BuckleRuntime; reports: ActionReport[] }
 
+interface CliOutput { exitCode: number; out: string; err: string }
+
 async function node(input: { policy?: string } = {}): Promise<Node> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-dangerously-'))
   roots.push(root)
@@ -275,7 +277,7 @@ describe('a workspace\'s switch, with no node switch beside it', () => {
   it('takes effect on its own', async () => {
     const setup = await node()
     await setup.runtime.policy.setDangerouslyAllow(true)
-    expect(setup.runtime.policy.dangerouslyAllow()).toEqual({ on: true, boundTo: setup.workspace })
+    expect(setup.runtime.policy.dangerouslyAllow()).toEqual({ on: true, level: 'command', boundTo: setup.workspace })
     const { result } = await call(setup.runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])
     expect(result.outcome).toBe('ok')
   })
@@ -373,14 +375,14 @@ describe('buckle policy dangerously-allow --workspace and --dir', () => {
     expect((await inDefault(['on', '--workspace', 'child'])).exitCode).toBe(0)
     expect(switchOf('child')).toMatchObject({ [idsOf.child]: { on: true } })
     expect(switchOf('default')).toEqual({})
-    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, workspaceName: 'Child', detail: 'on' }])
+    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, workspaceName: 'Child', detail: 'on command' }])
     expect(changes('default')).toEqual([])
 
     expect((await inDefault(['off', '--dir', join(root, 'child')])).exitCode).toBe(0)
     // Off removes the workspace's entry from its own switch file.
     expect(switchOf('child')).toEqual({})
     expect(switchOf('default')).toEqual({})
-    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, detail: 'on' }, { workspaceId: idsOf.child, detail: 'off' }])
+    expect(changes('child')).toMatchObject([{ workspaceId: idsOf.child, detail: 'on command' }, { workspaceId: idsOf.child, detail: 'off' }])
     expect(changes('default')).toEqual([])
   })
 })
@@ -395,7 +397,7 @@ describe('the audit of every use and every change', () => {
     const entries = uses(runtime, requestId)
     expect(entries.map(entry => entry.detail).sort()).toEqual(['destructive_command', 'write_scope'])
     const destructive = entries.find(entry => entry.detail === 'destructive_command')
-    expect(destructive?.args).toEqual({ tool: 'shell_exec', rule: 'destructive_command', subject: expect.stringMatching(/^rm \[\d+ characters\]$/) })
+    expect(destructive?.args).toEqual({ tool: 'shell_exec', rule: 'destructive_command', subject: expect.stringMatching(/^rm \[\d+ characters\]$/), level: 'command' })
     expect(JSON.stringify(runtime.actions.read(200))).not.toContain('zq81')
     const reported = reports.filter(report => report.tool === 'policy_dangerously_allowed')
     expect(reported.map(report => report.rule).sort()).toEqual(['destructive_command', 'write_scope'])
@@ -424,7 +426,7 @@ describe('the audit of every use and every change', () => {
     await policyCommand(runtime, ['dangerously-allow', 'off'])
     expect((await call(runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])).result.outcome).toBe('approval_required')
     const changes = runtime.actions.read(200).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result')
-    expect(changes.map(entry => entry.detail)).toEqual(['on', 'off'])
+    expect(changes.map(entry => entry.detail)).toEqual(['on command', 'off'])
   })
 
   it('shows the switch and its boundary in buckle policy show, and says what it covers when switched on (owner decision D7)', async () => {
@@ -432,7 +434,7 @@ describe('the audit of every use and every change', () => {
     let printed = ''
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
     await policyCommand(setup.runtime, ['dangerously-allow', 'on'])
-    expect(printed).toContain('WARNING: dangerously allow is on')
+    expect(printed).toContain('WARNING: dangerously allow is on at level command')
     expect(printed).toContain(`bound to the workspace root, or its mount when one is set (${setup.workspace})`)
     const covers = "Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included, except that a secret reference's file still asks a person. Paths outside it keep their normal outcome: they ask, or the mount refuses them."
     expect(printed).toContain(covers)
@@ -440,13 +442,13 @@ describe('the audit of every use and every change', () => {
     printed = ''
     await policyCommand(setup.runtime, ['show'])
     // The same sentence in show (review L15 of B23-B25).
-    expect(printed).toContain('Dangerously allow  ON, bound to the workspace root, or its mount when one is set')
+    expect(printed).toContain('Dangerously allow  ON at level command, bound to the workspace root, or its mount when one is set')
     expect(printed).toContain(covers)
     expect(printed).not.toContain('every ask there')
     printed = ''
     await policyCommand(setup.runtime, ['show', '--json'])
     const shown = JSON.parse(printed) as { dangerouslyAllow: unknown; effective: Record<string, unknown> }
-    expect(shown.dangerouslyAllow).toEqual({ on: true, boundTo: setup.workspace })
+    expect(shown.dangerouslyAllow).toEqual({ on: true, level: 'command', boundTo: setup.workspace })
     expect(Object.keys(shown.effective)).not.toContain('dangerouslyAllow')
   })
 })
@@ -498,9 +500,157 @@ describe('only the switch changes the switch (ruling H1e)', () => {
   })
 })
 
+// Owner ruling of 2026-10-25: the switch takes a level. At `command`, which the bare `on` scripts send means, every ask it
+// answered before is answered and a secret reference's file still asks a person; at `all` that file's ask is answered
+// too. An unknown level is refused before anything changes, and every use's audit entry names the level it ran at.
+describe('the switch\'s levels (owner ruling of 2026-10-25)', () => {
+  const DECOY = 'decoy-value-0123456789'
+  const DESTRUCTIVE = { command: 'rm', args: ['-rf', 'build'] }
+  const SECRET = { command: 'curl', args: ['-H', 'Authorization: Bearer {{file:.env.local:API_TOKEN}}'] }
+
+  /** A node whose shell_exec reads its effects and its secret references for real, and records what it would run instead of running it. */
+  async function levelled() {
+    const setup = await node()
+    writeFileSync(join(setup.workspace, '.env.local'), `API_TOKEN=${DECOY}\n`)
+    const ran: JsonValue[] = []
+    const tool = setup.runtime.registry().get('shell_exec')
+    const prepare = tool.prepare.bind(tool)
+    vi.spyOn(tool, 'prepare').mockImplementation(args => ({ ...prepare(args), execute: async () => { ran.push(args); return 'ran' } }))
+    return { ...setup, ran }
+  }
+
+  /** `buckle policy dangerously-allow <argv>`, with what it printed. */
+  async function switchTo(runtime: BuckleRuntime, argv: string[]): Promise<CliOutput> {
+    const printed = { out: '', err: '' }
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed.out += String(chunk); return true })
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { printed.err += String(chunk); return true })
+    try {
+      const { exitCode } = await policyCommand(runtime, ['dangerously-allow', ...argv])
+      return { exitCode, ...printed }
+    } finally {
+      out.mockRestore()
+      err.mockRestore()
+    }
+  }
+
+  const levelsOf = (runtime: BuckleRuntime, requestId: string) => uses(runtime, requestId).map(entry => [entry.detail, (entry.args as { level?: unknown }).level]).sort()
+  const changesOf = (runtime: BuckleRuntime) => runtime.actions.read(200).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result').map(entry => entry.detail)
+  const storedEntry = (setup: Node) => (JSON.parse(readFileSync(dangerouslyAllowPath(setup.config), 'utf8')) as { workspaces: Record<string, unknown> }).workspaces[setup.runtime.workspaceId]
+
+  it.each([[['on']], [['on', 'command']]])('%j answers a command ask, audited at level command, and leaves a secret file\'s ask to a person', async (argv) => {
+    const setup = await levelled()
+    const { runtime, workspace } = setup
+    const switched = await switchTo(runtime, argv)
+    expect(switched.exitCode).toBe(0)
+    expect(switched.out).toContain(`WARNING: dangerously allow is on at level command for workspace ${runtime.workspaceName()}`)
+    expect(switched.out).toContain('except that a secret reference\'s file still asks a person')
+    expect(runtime.policy.dangerouslyAllow()).toEqual({ on: true, level: 'command', boundTo: workspace })
+    // The bare switch writes the file as it always has, so a node that knows no level reads it the same.
+    expect(storedEntry(setup)).toEqual({ on: true, changedAt: expect.any(String) })
+
+    const destructive = await run(runtime, 'shell_exec', DESTRUCTIVE)
+    expect(destructive.result.outcome).toBe('ok')
+    expect(levelsOf(runtime, destructive.requestId)).toEqual([['destructive_command', 'command'], ['write_scope', 'command']])
+
+    const secret = await run(runtime, 'shell_exec', SECRET)
+    expect(asked(secret.result)).toEqual(['sensitive_path'])
+    expect(secret.result.outcome === 'approval_required' && secret.result.approvals[0]!.subject).toMatch(/^secret-file:.*\.env\.local$/)
+    expect(uses(runtime, secret.requestId)).toEqual([])
+    expect(setup.ran).toEqual([DESTRUCTIVE])
+    expect(changesOf(runtime)).toEqual(['on command'])
+    expect(JSON.stringify(runtime.actions.read(200))).not.toContain(DECOY)
+  })
+
+  it('on all answers a command ask and a secret file\'s ask, and every use\'s audit entry and report names the level', async () => {
+    const setup = await levelled()
+    const { runtime, workspace, reports } = setup
+    const switched = await switchTo(runtime, ['on', 'all'])
+    expect(switched.exitCode).toBe(0)
+    expect(switched.out).toContain(`WARNING: dangerously allow is on at level all for workspace ${runtime.workspaceName()}`)
+    expect(switched.out).toContain('sensitive files, file writes, and a secret reference\'s file included')
+    expect(switched.out).not.toContain('still asks a person')
+    expect(runtime.policy.dangerouslyAllow()).toEqual({ on: true, level: 'all', boundTo: workspace })
+    expect(storedEntry(setup)).toEqual({ on: true, level: 'all', changedAt: expect.any(String) })
+
+    const destructive = await run(runtime, 'shell_exec', DESTRUCTIVE)
+    expect(destructive.result.outcome).toBe('ok')
+    expect(levelsOf(runtime, destructive.requestId)).toEqual([['destructive_command', 'all'], ['write_scope', 'all']])
+
+    const secret = await run(runtime, 'shell_exec', SECRET)
+    expect(secret.result.outcome).toBe('ok')
+    expect(setup.ran).toEqual([DESTRUCTIVE, { command: 'curl', args: ['-H', `Authorization: Bearer ${DECOY}`] }])
+    expect(levelsOf(runtime, secret.requestId)).toEqual([['sensitive_path', 'all'], ['write_scope', 'all']])
+    expect(uses(runtime, secret.requestId).find(entry => entry.detail === 'sensitive_path')?.args).toEqual({ tool: 'shell_exec', rule: 'sensitive_path', subject: expect.stringMatching(/^secret-file:.*\.env\.local$/), level: 'all' })
+    expect(reports.filter(report => report.tool === 'policy_dangerously_allowed' && report.requestId === secret.requestId).map(report => report.args)).toContainEqual(expect.objectContaining({ rule: 'sensitive_path', level: 'all' }))
+    expect(changesOf(runtime)).toEqual(['on all'])
+    expect(JSON.stringify(runtime.actions.read(200))).not.toContain(DECOY)
+    expect(JSON.stringify(reports)).not.toContain(DECOY)
+
+    // policy show names the level, in words and as JSON.
+    const shown = { out: '' }
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { shown.out += String(chunk); return true })
+    await policyCommand(runtime, ['show'])
+    expect(shown.out).toContain('Dangerously allow  ON at level all, bound to the workspace root, or its mount when one is set')
+    shown.out = ''
+    await policyCommand(runtime, ['show', '--json'])
+    out.mockRestore()
+    expect((JSON.parse(shown.out) as { dangerouslyAllow: unknown }).dangerouslyAllow).toEqual({ on: true, level: 'all', boundTo: workspace })
+  })
+
+  it('takes the bare on back to level command, so a secret file asks again', async () => {
+    const setup = await levelled()
+    const { runtime } = setup
+    expect((await switchTo(runtime, ['on', 'all'])).exitCode).toBe(0)
+    expect((await switchTo(runtime, ['on'])).exitCode).toBe(0)
+    expect(runtime.policy.dangerouslyAllow().level).toBe('command')
+    expect(storedEntry(setup)).toEqual({ on: true, changedAt: expect.any(String) })
+    expect(asked((await run(runtime, 'shell_exec', SECRET)).result)).toEqual(['sensitive_path'])
+    expect((await switchTo(runtime, ['off'])).exitCode).toBe(0)
+    expect(runtime.policy.dangerouslyAllow()).toEqual({ on: false, level: null, boundTo: setup.workspace })
+    expect(changesOf(runtime)).toEqual(['on all', 'on command', 'off'])
+  })
+
+  it.each(['everything', 'ALL', 'commands', 'on', ''])('refuses the unknown level %j before anything changes, in one line naming the two levels', async (level) => {
+    const setup = await node()
+    const refused = await switchTo(setup.runtime, ['on', level])
+    expect(refused).toEqual({ exitCode: 1, out: '', err: `buckle policy dangerously-allow on takes the level command or all, not ${JSON.stringify(level)}; the switch is unchanged\n` })
+    expect(setup.runtime.policy.dangerouslyAllow()).toMatchObject({ on: false, level: null })
+    expect(existsSync(dangerouslyAllowPath(setup.config))).toBe(false)
+    expect(changesOf(setup.runtime)).toEqual([])
+  })
+
+  it('refuses a level after off, and a word after the level, with the usage', async () => {
+    const setup = await node()
+    for (const argv of [['off', 'all'], ['on', 'all', 'now']]) {
+      const refused = await switchTo(setup.runtime, argv)
+      expect(refused.exitCode).toBe(1)
+      expect(refused.err).toContain('buckle policy dangerously-allow takes on [command|all] or off\n')
+      expect(refused.err).toContain('buckle policy show')
+    }
+    expect(setup.runtime.policy.dangerouslyAllow().on).toBe(false)
+  })
+
+  it('reads a switch file that names a level it does not know as off', async () => {
+    const setup = await node()
+    await setup.runtime.policy.setDangerouslyAllow(true, 'all')
+    const file = dangerouslyAllowPath(setup.config)
+    const stored = JSON.parse(readFileSync(file, 'utf8')) as { workspaces: Record<string, { level: string }> }
+    stored.workspaces[setup.runtime.workspaceId]!.level = 'everything'
+    writeFileSync(file, JSON.stringify(stored))
+    expect(setup.runtime.policy.dangerouslyAllow()).toMatchObject({ on: false, level: null })
+    const { result } = await call(setup.runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])
+    expect(result.outcome).toBe('approval_required')
+  })
+})
+
 describe('the switch as data', () => {
   it('reads its uses back from allowedBy, and redacts command lines to the executable', () => {
-    expect(dangerousUses(['write_scope:/a', 'dangerously_allow:network_egress:127.0.0.1:9'])).toEqual([{ rule: 'network_egress', subject: '127.0.0.1:9' }])
+    expect(dangerousUses(['write_scope:/a', 'dangerously_allow:command:network_egress:127.0.0.1:9', 'dangerously_allow:all:sensitive_path:secret-file:/w/.env'])).toEqual([
+      { level: 'command', rule: 'network_egress', subject: '127.0.0.1:9' },
+      { level: 'all', rule: 'sensitive_path', subject: 'secret-file:/w/.env' },
+    ])
+    // A key that names no level the switch has is no use of it.
+    expect(dangerousUses(['dangerously_allow:everything:write_scope:/a', 'dangerously_allow:write_scope:/a'])).toEqual([])
     expect(redactedSubject('destructive_command', 'curl -H Authorization: secret')).toBe('curl [29 characters]')
     expect(redactedSubject('read_scope', '/tmp/outside')).toBe('/tmp/outside')
     expect(redactedSubject('read_scope', 'x'.repeat(300))).toBe('[300 characters]')

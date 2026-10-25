@@ -7,7 +7,8 @@ import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/s
 import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
-import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { BuckleRuntime, DangerouslyAllowState } from '../common/services/workspaces/workspace-runtime.js'
+import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../common/types/ports/dangerously-allow-store.js'
 import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import type { CommandTarget } from './target.js'
 import { mountTableText } from './workspace.js'
@@ -36,11 +37,13 @@ Acts on the workspace named, or else on the one whose folder holds the current d
   buckle policy import <file.json>            Replace the workspace's policy from a file
   buckle policy export                        Print the workspace's policy as JSON
   buckle policy clear                         Empty every list
-  buckle policy dangerously-allow on|off      DANGEROUS: allow every ask in the workspace without a
+  buckle policy dangerously-allow on [command|all] | off
+                                              DANGEROUS: allow every ask in the workspace without a
                                               person, sensitive files and file writes included, bound
                                               to the workspace root, or its mount when one is set;
-                                              each use is audited, deny rules still refuse, and a
-                                              secret reference's file still asks a person
+                                              each use is audited and deny rules still refuse. At
+                                              level command, the default, a secret reference's file
+                                              still asks a person; at level all it is allowed too
 
 Exits 0 when done, 1 when the node refuses the change or the input, and 2 when the change conflicts
 with the node's state (the refusals the setup face answers 409): active work, or a policy file that
@@ -111,12 +114,14 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
       }
       case 'export':
         return print(runtime.policy.stored())
-      case 'clear':
+      case 'clear': {
         await runtime.policy.clear()
         process.stdout.write(`Every list of workspace ${runtime.workspaceName()} is empty\n`)
         if (isRestrictive({ ...runtime.policy.effective(), mount: null })) process.stdout.write('The node\'s lists in buckle.env apply in their place, and its deny lists apply to every workspace: buckle policy show lists them.\n')
-        if (runtime.policy.dangerouslyAllow().on) process.stdout.write('The dangerously-allow switch is apart from the policy and stays on: only `buckle policy dangerously-allow off` turns it off.\n')
+        const { level } = runtime.policy.dangerouslyAllow()
+        if (level !== null) process.stdout.write(`The dangerously-allow switch is apart from the policy and stays on at level ${level}: only \`buckle policy dangerously-allow off\` turns it off.\n`)
         return { exitCode: 0 }
+      }
       case 'dangerously-allow':
         return await dangerouslyAllow({ runtime, argv: rest })
       case 'help':
@@ -151,17 +156,26 @@ function exitCodeOf(error: PolicyError | UsageError): number {
 /**
  * The one switch for a workspace's dangerously-allow flag (rulings 11 and H1 of 2026-09-28), local only (H1e), for
  * the workspace the command targets alone: no node switch stands beside it (Q14). It needs no restart: a running node
- * reads it at every call.
+ * reads it at every call. `on` takes a level (owner ruling of 2026-10-25): `command` where none is named, as scripts
+ * send it, or `all`; a level it does not know is refused in one line before anything changes.
  */
 async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[] }): Promise<CliResult> {
-  const [state, ...extra] = input.argv
-  if ((state !== 'on' && state !== 'off') || extra.length > 0) throw new UsageError(`buckle policy dangerously-allow takes on or off\n${USAGE}`)
+  const [state, named, ...extra] = input.argv
+  if ((state !== 'on' && state !== 'off') || extra.length > 0 || (state === 'off' && named !== undefined)) throw new UsageError(`buckle policy dangerously-allow takes on [command|all] or off\n${USAGE}`)
+  const level = onLevel(named)
   const target = input.runtime
-  await target.policy.setDangerouslyAllow(state === 'on')
+  await target.policy.setDangerouslyAllow(state === 'on', level)
   const now = target.policy.dangerouslyAllow()
-  if (!now.on) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceName()}: asks wait for a person again.\n`)
-  else process.stdout.write(`WARNING: dangerously allow is on for workspace ${target.workspaceName()}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
-  return { exitCode: 0, detail: `dangerously-allow ${state} ${target.workspaceName()}` }
+  if (now.level === null) process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceName()}: asks wait for a person again.\n`)
+  else process.stdout.write(`WARNING: dangerously allow is on at level ${now.level} for workspace ${target.workspaceName()}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${DANGEROUSLY_ALLOW_COVERS[now.level]} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
+  return { exitCode: 0, detail: `dangerously-allow ${state === 'on' ? `on ${level}` : 'off'} ${target.workspaceName()}` }
+}
+
+/** The level `on` names, `command` where it names none. */
+function onLevel(named: string | undefined): DangerouslyAllowLevel {
+  if (named === undefined) return 'command'
+  if (!isDangerouslyAllowLevel(named)) throw new UsageError(`buckle policy dangerously-allow on takes the level command or all, not ${JSON.stringify(named)}; the switch is unchanged`)
+  return named
 }
 
 /**
@@ -373,13 +387,18 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
 }
 
 /**
- * What the switch covers, said the same way wherever it is shown (review L15 of B23-B25; owner decision
- * D7): asks about paths inside the boundary, and every ask that names no path, wherever it points.
+ * What the switch covers at each level, said the same way wherever it is shown (review L15 of B23-B25; owner decision
+ * D7; owner ruling of 2026-10-25): asks about paths inside the boundary, and every ask that names no path, wherever it
+ * points; a secret reference's file only at level all.
  */
-const DANGEROUSLY_ALLOW_COVERS = "Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included, except that a secret reference's file still asks a person. Paths outside it keep their normal outcome: they ask, or the mount refuses them."
+const OUTSIDE = 'Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
+const DANGEROUSLY_ALLOW_COVERS: Readonly<Record<DangerouslyAllowLevel, string>> = {
+  command: `Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files and file writes included, except that a secret reference's file still asks a person. ${OUTSIDE}`,
+  all: `Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files, file writes, and a secret reference's file included. ${OUTSIDE}`,
+}
 
-function describeDangerously(state: { on: boolean; boundTo: string }): string {
-  return state.on ? `ON, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS} Each use is audited.` : 'off'
+function describeDangerously(state: DangerouslyAllowState): string {
+  return state.level === null ? 'off' : `ON at level ${state.level}, ${DANGEROUSLY_ALLOW_SCOPE} (${state.boundTo}). ${DANGEROUSLY_ALLOW_COVERS[state.level]} Each use is audited.`
 }
 
 function failed(message: string): CliResult {

@@ -18,6 +18,9 @@ import { workspacesOf } from './support/workspaces.js'
 
 afterEach(() => vi.restoreAllMocks())
 
+/** What both helps say of the switch's two levels. */
+const LEVELS_SAID = "each use is audited and deny rules still refuse. At level command, the default, a secret reference's file still asks a person; at level all it is allowed too"
+
 const captured = () => {
   let out = ''
   let err = ''
@@ -41,10 +44,11 @@ describe('buckle --help', () => {
     const io = captured()
     const result = answerWithoutConfiguration(['--help'])
     expect(result).toEqual({ exitCode: 0 })
-    expect(io.out()).toContain('buckle policy dangerously-allow on|off')
+    expect(io.out()).toContain('buckle policy dangerously-allow on [command|all] | off')
     expect(io.out()).toContain('DANGEROUS')
-    // The switch never answers a secret reference's ask (docs/secrets.md), so its help says so (review of 6de734c).
-    expect(io.out().replace(/\s+/g, ' ')).toContain("deny rules still refuse, and a secret reference's file still asks a person")
+    // At level command, the bare on, the switch never answers a secret reference's ask (docs/secrets.md), so its help
+    // says so (review of 6de734c); at level all it does (owner ruling of 2026-10-25).
+    expect(io.out().replace(/\s+/g, ' ')).toContain(LEVELS_SAID)
   })
 
   it('names buckle client approve on the client line, as the settings reference and the approvals page do', () => {
@@ -62,8 +66,8 @@ describe('buckle policy --help', () => {
     const io = captured()
     const result = await policyCommand(runtime, [flag])
     expect(result.exitCode).toBe(0)
-    expect(io.out()).toContain('buckle policy dangerously-allow on|off')
-    expect(io.out().replace(/\s+/g, ' ')).toContain("deny rules still refuse, and a secret reference's file still asks a person")
+    expect(io.out()).toContain('buckle policy dangerously-allow on [command|all] | off')
+    expect(io.out().replace(/\s+/g, ' ')).toContain(LEVELS_SAID)
     expect(io.err()).toBe('')
   })
 

@@ -473,8 +473,8 @@ function grantUseRecorder(input: { grants: GrantStore; sessionId: string }): Gra
 
 /**
  * Every ask the workspace's dangerously-allow switch let through is audited on its own (ruling 11 of
- * 2026-09-28): an entry per use naming the rule and the redacted subject, a warning in the owner's
- * log, and the same entry in the action report to Rings. The entry is required: a use that cannot be
+ * 2026-09-28): an entry per use naming the rule, the redacted subject, and the level the switch was on at (owner
+ * ruling of 2026-10-25), a warning in the owner's log, and the same entry in the action report to Rings. The entry is required: a use that cannot be
  * recorded does not go ahead. A rule and subject the call already recorded is not written again.
  */
 async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[]; audited: Set<string> }): Promise<void> {
@@ -487,11 +487,11 @@ async function auditDangerousUses(input: { options: InvokerOptions; request: Inv
     const at = new Date().toISOString()
     const entry: ActionLogEntry = {
       at, requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: input.sessionId.slice(0, MAX_LOGGED_ID), tool: DANGEROUSLY_ALLOWED_TOOL,
-      outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
+      outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject, level: use.level }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
     }
     await options.actions.record({ ...entry, auditId: randomUUID(), event: 'result', workspaceId, ...auditContext(request) })
     input.audited.add(key)
-    logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule })
+    logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, level: use.level })
     if (!options.reporter.configured) continue
     options.reporter.record({
       workspace: options.paths.root, workspaceId, at, requestId: entry.requestId, sessionId: entry.sessionId, tool: DANGEROUSLY_ALLOWED_TOOL,

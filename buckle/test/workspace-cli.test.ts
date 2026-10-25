@@ -694,7 +694,7 @@ describe('buckle workspace enable, disable and remove', () => {
     } finally { await workspaces.close() }
     const taken = await buckle(['init'], { cwd: alpha })
     expect(taken.exitCode).toBe(0)
-    expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
+    expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON at level command.')
   })
 
   it('names the one name a verb takes', async () => {

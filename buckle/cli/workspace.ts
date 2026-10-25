@@ -179,7 +179,7 @@ export async function createNamed<T>(prompt: NamePrompt, input: { name?: string;
 }
 
 function printMinted(workspace: WorkspaceDescriptor, token: MintedToken, takenUp: TakenUp | null): void {
-  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records this folder left when its workspace was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? ', and its dangerously-allow switch, which is ON' : ''}.` : ''}
+  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records this folder left when its workspace was removed: its settings, grants, and history${takenUp.dangerouslyAllow ? `, and its dangerously-allow switch, which is ON at level ${takenUp.dangerouslyAllow}` : ''}.` : ''}
 
   agent token   ${token.token}
 

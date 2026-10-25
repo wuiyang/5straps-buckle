@@ -59,9 +59,28 @@ describe('the credential-file rule on a secret file', () => {
     expect(filesystem.evaluate({ tool: 'shell_exec', effect: { ...effect('/w/secrets/.env'), written: ['secrets/.env'] }, grants: NO_GRANTS })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
   })
 
-  it('is still asked about while the dangerously-allow switch is on', () => {
-    const engine = withDangerouslyAllow(createPermissionEngine([createSensitivePathRule()]), { enabled: () => true, root: () => '/w' })
+  it('is still asked about while the dangerously-allow switch is on at level command', () => {
+    const engine = withDangerouslyAllow(createPermissionEngine([createSensitivePathRule()]), { level: () => 'command', root: () => '/w' })
     expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: NO_GRANTS })).toMatchObject({ kind: 'ask', asks: [{ subject: 'secret-file:/w/.env.local' }] })
+  })
+
+  // Owner ruling of 2026-10-25: at level all the switch answers a secret file's ask too, within the root it is bound to.
+  it('is answered by the switch at level all for a file inside the workspace root, and still asked about outside it', () => {
+    const engine = withDangerouslyAllow(createPermissionEngine([createSensitivePathRule()]), { level: () => 'all', root: () => '/w' })
+    expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: NO_GRANTS })).toEqual({ kind: 'allow', allowedBy: ['dangerously_allow:all:sensitive_path:secret-file:/w/.env.local'] })
+    // A file in a declared mount's source outside the root keeps its ask, as every path outside the root does.
+    for (const path of ['/data/.env.local', '/w-other/.env.local']) {
+      expect(engine.evaluate({ tool: 'shell_exec', effects: [effect(path)], grants: NO_GRANTS })).toMatchObject({ kind: 'ask', asks: [{ subject: `secret-file:${path}` }] })
+    }
+  })
+
+  it('is refused at every level where the rule refuses it: Buckle\'s own state and a file the owner denied', () => {
+    const denied = { subjectsFor: () => [], deniedSubjectsFor: () => ['secret-file:/w/denied.env'] }
+    for (const level of ['command', 'all'] as const) {
+      const engine = withDangerouslyAllow(createPermissionEngine([createSensitivePathRule({ protectedRoots: ['/w/.5straps'] })]), { level: () => level, root: () => '/w' })
+      expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.5straps/state.env')], grants: NO_GRANTS })).toMatchObject({ kind: 'deny' })
+      expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/denied.env')], grants: denied })).toMatchObject({ kind: 'deny' })
+    }
   })
 
   it('names the NAMEs and the file in the approval\'s effect line, never a value', () => {

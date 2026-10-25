@@ -24,6 +24,7 @@ import { createWebhookReporter } from '../../adapters/report/webhook-reporter.js
 import { resolveSandbox, type SandboxResolution } from '../../adapters/sandbox/create-sandbox.js'
 import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, grantsPath, pluginsPath, sandboxBinds, scratchSources, workspaceFields, type BuckleConfig } from '../../runtime/config.js'
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
+import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
@@ -155,13 +156,18 @@ export interface PolicyHandle {
   setMount(mount: string | null): Promise<WorkspacePolicy>
   /**
    * The dangerously-allow switch as stored now, read from the store at every call, so the local switch applies in a
-   * running node at once: `on`, and the root it is bound to, as the agent names it (owner decision D7). It needs no
-   * node switch beside it (Q14).
+   * running node at once: `on`, the level it is on at (null while off; owner ruling of 2026-10-25), and the root it is
+   * bound to, as the agent names it (owner decision D7). It needs no node switch beside it (Q14).
    */
-  dangerouslyAllow(): { on: boolean; boundTo: string }
-  /** The one switch, for the owner's local CLI only (ruling H1e), audited `policy_dangerously_allow_changed`. Writes nothing the policy is read from. */
-  setDangerouslyAllow(on: boolean): Promise<void>
+  dangerouslyAllow(): DangerouslyAllowState
+  /**
+   * The one switch, for the owner's local CLI only (ruling H1e), audited `policy_dangerously_allow_changed`, on at
+   * `level` (`command` unless named) or off. Writes nothing the policy is read from.
+   */
+  setDangerouslyAllow(on: boolean, level?: DangerouslyAllowLevel): Promise<void>
 }
+
+export interface DangerouslyAllowState { on: boolean; level: DangerouslyAllowLevel | null; boundTo: string }
 
 export interface BuckleRuntime {
   readonly workspaceId: string
@@ -368,14 +374,15 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
   let compiled = compileStartupPolicy(applied)
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, mounts: config.mounts })
-  // Read from the store at each evaluation; an unreadable store fails closed.
-  const dangerouslyAllow = () => {
-    let on = false
-    try { on = switchStore.isOn() } catch { on = false }
-    return { on, boundTo: paths.displayRoot }
+  // Read from the store at each evaluation; an unreadable store, a level it does not know among it, fails closed.
+  const dangerouslyAllow = (): DangerouslyAllowState => {
+    let level: DangerouslyAllowLevel | null = null
+    try { level = switchStore.level() } catch { level = null }
+    return { on: level !== null, level, boundTo: paths.displayRoot }
   }
+  const dangerouslyAllowLevel = () => dangerouslyAllow().level
   const dangerouslyAllowed = () => dangerouslyAllow().on
-  let permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowed })
+  let permissions = buildPermissionEngine({ config, compiled, paths, dangerouslyAllowLevel })
   // What a code mode script reaches: this workspace's manifest as it stands at each call, after tool policy (owner
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
@@ -487,13 +494,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         return compiled.policy
       },
       dangerouslyAllow,
-      async setDangerouslyAllow(on) {
+      async setDangerouslyAllow(on, level = 'command') {
+        const next = on ? level : null
         // No active-work check and no reload: turning it off must apply at once, and the rules read it per call.
         await auditOperation({
-          actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', describe: () => (on ? 'on' : 'off'),
-          operation: () => switchStore.set(on),
+          actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', describe: () => (next === null ? 'off' : `on ${next}`),
+          operation: () => switchStore.set(next),
         })
-        logger.warn(on ? 'Dangerously allow is on: every ask in this workspace is allowed without a person, and each use is audited' : 'Dangerously allow is off', { workspaceId })
+        logger.warn(next === null ? 'Dangerously allow is off' : `Dangerously allow is on at level ${next}: every ask in this workspace${next === 'all' ? ', a secret reference\'s file included,' : ' but a secret reference\'s file'} is allowed without a person, and each use is audited`, { workspaceId })
       },
     },
 
@@ -643,7 +651,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // Taking a new policy up stops the terminals of every open workbench this process holds, so that alone waits for
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
-    const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowed })
+    const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowLevel })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
@@ -947,7 +955,7 @@ function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
  * can never unlock a credential file or a destructive command inside it. The owner's command
  * policy sits first among the floors, because its answer is a denial rather than a question.
  */
-function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
+function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowLevel: () => DangerouslyAllowLevel | null }): PermissionEngine {
   const { config, compiled, paths } = input
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
@@ -958,7 +966,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),
     createReadScopeRule({ paths }),
     createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy }) }),
-  ]), { enabled: input.dangerouslyAllowed, root: () => paths.root })
+  ]), { level: input.dangerouslyAllowLevel, root: () => paths.root })
 }
 
 function buildManifest(input: {
