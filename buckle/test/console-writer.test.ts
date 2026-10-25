@@ -25,12 +25,13 @@ function screen(isTTY: boolean) {
 }
 
 /**
- * A readline on `output` with TERM pinned to a capable terminal: Node's readline checks TERM when it is created and
- * again on every prompt(), and under TERM=dumb it redraws a prompt without the text typed after it. So the stub must
- * hold for the whole row (it does, until the afterEach unstubs), or a row would pass or fail by the caller's shell.
+ * A readline on `output` with TERM pinned, to a capable terminal unless the row says otherwise: Node's readline checks
+ * TERM when it is created and again on every prompt(), and under TERM=dumb it writes a prompt again without the text
+ * typed after it. So the stub must hold for the whole row (it does, until the afterEach unstubs), or a row would pass or
+ * fail by the caller's shell.
  */
-function interfaceOn(input: PassThrough, output: PassThrough) {
-  vi.stubEnv('TERM', 'xterm-256color')
+function interfaceOn(input: PassThrough, output: PassThrough, term = 'xterm-256color') {
+  vi.stubEnv('TERM', term)
   return createInterface({ input, output })
 }
 
@@ -202,6 +203,94 @@ describe('the console writer', () => {
       held()
       held()
       expect(terminal.shown()).toBe('after\nkept\n')
+    })
+  })
+
+  // Under TERM=dumb a terminal prints the clear-line and cursor escapes as text, and the typed answer scrolls out of view.
+  describe('where TERM is dumb', () => {
+    it('writes a line logged during a question on its own line, then the prompt and the typed text again below it, with no escape', async () => {
+      const terminal = screen(true)
+      const input = new PassThrough()
+      const readline = interfaceOn(input, terminal.output, 'dumb')
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      try {
+        readline.question('[site] Your choice: ', () => {})
+        input.write('2')
+        await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: 2$/))
+        const release = writer.asking(readline)
+        const before = terminal.shown().length
+        writer.write(['22:22:05 [info] /mcp request completed (3ms)', '  a second line'], new Date())
+        const drawn = terminal.shown().slice(before)
+        expect(drawn).toBe('\n22:22:05 [info] /mcp request completed (3ms)\n  a second line\n[site] Your choice: 2')
+        expect(terminal.shown()).not.toContain('\u001b')
+        release()
+        const after = terminal.shown().length
+        writer.write(['22:22:06 [info] after the question'], new Date())
+        expect(terminal.shown().slice(after)).toBe('22:22:06 [info] after the question\n')
+      } finally {
+        readline.close()
+      }
+    })
+
+    it('writes the prompt again alone where nothing was typed', async () => {
+      const terminal = screen(true)
+      const readline = interfaceOn(new PassThrough(), terminal.output, 'dumb')
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      try {
+        readline.question('[site] Your choice: ', () => {})
+        writer.asking(readline)
+        const before = terminal.shown().length
+        writer.write(['22:22:05 [info] quiet'], new Date())
+        expect(terminal.shown().slice(before)).toBe('\n22:22:05 [info] quiet\n[site] Your choice: ')
+      } finally {
+        readline.close()
+      }
+    })
+
+    it('shows the typed text again with its control characters escaped, so it cannot act on the terminal', () => {
+      vi.stubEnv('TERM', 'dumb')
+      const terminal = screen(true)
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      const typed = { line: 'x\u001b[2J\u009b', prompt: vi.fn(() => { terminal.output.write('[site] Your choice: ') }) }
+      writer.asking(typed as never)
+      writer.write(['22:22:05 [info] hostile'], new Date())
+      expect(terminal.shown()).toBe('\n22:22:05 [info] hostile\n[site] Your choice: x\\u001b[2J\\u009b')
+      expect(terminal.shown()).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/)
+    })
+
+    it('writes plainly all the same where its output is no terminal, as it does under any TERM', async () => {
+      const terminal = screen(false)
+      const input = new PassThrough()
+      const readline = interfaceOn(input, terminal.output, 'dumb')
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      try {
+        readline.question('[site] Your choice: ', () => {})
+        const release = writer.asking(readline)
+        writer.write(['22:22:05 [info] plain'], new Date())
+        release()
+        expect(terminal.shown()).toBe('[site] Your choice: 22:22:05 [info] plain\n')
+      } finally {
+        readline.close()
+      }
+    })
+
+    it.each([['dumb', 'xterm-256color', false], ['xterm-256color', 'dumb', true]])('reads TERM once, as the writer is created: %s then %s', async (first, later, cursor) => {
+      const terminal = screen(true)
+      const input = new PassThrough()
+      const readline = interfaceOn(input, terminal.output, first)
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      try {
+        readline.question('[site] Your choice: ', () => {})
+        input.write('2')
+        await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*2$/))
+        writer.asking(readline)
+        const before = terminal.shown().length
+        vi.stubEnv('TERM', later)
+        writer.write(['22:22:05 [info] later'], new Date())
+        expect(terminal.shown().slice(before).startsWith('\u001b[2K\u001b[1G22:22:05')).toBe(cursor)
+      } finally {
+        readline.close()
+      }
     })
   })
 

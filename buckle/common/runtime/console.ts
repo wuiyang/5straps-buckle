@@ -1,5 +1,6 @@
 import { clearLine, cursorTo, type Interface } from 'node:readline'
 import type { Writable } from 'node:stream'
+import { printable } from '../domain/approval-instruction.js'
 import { createDateSeparators } from './log-render.js'
 
 /**
@@ -28,6 +29,22 @@ export interface ConsoleWriter {
 }
 
 /**
+ * What the output does with cursor control: `cursor`, a terminal that acts on the clear-line and cursor escapes;
+ * `dumb`, a terminal with `TERM=dumb`, which prints them as text, so none is sent and a row is written again whole
+ * instead of in place; `plain`, no terminal, where readline echoes nothing and nothing is drawn again.
+ */
+export type ScreenKind = 'cursor' | 'dumb' | 'plain'
+
+/**
+ * Read from the output and `TERM` as the caller is created, as readline reads `TERM` when it is: a terminal question
+ * and the writer it shares must agree for as long as they live.
+ */
+export function screenKind(output: Writable): ScreenKind {
+  if ((output as { isTTY?: boolean }).isTTY !== true) return 'plain'
+  return process.env.TERM === 'dumb' ? 'dumb' : 'cursor'
+}
+
+/**
  * Ends a question's hold on the writer; idempotent. `hold()` first, as the question ends: the prompt is gone, and every
  * line written from then on waits, accepted at once so the logger never waits, until the release writes them in one go
  * below the ending the question writes on its row (fix brief 1, H1). One hold at a time.
@@ -43,8 +60,8 @@ export interface PromptRelease {
  */
 export function createConsoleWriter(input: { output: Writable; dates: boolean; flush?: () => Promise<void> }): ConsoleWriter {
   const { output } = input
-  // Cursor control only where the output is a terminal: anywhere else the escapes would land in the text.
-  const terminal = (output as { isTTY?: boolean }).isTTY === true
+  // Cursor control only where the output is a terminal that acts on it: anywhere else the escapes would land in the text.
+  const screen = screenKind(output)
   const separators = createDateSeparators()
   let question: Interface | undefined
   let held: string[] | undefined
@@ -68,7 +85,15 @@ export function createConsoleWriter(input: { output: Writable; dates: boolean; f
       held.push(text)
       return true
     }
-    if (question === undefined || !terminal) return output.write(text)
+    if (question === undefined || screen === 'plain') return output.write(text)
+    if (screen === 'dumb') {
+      // No escape reaches a dumb terminal: end the prompt's row where it stands, write the lines on rows of their own, and
+      // write the prompt again below them, which readline does without what was typed, so that is shown again by hand.
+      const written = output.write(`\n${text}`)
+      question.prompt(true)
+      if (question.line !== '') output.write(printable(question.line))
+      return written
+    }
     // Readline never draws its prompt again after another write: clear the prompt's row, write there, then have it
     // draw the prompt and the typed text on the row below. The prompt is kept to one row, so one row is cleared.
     clearLine(output, 0)

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import type { CliRequest, RequestCli } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, type ApprovalDecision, type ApprovalRequest, type ApprovalWait } from '@5straps/protocol'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { setupCli } from '../cli/setup.js'
 import { describeLocalExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -18,7 +18,9 @@ import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
 
-afterEach(() => { vi.useRealTimers() })
+// The rows that pin cursor control run on a capable terminal whatever shell runs the suite; the TERM=dumb rows say so.
+beforeEach(() => { vi.stubEnv('TERM', 'xterm-256color') })
+afterEach(() => { vi.useRealTimers(); vi.unstubAllEnvs() })
 
 function approval(token: string, expiresInMs = 60_000): ApprovalRequest {
   return {
@@ -357,6 +359,22 @@ describe('a log line written while a terminal question is open', () => {
     expect(terminal.shown().split('22:22:05 [info] /mcp request completed (3ms)\n')[1]).toMatch(/Your choice: \S*2/)
     terminal.input.write('\r')
     expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'session' } })
+  })
+
+  // Under TERM=dumb a terminal prints the escapes as text and the typed answer scrolls out of view: no escape is sent.
+  it('lands on its own line under TERM=dumb, the prompt and the key typed written again below it, and no escape sent', async () => {
+    vi.stubEnv('TERM', 'dumb')
+    const terminal = keyboardTerminal()
+    const writer = createConsoleWriter({ output: terminal.output, dates: false })
+    const asked = setupCli({ terminal: { ...terminal, console: writer } }).requestCli(question('t1', 600_000))
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+    terminal.input.write('2')
+    await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: 2$/))
+    writer.write(['22:22:05 [info] /mcp request completed (3ms)'], new Date())
+    expect(terminal.shown()).toMatch(/Your choice: 2\n22:22:05 \[info\] \/mcp request completed \(3ms\)\n\[default\] Your choice: 2$/)
+    terminal.input.write('\r')
+    expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'session' } })
+    expect(terminal.shown()).not.toContain('\u001b')
   })
 
   it('is written plainly where the output is no terminal', async () => {
@@ -757,6 +775,84 @@ describe('the serve terminal\'s question', () => {
       const shown = await endedInQuiet(false)
       expect(shown).toMatch(/\(n\) deny\n\[The site\] Your choice: \[no longer waiting\]\n$/)
       expect(shown).not.toContain('\u001b')
+    })
+  })
+
+  // Under TERM=dumb the row cannot be drawn again in place: what readline echoed stays, and the row is written whole below it.
+  describe('where TERM is dumb', () => {
+    beforeEach(() => { vi.stubEnv('TERM', 'dumb') })
+
+    it.each<[string, string, string]>([
+      ['Enter adds [deny]', '', '[The site] Your choice: \r\n[The site] Your choice: [deny]\n'],
+      ['an unknown key adds [deny]', 'x', '[The site] Your choice: x\r\n[The site] Your choice: x [deny]\n'],
+    ])('writes the answer row whole below the echoed one, with no escape: %s', async (_, key, row) => {
+      const terminal = keyboardTerminal()
+      const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+      terminal.input.write(`${key}\r`)
+      expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+      await vi.waitFor(() => expect(terminal.shown().endsWith(row)).toBe(true))
+      expect(terminal.shown()).not.toContain('\u001b')
+    })
+
+    it('leaves the echoed row as it is for an answer that is no denial, and sends no escape', async () => {
+      const terminal = keyboardTerminal()
+      const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+      terminal.input.write('1\r')
+      expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'once' } })
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/\[The site\] Your choice: 1\r\n$/))
+      expect(terminal.shown()).not.toContain('\u001b')
+    })
+
+    it('escapes what was typed where it writes the denied row again', async () => {
+      const terminal = keyboardTerminal()
+      const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+      terminal.input.write('x\u009b2J\r')
+      expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+      await vi.waitFor(() => expect(terminal.shown().endsWith('[The site] Your choice: x\\u009b2J [deny]\n')).toBe(true))
+      expect(terminal.shown().slice(terminal.shown().lastIndexOf('\n', terminal.shown().length - 2))).not.toContain('\u009b')
+    })
+
+    it('writes the ending on a row of its own below the half-typed text, with no escape', async () => {
+      vi.useFakeTimers({ toFake: ['Date'] })
+      const terminal = keyboardTerminal()
+      const stop = new AbortController()
+      const asked = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(named(approval('t1', 60_000)), { signal: stop.signal }).catch(() => undefined)
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+      terminal.input.write('12')
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/12$/))
+      vi.setSystemTime(Date.now() + 61_000)
+      stop.abort()
+      await asked
+      expect(terminal.shown()).toMatch(/Your choice: 12\r\n\[The site\] Your choice: \[timeout\]\n$/)
+      expect(terminal.shown()).not.toContain('\u001b')
+    })
+
+    it.each(['before', 'after'] as const)('writes a line logged in the turn the question ends below its ending, with no escape: logged %s the abort', async (side) => {
+      const terminal = keyboardTerminal()
+      const writer = createConsoleWriter({ output: terminal.output, dates: false })
+      const stop = new AbortController()
+      const asked = createTerminalConsumer({ ...terminal, console: writer, onInterrupt: () => {} }).prompt(named(approval('t1', 600_000)), { signal: stop.signal }).catch(() => undefined)
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: \S*$/), { timeout: 3_000 })
+      const log = () => { void Promise.resolve().then(() => writer.write(['22:22:05 [info] Withdrew a call\'s approvals withdrawn=1'], new Date())) }
+      if (side === 'before') log()
+      stop.abort()
+      if (side === 'after') log()
+      await asked
+      expect(terminal.shown()).toMatch(/Your choice: \r\n\[The site\] Your choice: \[no longer waiting\]\n22:22:05 \[info\] Withdrew a call's approvals withdrawn=1\n$/)
+      expect(terminal.shown()).not.toContain('\u001b')
+    })
+
+    it('writes a plain row as before where the output is no terminal', async () => {
+      const terminal = silentTerminal()
+      const asked = setupCli({ terminal }).requestCli(named(approval('t1', 600_000)))
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/Your choice: $/), { timeout: 3_000 })
+      terminal.input.write('x\n')
+      expect(await asked).toMatchObject({ status: 'answered', answer: { choice: 'deny' } })
+      await vi.waitFor(() => expect(terminal.shown()).toMatch(/\[The site\] Your choice: x \[deny\]\n$/))
+      expect(terminal.shown().match(/Your choice: /g)).toHaveLength(1)
     })
   })
 

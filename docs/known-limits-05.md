@@ -64,11 +64,14 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
   prompt's row, only while the prompt and what was typed fit one row: a long workspace name on a
   narrow terminal, or typing past the row's end, wraps it, and the redraw or the tag then lands a
   row off. A question a one-shot command asks at a terminal is not redrawn at all.
-- The console writer decides by `isTTY` and does not read `TERM`; Buckle still passes `TERM` to child
-  processes and sets `xterm-256color` for shell commands. Where it is `dumb`, a question's redraw
-  still sends the clear-line
-  and cursor escapes, and a terminal that does not act on them shows them as text: the logged line
-  lands on the prompt's row after what was typed, not above it, and the prompt is written again
-  below it without the typed text. The typed answer still counts: the next keys and Enter add to it.
+- The console writer sends cursor escapes only to a terminal whose `TERM` is not `dumb`, read as the
+  node starts, as Node's readline does; Buckle still passes `TERM` to child processes and sets
+  `xterm-256color` for shell commands. Under `dumb`, a line logged while a question is open is
+  written on its own line, and the prompt and what was typed are written again below it, so the
+  earlier prompt row stays above the line; a denial or an ending is written as a row of its own
+  below the typed one, not on it. Node's readline, the line editor the question uses, still
+  redraws the row with escapes when a key edits the typed text, such as Backspace or an arrow, and
+  for keys typed in the half second before the prompt shows; a terminal that does not act on them
+  shows them as text. The typed answer still counts: the next keys and Enter add to it.
 - Lines logged before the node reads `buckle.env` follow the terminal and the shell's
   `BUCKLE_LOG_FORMAT`, not the file's.

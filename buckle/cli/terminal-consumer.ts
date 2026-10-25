@@ -8,7 +8,7 @@ import { actionPhrase } from '../common/domain/action-phrase.js'
 import { describeLocalExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
 import { localTime } from '../common/domain/local-time.js'
-import { createConsoleWriter, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
+import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
 import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
@@ -227,11 +227,15 @@ function markOf(question: Pick<ApprovalQuestion, 'workspaceId' | 'workspaceName'
  *
  * Columns come from readline, which counts a wide character as two, never from a string's length; and from the moment
  * the question ends until the row is written, the writer holds every line it is handed (fix brief 1, H1).
+ *
+ * Where `TERM` is `dumb` the output is a terminal that prints cursor escapes as text: readline still echoes the typed
+ * text and ends the row on Enter and on an abort, but nothing here moves the cursor, so a denial and an ending are
+ * written as a row of their own below the one readline ended.
  */
 function promptRow(input: { question: ApprovalQuestion; output: Writable; readline: Interface; writer: ConsoleWriter }) {
   const { output, readline } = input
   const text = `${markOf(input.question)}Your choice: `
-  const terminal = (output as { isTTY?: boolean }).isTTY === true
+  const screen = screenKind(output)
   let prompted: PromptRelease | undefined
   let waiting: PromptRelease | undefined
   let promptColumns = 0
@@ -272,11 +276,15 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
     },
     answered(typed: string, denied: boolean): void {
       const tag = denied ? `${typed === '' ? '' : ' '}[deny]` : ''
-      if (!terminal) {
+      if (screen === 'plain') {
         output.write(`${printable(typed)}${tag}\n`)
         return
       }
       if (!denied) return
+      if (screen === 'dumb') {
+        output.write(`${text}${printable(typed)}${tag}\n`)
+        return
+      }
       // The row drawn again whole, so no column is computed; what a paste echoed below it is cleared.
       moveCursor(output, 0, -(1 + extraLines))
       cursorTo(output, 0)
@@ -285,7 +293,7 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
     },
     ended(tag: string | null): void {
       if (tag === null) return
-      if (prompted === undefined || !terminal) {
+      if (prompted === undefined || screen !== 'cursor') {
         output.write(`${text}${tag}\n`)
         return
       }
