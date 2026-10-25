@@ -69,7 +69,7 @@ export function createFilledSecrets(): FilledSecrets {
  * not read as written. Browser fill text and web_fetch headers reach no shell.
  */
 export function checkSecrets(input: { tool: string; args: JsonObject; plan: SecretPlan; effects: readonly ResolvedEffect[] }): CheckedSecrets {
-  const files = new Map(input.effects.flatMap(effect => (effect.kind === 'secret_file' ? [[effect.written, effect.path] as const] : [])))
+  const files = new Map(input.effects.flatMap(effect => (effect.kind === 'secret_file' ? effect.written.map(written => [written, effect.path] as const) : [])))
   const exec = input.effects.find((effect): effect is ExecEffect => effect.kind === 'exec')
   const shellPlaces = input.plan.places.filter(place => place.kind === 'argv' || place.kind === 'shell')
   if (shellPlaces.length === 0 || exec === undefined) return { plan: input.plan, files, shell: null }

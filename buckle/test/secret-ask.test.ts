@@ -20,7 +20,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // file as other grants are, a session at most in strict mode, and secrets.files lists files that need no ask.
 
 const DECOY = 'decoy-value-0123456789'
-const effect = (path: string, names = ['API_TOKEN']): SecretFileEffect => ({ kind: 'secret_file', path, written: '.env.local', names })
+const effect = (path: string, names = ['API_TOKEN']): SecretFileEffect => ({ kind: 'secret_file', path, written: ['.env.local'], names })
 const NO_GRANTS = { subjectsFor: () => [] }
 
 describe('the credential-file rule on a secret file', () => {
@@ -56,7 +56,7 @@ describe('the credential-file rule on a secret file', () => {
   it('refuses a file the workspace\'s filesystem policy keeps from reads', () => {
     const policy = { ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'secrets', read: 'deny' as const, write: 'deny' as const }] } }
     const filesystem = createFilesystemPolicyRule({ root: '/w', policy })
-    expect(filesystem.evaluate({ tool: 'shell_exec', effect: { ...effect('/w/secrets/.env'), written: 'secrets/.env' }, grants: NO_GRANTS })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
+    expect(filesystem.evaluate({ tool: 'shell_exec', effect: { ...effect('/w/secrets/.env'), written: ['secrets/.env'] }, grants: NO_GRANTS })).toMatchObject({ kind: 'deny', rule: 'filesystem_policy' })
   })
 
   it('is still asked about while the dangerously-allow switch is on', () => {
@@ -66,6 +66,7 @@ describe('the credential-file rule on a secret file', () => {
 
   it('names the NAMEs and the file in the approval\'s effect line, never a value', () => {
     expect(summarizeEffect(effect('/w/.env.local', ['API_TOKEN', 'OTHER']))).toBe('secrets API_TOKEN, OTHER from .env.local')
+    expect(summarizeEffect({ ...effect('/w/.env.local', ['A', 'B']), written: ['.env.local', './.env.local', 'link.env'] })).toBe('secrets A, B from .env.local, ./.env.local, and link.env')
   })
 })
 
@@ -215,6 +216,25 @@ describe('through the invoker', () => {
       expect(asked(await run(linked.runtime, [reference]))).toContain('sensitive_path')
     }
     expect([...missing.ran, ...linked.ran]).toEqual([])
+  })
+
+  it('asks once for a file a call spells two ways, naming every NAME and every spelling, and reads both', async () => {
+    const { workspace, runtime, ran } = await node()
+    symlinkSync('.env.local', join(workspace, 'link.env'))
+    for (const [args, said] of [
+      [['%s %s', '{{file:.env.local:API_TOKEN}}', '{{file:./.env.local:OTHER}}'], 'API_TOKEN, OTHER from .env.local and ./.env.local'],
+      [['%s %s', '{{file:link.env:API_TOKEN}}', '{{file:.env.local:OTHER}}'], 'API_TOKEN, OTHER from link.env and .env.local'],
+    ] as const) {
+      const response = await run(runtime, [...args], `chat-${said.length}`)
+      if (response.outcome !== 'approval_required') throw new Error('expected asks')
+      const asks = response.approvals.filter(approval => approval.rule === 'sensitive_path')
+      expect(asks).toMatchObject([{ subject: `secret-file:${join(workspace, '.env.local')}` }])
+      expect(asks[0]!.reason).toContain(`reads ${said} for this call`)
+      expect(runtime.approvalService.waiting().find(entry => entry.request.token === asks[0]!.token)?.call).toMatchObject({ effects: expect.arrayContaining([`secrets ${said}`]) })
+      await approve(runtime, response, 'once')
+      expect(await run(runtime, [...args], `chat-${said.length}`, response.approvals.map(approval => approval.token))).toMatchObject({ outcome: 'ok' })
+    }
+    expect(ran).toEqual([{ command: 'curl', args: ['%s %s', DECOY, `${DECOY}-other`] }, { command: 'curl', args: ['%s %s', DECOY, `${DECOY}-other`] }])
   })
 
   it('refuses a file that does not exist, or that lands outside the workspace, before anyone is asked', async () => {

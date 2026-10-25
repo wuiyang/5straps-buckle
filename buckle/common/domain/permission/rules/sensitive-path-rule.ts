@@ -1,5 +1,6 @@
 import { basename } from 'pathe'
 import { comparablePath, isInsideAny, segments } from '../../paths.js'
+import { wordList } from '../../word-list.js'
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionDecision, PermissionRule, RuleInput } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
@@ -112,11 +113,11 @@ function secretFileDecision(input: { effect: Extract<RuleInput['effect'], { kind
   const { effect, grants } = input
   const subject = secretFileSubject(effect.path)
   if (isInsideAny(input.protectedRoots, input.fold(effect.path))) return deny('sensitive_path', subject, "Buckle's own state and policy are not reachable from a tool")
-  if (grants.deniedSubjectsFor?.('sensitive_path').some(denied => isSecretFileSubject(denied) && input.fold(denied.slice(SECRET_FILE_PREFIX.length)) === input.fold(effect.path))) return deny('sensitive_path', subject, `The owner denied the secret file ${effect.written}`)
+  if (grants.deniedSubjectsFor?.('sensitive_path').some(denied => isSecretFileSubject(denied) && input.fold(denied.slice(SECRET_FILE_PREFIX.length)) === input.fold(effect.path))) return deny('sensitive_path', subject, `The owner denied the secret file ${wordList(effect.written)}`)
   if (grants.subjectsFor('sensitive_path').includes(subject)) return allowedVia('sensitive_path', subject)
   if (input.options.secretListed?.(effect.path)) return { kind: 'allow' }
   const scopes: GrantScope[] = input.options.strict ? ['once', 'session'] : ['once', 'session', 'always']
-  return ask('sensitive_path', subject, `WARNING: Buckle reads ${effect.names.join(', ')} from ${effect.written} for this call and puts each value where its secret reference stands, in the command, the browser fill, or the request header; the agent sees [secret:NAME] in its place, never the value. Allowing this file lets the scope you choose read any NAME in it this way.`, scopes)
+  return ask('sensitive_path', subject, `WARNING: Buckle reads ${effect.names.join(', ')} from ${wordList(effect.written)} for this call and puts each value where its secret reference stands, in the command, the browser fill, or the request header; the agent sees [secret:NAME] in its place, never the value. Allowing this file lets the scope you choose read any NAME in it this way.`, scopes)
 }
 
 export function sensitivePathReason(path: string): string | null {

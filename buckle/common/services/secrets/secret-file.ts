@@ -52,18 +52,33 @@ export function listedSecretFile(written: string, view: PathView): string | null
 
 /**
  * The files a call's references name, each judged where it lands (resolveSecretFile) with the NAMEs the call reads from
- * it, so the rules ask about each before Buckle reads any (docs/secrets.md).
+ * it, so the rules ask about each before Buckle reads any (docs/secrets.md). One file the references spell two ways,
+ * `./.env.local` or a link to it beside `.env.local`, is one effect naming every spelling and every NAME, so its one ask
+ * names them all.
  */
 export function secretFileEffects(plan: SecretPlan, view: PathView): SecretFileEffect[] {
-  return [...plan.files].map(([written, names]) => {
-    try {
-      return { kind: 'secret_file', path: resolveSecretFile(written, view), written, names: [...names] }
-    } catch (error) {
-      // A refusal names the NAMEs the call would have read there too, never a value (docs/secrets.md).
-      if (error instanceof ToolInputError) throw new ToolInputError(`${error.message}; the call reads ${names.join(', ')} from it`, { code: error.code })
-      throw error
+  const byPath = new Map<string, SecretFileEffect>()
+  for (const [written, names] of plan.files) {
+    const path = judgedSecretFile(written, names, view)
+    const effect = byPath.get(path)
+    if (!effect) {
+      byPath.set(path, { kind: 'secret_file', path, written: [written], names: [...names] })
+      continue
     }
-  })
+    effect.written.push(written)
+    for (const name of names) if (!effect.names.includes(name)) effect.names.push(name)
+  }
+  return [...byPath.values()]
+}
+
+/** Where a reference's file lands; a refusal names the NAMEs the call would have read there too, never a value. */
+function judgedSecretFile(written: string, names: readonly string[], view: PathView): string {
+  try {
+    return resolveSecretFile(written, view)
+  } catch (error) {
+    if (error instanceof ToolInputError) throw new ToolInputError(`${error.message}; the call reads ${names.join(', ')} from it`, { code: error.code })
+    throw error
+  }
 }
 
 /**

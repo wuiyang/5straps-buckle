@@ -1,5 +1,6 @@
 import { redactUrl } from '@5straps/runtime'
 import { shownCommand } from './argv.js'
+import { wordList } from './word-list.js'
 
 /**
  * What a call will touch, declared from parsed input before it runs. Paths may be relative;
@@ -34,10 +35,10 @@ export type ResolvedEffect =
 
 /**
  * A file the call's secret references name (docs/secrets.md), added by the invoker and never declared by a tool: `path`
- * where it really lands, `written` as the reference names it, and the NAMEs the call reads from it. Buckle reads it
- * itself as the call runs; nothing of it reaches the agent.
+ * where it really lands, `written` each spelling the references name it by, and the NAMEs the call reads from it under
+ * any of them. Buckle reads it itself as the call runs; nothing of it reaches the agent.
  */
-export interface SecretFileEffect { kind: 'secret_file'; path: string; written: string; names: string[] }
+export interface SecretFileEffect { kind: 'secret_file'; path: string; written: string[]; names: string[] }
 
 /**
  * One line naming what an effect touches, as an approval shows it (owner decision D17): whole, a command
@@ -50,6 +51,6 @@ export function summarizeEffect(effect: ResolvedEffect): string {
     case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
     case 'process_probe': return 'process probe'
-    case 'secret_file': return `secrets ${effect.names.join(', ')} from ${effect.written}`
+    case 'secret_file': return `secrets ${effect.names.join(', ')} from ${wordList(effect.written)}`
   }
 }

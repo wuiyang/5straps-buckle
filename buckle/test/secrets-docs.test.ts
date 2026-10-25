@@ -50,7 +50,7 @@ describe('docs/secrets.md quotes what the code says', () => {
   })
 
   it('quotes the approval line a secret file shows, and the strict mode that shortens its answer', () => {
-    expect(summarizeEffect({ kind: 'secret_file', path: '/repo/.env.local', written: '.env.local', names: ['API_TOKEN'] })).toBe('secrets API_TOKEN from .env.local')
+    expect(summarizeEffect({ kind: 'secret_file', path: '/repo/.env.local', written: ['.env.local'], names: ['API_TOKEN'] })).toBe('secrets API_TOKEN from .env.local')
     expect(secrets).toContain('"secrets API_TOKEN from .env.local"')
     expect(secrets).toContain('BUCKLE_STRICT_WRITES=true')
   })
