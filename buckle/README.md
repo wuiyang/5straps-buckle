@@ -32,14 +32,14 @@ cd ~/some/project
 buckle init
 ```
 
-`buckle init` sets the machine's node up once, writing its settings and admin credential to
+`buckle init` sets up the node once, writing its settings and admin credential to
 `buckle.env`, owner-only, in the state directory: `~/.5straps/buckle`, or the absolute path in
 `BUCKLE_STATE_DIR`. It serves the current directory as a workspace, shown to the agent as
 `/workspace`, and prints its agent token once. It asks about packs, the shell, host Git, and
 network lists; `--yes` takes the defaults. `buckle workspace set` and `buckle policy` change them
 later; `buckle init` in another project adds another workspace.
 
-The state directory also holds each workspace's settings, grants, approvals, and action log.
+The state directory holds each workspace's settings, grants, approvals, and action log.
 Buckle's file tools refuse to read it. Only a process sandbox, bubblewrap on Linux or Seatbelt on
 macOS, hides it from shell commands: with `BUCKLE_SANDBOX=none`, a shell command can read
 `buckle.env` without an ask.
@@ -80,11 +80,11 @@ credential shapes hidden
 ([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)),
 and the decision binds the whole call.
 
-The answer can come from anywhere: a prompt in the terminal running `buckle
+The answer can come from a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can also post each pending approval to
 the relay `BUCKLE_APPROVAL_WEBHOOK` names, for a person away from the machine. A
-call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a token to retry.
+call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a retry token.
 
 ```bash
 buckle approvals --watch
@@ -92,7 +92,7 @@ buckle approve <token> --scope session
 buckle grants list
 ```
 
-Owners set the policy with `buckle policy`: command allow and deny globs matched one shell
+Owners set policy with `buckle policy`: command allow and deny globs matched one shell
 word at a time, an approved host and URL list, and where the folder shows. Deny wins.
 
 ```bash
@@ -104,8 +104,8 @@ buckle policy mount /workspace
 `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders ([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)).
 
 `buckle policy dangerously-allow on` removes the person: every ask in that workspace becomes an
-allow, destructive commands included. Explicit deny rules and the mount boundary still refuse,
-and a path outside the workspace still asks.
+allow, destructive commands included. Explicit deny rules and the mount boundary still refuse;
+a path outside the workspace still asks.
 Off by default;
 [Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)
 documents it.
@@ -113,13 +113,13 @@ documents it.
 ## Sandbox
 
 - Linux: shell commands run under bubblewrap.
-- macOS: shell commands run under Seatbelt once `shell.isolation` is off and no workspace mount
+- macOS: shell commands run under Seatbelt once `shell.isolation` is off and no mount
   is set, since both need bubblewrap.
-- Elsewhere, or with no sandbox available, the shell pack is withheld. `BUCKLE_SANDBOX=none`
+- Elsewhere, or with no sandbox, the shell pack is withheld. `BUCKLE_SANDBOX=none`
   acknowledges that commands run unsandboxed; it too needs
   `shell.isolation` off and no mount.
 
-On Linux, shell tools work on private copies of the workspace by default and publish
+On Linux, shell tools work on private workspace copies by default and publish
 changes through conflict-checked checkpoints; `shell.isolation` off selects shared-workspace
 execution (`BUCKLE_SHELL_ISOLATION=false` sets it for every workspace). Host Git and forge
 tools (`packs.hostGit`) and host language servers (`packs.hostLsp`) are off by default, because
@@ -134,13 +134,13 @@ buckle log --limit 20
 buckle log --json
 ```
 
-Arguments are trimmed for the log: every string becomes its length, such as
+Arguments are trimmed for the log: every string becomes its length, like
 `[5 characters]`, and any value under a credential-named key reads `[redacted]`. The log is a plain append-only file,
-not a tamper-proof record.
+not tamper-proof.
 
 ## Rings
 
-Rings, the 5straps agent control plane, can pair with Buckle nodes to collect their
+Rings, the 5straps agent control plane, can pair with Buckle nodes to collect
 action logs and refused calls, relay pending approvals, and, where the experimental admin face is
 on, push policy; Buckle runs without it.
 
@@ -161,6 +161,7 @@ For users:
   when a change applies.
 - [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, shell isolation,
   and [scripts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md).
+- [Secrets](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md): secret references in commands, browser fills, and fetch headers; values never shown.
 - [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and
   Chromium arguments.
 - [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
@@ -182,7 +183,7 @@ For developers:
 
 | Path | Package | What it is |
 |---|---|---|
-| `buckle/` | `@5straps/buckle` | Buckle: the CLI, the MCP server, and the HTTP server |
+| `buckle/` | `@5straps/buckle` | Buckle: the CLI, MCP server, and HTTP server |
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas Buckle speaks |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives Buckle is built on |
 
