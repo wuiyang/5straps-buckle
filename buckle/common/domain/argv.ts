@@ -10,9 +10,12 @@ import { redactCredentials } from '@5straps/runtime'
  */
 const ZSH_NAME = /^r?zsh(?:5?(?:-static)?|-\d[0-9A-Za-z.-]*|\.old)$/
 
-/** Whether a command's base name (baseCommand) starts zsh. */
+/**
+ * Whether a command's base name (baseCommand) starts zsh. Every shell name lookup (SHELL_COMMANDS) of every command read
+ * comes here, so a name starting with neither letter ZSH_NAME allows is passed before the pattern.
+ */
 export function isZsh(name: string): boolean {
-  return ZSH_NAME.test(name)
+  return (name[0] === 'z' || name[0] === 'r') && ZSH_NAME.test(name)
 }
 
 /**
