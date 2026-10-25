@@ -118,6 +118,8 @@ const PNPM_SELECTORS = ['--filter', '-F', '--filter-prod', '--recursive', '-r', 
 const PNPM_CONFIG_KEY = /^-+(?:no-)*config\./i
 /** pnpm's commands that run a script or a program: options up to its name, then every word after it is its own. */
 const PNPM_RUNNERS: ReadonlySet<string> = new Set(['run', 'run-script', 'exec'])
+/** pnpm's commands that run the next command in every workspace package (`pnpm recursive run build`), by name and aliases. */
+const PNPM_RECURSIVE_COMMANDS: ReadonlySet<string> = new Set(['recursive', 'multi', 'm'])
 /**
  * The script names that pnpm runs as `pnpm <name>`, and the commands that run one: every word after the first is the script's
  * own. `restart` is not one: pnpm reads `-w`, `--workspace-root`, and any `--config.<key>` after it itself, and ran the root's or
@@ -130,12 +132,15 @@ const PNPM_SCRIPT_WORDS: ReadonlySet<string> = new Set(['dev', 'build', 'test', 
  * as the program's own parser reads it. Both hand every word after the command (npx) or the script name (pnpm run) to it as its
  * own argument (`npx tsc -w` runs tsc's watch mode, `pnpm run build --filter a` runs the root's script with `--filter a`),
  * so a selector counts only before it. Any other pnpm command reads every word as its own option (`pnpm install --filter a`).
+ * pnpm's `recursive`, `multi`, and `m` are commands, not options, that run the next command in every package, so one as the first
+ * bare word selects too (`selectsBare`), and as any bare word after an option without `=value`, where the command is not known.
  */
 function selectsPackage(program: string, words: readonly string[]): boolean {
   if (program === 'npx') return selectsBeforeProgram(words, word => NPX_SELECTORS.some(option => selectsOption(word, option)), () => true)
   if (program !== 'pnpm') return false
   const selects = (word: string) => PNPM_CONFIG_KEY.test(word) || PNPM_SELECTORS.some(option => selectsOption(word, option))
-  return selectsBeforeProgram(words, selects, ([first = '', ...more]) => PNPM_SCRIPT_WORDS.has(first) || (PNPM_RUNNERS.has(first) && more.length > 0))
+  const recursive = (word: string, first: boolean, loose: boolean) => PNPM_RECURSIVE_COMMANDS.has(word) && (first || loose)
+  return selectsBeforeProgram(words, selects, ([first = '', ...more]) => PNPM_SCRIPT_WORDS.has(first) || (PNPM_RUNNERS.has(first) && more.length > 0), recursive)
 }
 
 /**
@@ -144,9 +149,13 @@ function selectsPackage(program: string, words: readonly string[]): boolean {
  * The options' own types are not modeled, so a bare word after an option typed without `=value` may be that option's value:
  * from the first such option on, the reading never stops and a selector anywhere counts (`pnpm run --reporter silent --filter a
  * build`), which fails closed for `pnpm --silent run build --filter a`, `npx -y tsc -w`, and a pnpm script of another name
- * (`pnpm lint -r`).
+ * (`pnpm lint -r`). `selectsBare` is asked of each bare word: whether it is itself a selection, given whether it is the first bare
+ * word and whether an option without `=value` came before it.
  */
-function selectsBeforeProgram(words: readonly string[], selects: (word: string) => boolean, starts: (bare: readonly string[]) => boolean): boolean {
+function selectsBeforeProgram(
+  words: readonly string[], selects: (word: string) => boolean, starts: (bare: readonly string[]) => boolean,
+  selectsBare: (word: string, first: boolean, loose: boolean) => boolean = () => false,
+): boolean {
   const bare: string[] = []
   let loose = false
   for (const word of words) {
@@ -156,6 +165,7 @@ function selectsBeforeProgram(words: readonly string[], selects: (word: string) 
       continue
     }
     bare.push(word)
+    if (selectsBare(word, bare.length === 1, loose)) return true
     if (!loose && starts(bare)) return false
   }
   return false

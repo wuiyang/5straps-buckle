@@ -372,6 +372,22 @@ describe('a call that changes its working directory before its code runs (fix br
     for (const words of own) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(false)
   })
 
+  // pnpm 10.33.2's recursive, and its aliases multi and m, are commands, not options: from inside the package a, `pnpm recursive run
+  // build` (and `multi` and `m`) ran every workspace package's build script, and `pnpm recursive exec pwd` printed both folders,
+  // also after an option such as `--no-color` or `--loglevel=info`. The same word as a script name, a package to add, or an argument
+  // after the program is not the command (standalone round 2 residue, pnpm recursive).
+  it('counts pnpm recursive, multi, and m as the command, which runs the next command in every package, and reads the same word anywhere else as its own', () => {
+    const selecting = [
+      ['recursive', 'run', 'build'], ['multi', 'run', 'build'], ['m', 'run', 'build'], ['recursive', 'exec', 'pwd'], ['recursive', 'install'], ['recursive', 'build'],
+      ['--no-color', 'recursive', 'run', 'build'], ['--loglevel=info', 'multi', 'run', 'build'], ['--reporter=append-only', 'm', 'run', 'build'], ['--reporter', 'append-only', 'm', 'run', 'build'],
+    ]
+    for (const words of selecting) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+    const own = [['run', 'recursive'], ['run', 'm'], ['run-script', 'multi'], ['add', 'm'], ['add', 'recursive'], ['install', 'multi'], ['exec', 'echo', 'm'], ['run', 'build', 'recursive'], ['build', 'm'], ['--reporter=silent', 'add', 'm'], ['recurse', 'run', 'build'], ['mm', 'run', 'build']]
+    for (const words of own) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(false)
+    // The kept over-refusal: after an option without =value the command word is not known, so a word of this kind anywhere counts.
+    for (const words of [['--silent', 'add', 'm'], ['--silent', 'run', 'build', 'recursive']]) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+  })
+
   // npm 11.19.0's npx, run in a scratch workspace of the packages a and b with a local command that prints its folder: each npx
   // option below, typed before the command, ran it in a (or once in each package), where the same word after the command reached
   // it as its own argument (`npx tsc -w` is tsc's watch mode). ruby's -x[directory] is from ruby(1), not run: ruby is not installed
