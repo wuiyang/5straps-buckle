@@ -42,8 +42,9 @@ const referenceKey = (reference: FileReference) => secretKey(reference.path, ref
 /**
  * The references of a shell call, read as the rules read the call, before anyone is asked (docs/secrets.md): the call
  * must be read whole, run no interpreter (whose code Buckle does not read, so a reference there is an interpreter body's),
- * and hold no reference in a command word; a reference in text a shell parses must sit inside quotes, which a probe holding
- * a blank shows (UNQUOTED_REASON), and follow no `$` or backslash. Answers how each place is read, which sets the
+ * and hold no reference in a command word; a reference in text a shell parses must sit inside quotes, and not in the word
+ * of a parameter expansion no double quotes hold, which a probe holding a blank shows (probesFor, UNQUOTED_REASON), and
+ * follow no `$` or backslash. Answers how each place is read, which sets the
  * characters its value may hold. `shellText` marks script_run's bash body, which a shell parses whole.
  */
 export function readShellReferences(input: { call: ProgramCall; places: readonly ArgumentPlace[]; shellText: boolean }): Map<number, ShellTier> {
@@ -79,14 +80,51 @@ export function readShellReferences(input: { call: ProgramCall; places: readonly
     if (place.references.some(reference => reference.start > 0 && (text[reference.start - 1] === '$' || text[reference.start - 1] === '\\'))) throw refused(EXPANSION_REASON)
   }
   if (shellPlaces.length > 0) {
-    // A probe holding a blank in each reference's place: where a shell would split it, the reading changes.
-    const probes = new Map(references.map((reference, index) => [referenceKey(reference), `bucklesecretprobe${index}a bucklesecretprobe${index}b`]))
-    const probed = substituted(call, shellPlaces, reference => probes.get(referenceKey(reference))!)
+    // A probe in each reference's place (probesFor): where a shell would split it, the reading changes.
+    const probes = probesFor(call, shellPlaces)
+    const probed = substituted(call, shellPlaces, reference => probes.get(reference)!)
     const probedForms = commandForms(probed.command, probed.args)
-    const byProbe = [...probes].map(([key, probe]) => [probe, token(key)] as const)
+    const byProbe = [...probes].map(([reference, probe]) => [probe, token(referenceKey(reference))] as const)
     if (JSON.stringify(mapped(probedForms, word => replaceAll(withTokens(word, references), byProbe))) !== JSON.stringify(asRead)) throw refused(UNQUOTED_REASON)
   }
   return tiers
+}
+
+/** How many closing braces the probes of one call carry in all: the probed text is read whole, so it is bounded. */
+const MAX_PROBE_BRACES = 65_536
+
+/**
+ * A stand-in for each reference in shell text, read in its place to show the reference stays one word: a blank, which a
+ * shell splits on outside quotes, after as many closing braces as `${` stand before the reference in the call. Those
+ * end every parameter expansion it may stand in, `${x:-REF}` among them, which the command reader reads as one word
+ * while a shell splits and globs its value unless the whole expansion is double-quoted; after them the blank splits the
+ * word, unless double quotes around the expansion, or quotes in its word, hold it. A brace past the last expansion is
+ * one more character of the word.
+ */
+function probesFor(call: ProgramCall, places: readonly ArgumentPlace[]): Map<FileReference, string> {
+  const words = [call.command, ...call.args]
+  const before = [0]
+  for (const word of words) before.push(before.at(-1)! + expansionsIn(word, word.length))
+  const probes = new Map<FileReference, string>()
+  let braces = 0
+  for (const place of places) {
+    const text = words[place.index + 1]!
+    for (const reference of place.references) {
+      const closing = before[place.index + 1]! + expansionsIn(text, reference.start)
+      braces += closing
+      if (braces > MAX_PROBE_BRACES) throw refused(`${UNQUOTED_REASON}; this call's secret references stand after more \${ than Buckle checks them against (${MAX_PROBE_BRACES} in all)`)
+      const index = probes.size
+      probes.set(reference, `bucklesecretprobe${index}a${'}'.repeat(closing)} bucklesecretprobe${index}b`)
+    }
+  }
+  return probes
+}
+
+/** How many `${` open in text before `end`. */
+function expansionsIn(text: string, end: number): number {
+  let count = 0
+  for (let at = text.indexOf('${'); at >= 0 && at + 2 <= end; at = text.indexOf('${', at + 2)) count++
+  return count
 }
 
 /**

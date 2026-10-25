@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingHttpHeaders, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -12,7 +12,7 @@ import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { checkSecrets, createFilledSecrets, runWithSecrets } from '../common/services/secrets/call-secrets.js'
 import { planSecrets } from '../common/services/secrets/places.js'
 import { PLACES_REASON, SHORT_REASON } from '../common/domain/secret-reference.js'
-import { COMMAND_WORD_REASON, EXPANSION_REASON, UNQUOTED_REASON } from '../common/services/secrets/shell-reading.js'
+import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_REASON } from '../common/services/secrets/shell-reading.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -222,6 +222,54 @@ describe('each value checked for where it goes', () => {
   it('takes a value holding blanks inside quotes in shell text, where it stays one word', async () => {
     const { runtime } = await node()
     expect(output(await shell(runtime, 'bash', ['-c', 'printf "<%s>" "{{file:.env.local:SPACED}}"'])).stdout).toBe('<[secret:SPACED]>')
+  })
+
+  // A shell splits and globs the value of an unquoted parameter expansion, ${x:-word} among them, while the command reader
+  // reads the expansion as one word, so a stand-in holding only a blank read the same there (review of 6de734c).
+  it.each([
+    ['a default', 'printf "<%s>" ${x:-{{file:.env.local:SPACED}}}'],
+    ['an assigned default', 'printf "<%s>" ${x:={{file:.env.local:SPACED}}}'],
+    ['an alternative', 'y=1; printf "<%s>" ${y:+{{file:.env.local:SPACED}}}'],
+    ['a replacement', 'x=abc; printf "<%s>" ${x/b/{{file:.env.local:SPACED}}}'],
+    ['a loop\'s word list', 'for w in ${x:-{{file:.env.local:SPACED}}}; do printf "<%s>" "$w"; done'],
+    ['a nested default', 'printf "<%s>" ${x:-${y:-{{file:.env.local:SPACED}}}}'],
+    ['a parameter\'s name', 'printf "<%s>" ${{{file:.env.local:SPACED}}}'],
+    ['a default inside a quoted command substitution', 'printf "<%s>" "$(printf "[%s]" ${x:-{{file:.env.local:SPACED}}})"'],
+  ])('refuses a reference unquoted in %s, which a shell would split', async (_what, body) => {
+    const { runtime } = await node()
+    expect(refusal(await shell(runtime, 'bash', ['-c', body]))).toContain(UNQUOTED_REASON)
+    expect(refusal(await call(runtime, 'script_run', { runtime: 'bash', script: body }))).toContain(UNQUOTED_REASON)
+  })
+
+  it('refuses a reference after more ${ than its probe is bounded to, and reads one at the bound', () => {
+    const body = (count: number) => 'v="' + '${a}'.repeat(count) + '"; printf "%s" "{{file:.env.local:API_TOKEN}}"'
+    const read = (count: number) => {
+      const text = body(count)
+      const planned = planSecrets({ tool: 'shell_exec', pack: 'shell', args: { command: 'bash', args: ['-c', text] }, enabled: true })
+      if (!('plan' in planned) || !planned.plan) throw new Error('expected a plan')
+      return () => readShellReferences({ call: { command: 'bash', args: ['-c', text] }, places: [{ index: 1, references: planned.plan!.places[0]!.references }], shellText: false })
+    }
+    expect(read(65_536)()).toEqual(new Map([[1, 'shell']]))
+    expect(read(65_537)).toThrow('than Buckle checks them against (65536 in all)')
+  })
+
+  it('runs no recursive delete a value split inside an unquoted default would make', async () => {
+    const { workspace, runtime } = await node()
+    appendFileSync(join(workspace, '.env.local'), 'SPLIT="decoy-file -rf decoy-dir"\n')
+    mkdirSync(join(workspace, 'decoy-dir', 'inner'), { recursive: true })
+    writeFileSync(join(workspace, 'decoy-file'), 'marker')
+    expect(refusal(await shell(runtime, 'bash', ['-c', 'rm ${x:-{{file:.env.local:SPLIT}}}']))).toContain(UNQUOTED_REASON)
+    expect(realpathSync(join(workspace, 'decoy-dir', 'inner'))).toBe(join(workspace, 'decoy-dir', 'inner'))
+  })
+
+  it.each([
+    ['a default the whole expansion quotes', 'printf "<%s>" "${x:-{{file:.env.local:SPACED}}}"'],
+    ['a nested default the whole expansion quotes', 'printf "<%s>" "${x:-${y:-{{file:.env.local:SPACED}}}}"'],
+    ['a default whose word quotes it', 'printf "<%s>" ${x:-"{{file:.env.local:SPACED}}"}'],
+    ['a default whose word single-quotes it', `printf "<%s>" \${x:-'{{file:.env.local:SPACED}}'}`],
+  ])('takes a reference in %s, where it stays one word', async (_what, body) => {
+    const { runtime } = await node()
+    expect(output(await shell(runtime, 'bash', ['-c', body])).stdout).toBe('<[secret:SPACED]>')
   })
 
   it('reads the file as the call runs, not as it was judged', async () => {
