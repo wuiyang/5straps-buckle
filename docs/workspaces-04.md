@@ -38,8 +38,10 @@ A state directory that served nothing gets no workspace until `buckle init` make
 On Windows a folder will not move while a program holds a file inside it open, most likely a
 `buckle serve`, a `buckle mcp` an MCP client started, the Buckle service, the browser Buckle opened
 (agent-browser and its Chromium), or an antivirus scan. The folders such a program keeps files in
-(`history`, `browser-sessions`, and `workbenches`) move first, so a held one stops the move before
-any record has changed. The move tries a held record again for about two seconds, then stops with
+(`history`, `browser-sessions`, and `workbenches`) move first within each workspace, so a held one
+stops that workspace's move before its other records change; the node's folder moves before the
+registered workspaces, so where only a registered one is held, the node's folder has moved already.
+The move tries a held record again for about two seconds, then stops with
 `EPERM`, `EBUSY`, or `EACCES`, naming the record
 ([Troubleshooting](troubleshooting.md#the-move-onto-workspaces-stops-partway)). Stop every Buckle
 process and the browser it opened, and run the command again: the move continues where it

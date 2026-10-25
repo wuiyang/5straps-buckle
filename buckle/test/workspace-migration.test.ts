@@ -792,11 +792,13 @@ describe('moving a 0.1 node onto the workspace model', () => {
         expect((failure as Error).message).toContain(process.platform === 'win32' ? 'as a program still holds it' : 'as the rename was refused (EPERM)')
       })
 
-      it('is quoted by the pages: Windows, the holders, and the codes', () => {
+      it('is quoted by the pages: Windows, the holders, the codes, and the order', () => {
         const words = (name: string) => page(name).replaceAll('`', '')
         expect(words('workspaces-04.md')).toContain(`most likely ${HOLDERS}`)
         expect(words('workspaces-04.md')).toContain('EPERM, EBUSY, or EACCES')
         expect(words('workspaces-04.md')).not.toContain('EPERM or EBUSY')
+        expect(words('workspaces-04.md')).toContain('(history, browser-sessions, and workbenches) move first within each workspace')
+        expect(words('workspaces-04.md')).toContain('the node\'s folder moves before the registered workspaces')
         expect(words('troubleshooting.md')).toContain(STOP_EVERY)
         expect(words('install.md')).toContain('the browser Buckle opened')
       })
