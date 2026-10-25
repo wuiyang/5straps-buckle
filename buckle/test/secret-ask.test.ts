@@ -24,7 +24,7 @@ const effect = (path: string, names = ['API_TOKEN']): SecretFileEffect => ({ kin
 const NO_GRANTS = { subjectsFor: () => [] }
 
 describe('the credential-file rule on a secret file', () => {
-  const rule = createSensitivePathRule({ protectedRoots: ['/home/owner/.5straps'] })
+  const rule = createSensitivePathRule({ protectedRoots: ['/srv/node/.5straps'] })
 
   it('asks under sensitive_path, naming the file as written and the NAMEs, with every scope offered', () => {
     const decision = rule.evaluate({ tool: 'shell_exec', effect: effect('/w/.env.local', ['API_TOKEN', 'OTHER']), grants: NO_GRANTS })
@@ -39,7 +39,7 @@ describe('the credential-file rule on a secret file', () => {
   })
 
   it('refuses Buckle\'s own state, and a file the owner denied', () => {
-    expect(rule.evaluate({ tool: 'shell_exec', effect: effect('/home/owner/.5straps/buckle.env'), grants: NO_GRANTS })).toMatchObject({ kind: 'deny', reason: "Buckle's own state and policy are not reachable from a tool" })
+    expect(rule.evaluate({ tool: 'shell_exec', effect: effect('/srv/node/.5straps/buckle.env'), grants: NO_GRANTS })).toMatchObject({ kind: 'deny', reason: "Buckle's own state and policy are not reachable from a tool" })
     expect(rule.evaluate({ tool: 'shell_exec', effect: effect('/w/.env.local'), grants: { ...NO_GRANTS, deniedSubjectsFor: () => [secretFileSubject('/w/.env.local')] } })).toMatchObject({ kind: 'deny', reason: 'The owner denied the secret file .env.local' })
   })
 
