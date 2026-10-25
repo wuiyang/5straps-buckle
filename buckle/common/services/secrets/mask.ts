@@ -85,8 +85,9 @@ interface View {
 
 /**
  * Each form masked where a view of the text shows it, as an encoder that escapes other characters than
- * encodeURIComponent writes it (URLSearchParams, RFC 3986 as curl and jq write it, Python's quote): every span the
- * view reads the form from becomes its label, the longest form first and no span twice.
+ * encodeURIComponent or JSON.stringify writes it (URLSearchParams, RFC 3986 as curl and jq write it, Python's quote, the
+ * JSON of PHP, Go, and Python, an HTML page's entities): every span the view reads the form from becomes its label, the
+ * longest form first and no span twice.
  */
 function maskInViews(text: string, forms: readonly Form[]): string {
   // A `+` reads as a blank in a form and as itself elsewhere, so a text holding one is read both ways.
@@ -117,11 +118,11 @@ function maskInViews(text: string, forms: readonly Form[]): string {
 }
 
 /**
- * The text with each percent-encoded UTF-8 character read as the character, and a `+` as a blank where `plusIsBlank`, as
- * a form's reader takes it; null where nothing in it reads otherwise.
+ * The text with each escape read as the character it writes: a percent-encoded UTF-8 character, a JSON escape, an HTML
+ * entity, and a `+` as a blank where `plusIsBlank`, as a form's reader takes it; null where nothing in it reads otherwise.
  */
 function decodedView(text: string, plusIsBlank: boolean): View | null {
-  if (!text.includes('%') && !(plusIsBlank && text.includes('+'))) return null
+  if (!/[%\\&]/.test(text) && !(plusIsBlank && text.includes('+'))) return null
   const from = new Int32Array(text.length)
   const to = new Int32Array(text.length)
   const parts: string[] = []
@@ -158,7 +159,45 @@ function escapeAt(text: string, index: number, plusIsBlank: boolean): Escape | n
   const code = text.charCodeAt(index)
   if (code === 0x25) return percentEscape(text, index)
   if (code === 0x2b) return plusIsBlank ? BLANK : null
+  if (code === 0x5c) return jsonEscape(text, index)
+  if (code === 0x26) return htmlEntity(text, index)
   return null
+}
+
+/** What the short JSON escapes write. */
+const JSON_ESCAPES: ReadonlyMap<string, string> = new Map([['"', '"'], ['\\', '\\'], ['/', '/'], ['b', '\b'], ['f', '\f'], ['n', '\n'], ['r', '\r'], ['t', '\t']])
+
+/** The character a JSON escape at `index` writes: a short one, or `\uXXXX` in either case of hex, one UTF-16 unit. */
+function jsonEscape(text: string, index: number): Escape | null {
+  const short = JSON_ESCAPES.get(text[index + 1] ?? '')
+  if (short !== undefined) return { characters: short, length: 2 }
+  if (text[index + 1] !== 'u') return null
+  let unit = 0
+  for (let digit = 2; digit < 6; digit++) {
+    const value = hexDigit(text.charCodeAt(index + digit))
+    if (value < 0) return null
+    unit = unit * 16 + value
+  }
+  return { characters: String.fromCharCode(unit), length: 6 }
+}
+
+/** What the named HTML entities an encoder writes for a value stand for. */
+const NAMED_ENTITIES: ReadonlyMap<string, string> = new Map([['amp', '&'], ['lt', '<'], ['gt', '>'], ['quot', '"'], ['apos', "'"], ['AMP', '&'], ['LT', '<'], ['GT', '>'], ['QUOT', '"']])
+const ENTITY = /&(?:([A-Za-z]{2,4})|#([0-9]{1,7})|#[xX]([0-9A-Fa-f]{1,6}));/y
+
+/** The character an HTML entity at `index` stands for: a named one an encoder writes, or a numbered one. */
+function htmlEntity(text: string, index: number): Escape | null {
+  ENTITY.lastIndex = index
+  const match = ENTITY.exec(text)
+  if (match === null) return null
+  const [whole, name, decimal, hex] = match
+  if (name !== undefined) {
+    const character = NAMED_ENTITIES.get(name)
+    return character === undefined ? null : { characters: character, length: whole.length }
+  }
+  const point = decimal !== undefined ? Number.parseInt(decimal, 10) : Number.parseInt(hex!, 16)
+  if (point === 0 || point > 0x10ffff || (point >= 0xd800 && point <= 0xdfff)) return null
+  return { characters: String.fromCodePoint(point), length: whole.length }
 }
 
 /** The byte a `%XX` at `index` writes, or -1. */

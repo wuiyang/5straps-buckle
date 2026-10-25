@@ -99,6 +99,23 @@ describe('a call\'s masker', () => {
     expect(mask('decoy%21tok%7Een%280123%29*xy end')).toBe('decoy%21tok%7Een%280123%29*xy end')
   })
 
+  it('masks a value JSON-escaped as PHP, Go, and Python write it, and as HTML entities', () => {
+    // PHP's json_encode writes / as \/; Go's encoding/json and Rails write & < > as & < >; Python's json
+    // writes a character beyond ASCII as \u escapes, a pair of them beyond the first plane.
+    const slashed = createMasker([{ name: 'SLASHED', value: 'decoy/slash+key/0123456789' }]).text
+    expect(slashed('{"received":"decoy\\/slash+key\\/0123456789"}')).toBe('{"received":"[secret:SLASHED]"}')
+    const marked = createMasker([{ name: 'MARKED', value: 'decoy&amp<key>0123456789' }]).text
+    expect(marked('{"k":"decoy\\u0026amp\\u003ckey\\u003E0123456789"}')).toBe('{"k":"[secret:MARKED]"}')
+    const accented = createMasker([{ name: 'ACCENTED', value: 'decoy-café-\u{1F600}-0123' }]).text
+    expect(accented('{"k": "decoy-caf\\u00e9-\\ud83d\\ude00-0123"}')).toBe('{"k": "[secret:ACCENTED]"}')
+    // An HTML page, or a value attribute get html shows, by named and numbered entities.
+    expect(marked('<input value="decoy&amp;amp&lt;key&gt;0123456789">')).toBe('<input value="[secret:MARKED]">')
+    expect(marked('decoy&#38;amp&#x3C;key&#062;0123456789')).toBe('[secret:MARKED]')
+    const quoted = createMasker([{ name: 'QUOTED', value: 'decoy"it\'s"0123' }]).text
+    expect(quoted('value="decoy&quot;it&#39;s&quot;0123"')).toBe('value="[secret:QUOTED]"')
+    expect(quoted('value=\'decoy"it&apos;s"0123\'')).toBe('value=\'[secret:QUOTED]\'')
+  })
+
   it('masks nothing once dropped', () => {
     const mask = masker()
     mask.drop()
