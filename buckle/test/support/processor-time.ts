@@ -23,3 +23,23 @@ export function leastProcessorTime<T>(run: () => T, runs = 3): { milliseconds: n
   }
   return { milliseconds, result }
 }
+
+/**
+ * How many times the least processor time of a reading (leastProcessorTime) is that of the same reading on a tenth of
+ * its input, timed just before it in the same thread. A slower machine slows both alike, so a limit on the ratio holds
+ * on a CI runner as on a developer machine: three one-second rows took 1030 to 1187 ms on a GitHub runner, about 1.65
+ * times what they took on the machine they were written on. A reading that grows with the square of its input reads
+ * ten times the input a hundred times slower, and still fails LINEAR_TENFOLD_LIMIT.
+ */
+export function tenfoldProcessorRatio<T>(run: () => T, tenth: () => unknown, runs = 3): { ratio: number; result: T } {
+  const calibration = leastProcessorTime(tenth, 5)
+  const { milliseconds, result } = leastProcessorTime(run, runs)
+  return { ratio: milliseconds / calibration.milliseconds, result }
+}
+
+/**
+ * The ratio tenfoldProcessorRatio may reach. A linear reading's is about 10 (9.1 to 11.4 measured alone, 5.9 to 14.2
+ * beside two busy loops), so this leaves it twice that and more; a quadratic reading's is about 100, and a reading made
+ * ten times slower by a quadratic part reaches about 50.
+ */
+export const LINEAR_TENFOLD_LIMIT = 30

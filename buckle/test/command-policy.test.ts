@@ -14,7 +14,7 @@ import { createCommandPolicyRule } from '../common/domain/permission/rules/comma
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructiveCommandRule, PATH_SPELLING_REASON } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
-import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
+import { leastProcessorTime, LINEAR_TENFOLD_LIMIT, PROCESSOR_TIME_ROW_TIMEOUT, tenfoldProcessorRatio } from './support/processor-time.js'
 
 /** `platform`, where a test imitates a host other than this one. */
 function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}, shownAs?: string, platform?: NodeJS.Platform) {
@@ -681,13 +681,16 @@ describe('a call Buckle cannot read whole', () => {
     expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', expect.stringMatching(/^Wrappers or shell bodies nest deeper than Buckle reads \(MAX_DEPTH: 8 levels\)/)]])
   })
 
-  it('reads a 1 MB quoted heredoc body whole as shell text within a second', () => {
-    const notes = Array.from({ length: 40_000 }, (_, index) => `note ${index} of the release`).join('\n')
+  it('reads a 1 MB quoted heredoc body whole as shell text, in time linear in its length', () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, index) => `note ${index} of the release`).join('\n')
+    const notes = lines(40_000)
+    const tenth = lines(4_000)
     expect(notes.length).toBeGreaterThan(1_000_000)
-    const { milliseconds, result } = leastProcessorTime(() => [check('workspace', false, heredocLine(notes, "bash <<'EOF'")), check('workspace', false, heredocLine(`${notes}\n${push}`, "bash <<'EOF'"))] as const)
+    const read = (body: string) => [check('workspace', false, heredocLine(body, "bash <<'EOF'")), check('workspace', false, heredocLine(`${body}\n${push}`, "bash <<'EOF'"))] as const
+    const { ratio, result } = tenfoldProcessorRatio(() => read(notes), () => read(tenth))
     expect(result[0].kind).toBe('allow')
     expect(refusal(result[1])).toBe('Refused by the workspace command policy: git push *')
-    expect(milliseconds).toBeLessThan(1_000)
+    expect(ratio).toBeLessThan(LINEAR_TENFOLD_LIMIT)
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 
   // Slice 7h probe: a backslash-newline outside single quotes is a line continuation bash removes before it splits
@@ -1487,13 +1490,15 @@ describe('a call Buckle cannot read whole', () => {
     expect(refusal(check(engine, switched, `git push ${B}\n --force origin main`, ['git push --force *']))).toBe(`Refused by ${named[engine]}: git push --force *`)
   })
 
-  it('reads a heredoc body of 40,000 lines, every one continued, within a second, joining them in one pass', () => {
-    const notes = Array.from({ length: 40_000 }, (_, index) => `note ${index} of the release ${B}`).join('\n')
+  it('reads a heredoc body of 40,000 lines, every one continued, joining them in one pass, in time linear in its length', () => {
+    const lines = (count: number) => Array.from({ length: count }, (_, index) => `note ${index} of the release ${B}`).join('\n')
+    const notes = lines(40_000)
+    const tenth = lines(4_000)
     expect(notes.length).toBeGreaterThan(1_000_000)
     for (const opener of ["bash <<'EOF'", 'bash <<EOF']) {
-      const { milliseconds, result } = leastProcessorTime(() => check('workspace', false, heredocLine(notes, opener)))
+      const { ratio, result } = tenfoldProcessorRatio(() => check('workspace', false, heredocLine(notes, opener)), () => check('workspace', false, heredocLine(tenth, opener)))
       expect(result.kind).toBe('allow')
-      expect(milliseconds).toBeLessThan(1_000)
+      expect(ratio).toBeLessThan(LINEAR_TENFOLD_LIMIT)
     }
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 
@@ -2167,10 +2172,12 @@ describe('a command a substitution cuts, read whole by the floor and the deny li
 describe('a head holding many bare substitutions (fix brief 8, A3c)', () => {
   // The reading of a head without its bare substitution words looked each word up in the list of them, so a body of echo
   // and 330,000 empty backtick pairs (990 KB, under the request cap) held the node for about a minute.
-  it('reads echo and 330,000 empty backtick pairs through the rules in under a second', () => {
-    const text = `echo${' ``'.repeat(330_000)}`
-    const { milliseconds, result } = leastProcessorTime(() => evaluate('bash', ['-c', text], { allow: ['bash -c *'] }), 2)
-    expect(milliseconds).toBeLessThan(1_000)
+  it('reads echo and 330,000 empty backtick pairs through the rules in time linear in their count', () => {
+    const pairs = (count: number) => `echo${' ``'.repeat(count)}`
+    const text = pairs(330_000)
+    const tenth = pairs(33_000)
+    const { ratio, result } = tenfoldProcessorRatio(() => evaluate('bash', ['-c', text], { allow: ['bash -c *'] }), () => evaluate('bash', ['-c', tenth], { allow: ['bash -c *'] }), 2)
+    expect(ratio).toBeLessThan(LINEAR_TENFOLD_LIMIT)
     expect(result.kind).toBe('allow')
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 
