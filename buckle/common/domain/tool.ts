@@ -39,6 +39,11 @@ export interface ToolContext {
   /** Whether a real path is one the call's permission check judged as a write; a writer refuses any other. */
   authorizeWrite?: (target: string) => boolean
   /**
+   * The request headers whose values Buckle filled from secret references (docs/secrets.md): a fetch drops them on a
+   * hop to another origin, as it drops a credential header.
+   */
+  secretHeaders?: readonly string[]
+  /**
    * The permission rules' verdict on reaching a URL mid-call, with this session's grants and the
    * approvals this call consumed, so a fetch honours what the owner approved without a copy of
    * the allow logic.

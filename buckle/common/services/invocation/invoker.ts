@@ -29,6 +29,7 @@ import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, typ
 import { nativePath, parentDirectory } from '../../domain/paths.js'
 import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
 import { secretFileEffects } from '../secrets/secret-file.js'
+import { checkSecrets, runWithSecrets, type FilledSecrets } from '../secrets/call-secrets.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -70,6 +71,10 @@ export interface InvokerOptions {
   judge?: JudgeGate
   /** The workspace's secret reference settings as the call found them (docs/secrets.md); on where absent. */
   secrets?: SecretSettings
+  /** The values the workspace's browsers were filled with, by file and NAME, which every later browser call is masked by. */
+  filledSecrets?: FilledSecrets
+  /** Buckle's own state, which no secret file may be a hard link to (beneath.ts, isLinkedOnStateDevice). */
+  protectedRoots?: readonly string[]
   paths: PathView
   serverId: string
   workspaceId: string
@@ -195,6 +200,13 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // person (docs/secrets.md).
           const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
           effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+          // How the command reader reads each reference in a shell call, refused where the rules could not read it as
+          // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
+          const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
+          const masksBrowser = request.tool === 'browser_command' && (options.filledSecrets?.list().length ?? 0) > 0
+          const run = checked || masksBrowser
+            ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+            : prepared.execute
 
           // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
           const fromCopy = prepared.managesHistory === true
@@ -235,7 +247,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
             const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
             try {
-              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: prepared.execute, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}) })
+              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}) })
               markStarted()
               return output
             } catch (error) {

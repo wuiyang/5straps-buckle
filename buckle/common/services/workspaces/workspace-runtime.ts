@@ -82,6 +82,7 @@ import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
+import { createFilledSecrets } from '../secrets/call-secrets.js'
 import { resolveSecretFile } from '../secrets/secret-file.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
@@ -388,6 +389,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
   const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
+  // The values this workspace's browsers were filled with, by file and NAME, for the runtime's life (docs/secrets.md).
+  const filledSecrets = createFilledSecrets()
   const executions = createExecutions({ budget: executionBudget })
   // Every call running here, so shutdown can cancel them and wait for each to answer.
   const inFlight = new Set<Promise<unknown>>()
@@ -717,6 +720,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         toolDenial: settled.toolDenial,
         judge: settled.judge,
         secrets: settled.secrets,
+        filledSecrets,
+        protectedRoots: protectedStateRoots(config),
         shutdown: stopping.signal,
         // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
         nested: nestedCall => invokeNow(nestedCall, settled),

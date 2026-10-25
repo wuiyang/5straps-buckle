@@ -54,6 +54,7 @@ export function createWebPack(options: WebPackOptions): Pack {
           signal: context.signal,
           approved: options.approved,
           judge: context.judgeNetwork,
+          ...(context.secretHeaders ? { secretHeaders: context.secretHeaders } : {}),
         })
         const { body, truncated } = await readBounded(response)
         return {

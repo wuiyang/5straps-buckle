@@ -1,0 +1,257 @@
+import { createHash } from 'node:crypto'
+import type { JsonObject, JsonValue } from '@5straps/protocol'
+import type { ExecEffect, ResolvedEffect } from '../../domain/effect.js'
+import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
+import { MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
+import { ToolInputError, type PreparedCall, type ToolContext } from '../../domain/tool.js'
+import { createMasker, holdMasker, type SecretValue } from './mask.js'
+import type { SecretPlace, SecretPlan } from './places.js'
+import { readSecretValues } from './secret-file.js'
+import { positionalIndexes } from '../packs/browser/effects.js'
+import { readShellReferences, readsAsReferenced, referenceKey, replaceReferences, secretKey, substituted, type ArgumentPlace, type ProgramCall, type ShellTier } from './shell-reading.js'
+
+/**
+ * A call's references as the gate checked them (docs/secrets.md): the plan, each file's real path as the rules judged
+ * it, and for a shell call how each argument holding one is read, which the run checks the values against.
+ */
+export interface CheckedSecrets {
+  plan: SecretPlan
+  files: ReadonlyMap<string, string>
+  shell: ShellCall | null
+}
+
+interface ShellCall {
+  call: ProgramCall
+  places: ArgumentPlace[]
+  tiers: ReadonlyMap<number, ShellTier>
+}
+
+/**
+ * One value filled into a browser, by its file and NAME, never its value, so the browser's later results are masked; the
+ * sha256 of the value it was, so a file changed since is told apart, as the page still holds the value it was filled with.
+ */
+export interface FilledSecret {
+  real: string
+  written: string
+  name: string
+  digest: string
+}
+
+/**
+ * The values a workspace's browsers were handed by a fill or type, by file and NAME, held for the runtime's life, so a
+ * later snapshot, `get value`, or `eval` that shows the page is masked too: each later browser call reads them again.
+ */
+export interface FilledSecrets {
+  add(entries: readonly FilledSecret[]): void
+  list(): readonly FilledSecret[]
+}
+
+/** How many filled values a workspace's browsers are masked by at most. */
+const MAX_FILLED = 256
+
+export function createFilledSecrets(): FilledSecrets {
+  const entries = new Map<string, FilledSecret>()
+  return {
+    add(added) {
+      for (const entry of added) {
+        const key = `${entry.real}\u0000${entry.name}`
+        if (!entries.has(key) && entries.size >= MAX_FILLED) throw refused(`A workspace's browsers are masked by at most ${MAX_FILLED} filled secret values; close the browser and restart Buckle to fill more`)
+        entries.set(key, entry)
+      }
+    },
+    list: () => [...entries.values()],
+  }
+}
+
+/**
+ * The gate's check of a call's references (docs/secrets.md), before anyone is asked: for shell_exec and script_run's
+ * bash body, how Buckle reads each argument that holds one (readShellReferences), refusing a reference the rules could
+ * not read as written. Browser fill text and web_fetch headers reach no shell.
+ */
+export function checkSecrets(input: { tool: string; args: JsonObject; plan: SecretPlan; effects: readonly ResolvedEffect[] }): CheckedSecrets {
+  const files = new Map(input.effects.flatMap(effect => (effect.kind === 'secret_file' ? [[effect.written, effect.path] as const] : [])))
+  const exec = input.effects.find((effect): effect is ExecEffect => effect.kind === 'exec')
+  const shellPlaces = input.plan.places.filter(place => place.kind === 'argv' || place.kind === 'shell')
+  if (shellPlaces.length === 0 || exec === undefined) return { plan: input.plan, files, shell: null }
+  const shellText = input.tool === 'script_run'
+  // script_run's body is the `-c` string of its exec effect; shell_exec's argument i is the effect's argument i.
+  const places = shellPlaces.map((place) => {
+    const index = shellText ? exec.args.indexOf(place.text) : place.at[1] as number
+    if (index < 0 || exec.args[index] !== place.text) throw refused('A secret reference stands where Buckle cannot place it in the command it judges')
+    return { index, references: place.references }
+  })
+  const call = { command: exec.command, args: exec.args }
+  return { plan: input.plan, files, shell: { call, places, tiers: readShellReferences({ call, places, shellText }) } }
+}
+
+/**
+ * Runs a call with each reference's value in its place, read just before the tool starts (docs/secrets.md): every file
+ * is read where it was judged, each value checked for where it goes (MIN_SECRET_LENGTH, and what its place may hold), the
+ * arguments rebuilt with the values in them and the tool prepared from them, and a shell call read again to be sure it
+ * reads as it did with the references, by the command reader and by the rules. Everything the tool answers, and every
+ * error it throws, is masked; a browser call is also masked by every value its workspace's browsers were filled with.
+ * The values are held only while the tool runs, then dropped.
+ */
+export async function runWithSecrets(input: {
+  checked: CheckedSecrets | null
+  filled?: FilledSecrets
+  tool: string
+  args: JsonObject
+  prepare: (args: JsonObject) => PreparedCall
+  execute: (context: ToolContext) => Promise<JsonValue>
+  permissions: PermissionEngine
+  context: ToolContext
+  protectedRoots: readonly string[]
+  roots: readonly string[]
+}): Promise<JsonValue> {
+  const { checked } = input
+  const read = checked ? readCallValues(checked, input) : new Map<string, SecretValue>()
+  const values = new Map([...read].map(([key, secret]) => [key, secret.value]))
+  const browser = input.tool === 'browser_command' && input.filled ? readFilledValues(input.filled.list(), input) : []
+  const masker = createMasker([...read.values(), ...browser])
+  const release = holdMasker(masker)
+  try {
+    if (!checked) return masker.json(await input.execute(input.context))
+    for (const place of checked.plan.places) for (const reference of place.references) checkValue(place, reference, values.get(referenceKey(reference))!, checked.shell?.tiers)
+    const args = substitutedArguments(input.args, checked.plan.places, reference => values.get(referenceKey(reference))!)
+    const prepared = input.prepare(args)
+    if (checked.shell) assertSameReading({ shell: checked.shell, prepared, values, permissions: input.permissions, tool: input.tool })
+    const fillPlaces = checked.plan.places.filter(place => place.kind === 'fill')
+    if (fillPlaces.length > 0) assertSamePositionals(input.args, args)
+    const fills = fillPlaces.flatMap(place => place.references)
+    if (input.filled && fills.length > 0) input.filled.add(fills.map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) })))
+    const headers = checked.plan.places.filter(place => place.kind === 'header').map(place => String(place.at[1]))
+    return masker.json(await prepared.execute(headers.length > 0 ? { ...input.context, secretHeaders: headers } : input.context))
+  } catch (error) {
+    throw maskError(error, masker.text)
+  } finally {
+    release()
+    masker.drop()
+    values.clear()
+    read.clear()
+  }
+}
+
+/** Each value the call's references name, by secretKey, each file read once where it was judged. */
+function readCallValues(checked: CheckedSecrets, input: { protectedRoots: readonly string[]; roots: readonly string[] }): Map<string, SecretValue> {
+  const values = new Map<string, SecretValue>()
+  for (const [written, names] of checked.plan.files) {
+    const real = checked.files.get(written)
+    if (real === undefined) throw refused(`The secret file ${written} was not judged before the call ran`)
+    const read = readSecretValues({ real, written, names, protectedRoots: input.protectedRoots, roots: input.roots })
+    for (const [name, value] of read) values.set(secretKey(written, name), { name, value })
+    read.clear()
+  }
+  return values
+}
+
+/**
+ * The values a workspace's browsers were filled with, read again now; one that cannot be read, or reads as another value
+ * than the one filled, refuses the call, as its result could not be masked.
+ */
+function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoots: readonly string[]; roots: readonly string[] }): SecretValue[] {
+  const byFile = new Map<string, { written: string; names: string[] }>()
+  for (const entry of filled) {
+    const file = byFile.get(entry.real) ?? { written: entry.written, names: [] }
+    file.names.push(entry.name)
+    byFile.set(entry.real, file)
+  }
+  const digests = new Map(filled.map(entry => [`${entry.real}\u0000${entry.name}`, entry.digest]))
+  const values: SecretValue[] = []
+  for (const [real, file] of byFile) {
+    let read: Map<string, string>
+    try { read = readSecretValues({ real, written: file.written, names: file.names, protectedRoots: input.protectedRoots, roots: input.roots }) } catch (error) {
+      throw refused(`A secret value this workspace's browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}. Close the browser and restart Buckle, or put the file back`)
+    }
+    for (const [name, value] of read) {
+      if (digests.get(`${real}\u0000${name}`) !== digestOf(value)) throw refused(`The secret ${name} in ${file.written} changed since this workspace's browser was filled with it, so this browser call's result could not be masked. Close the browser and restart Buckle`)
+      values.push({ name, value })
+    }
+    read.clear()
+  }
+  return values
+}
+
+function digestOf(value: string): string {
+  return createHash('sha256').update(value).digest('hex')
+}
+
+/** Refuses browser text whose value would move which argument agent-browser takes as the text, as a flag's value would. */
+function assertSamePositionals(before: JsonObject, after: JsonObject): void {
+  const positionals = (args: JsonObject) => JSON.stringify(positionalIndexes(Array.isArray(args.args) ? args.args as string[] : []))
+  if (positionals(before) !== positionals(after)) throw refused('A secret value would change which argument the browser takes as its text, so the call did not run')
+}
+
+/** Characters a value placed in shell text may not hold: a quote, an escape, an expansion, a history mark, or a control character. */
+const SHELL_UNSAFE = /["'`\\$!\u0000-\u001f\u007f]/
+/** Characters no value may hold: NUL, which no argument can, and the mark the command reader's comparison stands on. */
+const NEVER = /[\u0000\u0001]/
+
+/**
+ * Whether a value may stand where its reference does (docs/secrets.md), refused naming the reference, never the value: at
+ * least MIN_SECRET_LENGTH characters (SHORT_REASON); in shell text, none a shell reads as syntax inside quotes, and no
+ * leading `-`; as a whole argument or browser text, no leading `-`, which its program would read as an option; in a
+ * header, no line break.
+ */
+function checkValue(place: SecretPlace, reference: FileReference, value: string, tiers: ReadonlyMap<number, ShellTier> | undefined): void {
+  const shown = reference.raw
+  if (value.length < MIN_SECRET_LENGTH) throw refused(`${SHORT_REASON}: ${shown} holds fewer than ${MIN_SECRET_LENGTH} characters, so its value could not be told from other text`)
+  if (NEVER.test(value)) throw refused(`The value of ${shown} holds a NUL or control character no argument can carry`)
+  const tier = place.kind === 'shell' ? 'shell' : place.kind === 'argv' ? tiers?.get(place.at[1] as number) ?? 'shell' : null
+  if (tier === 'shell' && (SHELL_UNSAFE.test(value) || value.startsWith('-'))) throw refused(`The value of ${shown} holds a character a shell reads as syntax (a quote, a backslash, $, \`, !, or a control character) or starts with -, and its reference stands in shell text; use it as a whole argument of a program instead`)
+  if ((tier === 'argv' && reference.start === 0 || place.kind === 'fill') && value.startsWith('-')) throw refused(`The value of ${shown} starts with -, which its program would read as an option`)
+  if (place.kind === 'header' && /[\r\n]/.test(value)) throw refused(`The value of ${shown} holds a line break, which no header value may`)
+}
+
+/** A copy of the arguments with each place's references replaced by their values. */
+function substitutedArguments(args: JsonObject, places: readonly SecretPlace[], value: (reference: FileReference) => string): JsonObject {
+  const copy = structuredClone(args) as JsonObject
+  for (const place of places) {
+    let holder: JsonValue = copy
+    for (const part of place.at.slice(0, -1)) holder = (holder as Record<string | number, JsonValue>)[part]!
+    ;(holder as Record<string | number, JsonValue>)[place.at.at(-1)!] = replaceReferences(place.text, place.references, value)
+  }
+  return copy
+}
+
+/**
+ * Refuses a shell call whose values change how it reads (docs/secrets.md): the command reader must read it word for word
+ * as it read the references, each value where its reference stood, and the rules, judged with no grant, must ask and
+ * refuse about it as they did, so no value moves what a rule matched.
+ */
+function assertSameReading(input: { shell: ShellCall; prepared: PreparedCall; values: ReadonlyMap<string, string>; permissions: PermissionEngine; tool: string }): void {
+  const { shell } = input
+  const exec = input.prepared.effects.find((effect): effect is ExecEffect => effect.kind === 'exec')
+  const references = shell.places.flatMap(place => place.references)
+  const changed = () => refused(`The values of ${[...new Set(references.map(reference => reference.raw))].join(', ')} change how Buckle reads the command, so it did not run`)
+  if (!exec) throw changed()
+  const rebuilt = substituted(shell.call, shell.places, reference => input.values.get(referenceKey(reference))!)
+  if (exec.command !== rebuilt.command || exec.args.length !== rebuilt.args.length || exec.args.some((word, index) => word !== rebuilt.args[index])) throw changed()
+  if (!readsAsReferenced({ call: shell.call, substituted: rebuilt, references, values: input.values })) throw changed()
+  const judged = (effect: ExecEffect) => outcomeShape(input.permissions.evaluate({ tool: input.tool, effects: [effect], grants: { subjectsFor: () => [] } }))
+  if (judged({ kind: 'exec', command: shell.call.command, args: [...shell.call.args] }) !== judged(exec)) throw changed()
+}
+
+/** What of an outcome a value may not move: allow, ask, or deny, and the rule and cause of each ask or the denial. */
+function outcomeShape(outcome: PermissionOutcome): string {
+  if (outcome.kind === 'deny') return `deny ${outcome.denial.rule}`
+  if (outcome.kind === 'ask') return `ask ${outcome.asks.map(ask => `${ask.rule}/${ask.cause ?? ''}`).sort().join(' ')}`
+  return 'allow'
+}
+
+/** An error the tool threw, its message, stack, and causes masked in place, so its class and fields stay. */
+function maskError(error: unknown, mask: (text: string) => string): unknown {
+  if (typeof error === 'string') return mask(error)
+  let current: unknown = error
+  for (let depth = 0; current instanceof Error && depth < 8; depth++) {
+    current.message = mask(current.message)
+    if (current.stack !== undefined) current.stack = mask(current.stack)
+    current = current.cause
+  }
+  return error
+}
+
+function refused(message: string): ToolInputError {
+  return new ToolInputError(message, { code: 'PERMISSION_DENIED' })
+}
+
