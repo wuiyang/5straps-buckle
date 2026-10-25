@@ -1573,6 +1573,50 @@ describe.skipIf(hostGit === null)('git_blame and a repository config that names 
   })
 })
 
+// `diff.orderFile` names a file git diff and git status read as a list of path patterns, with no read of it judged: a
+// diff's files came out in the order its lines gave, and a missing file failed the call quoting the configured place
+// (git residue, round 2). The isolation scope names an empty list, which outranks the repository's config.
+describe.skipIf(hostGit === null)('git_diff, git_status, and a repository config that names an order file, against the installed git', () => {
+  const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
+  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' }).toString()
+  /** A repository inside the root with a.txt and z.txt changed in the work tree, and an order file beside the root. */
+  function repository() {
+    const parent = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-order-live-')))
+    const root = join(parent, 'root')
+    const repo = join(root, 'repo')
+    mkdirSync(repo, { recursive: true })
+    for (const name of ['a.txt', 'z.txt']) writeFileSync(join(repo, name), `${name}\n`)
+    git(repo, 'init', '-q')
+    git(repo, 'add', '-A')
+    git(repo, 'commit', '-qm', 'first')
+    for (const name of ['a.txt', 'z.txt']) appendFileSync(join(repo, name), `${name} planted change\n`)
+    writeFileSync(join(parent, 'outside-order.txt'), 'z.txt\n')
+    return { parent, root, repo, order: join(parent, 'outside-order.txt') }
+  }
+  const call = (root: string, tool: string) => gitPack(root, hostRunProcess, null, hostGit!).call(tool, { repo: 'repo' }, readsAll)
+
+  it('keeps git\'s own order of files where the config names an order file outside the workspace', async () => {
+    const { root, repo, order } = repository()
+    git(repo, 'config', 'diff.orderFile', order)
+    // The read this closes: git itself orders the files by the lines of that file.
+    expect(git(repo, 'diff', '--name-only')).toBe('z.txt\na.txt\n')
+    const { diff } = await call(root, 'git_diff') as { diff: string }
+    expect(diff.indexOf('diff --git a/a.txt b/a.txt')).toBeGreaterThanOrEqual(0)
+    expect(diff.indexOf('diff --git a/a.txt b/a.txt')).toBeLessThan(diff.indexOf('diff --git a/z.txt b/z.txt'))
+  })
+
+  it('runs git_diff and git_status where the config names a missing order file, and names no place', async () => {
+    const { parent, root, repo } = repository()
+    git(repo, 'config', 'diff.orderFile', join(parent, 'missing-order.txt'))
+    expect(() => git(repo, 'diff')).toThrow(/failed to read orderfile/)
+    const { diff } = await call(root, 'git_diff') as { diff: string }
+    expect(diff).toContain('+a.txt planted change')
+    const status = await call(root, 'git_status')
+    expect(JSON.stringify(status)).toContain('z.txt')
+    expect(JSON.stringify([diff, status])).not.toContain(parent)
+  })
+})
+
 // A gitlink's work-tree `.git` pointer may lead outside the workspace, and git followed it wherever the repository's own
 // config asked (`diff.submodule`, `status.submoduleSummary`), showing that repository's commits in a diff and its state in
 // a status (git pack recheck 1, held[1]). The read pack never enters a submodule.

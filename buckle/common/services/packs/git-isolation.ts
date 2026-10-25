@@ -111,6 +111,9 @@ export function isolationConfig(hooksDirectory: string): GitConfig[] {
     { key: 'core.pager', value: 'cat' },
     { key: 'diff.external', value: '' },
     { key: 'core.attributesFile', value: '/dev/null' },
+    // A file git diff and git status read as an order of paths, with no read of it judged: its lines ordered a diff's
+    // files, and a missing one failed the call quoting the configured place. An empty file is git's own order.
+    { key: 'diff.orderFile', value: '/dev/null' },
   ]
 }
 
