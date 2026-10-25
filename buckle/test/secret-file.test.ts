@@ -147,6 +147,34 @@ describe('the file a reference names', () => {
     expect(refusal).toMatchObject({ code: 'PERMISSION_DENIED', message: 'The secret file .env.local is not readable by Buckle (permission denied); the call reads API_TOKEN from it' })
   })
 
+  it('names the NAMEs the call reads in every refusal of the file itself, never a value', () => {
+    const said = (run: () => unknown) => {
+      try { run() } catch (error) { return (error as Error).message }
+      return ''
+    }
+    writeFileSync(join(root, 'big.env'), `A=${'x'.repeat(MAX_SECRET_FILE_BYTES)}\n`)
+    writeFileSync(join(root, 'latin.env'), Buffer.from([0x41, 0x3d, 0xe9, 0x0a]))
+    const state = join(base, 'state')
+    mkdirSync(state)
+    writeFileSync(join(state, 'buckle.env'), `BUCKLE_ADMIN_TOKEN=${DECOY}\n`)
+    linkSync(join(state, 'buckle.env'), join(root, 'linked.env'))
+    const real = resolveSecretFile('.env.local', view)
+    const refusals = [
+      said(() => values('big.env', ['A', 'B'])),
+      said(() => values('latin.env', ['A', 'B'])),
+      said(() => readSecretValues({ real: resolveSecretFile('linked.env', view), written: 'linked.env', names: ['A', 'B'], protectedRoots: [state], roots: [root] })),
+    ]
+    renameSync(real, join(root, 'moved.env'))
+    symlinkSync(join(outside, 'planted.env'), real)
+    refusals.push(said(() => readSecretValues({ real, written: '.env.local', names: ['A', 'B'], protectedRoots: [], roots: [root] })))
+    rmSync(real)
+    refusals.push(said(() => readSecretValues({ real, written: '.env.local', names: ['A', 'B'], protectedRoots: [], roots: [root] })))
+    for (const message of refusals) {
+      expect(message).toMatch(/; the call reads A, B from it$/)
+      expect(message).not.toContain(DECOY)
+    }
+  })
+
   it('refuses a file over the size bound and one that is not UTF-8', () => {
     writeFileSync(join(root, 'big.env'), `A=${'x'.repeat(MAX_SECRET_FILE_BYTES)}\n`)
     expect(() => values('big.env', ['A'])).toThrow(`larger than ${MAX_SECRET_FILE_BYTES} bytes`)
