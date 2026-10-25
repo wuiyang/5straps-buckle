@@ -692,6 +692,9 @@ describe('moving a 0.1 node onto the workspace model', () => {
 
         expect(message).toContain(`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (${code}), as a program still holds it, or a file inside it, open: most likely ${HOLDERS}. ${STOP_EVERY}, ${RESUME}`)
         expect(held.tried('history')).toBe(5)
+        // The page quotes it up to the step, on a Windows state directory.
+        const shown = message.replaceAll(input.state, 'C:/Users/you/.5straps/buckle').replace(ownId(input), '<id>').replace(`(${code})`, '(EPERM)')
+        expect(troubleshooting()).toContain(shown.slice(0, shown.indexOf('antivirus scan.') + 'antivirus scan.'.length))
       })
 
       it.each([['linux', 'EPERM'], ['linux', 'EACCES'], ['darwin', 'EPERM'], ['darwin', 'EBUSY']] as const)('on %s says the rename was refused, to check the folder\'s owner and mode, for %s, and still tries it five times', async (platform, code) => {
@@ -711,6 +714,15 @@ describe('moving a 0.1 node onto the workspace model', () => {
         withRecords(input)
         const failure = await migrateNode({ node: loadConfig(input.environment), io: holding('history', Number.POSITIVE_INFINITY).io }).catch((error: unknown) => error)
         expect((failure as Error).message).toContain(process.platform === 'win32' ? 'as a program still holds it' : 'as the rename was refused (EPERM)')
+      })
+
+      it('is quoted by the pages: Windows, the holders, and the codes', () => {
+        const words = (name: string) => page(name).replaceAll('`', '')
+        expect(words('workspaces-04.md')).toContain(`most likely ${HOLDERS}`)
+        expect(words('workspaces-04.md')).toContain('EPERM, EBUSY, or EACCES')
+        expect(words('workspaces-04.md')).not.toContain('EPERM or EBUSY')
+        expect(words('troubleshooting.md')).toContain(STOP_EVERY)
+        expect(words('install.md')).toContain('the browser Buckle opened')
       })
     })
 

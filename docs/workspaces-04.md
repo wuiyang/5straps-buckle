@@ -35,13 +35,20 @@ A state directory that served nothing gets no workspace until `buckle init` make
 
 ## A move that stops partway
 
-On Windows a folder will not move while a program holds a file inside it open: a `buckle serve`,
-a `buckle mcp` an MCP client started, the service, or an antivirus scan for a moment. The move
-tries such a record again for about two seconds, then stops with `EPERM` or `EBUSY`, naming the
-record ([Troubleshooting](troubleshooting.md#the-move-onto-workspaces-stops-partway)). Stop every Buckle
-process and run the command again: the move continues where it stopped, and the records it moved
-stay moved. Where another Buckle process has a call open, or serves, the move refuses before it
-changes anything, naming the process id.
+On Windows a folder will not move while a program holds a file inside it open, most likely a
+`buckle serve`, a `buckle mcp` an MCP client started, the Buckle service, the browser Buckle opened
+(agent-browser and its Chromium), or an antivirus scan. The folders such a program keeps files in
+(`history`, `browser-sessions`, and `workbenches`) move first, so a held one stops the move before
+any record has changed. The move tries a held record again for about two seconds, then stops with
+`EPERM`, `EBUSY`, or `EACCES`, naming the record
+([Troubleshooting](troubleshooting.md#the-move-onto-workspaces-stops-partway)). Stop every Buckle
+process and the browser it opened, and run the command again: the move continues where it
+stopped, and the records it moved stay moved. Where another Buckle process has a call open, or
+serves, the move refuses before it changes anything, naming the process id.
+
+On Linux and macOS the same codes mean the rename was refused for the folder's owner or mode, so
+the message says to check who owns the destination folder and its mode, and that no program holds
+a file inside the record open. It tries the record again for about two seconds there too.
 
 ## Going back
 

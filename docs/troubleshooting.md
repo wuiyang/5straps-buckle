@@ -108,15 +108,15 @@ one of them.
 On Windows, the first command after an upgrade from 0.1 can stop with:
 
 ```
-Buckle stopped moving the node onto workspaces partway: it could not move C:/Users/you/.5straps/buckle/history to C:/Users/you/.5straps/buckle/workspaces/<id>/history (EPERM), as a program still holds it, or a file inside it, open: most likely a buckle serve, a buckle mcp an MCP client started, the Buckle service, or an antivirus scan. ...
+Buckle stopped moving the node onto workspaces partway: it could not move C:/Users/you/.5straps/buckle/history to C:/Users/you/.5straps/buckle/workspaces/<id>/history (EPERM), as a program still holds it, or a file inside it, open: most likely a buckle serve, a buckle mcp an MCP client started, the Buckle service, the browser Buckle opened (agent-browser and its Chromium), or an antivirus scan. ...
 ```
 
-Windows will not move a folder with a file inside it open; Buckle tried for about two seconds.
-Stop every Buckle process: Ctrl-C the `buckle serve`, run `buckle service stop`, and quit each
-MCP client that started `buckle mcp`. Then run the command again: the move continues where it
-stopped, keeping what it moved. Where another Buckle process is still at work, the move refuses
-first, with `Buckle cannot move the node onto workspaces while another Buckle process runs on
-this state directory: process 1234 ...`, and the same fix applies.
+Stop every Buckle process (`buckle serve`, the Buckle service, and each MCP client that runs
+`buckle mcp`) and the browser it opened: Ctrl-C the serve, run `buckle service stop`, and quit
+each client. Then run the command again: the move continues where it stopped. Where another
+Buckle process is still at work, the move refuses first, with `Buckle cannot move the node onto
+workspaces while another Buckle process runs on this state directory: process 1234 ...`, and the
+same fix applies.
 [Moving a node from 0.1](workspaces-04.md) says what moves.
 
 ## A .env in the project is refused

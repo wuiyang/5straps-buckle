@@ -90,8 +90,9 @@ policies, and the audit log carry over: the calls of a 0.1 node's folder are its
 which `buckle log --workspace <name>` reads. The first command after an upgrade from 0.1 moves the
 node onto workspaces once, and an older Buckle then fails closed;
 [Moving a node from 0.1](workspaces-04.md) says what changes, and how to go back. Stop
-`buckle serve`, the service, and every MCP client that runs `buckle mcp` before that first
-command: on Windows the move stops at a folder a running Buckle holds open.
+`buckle serve`, the service, every MCP client that runs `buckle mcp`, and the browser Buckle
+opened before that first command: on Windows the move stops at a folder a running Buckle, or the
+browser it opened, holds open.
 
 ## Uninstall
 
