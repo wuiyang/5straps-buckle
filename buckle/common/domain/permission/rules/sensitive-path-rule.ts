@@ -1,6 +1,7 @@
 import { basename } from 'pathe'
 import { comparablePath, isInsideAny, segments } from '../../paths.js'
-import type { PermissionRule } from '../decision.js'
+import type { GrantScope } from '@5straps/protocol'
+import type { PermissionDecision, PermissionRule, RuleInput } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
 
 /** Directory names whose entire subtree holds credentials. */
@@ -43,6 +44,21 @@ const SENSITIVE_FILENAME_PATTERNS = [
   /_rsa$/,
 ]
 
+/**
+ * The subject a secret file's use is asked and granted under (docs/secrets.md): never a path, so a grant to read the
+ * file into a command's argument list never opens the file to the agent, nor a read of it the other way round.
+ */
+export const SECRET_FILE_PREFIX = 'secret-file:'
+
+export function secretFileSubject(path: string): string {
+  return `${SECRET_FILE_PREFIX}${path}`
+}
+
+/** Whether a sensitive_path subject is a secret file's use, which may be granted for a session or always. */
+export function isSecretFileSubject(subject: string): boolean {
+  return subject.startsWith(SECRET_FILE_PREFIX)
+}
+
 export interface SensitivePathOptions {
   /**
    * Buckle's own state: grants, pending approvals, the policy, the action log. No grant can
@@ -54,6 +70,10 @@ export interface SensitivePathOptions {
    * same directory there, so the roots are compared folded (review item 13 of the proof-of-possession fixes).
    */
   caseInsensitive?: boolean
+  /** Whether the workspace's secrets.files lists the real file a reference names, so its use needs no ask (docs/secrets.md). */
+  secretListed?: (path: string) => boolean
+  /** Strict mode: a secret file's use is granted for a session at most, so it asks again each session. */
+  strict?: boolean
 }
 
 export function createSensitivePathRule(options: SensitivePathOptions = { protectedRoots: [] }): PermissionRule {
@@ -62,6 +82,7 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
   return {
     id: 'sensitive_path',
     evaluate({ effect, grants }) {
+      if (effect.kind === 'secret_file') return secretFileDecision({ effect, grants, protectedRoots, fold, options })
       if (effect.kind !== 'read_path' && effect.kind !== 'write_path') return null
       if (isInsideAny(protectedRoots, fold(effect.path))) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
@@ -79,6 +100,23 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
       return ask('sensitive_path', effect.path, `WARNING: This file may contain credentials. Allowing access exposes its contents to the agent or command. ${reason}`, ['once'])
     },
   }
+}
+
+/**
+ * A secret file's first use in a workspace asks a person once (docs/secrets.md), naming the file as the reference wrote
+ * it and the NAMEs the call reads, never a value; the answer is remembered as the scope chosen, a session at most in
+ * strict mode, and a file secrets.files lists needs none. Buckle's own state is never read, and a remembered denial
+ * stands, as for any credential file.
+ */
+function secretFileDecision(input: { effect: Extract<RuleInput['effect'], { kind: 'secret_file' }>; grants: RuleInput['grants']; protectedRoots: string[]; fold: (path: string) => string; options: SensitivePathOptions }): PermissionDecision {
+  const { effect, grants } = input
+  const subject = secretFileSubject(effect.path)
+  if (isInsideAny(input.protectedRoots, input.fold(effect.path))) return deny('sensitive_path', subject, "Buckle's own state and policy are not reachable from a tool")
+  if (grants.deniedSubjectsFor?.('sensitive_path').some(denied => isSecretFileSubject(denied) && input.fold(denied.slice(SECRET_FILE_PREFIX.length)) === input.fold(effect.path))) return deny('sensitive_path', subject, `The owner denied the secret file ${effect.written}`)
+  if (grants.subjectsFor('sensitive_path').includes(subject)) return allowedVia('sensitive_path', subject)
+  if (input.options.secretListed?.(effect.path)) return { kind: 'allow' }
+  const scopes: GrantScope[] = input.options.strict ? ['once', 'session'] : ['once', 'session', 'always']
+  return ask('sensitive_path', subject, `WARNING: Buckle reads ${effect.names.join(', ')} from ${effect.written} for this call and puts each value where its secret reference stands, in the command, the browser fill, or the request header; the agent sees [secret:NAME] in its place, never the value. Allowing this file lets the scope you choose read any NAME in it this way.`, scopes)
 }
 
 export function sensitivePathReason(path: string): string | null {

@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import { GrantRecordSchema, type GrantRecord, type PermissionRuleId } from '@5straps/protocol'
 import type { GrantLookup } from '../../domain/permission/decision.js'
+import { isSecretFileSubject } from '../../domain/permission/rules/sensitive-path-rule.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
@@ -31,7 +32,8 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
   }
 
   return {
-    activeSubjects: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && rule !== 'sensitive_path').map(grant => grant.subject),
+    // A sensitive file is allowed once at a time; only a secret file's use (docs/secrets.md) is remembered.
+    activeSubjects: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && (rule !== 'sensitive_path' || isSecretFileSubject(grant.subject))).map(grant => grant.subject),
 
     activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 

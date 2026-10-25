@@ -69,8 +69,9 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
   return {
     id: 'filesystem_policy',
     evaluate({ effect, grants }) {
-      if (effect.kind !== 'read_path' && effect.kind !== 'write_path') return null
-      const operation = effect.kind === 'read_path' ? 'read' : 'write'
+      // A secret file a reference names is read, by Buckle, as any read of it is judged (docs/secrets.md).
+      if (effect.kind !== 'read_path' && effect.kind !== 'write_path' && effect.kind !== 'secret_file') return null
+      const operation = effect.kind === 'write_path' ? 'write' : 'read'
       const decision = filesystemPathDecision({ ...input, path: effect.path, operation })
       const subject = `${operation}:${effect.path}`
       if (decision === 'deny') return deny('filesystem_policy', subject, `Workspace policy denies ${operation} access`)

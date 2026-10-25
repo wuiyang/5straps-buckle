@@ -13,6 +13,7 @@ import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js
 import { FLOOR_WARNING, RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
+import { isSecretFileSubject } from '../../domain/permission/rules/sensitive-path-rule.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -648,7 +649,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
         // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
         const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
-        if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once') return { ok: false, reason: 'Sensitive files can only be allowed once' }
+        // A secret file's use (docs/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
+        if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once' && !isSecretFileSubject(subject)) return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const now = Date.now()
         if (decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined && (!Number.isFinite(options.consumeNotAfter) || options.consumeNotAfter <= now)) return { ok: false, reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' }

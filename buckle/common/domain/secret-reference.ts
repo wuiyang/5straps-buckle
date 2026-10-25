@@ -97,13 +97,16 @@ function shapedReference(raw: string, scheme: string, body: string): { path: str
   const path = body.slice(0, colon)
   const name = body.slice(colon + 1)
   if (!NAME.test(name)) return { refusal: `${shown}: a reference's NAME is letters, digits, and _, not starting with a digit` }
-  const refusal = pathRefusal(path)
+  const refusal = referencePathRefusal(path)
   if (refusal) return { refusal: `${shown}: ${refusal}` }
   return { path, name }
 }
 
-/** Why a reference's path is outside the grammar, or null: relative, with no leading /, no .. segment, and no drive letter. */
-function pathRefusal(path: string): string | null {
+/**
+ * Why a reference's path is outside the grammar, or null: relative, with no leading /, no .. segment, and no drive
+ * letter. A path secrets.files lists is held to the same.
+ */
+export function referencePathRefusal(path: string): string | null {
   if (path === '') return 'a reference names a file by its relative path, which is empty here'
   if (path.length > MAX_PATH) return `a reference's path is at most ${MAX_PATH} characters`
   if (CONTROL.test(path)) return 'a reference\'s path holds no control character'

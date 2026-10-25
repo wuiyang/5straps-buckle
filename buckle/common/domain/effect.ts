@@ -30,6 +30,14 @@ export type ResolvedEffect =
   | { kind: 'network'; url: URL }
   | ExecEffect
   | { kind: 'process_probe' }
+  | SecretFileEffect
+
+/**
+ * A file the call's secret references name (docs/secrets.md), added by the invoker and never declared by a tool: `path`
+ * where it really lands, `written` as the reference names it, and the NAMEs the call reads from it. Buckle reads it
+ * itself as the call runs; nothing of it reaches the agent.
+ */
+export interface SecretFileEffect { kind: 'secret_file'; path: string; written: string; names: string[] }
 
 /**
  * One line naming what an effect touches, as an approval shows it (owner decision D17): whole, a command
@@ -42,5 +50,6 @@ export function summarizeEffect(effect: ResolvedEffect): string {
     case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
     case 'process_probe': return 'process probe'
+    case 'secret_file': return `secrets ${effect.names.join(', ')} from ${effect.written}`
   }
 }

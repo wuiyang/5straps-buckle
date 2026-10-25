@@ -220,6 +220,28 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
   })
 })
 
+// The secret-references slice, part 4 (docs/secrets.md): a secret file's use is remembered as other grants are, so its
+// form offers each scope the ask does; a credential file's still offers to allow it once alone.
+describe('a secret file ask under the credential-file rule', () => {
+  const secret: ApprovalRequest = { ...approval, rule: 'sensitive_path', subject: 'secret-file:/workspace/.env.local', reason: 'WARNING: Buckle reads API_TOKEN from .env.local', offeredScopes: ['once', 'session', 'always'] }
+  const asked = (request: ApprovalRequest): PendingAsk => ({ ...recorded, request })
+
+  it('offers to allow it once, for the session, or always, beside the denials', async () => {
+    const form = formOf(await gatedCall(gatedServer(undefined, [asked(secret)]), elicitingContext()))
+    expect(form.requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny'])
+    const credential = formOf(await gatedCall(gatedServer(undefined, [asked({ ...secret, subject: '/workspace/.env.local', offeredScopes: ['once'] })]), elicitingContext()))
+    expect(credential.requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'deny', 'deny_session', 'always_deny'])
+  })
+
+  it.each([['allow_session', 'session'], ['allow_always', 'always'], ['allow_once', 'once']] as const)('records %s as an approval at scope %s', async (action, scope) => {
+    const answer = vi.fn(async () => ({ ok: true as const }))
+    await gatedCall(gatedServer(answer, [asked(secret)]), { ...elicitingContext(),
+      mcpReq: { id: 4, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { action } } } },
+    } as unknown as ServerContext)
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, authority: 'admin' })
+  })
+})
+
 describe('elicited answers', () => {
   it('are recorded through the approval service, with the owner\'s authority (ruling 3 of 2026-09-25)', async () => {
     const answer = vi.fn(async () => ({ ok: true as const }))

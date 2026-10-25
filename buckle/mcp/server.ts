@@ -9,7 +9,7 @@ import type { BuckleRuntime } from '../common/services/workspaces/workspace-runt
 
 interface ApprovalAnswer extends Record<string, unknown> {
   approve?: boolean
-  action?: 'allow_once' | 'deny' | 'deny_session' | 'always_deny'
+  action?: 'allow_once' | 'allow_session' | 'allow_always' | 'deny' | 'deny_session' | 'always_deny'
   scope?: GrantScope
 }
 
@@ -215,8 +215,9 @@ function approvalForm(input: { approval: ApprovalRequest; message: string }) {
     message: input.message,
     requestedSchema: {
       type: 'object',
+      // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/secrets.md).
       properties: approval.rule === 'sensitive_path' ? {
-        action: { type: 'string', enum: ['allow_once', 'deny', 'deny_session', 'always_deny'], description: 'Allow once, Deny, Deny this session, Always deny' },
+        action: { type: 'string', enum: [...approval.offeredScopes.map(scope => `allow_${scope}`), 'deny', 'deny_session', 'always_deny'], description: `${approval.offeredScopes.map(scope => ALLOW_LABELS[scope]).join(', ')}, Deny, Deny this session, Always deny` },
       } : {
         approve: { type: 'boolean', description: 'Allow this operation' },
         scope: {
@@ -229,6 +230,8 @@ function approvalForm(input: { approval: ApprovalRequest; message: string }) {
     },
   })
 }
+
+const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once', session: 'Allow this session', always: 'Always allow' }
 
 /** An ask nobody was shown whole: it may be denied here, never approved. */
 function denialForm(input: { approval: ApprovalRequest; message: string }) {
@@ -261,7 +264,7 @@ async function resolveAnswers(input: {
     const answer = acceptedContent<ApprovalAnswer>(input.responses, token)
     if (!answer) continue
 
-    const approved = answer.action ? answer.action === 'allow_once' : answer.approve === true
+    const approved = answer.action ? answer.action.startsWith('allow_') : answer.approve === true
     // Owner decision D17: an ask whose whole call was never kept was never shown whole, so no answer approves it.
     if (approved && waiting.some(ask => ask.request.token === token) && !recordedCall(waiting, token)) {
       logger.warn('Elicited approval refused: the ask was recorded before this build, so its whole action was never shown')
@@ -271,7 +274,7 @@ async function resolveAnswers(input: {
     const result = await input.runtime.approvalService.answer({ decision: {
       token,
       approved,
-      scope: answer.action === 'deny_session' ? 'session' : answer.action === 'always_deny' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
+      scope: answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
     }, authority: input.authority })
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })

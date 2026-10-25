@@ -2,7 +2,8 @@ import { MountPathSchema } from '@5straps/protocol'
 import { parseApprovalTimeout, parseBrowserCdp, parseBrowserProfile } from '../common/runtime/config.js'
 import { BUILTIN_PACKS } from '../common/services/packs/index.js'
 import { compileCommandGlob, CommandGlobError } from '../common/domain/command-glob.js'
-import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, MAX_LISTED_SECRET_FILES, withMount, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { referencePathRefusal } from '../common/domain/secret-reference.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 
@@ -184,6 +185,24 @@ export const SETTING_KEYS: readonly SettingKey[] = [
     unset: (settings) => {
       const { secrets: block, ...rest } = settings
       const { enabled: _dropped, ...secrets } = block ?? {}
+      return Object.keys(secrets).length === 0 ? rest : { ...rest, secrets }
+    },
+  },
+  {
+    key: 'secrets.files',
+    takes: 'files whose secret references need no ask, comma separated, by their paths in the folder as a reference writes them, such as .env.local; empty for none (Buckle\'s none)',
+    set: (settings, raw) => {
+      const files = [...new Set(raw.split(',').map(item => item.trim()).filter(Boolean))]
+      for (const file of files) {
+        const refusal = referencePathRefusal(file)
+        if (refusal) throw new SettingValueError(`secrets.files: ${file}: ${refusal}`)
+      }
+      if (files.length > MAX_LISTED_SECRET_FILES) throw new SettingValueError(`secrets.files lists at most ${MAX_LISTED_SECRET_FILES} files`)
+      return { ...settings, secrets: { ...settings.secrets, files } }
+    },
+    unset: (settings) => {
+      const { secrets: block, ...rest } = settings
+      const { files: _dropped, ...secrets } = block ?? {}
       return Object.keys(secrets).length === 0 ? rest : { ...rest, secrets }
     },
   },

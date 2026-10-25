@@ -149,6 +149,8 @@ export interface BuckleConfig extends NodeConfig {
   commandEnvironment: Readonly<Record<string, string>>
   /** Whether Buckle reads the workspace's secret references (secrets.enabled, docs/secrets.md); on where absent. */
   secretsEnabled?: boolean
+  /** The files whose use by a secret reference needs no ask (secrets.files), as a reference writes their paths; none where absent. */
+  secretFiles?: readonly string[]
   /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
   policy: WorkspacePolicy
   /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
@@ -402,8 +404,8 @@ export interface WorkspaceScope {
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Its decision AI (D91). */
   approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
-  /** Its secret references (docs/secrets.md); on where absent. */
-  secrets?: { enabled: boolean }
+  /** Its secret references (docs/secrets.md); on, and no file listed, where absent. */
+  secrets?: { enabled: boolean; files: readonly string[] }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -562,7 +564,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'commandEnvironment'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'env'>): WorkspaceFields {
   return {
@@ -591,6 +593,7 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     allowHostLsp: scope.packs.hostLsp,
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
     secretsEnabled: scope.secrets?.enabled ?? true,
+    secretFiles: [...scope.secrets?.files ?? []],
     commandEnvironment: { ...scope.env },
   }
 }

@@ -111,11 +111,11 @@ describe('bounds and the switch', () => {
   it('is on by default, and secrets.enabled turns it off and unsets', () => {
     const stored = WorkspaceSettingsSchema.parse({ version: 1 })
     const node = configFromEnvironment({}).workspaceDefaults
-    expect(resolveSettings(stored, node).secrets).toEqual({ enabled: true })
+    expect(resolveSettings(stored, node).secrets).toMatchObject({ enabled: true })
     expect(resolveSettings(stored, node).sources['secrets.enabled']).toBe('built-in')
     const key = SETTING_KEYS.find(item => item.key === 'secrets.enabled')!
     const off = key.set(stored, 'off')
-    expect(resolveSettings(WorkspaceSettingsSchema.parse(off), node).secrets).toEqual({ enabled: false })
+    expect(resolveSettings(WorkspaceSettingsSchema.parse(off), node).secrets).toMatchObject({ enabled: false })
     expect(resolveSettings(WorkspaceSettingsSchema.parse(off), node).sources['secrets.enabled']).toBe('workspace')
     expect(WorkspaceSettingsSchema.parse(key.unset(off)).secrets).toBeUndefined()
     expect(() => key.set(stored, 'sometimes')).toThrow('secrets.enabled is on or off')

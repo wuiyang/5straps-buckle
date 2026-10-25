@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { allowedInterpreters, CommandPolicySchema, destructivePatterns, emptyWorkspacePolicy, MountPathSchema, NetworkPolicySchema, WorkspacePolicySchema, type WorkspacePolicy } from '@5straps/protocol'
 import { createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import { isSecretName } from '../../domain/environment.js'
+import { referencePathRefusal } from '../../domain/secret-reference.js'
 import { MAX_OWNER_MOUNTS, mountTargetRefusal, type MountRow, type OwnerMount, type TableMount } from '../../domain/mount-table.js'
 import { comparablePath, ignoresCase, isInside, pathRoot } from '../../domain/paths.js'
 import { compilePolicy, PolicyError } from '../../domain/policy.js'
@@ -104,12 +105,20 @@ const ApprovalSchema = z.object({
   quickJudgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
 }).strict()
 
+/** The most files secrets.files may list. */
+export const MAX_LISTED_SECRET_FILES = 64
+
 /**
- * Its secret references (docs/secrets.md): `enabled` says whether Buckle reads them at all, on where unset. Absent from
+ * Its secret references (docs/secrets.md): `enabled` says whether Buckle reads them at all, on where unset; `files`
+ * lists the files, by their paths relative to the folder as a reference writes them, whose use needs no ask. Absent from
  * a file that sets none, so a workspace.json written before it reads as it did.
  */
 const SecretsSchema = z.object({
   enabled: z.boolean().optional(),
+  files: z.array(z.string().superRefine((path, context) => {
+    const refusal = referencePathRefusal(path)
+    if (refusal) context.addIssue({ code: 'custom', message: `secrets.files: ${refusal}` })
+  })).max(MAX_LISTED_SECRET_FILES).optional(),
 }).strict()
 
 /**
@@ -280,7 +289,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
   approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
-  secrets: Object.freeze({ enabled: true }),
+  secrets: Object.freeze({ enabled: true, files: Object.freeze([] as string[]) }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -296,7 +305,7 @@ export interface ResolvedSettings {
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
   approval: ResolvedApproval
   /** Its secret references (docs/secrets.md): the workspace's own alone, else Buckle's; the node names none. */
-  secrets: { enabled: boolean }
+  secrets: { enabled: boolean; files: readonly string[] }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
   sources: Readonly<Record<string, SettingSource>>
@@ -401,6 +410,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     },
     secrets: {
       enabled: pick('secrets.enabled', stored.secrets?.enabled, undefined, BUILT_IN_SETTINGS.secrets.enabled),
+      files: pick('secrets.files', stored.secrets?.files, undefined, BUILT_IN_SETTINGS.secrets.files),
     },
     env: { ...node.env, ...stored.env },
     sources,

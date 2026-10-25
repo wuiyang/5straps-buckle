@@ -1,10 +1,12 @@
 import { constants, readSync, realpathSync, statSync } from 'node:fs'
 import { posix } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
+import type { SecretFileEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import { isInsideAny, nativePath } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 import { readDotenv } from './dotenv.js'
+import type { SecretPlan } from './places.js'
 
 /** The largest file a reference may read: a dotenv file is small, and a larger one is no such file. */
 export const MAX_SECRET_FILE_BYTES = 1_048_576
@@ -32,6 +34,14 @@ export function resolveSecretFile(written: string, view: PathView): string {
   try { isFile = statSync(real).isFile() } catch { isFile = false }
   if (!isFile) throw refused(`The secret reference names ${written}, which is not a regular file`)
   return real
+}
+
+/**
+ * The files a call's references name, each judged where it lands (resolveSecretFile) with the NAMEs the call reads from
+ * it, so the rules ask about each before Buckle reads any (docs/secrets.md).
+ */
+export function secretFileEffects(plan: SecretPlan, view: PathView): SecretFileEffect[] {
+  return [...plan.files].map(([written, names]) => ({ kind: 'secret_file', path: resolveSecretFile(written, view), written, names: [...names] }))
 }
 
 /**

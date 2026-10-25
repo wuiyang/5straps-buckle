@@ -82,6 +82,7 @@ import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
+import { resolveSecretFile } from '../secrets/secret-file.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -917,8 +918,18 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
     approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts], quickJudge: config.approvalQuickJudge, quickJudgeProvider: config.approvalQuickJudgeProvider, quickJudgeModel: config.approvalQuickJudgeModel },
-    ...(config.secretsEnabled === undefined ? {} : { secrets: { enabled: config.secretsEnabled } }),
+    ...(config.secretsEnabled === undefined && config.secretFiles === undefined ? {} : { secrets: { ...(config.secretsEnabled === undefined ? {} : { enabled: config.secretsEnabled }), ...(config.secretFiles === undefined ? {} : { files: [...config.secretFiles] }) } }),
     env: config.commandEnvironment,
+  })
+}
+
+/**
+ * Whether secrets.files lists the real file a reference names (docs/secrets.md): each listed path is read as a reference's
+ * is, where it lands now, so a listed name a link moves elsewhere lists that file, and one that lands outside lists none.
+ */
+function listedSecretFile(listed: readonly string[], paths: PathView, real: string): boolean {
+  return listed.some((written) => {
+    try { return resolveSecretFile(written, paths) === real } catch { return false }
   })
 }
 
@@ -935,7 +946,7 @@ function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
   const { config, compiled, paths } = input
   return withDangerouslyAllow(createPermissionEngine([
-    createSensitivePathRule({ protectedRoots: protectedStateRoots(config) }),
+    createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => listedSecretFile(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
     networkEgressRule(compiled),

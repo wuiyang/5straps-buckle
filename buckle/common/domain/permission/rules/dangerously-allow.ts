@@ -2,6 +2,7 @@ import type { PermissionRuleId } from '@5straps/protocol'
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
+import { isSecretFileSubject } from './sensitive-path-rule.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<rule>:<subject>`. */
 export const DANGEROUSLY_ALLOW = 'dangerously_allow'
@@ -38,8 +39,12 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { enabled:
   }
 }
 
-/** Whether the switch answers this ask: one about a path only inside the workspace root. */
+/**
+ * Whether the switch answers this ask: one about a path only inside the workspace root. A secret file's use is never
+ * one: a person allows it (docs/secrets.md).
+ */
 function covers(ask: Ask, root: string): boolean {
+  if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject)) return false
   const path = askedPath(ask)
   return path === null || isInside(root, path)
 }

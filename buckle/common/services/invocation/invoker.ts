@@ -28,6 +28,7 @@ import { shorterWait, type ApprovalService } from '../approvals/approval-service
 import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 import { nativePath, parentDirectory } from '../../domain/paths.js'
 import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
+import { secretFileEffects } from '../secrets/secret-file.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -190,9 +191,10 @@ export function createInvoker(options: InvokerOptions): Invoker {
           const tool = options.registry.get(request.tool)
           const prepared = tool.prepare(request.args)
           // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
-          // before anything is judged (docs/secrets.md).
-          secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
-          effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
+          // before anything is judged; each file the references name is judged where it lands, and its first use asks a
+          // person (docs/secrets.md).
+          const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
+          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
 
           // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
           const fromCopy = prepared.managesHistory === true
