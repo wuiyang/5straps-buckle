@@ -551,15 +551,17 @@ describe('moving a 0.1 node onto the workspace model', () => {
       }
       return before
     }
-    /** A rename that fails `failures` times with `code` for the record named `held`, as Windows fails it, and renames otherwise. */
+    /** A rename that fails `failures` times with `code` for the record named `held` (a name, or one path), as Windows fails it, and renames otherwise. */
     function holding(held: string, failures: number, code = 'EPERM') {
       const tried: string[] = []
+      const sources: string[] = []
       const pauses: number[] = []
       let left = failures
       const io: RenameIo = {
         rename(from, to) {
           tried.push(basename(from))
-          if (basename(from) === held && left > 0) {
+          sources.push(from)
+          if ((basename(from) === held || from === held) && left > 0) {
             left -= 1
             throw Object.assign(new Error(`${code}: operation not permitted, rename '${from}' -> '${to}'`), { code, errno: -1, syscall: 'rename', path: from, dest: to })
           }
@@ -567,7 +569,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
         },
         async pause(ms) { pauses.push(ms) },
       }
-      return { io, tried: (name: string) => tried.filter(entry => entry === name).length, all: tried, pauses }
+      return { io, tried: (name: string) => tried.filter(entry => entry === name).length, all: tried, sources, pauses }
     }
     const marker = (input: Scene) => join(input.state, 'moving-onto-workspaces')
     const moved = (input: Scene, file: string) => join(input.state, 'workspaces', ownId(input), file)
@@ -670,6 +672,80 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(held.all).toEqual(['history', 'browser-sessions', 'workbenches', 'grants.json', 'approvals.json', 'plugins.json', 'isolated-shell'])
     })
 
+    describe('a registered workspace\'s records', () => {
+      const siteRecords = { 'approvals.json': '{"version":1,"pending":[]}', 'notes.json': '{"version":1}', 'plugins.json': '{"version":1,"plugins":[]}', [join('workbenches', 'w1')]: 'a workbench', [join('browser-sessions', 's1')]: 'a browser session', [join('history', 'h1')]: 'a site restore point', [join('isolated-shell', 'abc', 'f')]: 'a site shell copy' }
+      const HELD_FIRST = ['history', 'browser-sessions', 'workbenches']
+      const SITE_ENTRIES = ['approvals.json', 'browser-sessions', 'history', 'isolated-shell', 'notes.json', 'plugins.json', 'workbenches']
+      const siteDirectory = (input: Scene) => join(input.state, 'workspaces', 'site')
+      const movedSite = (input: Scene) => join(input.state, 'workspaces', siteId(input))
+      function withSiteRecords(input: Scene): string {
+        const before = withRecords(input)
+        for (const [file, text] of Object.entries(siteRecords)) {
+          mkdirSync(dirname(join(siteDirectory(input), file)), { recursive: true })
+          writeFileSync(join(siteDirectory(input), file), text)
+        }
+        return before
+      }
+      /** The names a move renamed out of the site's 0.1 directory, in order. */
+      const renamedFromSite = (input: Scene, held: ReturnType<typeof holding>) => held.sources.filter(from => dirname(from) === siteDirectory(input)).map(from => basename(from))
+
+      it('moves its history, browser-sessions, and workbenches first, then the rest in the order the disk lists them', async () => {
+        const input = scene()
+        withSiteRecords(input)
+        const listed = readdirSync(siteDirectory(input))
+        // The disk lists approvals.json before the three, so a move in listed order would start there.
+        expect(listed[0]).toBe('approvals.json')
+        const held = holding('none', 0)
+        await migrateNode({ node: loadConfig(input.environment), io: held.io })
+
+        expect(renamedFromSite(input, held)).toEqual([...HELD_FIRST, ...listed.filter(entry => !HELD_FIRST.includes(entry))])
+        expect(renamedFromSite(input, held).slice(0, 3)).toEqual(HELD_FIRST)
+      })
+
+      it('moves only the folders it keeps, in that order, where it keeps one or two of the three', async () => {
+        const input = scene()
+        withSiteRecords(input)
+        rmSync(join(siteDirectory(input), 'history'), { recursive: true })
+        rmSync(join(siteDirectory(input), 'browser-sessions'), { recursive: true })
+        const held = holding('none', 0)
+        await migrateNode({ node: loadConfig(input.environment), io: held.io })
+
+        expect(renamedFromSite(input, held)).toEqual(['workbenches', 'approvals.json', 'isolated-shell', 'notes.json', 'plugins.json'])
+      })
+
+      it('stops at its history, held open every time, before any other of its records moves, and a run again finishes the move with no duplicate and no earlier-move entry', async () => {
+        const input = scene()
+        const before = withSiteRecords(input)
+        const siteHistory = join(siteDirectory(input), 'history')
+        const held = holding(siteHistory, Number.POSITIVE_INFINITY)
+        const message = await stoppedAt(input, held, 'win32')
+
+        expect(message).toContain(`could not move ${siteHistory} to ${join(movedSite(input), 'history')}`)
+        // The site's renames start with its history, tried five times, and no other record of the site was renamed.
+        expect(renamedFromSite(input, held)).toEqual(Array(5).fill('history'))
+        expect(held.sources.indexOf(siteHistory)).toBeGreaterThan(held.sources.indexOf(join(input.state, 'isolated-shell')))
+        for (const [file, text] of Object.entries(siteRecords)) expect(readFileSync(join(siteDirectory(input), file), 'utf8')).toBe(text)
+        expect(readdirSync(movedSite(input))).toEqual([])
+        // The node folder's workspace is moved first, so its records had moved by then.
+        for (const file of Object.keys(records)) expect(readFileSync(moved(input, file), 'utf8')).toBe(records[file])
+        expect(registry(input)).toBe(before)
+        expect(existsSync(marker(input))).toBe(true)
+
+        await migrateNode({ node: loadConfig(input.environment) })
+        expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
+        for (const [file, text] of Object.entries(siteRecords)) {
+          expect(readFileSync(join(movedSite(input), file), 'utf8')).toBe(text)
+          expect(existsSync(join(siteDirectory(input), file))).toBe(false)
+        }
+        for (const directory of [movedSite(input), join(input.state, 'workspaces', ownId(input))]) {
+          expect(readdirSync(directory).filter(entry => entry.includes('earlier-move'))).toEqual([])
+        }
+        // Each record once, beside the settings file and its lock.
+        expect(readdirSync(movedSite(input)).filter(entry => !entry.startsWith('workspace.json')).sort()).toEqual(SITE_ENTRIES)
+        expect(existsSync(marker(input))).toBe(false)
+      })
+    })
+
     it.each([['ENOENT', 'win32'], ['EXDEV', 'win32'], ['ENOENT', 'linux'], ['EXDEV', 'darwin']] as const)('stops at once on a rename that fails with %s on %s, naming the code, and tries it no more', async (code, platform) => {
       const input = scene()
       const before = withRecords(input)
@@ -770,6 +846,19 @@ describe('moving a 0.1 node onto the workspace model', () => {
         writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify(attempt(processId)))
         await migrateNode({ node: loadConfig(input.environment) })
         expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
+      })
+
+      // The same id, kept with the audit log: process.kill throws a range error for it, which processIsAlive reads as a live process.
+      it.each([1e20, 2 ** 31])('takes an open attempt of process id %s, past what a process id can be, with the audit log, as a dead process\'s', async (processId) => {
+        const input = scene()
+        withRecords(input)
+        writeFileSync(join(input.state, 'actions.jsonl'), `${JSON.stringify({ at: '2026-10-01T00:00:00.000Z', requestId: 'r-fs_write', sessionId: 's', tool: 'fs_write', outcome: 'ok', event: 'result', durationMs: 1, effects: [], args: {}, workspaceId: 'default' })}\n`)
+        writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify(attempt(processId)))
+        await migrateNode({ node: loadConfig(input.environment) })
+
+        const pendingOf = (file: string) => existsSync(file) ? Object.keys(JSON.parse(readFileSync(file, 'utf8')).pending) : []
+        expect(pendingOf(join(input.state, 'workspaces', ownId(input), 'actions.jsonl.pending.json'))).toEqual(['running'])
+        expect(pendingOf(join(input.state, 'actions.jsonl.pending.json'))).toEqual([])
       })
 
       it('moves on where the process a sign names has ended, or is this one', async () => {

@@ -58,13 +58,18 @@ const PolicyStubSchema = z.object({ version: z.literal(2), note: z.string() }).s
 const POLICY_STUB = { version: 2 as const, note: 'Each workspace keeps its policy in workspaces/<id>/workspace.json since the workspace model; policy.v1.json holds what this file held, for going back to 0.1.' }
 
 /**
+ * The folders a running Buckle, or the browser it opened, keeps files open in: the history database, the browser's
+ * sessions, the workbenches. Every workspace's records move these first (heldFirst), so a program that holds one stops
+ * that workspace's move before any other record of it moves, and before a record the program writes meanwhile lands
+ * where 0.1 kept it.
+ */
+const HELD_FIRST = ['history', 'browser-sessions', 'workbenches']
+/**
  * The records 0.1 kept for the node's own folder in the state directory itself, which move to the folder's workspace
  * directory (D85, Q15). The node's own audit log, registry, keys, and credentials stay where they are. They move in this
- * order: first the folders a running Buckle, or the browser it opened, keeps files open in (the history database, the
- * browser's sessions, the workbenches), so a program that holds one stops the move before any record has changed and
- * before a record it writes meanwhile lands where 0.1 kept it; then the rest.
+ * order: the held folders first, then the rest.
  */
-const NODE_FOLDER_RECORDS = ['history', 'browser-sessions', 'workbenches', 'grants.json', 'dangerously-allow.json', 'approvals.json', 'approval-calls', 'approval-nonces.json', 'plugins.json', 'code-journal', 'isolated-shell', 'receive-git-hooks']
+const NODE_FOLDER_RECORDS = [...HELD_FIRST, 'grants.json', 'dangerously-allow.json', 'approvals.json', 'approval-calls', 'approval-nonces.json', 'plugins.json', 'code-journal', 'isolated-shell', 'receive-git-hooks']
 /** A workspace's audit log and the state beside it, which a move never sets aside: it would hide calls. */
 const AUDIT_LOG = /^actions\.jsonl/
 /** What stays in a registered workspace's 0.1 directory: the copies for going back, 0.1's own policy file, and lock files. */
@@ -563,16 +568,23 @@ function refuseRunning(node: NodeConfig, plans: readonly Planned[]): void {
   throw new MigrationError(`Buckle cannot move the node onto workspaces while another Buckle process runs on this state directory: process ${running.pid} ${running.sign}. ${STOP_EVERY}, then run the command again. If no Buckle process runs, another program took that process id after a Buckle stopped: restart the computer, then run the command again. This command changed nothing.`)
 }
 
+/**
+ * Whether a process other than this one runs under the id. Process 0 and a negative id name a process group to the kernel,
+ * never one process, and an id past 32 bits names none at all: process.kill throws a range error for it, which
+ * processIsAlive reads as a live process. Such an id is no process, in a sign of a running Buckle and in an open attempt alike.
+ */
+function runsElsewhere(pid: number): boolean {
+  return Number.isSafeInteger(pid) && pid > 0 && pid <= MAX_PROCESS_ID && pid !== process.pid && processIsAlive(pid)
+}
+
 function runningBuckle(node: NodeConfig, plans: readonly Planned[]): { pid: number; sign: string } | null {
-  // Process 0 and a negative id name a process group to the kernel, never one process; an id past 32 bits is none at all.
-  const elsewhere = (pid: number) => Number.isSafeInteger(pid) && pid > 0 && pid <= MAX_PROCESS_ID && pid !== process.pid && processIsAlive(pid)
   for (const directory of new Set(plans.flatMap(planned => [planned.oldStateDirectory, planned.stateDirectory]))) {
     const log = join(directory, 'actions.jsonl')
-    const pid = openAttemptProcesses(log, node.stateLockDeadlineMs).find(elsewhere)
+    const pid = openAttemptProcesses(log, node.stateLockDeadlineMs).find(runsElsewhere)
     if (pid !== undefined) return { pid, sign: `has a call open in the audit log ${log}` }
   }
   const serving = readRecord(node.stateDirectory)
-  return serving !== null && elsewhere(serving.pid) ? { pid: serving.pid, sign: 'serves it' } : null
+  return serving !== null && runsElsewhere(serving.pid) ? { pid: serving.pid, sign: 'serves it' } : null
 }
 
 /** The processes with a call open in an audit log, as its open attempts say; none where they will not read. */
@@ -639,14 +651,15 @@ async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: bool
 
 /**
  * Moves what 0.1 kept for the workspace into its own directory (D85, Q15): the named set from the state directory for
- * the node's folder, and everything but what stays behind (STAYS_BEHIND) from a registered workspace's 0.1 directory.
+ * the node's folder, and everything but what stays behind (STAYS_BEHIND) from a registered workspace's 0.1 directory,
+ * the held folders (HELD_FIRST) first and the rest as the disk lists them.
  * A record already moved, or never kept, is left alone, so a move run again changes nothing more. Where a record is in
  * both places, the node went back to 0.1 and moves again: the one an earlier move left is set aside beside the one 0.1
  * holds now, which takes its place, and the grants and the switch an earlier move left are set aside even where 0.1 has
  * none (an audit log is neither: it stays where it is). Answers what was set aside, as a path inside the state directory.
  */
 async function moveRecords(planned: Planned, renamer: Renamer): Promise<string[]> {
-  const entries = planned.nodeFolder ? NODE_FOLDER_RECORDS : listed(planned.oldStateDirectory).filter(entry => !STAYS_BEHIND.test(entry))
+  const entries = planned.nodeFolder ? NODE_FOLDER_RECORDS : heldFirst(listed(planned.oldStateDirectory).filter(entry => !STAYS_BEHIND.test(entry)))
   const aside: string[] = []
   for (const entry of entries) {
     const from = join(planned.oldStateDirectory, entry)
@@ -751,8 +764,8 @@ function openAttempts(log: string, lockDeadlineMs: number | undefined, options: 
  * The 0.1 node's audit log held every call of the node's folder, and its owner's commands beside them. It becomes the
  * folder's workspace's log, so `buckle log --workspace <name>` reads what the folder's agents did before the move, and
  * the node's own log starts fresh with the owner's commands (fix brief 4, findings 17 and 18). The attempts it still
- * tracks as open move with it where their process is dead; a live process's, this very one's among them, stay, as its
- * result is recorded in the node's log. A workspace that
+ * tracks as open move with it where their process is dead, or the id names none (runsElsewhere); a live process's, this
+ * very one's among them, stay, as its result is recorded in the node's log. A workspace that
  * has a log already (a node that went back to 0.1 and moves again) keeps it, and the old one stays where it is; so does
  * a log whose open attempts will not read. Answers whether the log moved.
  */
@@ -765,7 +778,7 @@ async function moveAuditLog(node: NodeConfig, planned: Planned, renamer: Renamer
   try {
     // A live process (a 0.1 serve still running, a command started beside this one) records its result in the node's
     // log by path and pairs it there, so its attempt stays at the node: moved, it would read as interrupted later.
-    const leaving = Object.entries(source.read().pending).filter(([, attempt]) => attempt.processId !== process.pid && !processIsAlive(attempt.processId))
+    const leaving = Object.entries(source.read().pending).filter(([, attempt]) => attempt.processId !== process.pid && !runsElsewhere(attempt.processId))
     if (leaving.length > 0) {
       await target.update((state) => { for (const [id, attempt] of leaving) state.pending[id] = attempt })
       await source.update((state) => { for (const [id] of leaving) delete state.pending[id] })
@@ -776,6 +789,11 @@ async function moveAuditLog(node: NodeConfig, planned: Planned, renamer: Renamer
   }
   await moveRecord(from, to, renamer)
   return true
+}
+
+/** The entries with the held folders among them first, those present in HELD_FIRST's order, the rest as they came. */
+function heldFirst(entries: readonly string[]): string[] {
+  return [...HELD_FIRST.filter(entry => entries.includes(entry)), ...entries.filter(entry => !HELD_FIRST.includes(entry))]
 }
 
 function listed(directory: string): string[] {
