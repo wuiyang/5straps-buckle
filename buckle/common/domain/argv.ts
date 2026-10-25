@@ -2129,9 +2129,11 @@ const LEADING_CONTINUATIONS = /^(?:\\\n)+/
 
 /**
  * Where a word's own text starts once the line continuations before it are removed, as the shell removes them before it
- * reads the word, so a `~` or an `=` after them leads it (D91 follow-ups, F1).
+ * reads the word, so a `~` or an `=` after them leads it (D91 follow-ups, F1). Every word read comes here, and a word
+ * not starting with a backslash starts at 0 without the pattern.
  */
 export function ownStart(raw: string): number {
+  if (raw[0] !== '\\') return 0
   return LEADING_CONTINUATIONS.exec(raw)?.[0].length ?? 0
 }
 
