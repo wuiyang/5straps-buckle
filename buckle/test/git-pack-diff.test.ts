@@ -134,6 +134,38 @@ describe.skipIf(hostGit === null)('git_diff hides the content of a file the rule
     expect(diff).not.toMatch(/after-rename-marker|prod-marker|prod-second|NOTE=committed/)
   })
 
+  // A path argument limits git's own listing, so a rename whose old name lies outside it was listed as a new file and
+  // judged by its plain new name alone, printing the hidden file's staged content (git residue, round 2, h12 and h15).
+  it('hides a staged rename out of a credential name, named by its new side alone, and keeps a plain one\'s content', async () => {
+    const root = repository({ '.env': 'K=planted-pathspec-marker\n', 'a.txt': 'a one\na two\na three\n' })
+    git(root, 'mv', '.env', 'notes.txt')
+    writeFileSync(join(root, 'notes.txt'), 'scrubbed\n')
+    git(root, 'mv', 'a.txt', 'b.txt')
+    const { diff } = await gitPack(root, hostRunProcess, hostGit!)({ staged: true, paths: ['notes.txt', 'b.txt'] }, readRules(root))
+    expect(diff).toContain('diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nstat: +1 -0\n[content hidden: credential file]\n')
+    expect(diff).toContain('+a two')
+    expect(diff).not.toContain('planted-pathspec-marker')
+  })
+
+  it('hides a staged rename out of a denied folder, named by the folder it moved to', async () => {
+    const root = repository({ 'secrets/token.txt': 'planted-folder-rename\nline two\n', 'public/readme.txt': 'readme\n' })
+    git(root, 'mv', 'secrets/token.txt', 'public/token.txt')
+    writeFileSync(join(root, 'public', 'token.txt'), 'scrubbed\n')
+    const { diff } = await gitPack(root, hostRunProcess, hostGit!)({ staged: true, paths: ['public'] }, readRules(root, { deny: ['secrets'] }))
+    expect(diff).toContain('diff --git a/public/token.txt b/public/token.txt\nnew file mode 100644\nstat: +2 -0\n[content hidden: read rule]\n')
+    expect(diff).not.toMatch(/planted-folder-rename|line two/)
+  })
+
+  it('hides a work-tree rename out of a credential name, an intent-to-add file named alone', async () => {
+    const root = repository({ '.env': 'K=planted-intent-marker\nK2=second\n' })
+    rmSync(join(root, '.env'))
+    writeFileSync(join(root, 'moved.txt'), 'K=planted-intent-marker\nK2=second\n')
+    git(root, 'add', '-N', 'moved.txt')
+    const { diff } = await gitPack(root, hostRunProcess, hostGit!)({ paths: ['moved.txt'] }, readRules(root))
+    expect(diff).toContain('diff --git a/moved.txt b/moved.txt\nnew file mode 100644\nstat: +2 -0\n[content hidden: credential file]\n')
+    expect(diff).not.toContain('planted-intent-marker')
+  })
+
   it('hides a binary credential file with a binary stat, and still shows that a plain binary file differs', async () => {
     const root = repository({ 'cert.pem': Buffer.from([0, 1, 2, 3, 0x6b, 0x65, 0x79]), 'image.bin': Buffer.from([0, 9, 9, 9]) }, { 'cert.pem': Buffer.from([0, 1, 2, 4, 0x6b, 0x65, 0x79]), 'image.bin': Buffer.from([0, 8, 8, 8]) })
     const { diff } = await gitPack(root, hostRunProcess, hostGit!)({}, readRules(root))
@@ -217,12 +249,14 @@ describe.skipIf(hostGit === null)('git_diff hides the content of a file the rule
   })
 })
 
-/** A git that answers the repository query as a repository of its own, and each later command as `answers` says. */
+/** A git that answers the repository query as a repository of its own, HEAD as a commit, and each later command as `answers` says. */
 function scripted(answers: (request: ProcessRequest) => Partial<ProcessResult> | null) {
   return vi.fn<ProcessRunner>(async request => {
     const done = (result: Partial<ProcessResult>): ProcessResult => ({ exitCode: 0, signal: null, stderr: '', truncated: false, timedOut: false, stdout: '', ...result })
     if (request.args[0] === 'rev-parse' && request.args.includes('--show-toplevel')) return done({ stdout: `${request.cwd}\n${request.cwd}/.git\n${request.cwd}/.git\n` })
-    return done(answers(request) ?? {})
+    const answer = answers(request)
+    if (answer === null && request.args[0] === 'rev-parse' && request.args.includes('--verify')) return done({ stdout: `${'b'.repeat(40)}\n` })
+    return done(answer ?? {})
   })
 }
 const isListing = (request: ProcessRequest) => request.args[0] === 'diff' && request.args.includes('--raw')
@@ -301,6 +335,30 @@ describe('git_diff runs git on the files it may show, from one listing', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0]).toBeLessThanOrEqual(original)
     expect(original - seen[0]!).toBeLessThan(1)
+  })
+
+  it('lists a path-limited call\'s renames again across the whole tree, never under the named paths, and hides the pair', async () => {
+    const root = workspace()
+    const runProcess = scripted(request => {
+      if (!isListing(request)) return null
+      return { stdout: request.args.includes('--diff-filter=RC') ? listingOf(['R100', ['.env', 'notes.txt'], '0\t0']) : listingOf(['A', ['notes.txt'], '1\t0']) }
+    })
+    const { diff } = await gitPack(root, runProcess)({ staged: true, paths: ['notes.txt'] }, allowedButEnv)
+    expect(diff).toBe('diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nstat: +1 -0\n[content hidden: credential file]\n')
+    const requests = runProcess.mock.calls.map(([request]) => request)
+    expect(requests.filter(isListing).map(request => request.args.slice(request.args.indexOf('-z') + 1))).toEqual([['--', 'notes.txt'], ['--diff-filter=RC', '--']])
+    expect(requests.filter(isPatch)).toEqual([])
+  })
+
+  it('refuses a path-limited call whose whole-tree list of renames was cut short, running no patch', async () => {
+    const root = workspace()
+    const runProcess = scripted(request => {
+      if (!isListing(request)) return null
+      return request.args.includes('--diff-filter=RC') ? { stdout: listingOf(['R100', ['a.txt', 'b.txt'], '0\t0']), truncated: true } : { stdout: listingOf(['M', ['plain.txt'], '1\t0']) }
+    })
+    const refusal = await gitPack(root, runProcess)({ staged: true, paths: ['plain.txt'] }, allowed).then(() => null, (error: unknown) => error)
+    expect(refusal).toMatchObject({ code: 'GIT_FAILED', message: expect.stringContaining('more renamed files') })
+    expect(runProcess.mock.calls.map(([request]) => request).filter(isPatch)).toEqual([])
   })
 
   it('hides a shown path that an entry of the index lies beneath, though the listing never named that entry', async () => {

@@ -323,6 +323,8 @@ const EMPTY_TREES: Readonly<Record<string, string>> = {
 const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
 /** Constant: how many files a repository changed is no reason to show a part of them. */
 const TOO_MANY_FILES = 'The diff lists more changed files than Buckle reads at once, so none is shown; name paths or a folder to narrow it'
+/** Constant too: the renames are listed across the whole tree whatever paths the call names, so naming fewer cannot help. */
+const TOO_MANY_RENAMES = 'The repository holds more renamed files than Buckle reads at once, so no diff is shown'
 
 /** Whether one listed path's content may be shown, and why not: null where the rules let the agent read it. */
 type FileJudge = (path: string) => Promise<HiddenReason | null>
@@ -357,24 +359,24 @@ function fileJudge(input: { workTree: string; authorizeRead: ToolContext['author
 /**
  * The diff of the files the rules let the agent read, then the header and stat of each other one (R1, D77). The list
  * comes from one `--raw --numstat -z` listing, never from the patch, so a file whose content spells `diff --git` lines
- * forges no file of its own. The patch is then handed only the paths it may show, never a bare `--`, which would show
- * them all, and none that is a folder above a path it may not (withholdBeneath; ls-files names the index's entries
- * beneath).
+ * forges no file of its own. A rename or copy is hidden when either side is, as git pairs it across the whole tree
+ * (withholdPaired). The patch is then handed only the paths it may show, never a bare `--`, which would show them all,
+ * and none that is a folder above a path it may not (withholdBeneath; ls-files names the index's entries beneath).
  * Every command reads one private copy of the index and a staged diff the commit HEAD named once, so a file staged or
  * committed while the call runs never reaches the patch.
  */
 async function censoredDiff(input: { repository: GitSession; listed: string[]; staged: boolean; contextLines: number; judge: FileJudge }): Promise<string> {
   const { git, workTree } = input.repository
   const args = [...DIFF_ARGS, ...(input.staged ? ['--cached', await committedTree(git)] : [])]
-  // The listing alone may end in a bare `--`: it lists every file, and a work-tree file named like the commit is no path.
+  // A listing alone may end in a bare `--`: it lists every file, and a work-tree file named like the commit is no path.
   const files = parseListing(whole(await git([...args, '--raw', '--numstat', '-z', ...(input.listed.length === 0 ? ['--'] : input.listed)])))
   const withheld = new Map<ListedFile, HiddenReason>()
   for (const file of files) {
-    for (const path of pathsOf(file)) {
-      const reason = await input.judge(path)
-      if (reason !== null) { withheld.set(file, reason); break }
-    }
+    const reason = await firstHidden(pathsOf(file), input.judge)
+    if (reason !== null) withheld.set(file, reason)
   }
+  const comparisons = input.listed.length === 0 ? [] : [args]
+  if (comparisons.length > 0 && files.some(file => !withheld.has(file))) await withholdPaired({ git, comparisons, files, withheld, judge: input.judge })
   // Each by its place under the work tree, which git reads from any folder in it, so none can be the folder git runs in.
   const handed = (shown: readonly ListedFile[]) => ['--', ...[...new Set(shown.flatMap(pathsOf))].map(path => childPath(workTree, path))]
   const candidates = files.filter(file => !withheld.has(file))
@@ -387,6 +389,38 @@ async function censoredDiff(input: { repository: GitSession; listed: string[]; s
   return `${patch === '' || patch.endsWith('\n') ? patch : `${patch}\n`}${hidden.join('')}`
 }
 
+/** Why the first of `paths` the rules hide is hidden, or null where they hide none. */
+async function firstHidden(paths: readonly string[], judge: FileJudge): Promise<HiddenReason | null> {
+  for (const path of paths) {
+    const reason = await judge(path)
+    if (reason !== null) return reason
+  }
+  return null
+}
+
+/**
+ * Hides each shown file that git pairs as a rename or a copy, across the whole tree in any of `comparisons`, with a path
+ * the rules hide. A path argument limits git's own listing, so a rename whose other side lies outside it is listed as a
+ * new or a deleted file and judged by the one name: the new name alone printed a hidden file's staged content (git
+ * residue, round 2). Each comparison is listed again with a bare `--` and only its renames and copies. `withheld` is
+ * updated in place.
+ */
+async function withholdPaired(input: { git: GitCommand; comparisons: readonly string[][]; files: readonly ListedFile[]; withheld: Map<ListedFile, HiddenReason>; judge: FileJudge }): Promise<void> {
+  const partners = new Map<string, string[]>()
+  for (const comparison of input.comparisons) {
+    for (const pair of parseListing(whole(await input.git([...comparison, '--raw', '--numstat', '-z', '--diff-filter=RC', '--']), TOO_MANY_RENAMES))) {
+      if (pair.from === null) continue
+      partners.set(pair.from, [...partners.get(pair.from) ?? [], pair.path])
+      partners.set(pair.path, [...partners.get(pair.path) ?? [], pair.from])
+    }
+  }
+  for (const file of input.files) {
+    if (input.withheld.has(file)) continue
+    const reason = await firstHidden(pathsOf(file).flatMap(path => partners.get(path) ?? []), input.judge)
+    if (reason !== null) input.withheld.set(file, reason)
+  }
+}
+
 /** The tree a staged diff compares the index with: the commit HEAD names now, or the empty tree where it names none. */
 async function committedTree(git: GitCommand): Promise<string> {
   const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], [0, 1])
@@ -396,8 +430,8 @@ async function committedTree(git: GitCommand): Promise<string> {
 }
 
 /** A listing's output, refused where it was cut short, as a part of it may end inside a path. */
-function whole(result: ProcessResult): string {
-  if (result.truncated) throw new ToolExecutionError(TOO_MANY_FILES, { code: 'GIT_FAILED' })
+function whole(result: ProcessResult, reason = TOO_MANY_FILES): string {
+  if (result.truncated) throw new ToolExecutionError(reason, { code: 'GIT_FAILED' })
   return result.stdout
 }
 
