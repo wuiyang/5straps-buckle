@@ -39,7 +39,7 @@ On Windows a folder will not move while a program holds a file inside it open, m
 `buckle serve`, a `buckle mcp` an MCP client started, the Buckle service, the browser Buckle opened
 (agent-browser and its Chromium), or an antivirus scan. The folders such a program keeps files in
 (`history`, `browser-sessions`, and `workbenches`) move first within each workspace, so a held one
-stops that workspace's move before its other records change; the node's folder moves before the
+stops that workspace's move before its other records change on a first move; the node's folder moves before the
 registered workspaces, so where only a registered one is held, the node's folder has moved already.
 The move tries a held record again for about two seconds, then stops with
 `EPERM`, `EBUSY`, or `EACCES`, naming the record
