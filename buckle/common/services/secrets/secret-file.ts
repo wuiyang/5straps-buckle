@@ -41,7 +41,15 @@ export function resolveSecretFile(written: string, view: PathView): string {
  * it, so the rules ask about each before Buckle reads any (docs/secrets.md).
  */
 export function secretFileEffects(plan: SecretPlan, view: PathView): SecretFileEffect[] {
-  return [...plan.files].map(([written, names]) => ({ kind: 'secret_file', path: resolveSecretFile(written, view), written, names: [...names] }))
+  return [...plan.files].map(([written, names]) => {
+    try {
+      return { kind: 'secret_file', path: resolveSecretFile(written, view), written, names: [...names] }
+    } catch (error) {
+      // A refusal names the NAMEs the call would have read there too, never a value (docs/secrets.md).
+      if (error instanceof ToolInputError) throw new ToolInputError(`${error.message}; the call reads ${names.join(', ')} from it`, { code: error.code })
+      throw error
+    }
+  })
 }
 
 /**

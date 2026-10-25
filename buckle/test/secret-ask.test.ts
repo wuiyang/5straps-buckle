@@ -201,7 +201,7 @@ describe('through the invoker', () => {
     mkdirSync(join(root, 'outside'))
     writeFileSync(join(root, 'outside', 'planted.env'), `API_TOKEN=${DECOY}\n`)
     symlinkSync(join(root, 'outside', 'planted.env'), join(workspace, 'planted.env'))
-    for (const [reference, said] of [['{{file:missing.env:API_TOKEN}}', 'missing.env, which does not exist'], ['{{file:planted.env:API_TOKEN}}', 'planted.env, which lands outside the workspace and its mounts']] as const) {
+    for (const [reference, said] of [['{{file:missing.env:API_TOKEN}}', 'missing.env, which does not exist in the workspace; the call reads API_TOKEN from it'], ['{{file:planted.env:API_TOKEN}}', 'planted.env, which lands outside the workspace and its mounts; the call reads API_TOKEN from it']] as const) {
       expect(await run(runtime, [reference])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(said) } })
     }
     expect(runtime.approvals.pending()).toEqual([])
