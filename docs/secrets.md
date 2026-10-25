@@ -64,8 +64,9 @@ the other way round.
 
 The setting `secrets.files` lists files that need no ask, and `secrets.enabled` off refuses a
 reference where it is read, both in the [settings table](workspaces-02.md#settings). The
-dangerously-allow switch never answers this ask. Buckle's own state, a file the owner denied, and a
-path a filesystem rule denies are refused.
+[dangerously-allow switch](approvals.md#dangerously-allow) answers this ask only at level `all`; a
+bare `on` leaves it to a person. Buckle's own state, a file the owner denied, and a path a
+filesystem rule denies are refused.
 
 ## What the rules see
 

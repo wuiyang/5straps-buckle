@@ -1,9 +1,8 @@
 # Approvals
 
-Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, judges each call
-by its effects: the paths it reads and writes, the commands it runs, and the URLs it reaches,
-never the tool's name. A deny on any effect refuses the call, an ask waits for a person, and
-otherwise it runs.
+Buckle, the local permission node that runs an AI agent's tool calls, judges each call by its
+effects: paths read and written, commands run, and URLs reached, never the tool's name. A deny
+on any effect refuses the call, an ask waits for a person, and otherwise it runs.
 
 ## What runs, asks, or is refused
 
@@ -103,16 +102,16 @@ command waits only while its terminal question is open. `buckle workspace set ap
 ## Dangerously allow
 
 ```bash
-buckle policy dangerously-allow on [--workspace <name>]
+buckle policy dangerously-allow on [command|all] [--workspace <name>]
 buckle policy dangerously-allow off
 ```
 
-Warning: this removes the person. While it is on, every ask about a path inside the workspace,
-and every command, host, and process ask, is allowed, sensitive files, writes, and destructive
-commands included, except a secret reference's file. Paths outside it keep their normal outcome,
-and deny rules, the mount, and the state directory still refuse.
+Warning: this removes the person. At level `command`, the default, every ask about a path inside
+the workspace, and every command, host, and process ask, is allowed, sensitive files, writes, and
+destructive commands included, except a secret reference's file. Level `all` allows that file
+too. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
+directory still refuse.
 
-Only the local CLI sets it; `buckle policy import` refuses a file that names it. A running node
-reads it each call, so `off` applies at once. Each use is logged as
-`policy_dangerously_allowed`. Each workspace has its own switch, with no node-wide one, and
-`buckle policy clear` leaves it on.
+Only the local CLI sets it, per workspace; `buckle policy import` refuses a file that names it,
+and `buckle policy clear` leaves it on. A running node reads it each call, so `off` applies at
+once. Each use is logged as `policy_dangerously_allowed` with its level.
