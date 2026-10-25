@@ -461,8 +461,10 @@ const TILDE_EXPANSION = /\$\{[\^=~#+]*~|\$[\^=]*~/
  * flags group holding `e` (`${(e)v}`), which runs the substitutions in the value (zshexpn, Parameter Expansion Flags).
  * A group holding a delimiter (`${(s:):e)v}`, whose `)` may be a separator) is read on to the next `}`. `${v:-~}` and
  * `${v#~}` keep their reading. One pass: each group is read once, and a group with no end is read as one that may.
+ * Every such form holds a `$`, so a word without one is passed at once.
  */
 function holdsValueAsPattern(word: string): boolean {
+  if (!word.includes('$')) return false
   if (TILDE_EXPANSION.test(word)) return true
   let at = word.indexOf('${(')
   if (at === -1) return false
@@ -495,6 +497,9 @@ const NAMED_OPTION_FLAG = /^[-+][A-Za-z]*o[A-Za-z]*$/
 const ARRAY_FLAG = /^[-+][A-Za-z]*A[A-Za-z]*$/
 /** An option word of exec that holds `a`, which names the zeroth argument the command starts with. */
 const ARGV0_FLAG = /^-[A-Za-z]*a[A-Za-z]*$/
+/** Whether a word starts zsh (isZsh of its baseCommand); one without `zsh` in any case cannot, and builds no base name. */
+const ZSH_LETTERS = /zsh/i
+const startsZsh = (word: string) => ZSH_LETTERS.test(word) && isZsh(baseCommand(word))
 
 /**
  * Whether words zsh may read turn a parameter's value into a pattern whose glob qualifiers run code the text never spells
@@ -508,16 +513,34 @@ const ARGV0_FLAG = /^-[A-Za-z]*a[A-Za-z]*$/
  * and `setopt` of another option keeps its reading.
  */
 function readsValueAsPattern(words: readonly string[], place: Place): boolean {
-  if (place.statement && words.some(word => word === 'emulate' || holdsValueAsPattern(word))) return true
-  const setopt = words.some(word => word === 'setopt' || word === 'unsetopt')
-  const zsh = words.some(word => isZsh(baseCommand(word)))
-  const setsNamed = place.statement && words.includes('set') && words.some(word => NAMED_OPTION_FLAG.test(word))
-  const options = place.statement && (words.some(word => OPTIONS_ARRAY.test(word)) || (words.includes('set') && words.includes('options') && words.some(word => ARRAY_FLAG.test(word))))
+  // Every statement read comes here, so one pass gathers what the checks ask of its words, each pattern tried only on a
+  // word that holds the text it needs.
+  let setopt = false
+  let zsh = false
+  let set = false
+  let optionsWord = false
+  let namedFlag = false
+  let arrayFlag = false
+  let optionsArray = false
+  for (const word of words) {
+    if (place.statement && (word === 'emulate' || holdsValueAsPattern(word))) return true
+    setopt ||= word === 'setopt' || word === 'unsetopt'
+    zsh ||= startsZsh(word)
+    set ||= word === 'set'
+    optionsWord ||= word === 'options'
+    if (word[0] === '-' || word[0] === '+') {
+      namedFlag ||= NAMED_OPTION_FLAG.test(word)
+      arrayFlag ||= ARRAY_FLAG.test(word)
+    }
+    optionsArray ||= word.includes('options') && OPTIONS_ARRAY.test(word)
+  }
+  const setsNamed = place.statement && set && namedFlag
+  const options = place.statement && (optionsArray || (set && optionsWord && arrayFlag))
   if (!(setopt || zsh || setsNamed || options)) return false
   if (words.some(word => namesGlobSubst(word) || /^--emulate(?:=|$)/.test(word))) return true
   // zsh started as sh or ksh emulates it, GLOB_SUBST on: an ARGV0 assignment or exec -a before it names the zeroth
   // argument it starts with. A word after it, such as its -c text, is no such name.
-  const before = words.slice(0, words.findIndex(word => isZsh(baseCommand(word))))
+  const before = words.slice(0, words.findIndex(startsZsh))
   if (place.statement && before.some(word => word.startsWith('ARGV0=') || (ARGV0_FLAG.test(word) && before.includes('exec')))) return true
   const supplied = words.some(word => place.expanded.has(word))
   return (setopt && (supplied || words.some(word => PATTERN_FLAG.test(word)))) || ((setsNamed || options) && supplied)
