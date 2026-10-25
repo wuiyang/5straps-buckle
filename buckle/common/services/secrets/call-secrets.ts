@@ -107,11 +107,19 @@ export async function runWithSecrets(input: {
   const { checked } = input
   const read = checked ? readCallValues(checked, input) : new Map<string, SecretValue>()
   const values = new Map([...read].map(([key, secret]) => [key, secret.value]))
-  const browser = input.tool === 'browser_command' && input.filled ? readFilledValues(input.filled.list(), input) : []
-  const masker = createMasker([...read.values(), ...browser])
+  // A browser call is masked by every value its workspace's browsers hold: those filled before it starts, held while it
+  // runs, and, read again once it answers, those a call beside it filled meanwhile.
+  const browser = input.tool === 'browser_command' && input.filled ? input.filled : null
+  const masker = createMasker([...read.values(), ...browser ? readFilledValues(browser.list(), input) : []])
   const release = holdMasker(masker)
+  const answered = (output: JsonValue): JsonValue => {
+    const masked = masker.json(output)
+    if (!browser) return masked
+    const late = createMasker(readFilledValues(browser.list(), input))
+    try { return late.json(masked) } finally { late.drop() }
+  }
   try {
-    if (!checked) return masker.json(await input.execute(input.context))
+    if (!checked) return answered(await input.execute(input.context))
     for (const place of checked.plan.places) for (const reference of place.references) checkValue(place, reference, values.get(referenceKey(reference))!, checked.shell?.tiers)
     const args = substitutedArguments(input.args, checked.plan.places, reference => values.get(referenceKey(reference))!)
     const prepared = input.prepare(args)
@@ -121,9 +129,12 @@ export async function runWithSecrets(input: {
     const fills = fillPlaces.flatMap(place => place.references)
     if (input.filled && fills.length > 0) input.filled.add(fills.map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) })))
     const headers = checked.plan.places.filter(place => place.kind === 'header').map(place => String(place.at[1]))
-    return masker.json(await prepared.execute(headers.length > 0 ? { ...input.context, secretHeaders: headers } : input.context))
+    return answered(await prepared.execute(headers.length > 0 ? { ...input.context, secretHeaders: headers } : input.context))
   } catch (error) {
-    throw maskError(error, masker.text)
+    const masked = maskError(error, masker.text)
+    if (!browser) throw masked
+    const late = createMasker(readFilledValues(browser.list(), input))
+    try { throw maskError(masked, late.text) } finally { late.drop() }
   } finally {
     release()
     masker.drop()

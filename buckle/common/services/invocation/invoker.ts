@@ -203,7 +203,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // How the command reader reads each reference in a shell call, refused where the rules could not read it as
           // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
           const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
-          const masksBrowser = request.tool === 'browser_command' && (options.filledSecrets?.list().length ?? 0) > 0
+          // Every browser call goes through it where the workspace keeps filled values, read as it runs and once it answers.
+          const masksBrowser = request.tool === 'browser_command' && tool.capability.pack === 'browser' && options.filledSecrets !== undefined
           const run = checked || masksBrowser
             ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
             : prepared.execute
