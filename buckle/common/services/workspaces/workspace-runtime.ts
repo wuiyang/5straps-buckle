@@ -83,7 +83,7 @@ import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { createFilledSecrets } from '../secrets/call-secrets.js'
-import { resolveSecretFile } from '../secrets/secret-file.js'
+import { listedSecretFile } from '../secrets/secret-file.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -929,13 +929,11 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
 }
 
 /**
- * Whether secrets.files lists the real file a reference names (docs/secrets.md): each listed path is read as a reference's
- * is, where it lands now, so a listed name a link moves elsewhere lists that file, and one that lands outside lists none.
+ * Whether secrets.files lists the real file a reference names (docs/secrets.md): each listed path names the regular file
+ * that stands at it now, reached through no link, so a link at a listed name or a folder above it lists nothing.
  */
-function listedSecretFile(listed: readonly string[], paths: PathView, real: string): boolean {
-  return listed.some((written) => {
-    try { return resolveSecretFile(written, paths) === real } catch { return false }
-  })
+function secretFileListed(listed: readonly string[], paths: PathView, real: string): boolean {
+  return listed.some(written => listedSecretFile(written, paths) === real)
 }
 
 /** One construction for the engine and `buckle check-url`, so the check cannot drift from the rule. */
@@ -951,7 +949,7 @@ function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowed: () => boolean }): PermissionEngine {
   const { config, compiled, paths } = input
   return withDangerouslyAllow(createPermissionEngine([
-    createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => listedSecretFile(config.secretFiles ?? [], paths, path) }),
+    createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
     networkEgressRule(compiled),

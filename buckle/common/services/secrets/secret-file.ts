@@ -37,6 +37,20 @@ export function resolveSecretFile(written: string, view: PathView): string {
 }
 
 /**
+ * The file a secrets.files entry lists (docs/secrets.md): the regular file at that path in the workspace or a mount,
+ * reached through no link, or null. A link at the listed name, or at a folder above it, lists nothing, so a link planted
+ * there, at a name missing or replaced, never moves the listing onto another file.
+ */
+export function listedSecretFile(written: string, view: PathView): string | null {
+  try {
+    const real = resolveSecretFile(written, view)
+    return real === nativePath(view.resolve(posix.join(view.displayRoot, written))) ? real : null
+  } catch {
+    return null
+  }
+}
+
+/**
  * The files a call's references name, each judged where it lands (resolveSecretFile) with the NAMEs the call reads from
  * it, so the rules ask about each before Buckle reads any (docs/secrets.md).
  */

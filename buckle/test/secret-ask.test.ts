@@ -196,6 +196,27 @@ describe('through the invoker', () => {
     expect(ran).toEqual([])
   })
 
+  it('lists no file through a link at a listed name or a folder above it, so a planted link exempts nothing', async () => {
+    const asked = (response: InvokeResponse) => (response.outcome === 'approval_required' ? response.approvals.map(approval => approval.rule) : [])
+    // A listed name that is missing: a link planted there later lists nothing, neither the file it reaches nor itself.
+    const missing = await node({}, ['.env.production'])
+    writeFileSync(join(missing.workspace, 'other.env'), `API_TOKEN=${DECOY}\n`)
+    expect(asked(await run(missing.runtime, ['{{file:other.env:API_TOKEN}}']))).toContain('sensitive_path')
+    symlinkSync('other.env', join(missing.workspace, '.env.production'))
+    expect(asked(await run(missing.runtime, ['{{file:other.env:API_TOKEN}}']))).toContain('sensitive_path')
+    expect(asked(await run(missing.runtime, ['{{file:.env.production:API_TOKEN}}']))).toContain('sensitive_path')
+    // A listed name that is a link lists nothing, and neither does a listed name beneath a linked folder.
+    const linked = await node({}, ['listed.env', 'config/keys.env'])
+    symlinkSync('.env.local', join(linked.workspace, 'listed.env'))
+    mkdirSync(join(linked.workspace, 'real-config'))
+    writeFileSync(join(linked.workspace, 'real-config', 'keys.env'), `API_TOKEN=${DECOY}\n`)
+    symlinkSync('real-config', join(linked.workspace, 'config'))
+    for (const reference of ['{{file:.env.local:API_TOKEN}}', '{{file:listed.env:API_TOKEN}}', '{{file:real-config/keys.env:API_TOKEN}}', '{{file:config/keys.env:API_TOKEN}}']) {
+      expect(asked(await run(linked.runtime, [reference]))).toContain('sensitive_path')
+    }
+    expect([...missing.ran, ...linked.ran]).toEqual([])
+  })
+
   it('refuses a file that does not exist, or that lands outside the workspace, before anyone is asked', async () => {
     const { root, workspace, runtime, ran } = await node()
     mkdirSync(join(root, 'outside'))
