@@ -105,6 +105,14 @@ const ApprovalSchema = z.object({
 }).strict()
 
 /**
+ * Its secret references (docs/secrets.md): `enabled` says whether Buckle reads them at all, on where unset. Absent from
+ * a file that sets none, so a workspace.json written before it reads as it did.
+ */
+const SecretsSchema = z.object({
+  enabled: z.boolean().optional(),
+}).strict()
+
+/**
  * The workspace's browser (Phase 2 item 6, Q10): checked at each write (browserSettingsRefusal, and with the node's
  * defaults, browserInForceRefusal), and again where its browser pack chooses the browser, so a hand edit passes nothing
  * a write would not; each the workspace's own, else the node's (BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE,
@@ -242,6 +250,7 @@ export const WorkspaceSettingsSchema = z.object({
   shell: ShellSchema.default({}),
   browser: BrowserSchema.default({}),
   approval: ApprovalSchema.default({}),
+  secrets: SecretsSchema.optional(),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
@@ -271,6 +280,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
   approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
+  secrets: Object.freeze({ enabled: true }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -285,6 +295,8 @@ export interface ResolvedSettings {
   shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
   approval: ResolvedApproval
+  /** Its secret references (docs/secrets.md): the workspace's own alone, else Buckle's; the node names none. */
+  secrets: { enabled: boolean }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
   sources: Readonly<Record<string, SettingSource>>
@@ -386,6 +398,9 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
       quickJudge: pick('approval.quickJudge', stored.approval.quickJudge, node.approval.quickJudge, BUILT_IN_SETTINGS.approval.quickJudge),
       quickJudgeProvider: pick('approval.quickJudgeProvider', stored.approval.quickJudgeProvider, undefined, BUILT_IN_SETTINGS.approval.quickJudgeProvider),
       quickJudgeModel: pick('approval.quickJudgeModel', stored.approval.quickJudgeModel, node.approval.quickJudgeModel, BUILT_IN_SETTINGS.approval.quickJudgeModel),
+    },
+    secrets: {
+      enabled: pick('secrets.enabled', stored.secrets?.enabled, undefined, BUILT_IN_SETTINGS.secrets.enabled),
     },
     env: { ...node.env, ...stored.env },
     sources,
@@ -533,9 +548,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

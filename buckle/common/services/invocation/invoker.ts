@@ -27,6 +27,7 @@ import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, Request
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 import { nativePath, parentDirectory } from '../../domain/paths.js'
+import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -66,6 +67,8 @@ export interface InvokerOptions {
   reporter: Reporter
   /** The workspace's decision AI as the call found it (D91): in automated mode it may pass a command ask its stages cover. */
   judge?: JudgeGate
+  /** The workspace's secret reference settings as the call found them (docs/secrets.md); on where absent. */
+  secrets?: SecretSettings
   paths: PathView
   serverId: string
   workspaceId: string
@@ -184,7 +187,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
             return response
           }
           options.checkFolder?.()
-          const prepared = options.registry.get(request.tool).prepare(request.args)
+          const tool = options.registry.get(request.tool)
+          const prepared = tool.prepare(request.args)
+          // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
+          // before anything is judged (docs/secrets.md).
+          secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
           effects = await resolveEffects({ effects: prepared.effects, paths: options.paths })
 
           // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).

@@ -178,6 +178,16 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   browser('args', 'Chromium arguments for a browser Buckle launches (the node\'s BUCKLE_BROWSER_ARGS, else none)', raw => raw.trim(), false),
   browser('headed', 'on or off: a visible window (the node\'s BUCKLE_BROWSER_HEADED, else off)', raw => onOff('browser.headed', raw)),
   {
+    key: 'secrets.enabled',
+    takes: `on or off: whether Buckle reads the secret references {{file:<path>:NAME}} in shell words, browser fill values, and web_fetch headers (Buckle's ${BUILT_IN_SETTINGS.secrets.enabled ? 'on' : 'off'})`,
+    set: (settings, raw) => ({ ...settings, secrets: { ...settings.secrets, enabled: onOff('secrets.enabled', raw) } }),
+    unset: (settings) => {
+      const { secrets: block, ...rest } = settings
+      const { enabled: _dropped, ...secrets } = block ?? {}
+      return Object.keys(secrets).length === 0 ? rest : { ...rest, secrets }
+    },
+  },
+  {
     key: 'mount',
     takes: 'where the agent sees the folder, such as /workspace (the node\'s, else its real path)',
     set: (settings, raw) => {

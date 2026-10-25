@@ -139,7 +139,7 @@ export function argumentOrder(command: string, args: string[]): number[] {
 }
 
 /** Arguments that are not a flag and not the separate value of the flag before them. */
-function positionalIndexes(args: string[]): number[] {
+export function positionalIndexes(args: string[]): number[] {
   const indexes: number[] = []
   for (let index = 0; index < args.length; index++) {
     const name = flagName(args[index]!)

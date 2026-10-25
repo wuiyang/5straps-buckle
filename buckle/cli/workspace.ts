@@ -236,6 +236,7 @@ function show(context: Context): CliResult {
     ['approval.quickJudge', inForce.approval.quickJudge, inForce.sources['approval.quickJudge']!],
     ['approval.quickJudgeProvider', inForce.approval.quickJudgeProvider, inForce.sources['approval.quickJudgeProvider']!],
     ['approval.quickJudgeModel', inForce.approval.quickJudgeModel, inForce.sources['approval.quickJudgeModel']!],
+    ['secrets.enabled', onOff(inForce.secrets.enabled), inForce.sources['secrets.enabled']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]
   process.stdout.write(`Workspace ${workspace.name} (id ${workspace.id}), ${workspace.online ? 'online' : 'offline'}, ${workspace.tokens} agent token${workspace.tokens === 1 ? '' : 's'}

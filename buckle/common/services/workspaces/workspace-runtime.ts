@@ -81,6 +81,7 @@ import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, 
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
+import type { SecretSettings } from '../secrets/places.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -92,6 +93,8 @@ interface InForce {
   toolDenial(tool: string): string | null
   /** The decision AI as the call found the settings (D91). */
   judge: JudgeGate
+  /** The secret reference settings as the call found them (docs/secrets.md). */
+  secrets: SecretSettings
 }
 
 /** A waiting ask the decision AI rated at its owner's request, or why it rated nothing. */
@@ -660,7 +663,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }) }
+    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
   }
 
   /**
@@ -712,6 +715,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial: settled.toolDenial,
         judge: settled.judge,
+        secrets: settled.secrets,
         shutdown: stopping.signal,
         // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
         nested: nestedCall => invokeNow(nestedCall, settled),
@@ -913,6 +917,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
     approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts], quickJudge: config.approvalQuickJudge, quickJudgeProvider: config.approvalQuickJudgeProvider, quickJudgeModel: config.approvalQuickJudgeModel },
+    ...(config.secretsEnabled === undefined ? {} : { secrets: { enabled: config.secretsEnabled } }),
     env: config.commandEnvironment,
   })
 }
