@@ -84,10 +84,10 @@ as an option. In a header it holds no line break.
 
 Buckle shows each value as `[secret:NAME]` wherever text leaves it: the command's output and
 errors, the browser's result, a fetch's response headers and body, the audit log, every log line,
-every error, and every approval line. It masks the value URL-encoded, in base64 and base64url, inside
-the base64 of a Basic authorization, and JSON-escaped, when the form is at least 8 characters, and
-masks a value split across output chunks or cut where output reached its bound. Values are held in
-memory only while the call runs.
+every error, and every approval line. It masks the value URL-encoded, whichever characters the
+encoder escapes, in base64 and base64url, inside the base64 of a Basic authorization, and
+JSON-escaped, when the form is at least 8 characters, and masks a value split across output chunks
+or cut where output reached its bound. Values are held in memory only while the call runs.
 
 After a fill, every later browser call in the workspace is masked by the value too, since the page
 still holds it. Each call reads the file again and is refused if the file is gone or changed since

@@ -74,6 +74,31 @@ describe('a call\'s masker', () => {
     expect(mask('abcdefgh-ijklmnop and abcdefgh')).toBe('[secret:LONG] and [secret:SHORT]')
   })
 
+  it('masks a value URL-encoded by an encoder that escapes other characters than encodeURIComponent', () => {
+    const value = 'decoy!tok~en(0123)*xyz \'q'
+    const mask = createMasker([{ name: 'PUNCT', value }]).text
+    const label = '[secret:PUNCT]'
+    const escaped = (keep: RegExp, hex: (code: string) => string) => [...Buffer.from(value)].map(byte => keep.test(String.fromCharCode(byte)) ? String.fromCharCode(byte) : `%${hex(byte.toString(16).padStart(2, '0'))}`).join('')
+    // A form post (URLSearchParams), RFC 3986 as curl and jq @uri write it, and every character but a letter or digit,
+    // in either case of hex, with + for a blank.
+    expect(mask(`k=${new URLSearchParams({ k: value }).toString().slice(2)}&n=1`)).toBe(`k=${label}&n=1`)
+    expect(mask(`k=${escaped(/[A-Za-z0-9\-._~]/, code => code.toUpperCase())}`)).toBe(`k=${label}`)
+    expect(mask(`k=${escaped(/[A-Za-z0-9]/, code => code.toUpperCase())}`)).toBe(`k=${label}`)
+    expect(mask(`k=${escaped(/[A-Za-z0-9]/, code => code).replace(/%20/g, '+')}`)).toBe(`k=${label}`)
+    // Python's quote leaves / as it is.
+    const slashed = createMasker([{ name: 'SLASHED', value: 'decoy/slash+key/0123456789' }]).text
+    expect(slashed('decoy/slash%2Bkey/0123456789')).toBe('[secret:SLASHED]')
+    // A non-ASCII character as the UTF-8 bytes it is written in.
+    const accented = createMasker([{ name: 'ACCENTED', value: 'decoy-café-0123' }]).text
+    expect(accented('q=decoy%2Dcaf%C3%A9%2D0123')).toBe('q=[secret:ACCENTED]')
+  })
+
+  it('masks a URL-encoded value beside text it does not hold, and leaves a part of it alone', () => {
+    const mask = createMasker([{ name: 'PUNCT', value: 'decoy!tok~en(0123)*xyz' }]).text
+    expect(mask('a%21 decoy%21tok%7Een%280123%29*xyz+%7E plain')).toBe('a%21 [secret:PUNCT]+%7E plain')
+    expect(mask('decoy%21tok%7Een%280123%29*xy end')).toBe('decoy%21tok%7Een%280123%29*xy end')
+  })
+
   it('masks nothing once dropped', () => {
     const mask = masker()
     mask.drop()
