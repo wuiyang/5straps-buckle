@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type ApprovalRequest, type GrantScope, type InvokeResponse, type JsonObject } from '@5straps/protocol'
@@ -216,6 +216,18 @@ describe('through the invoker', () => {
       expect(asked(await run(linked.runtime, [reference]))).toContain('sensitive_path')
     }
     expect([...missing.ran, ...linked.ran]).toEqual([])
+  })
+
+  it('lists no file with a second hard link, which a listed name planted that way would share with an unlisted file', async () => {
+    const asked = (response: InvokeResponse) => (response.outcome === 'approval_required' ? response.approvals.map(approval => approval.rule) : [])
+    const { workspace, runtime, ran } = await node({}, ['.env.production', '.env.local'])
+    writeFileSync(join(workspace, 'other.env'), `API_TOKEN=${DECOY}\n`)
+    linkSync(join(workspace, 'other.env'), join(workspace, '.env.production'))
+    expect(asked(await run(runtime, ['{{file:.env.production:API_TOKEN}}']))).toContain('sensitive_path')
+    expect(asked(await run(runtime, ['{{file:other.env:API_TOKEN}}']))).toContain('sensitive_path')
+    // A listed file with one link still needs no ask.
+    expect(asked(await run(runtime, ['{{file:.env.local:API_TOKEN}}']))).not.toContain('sensitive_path')
+    expect(ran).toEqual([])
   })
 
   it('asks once for a file a call spells two ways, naming every NAME and every spelling, and reads both', async () => {

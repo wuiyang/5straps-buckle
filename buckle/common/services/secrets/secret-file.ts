@@ -1,4 +1,4 @@
-import { constants, readSync, realpathSync, statSync } from 'node:fs'
+import { constants, lstatSync, readSync, realpathSync, statSync } from 'node:fs'
 import { posix } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import type { SecretFileEffect } from '../../domain/effect.js'
@@ -38,13 +38,15 @@ export function resolveSecretFile(written: string, view: PathView): string {
 
 /**
  * The file a secrets.files entry lists (docs/secrets.md): the regular file at that path in the workspace or a mount,
- * reached through no link, or null. A link at the listed name, or at a folder above it, lists nothing, so a link planted
- * there, at a name missing or replaced, never moves the listing onto another file.
+ * reached through no link and holding no other hard link, or null. A link at the listed name, or at a folder above it,
+ * and a hard link there to a file named elsewhere too, list nothing, so a link planted at a name missing or replaced
+ * never moves the listing onto another file.
  */
 export function listedSecretFile(written: string, view: PathView): string | null {
   try {
     const real = resolveSecretFile(written, view)
-    return real === nativePath(view.resolve(posix.join(view.displayRoot, written))) ? real : null
+    if (real !== nativePath(view.resolve(posix.join(view.displayRoot, written)))) return null
+    return lstatSync(real).nlink === 1 ? real : null
   } catch {
     return null
   }
@@ -90,18 +92,21 @@ function judgedSecretFile(written: string, names: readonly string[], view: PathV
  */
 export function readSecretValues(input: { real: string; written: string; names: readonly string[]; protectedRoots: readonly string[]; roots: readonly string[] }): Map<string, string> {
   const { real, written } = input
+  // A refusal of the file itself names the NAMEs the call reads from it too, as a missing NAME's names its own.
+  const fileRefused = (message: string) => refused(`${message}; the call reads ${input.names.join(', ')} from it`)
   let now: string
-  try { now = nativePath(realpathSync.native(real)) } catch { throw refused(`The secret file ${written} is gone since the call was judged`) }
-  if (now !== real) throw refused(`The secret file ${written} moved since the call was judged, so nothing was read`)
+  try { now = nativePath(realpathSync.native(real)) } catch { throw fileRefused(`The secret file ${written} is gone since the call was judged`) }
+  if (now !== real) throw fileRefused(`The secret file ${written} moved since the call was judged, so nothing was read`)
   let bytes: Buffer
   try {
     bytes = withFileBeneath(real, { flags: constants.O_RDONLY, shown: written, protectedRoots: input.protectedRoots, roots: input.roots }, descriptor => readBounded(descriptor, written))
   } catch (error) {
-    if (isDenied(error)) throw refused(`The secret file ${written} is not readable by Buckle (permission denied); the call reads ${input.names.join(', ')} from it`)
+    if (isDenied(error)) throw fileRefused(`The secret file ${written} is not readable by Buckle (permission denied)`)
+    if (error instanceof ToolInputError) throw new ToolInputError(`${error.message}; the call reads ${input.names.join(', ')} from it`, { code: error.code })
     throw error
   }
   let text: string
-  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw refused(`The secret file ${written} is not UTF-8 text`) } finally { bytes.fill(0) }
+  try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) } catch { throw fileRefused(`The secret file ${written} is not UTF-8 text`) } finally { bytes.fill(0) }
   const reading = readDotenv(text)
   const values = new Map<string, string>()
   for (const name of input.names) {
