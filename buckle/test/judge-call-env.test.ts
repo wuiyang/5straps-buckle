@@ -361,6 +361,17 @@ describe('a call that changes its working directory before its code runs (fix br
     for (const words of [['--silent', 'run', 'build', '--filter', 'a'], ['run', '--if-present', 'build', '--filter', 'a']]) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
   })
 
+  // pnpm 10.33.2's restart is a command that reads its own options, where test, t, tst, start, stop, and dev hand every word after
+  // them to the script: from inside the package a, `pnpm restart -w` ran the root's stop, restart, and start scripts in the root,
+  // and `pnpm restart --config.dir=../b` ran b's, but `pnpm stop -w` and `pnpm start --config.dir=../b` ran a's with the word as an
+  // argument (standalone round 2 residue, pnpm restart).
+  it('counts a pnpm selector after restart, which pnpm reads itself, and keeps reading one after stop, start, or test as the script\'s own', () => {
+    const selecting = [['restart', '-w'], ['restart', '--workspace-root'], ['restart', '--config.dir=../b'], ['restart', '--config.filter=b'], ['restart', '--config.recursive=true'], ['restart', 'a', '-w']]
+    for (const words of selecting) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(true)
+    const own = [['restart'], ['restart', 'a'], ['restart', '--if-present'], ['stop', '-w'], ['stop', '--config.dir=../b'], ['start', '-w'], ['start', '--config.dir=../b'], ['test', '-w'], ['t', '--filter', 'a'], ['tst', '-r'], ['dev', '--workspace-root']]
+    for (const words of own) expect(changesDirectory(pnpmForms(words)), `pnpm ${words.join(' ')}`).toBe(false)
+  })
+
   // npm 11.19.0's npx, run in a scratch workspace of the packages a and b with a local command that prints its folder: each npx
   // option below, typed before the command, ran it in a (or once in each package), where the same word after the command reached
   // it as its own argument (`npx tsc -w` is tsc's watch mode). ruby's -x[directory] is from ruby(1), not run: ruby is not installed

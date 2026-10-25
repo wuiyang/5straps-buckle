@@ -118,8 +118,12 @@ const PNPM_SELECTORS = ['--filter', '-F', '--filter-prod', '--recursive', '-r', 
 const PNPM_CONFIG_KEY = /^-+(?:no-)*config\./i
 /** pnpm's commands that run a script or a program: options up to its name, then every word after it is its own. */
 const PNPM_RUNNERS: ReadonlySet<string> = new Set(['run', 'run-script', 'exec'])
-/** The script names that pnpm runs as `pnpm <name>`, and the commands that run one: every word after the first is the script's own. */
-const PNPM_SCRIPT_WORDS: ReadonlySet<string> = new Set(['dev', 'build', 'test', 't', 'tst', 'start', 'stop', 'restart'])
+/**
+ * The script names that pnpm runs as `pnpm <name>`, and the commands that run one: every word after the first is the script's
+ * own. `restart` is not one: pnpm reads `-w`, `--workspace-root`, and any `--config.<key>` after it itself, and ran the root's or
+ * another package's stop, restart, and start scripts for them (pnpm 10.33.2), so the whole form is read.
+ */
+const PNPM_SCRIPT_WORDS: ReadonlySet<string> = new Set(['dev', 'build', 'test', 't', 'tst', 'start', 'stop'])
 
 /**
  * Whether an npx or pnpm form selects another package before its script or program runs (D91 follow-ups; standalone round 2),
