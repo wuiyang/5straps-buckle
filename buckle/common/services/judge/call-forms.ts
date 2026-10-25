@@ -82,6 +82,19 @@ const PROGRAM_CHDIR: Readonly<Record<string, readonly string[]>> = {
 }
 
 /**
+ * The program of PROGRAM_CHDIR a command word names, or undefined: the name itself, or the name with a version after it, as
+ * the code reader takes `ruby3.2` for ruby (`ruby3.2`, `ruby32`, `ruby-3.2`, `ruby2.7.8`), so the options of the plain name are
+ * read under the versioned one too. A name that only starts with another's (`ruby-lint`, `bun-types`) is another program.
+ */
+function chdirProgram(program: string): string | undefined {
+  if (Object.hasOwn(PROGRAM_CHDIR, program)) return program
+  let end = program.length
+  while (end > 0 && '0123456789.'.includes(program[end - 1]!)) end--
+  const plain = program.slice(0, end).replace(/-$/, '')
+  return /\d/.test(program.slice(end)) && Object.hasOwn(PROGRAM_CHDIR, plain) ? plain : undefined
+}
+
+/**
  * Whether a call moves to another folder before its code runs (fix brief 2, H2), so the code read at the call's own
  * working directory may not be the code that runs: a builtin of DIRECTORY_COMMANDS anywhere in it, `env -C` or `--chdir`,
  * `sudo -D` or `--chdir`, `bun --cwd`, a runner's or package manager's `-C`, `--prefix`, `--dir`, or `--cwd`, or a word
@@ -94,11 +107,12 @@ export function changesDirectory(forms: CommandForms): boolean {
     if (DIRECTORY_COMMANDS.has(program)) return true
     const short = WRAPPER_CHDIR[program]
     if (short !== undefined) return wrapperWords(all, index).some(word => namesOption(word, short, 'chdir'))
-    const options = PROGRAM_CHDIR[program]
-    if (options === undefined) return false
+    const named = chdirProgram(program)
+    if (named === undefined) return false
+    const options = PROGRAM_CHDIR[named]!
     const end = form.indexOf('--')
     const words = form.slice(1, end < 0 ? form.length : end)
-    return words.some(word => options.some(option => selectsOption(word, option))) || selectsPackage(program, words)
+    return words.some(word => options.some(option => selectsOption(word, option))) || selectsPackage(named, words)
   })
 }
 

@@ -424,6 +424,38 @@ describe('a call that changes its working directory before its code runs (fix br
     }
   })
 
+  // The code reader takes `ruby3.2` for ruby and reads the file in the call's own folder, so the folder options of the program,
+  // looked up by its exact name, must be found under a versioned name too (standalone round 2 residue, versioned ruby names).
+  it('counts a folder option under a versioned name of the program as under its plain name: ruby3.2, ruby32, ruby-3.2, and a path', () => {
+    const selects = (command: string, words: string[]) => changesDirectory(commandFormsOf({ command, args: words }))
+    for (const command of ['ruby3.2', 'ruby32', 'ruby-3.2', 'ruby2.7.8', '/usr/bin/ruby3.2']) {
+      for (const words of [['-C', 'sub', 'job.rb'], ['-Csub', 'job.rb'], ['-X', 'sub', 'job.rb'], ['-x', 'job.rb'], ['-xsub', 'job.rb']]) {
+        expect(selects(command, words), `${command} ${words.join(' ')}`).toBe(true)
+      }
+      for (const words of [['job.rb'], ['-w', 'job.rb'], ['-rjson', 'job.rb'], ['job.rb', '--', '-x']]) expect(selects(command, words), `${command} ${words.join(' ')}`).toBe(false)
+    }
+    expect(selects('bun1.1', ['--cwd', 'sub', 'x.ts'])).toBe(true)
+    // A name that only starts with the program's, with no version after it, is another program, as it was.
+    for (const command of ['ruby-lint', 'rubyfmt', 'bundle', 'bun-types']) expect(selects(command, ['-C', 'sub', 'job.rb']), `${command} -C`).toBe(false)
+  })
+
+  it('refuses ruby3.2 -C as it refuses ruby -C, on the destructive list under quick scope asks: the root job.rb is shown to no stage', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
+    const judge = fakeJudge()
+    const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
+    writeFileSync(join(config.cwd, 'job.rb'), "puts 'root'\n")
+    const runtime = await runtimeOf(config, { quickJudge, judge })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: ['ruby*'] } })
+    for (const program of ['ruby', 'ruby3.2']) {
+      const { response, entry, ran } = await call(runtime, {}, [program, '-C', 'sub', 'job.rb'])
+      expect(response, program).toMatchObject({ outcome: 'approval_required' })
+      expect(entry.judge, program).toMatchObject({ quick: { unavailable: CHANGES_DIRECTORY }, passed: false })
+      expect(ran, program).toBe(false)
+    }
+    expect(quickJudge.quick).not.toHaveBeenCalled()
+    expect(judge.judge).not.toHaveBeenCalled()
+  })
+
   it('reads sudo -D, which the quick stage rates under scope asks, and leaves an option of the command after env alone', async () => {
     const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
     const config = node({ BUCKLE_APPROVAL_QUICK_JUDGE: 'asks' })
