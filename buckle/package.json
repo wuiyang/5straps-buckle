@@ -1,6 +1,6 @@
 {
   "name": "@5straps/buckle",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Buckle: a sandboxed tool-execution node any AI harness can drive over CLI, MCP, or HTTP.",
   "license": "Apache-2.0",
   "keywords": [
