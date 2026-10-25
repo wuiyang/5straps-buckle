@@ -2560,6 +2560,62 @@ describe('a zsh parameter read as a pattern, whose glob qualifiers the text does
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
+describe("zsh's other names, read as zsh is (round 2 residue)", () => {
+  // The Debian and Ubuntu zsh package ships rzsh (restricted zsh, a link to zsh) and zsh5 (a wrapper that execs zsh),
+  // zsh-static is zsh's static build, and zsh's own install leaves zsh-<version> and zsh.old beside zsh. Started under
+  // any of them, zsh runs as zsh: it emulates another shell only for a name whose first letter after an r is s, b, k,
+  // or c. None was read as a shell, so neither its -c text nor a script piped into it was read: a deny glob, the floor,
+  // and the glob substitution limit all missed what it ran. The names come from the Ubuntu zsh 5.9 package, its zsh5
+  // wrapper, and zsh's Src/Makefile.in; that zsh, unpacked and run under each name, printed zsh for emulate and
+  // expanded ${~v} and a globsubst value as a pattern.
+  const globSubst = READ_LIMITS.globSubst
+  const names = ['rzsh', 'zsh5', 'zsh-static', 'zsh5-static', 'zsh-5.9', 'zsh.old', '/usr/bin/rzsh']
+  const patterns = ['setopt globsubst; echo $v', 'echo ${~v}', 'emulate sh; echo $v']
+
+  it.each(names)('%s -c leaves a value read as a pattern unread: refused under a deny list, asked at the floor', name => {
+    for (const text of patterns) {
+      expect(commandFormsOf({ command: name, args: ['-c', text] }).unread, text).toBe('globSubst')
+      const denied = evaluate(name, ['-c', text], { allow: [`${name} -c *`], deny: ['git push *'] })
+      expect(denied.kind, text).toBe('deny')
+      expect(reasonOf(denied)).toContain(globSubst)
+      const asked = evaluate(name, ['-c', text], { allow: [`${name} -c *`] })
+      if (asked.kind !== 'ask') throw new Error(`${name} -c ${text}: expected an ask, got ${asked.kind}`)
+      expect(asked.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${globSubst}; asked rather than guessed at`]])
+    }
+    expect(commandFormsOf({ command: name, args: ['-o', 'globsubst', '-c', 'echo $v'] }).unread).toBe('globSubst')
+    expect(commandFormsOf({ command: 'env', args: [name, '-c', 'setopt globsubst; echo $v'] }).unread).toBe('globSubst')
+    expect(commandFormsOf({ command: 'bash', args: ['-c', `ARGV0=sh ${name} -c 'echo $v'`] }).unread).toBe('globSubst')
+    expect(commandFormsOf({ command: 'bash', args: ['-c', `exec -a sh ${name} -c 'echo $v'`] }).unread).toBe('globSubst')
+  })
+
+  /** An outcome with the shell's spelling in its subject and reasons replaced, so one name's outcome compares with zsh's. */
+  const spelledAs = (outcome: ReturnType<typeof evaluate>, spelling: string) => JSON.parse(JSON.stringify(outcome).replaceAll(`${spelling} -c`, 'SHELL -c').replaceAll(`| ${spelling}`, '| SHELL').replaceAll(`${spelling} <<`, 'SHELL <<'))
+
+  it.each(names)('%s -c is read as zsh -c is: a deny glob meets its command, the floor its destructive one, and a script piped in is data', name => {
+    expect(reasonOf(evaluate(name, ['-c', 'git push origin main'], { deny: ['git push *'] }))).toBe('Refused by the workspace command policy: git push *')
+    expect(reasonOf(evaluate('env', [name, '-c', 'git push origin main'], { deny: ['git push *'] }))).toBe('Refused by the workspace command policy: git push *')
+    const rows: Array<[string, { deny?: string[] }]> = [['sudo rm -rf /', {}], ['git push --force origin main', {}], ["echo 'git push origin main' | NAME", { deny: ['terraform destroy *'] }], ["NAME <<'EOF'\ngit push origin main\nEOF", { deny: ['git push *'] }]]
+    for (const [text, rules] of rows) {
+      const shown = text.replace('NAME', name)
+      const own = shown === text ? evaluate(name, ['-c', text], rules) : evaluate('bash', ['-c', shown], rules)
+      const zsh = name.replace(/[^/]*$/, 'zsh')
+      const asZsh = shown === text ? evaluate(zsh, ['-c', text], rules) : evaluate('bash', ['-c', text.replace('NAME', zsh)], rules)
+      expect(asZsh.kind, `zsh: ${text}`).not.toBe('allow')
+      expect(spelledAs(own, name), `${name}: ${shown}`).toEqual(spelledAs(asZsh, zsh))
+    }
+  })
+
+  it.each(names)('%s -c needs a rule of its own, and a plain expansion and another option keep their reading', name => {
+    expect(evaluate(name, ['-c', 'echo hi'], { allow: ['echo *'] }).kind).not.toBe('allow')
+    expect(evaluate(name, ['-c', 'echo hi'], { allow: ['zsh -c *', 'echo *'] }).kind).not.toBe('allow')
+    for (const text of ['echo ${v}', 'echo $v', 'setopt extendedglob; echo $v', 'set -o pipefail; echo $v']) {
+      expect(commandFormsOf({ command: name, args: ['-c', text] }).unread, text).toBeNull()
+      const outcome = evaluate(name, ['-c', text], { allow: [`${name} -c *`], deny: ['git push *'] })
+      expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
+    }
+  })
+})
+
 describe("a line continuation before zsh's =name, and zsh's precommand modifiers and watch (D91 follow-ups, F1)", () => {
   // The shell removes a backslash-newline before it reads a word, so a run of them before an `=` leaves the word one that
   // zsh's EQUALS option expands to a command's path (zsh 5.9 ran a stub after the continuation at a command's start).

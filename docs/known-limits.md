@@ -36,6 +36,9 @@ forge pack,
   `$~v`, a `setopt`, `set -o`, or `zsh -o` naming `globsubst`, and any `emulate` read the value as a
   pattern whose qualifiers run code, and `${(e)v}` runs its substitutions. Under a deny rule
   `emulate -L zsh` is refused.
+- zsh is read as zsh under its other names too: `rzsh`, `zsh5`, `zsh-static`, `zsh-5.9`, and
+  `zsh.old`. A shell under a name Buckle does not list, such as `rksh` or `ksh93`, is judged by its
+  own words: `rksh -c 'git push'` does not meet `git push *`.
 
 ## Credential hiding
 

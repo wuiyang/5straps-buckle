@@ -3,10 +3,25 @@ import { posix } from 'node:path'
 import { redactCredentials } from '@5straps/runtime'
 
 /**
- * Interpreters whose positional is a script body rather than an argument list. rbash, ash, mksh, yash, and posh are
- * POSIX shells too, read as bash is; the C shells and busybox's shell applets are interpreters Buckle does not read.
+ * zsh and the names it is installed under beside it: rzsh (restricted zsh, a link to zsh), the Debian wrappers zsh5 and
+ * zsh5-static, which exec zsh and zsh-static, zsh-static (the static build), and the zsh-<version> and zsh.old names
+ * zsh's own install leaves (Src/Makefile.in). Started under any of them zsh runs as zsh: it emulates another shell only
+ * for a name whose first letter after an r is s, b, k, or c.
  */
-export const SHELL_COMMANDS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'fish', 'rbash', 'ash', 'mksh', 'yash', 'posh'])
+const ZSH_NAME = /^r?zsh(?:5?(?:-static)?|-\d[0-9A-Za-z.-]*|\.old)$/
+
+/** Whether a command's base name (baseCommand) starts zsh. */
+export function isZsh(name: string): boolean {
+  return ZSH_NAME.test(name)
+}
+
+/**
+ * Interpreters whose positional is a script body rather than an argument list, by base name: zsh under any of its
+ * names (isZsh), and these. rbash, ash, mksh, yash, and posh are POSIX shells too, read as bash is; the C shells and
+ * busybox's shell applets are interpreters Buckle does not read.
+ */
+const SHELL_NAMES: ReadonlySet<string> = new Set(['bash', 'sh', 'dash', 'ksh', 'fish', 'rbash', 'ash', 'mksh', 'yash', 'posh'])
+export const SHELL_COMMANDS: Pick<ReadonlySet<string>, 'has'> = { has: name => SHELL_NAMES.has(name) || isZsh(name) }
 
 export interface ParsedArgv {
   command: string

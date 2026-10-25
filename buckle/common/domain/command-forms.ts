@@ -1,4 +1,4 @@
-import { baseCommand, writtenAsPath, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, ownStart, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
+import { baseCommand, writtenAsPath, envSplitWords, expansionShape, type ExpansionShape, holdsExpansion, isZsh, joinedOperator, type LeadingWord, MAX_DEPTH, MAX_SUBSTITUTIONS, ownStart, parseArgv, readsAsItself, scriptOperandKind, SHELL_COMMANDS, shellLeadingWords, shellScriptOperand, shellStartupFiles, shellStatementList, type ShellToken, shellTokens, shellTokensUpTo, shellWords, sshInvocation, statementPieces, suInvocation } from './argv.js'
 import type { CommandGlob } from './command-glob.js'
 
 /**
@@ -510,14 +510,14 @@ const ARGV0_FLAG = /^-[A-Za-z]*a[A-Za-z]*$/
 function readsValueAsPattern(words: readonly string[], place: Place): boolean {
   if (place.statement && words.some(word => word === 'emulate' || holdsValueAsPattern(word))) return true
   const setopt = words.some(word => word === 'setopt' || word === 'unsetopt')
-  const zsh = words.some(word => baseCommand(word) === 'zsh')
+  const zsh = words.some(word => isZsh(baseCommand(word)))
   const setsNamed = place.statement && words.includes('set') && words.some(word => NAMED_OPTION_FLAG.test(word))
   const options = place.statement && (words.some(word => OPTIONS_ARRAY.test(word)) || (words.includes('set') && words.includes('options') && words.some(word => ARRAY_FLAG.test(word))))
   if (!(setopt || zsh || setsNamed || options)) return false
   if (words.some(word => namesGlobSubst(word) || /^--emulate(?:=|$)/.test(word))) return true
   // zsh started as sh or ksh emulates it, GLOB_SUBST on: an ARGV0 assignment or exec -a before it names the zeroth
   // argument it starts with. A word after it, such as its -c text, is no such name.
-  const before = words.slice(0, words.findIndex(word => baseCommand(word) === 'zsh'))
+  const before = words.slice(0, words.findIndex(word => isZsh(baseCommand(word))))
   if (place.statement && before.some(word => word.startsWith('ARGV0=') || (ARGV0_FLAG.test(word) && before.includes('exec')))) return true
   const supplied = words.some(word => place.expanded.has(word))
   return (setopt && (supplied || words.some(word => PATTERN_FLAG.test(word)))) || ((setsNamed || options) && supplied)
@@ -1071,7 +1071,8 @@ function parsesLater(runs: readonly string[]): boolean {
 }
 
 /** Programs that run what a heredoc feeds them as shell text: the shells, `source`, and ssh and su, which hand it to one. */
-const BODY_RUNNERS: ReadonlySet<string> = new Set([...SHELL_COMMANDS, 'source', '.', 'ssh', 'su', 'tcsh', 'csh', 'busybox'])
+const OTHER_BODY_RUNNERS: ReadonlySet<string> = new Set(['source', '.', 'ssh', 'su', 'tcsh', 'csh', 'busybox'])
+const BODY_RUNNERS: Pick<ReadonlySet<string>, 'has'> = { has: name => SHELL_COMMANDS.has(name) || OTHER_BODY_RUNNERS.has(name) }
 
 /**
  * Whether the command owning a heredoc (its statement, or its head when a substitution cut it) may feed the body to a
