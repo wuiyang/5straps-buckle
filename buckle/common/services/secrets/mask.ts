@@ -86,12 +86,15 @@ interface View {
 /**
  * Each form masked where a view of the text shows it, as an encoder that escapes other characters than
  * encodeURIComponent or JSON.stringify writes it (URLSearchParams, RFC 3986 as curl and jq write it, Python's quote, the
- * JSON of PHP, Go, and Python, an HTML page's entities): every span the view reads the form from becomes its label, the
- * longest form first and no span twice.
+ * JSON of PHP, Go, and Python, an HTML page's entities), and as an encoder that wraps base64 across lines writes it:
+ * every span the view reads the form from becomes its label, the longest form first and no span twice.
  */
 function maskInViews(text: string, forms: readonly Form[]): string {
+  const kept = decodedView(text, false)
   // A `+` reads as a blank in a form and as itself elsewhere, so a text holding one is read both ways.
-  const views = [decodedView(text, true), text.includes('+') ? decodedView(text, false) : null].filter((view): view is View => view !== null)
+  const blank = text.includes('+') ? decodedView(text, true) : null
+  const base = kept ?? (WRAPPED_BREAK.test(text) ? identityView(text) : null)
+  const views = [kept, blank, base === null ? null : unwrappedView(base)].filter((view): view is View => view !== null)
   if (views.length === 0) return text
   const spans: Array<{ from: number; to: number; label: string }> = []
   const taken = new Uint8Array(text.length)
@@ -146,6 +149,52 @@ function decodedView(text: string, plusIsBlank: boolean): View | null {
     run = index
   }
   if (parts.length === 0) return null
+  parts.push(text.slice(run))
+  return { text: parts.join(''), from: from.subarray(0, shown), to: to.subarray(0, shown) }
+}
+
+/** The text as it is. */
+function identityView(text: string): View {
+  const from = new Int32Array(text.length)
+  const to = new Int32Array(text.length)
+  for (let index = 0; index < text.length; index++) {
+    from[index] = index
+    to[index] = index + 1
+  }
+  return { text, from, to }
+}
+
+/** A line break between two base64 or base64url characters, as an encoder that wraps an encoded run writes one. */
+const WRAPPED_BREAK = /[A-Za-z0-9+/=_-]\r?\n[A-Za-z0-9+/=_-]/
+
+function isBase64Character(code: number): boolean {
+  return (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || (code >= 0x30 && code <= 0x39) || code === 0x2b || code === 0x2f || code === 0x3d || code === 0x5f || code === 0x2d
+}
+
+/**
+ * The view with each single line break between two base64 characters taken out, as the base64 command (76 columns),
+ * openssl (64), and MIME (CRLF) wrap an encoded run; null where it holds none.
+ */
+function unwrappedView(view: View): View | null {
+  const { text } = view
+  if (!WRAPPED_BREAK.test(text)) return null
+  const from = new Int32Array(text.length)
+  const to = new Int32Array(text.length)
+  const parts: string[] = []
+  let shown = 0
+  let run = 0
+  for (let index = 0; index < text.length; index++) {
+    const size = text[index] === '\n' ? 1 : text[index] === '\r' && text[index + 1] === '\n' ? 2 : 0
+    if (size > 0 && index > 0 && isBase64Character(text.charCodeAt(index - 1)) && isBase64Character(text.charCodeAt(index + size))) {
+      parts.push(text.slice(run, index))
+      index += size - 1
+      run = index + 1
+      continue
+    }
+    from[shown] = view.from[index]!
+    to[shown] = view.to[index]!
+    shown += 1
+  }
   parts.push(text.slice(run))
   return { text: parts.join(''), from: from.subarray(0, shown), to: to.subarray(0, shown) }
 }

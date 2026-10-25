@@ -1,6 +1,6 @@
 # Secret references
 
-Some calls need a value that lives in a dotenv file, such as an API token for a header or a password
+Some calls need a value from a dotenv file, such as an API token for a header or a password
 for a login form. A secret reference lets the agent name the value without holding it. Buckle, the
 local permission node, reads the file as the call starts, puts the value where the reference stands,
 and shows the agent `[secret:NAME]` wherever the value would come back. It never reaches the agent's
@@ -85,9 +85,9 @@ as an option. In a header it holds no line break.
 Buckle shows each value as `[secret:NAME]` wherever text leaves it: the command's output and
 errors, the browser's result, a fetch's response headers and body, the audit log, every log line,
 every error, and every approval line. It masks the value URL-encoded, JSON-escaped, and as HTML
-entities, whichever characters the encoder escapes, in base64 and base64url, and inside the base64
-of a Basic authorization, when the form is at least 8 characters, and masks a value split across
-output chunks or cut where output reached its bound. Values are held in memory only while the call runs.
+entities, whichever characters the encoder escapes, in base64 and base64url, wrapped or not, and
+inside the base64 of a Basic authorization, when the form is at least 8 characters, and masks a
+value split across output chunks or cut where output reached its bound. Values are held in memory only while the call runs.
 
 After a fill, every later browser call in the workspace is masked by the value too, since the page
 still holds it. Each call reads the file again and is refused if the file is gone or changed since

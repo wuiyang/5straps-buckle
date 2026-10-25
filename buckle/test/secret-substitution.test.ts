@@ -104,6 +104,15 @@ describe('the value in the argument list, masked in what comes back', () => {
     expect(output(await shell(runtime, 'printf', ['<%s>', '{{file:.env.local:SPACED}}'])).stdout).toBe('<[secret:SPACED]>')
   })
 
+  it('masks the base64 of a long value as the base64 command wraps it, across its lines', async () => {
+    const { workspace, runtime } = await node()
+    const long = 'decoy-long-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGH'
+    appendFileSync(join(workspace, '.env.local'), `LONG=${long}\n`)
+    const stdout = output(await call(runtime, 'script_run', { runtime: 'bash', script: 'printf "%s" "{{file:.env.local:LONG}}" | base64' })).stdout
+    expect(stdout.trim()).toBe('[secret:LONG]')
+    expect(stdout).not.toContain(Buffer.from(long).toString('base64').slice(0, 20))
+  })
+
   it('reads the value inside quotes in shell text, and runs it there', async () => {
     const { runtime } = await node()
     expect(output(await shell(runtime, 'bash', ['-c', 'printf "token=%s" "{{file:.env.local:API_TOKEN}}"'])).stdout).toBe(`token=${LABEL}`)

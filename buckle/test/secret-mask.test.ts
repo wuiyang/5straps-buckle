@@ -53,6 +53,25 @@ describe('a call\'s masker', () => {
     }
   })
 
+  it('masks the base64 of a long value wrapped across lines, as the base64 command, openssl, and MIME write it', () => {
+    const long = 'decoy-long-0123456789-abcdefghijklmnopqrstuvwxyz-0123456789-ABCDEFGH'
+    const mask = createMasker([{ name: 'LONG', value: long }]).text
+    const wrapped = (text: string, width: number, end = '\n') => `${text.match(new RegExp(`.{1,${width}}`, 'g'))!.join(end)}${end}`
+    const encoded = Buffer.from(long).toString('base64')
+    expect(mask(wrapped(encoded, 76))).toBe('[secret:LONG]\n')
+    expect(mask(`out:\n${wrapped(encoded, 64)}done`)).toBe('out:\n[secret:LONG]\ndone')
+    expect(mask(wrapped(encoded, 76, '\r\n'))).toBe('[secret:LONG]\r\n')
+    // Inside a longer run, as `echo "user:$TOKEN" | base64` writes a Basic authorization's value, wrapped.
+    const header = wrapped(Buffer.from(`user:${long}`).toString('base64'), 76)
+    const masked = mask(header)
+    expect(masked).toContain('[secret:LONG]')
+    const [before, after] = masked.split('[secret:LONG]')
+    expect(before!.replace(/\s/g, '').length).toBeLessThanOrEqual(Math.ceil((5 * 8) / 6))
+    expect(after!.replace(/[\s=]/g, '').length).toBeLessThanOrEqual(1)
+    // Lines of other text are left as they are.
+    expect(mask('abcdefgh\nijklmnop\n')).toBe('abcdefgh\nijklmnop\n')
+  })
+
   it('masks a value cut at the end of a text, where a stream reached its bound', () => {
     const mask = masker()
     expect(mask.text(`output ${VALUE.slice(0, 6)}`)).toBe(`output ${LABEL}`)
