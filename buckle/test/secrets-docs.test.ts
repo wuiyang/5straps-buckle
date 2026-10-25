@@ -89,8 +89,13 @@ describe('docs/secrets.md quotes what the code says', () => {
 })
 
 describe('the pages that point at docs/secrets.md', () => {
-  it.each(['policy.md', 'sandbox-and-tools.md', 'workspaces-02.md'])('%s links to it', (name) => {
+  it.each(['policy.md', 'sandbox-and-tools.md', 'workspaces-02.md', 'approvals.md'])('%s links to it', (name) => {
     expect(page(name)).toContain('](secrets.md')
+  })
+
+  it('approvals.md gives a secret file\'s ask the scopes it offers, and says the dangerously-allow switch leaves it asking', () => {
+    expect(page('approvals.md')).toContain('| once (a [secret reference](secrets.md)\'s file: once, session, always) |')
+    expect(page('approvals.md')).toContain('commands included, except a secret reference\'s file.')
   })
 
   it.each(['browser', 'web', 'shell'])('the %s skill links to it by its address on GitHub, which a shipped skill must use', (pack) => {

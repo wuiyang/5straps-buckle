@@ -16,7 +16,7 @@ Asks:
 |---|---|---|
 | `read_scope` | a read outside the workspace, when no mount is set | once, session, always |
 | `write_scope` | the first write to a directory | once, session, always; once alone with `BUCKLE_STRICT_WRITES=true` |
-| `sensitive_path` | a credential file such as `.env`, `.ssh/`, `*.pem` | once |
+| `sensitive_path` | a credential file such as `.env`, `.ssh/`, `*.pem` | once (a [secret reference](secrets.md)'s file: once, session, always) |
 | `destructive_command` | a destructive command | once, session |
 | `network_egress` | loopback, private, and other reserved addresses, when no approved list is set | once, session, always |
 | `process_probe` | listing running processes (`lsp_discover`) | once, session |
@@ -59,7 +59,7 @@ arguments, so approving `rm -rf build` does not approve `rm -rf /`.
 
 ## What the approver sees
 
-Every deciding route shows the ask, naming its workspace by name, then the whole action:
+Every deciding route shows the ask, naming its workspace, then the whole action:
 node, workspace, a summary, rule, subject, reason, working directory, every effect, and every
 argument as JSON. Nothing is cut or paged. Scripts and free text show as written; a plain value under a key naming password,
 secret, or token, and a URL's password and credential query values, read `[redacted]`, with
@@ -74,7 +74,7 @@ ask whose whole call was not recorded can be denied, never approved.
 | A CLI tool command at a terminal | the same question, before the command returns |
 | `buckle approvals --watch` | a second terminal: `o` once, `s` session, the word `always`, `d` deny, `n` skip; `ds` or `da` deny a sensitive file for the session or always |
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
-| MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, get text pointing to `buckle approvals` |
+| MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, are pointed to `buckle approvals` |
 
 A question ignores keys until the keyboard rests half a second; [`buckle serve`](approvals-02.md)
 marks each line `[<name>]`. `buckle approvals`, `--watch`, and `buckle approve` take the
@@ -92,9 +92,9 @@ decides; [Rings](rings.md#approval-webhook) describes what it sends.
 ## Timeouts
 
 `buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs` (15000
-by default); an answer inside that window lets it run. `0` holds until someone answers. When a
+by default); an answer within it lets it run. `0` holds until someone answers. When a
 hold ends unanswered, the call returns `approval_required`, its asks stay answerable ten more
-minutes, and the agent retries the same call once answered. An HTTP caller's
+minutes, and the agent retries it once answered. An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
 command waits only while its terminal question is open. `buckle workspace set approvalWaitMs
@@ -108,11 +108,11 @@ buckle policy dangerously-allow off
 ```
 
 Warning: this removes the person. While it is on, every ask about a path inside the workspace,
-and every command, host, and process ask, is allowed without asking anyone, sensitive files,
-writes, and destructive commands included. Paths outside it keep their normal outcome, and
-deny rules, the mount, and the state directory still refuse.
+and every command, host, and process ask, is allowed, sensitive files, writes, and destructive
+commands included, except a secret reference's file. Paths outside it keep their normal outcome,
+and deny rules, the mount, and the state directory still refuse.
 
 Only the local CLI sets it; `buckle policy import` refuses a file that names it. A running node
-reads it on every call, so `off` applies at once. Each use is logged as
-`policy_dangerously_allowed`. Each workspace has its own switch, with no node switch over it, and
+reads it each call, so `off` applies at once. Each use is logged as
+`policy_dangerously_allowed`. Each workspace has its own switch, with no node-wide one, and
 `buckle policy clear` leaves it on.
