@@ -3,6 +3,18 @@ import type { ApprovalRequest, CapabilityRisk, InvokeResponse, JsonObject, JsonV
 import { TOOL_NAME_PATTERN } from '@5straps/protocol'
 import type { ToolEffect } from './effect.js'
 
+/**
+ * One value filled into a browser from a secret reference (docs/secrets.md): its file as the rules judged it and as
+ * written, its NAME, and the sha256 of the value it was, so a file changed since is told apart while the page still holds
+ * the value it was filled with.
+ */
+export interface FilledSecret {
+  real: string
+  written: string
+  name: string
+  digest: string
+}
+
 export interface ToolContext {
   requestId: string
   sessionId: string
@@ -43,6 +55,12 @@ export interface ToolContext {
    * hop to another origin, as it drops a credential header.
    */
   secretHeaders?: readonly string[]
+  /**
+   * The values a browser fill or type call hands the browser from secret references (docs/secrets.md), each by its file,
+   * NAME, and sha256, never the value: the browser pack records them before the browser runs, so every later browser call
+   * on the workspace, in any Buckle process, is masked by them while a browser may still show them.
+   */
+  secretFills?: readonly FilledSecret[]
   /**
    * The permission rules' verdict on reaching a URL mid-call, with this session's grants and the
    * approvals this call consumed, so a fetch honours what the owner approved without a copy of

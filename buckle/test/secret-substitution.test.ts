@@ -6,10 +6,10 @@ import { join } from 'node:path'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { logger, rootLogger } from '../common/runtime/log.js'
-import { ToolExecutionError, type PreparedCall, type ToolContext } from '../common/domain/tool.js'
+import { ToolExecutionError, type FilledSecret, type PreparedCall, type ToolContext } from '../common/domain/tool.js'
 import type { JsonValue } from '@5straps/protocol'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
-import { checkSecrets, createFilledSecrets, runWithSecrets } from '../common/services/secrets/call-secrets.js'
+import { checkSecrets, runWithSecrets } from '../common/services/secrets/call-secrets.js'
 import { planSecrets } from '../common/services/secrets/places.js'
 import { PLACES_REASON, SHORT_REASON } from '../common/domain/secret-reference.js'
 import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_REASON } from '../common/services/secrets/shell-reading.js'
@@ -304,14 +304,16 @@ describe('a browser fill', () => {
   async function setup() {
     const { workspace } = await node()
     const real = join(workspace, '.env.local')
-    const filled = createFilledSecrets()
+    // What the browser pack records of each call's secretFills, as its sessions.json holds them.
+    const held: FilledSecret[] = []
+    const filled = { list: () => held }
     const seen: JsonObject[] = []
     const browserCall = (args: JsonObject, page: (args: JsonObject) => JsonValue) => {
       const planned = planSecrets({ tool: 'browser_command', pack: 'browser', args, enabled: true })
       if ('refusal' in planned) throw new Error(planned.refusal)
       const effects = planned.plan ? [...planned.plan.files].map(([written, names]) => ({ kind: 'secret_file' as const, path: real, written: [written], names })) : []
       const checked = planned.plan ? checkSecrets({ tool: 'browser_command', args, plan: planned.plan, effects }) : null
-      const prepare = (passed: JsonObject): PreparedCall => ({ effects: [], execute: async () => { seen.push(passed); return page(passed) } })
+      const prepare = (passed: JsonObject): PreparedCall => ({ effects: [], execute: async (ran) => { held.push(...ran.secretFills ?? []); seen.push(passed); return page(passed) } })
       return runWithSecrets({ checked, filled, tool: 'browser_command', args, prepare, execute: prepare(args).execute, permissions: NO_RULES, context: context(), protectedRoots: [], roots: [workspace] })
     }
     return { workspace, filled, seen, browserCall }

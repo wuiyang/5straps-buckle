@@ -49,6 +49,12 @@ describe('docs/secrets.md quotes what the code says', () => {
     expect(secrets).toContain('`[secret:NAME]`')
   })
 
+  it('links the masking page, which says a filled page stays masked in every Buckle process and after a restart', () => {
+    expect(secrets).toContain('](secrets-02.md)')
+    expect(page('secrets-02.md')).toContain('in any Buckle process and after a restart')
+    expect(page('secrets-02.md')).toContain('](secrets.md)')
+  })
+
   it('quotes the approval line a secret file shows, and the strict mode that shortens its answer', () => {
     expect(summarizeEffect({ kind: 'secret_file', path: '/repo/.env.local', written: ['.env.local'], names: ['API_TOKEN'] })).toBe('secrets API_TOKEN from .env.local')
     expect(secrets).toContain('"secrets API_TOKEN from .env.local"')

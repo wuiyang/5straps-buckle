@@ -59,6 +59,7 @@ import { resolveEffects } from '../invocation/resolve-effects.js'
 import type { PendingAsk } from '../approvals/approval-registry.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
+import { browserFilledSecrets } from '../packs/browser/index.js'
 import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
@@ -82,7 +83,6 @@ import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
-import { createFilledSecrets } from '../secrets/call-secrets.js'
 import { listedSecretFile } from '../secrets/secret-file.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
@@ -389,8 +389,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
   const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
-  // The values this workspace's browsers were filled with, by file and NAME, for the runtime's life (docs/secrets.md).
-  const filledSecrets = createFilledSecrets()
+  // The values this workspace's browsers were filled with, by file and NAME, as its browser packs record them beside
+  // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/secrets.md).
+  const filledSecrets = browserFilledSecrets(browserStateDirectory)
   const executions = createExecutions({ budget: executionBudget })
   // Every call running here, so shutdown can cancel them and wait for each to answer.
   const inFlight = new Set<Promise<unknown>>()

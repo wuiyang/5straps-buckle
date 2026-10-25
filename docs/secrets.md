@@ -73,7 +73,7 @@ The rules, the [destructive floor](approvals.md#the-destructive-floor), and the 
 judge the call as written, references included. Buckle puts the values in afterward, into the program's argument list and never its
 environment, just before the browser fills or the request goes out. It reads a shell call again with
 the values in and runs nothing if the reading differs, as a value holding `;` or a newline would
-cause.
+cause. `web_fetch` drops a header carrying a value when a redirect leaves the origin.
 
 A value must hold at least 8 characters, or Buckle refuses with "too short to mask". In shell text
 it holds no quote, backslash, `$`, backtick, `!`, or control character. A value starting with `-` is
@@ -82,27 +82,9 @@ as an option. In a header it holds no line break.
 
 ## Masking
 
-Buckle shows each value as `[secret:NAME]` wherever text leaves it: the command's output and
-errors, the browser's result, a fetch's response headers and body, the audit log, every log line,
-every error, and every approval line. It masks the value URL-encoded, JSON-escaped, and as HTML
-entities, whichever characters the encoder escapes, in base64 and base64url, wrapped or not, and
-inside the base64 of a Basic authorization, when the form is at least 8 characters, and masks a
-value split across output chunks or cut where output reached its bound. Values are held in memory only while the call runs.
-
-After a fill, every later browser call in the workspace is masked by the value too, since the page
-still holds it. Each call reads the file again and is refused if the file is gone or changed since
-the fill; put it back, or close the browser and restart Buckle. `web_fetch` drops a header carrying
-a value when a redirect leaves the origin.
-
-## Limits
-
-Masking works on text. These stay unmasked:
-
-- A command that writes the value to a file, or sends it over the network by a route Buckle does not
-  see, such as a child the sandbox lets reach the network.
-- Output that transforms the value another way, such as reversing it.
-- A screenshot or PDF of a page showing the value.
-- The program's memory and argument list, which other processes on the machine can read while it runs.
+Buckle shows each value as `[secret:NAME]` wherever text leaves it, in its common encodings too,
+and in every later browser call once a page holds it. [Secret masking](secrets-02.md) lists the
+forms, the browser's hold after a fill, and what stays unmasked.
 
 ## Platform values
 

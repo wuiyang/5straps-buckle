@@ -8,7 +8,7 @@ import { hostEnvironment, type HostEnvironment } from '../../../domain/environme
 import { ownRoots, type Program, type ProgramRefusal, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool, ToolExecutionError, ToolInputError } from '../../../domain/tool.js'
+import { defineTool, ToolExecutionError, ToolInputError, type FilledSecret } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { logger } from '../../../runtime/log.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -17,6 +17,7 @@ import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedF
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
+import type { FilledSecrets } from '../../secrets/call-secrets.js'
 
 const PACK_ID = 'browser'
 
@@ -46,7 +47,52 @@ const SessionsSchema = z.object({
   modes: z.record(z.string(), z.string()).default({}),
   /** The process that wrote each session's settings, so a live sibling's daemon is reused rather than closed. */
   writers: z.record(z.string(), z.number().int()).default({}),
+  /**
+   * Each value a fill or type handed a browser of the workspace from a secret reference (docs/secrets.md), by file, NAME,
+   * and sha256, never the value, so every Buckle process on the workspace masks the page by it, after a restart too;
+   * absent while none is held. It ends with the workspace's last browser where closing ends the page (endsHold).
+   */
+  filled: z.array(z.object({ real: z.string(), written: z.string(), name: z.string(), digest: z.string() })).optional(),
 })
+
+type Sessions = z.infer<typeof SessionsSchema>
+
+/** A fresh record each time, as a store's update may change the fallback it was handed. */
+function emptySessions(): Sessions {
+  return { sessions: {}, allowedDomains: {}, modes: {}, writers: {} }
+}
+
+/** How many filled values a workspace's browsers are masked by at most. */
+const MAX_FILLED = 256
+
+/**
+ * The values the workspace's browsers hold from secret references, as its browser packs record them in sessions.json,
+ * read again at each browser call (runWithSecrets), so a process beside the one that filled, or one started after it
+ * stopped, masks the page too.
+ */
+export function browserFilledSecrets(sessionDirectory: string): FilledSecrets {
+  const sessions = createJsonFileStore({ filePath: join(sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: emptySessions() })
+  return { list: () => sessions.read().filled ?? [] }
+}
+
+/** The record with a call's filled values in it, one entry a file and NAME, refused past MAX_FILLED. */
+function withFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
+  const entries = new Map(held.map(entry => [`${entry.real}\u0000${entry.name}`, entry]))
+  for (const entry of added) {
+    const key = `${entry.real}\u0000${entry.name}`
+    if (!entries.has(key) && entries.size >= MAX_FILLED) throw new ToolInputError(`A workspace's browsers are masked by at most ${MAX_FILLED} filled secret values; end them with the close command to fill more`, { code: 'PERMISSION_DENIED' })
+    entries.set(key, { real: entry.real, written: entry.written, name: entry.name, digest: entry.digest })
+  }
+  return [...entries.values()]
+}
+
+/**
+ * Whether closing a browser ends the page it shows, and with the workspace's last one the hold its fills left: a fresh
+ * or profile browser Buckle launched closes, while an attached Chrome only disconnects and keeps its pages.
+ */
+function endsHold(mode: BrowserMode | null): boolean {
+  return mode?.kind !== 'attached'
+}
 
 const commandInput = z.object({
   command: z.string().regex(/^[a-z][a-z0-9-]*$/).max(100),
@@ -128,7 +174,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
   const staleAfterMs = 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS)
   sweepTransfers({ directory: options.sessionDirectory, staleAfterMs })
-  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: { sessions: {}, allowedDomains: {}, modes: {}, writers: {} } })
+  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: emptySessions() })
   const configFile = join(options.sessionDirectory, 'fresh-config.json')
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const choice = options.browser ?? { mode: FRESH_BROWSER }
@@ -156,8 +202,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     // No path: the manifest carrying it is read with the agent token, and the configured path is the owner's.
     unavailableReason,
-    close: () => closeSessions({ options, sessions, opened, forget: true }),
-    retire: () => closeSessions({ options, sessions, opened, forget: false }),
+    close: () => closeSessions({ options, sessions, opened, forget: true, endsHold: endsHold(mode) }),
+    retire: () => closeSessions({ options, sessions, opened, forget: false, endsHold: endsHold(mode) }),
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
@@ -203,6 +249,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([running.kind, fingerprint, context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
             const own = running.kind === 'profile' ? profileSession(running.directory) : null
             const { session, relaunchedFrom, replaced, sibling } = await sessions.update((state) => {
+              // Recorded under the same lock as the session, before the browser is handed a value, so a close in another
+              // process never ends a hold this call is about to need.
+              if (context.secretFills && context.secretFills.length > 0) state.filled = withFilled(state.filled ?? [], context.secretFills)
               const known = state.sessions[key]
               // Only the shared profile key can hold other settings: every other key carries its own.
               const mismatch = known !== undefined && state.modes[key] !== fingerprint
@@ -267,6 +316,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
                 delete state.allowedDomains[key]
                 delete state.modes[key]
                 delete state.writers[key]
+                if (endsHold(running) && Object.keys(state.sessions).length === 0) delete state.filled
               })
             }
             const relaunched = relaunchedFrom !== undefined
@@ -338,13 +388,15 @@ const CLOSE_TIMEOUT_MS = 5_000
  * records instead (fix brief 2, R2): the successor finds each session's key and the list it last ran under, and at the
  * session's next call closes it and starts a browser under a new name and the new list, saying it was relaunched.
  */
-async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<z.infer<typeof SessionsSchema>>; opened: Set<string>; forget: boolean }): Promise<void> {
+async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<Sessions>; opened: Set<string>; forget: boolean; endsHold: boolean }): Promise<void> {
   const closing = [...input.opened]
   input.opened.clear()
   if (closing.length === 0) return
   const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
-  await Promise.all(closing.map(async (session) => {
-    if (!await closeSession(input.options, session, bound)) logger.warn(input.forget ? 'A browser session did not close at shutdown; its idle timeout ends it' : 'A browser session did not close when its settings changed; its idle timeout ends it')
+  const closed = await Promise.all(closing.map(async (session) => {
+    const done = await closeSession(input.options, session, bound)
+    if (!done) logger.warn(input.forget ? 'A browser session did not close at shutdown; its idle timeout ends it' : 'A browser session did not close when its settings changed; its idle timeout ends it')
+    return done
   }))
   if (!input.forget) return
   await input.sessions.update((state) => {
@@ -355,6 +407,8 @@ async function closeSessions(input: { options: BrowserPackOptions; sessions: Jso
       delete state.modes[key]
       delete state.writers[key]
     }
+    // A browser that would not close may still show a filled page until its idle timeout, so the hold stays.
+    if (input.endsHold && closed.every(Boolean) && Object.keys(state.sessions).length === 0) delete state.filled
   })
 }
 

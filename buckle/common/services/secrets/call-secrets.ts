@@ -3,7 +3,7 @@ import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { ExecEffect, ResolvedEffect } from '../../domain/effect.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import { MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
-import { ToolInputError, type PreparedCall, type ToolContext } from '../../domain/tool.js'
+import { ToolInputError, type FilledSecret, type PreparedCall, type ToolContext } from '../../domain/tool.js'
 import { createMasker, holdMasker, type SecretValue } from './mask.js'
 import type { SecretPlace, SecretPlan } from './places.js'
 import { readSecretValues } from './secret-file.js'
@@ -27,40 +27,12 @@ interface ShellCall {
 }
 
 /**
- * One value filled into a browser, by its file and NAME, never its value, so the browser's later results are masked; the
- * sha256 of the value it was, so a file changed since is told apart, as the page still holds the value it was filled with.
- */
-export interface FilledSecret {
-  real: string
-  written: string
-  name: string
-  digest: string
-}
-
-/**
- * The values a workspace's browsers were handed by a fill or type, by file and NAME, held for the runtime's life, so a
- * later snapshot, `get value`, or `eval` that shows the page is masked too: each later browser call reads them again.
+ * The values a workspace's browsers were handed by a fill or type, by file and NAME, as the browser pack records them
+ * with its sessions (secretFills), so a later snapshot, `get value`, or `eval` that shows the page is masked too, in any
+ * Buckle process on the workspace and after a restart: each browser call reads them again.
  */
 export interface FilledSecrets {
-  add(entries: readonly FilledSecret[]): void
   list(): readonly FilledSecret[]
-}
-
-/** How many filled values a workspace's browsers are masked by at most. */
-const MAX_FILLED = 256
-
-export function createFilledSecrets(): FilledSecrets {
-  const entries = new Map<string, FilledSecret>()
-  return {
-    add(added) {
-      for (const entry of added) {
-        const key = `${entry.real}\u0000${entry.name}`
-        if (!entries.has(key) && entries.size >= MAX_FILLED) throw refused(`A workspace's browsers are masked by at most ${MAX_FILLED} filled secret values; close the browser and restart Buckle to fill more`)
-        entries.set(key, entry)
-      }
-    },
-    list: () => [...entries.values()],
-  }
 }
 
 /**
@@ -110,12 +82,15 @@ export async function runWithSecrets(input: {
   // A browser call is masked by every value its workspace's browsers hold: those filled before it starts, held while it
   // runs, and, read again once it answers, those a call beside it filled meanwhile.
   const browser = input.tool === 'browser_command' && input.filled ? input.filled : null
-  const masker = createMasker([...read.values(), ...browser ? readFilledValues(browser.list(), input) : []])
+  // Close shows no page, so it runs though a value the browser holds no longer reads, and ends the hold that refused
+  // every other call; it is masked by every value that still reads.
+  const closing = browser !== null && input.args.command === 'close'
+  const masker = createMasker([...read.values(), ...browser ? readFilledValues(browser.list(), input, closing) : []])
   const release = holdMasker(masker)
   const answered = (output: JsonValue): JsonValue => {
     const masked = masker.json(output)
     if (!browser) return masked
-    const late = createMasker(readFilledValues(browser.list(), input))
+    const late = createMasker(readFilledValues(browser.list(), input, closing))
     try { return late.json(masked) } finally { late.drop() }
   }
   try {
@@ -126,14 +101,14 @@ export async function runWithSecrets(input: {
     if (checked.shell) assertSameReading({ shell: checked.shell, prepared, values, permissions: input.permissions, tool: input.tool })
     const fillPlaces = checked.plan.places.filter(place => place.kind === 'fill')
     if (fillPlaces.length > 0) assertSamePositionals(input.args, args)
-    const fills = fillPlaces.flatMap(place => place.references)
-    if (input.filled && fills.length > 0) input.filled.add(fills.map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) })))
+    // The browser pack records each value it is handed with the session that runs it, before the browser runs.
+    const fills: FilledSecret[] = fillPlaces.flatMap(place => place.references).map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) }))
     const headers = checked.plan.places.filter(place => place.kind === 'header').map(place => String(place.at[1]))
-    return answered(await prepared.execute(headers.length > 0 ? { ...input.context, secretHeaders: headers } : input.context))
+    return answered(await prepared.execute({ ...input.context, ...headers.length > 0 ? { secretHeaders: headers } : {}, ...fills.length > 0 ? { secretFills: fills } : {} }))
   } catch (error) {
     const masked = maskError(error, masker.text)
     if (!browser) throw masked
-    const late = createMasker(readFilledValues(browser.list(), input))
+    const late = createMasker(readFilledValues(browser.list(), input, closing))
     try { throw maskError(masked, late.text) } finally { late.drop() }
   } finally {
     release()
@@ -158,9 +133,10 @@ function readCallValues(checked: CheckedSecrets, input: { protectedRoots: readon
 
 /**
  * The values a workspace's browsers were filled with, read again now; one that cannot be read, or reads as another value
- * than the one filled, refuses the call, as its result could not be masked.
+ * than the one filled, refuses the call, as its result could not be masked, except a close (`skipStale`), which shows no
+ * page and is masked by the rest.
  */
-function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoots: readonly string[]; roots: readonly string[] }): SecretValue[] {
+function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoots: readonly string[]; roots: readonly string[] }, skipStale: boolean): SecretValue[] {
   const byFile = new Map<string, { written: string; names: string[] }>()
   for (const entry of filled) {
     const file = byFile.get(entry.real) ?? { written: entry.written, names: [] }
@@ -172,11 +148,12 @@ function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoo
   for (const [real, file] of byFile) {
     let read: Map<string, string>
     try { read = readSecretValues({ real, written: file.written, names: file.names, protectedRoots: input.protectedRoots, roots: input.roots }) } catch (error) {
-      throw refused(`A secret value this workspace's browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}. Close the browser and restart Buckle, or put the file back`)
+      if (skipStale) continue
+      throw refused(`A secret value this workspace's browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}. Put the file back, or end the workspace's browsers with the close command`)
     }
     for (const [name, value] of read) {
-      if (digests.get(`${real}\u0000${name}`) !== digestOf(value)) throw refused(`The secret ${name} in ${file.written} changed since this workspace's browser was filled with it, so this browser call's result could not be masked. Close the browser and restart Buckle`)
-      values.push({ name, value })
+      if (digests.get(`${real}\u0000${name}`) === digestOf(value)) values.push({ name, value })
+      else if (!skipStale) throw refused(`The secret ${name} in ${file.written} changed since this workspace's browser was filled with it, so this browser call's result could not be masked. Put the file back, or end the workspace's browsers with the close command`)
     }
     read.clear()
   }
