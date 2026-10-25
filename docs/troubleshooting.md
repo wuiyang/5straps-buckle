@@ -3,8 +3,8 @@
 The failures people meet first with Buckle, the approval and sandbox runtime on their machine,
 each with the message it prints and the fix. Buckle logs text at terminals, JSON elsewhere; a
 one-shot command prints its reason on one line and exits 1.
-[Refused commands](troubleshooting-02.md), such as a shell wrapper, an interpreter, or a call
-Buckle cannot read whole, continue on the next page.
+[Refused commands](troubleshooting-02.md), such as a shell wrapper, an interpreter, a call
+Buckle cannot read whole, or a push the receive guard refuses, continue on the next page.
 
 ## node-pty was not built
 
@@ -103,22 +103,21 @@ folder must not hold, or sit inside, another workspace or Buckle state`, or, for
 moving onto workspaces, `BUCKLE_STATE_DIR is ..., inside the BUCKLE_WORKSPACE_ROOT at ...`; move
 one of them.
 
-## A push is refused by the receive guard
+## The move onto workspaces stops partway
 
-When `origin` is a repository on the same machine, `git_push` checks it before the push, and
-again inside the receiving git through a guard that is that git's only hook. Both refuse when git
-would write somewhere other than the repository Buckle judged: a `.git` that is a file or a
-symbolic link, a `commondir` or `gitdir` pointer file, or a symbolic link in the git directory,
-its `objects`, `refs`, or `logs`. The agent sees:
+On Windows, the first command after an upgrade from 0.1 can stop with:
 
 ```
-PERMISSION_DENIED: /home/you/repos/app/.git is a file pointing git at another repository, so git would write somewhere the permission rules never judged; push to the real repository by its own path (set origin to it) so the permission rules judge it
+Buckle stopped moving the node onto workspaces partway: it could not move C:/Users/you/.5straps/buckle/history to C:/Users/you/.5straps/buckle/workspaces/<id>/history (EPERM), as a program still holds it, or a file inside it, open: most likely a buckle serve, a buckle mcp an MCP client started, the Buckle service, or an antivirus scan. ...
 ```
 
-Point `origin` at the real repository directory, for example with
-`git remote set-url origin /home/you/repos/app-main`, and push again. If the message instead
-says the guard `cannot be run`, its execute permission was lost or the state directory sits on a
-`noexec` mount: restore the permission, or move the state directory with `BUCKLE_STATE_DIR`.
+Windows will not move a folder with a file inside it open; Buckle tried for about two seconds.
+Stop every Buckle process: Ctrl-C the `buckle serve`, run `buckle service stop`, and quit each
+MCP client that started `buckle mcp`. Then run the command again: the move continues where it
+stopped, keeping what it moved. Where another Buckle process is still at work, the move refuses
+first, with `Buckle cannot move the node onto workspaces while another Buckle process runs on
+this state directory: process 1234 ...`, and the same fix applies.
+[Moving a node from 0.1](workspaces-04.md) says what moves.
 
 ## A .env in the project is refused
 

@@ -56,6 +56,23 @@ variable after an option that takes one (`nice -n "$n" make`), or hand a shell i
 `-c`. [What stays unread](policy-03.md) shows the forms an expansion leaves read, and
 [Known limits](known-limits.md) what Buckle does not read at all.
 
+## A push is refused by the receive guard
+
+When `origin` is a repository on the same machine, `git_push` checks it before the push, and
+again inside the receiving git through a guard that is that git's only hook. Both refuse when git
+would write somewhere other than the repository Buckle judged: a `.git` that is a file or a
+symbolic link, a `commondir` or `gitdir` pointer file, or a symbolic link in the git directory,
+its `objects`, `refs`, or `logs`. The agent sees:
+
+```
+PERMISSION_DENIED: /home/you/repos/app/.git is a file pointing git at another repository, so git would write somewhere the permission rules never judged; push to the real repository by its own path (set origin to it) so the permission rules judge it
+```
+
+Point `origin` at the real repository directory, for example with
+`git remote set-url origin /home/you/repos/app-main`, and push again. If the message instead
+says the guard `cannot be run`, its execute permission was lost or the state directory sits on a
+`noexec` mount: restore the permission, or move the state directory with `BUCKLE_STATE_DIR`.
+
 ## A rule changes another workspace than you meant
 
 `buckle policy` acts on the workspace `--workspace <name>` or `--dir <path>` names, or else on the

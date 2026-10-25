@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { parseEnv } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
@@ -570,6 +571,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
     }
     const marker = (input: Scene) => join(input.state, 'moving-onto-workspaces')
     const moved = (input: Scene, file: string) => join(input.state, 'workspaces', ownId(input), file)
+    /** docs/troubleshooting.md, its lines joined, as it quotes what the move prints. */
+    const troubleshooting = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'troubleshooting.md'), 'utf8').replace(/\s+/g, ' ')
 
     it('tries a record held open again, a short pause apart, and finishes the move once it is let go', async () => {
       const input = scene()
@@ -594,6 +597,9 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(failure).toBeInstanceOf(MigrationError)
       const message = (failure as Error).message
       for (const part of [`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (EPERM)`, 'a buckle serve, a buckle mcp an MCP client started, the Buckle service, or an antivirus scan', 'Stop every Buckle process', 'then run the command again', 'the move continues where it stopped, and the records it moved already stay moved']) expect(message).toContain(part)
+      // The page quotes it up to the step, on a Windows state directory.
+      const shown = message.replaceAll(input.state, 'C:/Users/you/.5straps/buckle').replace(ownId(input), '<id>')
+      expect(troubleshooting()).toContain(shown.slice(0, shown.indexOf('antivirus scan.') + 'antivirus scan.'.length))
       // Five tries over about two seconds.
       expect(held.tried('history')).toBe(5)
       const waited = held.pauses.reduce((sum, ms) => sum + ms, 0)
@@ -663,6 +669,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
           expect(message).toContain(`process ${live.pid}`)
           expect(message).toContain('Stop every Buckle process (buckle serve, the Buckle service, and each MCP client that runs buckle mcp), then run the command again')
           expect(message).toContain('This command changed nothing')
+          expect(troubleshooting()).toContain(`${message.slice(0, message.indexOf(`process ${live.pid}`))}process 1234 ...`)
           expect(held.all).toEqual([])
           expect(registry(input)).toBe(before)
           expect(existsSync(marker(input))).toBe(false)

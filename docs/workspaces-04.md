@@ -33,6 +33,16 @@ workspace then holds.
 
 A state directory that served nothing gets no workspace until `buckle init` makes one.
 
+## A move that stops partway
+
+On Windows a folder will not move while a program holds a file inside it open: a `buckle serve`,
+a `buckle mcp` an MCP client started, the service, or an antivirus scan for a moment. The move
+tries such a record again for about two seconds, then stops with `EPERM` or `EBUSY`, naming the
+record ([Troubleshooting](troubleshooting.md#the-move-onto-workspaces-stops-partway)). Stop every Buckle
+process and run the command again: the move continues where it stopped, and the records it moved
+stay moved. Where another Buckle process has a call open, or serves, the move refuses before it
+changes anything, naming the process id.
+
 ## Going back
 
 The move keeps owner-only copies of what it changes: `workspaces.v1.json` and
