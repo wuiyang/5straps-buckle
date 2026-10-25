@@ -97,9 +97,9 @@ all three packs again.
 
 `git_diff` and `git_log` judge each path they name as a read, as `git_blame` judges its file, so
 the credential-file check asks about a named `.env`. git reads each path literally, never as a
-pattern, and a path outside the repository is refused. A `git_diff` or `git_log` that names no
-path is judged by the repository alone, so a diff shows the changes of every tracked file, a `.env`
-included, and a log lists the commits of every file; Buckle filters neither
+pattern, and a path outside the repository is refused. A `git_diff` naming no path, or a folder,
+judges each file it lists: one the rules keep from the agent, such as a `.env`, shows its header
+and line counts, not its content. A `git_log` naming no path lists every file's commits
 ([known limits](known-limits-02.md#where-programs-come-from)).
 
 Each `git` pack call (`git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch`) runs against

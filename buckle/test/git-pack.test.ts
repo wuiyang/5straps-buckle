@@ -21,13 +21,17 @@ import type { ProcessRequest, ProcessRunner } from '../common/types/ports/proces
 function gitPack(root: string, runProcess: ProcessRunner = vi.fn(), mount: string | null = null, git = 'git') {
   const stateDirectory = mkdtempSync(join(tmpdir(), 'git-pack-state-'))
   const pack = createGitPack({ paths: createPathView({ root, mount, scratchRoots: [] }), runProcess, stateDirectory, git: { path: git, argv0: 'git', args: [] } })
-  const call = (name: string, args: Record<string, JsonValue>, judged: Pick<ToolContext, 'authorizeReadTarget'> = {}) => {
+  const call = (name: string, args: Record<string, JsonValue>, judged: Pick<ToolContext, 'authorizeReadTarget' | 'authorizeRead'> = {}) => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)
     if (!tool) throw new Error(`No such tool: ${name}`)
-    return tool.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 1_000, signal: AbortSignal.timeout(1_000), ...judged })
+    // A diff runs up to six git commands (R1), so the call's own limit leaves room for a loaded disk.
+    return tool.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 5_000, signal: AbortSignal.timeout(5_000), ...judged })
   }
   return { call, runProcess }
 }
+
+/** A call whose rules let it read every file it reaches (git_diff judges each file it lists; R1). */
+const readsAll: Pick<ToolContext, 'authorizeRead'> = { authorizeRead: async () => true }
 
 /** A git that answers every call with nothing, and the repository it is asked about as one with its own `.git`. */
 /** What a call was refused with, or null where it ran: a refusal at prepare time is thrown rather than returned. */
@@ -241,7 +245,7 @@ describe.skipIf(hostGit === null)('a git tool reads only a repository inside the
     const { call } = gitPack(workspace, hostRunProcess, null, hostGit!)
     expect(await call('git_status', { repo: '.' })).toMatchObject({ branch: 'main', entries: expect.arrayContaining([{ state: '.M', path: 'own.txt' }]) })
     expect(await call('git_log', { repo: 'src' })).toMatchObject({ commits: [{ subject: 'commit of own.txt' }] })
-    expect(await call('git_diff', { repo: 'nested' })).toMatchObject({ diff: expect.stringContaining('+changed') })
+    expect(await call('git_diff', { repo: 'nested' }, readsAll)).toMatchObject({ diff: expect.stringContaining('+changed') })
     expect(await call('git_log', { repo: 'nested' })).toMatchObject({ commits: [{ subject: 'commit of nested.txt' }] })
     expect(await call('git_branch', { repo: 'nested' })).toMatchObject({ branches: [{ name: 'main', current: true }] })
   })
@@ -333,13 +337,14 @@ describe('git_diff and git_log declare a read of each path they name (D77)', () 
     expect(diff.environment).toMatchObject({ GIT_LITERAL_PATHSPECS: '1' })
   })
 
-  it('declares the repository alone for git_diff with no paths, and runs as it did', async () => {
+  // R1: the files a diff of the whole tree lists are each judged as a read the call reached (git-pack-diff.test.ts).
+  it('declares the repository alone for git_diff with no paths, and lists the files it changed with no pathspec', async () => {
     const root = workspace()
     expect(prepare(root, 'git_diff', {}).effects).toEqual([{ kind: 'read_path', path: '.' }])
     const runProcess = answering()
     const { call } = gitPack(root, runProcess)
     await call('git_diff', {})
-    expect(runProcess.mock.calls.at(-1)![0].args.slice(1)).toEqual(['--unified=3', '--no-color', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all'])
+    expect(runProcess.mock.calls.at(-1)![0].args.slice(1)).toEqual(['--no-color', '--no-ext-diff', '--no-textconv', '--ignore-submodules=all', '--no-relative', '-M', '--raw', '--numstat', '-z', '--'])
   })
 })
 
@@ -355,15 +360,15 @@ describe.skipIf(hostGit === null)('git_diff reads the paths it names literally, 
     writeFileSync(join(root, '.env'), 'NAME=second\n')
     const { call } = gitPack(root, hostRunProcess, null, hostGit!)
     expect(await call('git_diff', { paths: ['.en*'] })).toEqual({ diff: '' })
-    expect(await call('git_diff', { paths: ['.env'] })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
+    expect(await call('git_diff', { paths: ['.env'] }, readsAll)).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
   })
 })
 
-// A known limit, kept on purpose (D77 read beside BUCKLE-D17, which declined a per-path gate on git_diff): a diff or log
-// naming no path is judged by the repository alone and shows every tracked file, a `.env` included. Buckle adds no
-// `:(exclude)` pathspec, as a filtered diff would misreport the tree (docs/known-limits-02.md).
+// R1 (D77, owner 2026-10-25): a diff naming no path still lists every tracked file it changed, a `.env` included, but
+// shows no content of one the rules would not let the agent read; git_log naming no path lists every file's commits,
+// as ruled. Buckle adds no `:(exclude)` pathspec: the patch is handed the shown files by name (git-pack-diff.test.ts).
 describe.skipIf(hostGit === null)('a git_diff or git_log naming no path reads the whole tree, against the installed git', () => {
-  it('shows a tracked .env change unstaged and staged, and lists its commit, with no pathspec added', async () => {
+  it('shows that a tracked .env changed, unstaged and staged, with none of its content, and lists its commit', async () => {
     const quiet = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' }
     const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.com', '-c', 'init.defaultBranch=main', ...args], { cwd, env: quiet, stdio: 'pipe' })
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-whole-')))
@@ -374,11 +379,14 @@ describe.skipIf(hostGit === null)('a git_diff or git_log naming no path reads th
     writeFileSync(join(root, '.env'), 'NAME=second\n')
     const requests: Parameters<ProcessRunner>[0][] = []
     const { call } = gitPack(root, request => { requests.push(request); return hostRunProcess(request) }, null, hostGit!)
-    expect(await call('git_diff', {})).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
+    const credentialOnly = { authorizeRead: async (path: string) => !path.endsWith('/.env') }
+    const hidden = 'diff --git a/.env b/.env\nstat: +1 -1\n[content hidden: credential file]\n'
+    expect(await call('git_diff', {}, credentialOnly)).toEqual({ diff: hidden })
     git(root, 'add', '.env')
-    expect(await call('git_diff', { staged: true })).toMatchObject({ diff: expect.stringContaining('+NAME=second') })
+    expect(await call('git_diff', { staged: true }, credentialOnly)).toEqual({ diff: hidden })
     expect(await call('git_log', {})).toMatchObject({ commits: [{ subject: 'seed' }] })
-    expect(requests.flatMap(request => request.args).filter(word => word === '--' || word.startsWith(':('))).toEqual([])
+    expect(requests.flatMap(request => request.args).filter(word => word.startsWith(':('))).toEqual([])
+    expect(requests.filter(request => request.args[0] === 'diff').map(request => request.args.at(-1))).toEqual(['--', '--'])
   })
 })
 
@@ -554,7 +562,7 @@ describe.skipIf(hostGit === null)('a git tool pinned to the resolved directories
     writeFileSync(join(root, 'side', 'src', 'a.txt'), 'second\n')
     const { call } = gitPack(root, hostRunProcess, null, hostGit!)
     expect(await call('git_status', { repo: 'side' })).toMatchObject({ branch: 'side', entries: [{ state: '.M', path: 'src/a.txt' }] })
-    expect(await call('git_diff', { repo: 'side/src', paths: ['a.txt'] })).toMatchObject({ diff: expect.stringContaining('+second') })
+    expect(await call('git_diff', { repo: 'side/src', paths: ['a.txt'] }, readsAll)).toMatchObject({ diff: expect.stringContaining('+second') })
     expect(await call('git_log', { repo: 'side/src' })).toMatchObject({ commits: [{ subject: 'seed' }] })
   })
 

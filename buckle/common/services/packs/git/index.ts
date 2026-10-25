@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { posix } from 'node:path'
 import { isAbsolute, join, normalize, relative } from 'pathe'
 import { z } from 'zod'
@@ -14,8 +14,10 @@ import { resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { isInside, isInsideAny, nativePath, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
+import { childPath, isInside, isInsideAny, isPlainName, nativePath, parentDirectory, withForwardSlashes } from '../../../domain/paths.js'
 import { ownRoots, realPathOr, type ResolvedProgram } from '../../../domain/executable.js'
+import { sensitivePathReason } from '../../../domain/permission/rules/sensitive-path-rule.js'
+import { HIDDEN, hiddenEntry, type HiddenReason, type ListedFile, parseListing, pathsOf, unreadableListing, withholdBeneath } from './diff-files.js'
 
 const PACK_ID = 'git'
 /** Unit separator: safe inside commit subjects and branch names, unlike any printable delimiter. */
@@ -140,25 +142,20 @@ export function createGitPack(options: GitPackOptions): Pack {
   }
 
   /**
-   * `args` may be built from the judged real repository git runs in, for a path git is handed relative to it; they are
-   * built before anything is spawned, so a path refused there runs nothing.
-   * `refreshesIndex`: the command may write the repository's index (git diff refreshes it whatever GIT_OPTIONAL_LOCKS
-   * says), so in a mount the owner shares read-only it runs on a private copy of the index instead.
+   * The commands of one call, against the repository its permission check judged. `plan` is handed the judged real
+   * repository git runs in before anything is spawned, so a path it refuses there runs nothing, and returns what the
+   * call then runs, each command through the session's `git`.
+   * `refreshesIndex`: a command may write the repository's index (git diff refreshes it whatever GIT_OPTIONAL_LOCKS
+   * says), so in a mount the owner shares read-only every command reads a private copy of the index instead.
+   * `freezesIndex`: every command reads one private copy of the index, taken before the first, wherever the repository
+   * lies, so what one command listed is what a later one reads (R1).
    *
    * Only the repository query finds the repository; every later spawn runs against the places it resolved (D77, the
-   * rev-parse race), checked unchanged before each and after the command (pinRepository).
+   * rev-parse race), checked unchanged before each and after each command (pinRepository).
    */
-  const run = async (input: Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> & {
-    repo: string
-    args: string[] | ((repository: string) => string[])
-    refreshesIndex?: boolean
-    /** A config key, lowercase, that refuses this command where the repository lists it, and the constant reason (no path, no value). */
-    refusesKey?: { key: string; reason: string }
-    /** Config for the command alone: the listing runs under the isolation without it. */
-    commandConfig?: GitConfig[]
-  }): Promise<string> => {
+  const session = async <T>(input: SessionInput, plan: (cwd: string) => (repository: GitSession) => Promise<T>): Promise<T> => {
     const cwd = resolveRepository({ paths: options.paths, repo: input.repo, context: input })
-    const args = typeof input.args === 'function' ? input.args(cwd) : input.args
+    const use = plan(cwd)
     const boundary = repositoryBoundary(options.paths, cwd, platform)
     const isolation = [...isolationConfig(ensureHooksDirectory(options.stateDirectory)), ...SUBMODULE_CONFIG]
     const spawnHere = (args: string[], config: GitConfig[], extra?: Record<string, string>) => spawnGit({ cwd, args, config, boundary, timeoutMs: input.timeoutMs, signal: input.signal, ...(extra ? { extra } : {}) })
@@ -181,17 +178,27 @@ export function createGitPack(options: GitPackOptions): Pack {
     if (input.refusesKey && keys.some(key => key.toLowerCase() === input.refusesKey!.key)) throw new ToolInputError(input.refusesKey.reason, { code: 'PERMISSION_DENIED' })
     const config = [...isolation, ...filterProgramOverrides(keys), ...(input.commandConfig ?? [])]
     const readOnly = input.refreshesIndex === true && options.paths.mountOf(cwd)?.access === 'ro'
-    const index = readOnly ? privateIndex({ repository, stateDirectory: options.stateDirectory, shown: options.paths.display(cwd) }) : null
-    try {
+    const shown = options.paths.display(cwd)
+    const index = readOnly || input.freezesIndex === true ? privateIndex({ repository, stateDirectory: options.stateDirectory, refusal: readOnly ? readOnlyIndexRefusal(shown) : frozenIndexRefusal(shown) }) : null
+    const git: GitCommand = async (args, accepts = [0]) => {
       const result = await spawnPinned(args, index ? [...config, ...PRIVATE_INDEX_CONFIG] : config, index?.environment)
       // A swap while git ran is refused too, before git's own answer, which may name where it was pointed.
       assertUnchanged()
-      if (result.exitCode !== 0) {
+      if (result.exitCode === null || !accepts.includes(result.exitCode)) {
         throw new ToolExecutionError(describeProcessFailure('git', result), { code: 'GIT_FAILED' })
       }
-      return result.stdout
+      return result
+    }
+    try {
+      return await use({ workTree: repository.workTree, git })
     } finally { index?.remove() }
   }
+
+  /** One command, its arguments built from the judged real repository before anything is spawned, and its output. */
+  const run = (input: SessionInput & { args: string[] | ((repository: string) => string[]) }): Promise<string> => session(input, cwd => {
+    const args = typeof input.args === 'function' ? input.args(cwd) : input.args
+    return async ({ git }) => (await git(args)).stdout
+  })
 
   /** A path a tool names, as its effect declares it: joined to the repository, and refused when it leaves it. */
   const named = (repo: string, path: string) => repositoryPath(options.paths, repo, path, platform)
@@ -221,17 +228,20 @@ export function createGitPack(options: GitPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'git_diff',
-      description: 'Unified diff of the working tree or the staged index.',
+      description: 'Unified diff of the working tree or the staged index. A file the read rules keep from you shows its header and line counts, not its content.',
       risk: 'read',
       tags: ['git'],
       input: diffInput,
-      // Each path named is read too (D77); a diff of the whole tree names none, and shows every tracked file (known limit).
+      // Each path named is read too (D77); a diff of the whole tree or a folder names none beneath, so each file it lists
+      // is judged as a read the call reached, and one the rules would not let the agent read shows no content (R1).
       effects: input => [{ kind: 'read_path', path: input.repo }, ...input.paths.map(path => ({ kind: 'read_path' as const, path: named(input.repo, path) }))],
       run: async (input, context): Promise<JsonValue> => {
-        const args = ['diff', `--unified=${input.contextLines}`, '--no-color', ...PATCH_SAFETY_ARGS, IGNORE_SUBMODULES]
-        if (input.staged) args.push('--staged')
         const paths = input.paths.map(path => named(input.repo, path))
-        return { diff: await run({ repo: input.repo, args: repository => [...args, ...pathspec(repository, paths, context)], refreshesIndex: true, ...context }) }
+        const diff = await session({ repo: input.repo, refreshesIndex: true, freezesIndex: true, ...context }, cwd => {
+          const listed = pathspec(cwd, paths, context)
+          return repository => censoredDiff({ repository, listed, staged: input.staged, contextLines: input.contextLines, judge: fileJudge({ workTree: repository.workTree, authorizeRead: context.authorizeRead, shares: options.paths.shares, platform }) })
+        })
+        return { diff }
       },
     }),
     defineTool(PACK_ID, {
@@ -289,6 +299,108 @@ export function createGitPack(options: GitPackOptions): Pack {
   }
 }
 
+/** What a call's commands are handed: the real work tree the repository query resolved, and git. */
+interface GitSession { workTree: string; git: GitCommand }
+/** One git command against the pinned repository: its result, refused where git exits with a code `accepts` does not hold. */
+type GitCommand = (args: string[], accepts?: readonly number[]) => Promise<ProcessResult>
+interface SessionInput extends Pick<ToolContext, 'timeoutMs' | 'signal' | 'authorizeReadTarget'> {
+  repo: string
+  refreshesIndex?: boolean
+  freezesIndex?: boolean
+  /** A config key, lowercase, that refuses this command where the repository lists it, and the constant reason (no path, no value). */
+  refusesKey?: { key: string; reason: string }
+  /** Config for the command alone: the listing runs under the isolation without it. */
+  commandConfig?: GitConfig[]
+}
+
+/** The arguments every command of a diff shares: no colour, no program the repository names, no submodule, paths from the top, renames found. */
+const DIFF_ARGS = ['diff', '--no-color', ...PATCH_SAFETY_ARGS, IGNORE_SUBMODULES, '--no-relative', '-M']
+/** The tree a staged diff compares the index with where HEAD names no commit yet, by the repository's object format. */
+const EMPTY_TREES: Readonly<Record<string, string>> = {
+  sha1: '4b825dc642cb6eb9a060e54bf8d69288fbee4904',
+  sha256: '6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321',
+}
+const OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/
+/** Constant: how many files a repository changed is no reason to show a part of them. */
+const TOO_MANY_FILES = 'The diff lists more changed files than Buckle reads at once, so none is shown; name paths or a folder to narrow it'
+
+/** Whether one listed path's content may be shown, and why not: null where the rules let the agent read it. */
+type FileJudge = (path: string) => Promise<HiddenReason | null>
+
+/**
+ * A path a diff lists, judged as the file tools judge a read they reach mid-call (authorizeRead): the same deny rules,
+ * the credential-file check, and the approvals this call carries. git shows a path's content by its name in the index,
+ * HEAD, or the work tree, never through a link there, while the rules judge where a path lands, so a path whose place
+ * is not the name itself (a tracked link, a folder above it now a link) is hidden too. So is one Buckle cannot read
+ * back as names (an empty, `.`, or `..` name, a backslash, text that is not UTF-8), and every path where the call
+ * carries no read check, as a tool run outside the invoker does.
+ */
+function fileJudge(input: { workTree: string; authorizeRead: ToolContext['authorizeRead']; shares: readonly string[]; platform: NodeJS.Platform }): FileJudge {
+  const known = new Map<string, Promise<HiddenReason | null>>()
+  const judge = async (path: string): Promise<HiddenReason | null> => {
+    if (path.includes('\uFFFD') || !path.split('/').every(name => isPlainName(name, input.platform))) return HIDDEN.name
+    const place = childPath(input.workTree, path)
+    let real: string
+    try { real = resolveTarget(place, { shares: input.shares, platform: input.platform }) } catch { return HIDDEN.link }
+    if (real !== place) return HIDDEN.link
+    if (input.authorizeRead === undefined) return HIDDEN.unjudged
+    if (await input.authorizeRead(place)) return null
+    return sensitivePathReason(place) === null ? HIDDEN.rule : HIDDEN.credential
+  }
+  return path => {
+    let verdict = known.get(path)
+    if (verdict === undefined) known.set(path, verdict = judge(path))
+    return verdict
+  }
+}
+
+/**
+ * The diff of the files the rules let the agent read, then the header and stat of each other one (R1, D77). The list
+ * comes from one `--raw --numstat -z` listing, never from the patch, so a file whose content spells `diff --git` lines
+ * forges no file of its own. The patch is then handed only the paths it may show, never a bare `--`, which would show
+ * them all, and none that is a folder above a path it may not (withholdBeneath; ls-files names the index's entries
+ * beneath).
+ * Every command reads one private copy of the index and a staged diff the commit HEAD named once, so a file staged or
+ * committed while the call runs never reaches the patch.
+ */
+async function censoredDiff(input: { repository: GitSession; listed: string[]; staged: boolean; contextLines: number; judge: FileJudge }): Promise<string> {
+  const { git, workTree } = input.repository
+  const args = [...DIFF_ARGS, ...(input.staged ? ['--cached', await committedTree(git)] : [])]
+  // The listing alone may end in a bare `--`: it lists every file, and a work-tree file named like the commit is no path.
+  const files = parseListing(whole(await git([...args, '--raw', '--numstat', '-z', ...(input.listed.length === 0 ? ['--'] : input.listed)])))
+  const withheld = new Map<ListedFile, HiddenReason>()
+  for (const file of files) {
+    for (const path of pathsOf(file)) {
+      const reason = await input.judge(path)
+      if (reason !== null) { withheld.set(file, reason); break }
+    }
+  }
+  // Each by its place under the work tree, which git reads from any folder in it, so none can be the folder git runs in.
+  const handed = (shown: readonly ListedFile[]) => ['--', ...[...new Set(shown.flatMap(pathsOf))].map(path => childPath(workTree, path))]
+  const candidates = files.filter(file => !withheld.has(file))
+  const held = candidates.length === 0 ? [] : whole(await git(['ls-files', '-z', '--full-name', ...handed(candidates)])).split('\0').filter(Boolean)
+  withholdBeneath(files, withheld, held)
+  const shown = files.filter(file => !withheld.has(file))
+  const patch = shown.length === 0 ? '' : (await git([...args, `--unified=${input.contextLines}`, ...handed(shown)])).stdout
+  const hidden = files.filter(file => withheld.has(file)).map(file => hiddenEntry(file, withheld.get(file)!))
+  if (hidden.length === 0) return patch
+  return `${patch === '' || patch.endsWith('\n') ? patch : `${patch}\n`}${hidden.join('')}`
+}
+
+/** The tree a staged diff compares the index with: the commit HEAD names now, or the empty tree where it names none. */
+async function committedTree(git: GitCommand): Promise<string> {
+  const head = await git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], [0, 1])
+  const named = head.exitCode === 0 ? head.stdout.trim() : EMPTY_TREES[(await git(['rev-parse', '--show-object-format'])).stdout.trim()]
+  if (named === undefined || !OBJECT_ID.test(named)) throw unreadableListing()
+  return named
+}
+
+/** A listing's output, refused where it was cut short, as a part of it may end inside a path. */
+function whole(result: ProcessResult): string {
+  if (result.truncated) throw new ToolExecutionError(TOO_MANY_FILES, { code: 'GIT_FAILED' })
+  return result.stdout
+}
+
 /** A private index is written whole, with no untracked cache, so git writes nothing beside it in the repository. */
 const PRIVATE_INDEX_CONFIG: GitConfig[] = [{ key: 'core.splitIndex', value: 'false' }, { key: 'core.untrackedCache', value: 'false' }]
 
@@ -304,7 +416,7 @@ const PRIVATE_INDEX_CONFIG: GitConfig[] = [{ key: 'core.splitIndex', value: 'fal
  * directory, whose refs, objects, and config git reads in place and status and diff write none of. git runs with it as
  * GIT_DIR and the work tree named, so nothing in the owner's `.git` is touched. What is copied is bounded by the index.
  */
-function privateIndex(input: { repository: Repository; stateDirectory: string; shown: string }): { environment: Record<string, string>; remove: () => void } {
+function privateIndex(input: { repository: Repository; stateDirectory: string; refusal: string }): { environment: Record<string, string>; remove: () => void } {
   const directory = join(input.stateDirectory, 'git-index')
   const { workTree, gitDirectory, commonDirectory } = input.repository
   const copy = join(directory, randomUUID())
@@ -314,20 +426,34 @@ function privateIndex(input: { repository: Repository; stateDirectory: string; s
     if (shared.length === 0) {
       const path = `${copy}.index`
       const index = join(gitDirectory, 'index')
-      if (existsSync(index)) copyFileSync(index, path)
+      if (existsSync(index)) copyKeepingTime(index, path)
       return { environment: { GIT_INDEX_FILE: path }, remove: () => { for (const file of [path, `${path}.lock`]) rmSync(file, { force: true }) } }
     }
     mkdirSync(copy, { mode: 0o700 })
     const remove = () => rmSync(copy, { recursive: true, force: true })
     try {
-      for (const name of ['HEAD', 'index', ...shared]) if (existsSync(join(gitDirectory, name))) copyFileSync(join(gitDirectory, name), join(copy, name))
+      for (const name of ['HEAD', 'index', ...shared]) if (existsSync(join(gitDirectory, name))) copyKeepingTime(join(gitDirectory, name), join(copy, name))
       writeFileSync(join(copy, 'commondir'), `${commonDirectory}\n`, { mode: 0o600 })
     } catch (error) { remove(); throw error }
     return { environment: { GIT_DIR: copy, GIT_WORK_TREE: workTree }, remove }
   } catch {
-    throw new ToolInputError(`The repository at ${input.shown} is in a mount the owner shares read-only, and Buckle could not copy its index to read it without writing there, so git is not run`, { code: 'PERMISSION_DENIED' })
+    throw new ToolInputError(input.refusal, { code: 'PERMISSION_DENIED' })
   }
 }
+
+/**
+ * A file copied with its time no later than the original's: git reads an entry no older than the index file as one a
+ * same-size change may hide (racy git) and compares its content, so a copy timed at the copy hid a change made in the
+ * same moment as the last write of the index (R1). The time is floored to the millisecond, so it is never later.
+ */
+function copyKeepingTime(from: string, to: string): void {
+  const stats = statSync(from)
+  copyFileSync(from, to)
+  utimesSync(to, stats.atime, new Date(Math.floor(stats.mtimeMs)))
+}
+
+const readOnlyIndexRefusal = (shown: string) => `The repository at ${shown} is in a mount the owner shares read-only, and Buckle could not copy its index to read it without writing there, so git is not run`
+const frozenIndexRefusal = (shown: string) => `Buckle could not copy the index of the repository at ${shown}, which a diff reads one copy of throughout, so git is not run`
 
 /**
  * A path a git tool names, as its effect declares it: where git finds it, under the repository, an absolute one as it

@@ -7,6 +7,8 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { buildChildEnvironment } from '../common/domain/environment.js'
 import { hasExecutable } from '../common/domain/executable.js'
 import { createPathView } from '../common/domain/path-view.js'
+import { sensitivePathReason } from '../common/domain/permission/rules/sensitive-path-rule.js'
+import type { ToolContext } from '../common/domain/tool.js'
 import { createGitPack } from '../common/services/packs/git/index.js'
 import { filterProgramOverrides, ISOLATION_ENVIRONMENT } from '../common/services/packs/git-isolation.js'
 
@@ -83,6 +85,9 @@ async function hostileRepository(): Promise<{ root: string; marker: string; stat
   return { root, marker, stateDirectory }
 }
 
+/** A read the call reached, judged by the credential-file check alone, as the node's rules judge a file of the workspace with no deny rule. */
+const credentialCheck: Pick<ToolContext, 'authorizeRead'> = { authorizeRead: async path => sensitivePathReason(path) === null }
+
 function readToolCall(input: { root: string; stateDirectory: string }) {
   const pack = createGitPack({
     paths: createPathView({ root: input.root, mount: null, scratchRoots: [] }),
@@ -91,7 +96,7 @@ function readToolCall(input: { root: string; stateDirectory: string }) {
   return (name: string, args: Record<string, JsonValue>): Promise<JsonValue> => {
     const tool = pack.tools.find(candidate => candidate.capability.name === name)
     if (!tool) throw new Error(`No such tool: ${name}`)
-    return tool.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 20_000, signal: AbortSignal.timeout(20_000) })
+    return tool.prepare(args).execute({ requestId: 'req-1', sessionId: 'chat-1', timeoutMs: 20_000, signal: AbortSignal.timeout(20_000), ...credentialCheck })
   }
 }
 
@@ -118,15 +123,17 @@ describe.runIf(hasExecutable('git'))('a read-risk git tool in a repository whose
     }
   }, 120_000)
 
-  it('documents why config hardening still requires an owner opt-in: tracked credential diffs are visible', async () => {
+  // R1 (D77, owner 2026-10-25): a tracked credential file's diff showed whole; it now shows that the file changed alone.
+  it('shows that a tracked credential file changed, and none of its content', async () => {
     const repository = await hostileRepository()
     writeFileSync(join(repository.root, 'credentials.json'), '{"synthetic":"before"}\n')
     const added = await runProcess({ command: 'git', args: ['add', 'credentials.json'], cwd: repository.root,
       timeoutMs: 20_000, environment: buildChildEnvironment({ parent: process.env, extra: ISOLATION_ENVIRONMENT }) })
     expect(added.exitCode).toBe(0)
     writeFileSync(join(repository.root, 'credentials.json'), '{"synthetic":"after-private-marker"}\n')
-    const result = await readToolCall(repository)('git_diff', {})
-    expect(JSON.stringify(result)).toContain('after-private-marker')
+    const result = await readToolCall(repository)('git_diff', {}) as { diff: string }
+    expect(result.diff).toContain('diff --git a/credentials.json b/credentials.json\nstat: +1 -1\n[content hidden: credential file]\n')
+    expect(result.diff).not.toContain('private-marker')
   }, 60_000)
 
   it('still answers with the repository it was asked about', async () => {

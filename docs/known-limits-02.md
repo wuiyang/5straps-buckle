@@ -39,11 +39,11 @@ its commands write, and the forge pack.
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory
   lies elsewhere.
-- `git_diff` with no paths, staged or not, is judged by the repository alone, and a path naming a
-  folder by that folder, so it shows the changes of every tracked file beneath, a `.env` included,
-  with no credential-file ask about that file; `git_log` with no path lists the commits of every
-  file. Buckle filters neither, as a filtered diff would misreport the tree to the agent: name each
-  file to have it judged, or leave `packs.hostGit` off for a repository that tracks a credential file.
+- `git_diff` with no paths, or a folder, still names every tracked file it changed, a `.env`
+  included, with its added and removed line counts and no ask: a file the read rules would not
+  let the agent read, and a tracked link, show `[content hidden: <rule>]` in place of their content,
+  after the rest of the diff. Name a file to be asked about it. `git_log` with no path lists the
+  commits of every file, names and messages only.
 - The `git` pack checks the work tree, the git folder, the common folder, each `objects` folder,
   and the stores `objects/info/alternates` names, resolving each line as git does. It refuses a
   line through `/proc`, `/dev/fd`, or a link into `/proc/` or `/dev/`, which git's own process

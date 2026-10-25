@@ -24,6 +24,9 @@ with `hash`, `author`, `date`, `subject`.
 literally, never as patterns. Each is checked as a read, so a credential file such as `.env` asks
 the owner first, and a path outside the repository is refused. Name the files you need.
 
+`git_diff` with no paths, or a folder, judges each file it lists: one the read rules keep from you
+shows its header, a `stat:` line, and `[content hidden: <reason>]` in place of its hunks.
+
 No tool shows a submodule's changes or history: `git_status` and `git_diff` ignore submodules. To
 read one, name its folder as `repo`; it is checked as any repository is.
 
