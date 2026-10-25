@@ -1,11 +1,12 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { basename, dirname, join, relative } from 'pathe'
 import { z } from 'zod'
 import { WorkspacePolicySchema, allowedInterpreters, emptyWorkspacePolicy, type WorkspacePolicy } from '@5straps/protocol'
 import { processIsAlive } from '../../adapters/action-log/pending-audit.js'
 import { editEnvironmentVariable, updateEnvironmentFile } from '../../adapters/environment-file.js'
 import { setMode } from '../../adapters/file-modes.js'
-import { createJsonFileStore, StateFileError } from '../../adapters/json-file-store.js'
+import { createJsonFileStore, StateFileError, type RenameIo } from '../../adapters/json-file-store.js'
 import { grantKeys, rekeyGrants } from '../../adapters/grant-store/file-grant-store.js'
 import { clientKeyScopes, rekeyClientKeys } from '../../adapters/keys/file-client-keys.js'
 import { rekeySwitch, switchKeys } from '../../adapters/policy-store/file-dangerously-allow-store.js'
@@ -16,6 +17,7 @@ import { wholeCharacters } from '../../domain/whole-characters.js'
 import { actionsPath, clientKeysPath, dangerouslyAllowPath, grantsPath, legacyWorkspaceRoot, policyPath, type MigrationInput, type NodeConfig } from '../../runtime/config.js'
 import { NODE_SCOPE } from '../../types/ports/client-keys.js'
 import { tokenDigest } from '../access/tokens.js'
+import { readRecord } from '../node-service/serve-record.js'
 import { NewWorkspaceNameSchema, openRegistry, registryPath, RegistrySchema, sameName, WorkspaceNameSchema, WorkspaceRegistryError, type StoredWorkspace } from './registry.js'
 import { exposedRoots, overlaps } from './workspace-dirs.js'
 import { workspaceIdFor } from './workspace-id.js'
@@ -64,6 +66,18 @@ const NODE_FOLDER_RECORDS = ['grants.json', 'dangerously-allow.json', 'approvals
 const AUDIT_LOG = /^actions\.jsonl/
 /** What stays in a registered workspace's 0.1 directory: the copies for going back, 0.1's own policy file, and lock files. */
 const STAYS_BEHIND = /(?:\.v1\.json|\.lock\.sqlite)$|^policy\.json$|^active-work$/
+/**
+ * The codes Windows gives a rename while a program holds the record, or a file inside it, open: the history database a
+ * running Buckle keeps, or an antivirus scan for a moment. Such a rename is tried MOVE_ATTEMPTS times, the pause doubling
+ * from MOVE_PAUSE_MS, about two seconds in all.
+ */
+const HELD_OPEN = new Set(['EPERM', 'EBUSY', 'EACCES'])
+const MOVE_ATTEMPTS = 5
+const MOVE_PAUSE_MS = 125
+const SYSTEM_RENAME: RenameIo = { rename: renameSync, pause: ms => delay(ms) }
+/** What holds a record open, and what the owner does about it, wherever a running Buckle stops the move. */
+const HOLDERS = 'a buckle serve, a buckle mcp an MCP client started, the Buckle service, or an antivirus scan'
+const STOP_EVERY = 'Stop every Buckle process (buckle serve, the Buckle service, and each MCP client that runs buckle mcp)'
 
 const V1WorkspaceSchema = z.object({
   id: z.string(), name: z.string(), root: z.string(), adminToken: z.string(),
@@ -138,10 +152,12 @@ export type AskName = (question: string) => Promise<string>
  * Every file the move touches is read, and every record it writes checked against the registry's own reader, before
  * anything is written (finding 3 and 17 of the Phase 1 review), so a move that cannot finish refuses with
  * MigrationError and changes nothing; a move a crash stopped partway runs again to the same end, as each id derives
- * from its folder. Returns what the owner is told; on a node moved already, what its environment still sets that it no
- * longer reads. Throws WorkspaceRegistryError, as a version 2 registry that will not parse does, where version 1 will not.
+ * from its folder. Another Buckle process found running on the state directory refuses the move first (refuseRunning),
+ * and a record a program still holds open stops it partway with what to do (moveRecord). Returns what the owner is told;
+ * on a node moved already, what its environment still sets that it no longer reads. Throws WorkspaceRegistryError, as a
+ * version 2 registry that will not parse does, where version 1 will not. `io` is the rename a test hands in.
  */
-export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.Platform; askName?: AskName }): Promise<string[]> {
+export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.Platform; askName?: AskName; io?: RenameIo }): Promise<string[]> {
   const { node } = input
   const filePath = registryPath(node.stateDirectory)
   if (versionOf(filePath) === 2) {
@@ -157,6 +173,7 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       const hadRegistry = raw.version === 1
       const registered = hadRegistry ? version1Workspaces(filePath, raw) : []
       const plan = await beforeWriting(() => planMove({ ...input, platform: input.platform ?? process.platform, registered, hadRegistry }))
+      if (plan.plans.length > 0) refuseRunning(node, plan.plans)
       // The verdict is written with the marker, so a move after going back that stops is finished as one.
       const marker = join(node.stateDirectory, MOVING_MARKER)
       if (plan.plans.length > 0 && !existsSync(marker)) writeFileSync(marker, plan.rolledBack ? `${ROLLED_BACK}\n` : '', { mode: 0o600 })
@@ -164,7 +181,7 @@ export async function migrateNode(input: { node: NodeConfig; platform?: NodeJS.P
       const setAside: string[] = []
       let movedLog = false
       for (const planned of plan.plans) {
-        const done = await partway(() => apply(node, planned, { rolledBack: plan.rolledBack, staleSetAside: plan.staleSetAside.has(planned.record.id), marker }))
+        const done = await partway(() => apply(node, planned, { rolledBack: plan.rolledBack, staleSetAside: plan.staleSetAside.has(planned.record.id), marker, io: input.io ?? SYSTEM_RENAME }))
         setAside.push(...done.setAside)
         movedLog ||= done.movedLog
       }
@@ -524,6 +541,39 @@ function refuseUnreadable(plans: Planned[]): void {
 }
 
 /**
+ * Refuses the move, before it changes anything, while another Buckle process runs on the state directory: on Windows a
+ * record it holds open will not move, and anywhere it would go on keeping records where 0.1 kept them. The signs are the
+ * ones the node keeps already, read without a lock: a call another live process has open in an audit log the move takes,
+ * and the record a serving process writes once it listens. A sign that will not read is none: a record held open still
+ * stops the move (moveRecord).
+ */
+function refuseRunning(node: NodeConfig, plans: readonly Planned[]): void {
+  const running = runningBuckle(node, plans)
+  if (running === null) return
+  throw new MigrationError(`Buckle cannot move the node onto workspaces while another Buckle process runs on this state directory: process ${running.pid} ${running.sign}. ${STOP_EVERY}, then run the command again. If no Buckle process runs, another program took that process id after a Buckle stopped: restart the computer, then run the command again. This command changed nothing.`)
+}
+
+function runningBuckle(node: NodeConfig, plans: readonly Planned[]): { pid: number; sign: string } | null {
+  // Process 0 and a negative id name a process group to the kernel, never one process.
+  const elsewhere = (pid: number) => Number.isInteger(pid) && pid > 0 && pid !== process.pid && processIsAlive(pid)
+  for (const directory of new Set(plans.flatMap(planned => [planned.oldStateDirectory, planned.stateDirectory]))) {
+    const log = join(directory, 'actions.jsonl')
+    const pid = openAttemptProcesses(log, node.stateLockDeadlineMs).find(elsewhere)
+    if (pid !== undefined) return { pid, sign: `has a call open in the audit log ${log}` }
+  }
+  const serving = readRecord(node.stateDirectory)
+  return serving !== null && elsewhere(serving.pid) ? { pid: serving.pid, sign: 'serves it' } : null
+}
+
+/** The processes with a call open in an audit log, as its open attempts say; none where they will not read. */
+function openAttemptProcesses(log: string, lockDeadlineMs: number | undefined): number[] {
+  try { return Object.values(openAttempts(log, lockDeadlineMs, { silent: true }).read().pending).map(attempt => attempt.processId) } catch (error) {
+    if (error instanceof StateFileError) return []
+    throw error
+  }
+}
+
+/**
  * The move reads the node's token and folder from its environment file alone; a shell's or an MCP config's env that says
  * otherwise would make its own the node's for good (finding 34), so it refuses, naming the keys, never a value. A deny
  * list the caller names otherwise refuses it too (fix brief 4, finding 8): 0.1 enforced the caller's, and dropping it
@@ -556,7 +606,7 @@ function refuseDroppedFloor(keys: readonly string[], file: string | null): void 
  * rekeyed from the folder to the id. Each step finds its work done on a move run again, so a crash partway is finished
  * at the next start.
  */
-async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: boolean; staleSetAside: boolean; marker: string }): Promise<{ setAside: string[]; movedLog: boolean }> {
+async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: boolean; staleSetAside: boolean; marker: string; io: RenameIo }): Promise<{ setAside: string[]; movedLog: boolean }> {
   const { record, stateDirectory } = planned
   const lockDeadlineMs = node.stateLockDeadlineMs
   mkdirSync(stateDirectory, { recursive: true, mode: 0o700 })
@@ -564,13 +614,13 @@ async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: bool
   if (run.rolledBack) {
     // Once per workspace, said in the marker: a run again finds 0.1's records moved in their place, which are the node's.
     if (!run.staleSetAside) {
-      setAside.push(...setAsideStale(planned))
+      setAside.push(...await setAsideStale(planned, run.io))
       appendFileSync(run.marker, `${record.id}\n`)
     }
     setAside.push(...await setAsideEarlierEntries(planned, lockDeadlineMs))
   }
-  setAside.push(...moveRecords(planned))
-  const movedLog = planned.nodeFolder && await moveAuditLog(node, planned)
+  setAside.push(...await moveRecords(planned, run.io))
+  const movedLog = planned.nodeFolder && await moveAuditLog(node, planned, run.io)
   await openSettingsFile({ filePath: settingsPath(node.stateDirectory, record.id), lockDeadlineMs }).migrate(planned.settings)
   if (planned.grantsKey !== null) await rekeyGrants({ filePath: grantsPath({ stateDirectory }), from: planned.grantsKey, to: record.id, lockDeadlineMs })
   if (planned.switchKey !== null) await rekeySwitch({ filePath: dangerouslyAllowPath({ stateDirectory }), from: planned.switchKey, to: planned.keepSwitch ? record.id : null, lockDeadlineMs })
@@ -585,7 +635,7 @@ async function apply(node: NodeConfig, planned: Planned, run: { rolledBack: bool
  * holds now, which takes its place, and the grants and the switch an earlier move left are set aside even where 0.1 has
  * none (an audit log is neither: it stays where it is). Answers what was set aside, as a path inside the state directory.
  */
-function moveRecords(planned: Planned): string[] {
+async function moveRecords(planned: Planned, io: RenameIo): Promise<string[]> {
   const entries = planned.nodeFolder ? NODE_FOLDER_RECORDS : listed(planned.oldStateDirectory).filter(entry => !STAYS_BEHIND.test(entry))
   const aside: string[] = []
   for (const entry of entries) {
@@ -594,24 +644,56 @@ function moveRecords(planned: Planned): string[] {
     if (!existsSync(from)) continue
     if (existsSync(to)) {
       if (AUDIT_LOG.test(entry)) continue
-      aside.push(setAsideFile(planned, to))
+      aside.push(await setAsideFile(planned, to, io))
     }
-    renameSync(from, to)
+    await moveRecord(from, to, io)
   }
   return aside
 }
 
+/**
+ * One rename of the move. One refused while a program holds the record open (HELD_OPEN) is tried again a few times; one
+ * that still fails, or fails otherwise, stops the move with a MigrationError naming the record, where it was going, and
+ * the error's code. The marker and the version 1 registry stay, so a run again goes on from this record, keeping those
+ * moved already.
+ */
+async function moveRecord(from: string, to: string, io: RenameIo): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      io.rename(from, to)
+      return
+    } catch (error) {
+      const code = error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : null
+      if (code === null) throw error
+      const held = HELD_OPEN.has(code)
+      if (held && attempt < MOVE_ATTEMPTS) {
+        await io.pause(MOVE_PAUSE_MS * 2 ** (attempt - 1))
+        continue
+      }
+      const stopped = `Buckle stopped moving the node onto workspaces partway: it could not move ${from} to ${to} (${code})`
+      const resume = 'then run the command again: the move continues where it stopped, and the records it moved already stay moved.'
+      throw new MigrationError(held
+        ? `${stopped}, as a program still holds it, or a file inside it, open: most likely ${HOLDERS}. ${STOP_EVERY}, ${resume}`
+        : `${stopped}. Put right what stops that rename, ${resume}`, { cause: error })
+    }
+  }
+}
+
 /** A file moved out of the way as `<name>.earlier-move`, a number added where one is there; answers where, from the state directory. */
-function setAsideFile(planned: Planned, path: string): string {
+async function setAsideFile(planned: Planned, path: string, io: RenameIo): Promise<string> {
   let target = `${path}.earlier-move`
   for (let count = 2; existsSync(target); count++) target = `${path}.earlier-move-${count}`
-  renameSync(path, target)
+  await moveRecord(path, target, io)
   return relative(dirname(dirname(planned.stateDirectory)), target)
 }
 
 /** A move after going back: the grants and switch the earlier move left in the workspace's directory are not the node's. */
-function setAsideStale(planned: Planned): string[] {
-  return [grantsPath({ stateDirectory: planned.stateDirectory }), dangerouslyAllowPath({ stateDirectory: planned.stateDirectory })].filter(path => existsSync(path)).map(path => setAsideFile(planned, path))
+async function setAsideStale(planned: Planned, io: RenameIo): Promise<string[]> {
+  const aside: string[] = []
+  for (const path of [grantsPath({ stateDirectory: planned.stateDirectory }), dangerouslyAllowPath({ stateDirectory: planned.stateDirectory })]) {
+    if (existsSync(path)) aside.push(await setAsideFile(planned, path, io))
+  }
+  return aside
 }
 
 /**
@@ -640,6 +722,12 @@ async function setAsideEarlierEntries(planned: Planned, lockDeadlineMs: number |
 
 const PendingAuditSchema = z.object({ version: z.literal(1), pending: z.record(z.string(), z.object({ processId: z.number() }).passthrough()) })
 
+/** The attempts an audit log still tracks as open, in the file beside it. */
+function openAttempts(log: string, lockDeadlineMs: number | undefined, options: { silent?: boolean } = {}) {
+  const fallback: z.infer<typeof PendingAuditSchema> = { version: 1, pending: {} }
+  return createJsonFileStore({ filePath: `${log}.pending.json`, schema: PendingAuditSchema, fallback, lockDeadlineMs, ...options })
+}
+
 /**
  * The 0.1 node's audit log held every call of the node's folder, and its owner's commands beside them. It becomes the
  * folder's workspace's log, so `buckle log --workspace <name>` reads what the folder's agents did before the move, and
@@ -649,15 +737,12 @@ const PendingAuditSchema = z.object({ version: z.literal(1), pending: z.record(z
  * has a log already (a node that went back to 0.1 and moves again) keeps it, and the old one stays where it is; so does
  * a log whose open attempts will not read. Answers whether the log moved.
  */
-async function moveAuditLog(node: NodeConfig, planned: Planned): Promise<boolean> {
+async function moveAuditLog(node: NodeConfig, planned: Planned, io: RenameIo): Promise<boolean> {
   const from = actionsPath(node)
   const to = join(planned.stateDirectory, 'actions.jsonl')
   if (!existsSync(from) || existsSync(to)) return false
-  const lockDeadlineMs = node.stateLockDeadlineMs
-  const fallback: z.infer<typeof PendingAuditSchema> = { version: 1, pending: {} }
-  const open = { schema: PendingAuditSchema, fallback, lockDeadlineMs }
-  const source = createJsonFileStore({ filePath: `${from}.pending.json`, ...open })
-  const target = createJsonFileStore({ filePath: `${to}.pending.json`, ...open })
+  const source = openAttempts(from, node.stateLockDeadlineMs)
+  const target = openAttempts(to, node.stateLockDeadlineMs)
   try {
     // A live process (a 0.1 serve still running, a command started beside this one) records its result in the node's
     // log by path and pairs it there, so its attempt stays at the node: moved, it would read as interrupted later.
@@ -670,7 +755,7 @@ async function moveAuditLog(node: NodeConfig, planned: Planned): Promise<boolean
     if (error instanceof StateFileError) return false
     throw error
   }
-  renameSync(from, to)
+  await moveRecord(from, to, io)
   return true
 }
 
