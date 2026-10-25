@@ -6,6 +6,7 @@ import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, readSync, rmSync,
 import { dirname } from 'pathe'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
+import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
 import type { ActionLog, ActionLogEntry, AuditHealth } from '../../types/ports/action-log.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 
@@ -42,7 +43,8 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
     async record(written) {
-      const entry = named(written)
+      // Masked by every secret value a call holds now, as a log line is (docs/secrets.md): a value never reaches the file.
+      const entry = named(masksHeld() ? maskHeldJson(written) : written)
       try {
         const offset = appendSynced(filePath, (size, tail) => {
           const prefix = size > 0 && tail !== 10 ? '\n' : ''

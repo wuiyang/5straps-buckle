@@ -1,5 +1,6 @@
 import { once } from 'node:events'
-import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
+import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS, type LogFields, type Logger, type LoggerConfig, type LoggerRoot, type LogLevel, type LogSink } from '@5straps/runtime'
+import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
 import { isVerbose, renderEvent } from './log-render.js'
@@ -134,16 +135,27 @@ function createHumanSink(input: { console: ConsoleWriter; level: LogLevel }): Lo
   }
 }
 
-// Resolved on every call, so a logger taken at import time follows the root main configures later.
+/**
+ * Resolved on every call, so a logger taken at import time follows the root main configures later. While a call holds
+ * secret values, each line is masked as it is logged, before any sink queues it (docs/secrets.md); a child's bindings
+ * are masked as they are bound.
+ */
 function delegate(resolve: () => Logger): Logger {
+  const line = (method: 'trace' | 'debug' | 'info' | 'log' | 'warn' | 'error' | 'fatal') => (message: string, fields?: LogFields) => {
+    if (!masksHeld()) return resolve()[method](message, fields)
+    return resolve()[method](maskHeld(message), fields === undefined ? undefined : maskHeldJson(fields))
+  }
   return {
-    trace: (message, fields) => resolve().trace(message, fields),
-    debug: (message, fields) => resolve().debug(message, fields),
-    info: (message, fields) => resolve().info(message, fields),
-    log: (message, fields) => resolve().log(message, fields),
-    warn: (message, fields) => resolve().warn(message, fields),
-    error: (message, fields) => resolve().error(message, fields),
-    fatal: (message, fields) => resolve().fatal(message, fields),
-    child: bindings => delegate(() => resolve().child(bindings)),
+    trace: line('trace'),
+    debug: line('debug'),
+    info: line('info'),
+    log: line('log'),
+    warn: line('warn'),
+    error: line('error'),
+    fatal: line('fatal'),
+    child: (bindings) => {
+      const bound = masksHeld() ? maskHeldJson(bindings) : bindings
+      return delegate(() => resolve().child(bound))
+    },
   }
 }

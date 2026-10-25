@@ -1,0 +1,135 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { logger, rootLogger } from '../common/runtime/log.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalService } from '../common/services/approvals/approval-service.js'
+import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
+import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
+import { fixedInteraction } from './support/interaction.js'
+
+// The secret-references slice, part 6 (docs/secrets.md): every resolved value is shown as [secret:NAME] wherever text
+// leaves Buckle, in its common encodings too when they are at least 8 characters, and every log line, audit entry, and
+// approval view written while a call holds values is masked by them.
+
+const VALUE = 'decoy+value/0123=:'
+const masker = () => createMasker([{ name: 'API_TOKEN', value: VALUE }])
+const LABEL = '[secret:API_TOKEN]'
+
+describe('the forms a value is masked in', () => {
+  it('holds the value, its URL encodings, its base64 forms, and its JSON escape', () => {
+    const forms = maskForms('a b/c"d\\e+f')
+    expect(forms).toEqual(expect.arrayContaining(['a b/c"d\\e+f', 'a%20b%2Fc%22d%5Ce%2Bf', 'a+b%2Fc%22d%5Ce%2Bf', 'a%20b%2fc%22d%5ce%2bf', Buffer.from('a b/c"d\\e+f').toString('base64'), Buffer.from('a b/c"d\\e+f').toString('base64url'), 'a b/c\\"d\\\\e+f']))
+  })
+
+  it('leaves out a form shorter than 8 characters', () => {
+    expect(maskForms('abcdefgh').every(form => form.length >= 8)).toBe(true)
+    expect(maskForms('abcdefgh')).not.toContain('')
+  })
+})
+
+describe('a call\'s masker', () => {
+  it('masks the value, its URL encoding, and its base64 wherever they stand in text', () => {
+    const mask = masker().text
+    expect(mask(`token ${VALUE} again ${VALUE}`)).toBe(`token ${LABEL} again ${LABEL}`)
+    expect(mask(`https://x.test/?key=${encodeURIComponent(VALUE)}&b=1`)).toBe(`https://x.test/?key=${LABEL}&b=1`)
+    expect(mask(`echoed ${Buffer.from(VALUE).toString('base64')}.`)).toBe(`echoed ${LABEL}.`)
+    expect(mask(`{"token":${JSON.stringify(`${VALUE}"`)}}`)).not.toContain('0123=')
+  })
+
+  it('masks a value base64 encoded after other bytes, as a Basic authorization holds it', () => {
+    for (const user of ['u:', 'us:', 'use:']) {
+      const header = `Authorization: Basic ${Buffer.from(`${user}${VALUE}`).toString('base64')}`
+      const masked = masker().text(header)
+      expect(masked).toContain(LABEL)
+      // What is left of the encoded run is the user's own characters, and at most the characters the bytes around the
+      // value also decide: never a run of the value's own.
+      const [before, after] = masked.slice('Authorization: Basic '.length).split(LABEL)
+      expect(before!.length).toBeLessThanOrEqual(Math.ceil((user.length * 8) / 6))
+      expect(after!.replace(/=+$/, '').length).toBeLessThanOrEqual(1)
+    }
+  })
+
+  it('masks a value cut at the end of a text, where a stream reached its bound', () => {
+    const mask = masker()
+    expect(mask.text(`output ${VALUE.slice(0, 6)}`)).toBe(`output ${LABEL}`)
+    expect(mask.text(`output ${VALUE.slice(0, 3)}`)).toBe(`output ${VALUE.slice(0, 3)}`)
+    // Where the result says its output was cut, even a value's first character at the end is masked.
+    expect(mask.json({ stdout: `output ${VALUE.slice(0, 2)}`, stderr: 'plain', truncated: true })).toEqual({ stdout: `output ${LABEL}`, stderr: 'plain', truncated: true })
+    expect(mask.text(`output ${VALUE.slice(0, 9)}\uFFFD`)).toBe(`output ${LABEL}\uFFFD`)
+  })
+
+  it('masks every string of a value, its keys and errors included', () => {
+    const masked = masker().json({ [VALUE]: [VALUE, { deeper: `x${VALUE}y` }], count: 3, error: new Error(`failed with ${VALUE}`) })
+    expect(JSON.stringify(masked)).not.toContain(VALUE)
+    expect(masked).toMatchObject({ [LABEL]: [LABEL, { deeper: `x${LABEL}y` }], count: 3 })
+    expect((masked.error as Error).message).toBe(`failed with ${LABEL}`)
+  })
+
+  it('masks the longer of two values that hold each other whole', () => {
+    const mask = createMasker([{ name: 'SHORT', value: 'abcdefgh' }, { name: 'LONG', value: 'abcdefgh-ijklmnop' }]).text
+    expect(mask('abcdefgh-ijklmnop and abcdefgh')).toBe('[secret:LONG] and [secret:SHORT]')
+  })
+
+  it('masks nothing once dropped', () => {
+    const mask = masker()
+    mask.drop()
+    expect(mask.text(VALUE)).toBe(VALUE)
+  })
+})
+
+describe('while a call holds values', () => {
+  const roots: string[] = []
+  afterEach(() => {
+    vi.restoreAllMocks()
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  it('masks each log line and its fields as it is written, and nothing once released', () => {
+    const warn = vi.spyOn(rootLogger().logger, 'warn').mockImplementation(() => undefined)
+    const release = holdMasker(masker())
+    expect(masksHeld()).toBe(true)
+    logger.warn(`could not reach ${VALUE}`, { url: `https://x.test/${encodeURIComponent(VALUE)}`, error: new Error(`refused ${VALUE}`) })
+    release()
+    expect(masksHeld()).toBe(false)
+    logger.warn(`plain ${VALUE}`)
+    const [message, fields] = warn.mock.calls[0]!
+    expect(message).toBe(`could not reach ${LABEL}`)
+    expect(fields).toMatchObject({ url: `https://x.test/${LABEL}` })
+    expect(((fields as { error: Error }).error).message).toBe(`refused ${LABEL}`)
+    expect(warn.mock.calls[1]![0]).toBe(`plain ${VALUE}`)
+    expect(maskHeld(VALUE)).toBe(VALUE)
+  })
+
+  it('masks an audit entry before it reaches the file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-secret-mask-'))
+    roots.push(root)
+    const log = createFileActionLog(join(root, 'actions.jsonl'))
+    const release = holdMasker(masker())
+    try {
+      await log.record({ at: new Date().toISOString(), requestId: 'r1', sessionId: 's1', tool: 'shell_exec', outcome: 'error', durationMs: 1, effects: [], args: { args: [VALUE] }, event: 'result', detail: `x${VALUE}` })
+    } finally { release() }
+    const text = readFileSync(join(root, 'actions.jsonl'), 'utf8')
+    expect(text).not.toContain(VALUE)
+    expect(text).toContain(LABEL)
+  })
+
+  it('masks what a person reads of an ask, and keeps the subject a grant binds', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-secret-mask-'))
+    roots.push(root)
+    const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), root, 15_000)
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
+    const release = holdMasker(masker())
+    try {
+      await service.request({ sessionId: 'chat-1', requestId: 'request-1', tool: 'shell_exec', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/w/out', reason: `writes ${VALUE}`, offeredScopes: ['once'] }], call: { arguments: { args: [VALUE] }, cwd: '/w', description: `runs ${VALUE}`, effects: [`exec echo ${VALUE}`], complete: true } })
+    } finally { release() }
+    const waiting = service.waiting()
+    expect(JSON.stringify(waiting)).not.toContain(VALUE)
+    expect(waiting[0]).toMatchObject({ request: { subject: '/w/out', reason: `writes ${LABEL}` }, call: { arguments: { args: [LABEL] }, description: `runs ${LABEL}`, effects: [`exec echo ${LABEL}`] } })
+    await service.close()
+  })
+})

@@ -15,6 +15,7 @@ import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
+import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
@@ -264,7 +265,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
 
   const service: ApprovalService = {
-    async request(input) {
+    async request(asked) {
+      // What a person reads of the ask, masked by every secret value a call holds now (docs/secrets.md); the subject a
+      // grant binds stays as the rule named it.
+      const input = masksHeld() ? { ...asked, asks: asked.asks.map(ask => ({ ...ask, reason: maskHeld(ask.reason) })), ...(asked.call === undefined ? {} : { call: maskHeldJson(asked.call) }) } : asked
       input.signal?.throwIfAborted()
       const interaction = (await options.interaction()) ?? NO_INTERACTION
       const scope = useScopeSafe()
