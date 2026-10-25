@@ -571,8 +571,19 @@ describe('moving a 0.1 node onto the workspace model', () => {
     }
     const marker = (input: Scene) => join(input.state, 'moving-onto-workspaces')
     const moved = (input: Scene, file: string) => join(input.state, 'workspaces', ownId(input), file)
-    /** docs/troubleshooting.md, its lines joined, as it quotes what the move prints. */
-    const troubleshooting = () => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'troubleshooting.md'), 'utf8').replace(/\s+/g, ' ')
+    /** A docs page, its lines joined, as it quotes what the move prints. */
+    const page = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', name), 'utf8').replace(/\s+/g, ' ')
+    const troubleshooting = () => page('troubleshooting.md')
+    /** What the move says holds a record open on Windows, and the step it asks for: the words the pages quote. */
+    const HOLDERS = 'a buckle serve, a buckle mcp an MCP client started, the Buckle service, the browser Buckle opened (agent-browser and its Chromium), or an antivirus scan'
+    const STOP_EVERY = 'Stop every Buckle process (buckle serve, the Buckle service, and each MCP client that runs buckle mcp) and the browser it opened'
+    const RESUME = 'then run the command again: the move continues where it stopped, and the records it moved already stay moved.'
+    /** The first failure of a move whose rename `held` refuses every time with `code`, on `platform`. */
+    async function stoppedAt(input: Scene, held: ReturnType<typeof holding>, platform: NodeJS.Platform) {
+      const failure = await migrateNode({ node: loadConfig(input.environment), io: held.io, platform }).catch((error: unknown) => error)
+      expect(failure).toBeInstanceOf(MigrationError)
+      return (failure as Error).message
+    }
 
     it('tries a record held open again, a short pause apart, and finishes the move once it is let go', async () => {
       const input = scene()
@@ -588,33 +599,33 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(existsSync(marker(input))).toBe(false)
     })
 
-    it('stops with what to do where the record stays held, keeping what it moved and the registry at version 1, and a run again finishes the move', async () => {
+    it('stops where a record stays held, after five tries over about two seconds, keeping what it moved and the registry at version 1, and a run again finishes the move', async () => {
       const input = scene()
       const before = withRecords(input)
-      const held = holding('history', Number.POSITIVE_INFINITY)
+      const held = holding('isolated-shell', Number.POSITIVE_INFINITY)
       const failure = await migrateNode({ node: loadConfig(input.environment), io: held.io }).catch((error: unknown) => error)
 
       expect(failure).toBeInstanceOf(MigrationError)
-      const message = (failure as Error).message
-      for (const part of [`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (EPERM)`, 'a buckle serve, a buckle mcp an MCP client started, the Buckle service, or an antivirus scan', 'Stop every Buckle process', 'then run the command again', 'the move continues where it stopped, and the records it moved already stay moved']) expect(message).toContain(part)
-      // The page quotes it up to the step, on a Windows state directory.
-      const shown = message.replaceAll(input.state, 'C:/Users/you/.5straps/buckle').replace(ownId(input), '<id>')
-      expect(troubleshooting()).toContain(shown.slice(0, shown.indexOf('antivirus scan.') + 'antivirus scan.'.length))
+      expect((failure as Error).message).toContain(`could not move ${join(input.state, 'isolated-shell')} to ${moved(input, 'isolated-shell')}`)
       // Five tries over about two seconds.
-      expect(held.tried('history')).toBe(5)
+      expect(held.tried('isolated-shell')).toBe(5)
       const waited = held.pauses.reduce((sum, ms) => sum + ms, 0)
       expect(waited).toBeGreaterThanOrEqual(1_500)
       expect(waited).toBeLessThanOrEqual(2_500)
       // What moved before it stays moved; the rest waits where 0.1 kept it, and the marker says a move is under way.
-      for (const file of ['grants.json', 'plugins.json', 'approvals.json']) {
+      for (const file of ['grants.json', 'plugins.json', 'approvals.json', 'history']) {
         expect(existsSync(join(input.state, file))).toBe(false)
         expect(existsSync(moved(input, file))).toBe(true)
       }
-      expect(readFileSync(join(input.state, 'history', 'h1'), 'utf8')).toBe('a restore point')
       expect(readFileSync(join(input.state, 'isolated-shell', 'abc', 'f'), 'utf8')).toBe('a shell copy awaiting review')
       expect(registry(input)).toBe(before)
       expect(existsSync(marker(input))).toBe(true)
 
+      await finishes(input)
+    })
+
+    /** A move run again, with no program holding anything: version 2, every record at the workspace's directory, the marker gone. */
+    async function finishes(input: Scene) {
       await migrateNode({ node: loadConfig(input.environment) })
       expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
       for (const [file, text] of Object.entries(records)) {
@@ -623,22 +634,84 @@ describe('moving a 0.1 node onto the workspace model', () => {
       }
       expect(JSON.parse(readFileSync(moved(input, 'grants.json'), 'utf8')).grants).toMatchObject([{ id: 'grant-1', workspace: ownId(input) }])
       expect(existsSync(marker(input))).toBe(false)
-    })
+    }
 
-    it.each(['ENOENT', 'EXDEV'])('stops at once on a rename that fails with %s, naming the code, and tries it no more', async (code) => {
+    it('moves the folders a running program holds first, so a history it holds open stops the move before any other record changes, and a run again finishes the move', async () => {
       const input = scene()
       const before = withRecords(input)
-      const held = holding('history', Number.POSITIVE_INFINITY, code)
+      const held = holding('history', Number.POSITIVE_INFINITY)
       const failure = await migrateNode({ node: loadConfig(input.environment), io: held.io }).catch((error: unknown) => error)
 
       expect(failure).toBeInstanceOf(MigrationError)
-      const message = (failure as Error).message
-      expect(message).toContain(`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (${code})`)
-      expect(message).toContain('then run the command again: the move continues where it stopped')
+      // Only history was tried, five times: no other record was renamed, so a program that writes a record meanwhile writes it where it was.
+      expect(held.all).toEqual(['history', 'history', 'history', 'history', 'history'])
+      for (const file of Object.keys(records)) {
+        expect(readFileSync(join(input.state, file), 'utf8')).toBe(records[file])
+        expect(existsSync(moved(input, file))).toBe(false)
+      }
+      expect(existsSync(join(input.state, 'grants.json'))).toBe(true)
+      expect(readdirSync(join(input.state, 'workspaces', ownId(input)))).toEqual([])
+      expect(registry(input)).toBe(before)
+      expect(existsSync(marker(input))).toBe(true)
+
+      await finishes(input)
+    })
+
+    it('moves history, browser-sessions, and workbenches before the other records, which keep their order', async () => {
+      const input = scene()
+      withRecords(input)
+      for (const folder of ['workbenches', 'browser-sessions']) {
+        mkdirSync(join(input.state, folder))
+        writeFileSync(join(input.state, folder, 'f'), folder)
+      }
+      const held = holding('none', 0)
+      await migrateNode({ node: loadConfig(input.environment), io: held.io })
+
+      expect(held.all).toEqual(['history', 'browser-sessions', 'workbenches', 'grants.json', 'approvals.json', 'plugins.json', 'isolated-shell'])
+    })
+
+    it.each([['ENOENT', 'win32'], ['EXDEV', 'win32'], ['ENOENT', 'linux'], ['EXDEV', 'darwin']] as const)('stops at once on a rename that fails with %s on %s, naming the code, and tries it no more', async (code, platform) => {
+      const input = scene()
+      const before = withRecords(input)
+      const held = holding('history', Number.POSITIVE_INFINITY, code)
+      const message = await stoppedAt(input, held, platform)
+
+      expect(message).toContain(`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (${code}). Put right what stops that rename, ${RESUME}`)
       expect(message).not.toContain('antivirus')
       expect(held.tried('history')).toBe(1)
       expect(held.pauses).toEqual([])
       expect(registry(input)).toBe(before)
+    })
+
+    describe('what the stop says by platform', () => {
+      it.each(['EPERM', 'EBUSY', 'EACCES'])('on Windows names who holds the record open, the browser Buckle opened among them, for %s, and quotes the page', async (code) => {
+        const input = scene()
+        withRecords(input)
+        const held = holding('history', Number.POSITIVE_INFINITY, code)
+        const message = await stoppedAt(input, held, 'win32')
+
+        expect(message).toContain(`could not move ${join(input.state, 'history')} to ${moved(input, 'history')} (${code}), as a program still holds it, or a file inside it, open: most likely ${HOLDERS}. ${STOP_EVERY}, ${RESUME}`)
+        expect(held.tried('history')).toBe(5)
+      })
+
+      it.each([['linux', 'EPERM'], ['linux', 'EACCES'], ['darwin', 'EPERM'], ['darwin', 'EBUSY']] as const)('on %s says the rename was refused, to check the folder\'s owner and mode, for %s, and still tries it five times', async (platform, code) => {
+        const input = scene()
+        withRecords(input)
+        const held = holding('history', Number.POSITIVE_INFINITY, code)
+        const message = await stoppedAt(input, held, platform)
+
+        expect(message).toContain(`could not move ${join(input.state, 'history')} to ${moved(input, 'history')}, as the rename was refused (${code}): check who owns the destination folder and its mode, and that no program holds a file inside the record open, ${RESUME}`)
+        for (const absent of ['most likely', 'antivirus', 'browser', 'Stop every Buckle process']) expect(message).not.toContain(absent)
+        expect(held.tried('history')).toBe(5)
+        expect(held.pauses).toHaveLength(4)
+      })
+
+      it('takes the platform this process runs on where none is given', async () => {
+        const input = scene()
+        withRecords(input)
+        const failure = await migrateNode({ node: loadConfig(input.environment), io: holding('history', Number.POSITIVE_INFINITY).io }).catch((error: unknown) => error)
+        expect((failure as Error).message).toContain(process.platform === 'win32' ? 'as a program still holds it' : 'as the rename was refused (EPERM)')
+      })
     })
 
     describe('a Buckle process still running on the state directory', () => {
@@ -667,7 +740,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
           expect(failure).toBeInstanceOf(MigrationError)
           const message = (failure as Error).message
           expect(message).toContain(`process ${live.pid}`)
-          expect(message).toContain('Stop every Buckle process (buckle serve, the Buckle service, and each MCP client that runs buckle mcp), then run the command again')
+          expect(message).toContain(`${STOP_EVERY}, then run the command again`)
           expect(message).toContain('This command changed nothing')
           expect(troubleshooting()).toContain(`${message.slice(0, message.indexOf(`process ${live.pid}`))}process 1234 ...`)
           expect(held.all).toEqual([])
@@ -676,6 +749,15 @@ describe('moving a 0.1 node onto the workspace model', () => {
           expect(existsSync(join(input.state, REGISTRY_BACKUP))).toBe(false)
           expect(existsSync(join(input.state, 'grants.json'))).toBe(true)
         } finally { live.kill() }
+      })
+
+      // process.kill throws a range error for an id past 32 bits, which processIsAlive reads as a live process.
+      it.each([1e20, 2 ** 31])('reads process id %s, past what a process id can be, as no sign of a running Buckle, and moves on', async (processId) => {
+        const input = scene()
+        withRecords(input)
+        writeFileSync(join(input.state, 'actions.jsonl.pending.json'), JSON.stringify(attempt(processId)))
+        await migrateNode({ node: loadConfig(input.environment) })
+        expect(JSON.parse(registry(input))).toMatchObject({ version: 2 })
       })
 
       it('moves on where the process a sign names has ended, or is this one', async () => {
