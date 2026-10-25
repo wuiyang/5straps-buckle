@@ -55,17 +55,18 @@ const QUOTED = 200
 export function readReferences(text: string): ReferenceReading {
   if (!text.includes('{{')) return { references: [] }
   const references: FileReference[] = []
-  const covered: Array<[number, number]> = []
+  // A known scheme's start inside a shaped reference can only be that reference's own start, as its body holds no brace.
+  const shapedStarts = new Set<number>()
   for (const match of text.matchAll(SHAPED)) {
     const raw = match[0]
     const start = match.index
-    covered.push([start, start + raw.length])
+    shapedStarts.add(start)
     const read = shapedReference(raw, match[1]!, match[2]!)
     if ('refusal' in read) return read
     references.push({ raw, start, end: start + raw.length, ...read })
   }
   for (const match of text.matchAll(KNOWN_START)) {
-    if (covered.some(([from, to]) => match.index >= from && match.index < to)) continue
+    if (shapedStarts.has(match.index)) continue
     return { refusal: `${quoted(text.slice(match.index, match.index + QUOTED))} is not written as a reference: write {{file:<path>:NAME}}, in lower case and with no blank` }
   }
   return { references }

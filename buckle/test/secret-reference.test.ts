@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { maskLabel, mentionsReference, PLATFORM_REASON, readReferences } from '../common/domain/secret-reference.js'
+import { LINEAR_TENFOLD_LIMIT, PROCESSOR_TIME_ROW_TIMEOUT, tenfoldProcessorRatio } from './support/processor-time.js'
 
 // The secret-references slice, part 1 (docs/secrets.md): the grammar names its source. A file reference is read; a
 // platform reference is reserved and refused; any other text written as a reference refuses the call, naming the form.
@@ -92,6 +93,22 @@ describe('other forms written as a reference', () => {
   it('refuses the whole text when any one reference in it is refused', () => {
     expect('refusal' in readReferences('{{file:.env:GOOD}} then {{env:BAD}}')).toBe(true)
   })
+
+  it('refuses a near miss after many references, and takes a reference opened by a third brace', () => {
+    expect(refusalOf(`${'{{file:.env:A}}'.repeat(1_000)} {{ file:.env:B}}`)).toContain('is not written as a reference')
+    expect(readReferences('{{{file:.env:A}}')).toEqual({ references: [{ raw: '{{file:.env:A}}', start: 1, end: 16, path: '.env', name: 'A' }] })
+  })
+})
+
+describe('a text holding many references', () => {
+  // Each near-miss check looked through every reference read before it, so 66,666 references (about 1 MB, a script_run
+  // body the request cap allows) held the node for about 10 s before the 64-reference cap could refuse the call.
+  it('reads 32,000 references in time linear in their count', () => {
+    const text = (count: number) => '{{file:.env:A}}'.repeat(count)
+    const { ratio, result } = tenfoldProcessorRatio(() => readReferences(text(32_000)), () => readReferences(text(3_200)), 2)
+    expect('references' in result && result.references.length).toBe(32_000)
+    expect(ratio).toBeLessThan(LINEAR_TENFOLD_LIMIT)
+  }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
 describe('outside the places references are read', () => {
