@@ -375,8 +375,7 @@ async function censoredDiff(input: { repository: GitSession; listed: string[]; s
     const reason = await firstHidden(pathsOf(file), input.judge)
     if (reason !== null) withheld.set(file, reason)
   }
-  const comparisons = input.listed.length === 0 ? [] : [args]
-  if (comparisons.length > 0 && files.some(file => !withheld.has(file))) await withholdPaired({ git, comparisons, files, withheld, judge: input.judge })
+  if (files.some(file => !withheld.has(file))) await withholdPaired({ git, comparisons: await pairingComparisons(git, args, input), files, withheld, judge: input.judge })
   // Each by its place under the work tree, which git reads from any folder in it, so none can be the folder git runs in.
   const handed = (shown: readonly ListedFile[]) => ['--', ...[...new Set(shown.flatMap(pathsOf))].map(path => childPath(workTree, path))]
   const candidates = files.filter(file => !withheld.has(file))
@@ -396,6 +395,19 @@ async function firstHidden(paths: readonly string[], judge: FileJudge): Promise<
     if (reason !== null) return reason
   }
   return null
+}
+
+/**
+ * The comparisons whose renames and copies count against a listed file beyond its own listing: the call's own where it
+ * names paths, which limit git's pairing to them, and the index against the commit HEAD names (or the empty tree) for a
+ * work-tree diff. That one compares the index with the work tree, where git sees no rename, so the index's copy of a
+ * file a staged rename moved out of a hidden name showed as removed lines under its plain new name (git residue, round
+ * 2). A staged diff with no paths is its own whole-tree comparison, so it needs none.
+ */
+async function pairingComparisons(git: GitCommand, args: readonly string[], input: { listed: readonly string[]; staged: boolean }): Promise<string[][]> {
+  const comparisons = input.listed.length === 0 ? [] : [[...args]]
+  if (!input.staged) comparisons.push([...DIFF_ARGS, '--cached', await committedTree(git)])
+  return comparisons
 }
 
 /**

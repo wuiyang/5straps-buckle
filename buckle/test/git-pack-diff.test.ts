@@ -166,6 +166,36 @@ describe.skipIf(hostGit === null)('git_diff hides the content of a file the rule
     expect(diff).not.toContain('planted-intent-marker')
   })
 
+  // A work-tree diff compares the index with the work tree, where git sees no rename: the index's copy of a file a staged
+  // rename moved out of a hidden name showed as removed lines under its plain new name (git residue, round 2, h01, h02).
+  it('hides the work-tree change of a file a staged rename moved out of a credential name or a denied folder', async () => {
+    const root = repository({ '.env': 'K=planted-rename-marker\nK2=planted-second\n', 'secrets/token.txt': 'planted-deny-marker\n', 'public/readme.txt': 'readme\n', 'a.txt': 'a one\na two\na three\n' })
+    git(root, 'mv', '.env', 'notes.txt')
+    writeFileSync(join(root, 'notes.txt'), 'scrubbed\n')
+    git(root, 'mv', 'secrets/token.txt', 'public/token.txt')
+    writeFileSync(join(root, 'public', 'token.txt'), 'scrubbed\n')
+    git(root, 'mv', 'a.txt', 'b.txt')
+    writeFileSync(join(root, 'b.txt'), 'a one\na two\na three\nb four\n')
+    const judged = readRules(root, { deny: ['secrets'] })
+    for (const paths of [[], ['notes.txt', 'public', 'b.txt']]) {
+      const { diff } = await gitPack(root, hostRunProcess, hostGit!)({ paths }, judged)
+      expect(diff).toContain('diff --git a/notes.txt b/notes.txt\nstat: +1 -2\n[content hidden: credential file]\n')
+      expect(diff).toContain('diff --git a/public/token.txt b/public/token.txt\nstat: +1 -1\n[content hidden: read rule]\n')
+      expect(diff).toContain('+b four')
+      expect(diff).not.toMatch(/planted-rename-marker|planted-second|planted-deny-marker/)
+    }
+  })
+
+  it('shows an unborn repository\'s work-tree change, whose index it compares with the empty tree for renames', async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'git-pack-diff-unborn-')))
+    writeFileSync(join(root, 'first.txt'), 'first-line\n')
+    git(root, 'init', '-q')
+    git(root, 'add', '-A')
+    writeFileSync(join(root, 'first.txt'), 'first-line\nsecond-line\n')
+    const { diff } = await gitPack(root, hostRunProcess, hostGit!)({}, readRules(root))
+    expect(diff).toContain('+second-line')
+  })
+
   it('hides a binary credential file with a binary stat, and still shows that a plain binary file differs', async () => {
     const root = repository({ 'cert.pem': Buffer.from([0, 1, 2, 3, 0x6b, 0x65, 0x79]), 'image.bin': Buffer.from([0, 9, 9, 9]) }, { 'cert.pem': Buffer.from([0, 1, 2, 4, 0x6b, 0x65, 0x79]), 'image.bin': Buffer.from([0, 8, 8, 8]) })
     const { diff } = await gitPack(root, hostRunProcess, hostGit!)({}, readRules(root))
@@ -332,9 +362,12 @@ describe('git_diff runs git on the files it may show, from one listing', () => {
     })
     await gitPack(root, runProcess)({}, allowed)
     const original = statSync(index).mtimeMs
-    expect(seen).toHaveLength(1)
-    expect(seen[0]).toBeLessThanOrEqual(original)
-    expect(original - seen[0]!).toBeLessThan(1)
+    // The file listing, then the index's renames against HEAD, which a work-tree diff lists too.
+    expect(seen).toHaveLength(2)
+    for (const time of seen) {
+      expect(time).toBeLessThanOrEqual(original)
+      expect(original - time).toBeLessThan(1)
+    }
   })
 
   it('lists a path-limited call\'s renames again across the whole tree, never under the named paths, and hides the pair', async () => {
@@ -347,6 +380,24 @@ describe('git_diff runs git on the files it may show, from one listing', () => {
     expect(diff).toBe('diff --git a/notes.txt b/notes.txt\nnew file mode 100644\nstat: +1 -0\n[content hidden: credential file]\n')
     const requests = runProcess.mock.calls.map(([request]) => request)
     expect(requests.filter(isListing).map(request => request.args.slice(request.args.indexOf('-z') + 1))).toEqual([['--', 'notes.txt'], ['--diff-filter=RC', '--']])
+    expect(requests.filter(isPatch)).toEqual([])
+  })
+
+  it('lists a work-tree call\'s staged renames against the commit HEAD names, and hides a file one moved out of a hidden name', async () => {
+    const root = workspace()
+    const oid = 'c'.repeat(40)
+    const runProcess = scripted(request => {
+      if (request.args[0] === 'rev-parse' && request.args.includes('--verify')) return { stdout: `${oid}\n` }
+      if (!isListing(request)) return null
+      return { stdout: request.args.includes('--cached') ? listingOf(['R100', ['.env', 'notes.txt'], '0\t0']) : listingOf(['M', ['notes.txt'], '1\t2']) }
+    })
+    const { diff } = await gitPack(root, runProcess)({}, allowedButEnv)
+    expect(diff).toBe('diff --git a/notes.txt b/notes.txt\nstat: +1 -2\n[content hidden: credential file]\n')
+    const requests = runProcess.mock.calls.map(([request]) => request)
+    const listings = requests.filter(isListing)
+    expect(listings).toHaveLength(2)
+    expect(listings[0]!.args).not.toContain('--cached')
+    expect(listings[1]!.args.slice(listings[1]!.args.indexOf('--cached'))).toEqual(['--cached', oid, '--raw', '--numstat', '-z', '--diff-filter=RC', '--'])
     expect(requests.filter(isPatch)).toEqual([])
   })
 

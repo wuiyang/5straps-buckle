@@ -39,11 +39,11 @@ its commands write, and the forge pack.
 - The git tools refuse a repository reaching outside the workspace or scratch root holding the
   folder named, such as a home folder kept in git, a bare repository, or one whose git directory
   lies elsewhere.
-- `git_diff` with no paths, or a folder, still names every tracked file it changed, a `.env`
-  included, with its added and removed line counts and no ask: a file the read rules would not
-  let the agent read, and a tracked link, show `[content hidden: <rule>]` in place of their content,
-  after the rest of the diff. Name a file to be asked about it. `git_log` with no path lists the
-  commits of every file, names and messages only.
+- `git_diff` with no paths, or a folder, names every tracked file it changed, `.env` included,
+  with line counts and no ask. A file the read rules hide, a tracked link, and either side of a
+  rename of one, staged or not, show `[content hidden: <rule>]`. Rules judge names, not history:
+  a committed or merged rename out of a hidden name shows under its new name. Name a file to be
+  asked about it. `git_log` with no path lists every file's commits, names and messages only.
 - The `git` pack checks the work tree, the git folder, the common folder, each `objects` folder,
   and the stores `objects/info/alternates` names, resolving each line as git does. It refuses a
   line through `/proc`, `/dev/fd`, or a link into `/proc/` or `/dev/`, which git's own process
