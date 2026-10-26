@@ -23,8 +23,6 @@ pnpm build
 cd buckle && npm link
 ```
 
-Shell tools need a sandbox: bubblewrap on Linux, Seatbelt on macOS ([Sandbox](#sandbox)).
-
 ## First run
 
 ```bash
@@ -119,9 +117,9 @@ documents it.
 
 On Linux, shell tools work on private workspace copies by default and publish
 changes through conflict-checked checkpoints; `shell.isolation` off selects shared-workspace
-execution (`BUCKLE_SHELL_ISOLATION=false` sets it for every workspace). Host Git and forge
+execution. Host Git and forge
 tools (`packs.hostGit`) and host language servers (`packs.hostLsp`) are off by default: they
-run outside the sandbox. Without `rg`, `fs_search_content` is absent.
+run outside the sandbox.
 
 ## Audit log
 
@@ -133,7 +131,7 @@ buckle log --json
 ```
 
 Arguments are trimmed for the log: every string becomes its length, like
-`[5 characters]`, and any value under a credential-named key reads `[redacted]`. The log is append-only,
+`[5 characters]`, except a file copy's path and digest, and any value under a credential-named key reads `[redacted]`. The log is append-only,
 not tamper-proof.
 
 ## Rings
@@ -148,7 +146,7 @@ For users:
 
 - [Installing Buckle](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install.md) ([state files](https://github.com/wuiyang/5straps-buckle/blob/main/docs/install-02.md)):
   requirements, platform status, and upgrading.
-- [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md): `buckle init`, the two credentials, and the CLI, MCP, and
+- [First run](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run.md) ([credentials](https://github.com/wuiyang/5straps-buckle/blob/main/docs/first-run-02.md)): `buckle init`, the two credentials, and the CLI, MCP, and
   HTTP faces.
 - [Workspaces](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces.md) ([settings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-02.md), [defaults](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-03.md), and [moving from 0.1](https://github.com/wuiyang/5straps-buckle/blob/main/docs/workspaces-04.md)):
   one node, many folders, and their tokens.
@@ -159,6 +157,7 @@ For users:
   when a change applies.
 - [Sandbox and tools](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md): packs, sandboxing per platform, shell isolation,
   and [scripts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md).
+- [Copying files](https://github.com/wuiyang/5straps-buckle/blob/main/docs/copy.md) ([checks](https://github.com/wuiyang/5straps-buckle/blob/main/docs/copy-02.md)): `buckle cp`, its token, approvals, and limits.
 - [Secrets](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md): secret references in commands, browser fills, and fetch headers; values never shown.
 - [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and
   Chromium arguments.

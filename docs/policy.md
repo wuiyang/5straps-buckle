@@ -13,7 +13,7 @@ writes: its command lists, its approved list, its [allowed interpreters](policy-
 its tool lists, its filesystem rules, and where the agent sees its folder. The node's lists in
 `buckle.env` are every workspace's defaults: an allow list a workspace has none of is the node's,
 and the node's deny and destructive lists apply to every workspace ([Node
-defaults](workspaces-03.md)). No other workspace's applies. `buckle policy` acts on the workspace `--workspace
+defaults](workspaces-03.md)). `buckle policy` acts on the workspace `--workspace
 <name>` or `--dir <path>` names, else the one whose folder holds the current directory.
 
 ## Commands
@@ -82,7 +82,7 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 ## Tools and files
 
 - `buckle policy deny-tool fs_write` refuses a tool outright; `allow-tool` lifts that. A tool
-  in a withheld pack stays withheld.
+  in a withheld pack stays withheld. The [copy tools](sandbox-and-tools.md#packs) follow `fs_write` and `fs_read`.
 - `buckle policy mount /workspace` shows the workspace to the agent at that path; every path
   outside it and its [mounts](mounts.md) is then refused, not asked. The folder may not show under
   `/bin`, `/etc`, `/home`, `/tmp`, `/usr`, or another system directory; extra mounts follow that

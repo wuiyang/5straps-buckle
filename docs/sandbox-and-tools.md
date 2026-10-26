@@ -21,6 +21,9 @@ that cannot run here is withheld with a reason rather than failing at call time,
 
 `buckle workspace set packs.enabled fs,web,shell` offers only the named
 [packs](workspaces-02.md#settings), and naming any turns plugins off.
+The tool policy treats the two copy tools as the file faces of `fs_write` and `fs_read`:
+`buckle policy deny-tool fs_write` also denies `fs_receive`, and `deny-tool fs_read` also denies
+`fs_send`. A tool allow list must name them to allow copies.
 `buckle plugin add <id> <module>` adds a plugin, a module that exports `createPack(options)`; one
 that fails to load shows as an unavailable pack. Each built-in pack ships a skill, a short guide
 for the agent: `buckle skills` lists them and `buckle skills buckle-shell` prints one.

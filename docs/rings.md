@@ -41,8 +41,8 @@ With `BUCKLE_REPORT_URL` set, the [audit log](audit-log.md) entry for each tool 
 and for each dangerously-allowed use, is queued and posted in batches of up to 100. A batch goes
 out 5 seconds after its first entry, or as soon as 100 wait, with up to 3 attempts. The queue
 holds 500 entries and drops the oldest past that. A refused call is also posted on its own as it happens.
-Each report carries the entry as the local log keeps it, plus the workspace root and, for a
-refused call, its rule, subject, and reason. Posting never holds up a call, and a batch that
+Each report carries the entry as the local log keeps it, which for a file copy includes its path and
+sha256, plus the workspace root and, for a refused call, its rule, subject, and reason. Posting never holds up a call, and a batch that
 cannot be delivered is still in `actions.jsonl`.
 
 ### Approval webhook

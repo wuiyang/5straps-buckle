@@ -65,10 +65,16 @@ The log keeps the shape of a call, not its content:
   host, or command;
 - identifiers are cut to 200 characters.
 
-The one exception is `judge`: the thorough model's reasoning about the command and its code is
-kept as it wrote it, clipped at 2,000 characters, with credentials hidden.
+Two exceptions keep text as it is. In `judge`, the thorough model's reasoning about the command
+and its code is kept as it wrote it, clipped at 2,000 characters, with credentials hidden.
 
-So the log says that `fs_write` wrote something and which gate asked, not what it wrote or
+A file copy is the other. Its entry (`fs_receive` for a copy in, `fs_send` for a copy out, from
+[`buckle cp`](copy.md)) keeps the path as written, with credentials hidden and at most 1,024
+characters, the byte count, and the file's sha256, so the log says which file moved. It never keeps
+the content. A digest can be guessed for a short or predictable file, and Rings reports carry the
+entry as the log keeps it.
+
+Apart from those, the log says that `fs_write` wrote something and which gate asked, not what it wrote or
 where. Approvers see the whole call when they decide; the log does not keep it.
 
 ## Limits
