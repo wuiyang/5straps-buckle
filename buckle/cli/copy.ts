@@ -46,8 +46,6 @@ Exits 0 once copied, 1 when the node or the copy refuses, 2 on a command line it
 const CONNECT_TIMEOUT_MS = 30_000
 /** How often a copy waiting for a person is sent again; the node holds each one for its own wait first. */
 const POLL_MS = 2_000
-/** The session a copy's asks and grants are kept in, apart from an agent's own, which names none or its own. */
-const COPY_SESSION = 'buckle-cp'
 /** The mode a downloaded file is made with where none is replaced: owner only, as the workspace's file may be a secret. */
 const NEW_FILE_MODE = 0o600
 /** The signals that stop a copy where it stands, which remove a download's new file before the process ends. */
@@ -106,7 +104,9 @@ export async function copyCommand(argv: string[], environment: NodeJS.ProcessEnv
     const route = routeOf(from, to)
     const node = await copyNode({ ...(values.node === undefined ? {} : { flag: values.node }), environment, ...(options.running ? { running: options.running } : {}) })
     const token = copyToken({ environment, ...(values['token-file'] === undefined ? {} : { tokenFile: values['token-file'] }), ...(options.ownerOnly ? { ownerOnly: options.ownerOnly } : {}) })
-    const client: NodeClient = { node, token: token.token, tokenSource: token.source, stderr, pollMs: options.pollMs ?? POLL_MS, platform, ...(options.renameIo ? { renameIo: options.renameIo } : {}) }
+    // Each copy asks and is granted in a session of its own: a session grant made for it covers no other caller, and the
+    // name is not one that anyone can know ahead of the copy.
+    const client: NodeClient = { node, token: token.token, tokenSource: token.source, stderr, pollMs: options.pollMs ?? POLL_MS, session: `buckle-cp-${randomUUID()}`, platform, ...(options.renameIo ? { renameIo: options.renameIo } : {}) }
     const stopGuard = guardSignals(options.signals ?? process, platform)
     let copied: Copied
     try {
@@ -135,7 +135,7 @@ function isParseArgsError(error: unknown): boolean {
   return error instanceof TypeError && 'code' in error && typeof error.code === 'string' && error.code.startsWith('ERR_PARSE_ARGS_')
 }
 
-interface NodeClient { node: URL; token: string; tokenSource: string; stderr: Output; pollMs: number; platform: NodeJS.Platform; renameIo?: RenameIo }
+interface NodeClient { node: URL; token: string; tokenSource: string; stderr: Output; pollMs: number; session: string; platform: NodeJS.Platform; renameIo?: RenameIo }
 type WorkspaceEnd = Extract<CopyEnd, { kind: 'workspace' }>
 type LocalEnd = Extract<CopyEnd, { kind: 'local' }>
 interface Copied { size: number; sha256: string; end: CopyEnd }
@@ -208,7 +208,9 @@ async function untilDecided(client: NodeClient, workspace: string, send: () => P
 /** The node's instruction for each ask, in the words an agent relays (approval-instruction.ts): run at the node. */
 function instruction(input: { approvals: ApprovalRequest[]; workspace: string; node: URL }): string {
   const lines = input.approvals.map((request) => {
-    const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspace, workspaceName: input.workspace, nodeName: input.node.origin })
+    // A grant of this copy's session would cover no other copy, so the command offered is the one-time approval.
+    const asked = request.offeredScopes.includes('once') ? { ...request, offeredScopes: ['once' as const] } : request
+    const [first, ...rest] = describeApprovalRequest({ request: asked, workspaceId: input.workspace, workspaceName: input.workspace, nodeName: input.node.origin })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
   return ['This copy needs a person to approve it at the node, with these commands there:', ...lines].join('\n')
@@ -411,7 +413,7 @@ async function readText(response: IncomingMessage): Promise<string> {
 }
 
 function credentials(client: NodeClient, requestId: string): Record<string, string> {
-  return { authorization: `Bearer ${client.token}`, 'x-buckle-request-id': requestId, 'x-buckle-session': COPY_SESSION }
+  return { authorization: `Bearer ${client.token}`, 'x-buckle-request-id': requestId, 'x-buckle-session': client.session }
 }
 
 function filesUrl(node: URL, workspace: string, path: string): URL {

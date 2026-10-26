@@ -247,9 +247,11 @@ describe('buckle cp against this node', () => {
     // In: the first write to the folder asks; the copy waits, then runs once the ask is approved at the node.
     const copying = copyCommand([join(here, 'app.tgz'), `${workspaceName}:`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)
     const token = await Promise.race([waitingToken('fs_receive'), copying.then((result) => { throw new Error(`buckle cp ended before it asked: ${JSON.stringify(result)} ${err}`) })])
-    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'session' }, 'admin')
+    // The ask is registered before the node answers the held PUT with it: approve once the copy has said it is waiting.
+    await until(() => err.includes('Waiting for the approval...'))
+    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'always' }, 'admin')
     expect(await copying).toEqual({ exitCode: 0 })
-    expect(err).toContain(`then approve with: buckle approve ${token} --scope session --workspace ${workspaceName}`)
+    expect(err).toContain(`then approve with: buckle approve ${token} --scope once --workspace ${workspaceName}`)
     expect(out).toBe(`Copied ${content.byteLength} bytes to ${workspaceName}:app.tgz (sha256 ${sha256(content)})\n`)
     expect(sha256(readFileSync(join(workspace, 'app.tgz')))).toBe(sha256(content))
 
@@ -259,7 +261,7 @@ describe('buckle cp against this node', () => {
     expect(sha256(readFileSync(join(here, 'back.tgz')))).toBe(sha256(content))
     expect(out).toBe(`Copied ${content.byteLength} bytes to ${join(here, 'back.tgz')} (sha256 ${sha256(content)})\n`)
 
-    // Again: the copy that came out, in under the workspace's id and a folder, the session's grant applying.
+    // Again: the copy that came out, in under the workspace's id and a folder, the standing grant applying.
     out = ''
     mkdirSync(join(workspace, 'copies'))
     expect(await copyCommand([join(here, 'back.tgz'), `${buckle.runtime.workspaceId}:copies`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)).toEqual({ exitCode: 0 })
@@ -267,9 +269,21 @@ describe('buckle cp against this node', () => {
     expect(sha256(readFileSync(join(workspace, 'copies', 'back.tgz')))).toBe(sha256(content))
     // Each folder target is refused as one before anyone is asked, and sent again by the file's name.
     expect(results('fs_receive').map(entry => [entry.outcome, entry.detail ?? null])).toEqual([['error', 'TARGET_IS_DIRECTORY'], ['approval_required', null], ['ok', null], ['error', 'TARGET_IS_DIRECTORY'], ['ok', null]])
-    expect(new Set(results('fs_receive').map(entry => entry.sessionId))).toEqual(new Set(['buckle-cp']))
+    // Each copy ran in a session of its own, which no caller can name ahead of it.
+    const sessions = results('fs_receive').map(entry => entry.sessionId)
+    expect(sessions.every(id => /^buckle-cp-[0-9a-f-]{36}$/.test(String(id)))).toBe(true)
+    expect(new Set(sessions).size).toBe(2)
   })
 })
+
+/** Resolves once `condition` holds. */
+async function until(condition: () => boolean): Promise<void> {
+  const deadline = Date.now() + 10_000
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error('The condition never held')
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
 
 /** The token of the first ask `tool` leaves waiting, once it has. */
 async function waitingToken(tool: string): Promise<string> {

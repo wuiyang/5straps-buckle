@@ -85,7 +85,18 @@ describe('buckle cp into a workspace', () => {
     const [put] = node.seen
     expect(put).toMatchObject({ method: 'PUT', path: '/workspaces/site/v1/files', body: content })
     expect(put!.query.get('path')).toBe('dist/app.tgz')
-    expect(put!.headers).toMatchObject({ authorization: `Bearer ${TOKEN}`, 'content-length': String(content.byteLength), 'x-buckle-sha256': sha256(content), 'x-buckle-session': 'buckle-cp', 'x-buckle-request-id': expect.stringMatching(/^[0-9a-f-]{36}$/) })
+    expect(put!.headers).toMatchObject({ authorization: `Bearer ${TOKEN}`, 'content-length': String(content.byteLength), 'x-buckle-sha256': sha256(content), 'x-buckle-session': expect.stringMatching(/^buckle-cp-[0-9a-f-]{36}$/), 'x-buckle-request-id': expect.stringMatching(/^[0-9a-f-]{36}$/) })
+  })
+
+  it('names a session of its own for each copy, so a session grant made for one covers no other caller', async () => {
+    const node = await fakeNode([received])
+    const { file } = local()
+    await cp([file, 'site:a.tgz', '--node', node.url])
+    await cp([file, 'site:b.tgz', '--node', node.url])
+    const sessions = node.seen.map(seen => seen.headers['x-buckle-session'])
+    expect(sessions).toHaveLength(2)
+    expect(sessions[0]).not.toBe(sessions[1])
+    expect(sessions.every(session => /^buckle-cp-[0-9a-f-]{36}$/.test(String(session)))).toBe(true)
   })
 
   it('prints the node\'s instruction once, waits, and sends the same request again under its requestId until it is approved', async () => {
@@ -95,7 +106,7 @@ describe('buckle cp into a workspace', () => {
     expect(result.exitCode).toBe(0)
     expect(result.err).toContain('This copy needs a person to approve it at the node, with these commands there:')
     expect(result.err).toContain(`  waiting on node ${node.url}, workspace site\n`)
-    expect(result.err).toContain('  then approve with: buckle approve 3f6c1a2b-0000-4000-8000-000000000000 --scope session --workspace site')
+    expect(result.err).toContain('  then approve with: buckle approve 3f6c1a2b-0000-4000-8000-000000000000 --scope once --workspace site')
     expect(result.err.match(/Waiting for the approval\.\.\./g)).toHaveLength(1)
     expect(node.seen).toHaveLength(3)
     expect(new Set(node.seen.map(seen => seen.headers['x-buckle-request-id'])).size).toBe(1)
