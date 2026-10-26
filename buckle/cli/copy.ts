@@ -1,14 +1,16 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, openSync, read, readSync, renameSync, rmSync, statSync } from 'node:fs'
-import { open } from 'node:fs/promises'
+import { closeSync, constants, fstatSync, lstatSync, openSync, read, readSync, realpathSync, rmSync, statSync } from 'node:fs'
+import { open, type FileHandle } from 'node:fs/promises'
 import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from 'node:http'
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
+import { constants as osConstants } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
 import { parseArgs, promisify } from 'node:util'
 import type { ApprovalRequest, InvokeResponse } from '@5straps/protocol'
 import { OwnerOnlyError, type OwnerOnlyCheck } from '../common/adapters/file-modes.js'
+import { isHeldOpen, replaceFile, type RenameIo } from '../common/adapters/replace-file.js'
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import type { RunningNode } from '../common/services/node-service/serve-record.js'
 import { TARGET_IS_DIRECTORY } from '../common/services/packs/fs/transfer.js'
@@ -46,6 +48,10 @@ const CONNECT_TIMEOUT_MS = 30_000
 const POLL_MS = 2_000
 /** The session a copy's asks and grants are kept in, apart from an agent's own, which names none or its own. */
 const COPY_SESSION = 'buckle-cp'
+/** The mode a downloaded file is made with where none is replaced: owner only, as the workspace's file may be a secret. */
+const NEW_FILE_MODE = 0o600
+/** The signals that stop a copy where it stands, which remove a download's new file before the process ends. */
+const STOPPING: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
 /** What a JSON answer may hold; a node's answer is far smaller. */
 const MAX_ANSWER_BYTES = 1_048_576
 const CHUNK_BYTES = 1_048_576
@@ -65,6 +71,17 @@ export interface CopyOptions {
   /** The serve record lookup, for a test; this machine's own by default. */
   running?: (stateDirectory: string) => Promise<RunningNode | null>
   ownerOnly?: OwnerOnlyCheck
+  /** The rename that puts a download in place, and the pause between its tries; the system's, with Windows' retries, by default. */
+  renameIo?: RenameIo
+  /** What a signal that stops the copy is heard on, and how the copy then exits; the process by default. */
+  signals?: SignalHost
+}
+
+/** The part of `process` that stops a copy on a signal. */
+export interface SignalHost {
+  on(signal: NodeJS.Signals, listener: () => void): unknown
+  off(signal: NodeJS.Signals, listener: () => void): unknown
+  exit(code: number): unknown
 }
 
 /**
@@ -89,8 +106,12 @@ export async function copyCommand(argv: string[], environment: NodeJS.ProcessEnv
     const route = routeOf(from, to)
     const node = await copyNode({ ...(values.node === undefined ? {} : { flag: values.node }), environment, ...(options.running ? { running: options.running } : {}) })
     const token = copyToken({ environment, ...(values['token-file'] === undefined ? {} : { tokenFile: values['token-file'] }), ...(options.ownerOnly ? { ownerOnly: options.ownerOnly } : {}) })
-    const client: NodeClient = { node, token: token.token, tokenSource: token.source, stderr, pollMs: options.pollMs ?? POLL_MS }
-    const copied = route.direction === 'in' ? await upload(client, { path: route.from.path, name: basename(route.from.path) }, route.to) : await download(client, route.from, route.to)
+    const client: NodeClient = { node, token: token.token, tokenSource: token.source, stderr, pollMs: options.pollMs ?? POLL_MS, platform, ...(options.renameIo ? { renameIo: options.renameIo } : {}) }
+    const stopGuard = guardSignals(options.signals ?? process, platform)
+    let copied: Copied
+    try {
+      copied = route.direction === 'in' ? await upload(client, { path: route.from.path, name: basename(route.from.path) }, route.to) : await download(client, route.from, route.to)
+    } finally { stopGuard() }
     stdout.write(`Copied ${copied.size} bytes to ${shownEnd(copied.end)} (sha256 ${copied.sha256})\n`)
     return { exitCode: 0 }
   } catch (error) {
@@ -114,7 +135,7 @@ function isParseArgsError(error: unknown): boolean {
   return error instanceof TypeError && 'code' in error && typeof error.code === 'string' && error.code.startsWith('ERR_PARSE_ARGS_')
 }
 
-interface NodeClient { node: URL; token: string; tokenSource: string; stderr: Output; pollMs: number }
+interface NodeClient { node: URL; token: string; tokenSource: string; stderr: Output; pollMs: number; platform: NodeJS.Platform; renameIo?: RenameIo }
 type WorkspaceEnd = Extract<CopyEnd, { kind: 'workspace' }>
 type LocalEnd = Extract<CopyEnd, { kind: 'local' }>
 interface Copied { size: number; sha256: string; end: CopyEnd }
@@ -152,7 +173,7 @@ async function upload(client: NodeClient, source: { path: string; name: string }
 
 /** One workspace file to this machine: into a new file beside the target, renamed onto it once whole and matching. */
 async function download(client: NodeClient, from: WorkspaceEnd, to: LocalEnd): Promise<Copied> {
-  const target = localTarget(to.path, workspaceName(from.path))
+  const target = localTarget(to.path, workspaceName(from.path), client.platform)
   const requestId = randomUUID()
   const answer = await untilDecided(client, from.workspace, () => getOnce(client, { workspace: from.workspace, path: from.path, requestId, target }))
   if (answer.outcome !== 'ok') throw refusalOf(answer)
@@ -254,42 +275,95 @@ async function getOnce(client: NodeClient, input: { workspace: string; path: str
     if (response.statusCode !== 200 || digest === undefined) return await readAnswer(client, input.workspace, response)
     const size = Number(header(response, 'content-length'))
     if (!Number.isSafeInteger(size) || !/^[a-f0-9]{64}$/.test(digest)) throw new CopyRefusal('The node sent a file without its size or digest, so nothing was written')
-    await receive({ response, size, digest, target: input.target })
+    await receive({ response, size, digest, target: input.target, ...(client.renameIo ? { renameIo: client.renameIo } : {}) })
     return { kind: 'answered', answer: { requestId: input.requestId, outcome: 'ok', output: { size, sha256: digest }, meta: { durationMs: 0, truncated: false } } }
   } finally { exchange.close() }
 }
 
 /**
  * The response's bytes into a new file beside `target`, counted and hashed as they land, and renamed onto it only when
- * every byte the node declared arrived with the digest it named; on anything else the new file is removed.
+ * every byte the node declared arrived with the digest it named; on anything else the new file is removed. The new file
+ * has the mode of the file it replaces, exactly, so a private file is never replaced by one others read, and is owner
+ * only where there is none to replace, as the node side's replaceBeneath keeps it (re-checks of 2026-10-14). A signal that
+ * stops the copy removes it too (guardSignals).
  */
-async function receive(input: { response: IncomingMessage; size: number; digest: string; target: string }): Promise<void> {
+async function receive(input: { response: IncomingMessage; size: number; digest: string; target: string; renameIo?: RenameIo }): Promise<void> {
+  const existing = lstatSync(input.target, { throwIfNoEntry: false })
+  const mode = existing === undefined ? NEW_FILE_MODE : existing.mode & 0o777
   const partial = join(dirname(input.target), `.buckle-cp-${randomUUID()}.part`)
-  const handle = await open(partial, 'wx')
+  const handle = await open(partial, 'wx', mode).catch((error: unknown) => { throw unwritable(input.target, error) })
+  partials.add(partial)
   let kept = false
   try {
-    const hash = createHash('sha256')
-    let landed = 0
-    for await (const chunk of input.response as AsyncIterable<Buffer>) {
-      landed += chunk.byteLength
-      if (landed > input.size) throw new CopyRefusal('The node sent more bytes than it declared, so nothing was written')
-      hash.update(chunk)
-      await handle.write(chunk)
-    }
-    if (landed !== input.size) throw new CopyRefusal(`${landed} of the ${input.size} bytes the node declared arrived, so nothing was written`)
-    if (hash.digest('hex') !== input.digest) throw new CopyRefusal('The bytes that arrived do not hash to the sha256 the node named, so nothing was written')
+    // The kernel only narrows the mode a file is created with; the old file's own is set exactly.
+    if (existing !== undefined) await handle.chmod(mode)
+    await land({ response: input.response, size: input.size, digest: input.digest, handle, target: input.target })
     await handle.close()
-    renameSync(partial, input.target)
+    await replaceDownload(partial, input.target, input.renameIo)
     kept = true
-  } catch (error) {
-    if (error instanceof CopyRefusal) throw error
-    throw new CopyRefusal(`The file stopped arriving (${codeOf(error)}), so nothing was written`)
   } finally {
     if (!kept) {
       await handle.close().catch(() => undefined)
       rmSync(partial, { force: true })
     }
+    partials.delete(partial)
   }
+}
+
+/** The bytes that arrive into the new file, counted and hashed; a length or a digest other than the node declared is refused. */
+async function land(input: { response: IncomingMessage; size: number; digest: string; handle: FileHandle; target: string }): Promise<void> {
+  const hash = createHash('sha256')
+  let landed = 0
+  try {
+    for await (const chunk of input.response as AsyncIterable<Buffer>) {
+      landed += chunk.byteLength
+      if (landed > input.size) throw new CopyRefusal('The node sent more bytes than it declared, so nothing was written')
+      hash.update(chunk)
+      await input.handle.write(chunk).catch((error: unknown) => { throw unwritable(input.target, error) })
+    }
+  } catch (error) {
+    if (error instanceof CopyRefusal) throw error
+    throw new CopyRefusal(`The node cut the file short (${codeOf(error)}); it does so when a file changes while it is sent, so run buckle cp again. Nothing was written`)
+  }
+  if (landed !== input.size) throw new CopyRefusal(`Only ${landed} of the ${input.size} bytes the node declared arrived; the node cuts a file short when it changes while it is sent, so run buckle cp again. Nothing was written`)
+  if (hash.digest('hex') !== input.digest) throw new CopyRefusal('The bytes that arrived do not hash to the sha256 the node named, so nothing was written')
+}
+
+/** The new file onto the target, tried again where Windows holds the target open, as the state files are (replaceFile). */
+async function replaceDownload(partial: string, target: string, io: RenameIo | undefined): Promise<void> {
+  try {
+    await replaceFile(partial, target, io)
+  } catch (error) {
+    if (isHeldOpen(error)) throw new CopyRefusal(`${target} is held open by another program (${codeOf(error)}), so it was not replaced; close it and run buckle cp again`)
+    throw new CopyRefusal(`${target} could not be replaced (${codeOf(error)}), so nothing was written`)
+  }
+}
+
+function unwritable(target: string, error: unknown): CopyRefusal {
+  return new CopyRefusal(`The file could not be written beside ${target} (${codeOf(error)}), so nothing was written`)
+}
+
+/** The new files of the downloads under way, which a signal that stops the copy removes. */
+const partials = new Set<string>()
+
+/**
+ * For as long as a copy runs, a signal that stops it (and Ctrl-Break on Windows) removes the new file of a download under
+ * way and ends the process with the signal's usual code, 128 and its number, as the finally blocks do not run on one.
+ * Returns the call that takes the listeners off.
+ */
+function guardSignals(host: SignalHost, platform: NodeJS.Platform): () => void {
+  const names: readonly NodeJS.Signals[] = platform === 'win32' ? [...STOPPING, 'SIGBREAK'] : STOPPING
+  const listeners = names.map((name) => {
+    const listener = () => {
+      for (const partial of partials) {
+        try { rmSync(partial, { force: true }) } catch { /* Gone, or not ours to remove; the process ends all the same. */ }
+      }
+      host.exit(128 + (osConstants.signals[name] ?? 0))
+    }
+    host.on(name, listener)
+    return { name, listener }
+  })
+  return () => { for (const { name, listener } of listeners) host.off(name, listener) }
 }
 
 /**
@@ -390,14 +464,40 @@ function send(input: { url: URL; method: 'GET' | 'PUT'; headers: Record<string, 
   })
 }
 
-/** Where a download lands here: the target, or the file's name inside it where it is a folder; its folder must exist. */
-function localTarget(path: string, name: string): string {
-  const entry = statSync(path, { throwIfNoEntry: false })
-  if (entry?.isDirectory()) return join(path, name)
-  const folder = dirname(path)
-  if (!statSync(folder, { throwIfNoEntry: false })?.isDirectory()) throw new CopyRefusal(`The folder ${folder} does not exist, and buckle cp makes no folder: create it first, or copy into one that exists`)
-  if (entry !== undefined && !entry.isFile()) throw new CopyRefusal(`${path} is not a regular file, so nothing was written`)
-  return path
+/**
+ * Where a download lands here, settled before the node is asked for anything: the target, or the file's name inside it
+ * where it is a folder; a target that is a link is written through, as cp does, and one that points at nothing, a folder,
+ * or a name that ends in a separator without being a folder here is refused, and so is a folder that does not exist.
+ */
+function localTarget(path: string, name: string, platform: NodeJS.Platform): string {
+  const trailing = endsWithSeparator(path, platform)
+  const named = trailing ? path.replace(/[/\\]+$/, '') || path : path
+  const entry = statSync(named, { throwIfNoEntry: false })
+  if (entry?.isDirectory()) return landing(join(named, name))
+  if (!trailing) return landing(path)
+  if (entry !== undefined) throw new CopyRefusal(`${named} is a file, not a folder, so nothing was written`)
+  throw missingFolder(named)
+}
+
+function endsWithSeparator(path: string, platform: NodeJS.Platform): boolean {
+  return path.endsWith('/') || (platform === 'win32' && path.endsWith('\\'))
+}
+
+/** The file a download is written to: the link's file where the target is a link, which must be a regular file in a folder that exists. */
+function landing(target: string): string {
+  let file = target
+  if (lstatSync(target, { throwIfNoEntry: false })?.isSymbolicLink()) {
+    try { file = realpathSync(target) } catch { throw new CopyRefusal(`${target} is a link to a file that does not exist, so nothing was written; name the file itself`) }
+  }
+  const entry = statSync(file, { throwIfNoEntry: false })
+  if (entry !== undefined && !entry.isFile()) throw new CopyRefusal(`${file} is not a regular file, so nothing was written`)
+  const folder = dirname(file)
+  if (!statSync(folder, { throwIfNoEntry: false })?.isDirectory()) throw missingFolder(folder)
+  return file
+}
+
+function missingFolder(folder: string): CopyRefusal {
+  return new CopyRefusal(`The folder ${folder} does not exist, and buckle cp makes no folder: create it first, or copy into one that exists`)
 }
 
 /** A workspace path's last name, by either separator, as a Windows node's paths may use backslashes. */

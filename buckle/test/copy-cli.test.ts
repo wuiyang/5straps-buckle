@@ -1,11 +1,12 @@
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { EventEmitter } from 'node:events'
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
-import { copyCommand, COPY_USAGE } from '../cli/copy.js'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { copyCommand, COPY_USAGE, type CopyOptions } from '../cli/copy.js'
 
 // `buckle cp` against a node that answers as Buckle's files face does (the copy-verb brief): its success line and exit
 // codes, the wait for a person with the node's instruction and the same requestId sent again, the message for a node
@@ -59,10 +60,10 @@ function sent(content: Buffer): Answer {
 }
 
 /** `buckle cp` with its output kept, against `url`, with the token in the environment unless the test names another. */
-async function cp(argv: string[], environment: NodeJS.ProcessEnv = {}, platform?: NodeJS.Platform) {
+async function cp(argv: string[], environment: NodeJS.ProcessEnv = {}, platform?: NodeJS.Platform, extra: CopyOptions = {}) {
   let out = ''
   let err = ''
-  const result = await copyCommand(argv, { BUCKLE_AUTH_TOKEN: TOKEN, ...environment }, { stdout: { write: text => { out += text } }, stderr: { write: text => { err += text } }, pollMs: 5, running: async () => null, ...(platform ? { platform } : {}) })
+  const result = await copyCommand(argv, { BUCKLE_AUTH_TOKEN: TOKEN, ...environment }, { stdout: { write: text => { out += text } }, stderr: { write: text => { err += text } }, pollMs: 5, running: async () => null, ...(platform ? { platform } : {}), ...extra })
   expect(out + err).not.toContain(TOKEN)
   return { ...result, out, err }
 }
@@ -202,6 +203,140 @@ describe('buckle cp between two workspaces', () => {
     expect(result.out).toBe('')
     expect(node.seen).toEqual([])
     expect(COPY_USAGE).not.toContain('between two workspaces on one node')
+  })
+})
+
+/** Runs `body` under a umask of its own, and puts the process's back. */
+async function underUmask<T>(mask: number, body: () => Promise<T>): Promise<T> {
+  const before = process.umask(mask)
+  try { return await body() } finally { process.umask(before) }
+}
+
+const modeOf = (path: string) => lstatSync(path).mode & 0o777
+
+describe('buckle cp out of a workspace, onto what is here', () => {
+  it('keeps the mode of the file it replaces exactly, so a private file does not become one others read', async () => {
+    const content = Buffer.from('KEY=from the workspace\n')
+    const { folder } = local()
+    const closed = join(folder, 'closed.env')
+    const open = join(folder, 'open.env')
+    writeFileSync(closed, 'old', { mode: 0o600 })
+    writeFileSync(open, 'old', { mode: 0o644 })
+    chmodSync(closed, 0o600)
+    chmodSync(open, 0o644)
+    await underUmask(0o022, async () => {
+      expect((await cp(['site:.env', closed, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
+    })
+    await underUmask(0o077, async () => {
+      expect((await cp(['site:.env', open, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
+    })
+    expect([readFileSync(closed), readFileSync(open)]).toEqual([content, content])
+    expect([modeOf(closed), modeOf(open)]).toEqual([0o600, 0o644])
+    expect(readdirSync(folder).sort()).toEqual(['app.tgz', 'closed.env', 'open.env'])
+  })
+
+  it('makes a new file owner-only, as the node\'s file may be a secret, whatever the umask', async () => {
+    const content = Buffer.from('a new file')
+    const { folder } = local()
+    const target = join(folder, 'new.bin')
+    await underUmask(0o000, async () => {
+      expect((await cp(['site:new.bin', target, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
+    })
+    expect(readFileSync(target)).toEqual(content)
+    expect(modeOf(target)).toBe(0o600)
+  })
+
+  it('writes through a link to a file as cp does, leaving the link and the file\'s mode', async () => {
+    const content = Buffer.from('through the link')
+    const { folder } = local()
+    const real = join(folder, 'real.txt')
+    const link = join(folder, 'link.txt')
+    writeFileSync(real, 'old', { mode: 0o600 })
+    chmodSync(real, 0o600)
+    symlinkSync(real, link)
+    const result = await cp(['site:a.txt', link, '--node', (await fakeNode([sent(content)])).url])
+    expect(result).toMatchObject({ exitCode: 0, out: `Copied ${content.byteLength} bytes to ${real} (sha256 ${sha256(content)})\n` })
+    expect(lstatSync(link).isSymbolicLink()).toBe(true)
+    expect(readFileSync(real)).toEqual(content)
+    expect(modeOf(real)).toBe(0o600)
+  })
+
+  it('refuses a link that points at nothing, a folder where the file would go, and a trailing slash on a folder that is not there, before it asks the node', async () => {
+    const node = await fakeNode([sent(Buffer.from('x'))])
+    const { folder } = local()
+    symlinkSync(join(folder, 'nowhere'), join(folder, 'dangling'))
+    mkdirSync(join(folder, 'dest', 'a.txt'), { recursive: true })
+    const dangling = await cp(['site:a.txt', join(folder, 'dangling'), '--node', node.url])
+    expect(dangling).toMatchObject({ exitCode: 1, err: `${join(folder, 'dangling')} is a link to a file that does not exist, so nothing was written; name the file itself\n` })
+    const inFolder = await cp(['site:a.txt', join(folder, 'dest'), '--node', node.url])
+    expect(inFolder).toMatchObject({ exitCode: 1, err: `${join(folder, 'dest', 'a.txt')} is not a regular file, so nothing was written\n` })
+    const missing = await cp(['site:a.txt', `${join(folder, 'out')}/`, '--node', node.url])
+    expect(missing).toMatchObject({ exitCode: 1, err: expect.stringContaining(`The folder ${join(folder, 'out')} does not exist, and buckle cp makes no folder`) })
+    const file = await cp(['site:a.txt', `${join(folder, 'app.tgz')}/`, '--node', node.url])
+    expect(file).toMatchObject({ exitCode: 1, err: `${join(folder, 'app.tgz')} is a file, not a folder, so nothing was written\n` })
+    expect(node.seen).toEqual([])
+    expect(readdirSync(folder).sort()).toEqual(['app.tgz', 'dangling', 'dest'])
+  })
+
+  it('says the node cut the file short, and to run the copy again, where the bytes stop before the length it declared', async () => {
+    const cut: Answer = (_seen, response) => { response.writeHead(200, { 'content-length': '100', 'x-buckle-sha256': 'a'.repeat(64) }); response.write('half'); setTimeout(() => response.destroy(), 10) }
+    const { folder } = local()
+    const result = await cp(['site:a.txt', join(folder, 'a.txt'), '--node', (await fakeNode([cut])).url])
+    expect(result.exitCode).toBe(1)
+    expect(result.err).toBe('The node cut the file short (ECONNRESET); it does so when a file changes while it is sent, so run buckle cp again. Nothing was written\n')
+    expect(readdirSync(folder)).toEqual(['app.tgz'])
+  })
+
+  it('tries the rename again where Windows holds the target open, and says the target is in use where it stays held', async () => {
+    const content = Buffer.from('replaced after two tries')
+    const { folder } = local()
+    const target = join(folder, 'held.bin')
+    writeFileSync(target, 'old')
+    const held = () => Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+    let attempts = 0
+    const pauses: number[] = []
+    const eventually = { rename: (from: string, to: string) => { if (++attempts < 3) throw held(); renameSync(from, to) }, pause: async (ms: number) => { pauses.push(ms) } }
+    expect((await cp(['site:a.txt', target, '--node', (await fakeNode([sent(content)])).url], {}, undefined, { renameIo: eventually })).exitCode).toBe(0)
+    expect(readFileSync(target)).toEqual(content)
+    expect(pauses).toHaveLength(2)
+
+    const never = { rename: () => { throw held() }, pause: async () => {} }
+    const result = await cp(['site:a.txt', target, '--node', (await fakeNode([sent(Buffer.from('other'))])).url], {}, undefined, { renameIo: never })
+    expect(result).toMatchObject({ exitCode: 1, err: `${target} is held open by another program (EPERM), so it was not replaced; close it and run buckle cp again\n` })
+    expect(readFileSync(target)).toEqual(content)
+    expect(readdirSync(folder).sort()).toEqual(['app.tgz', 'held.bin'])
+  })
+})
+
+describe('buckle cp stopped by a signal', () => {
+  const signals = () => Object.assign(new EventEmitter(), { exit: vi.fn() })
+
+  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'] as const)('removes the new file of a download %s cut short, exits with the signal\'s code, and leaves no listener', async (signal) => {
+    const stalled: Answer = (_seen, response) => { response.writeHead(200, { 'content-length': '1000', 'x-buckle-sha256': 'a'.repeat(64) }); response.write(Buffer.alloc(50, 1)) }
+    const node = await fakeNode([stalled])
+    const { folder } = local()
+    const host = signals()
+    const copying = cp(['site:a.bin', join(folder, 'a.bin'), '--node', node.url], {}, undefined, { signals: host })
+    const deadline = Date.now() + 10_000
+    const partial = () => readdirSync(folder).find(name => name.startsWith('.buckle-cp-') && statSync(join(folder, name)).size === 50)
+    while (partial() === undefined) {
+      if (Date.now() > deadline) throw new Error('The download never began')
+      await new Promise(resolve => setTimeout(resolve, 10))
+    }
+    host.emit(signal)
+    expect(host.exit).toHaveBeenCalledWith({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal])
+    expect(readdirSync(folder)).toEqual(['app.tgz'])
+    servers.at(-1)!.closeAllConnections()
+    await copying
+    for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) expect(host.listenerCount(name)).toBe(0)
+  })
+
+  it('takes its listeners off once a copy ends, whether it copied or was refused', async () => {
+    const host = signals()
+    const { file } = local()
+    await cp([file, 'site:a.tgz', '--node', (await fakeNode([received])).url], {}, undefined, { signals: host })
+    await cp([file, 'site:a.tgz', '--node', (await fakeNode([json(422, { requestId: 'x', outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'declined', retryable: false } })])).url], {}, undefined, { signals: host })
+    expect(host.eventNames()).toEqual([])
   })
 })
 
