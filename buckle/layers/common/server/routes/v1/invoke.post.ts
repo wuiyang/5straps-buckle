@@ -4,23 +4,10 @@ import { statusOf, tolerantLog } from '../../utils/audit.js'
 import { readJson } from '../../utils/body.js'
 import { mapAgentFailures } from '../../utils/errors.js'
 import { requireAgent } from '../../utils/guards.js'
-import { INVOKE_REFUSED, recordInvokeRefusal } from '../../utils/invoke.js'
+import { ANONYMOUS_SESSION_ID, INVOKE_REFUSED, invokeStatus, recordInvokeRefusal } from '../../utils/invoke.js'
 import { defineOperationHandler } from '../../utils/operation.js'
 import { json } from '../../utils/respond.js'
 import { useTarget } from '../../utils/target.js'
-
-/** Mirrors the MCP face's fallback, so both name a session the same way when a caller gives none. */
-const ANONYMOUS_SESSION_ID = 'rpc'
-
-/**
- * A requestId that already names another call, or a re-sent call that asks for something other than
- * what its requestId already waits on, or that already ran and cannot be answered with its own
- * response, is a conflict; a session or workspace with too many asks waiting is told to slow down; a
- * session id past its cap is a bad request; a node shutting down or state busy in another process is
- * unavailable (review L7 of B18-B19). Other refusals are 422.
- */
-// AUDIT_UNAVAILABLE: a re-send joined to a call an audit failure stopped answers as that call did (review L5 of B23-B25).
-const ERROR_STATUS: Readonly<Record<string, number>> = { APPROVAL_CONFLICT: 409, REQUEST_ID_REUSED: 409, REQUEST_ALREADY_EXECUTED: 409, APPROVAL_LIMIT: 429, SESSION_ID_TOO_LONG: 400, BUCKLE_SHUTTING_DOWN: 503, STATE_BUSY: 503, AUDIT_UNAVAILABLE: 503 }
 
 export default defineOperationHandler({
   guards: [requireAgent(INVOKE_REFUSED)],
@@ -42,7 +29,7 @@ export default defineOperationHandler({
     // A required audit write that fails refuses the call before it runs: busy state is a retryable 503,
     // with no path in it (review L3 of B15-B17).
     const response = await mapAgentFailures(() => runtime.invoke({ request: parsed.data, sessionId, signal: event.req.signal }))
-    return json(response, { status: response.outcome === 'error' ? ERROR_STATUS[response.error.code] ?? 422 : 200 })
+    return json(response, { status: invokeStatus(response) })
   },
 })
 
