@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, fstatSync, mkdtempSync, openSync, read, readSync, renameSync, rmSync, statSync } from 'node:fs'
 import { open } from 'node:fs/promises'
-import { request as httpRequest, type IncomingMessage } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from 'node:http'
+import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -366,13 +366,16 @@ function header(response: IncomingMessage, name: string): string | undefined {
 interface Exchange { response: IncomingMessage; close(): void }
 
 /**
- * One request over node:http or node:https on its own connection: the connection must open within CONNECT_TIMEOUT_MS,
- * and nothing after times out here, as the node bounds its own wait. A body the node answers before it has read is cut
- * once its answer is read, so the rest is not sent for nothing.
+ * One request over node:http or node:https on a connection of its own: it must open within CONNECT_TIMEOUT_MS, and
+ * nothing after times out here, as the node bounds its own wait. The connection asks to be kept alive, so a node that
+ * answers before it has read the body drains the rest rather than closing on it, which resets the connection and can
+ * lose the answer; the body is cut here once the answer is read, so the rest is not sent for nothing.
  */
 function send(input: { url: URL; method: 'GET' | 'PUT'; headers: Record<string, string>; body?: () => Readable }): Promise<Exchange> {
-  const request = (input.url.protocol === 'https:' ? httpsRequest : httpRequest)(input.url, { method: input.method, headers: input.headers, agent: false })
-  const close = () => request.destroy()
+  const https = input.url.protocol === 'https:'
+  const agent = https ? new HttpsAgent({ keepAlive: true, maxSockets: 1 }) : new HttpAgent({ keepAlive: true, maxSockets: 1 })
+  const request = (https ? httpsRequest : httpRequest)(input.url, { method: input.method, headers: input.headers, agent })
+  const close = () => { request.destroy(); agent.destroy() }
   return new Promise<Exchange>((resolve, reject) => {
     const connecting = setTimeout(() => request.destroy(new CopyRefusal(`The node at ${input.url.origin} did not take the connection within ${CONNECT_TIMEOUT_MS / 1000} seconds`)), CONNECT_TIMEOUT_MS)
     request.once('socket', (socket) => {
@@ -387,6 +390,7 @@ function send(input: { url: URL; method: 'GET' | 'PUT'; headers: Record<string, 
     })
     request.once('error', (error) => {
       clearTimeout(connecting)
+      agent.destroy()
       reject(error instanceof CopyRefusal ? error : new CopyRefusal(`The node at ${input.url.origin} could not be reached, or closed the connection before it answered (${codeOf(error)})`))
     })
     if (!input.body) {

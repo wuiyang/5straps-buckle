@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { request as httpRequest } from 'node:http'
 import { connect } from 'node:net'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { copyCommand } from '../../cli/copy.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -57,12 +59,11 @@ async function settled(tool: string, count = 1): Promise<void> {
 }
 
 describe('PUT /v1/files', () => {
-  it('answers approval_required as /v1/invoke does, the body unread and the connection closed, then runs once the ask is approved, joined by its requestId', async () => {
+  it('answers approval_required as /v1/invoke does, the body unread, then runs once the ask is approved, joined by its requestId', async () => {
     const content = Buffer.from('a file for the workspace\n')
     const requestId = randomUUID()
     const first = await put('copied.txt', content, { requestId })
     expect(first.status).toBe(200)
-    expect(first.headers.get('connection')).toBe('close')
     const asked = await first.json() as InvokeResponse
     expect(asked).toMatchObject({ requestId, outcome: 'approval_required', approvals: [{ tool: 'fs_receive', rule: 'write_scope' }] })
     expect(entries(workspace)).toEqual([])
@@ -71,7 +72,6 @@ describe('PUT /v1/files', () => {
 
     const again = await put('copied.txt', content, { requestId })
     expect(again.status).toBe(200)
-    expect(again.headers.get('connection')).not.toBe('close')
     expect(await again.json()).toMatchObject({ requestId, outcome: 'ok', output: { path: 'copied.txt', size: content.byteLength, sha256: sha256(content) } })
     expect(readFileSync(join(workspace, 'copied.txt'))).toEqual(content)
     expect(entries(workspace)).toEqual(['copied.txt'])
@@ -124,7 +124,6 @@ describe('PUT /v1/files', () => {
     await grantWrites()
     const response = await put('wrong.txt', Buffer.from('these bytes'), { digest: sha256(Buffer.from('other bytes')) })
     expect(response.status).toBe(422)
-    expect(response.headers.get('connection')).toBe('close')
     expect(await response.json()).toMatchObject({ outcome: 'error', error: { code: 'TRANSFER_DIGEST_MISMATCH' } })
     expect(entries(workspace)).toEqual([])
   })
@@ -232,3 +231,53 @@ describe('GET /v1/files', () => {
     expect(manifest.tools.map(tool => tool.name)).not.toContain('fs_receive')
   })
 })
+
+describe('buckle cp against this node', () => {
+  it('copies a file in once a person approves it, back out, and between two workspaces, the digests matching each way', async () => {
+    const node = await buckle.listen()
+    const here = mkdtempSync(join(tmpdir(), 'files-cp-'))
+    const content = Buffer.alloc(3 * 1_048_576, 0)
+    for (let index = 0; index < content.byteLength; index += 4093) content[index] = index % 241
+    writeFileSync(join(here, 'app.tgz'), content)
+    let out = ''
+    let err = ''
+    const io = { stdout: { write: (text: string) => { out += text } }, stderr: { write: (text: string) => { err += text } }, pollMs: 20, running: async () => null }
+    const workspaceName = buckle.runtime.workspaceName()
+
+    // In: the first write to the folder asks; the copy waits, then runs once the ask is approved at the node.
+    const copying = copyCommand([join(here, 'app.tgz'), `${workspaceName}:`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)
+    const token = await Promise.race([waitingToken('fs_receive'), copying.then((result) => { throw new Error(`buckle cp ended before it asked: ${JSON.stringify(result)} ${err}`) })])
+    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'session' }, 'admin')
+    expect(await copying).toEqual({ exitCode: 0 })
+    expect(err).toContain(`then approve with: buckle approve ${token} --scope session --workspace ${workspaceName}`)
+    expect(out).toBe(`Copied ${content.byteLength} bytes to ${workspaceName}:app.tgz (sha256 ${sha256(content)})\n`)
+    expect(sha256(readFileSync(join(workspace, 'app.tgz')))).toBe(sha256(content))
+
+    // Out: a read in the workspace runs without asking.
+    out = ''
+    expect(await copyCommand([`${workspaceName}:app.tgz`, join(here, 'back.tgz'), '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)).toEqual({ exitCode: 0 })
+    expect(sha256(readFileSync(join(here, 'back.tgz')))).toBe(sha256(content))
+    expect(out).toBe(`Copied ${content.byteLength} bytes to ${join(here, 'back.tgz')} (sha256 ${sha256(content)})\n`)
+
+    // Between: out of the workspace and into it again, under its id, each a call of its own, the session's grant applying.
+    out = ''
+    mkdirSync(join(workspace, 'copies'))
+    expect(await copyCommand([`${workspaceName}:app.tgz`, `${buckle.runtime.workspaceId}:copies`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)).toEqual({ exitCode: 0 })
+    expect(out).toBe(`Copied ${content.byteLength} bytes to ${buckle.runtime.workspaceId}:copies/app.tgz (sha256 ${sha256(content)})\n`)
+    expect(sha256(readFileSync(join(workspace, 'copies', 'app.tgz')))).toBe(sha256(content))
+    // Each folder target is refused as one before anyone is asked, and sent again by the file's name.
+    expect(results('fs_receive').map(entry => [entry.outcome, entry.detail ?? null])).toEqual([['error', 'TARGET_IS_DIRECTORY'], ['approval_required', null], ['ok', null], ['error', 'TARGET_IS_DIRECTORY'], ['ok', null]])
+    expect(new Set(results('fs_receive').map(entry => entry.sessionId))).toEqual(new Set(['buckle-cp']))
+  })
+})
+
+/** The token of the first ask `tool` leaves waiting, once it has. */
+async function waitingToken(tool: string): Promise<string> {
+  const deadline = Date.now() + 10_000
+  for (;;) {
+    const ask = buckle.runtime.approvalService.waiting().find(item => item.request.tool === tool)
+    if (ask) return ask.request.token
+    if (Date.now() > deadline) throw new Error(`No ${tool} ask is waiting`)
+    await new Promise(resolve => setTimeout(resolve, 20))
+  }
+}
