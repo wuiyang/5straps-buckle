@@ -181,6 +181,38 @@ describe('fs_receive', () => {
     expect(entries(workspace)).toEqual(['sub'])
   })
 
+  it('reads a trailing separator as a folder: a missing one is named, a file is not replaced, and nothing is made or asked', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'notes.txt'), 'my notes')
+    mkdirSync(join(workspace, 'sub'))
+    const content = Buffer.from('x')
+    const missing = await call(runtime, 'fs_receive', { path: 'releases/', bytes: 1, sha256: sha256(content) }, body([content]).file)
+    expect(errorOf(missing)).toMatchObject({ code: 'PARENT_MISSING', message: expect.stringContaining('The folder releases does not exist') })
+    const file = await call(runtime, 'fs_receive', { path: 'notes.txt/', bytes: 1, sha256: sha256(content) }, body([content]).file)
+    expect(errorOf(file)).toMatchObject({ message: expect.stringContaining('notes.txt/ is a file, not a folder') })
+    const folder = await call(runtime, 'fs_receive', { path: 'sub/', bytes: 1, sha256: sha256(content) }, body([content]).file)
+    expect(errorOf(folder)?.code).toBe('TARGET_IS_DIRECTORY')
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'notes.txt'), 'utf8')).toBe('my notes')
+    expect(entries(workspace)).toEqual(['notes.txt', 'sub'])
+  })
+
+  it('answers TARGET_IS_DIRECTORY for a folder outside the workspace once the write is judged, so the copy can name the file in it', async () => {
+    const { runtime, root } = await node()
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    await runtime.grants.grant({ sessionId: 'copy', rule: 'write_scope', subject: outside, scope: 'session' })
+    const content = Buffer.from('into a folder')
+    const sent = body([content])
+    const response = await call(runtime, 'fs_receive', { path: outside, bytes: content.byteLength, sha256: sha256(content) }, sent.file)
+    expect(errorOf(response)).toMatchObject({ code: 'TARGET_IS_DIRECTORY', message: expect.stringContaining('is a folder') })
+    expect(sent.pulled()).toBe(0)
+    expect(entries(outside)).toEqual([])
+    const named = await call(runtime, 'fs_receive', { path: join(outside, 'file.txt'), bytes: content.byteLength, sha256: sha256(content) }, body([content]).file)
+    expect(named.outcome).toBe('ok')
+    expect(entries(outside)).toEqual(['file.txt'])
+  })
+
   it('refuses a copy over the limit before anyone is asked or any byte is read', async () => {
     const { runtime, workspace } = await node({ BUCKLE_MAX_TRANSFER_BYTES: '8' })
     const sent = body([Buffer.from('nine byte')])

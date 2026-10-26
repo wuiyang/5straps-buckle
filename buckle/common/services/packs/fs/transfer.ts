@@ -46,14 +46,29 @@ export interface TransferContext {
 /**
  * What fs_receive settles before any rule judges it (ToolDefinition.judge): a copy over the node's limit, a `to` that is
  * a folder, and one whose folder does not exist are refused at once, so no person is asked about a write that would not
- * land. The landing is looked at only inside the roots the agent may name, so a probe learns nothing of the host there.
+ * land. The landing is looked at only inside the roots the agent may name, so a probe learns nothing of the host there;
+ * elsewhere the same look is taken once the write is judged (receiveFile).
  */
 export function settleReceive(input: z.output<typeof schemas.receiveInput>, context: TransferContext): void {
   if (input.bytes > context.maxTransferBytes) throw tooLarge(input.bytes, context.maxTransferBytes, 'nothing was received')
   const landing = resolveTarget(context.paths.resolve(input.path), { shares: context.paths.shares })
   if (!isInsideAny(context.paths.reachableRoots, landing)) return
-  if (statSync(landing, { throwIfNoEntry: false })?.isDirectory()) throw new ToolInputError(`${input.path} is a folder: name the file to write in it, as buckle cp does with the source's name`, { code: TARGET_IS_DIRECTORY })
-  if (!statSync(dirname(landing), { throwIfNoEntry: false })?.isDirectory()) throw parentMissing(context.paths.display(dirname(landing)))
+  refuseLanding(landing, input.path, context.paths)
+}
+
+/**
+ * Where an fs_receive would land, refused when it cannot take a file: a folder (`buckle cp` then names the file in it), a
+ * name that ends in a separator as a folder does without being one (a copy makes no folder, and replaces no file named as
+ * one), or a folder that does not exist. The path was resolved without its trailing separator, so `named` is read for it.
+ */
+function refuseLanding(landing: string, named: string, paths: PathView): void {
+  const entry = statSync(landing, { throwIfNoEntry: false })
+  if (entry?.isDirectory()) throw new ToolInputError(`${named} is a folder: name the file to write in it, as buckle cp does with the source's name`, { code: TARGET_IS_DIRECTORY })
+  if (/[/\\]$/.test(named)) {
+    if (entry !== undefined) throw new ToolInputError(`${named} is a file, not a folder: name it without the trailing separator to replace it`)
+    throw parentMissing(paths.display(landing))
+  }
+  if (!statSync(dirname(landing), { throwIfNoEntry: false })?.isDirectory()) throw parentMissing(paths.display(dirname(landing)))
 }
 
 /**
@@ -77,6 +92,8 @@ export async function receiveFile(input: z.output<typeof schemas.receiveInput>, 
   if (!body) throw new ToolInputError('The request carried no body to receive')
   const path = context.paths.resolve(input.path)
   const target = judgedPath({ named: input.path, kind: 'write', paths: context.paths, context })
+  // Outside the roots the agent may name, the landing is looked at only now, once the write is judged and a person allowed it.
+  refuseLanding(target, input.path, context.paths)
   const directory = openParent(target, input.path, context.paths)
   try {
     sweepPartials(directory, context.staleAfterMs)

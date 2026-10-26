@@ -124,6 +124,15 @@ describe('buckle cp into a workspace', () => {
     expect(node.seen[0]!.headers['x-buckle-request-id']).not.toBe(node.seen[1]!.headers['x-buckle-request-id'])
   })
 
+  it('names the file in the folder too where the node learns it is one only after the ask was approved', async () => {
+    const folder = json(422, { requestId: 'x', outcome: 'error', error: { code: 'TARGET_IS_DIRECTORY', message: '/srv/releases is a folder', retryable: false } })
+    const node = await fakeNode([asked(), folder, received])
+    const { file, content } = local()
+    const result = await cp([file, 'site:/srv/releases', '--node', node.url])
+    expect(result).toMatchObject({ exitCode: 0, out: `Copied ${content.byteLength} bytes to site:/srv/releases/app.tgz (sha256 ${sha256(content)})\n` })
+    expect(node.seen.map(seen => seen.query.get('path'))).toEqual(['/srv/releases', '/srv/releases', '/srv/releases/app.tgz'])
+  })
+
   it('exits 1 with the node\'s words on a denial, a refusal, and an ask that expired unanswered', async () => {
     const { file } = local()
     const denied = await cp([file, 'site:a.tgz', '--node', (await fakeNode([json(422, { requestId: 'x', outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false } })])).url])
