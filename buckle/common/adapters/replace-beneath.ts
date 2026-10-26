@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, constants, fchmodSync, lstatSync, readdirSync, renameSync, rmSync } from 'node:fs'
+import { closeSync, constants, fchmodSync, lstatSync, readdirSync, rmSync } from 'node:fs'
 import { isPlainName } from '../domain/paths.js'
 import { ToolInputError } from '../domain/tool.js'
 import { LinkAppearedError, openBeneath, type PinnedDirectory } from './beneath.js'
+import { isHeldOpen, replaceFile, type RenameIo } from './replace-file.js'
 
 /** The name a delivery is written into before it replaces its target: hidden, and new for each one. */
 export const PARTIAL_PREFIX = '.buckle-delivery-'
@@ -15,9 +16,10 @@ export const PARTIAL_PREFIX = '.buckle-delivery-'
  * (the umask, and any default ACL of the folder), and in place of an existing one with that one's mode, given as the
  * mode it is created with, which the kernel only narrows, and then set exactly, so it is never more open than the file it
  * replaces (re-checks of 2026-10-14: a mode worked out from the umask missed a folder's default ACL, and a private
- * target's copy was briefly open to others). An access ACL on the old file is not kept.
+ * target's copy was briefly open to others). An access ACL on the old file is not kept. Where Windows holds the target
+ * open the rename is tried again a few times (replaceFile), and a target still held is refused in words that say so.
  */
-export async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; signal: AbortSignal; fill: (descriptor: number) => Promise<void> }): Promise<void> {
+export async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; signal: AbortSignal; fill: (descriptor: number) => Promise<void>; /** The rename and the pause, for a test to hand in its own. */ io?: RenameIo }): Promise<void> {
   const mode = existingMode(input.directory.child(input.name), input.named)
   const partial = `${PARTIAL_PREFIX}${randomUUID()}`
   const descriptor = openBeneath(input.directory, partial, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, { shown: input.named }, mode ?? undefined)
@@ -28,7 +30,7 @@ export async function replaceBeneath(input: { directory: PinnedDirectory; name: 
       await input.fill(descriptor)
     } finally { closeSync(descriptor) }
     input.signal.throwIfAborted()
-    renameSync(input.directory.child(partial), input.directory.child(input.name))
+    await replaceOnto(input, partial)
     replaced = true
   } finally {
     if (!replaced) rmSync(input.directory.child(partial), { force: true })
@@ -56,4 +58,13 @@ function existingMode(path: string, named: string): number | null {
   if (entry.isSymbolicLink()) throw new LinkAppearedError(named)
   if (!entry.isFile()) throw new ToolInputError(`Not a regular file: ${named}`)
   return entry.mode & 0o777
+}
+
+async function replaceOnto(input: { directory: PinnedDirectory; name: string; named: string; io?: RenameIo }, partial: string): Promise<void> {
+  try {
+    await replaceFile(input.directory.child(partial), input.directory.child(input.name), input.io)
+  } catch (error) {
+    if (isHeldOpen(error)) throw new ToolInputError(`${input.named} is held open by another program, so it was not replaced; close it and send the call again`)
+    throw error
+  }
 }
