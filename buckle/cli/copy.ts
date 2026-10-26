@@ -297,8 +297,9 @@ async function receive(input: { response: IncomingMessage; size: number; digest:
   partials.add(partial)
   let kept = false
   try {
-    // The kernel only narrows the mode a file is created with; the old file's own is set exactly.
-    if (existing !== undefined) await handle.chmod(mode)
+    // The kernel only narrows the mode a file is created with; the old file's own is set exactly. A folder that holds no
+    // modes (a FAT mount) refuses that, and the file is then no wider than the one it replaces, which is all that is owed.
+    if (existing !== undefined) await handle.chmod(mode).catch(() => undefined)
     await land({ response: input.response, size: input.size, digest: input.digest, handle, target: input.target })
     await handle.close()
     await replaceDownload(partial, input.target, input.renameIo)

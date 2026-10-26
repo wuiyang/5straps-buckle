@@ -6,6 +6,7 @@ import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { open as openHandle } from 'node:fs/promises'
 import { copyCommand, COPY_USAGE, type CopyOptions } from '../cli/copy.js'
 
 // `buckle cp` against a node that answers as Buckle's files face does (the copy-verb brief): its success line and exit
@@ -262,6 +263,26 @@ describe('buckle cp out of a workspace, onto what is here', () => {
     await underUmask(0o000, async () => {
       expect((await cp(['site:new.bin', target, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
     })
+    expect(readFileSync(target)).toEqual(content)
+    expect(modeOf(target)).toBe(0o600)
+  })
+
+  it('still replaces a file on a folder that holds no modes, where the call that sets the mode is refused, no wider than it was', async () => {
+    const content = Buffer.from('on a mount without modes')
+    const { folder } = local()
+    const target = join(folder, 'fat.bin')
+    writeFileSync(target, 'old', { mode: 0o600 })
+    chmodSync(target, 0o600)
+    const handle = await openHandle(target)
+    const prototype = Object.getPrototypeOf(handle) as { chmod(mode: number): Promise<void> }
+    await handle.close()
+    const refused = vi.spyOn(prototype, 'chmod').mockRejectedValue(Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }))
+    try {
+      await underUmask(0o022, async () => {
+        expect((await cp(['site:a.bin', target, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
+      })
+      expect(refused).toHaveBeenCalledWith(0o600)
+    } finally { refused.mockRestore() }
     expect(readFileSync(target)).toEqual(content)
     expect(modeOf(target)).toBe(0o600)
   })

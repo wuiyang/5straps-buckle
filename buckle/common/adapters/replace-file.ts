@@ -11,7 +11,7 @@ export interface RenameIo {
   pause(ms: number): Promise<void>
 }
 
-export const SYSTEM_RENAME: RenameIo = { rename: renameSync, pause: ms => delay(ms) }
+const SYSTEM_RENAME: RenameIo = { rename: renameSync, pause: ms => delay(ms) }
 
 /**
  * Renames a written temporary over a file. On Windows that rename fails with EPERM or EBUSY while another handle
