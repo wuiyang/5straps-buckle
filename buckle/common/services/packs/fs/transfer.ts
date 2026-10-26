@@ -60,15 +60,21 @@ export function settleReceive(input: z.output<typeof schemas.receiveInput>, cont
  * Where an fs_receive would land, refused when it cannot take a file: a folder (`buckle cp` then names the file in it), a
  * name that ends in a separator as a folder does without being one (a copy makes no folder, and replaces no file named as
  * one), or a folder that does not exist. The path was resolved without its trailing separator, so `named` is read for it.
+ * A backslash is a separator on Windows alone; elsewhere it is part of a name, as in the path layer (withForwardSlashes).
+ * `platform` is the host's unless a test imitates another.
  */
-function refuseLanding(landing: string, named: string, paths: PathView): void {
+export function refuseLanding(landing: string, named: string, paths: PathView, platform: NodeJS.Platform = process.platform): void {
   const entry = statSync(landing, { throwIfNoEntry: false })
   if (entry?.isDirectory()) throw new ToolInputError(`${named} is a folder: name the file to write in it, as buckle cp does with the source's name`, { code: TARGET_IS_DIRECTORY })
-  if (/[/\\]$/.test(named)) {
+  if (endsInSeparator(named, platform)) {
     if (entry !== undefined) throw new ToolInputError(`${named} is a file, not a folder: name it without the trailing separator to replace it`)
     throw parentMissing(paths.display(landing))
   }
   if (!statSync(dirname(landing), { throwIfNoEntry: false })?.isDirectory()) throw parentMissing(paths.display(dirname(landing)))
+}
+
+function endsInSeparator(named: string, platform: NodeJS.Platform): boolean {
+  return (platform === 'win32' ? /[/\\]$/ : /\/$/).test(named)
 }
 
 /**

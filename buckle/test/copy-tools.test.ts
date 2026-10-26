@@ -6,8 +6,10 @@ import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describeCall } from '../common/domain/describe-call.js'
+import { createPathView } from '../common/domain/path-view.js'
 import type { FileChannel, IncomingFile, OutgoingFile } from '../common/domain/tool.js'
 import { MAX_TRANSFER_BYTES } from '../common/services/packs/browser/file-transfer.js'
+import { refuseLanding } from '../common/services/packs/fs/transfer.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -196,6 +198,18 @@ describe('fs_receive', () => {
     expect(runtime.approvalService.waiting()).toEqual([])
     expect(readFileSync(join(workspace, 'notes.txt'), 'utf8')).toBe('my notes')
     expect(entries(workspace)).toEqual(['notes.txt', 'sub'])
+  })
+
+  it('reads a trailing backslash as a folder spelling on Windows alone, where it is a separator; elsewhere it ends a file name', async () => {
+    const { workspace } = await node()
+    const landing = join(workspace, 'report')
+    const view = (platform: NodeJS.Platform) => createPathView({ root: workspace, mount: null, platform })
+    // As settleReceive reaches it on Windows: the path was resolved without its trailing separator, which `named` still holds.
+    expect(() => refuseLanding(landing, 'report\\', view('win32'), 'win32')).toThrow(/The folder report does not exist/)
+    expect(() => refuseLanding(landing, 'report/', view('win32'), 'win32')).toThrow(/The folder report does not exist/)
+    expect(() => refuseLanding(landing, 'report/', view('linux'), 'linux')).toThrow(/The folder report does not exist/)
+    expect(() => refuseLanding(`${landing}\\`, 'report\\', view('linux'), 'linux')).not.toThrow()
+    expect(() => refuseLanding(`${landing}\\`, 'report\\', view('darwin'), 'darwin')).not.toThrow()
   })
 
   it('answers TARGET_IS_DIRECTORY for a folder outside the workspace once the write is judged, so the copy can name the file in it', async () => {
