@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { outgoingFile } from '../layers/common/server/utils/files.js'
+import { FILES_HOLD_MS, filesWait, outgoingFile } from '../layers/common/server/utils/files.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // GET /v1/files hands fs_send a channel (outgoingFile) whose stream the response is: it pulls a chunk as the caller
@@ -63,5 +63,15 @@ describe('the response stream of GET /v1/files', () => {
     await reader.read()
     await reader.cancel()
     expect((await running).outcome).toBe('error')
+  })
+})
+
+describe('the wait a copy is held for a person', () => {
+  it('is the workspace\'s own, at most two minutes, so a held PUT and its upload fit the 300 seconds node:http gives a request', () => {
+    expect(FILES_HOLD_MS).toBe(120_000)
+    expect(filesWait(15_000)).toEqual({ mode: 'finite', ms: 15_000 })
+    expect(filesWait(1)).toEqual({ mode: 'finite', ms: 1 })
+    expect(filesWait(null)).toEqual({ mode: 'finite', ms: FILES_HOLD_MS })
+    expect(filesWait(600_000)).toEqual({ mode: 'finite', ms: FILES_HOLD_MS })
   })
 })

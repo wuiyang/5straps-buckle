@@ -17,12 +17,13 @@ const ALREADY_EXECUTED: typeof REQUEST_ALREADY_EXECUTED = 'REQUEST_ALREADY_EXECU
 export const FILES_STATUS: Readonly<Record<string, number>> = { [TOO_LARGE]: 413 }
 
 /**
- * How long a copy's call is held for a person at most, below the 300 seconds node:http gives a request to arrive whole:
- * a PUT whose body waits unread behind an ask past that is cut by the server, never answered. A shorter wait of the
+ * How long a copy's call is held for a person at most. node:http gives a request 300 seconds to arrive whole, and a
+ * PUT's body waits unread behind its ask, so the hold and the upload after it share those seconds: this leaves the
+ * upload 180 of them, where a PUT held past the 300 is cut by the server, never answered. A shorter wait of the
  * workspace's own holds as it is; one held until answered, or longer, answers approval_required at this bound, and
  * `buckle cp` sends it again under the same requestId.
  */
-export const FILES_HOLD_MS = 240_000
+export const FILES_HOLD_MS = 120_000
 
 /** The wait an entry point gives a copy's call: the workspace's own, at most FILES_HOLD_MS. */
 export function filesWait(approvalTimeoutMs: number | null): { mode: 'finite'; ms: number } {
