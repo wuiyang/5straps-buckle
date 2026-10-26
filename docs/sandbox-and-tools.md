@@ -9,7 +9,7 @@ that cannot run here is withheld with a reason rather than failing at call time,
 
 | Pack | Tools | Needs |
 |---|---|---|
-| `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_list`, `fs_find_names`, `fs_search_content` | nothing; `fs_search_content` needs `rg` |
+| `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_list`, `fs_find_names`, `fs_search_content`, `fs_receive`, `fs_send` | nothing; `fs_search_content` needs `rg`; the last two run only for [`buckle cp`](copy.md) |
 | `web` | `web_fetch`, `web_search` | `web_search` needs `BUCKLE_BRAVE_SEARCH_API_KEY` |
 | `shell` | `shell_exec`, `script_run` | a process sandbox, below; on unless the workspace sets `packs.shell` off |
 | `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git`, and `packs.hostGit` on |
@@ -81,44 +81,4 @@ A command that needs a credential file declares it in `sensitiveFiles`, which as
 and mounts the approved file read-only for that call. This needs bubblewrap with shell isolation.
 A [secret reference](secrets.md) hands a command one dotenv value without showing it.
 
-## Host Git, forge, and language servers
-
-These run on the host, outside the sandbox. Buckle judges the repository a call names, and each
-path `git_diff`, `git_log`, `git_blame`, and the language servers name, but not the paths
-`git_commit` stages or every file they read, so they start off. Turn them on for a repository you
-trust:
-
-```bash
-buckle workspace set packs.hostGit on    # the git and forge packs
-buckle workspace set packs.hostLsp on    # language servers in the dev pack
-```
-
-Each applies to that workspace alone. A filesystem `deny` or `ask` rule in its policy withholds
-all three packs again.
-
-`git_diff` and `git_log` judge each path they name as a read, as `git_blame` judges its file, so
-a named `.env` asks. git reads each path literally, never as a
-pattern, and a path outside the repository is refused. A `git_diff` naming no path, or a folder,
-judges each file it lists: one the rules keep from the agent, such as a `.env`, shows its header
-and line counts, not its content. A `git_log` naming no path lists every file's commits
-([known limits](known-limits-02.md#where-programs-come-from)).
-
-Each `git` pack call runs against
-the repository Buckle checked: git is handed the git directory, work tree, and common directory
-that check found, and the call is refused when any of them changes before or while git runs. It
-shows nothing of a submodule's changes or history: Buckle tells git to ignore submodules, but git
-still opens a submodule's `HEAD`, config, and refs to compare the recorded commit, and an error
-there can name that place ([known limits](known-limits-02.md#where-programs-come-from)). A
-repository whose `objects/info/alternates` file borrows objects from outside the workspace and its
-mounts is refused too; for a repository outside them that you approved reading, its own folder
-counts as well. The forge pack gets neither check
-([known limits](known-limits-04.md#the-forge-pack)).
-
-Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
-an empty directory Buckle owns, and overrides the repository's program settings, so no
-repository hook or configured program runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
-in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_API_URL`
-(`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
-rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
-
-[Part two](sandbox-and-tools-02.md) covers the browser's allowed hosts, `web_fetch` redirects, and the change history.
+[Part two](sandbox-and-tools-02.md) covers host Git, forge, and language servers, the browser's allowed hosts, `web_fetch` redirects, and the change history.

@@ -43,17 +43,7 @@ not and what it unlocks. The node's file also sets `BUCKLE_HOST=127.0.0.1`, `BUC
 and `BUCKLE_SANDBOX=auto`. Change the workspace's answers later with `buckle workspace set` and
 `buckle policy`, and the node's with `buckle settings set`.
 
-### The two credentials
-
-- The agent token belongs to the workspace. An HTTP client presents it as a bearer token to call
-  tools through `buckle serve`, which serves that workspace for it. Buckle keeps only its digest,
-  so `buckle init` prints it once; `buckle workspace token create` mints another.
-- `BUCKLE_ADMIN_TOKEN`, the admin credential, is the node's, in `buckle.env`. It opens the
-  experimental `/setup` face, which is off until `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, and
-  `buckle workspace` needs it before it changes workspaces or mints tokens.
-
-Running tools and answering approvals from the local CLI needs neither. Treat what `buckle init`
-prints, both credentials, like the file.
+The two credentials, the agent token and the admin token, are in [part two](first-run-02.md#the-two-credentials).
 
 ## Choosing the folder
 
@@ -124,6 +114,8 @@ proxy in front before exposing it. `buckle service install --now` keeps it runni
 | `GET /v1/manifest` | the workspace, its packs and tools, and its limits |
 | `GET /v1/skills` | the skills, with their text |
 | `POST /v1/invoke` | runs one tool call |
+| `PUT /v1/files` | receives one file for [`buckle cp`](copy.md) |
+| `GET /v1/files` | sends one file back for `buckle cp` |
 | `POST /mcp` | MCP over HTTP |
 
 ```bash

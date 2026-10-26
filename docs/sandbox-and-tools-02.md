@@ -1,8 +1,9 @@
 # Sandbox and tools, part two
 
-More of how Buckle, the approval and sandbox runtime on your machine, runs its tools: the
-browser's allowed hosts, how `web_fetch` follows redirects, and the change history. [Part one](sandbox-and-tools.md) covers the packs,
-sandboxing per platform, shell isolation, and host Git.
+More of how Buckle, the approval and sandbox runtime on your machine, runs its tools: host Git,
+forge, and language servers, the browser's allowed hosts, how `web_fetch` follows redirects, and the
+change history. [Part one](sandbox-and-tools.md) covers the packs, sandboxing per platform, and shell
+isolation.
 
 ## The browser's allowed hosts
 
@@ -53,3 +54,43 @@ Tool writes and shell publications are recorded as checkpoints under `history/`,
 buckle history list
 buckle history restore <id>
 ```
+
+## Host Git, forge, and language servers
+
+These run on the host, outside the sandbox. Buckle judges the repository a call names, and each
+path `git_diff`, `git_log`, `git_blame`, and the language servers name, but not the paths
+`git_commit` stages or every file they read, so they start off. Turn them on for a repository you
+trust:
+
+```bash
+buckle workspace set packs.hostGit on    # the git and forge packs
+buckle workspace set packs.hostLsp on    # language servers in the dev pack
+```
+
+Each applies to that workspace alone. A filesystem `deny` or `ask` rule in its policy withholds
+all three packs again.
+
+`git_diff` and `git_log` judge each path they name as a read, as `git_blame` judges its file, so
+a named `.env` asks. git reads each path literally, never as a
+pattern, and a path outside the repository is refused. A `git_diff` naming no path, or a folder,
+judges each file it lists: one the rules keep from the agent, such as a `.env`, shows its header
+and line counts, not its content. A `git_log` naming no path lists every file's commits
+([known limits](known-limits-02.md#where-programs-come-from)).
+
+Each `git` pack call runs against
+the repository Buckle checked: git is handed the git directory, work tree, and common directory
+that check found, and the call is refused when any of them changes before or while git runs. It
+shows nothing of a submodule's changes or history: Buckle tells git to ignore submodules, but git
+still opens a submodule's `HEAD`, config, and refs to compare the recorded commit, and an error
+there can name that place ([known limits](known-limits-02.md#where-programs-come-from)). A
+repository whose `objects/info/alternates` file borrows objects from outside the workspace and its
+mounts is refused too; for a repository outside them that you approved reading, its own folder
+counts as well. The forge pack gets neither check
+([known limits](known-limits-04.md#the-forge-pack)).
+
+Every `git` and `forge` call hides the system and global git configs, points `core.hooksPath` at
+an empty directory Buckle owns, and overrides the repository's program settings, so no
+repository hook or configured program runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
+in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_API_URL`
+(`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
+rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
