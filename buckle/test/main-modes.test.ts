@@ -84,6 +84,7 @@ describe('selectMode', () => {
     [['init', '--yes'], { kind: 'init', argv: ['--yes'] }],
     [['settings', 'set', 'shell', 'off'], { kind: 'settings', argv: ['set', 'shell', 'off'] }],
     [['client', 'keygen'], { kind: 'client', argv: ['keygen'] }],
+    [['cp', 'app.tgz', 'site:'], { kind: 'cp', argv: ['app.tgz', 'site:'] }],
     [['service', 'install', '--now'], { kind: 'service', argv: ['install', '--now'] }],
     [['serve'], { kind: 'serve', options: [] }],
     [['mcp'], { kind: 'mcp', options: [] }],

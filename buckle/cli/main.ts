@@ -311,6 +311,9 @@ function printUsage(): CliResult {
 
   buckle <group> <verb> [args]       Run a tool, e.g. buckle fs read src/app.ts
   buckle call <tool> --json '{...}'  Run a tool with raw JSON arguments
+  buckle cp <from> <to> [--node <url>] [--token-file <file>]
+                                     Copy one file between here and a workspace on a node, as
+                                     <path> and <workspace>:<path>; see buckle cp --help
 
   buckle approvals [--json] [--workspace <name> | --all]   Requests waiting for a decision (the current workspace, or every online one)
   buckle approvals --watch [--workspace <name> | --all]    Ask about each request as it arrives

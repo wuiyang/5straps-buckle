@@ -62,7 +62,7 @@ function toolCommands(): Set<string> {
 /** The commands that run no tool: the top-level verbs and the owner commands a skill may still name. */
 const NON_TOOL_COMMANDS = new Set([
   'init', 'serve', 'mcp', 'tools', 'manifest', 'skills', 'call', 'approve', 'approvals', 'check-url', 'grants',
-  'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy', 'keys', 'settings', 'client', 'help',
+  'workspace', 'workspaces', 'history', 'log', 'plugin', 'policy', 'keys', 'settings', 'client', 'cp', 'help',
 ])
 
 /** Every `buckle ...` line inside a fenced code block, its comment and flags dropped, as a word array after `buckle`. */

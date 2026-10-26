@@ -6,6 +6,7 @@ import { askAtTerminal } from './cli/ask.js'
 import { answerWithoutConfiguration, runCli, runInitCommand, runServiceCommand, runSettingsCommand } from './cli/main.js'
 import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
+import { copyCommand } from './cli/copy.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
@@ -24,7 +25,7 @@ import { builtEntryPath, setupServer } from './server/setup-server.js'
 import { builtMainPath } from './common/runtime/package-root.js'
 
 export type Mode =
-  | { kind: 'init' | 'settings' | 'client' | 'service' | 'cli'; argv: string[] }
+  | { kind: 'init' | 'settings' | 'client' | 'cp' | 'service' | 'cli'; argv: string[] }
   | { kind: 'serve' | 'mcp'; options: string[] }
 
 type ServiceKind = 'serve' | 'mcp'
@@ -53,7 +54,7 @@ export function takeGlobalFlags(argv: readonly string[]): { argv: string[]; skip
 
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
-  if (command === 'init' || command === 'settings' || command === 'client' || command === 'service') return { kind: command, argv: rest }
+  if (command === 'init' || command === 'settings' || command === 'client' || command === 'cp' || command === 'service') return { kind: command, argv: rest }
   if (command === 'serve' || command === 'mcp') return { kind: command, options: rest }
   return { kind: 'cli', argv: [...argv] }
 }
@@ -136,6 +137,9 @@ async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: { ski
   if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
   // A person's device, which needs no node: its own key and the node it signs for.
   if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
+  // A copy to or from a node's workspace needs no node here either, and reads no buckle.env: its token is the shell's or
+  // a file's, never the local node's settings.
+  if (mode.kind === 'cp') return (await copyCommand(mode.argv)).exitCode
   // Before the file is loaded, so no credential is in this process's environment when it runs systemctl, launchctl, or
   // schtasks.exe.
   if (mode.kind === 'service') return (await runServiceCommand(mode.argv, { skipOwnerOnlyCheck: global.skipOwnerOnlyCheck })).exitCode
