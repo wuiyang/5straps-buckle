@@ -234,9 +234,9 @@ describe('the command line of buckle cp', () => {
 
   it('reads C:\\ as a drive on Windows, so the file is looked for here', async () => {
     const node = await fakeNode([received])
-    const result = await cp(['C:\\Users\\you\\app.tgz', 'site:', '--node', node.url], {}, 'win32')
+    const result = await cp(['C:\\work\\app.tgz', 'site:', '--node', node.url], {}, 'win32')
     expect(result.exitCode).toBe(1)
-    expect(result.err).toContain('C:\\Users\\you\\app.tgz could not be opened')
+    expect(result.err).toContain('C:\\work\\app.tgz could not be opened')
     expect(node.seen).toEqual([])
   })
 

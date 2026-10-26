@@ -39,8 +39,8 @@ describe('an end of buckle cp', () => {
   })
 
   it.each([
-    ['C:\\Users\\you\\app.tgz', { kind: 'local', path: 'C:\\Users\\you\\app.tgz' }],
-    ['C:/Users/you/app.tgz', { kind: 'local', path: 'C:/Users/you/app.tgz' }],
+    ['C:\\work\\app.tgz', { kind: 'local', path: 'C:\\work\\app.tgz' }],
+    ['C:/work/app.tgz', { kind: 'local', path: 'C:/work/app.tgz' }],
     ['d:\\app.tgz', { kind: 'local', path: 'd:\\app.tgz' }],
   ] as const)('reads the Windows drive path %j as a file here on Windows', (text, end) => {
     expect(parseEnd(text, 'win32')).toEqual(end)
