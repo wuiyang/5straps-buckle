@@ -1,9 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, mkdtempSync, openSync, read, readSync, renameSync, rmSync, statSync } from 'node:fs'
+import { closeSync, constants, fstatSync, openSync, read, readSync, renameSync, rmSync, statSync } from 'node:fs'
 import { open } from 'node:fs/promises'
 import { Agent as HttpAgent, request as httpRequest, type IncomingMessage } from 'node:http'
 import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
-import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { Readable } from 'node:stream'
 import { setTimeout as delay } from 'node:timers/promises'
@@ -19,9 +18,9 @@ export interface CliResult { exitCode: number }
 
 export const COPY_USAGE = `Usage: buckle cp <from> <to> [--node <url>] [--token-file <file>]
 
-Copies one file between this machine and a workspace on a Buckle node, or between two workspaces on one node. The
-bytes go over the node's HTTP face, never through an agent, and the node judges each copy as it judges fs_write and
-fs_read: a copy that needs a person waits here until it is approved at the node, or denied.
+Copies one file between this machine and a workspace on a Buckle node. The bytes go over the node's HTTP face, never
+through an agent, and the node judges each copy as it judges fs_write and fs_read: a copy that needs a person waits
+here until it is approved at the node, or denied.
 
   <path> or local:<path>     a file on this machine
   <workspace>:<path>         a file in that workspace, by its name or id; <path> as fs_write takes it there,
@@ -31,7 +30,8 @@ fs_read: a copy that needs a person waits here until it is approved at the node,
   A slash before the first colon keeps an end on this machine (./notes:2026.txt). On Windows, C:\\ or C:/ is a
   drive here, so a workspace named with one letter is written by its id. A workspace whose name holds a colon is
   written by its id too. A <to> that is a folder takes the file's own name; a <to> whose folder does not exist is
-  refused, as no folder is made. Two files on this machine: use cp. Workspaces on two nodes: not yet.
+  refused, as no folder is made. Two files on this machine: use cp. Two workspaces: not yet, as a token opens one
+  workspace; copy the file out to this machine, then into the other. Workspaces on two nodes: not yet.
 
   --node <url>        The node, such as http://127.0.0.1:4320; else BUCKLE_NODE_URL; else the node buckle serve runs here
   --token-file <file> An owner-only file with a BUCKLE_AUTH_TOKEN=<token> line, the workspace's agent token; else
@@ -68,8 +68,8 @@ export interface CopyOptions {
 }
 
 /**
- * `buckle cp <from> <to>`: one file between this machine and a workspace of a node, or between two workspaces of one
- * node, through PUT and GET /v1/files under a workspace agent token. Exit 0 on a copy, 1 on a refusal or a denial, 2 on
+ * `buckle cp <from> <to>`: one file between this machine and a workspace of a node, through PUT and GET /v1/files under
+ * a workspace agent token, which opens its own workspace alone, so two workspaces are refused. Exit 0 on a copy, 1 on a refusal or a denial, 2 on
  * a command line it cannot read. Runs before the node's own settings load: this machine needs no node.
  */
 export async function copyCommand(argv: string[], environment: NodeJS.ProcessEnv = process.env, options: CopyOptions = {}): Promise<CliResult> {
@@ -86,11 +86,11 @@ export async function copyCommand(argv: string[], environment: NodeJS.ProcessEnv
     const platform = options.platform ?? process.platform
     const from = parseEnd(positionals[0]!, platform)
     const to = parseEnd(positionals[1]!, platform)
-    if (from.kind === 'local' && to.kind === 'local') throw new CopyUsageError('Both ends are files on this machine: use cp')
+    const route = routeOf(from, to)
     const node = await copyNode({ ...(values.node === undefined ? {} : { flag: values.node }), environment, ...(options.running ? { running: options.running } : {}) })
     const token = copyToken({ environment, ...(values['token-file'] === undefined ? {} : { tokenFile: values['token-file'] }), ...(options.ownerOnly ? { ownerOnly: options.ownerOnly } : {}) })
     const client: NodeClient = { node, token: token.token, tokenSource: token.source, stderr, pollMs: options.pollMs ?? POLL_MS }
-    const copied = await copy(client, from, to)
+    const copied = route.direction === 'in' ? await upload(client, { path: route.from.path, name: basename(route.from.path) }, route.to) : await download(client, route.from, route.to)
     stdout.write(`Copied ${copied.size} bytes to ${shownEnd(copied.end)} (sha256 ${copied.sha256})\n`)
     return { exitCode: 0 }
   } catch (error) {
@@ -119,27 +119,13 @@ type WorkspaceEnd = Extract<CopyEnd, { kind: 'workspace' }>
 type LocalEnd = Extract<CopyEnd, { kind: 'local' }>
 interface Copied { size: number; sha256: string; end: CopyEnd }
 
-async function copy(client: NodeClient, from: CopyEnd, to: CopyEnd): Promise<Copied> {
-  if (from.kind === 'local' && to.kind === 'workspace') return upload(client, { path: from.path, name: basename(from.path) }, to)
-  if (from.kind === 'workspace' && to.kind === 'local') return download(client, from, to)
-  if (from.kind === 'workspace' && to.kind === 'workspace') return between(client, from, to)
-  throw new CopyUsageError('Both ends are files on this machine: use cp')
-}
+type Route = { direction: 'in'; from: LocalEnd; to: WorkspaceEnd } | { direction: 'out'; from: WorkspaceEnd; to: LocalEnd }
 
-/**
- * Workspace to workspace on the one node: fs_send into a private temporary file here, then fs_receive from it, each
- * judged on its own, so a copy that waits for a person sends the file again without reading it again.
- */
-async function between(client: NodeClient, from: WorkspaceEnd, to: WorkspaceEnd): Promise<Copied> {
-  const folder = mkdtempSync(join(tmpdir(), 'buckle-cp-'))
-  try {
-    const name = workspaceName(from.path)
-    const staged = join(folder, name)
-    await download(client, from, { kind: 'local', path: staged })
-    return await upload(client, { path: staged, name }, to)
-  } finally {
-    rmSync(folder, { recursive: true, force: true })
-  }
+/** Which way the file goes; two files here, or two workspaces, are refused before the node or the token is looked at. */
+function routeOf(from: CopyEnd, to: CopyEnd): Route {
+  if (from.kind === 'local' && to.kind === 'workspace') return { direction: 'in', from, to }
+  if (from.kind === 'workspace' && to.kind === 'local') return { direction: 'out', from, to }
+  throw new CopyUsageError(from.kind === 'local' ? 'Both ends are files on this machine: use cp' : 'Both ends are workspaces: a token opens one workspace, so copy the file out to this machine first, then into the other')
 }
 
 /** One local file into a workspace: hashed once, then sent from the same descriptor at each send. */

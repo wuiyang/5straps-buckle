@@ -233,7 +233,7 @@ describe('GET /v1/files', () => {
 })
 
 describe('buckle cp against this node', () => {
-  it('copies a file in once a person approves it, back out, and between two workspaces, the digests matching each way', async () => {
+  it('copies a file in once a person approves it, back out, and in again by the workspace\'s id, the digests matching each way', async () => {
     const node = await buckle.listen()
     const here = mkdtempSync(join(tmpdir(), 'files-cp-'))
     const content = Buffer.alloc(3 * 1_048_576, 0)
@@ -259,12 +259,12 @@ describe('buckle cp against this node', () => {
     expect(sha256(readFileSync(join(here, 'back.tgz')))).toBe(sha256(content))
     expect(out).toBe(`Copied ${content.byteLength} bytes to ${join(here, 'back.tgz')} (sha256 ${sha256(content)})\n`)
 
-    // Between: out of the workspace and into it again, under its id, each a call of its own, the session's grant applying.
+    // Again: the copy that came out, in under the workspace's id and a folder, the session's grant applying.
     out = ''
     mkdirSync(join(workspace, 'copies'))
-    expect(await copyCommand([`${workspaceName}:app.tgz`, `${buckle.runtime.workspaceId}:copies`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)).toEqual({ exitCode: 0 })
-    expect(out).toBe(`Copied ${content.byteLength} bytes to ${buckle.runtime.workspaceId}:copies/app.tgz (sha256 ${sha256(content)})\n`)
-    expect(sha256(readFileSync(join(workspace, 'copies', 'app.tgz')))).toBe(sha256(content))
+    expect(await copyCommand([join(here, 'back.tgz'), `${buckle.runtime.workspaceId}:copies`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)).toEqual({ exitCode: 0 })
+    expect(out).toBe(`Copied ${content.byteLength} bytes to ${buckle.runtime.workspaceId}:copies/back.tgz (sha256 ${sha256(content)})\n`)
+    expect(sha256(readFileSync(join(workspace, 'copies', 'back.tgz')))).toBe(sha256(content))
     // Each folder target is refused as one before anyone is asked, and sent again by the file's name.
     expect(results('fs_receive').map(entry => [entry.outcome, entry.detail ?? null])).toEqual([['error', 'TARGET_IS_DIRECTORY'], ['approval_required', null], ['ok', null], ['error', 'TARGET_IS_DIRECTORY'], ['ok', null]])
     expect(new Set(results('fs_receive').map(entry => entry.sessionId))).toEqual(new Set(['buckle-cp']))

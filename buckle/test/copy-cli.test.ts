@@ -192,14 +192,16 @@ describe('buckle cp out of a workspace', () => {
   })
 })
 
-describe('buckle cp between two workspaces of one node', () => {
-  it('takes the file out of one and sends it into the other, each its own call', async () => {
-    const content = Buffer.from('between workspaces')
-    const node = await fakeNode([sent(content), received])
+describe('buckle cp between two workspaces', () => {
+  it('exits 2 before it asks the node anything: a token opens one workspace, so the file goes out here and in again', async () => {
+    const node = await fakeNode([sent(Buffer.from('between workspaces')), received])
     const result = await cp(['one:notes/a.md', 'two:b.md', '--node', node.url])
-    expect(result).toMatchObject({ exitCode: 0, out: `Copied ${content.byteLength} bytes to two:b.md (sha256 ${sha256(content)})\n` })
-    expect(node.seen.map(seen => `${seen.method} ${seen.path}`)).toEqual(['GET /workspaces/one/v1/files', 'PUT /workspaces/two/v1/files'])
-    expect(node.seen[1]!.body).toEqual(content)
+    expect(result.exitCode).toBe(2)
+    expect(result.err).toMatch(/^Both ends are workspaces: a token opens one workspace, so copy the file out to this machine first, then into the other\n/)
+    expect(result.err).toContain(COPY_USAGE)
+    expect(result.out).toBe('')
+    expect(node.seen).toEqual([])
+    expect(COPY_USAGE).not.toContain('between two workspaces on one node')
   })
 })
 
