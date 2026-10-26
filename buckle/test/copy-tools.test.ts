@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
+import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { describeCall } from '../common/domain/describe-call.js'
 import type { FileChannel, IncomingFile, OutgoingFile } from '../common/domain/tool.js'
 import { MAX_TRANSFER_BYTES } from '../common/services/packs/browser/file-transfer.js'
@@ -296,5 +297,36 @@ describe('the description of a copy', () => {
     expect(describeCall({ tool: 'fs_send', args: { path: 'gone.tgz' }, cwd: '/workspace' })).toBe('Send "gone.tgz" in "/workspace"')
     // A digest that is no digest is quoted as any value the caller chose.
     expect(describeCall({ tool: 'fs_receive', args: { path: 'x', bytes: 1, sha256: 'not-hex' }, cwd: '/w' })).toBe('Receive 1 byte (sha256 "not-hex") into "x" in "/w"')
+  })
+})
+
+describe('the tool policy and the two copy tools', () => {
+  const denying = (...tools: string[]) => ({ ...emptyWorkspacePolicy(), tools: { deny: tools } })
+
+  it('reads a denial of fs_write as a denial of fs_receive, and of fs_read as one of fs_send, so an upgrade opens no way round it', async () => {
+    const { runtime, workspace } = await node()
+    await grantWrites(runtime, workspace)
+    writeFileSync(join(workspace, 'there.txt'), 'there')
+    const content = Buffer.from('written')
+    const receive = () => call(runtime, 'fs_receive', { path: 'in.txt', bytes: content.byteLength, sha256: sha256(content) }, body([content]).file)
+    const send = () => call(runtime, 'fs_send', { path: 'there.txt' }, collector().file)
+    await runtime.policy.apply(denying('fs_write'))
+    expect(errorOf(await receive())).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect((await send()).outcome).toBe('ok')
+    await runtime.policy.apply(denying('fs_read'))
+    expect(errorOf(await send())).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect((await receive()).outcome).toBe('ok')
+    expect(entries(workspace)).toEqual(['in.txt', 'there.txt'])
+  })
+
+  it('offers the transfer limit only while fs_receive is allowed', async () => {
+    const { runtime } = await node()
+    expect(runtime.manifest().limits.maxTransferBytes).toBe(MAX_TRANSFER_BYTES)
+    await runtime.policy.apply(denying('fs_receive'))
+    expect(runtime.manifest().limits.maxTransferBytes).toBeUndefined()
+    await runtime.policy.apply(denying('fs_write'))
+    expect(runtime.manifest().limits.maxTransferBytes).toBeUndefined()
+    await runtime.policy.apply(emptyWorkspacePolicy())
+    expect(runtime.manifest().limits.maxTransferBytes).toBe(MAX_TRANSFER_BYTES)
   })
 })

@@ -15,7 +15,7 @@ import { existsSync, realpathSync, watch, type FSWatcher } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
-import { PROTOCOL_VERSION, emptyWorkspacePolicy, isWorkspaceToolAllowed, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
+import { PROTOCOL_VERSION, emptyWorkspacePolicy, type HarnessManifest, type InvokeResponse, type WorkspacePolicy, type ToolCapability } from '@5straps/protocol'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { createPluginRegistry, type PluginRegistry } from '../../adapters/plugin-registry.js'
 import { createFileGrantStore } from '../../adapters/grant-store/file-grant-store.js'
@@ -29,6 +29,7 @@ import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/appr
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
 import { ToolInputError } from '../../domain/tool.js'
+import { isToolAllowed } from '../../domain/tool-policy.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
 import { createCommandPolicyRule } from '../../domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../../domain/permission/rules/destructive-command-rule.js'
@@ -450,7 +451,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     browserHeldBy: () => browserHeldBy?.() ?? null,
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills() }), tools: manifestTools() }),
+    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
       return reason ? [{ name: tool.name, reason }] : []
@@ -676,7 +677,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    return { registry, permissions, paths, toolDenial: tool => (isWorkspaceToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
+    return { registry, permissions, paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
   }
 
   /**
@@ -799,7 +800,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   }
 
   function toolDenial(tool: string): string | null {
-    return isWorkspaceToolAllowed(compiled.policy, tool) ? null : TOOL_DISABLED
+    return isToolAllowed(compiled.policy, tool) ? null : TOOL_DISABLED
   }
 
   return runtime
@@ -977,6 +978,8 @@ function buildManifest(input: {
   sandbox: SandboxResolution
   paths: PathView
   skills: LoadedSkill[]
+  /** Whether the tool policy lets fs_receive run, which a copy into the workspace needs. */
+  copies: boolean
 }): HarnessManifest {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -998,8 +1001,9 @@ function buildManifest(input: {
       maxRequestBytes: input.config.maxRequestBytes,
       defaultTimeoutMs: input.config.defaultTimeoutMs,
       maxTimeoutMs: input.config.maxTimeoutMs,
-      // What `buckle cp` moves at most, where the fs pack serves fs_receive and fs_send (PUT and GET /v1/files).
-      ...(input.registry.has('fs_receive') ? { maxTransferBytes: input.config.maxTransferBytes } : {}),
+      // What `buckle cp` moves at most, where the fs pack serves fs_receive and fs_send (PUT and GET /v1/files) and the
+      // tool policy lets a copy in; a node that refuses every copy offers no limit.
+      ...(input.copies && input.registry.has('fs_receive') ? { maxTransferBytes: input.config.maxTransferBytes } : {}),
     },
     generatedAt: new Date().toISOString(),
   }
