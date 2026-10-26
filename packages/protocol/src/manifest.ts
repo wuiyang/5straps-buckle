@@ -42,6 +42,8 @@ export const HarnessManifestSchema = z.object({
     maxRequestBytes: z.number().int().positive(),
     defaultTimeoutMs: z.number().int().positive(),
     maxTimeoutMs: z.number().int().positive(),
+    /** The largest file one copy moves through PUT and GET /v1/files; absent where the node offers no file copy. */
+    maxTransferBytes: z.number().int().positive().optional(),
   }),
   generatedAt: z.iso.datetime(),
 })

@@ -15,6 +15,7 @@ import { systemdGuardedPaths } from '../domain/systemd-unit.js'
 import { compileCommandGlob, CommandGlobError } from '../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
+import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -125,6 +126,8 @@ export interface NodeConfig {
   /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */
   stateLockDeadlineMs?: number
   maxRequestBytes: number
+  /** The largest file one `buckle cp` moves through PUT or GET /v1/files (BUCKLE_MAX_TRANSFER_BYTES), 100 MiB by default. */
+  maxTransferBytes: number
   defaultTimeoutMs: number
   maxTimeoutMs: number
 }
@@ -281,6 +284,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
+    maxTransferBytes: parsePositiveInteger(environment.BUCKLE_MAX_TRANSFER_BYTES, MAX_TRANSFER_BYTES),
     defaultTimeoutMs: parsePositiveInteger(environment.BUCKLE_DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
     maxTimeoutMs: parsePositiveInteger(environment.BUCKLE_MAX_TIMEOUT_MS, DEFAULT_MAX_TIMEOUT_MS),
   }

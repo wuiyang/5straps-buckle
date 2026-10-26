@@ -848,6 +848,7 @@ async function buildPacks(input: {
     allowCode: input.config.allowCode,
     reachableTools: input.reachableTools,
     maxRequestBytes: input.config.maxRequestBytes,
+    maxTransferBytes: input.config.maxTransferBytes,
     allowHostGit: input.config.allowHostGit,
     allowHostLsp: input.config.allowHostLsp,
     shellNetwork: input.config.shellNetwork,
@@ -997,6 +998,8 @@ function buildManifest(input: {
       maxRequestBytes: input.config.maxRequestBytes,
       defaultTimeoutMs: input.config.defaultTimeoutMs,
       maxTimeoutMs: input.config.maxTimeoutMs,
+      // What `buckle cp` moves at most, where the fs pack serves fs_receive and fs_send (PUT and GET /v1/files).
+      ...(input.registry.has('fs_receive') ? { maxTransferBytes: input.config.maxTransferBytes } : {}),
     },
     generatedAt: new Date().toISOString(),
   }

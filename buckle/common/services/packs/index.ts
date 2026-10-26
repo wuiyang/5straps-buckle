@@ -79,6 +79,8 @@ export interface BuiltinPackOptions {
   reachableTools?: () => ToolCapability[]
   /** BUCKLE_MAX_REQUEST_BYTES, which a script's calls are held to as direct ones are. */
   maxRequestBytes?: number
+  /** BUCKLE_MAX_TRANSFER_BYTES: the largest file one `buckle cp` moves through fs_receive or fs_send. */
+  maxTransferBytes?: number
   /** The VM code mode runs scripts in; pi-codemode's when absent. */
   scriptVm?: ScriptVm
   shellNetwork?: boolean
@@ -133,7 +135,11 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
   const environment = hostEnvironment(untrusted, options.programSearch?.platform, shares)
   const git = program('git')
   const packs: Pack[] = [
-    createFsPack({ paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment }),
+    createFsPack({
+      paths: options.paths, runProcess: options.runProcess, ripgrep: programOrNull(program('rg')), protectedRoots: options.hiddenPaths, environment,
+      ...(options.maxTransferBytes === undefined ? {} : { maxTransferBytes: options.maxTransferBytes }),
+      ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
+    }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({

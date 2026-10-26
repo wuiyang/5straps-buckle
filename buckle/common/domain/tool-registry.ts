@@ -3,6 +3,10 @@ import type { RegisteredTool } from './tool.js'
 import { ToolExecutionError } from './tool.js'
 
 export interface ToolRegistry {
+  /**
+   * The tools a caller is offered: the manifest's, MCP's, a script's, and `buckle tools`. A tool the files route alone
+   * runs (RegisteredTool.transfer) is never among them, as no byte of a copy passes through a model.
+   */
   capabilities(): ToolCapability[]
   has(name: string): boolean
   get(name: string): RegisteredTool
@@ -20,7 +24,7 @@ export function createToolRegistry(tools: RegisteredTool[]): ToolRegistry {
     byName.set(tool.capability.name, tool)
   }
 
-  const sorted = [...byName.values()].sort((left, right) => left.capability.name.localeCompare(right.capability.name))
+  const sorted = [...byName.values()].filter(tool => tool.transfer === undefined).sort((left, right) => left.capability.name.localeCompare(right.capability.name))
 
   return {
     capabilities: () => sorted.map(tool => tool.capability),

@@ -28,6 +28,16 @@ export const writeInput = z.object({
 
 export const writeBatchInput = z.object({ files: z.array(writeInput).min(1).max(MAX_BATCH_FILES) })
 
+/** fs_receive's arguments, which the files route builds from its query and headers: where, how many bytes, and their digest. */
+export const receiveInput = z.object({
+  path: pathInput,
+  bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+  sha256: z.string().regex(/^[a-f0-9]{64}$/),
+}).strict()
+
+/** fs_send's arguments: the file the files route streams back. */
+export const sendInput = z.object({ path: pathInput }).strict()
+
 export const patchInput = z.object({
   path: pathInput,
   edits: z.array(z.object({

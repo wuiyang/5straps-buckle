@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
-import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, read, readdirSync, renameSync, rmSync, statSync, write } from 'node:fs'
+import { closeSync, constants, fstatSync, mkdirSync, openSync, read, readdirSync, rmSync, statSync, write } from 'node:fs'
 import { basename, dirname, join } from 'pathe'
 import { promisify } from 'node:util'
-import { LinkAppearedError, openBeneath, openRealDirectory, withFileBeneathAsync, type PinnedDirectory } from '../../../adapters/beneath.js'
+import { openRealDirectory, withFileBeneathAsync } from '../../../adapters/beneath.js'
+import { replaceBeneath, sweepPartials } from '../../../adapters/replace-beneath.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { ToolInputError, type ToolContext } from '../../../domain/tool.js'
 import { isMissingPathError } from '../../invocation/real-path.js'
@@ -125,63 +126,10 @@ async function deliver(file: Transferred, signal: AbortSignal, staleAfterMs: num
     const directory = openRealDirectory(dirname(file.target), { create: true, refusal: { shown: file.named } })
     try {
       sweepPartials(directory, staleAfterMs)
-      await replaceBeneath({ directory, name: basename(file.target), named: file.named, source, signal })
+      // Copied into a new name beside the target and renamed onto it once whole (replaceBeneath).
+      await replaceBeneath({ directory, name: basename(file.target), named: file.named, signal, fill: target => copy({ source, target, named: file.named, signal }) })
     } finally { directory.close() }
   } finally { closeSync(source) }
-}
-
-/** The name a delivery is copied into before it replaces its target: hidden, and new for each copy. */
-const PARTIAL_PREFIX = '.buckle-delivery-'
-
-/**
- * Copies `source` into a new file beside `name` in a directory reached without following a link, created exclusively,
- * and renames it onto `name` once the whole copy succeeded and the signal has not fired. On any failure or abort the
- * new file is removed and `name` is left as it was. A target that is a link, as one swapped in after the check, or not
- * a regular file, is refused before anything is made. The file is made as `fs_write` makes one: a new one with the
- * mode the kernel gives (the umask, and any default ACL of the folder), and in place of an existing one with that
- * one's mode, given as the mode it is created with, which the kernel only narrows, and then set exactly, so it is never
- * more open than the file it replaces (re-checks of 2026-10-14: a mode worked out from the umask missed a folder's
- * default ACL, and a private target's copy was briefly open to others). An access ACL on the old file is not kept.
- */
-async function replaceBeneath(input: { directory: PinnedDirectory; name: string; named: string; source: number; signal: AbortSignal }): Promise<void> {
-  const mode = existingMode(input.directory.child(input.name), input.named)
-  const partial = `${PARTIAL_PREFIX}${randomUUID()}`
-  const descriptor = openBeneath(input.directory, partial, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, { shown: input.named }, mode ?? undefined)
-  let replaced = false
-  try {
-    try {
-      if (mode !== null) fchmodSync(descriptor, mode)
-      await copy({ source: input.source, target: descriptor, named: input.named, signal: input.signal })
-    } finally { closeSync(descriptor) }
-    input.signal.throwIfAborted()
-    renameSync(input.directory.child(partial), input.directory.child(input.name))
-    replaced = true
-  } finally {
-    if (!replaced) rmSync(input.directory.child(partial), { force: true })
-  }
-}
-
-/**
- * Removes the partial deliveries a node stopped mid-copy left in a target's directory: regular files named with
- * PARTIAL_PREFIX older than `staleAfterMs`, which no call can still be writing, so none is left for good.
- */
-function sweepPartials(directory: PinnedDirectory, staleAfterMs: number, now = Date.now()): void {
-  for (const name of readdirSync(directory.self).filter(entry => entry.startsWith(PARTIAL_PREFIX) && isPlainName(entry))) {
-    const path = directory.child(name)
-    try {
-      const entry = lstatSync(path)
-      if (entry.isFile() && now - entry.mtimeMs > staleAfterMs) rmSync(path, { force: true })
-    } catch { /* Gone meanwhile, or another process sweeps it. */ }
-  }
-}
-
-/** The permission bits of the regular file at `path`, null where there is none; a link or any other entry is refused. */
-function existingMode(path: string, named: string): number | null {
-  const entry = lstatSync(path, { throwIfNoEntry: false })
-  if (entry === undefined) return null
-  if (entry.isSymbolicLink()) throw new LinkAppearedError(named)
-  if (!entry.isFile()) throw new ToolInputError(`Not a regular file: ${named}`)
-  return entry.mode & 0o777
 }
 
 async function copyInto(input: { source: number; staged: string; named: string; signal: AbortSignal }): Promise<void> {

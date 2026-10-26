@@ -21,6 +21,8 @@ const PHRASES: Readonly<Record<string, string>> = {
   fs_list: 'list a folder',
   fs_find_names: 'find files by name',
   fs_search_content: 'search file contents',
+  fs_receive: 'receive a copied file',
+  fs_send: 'send a copied file',
   git_status: 'read the git status',
   git_diff: 'read a git diff',
   git_log: 'read the git log',

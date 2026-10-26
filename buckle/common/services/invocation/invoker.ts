@@ -4,7 +4,7 @@ import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, realpathSync } from 'node:fs'
 import { isAbsolute } from 'pathe'
 import type { ChangeHistory } from '../history/journal.js'
-import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
@@ -16,7 +16,7 @@ import { CODE_CHANGED_REASON, CodeChangedError, JUDGE, passKey, QUICK_FLAG_REASO
 import { announcePass, judgeAuditOf, judgeNotes, withJudgeReason, type JudgedAsk, type JudgeGate } from '../judge/judge-gate.js'
 import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-log/file-action-log.js'
 import type { ToolRegistry } from '../../domain/tool-registry.js'
-import { CODE_REPLAY_DIVERGED, LockWaitError, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type NestedCall, type NetworkVerdict, type ToolContext } from '../../domain/tool.js'
+import { CODE_REPLAY_DIVERGED, LockWaitError, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type FileChannel, type NestedCall, type NetworkVerdict, type PreparedCall, type RegisteredTool, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
@@ -115,6 +115,11 @@ export interface InvokeInput {
   holdUntil?: number
   /** Set only by the invoker on a call a script made: told when the tool begins to run (NestedCall.onExecute). */
   onExecute?: () => void
+  /**
+   * Set only by the files route: the bytes of one `buckle cp`, which reach the tool through its context and never its
+   * arguments. Only the tool whose `transfer` names this kind runs with them, and no such tool runs without them.
+   */
+  file?: FileChannel
 }
 
 /**
@@ -148,12 +153,14 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, file }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
       await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
       let effects: ResolvedEffect[] = []
+      // What the tool's result entry keeps as it is (ToolDefinition.audited), once the call is prepared.
+      let audited: PreparedCall['audited']
       let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
       // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
       const key = executionKey({ request, sessionId })
@@ -193,8 +200,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
             return response
           }
           options.checkFolder?.()
-          const tool = options.registry.get(request.tool)
+          const tool = toolFor(options.registry, request.tool, file)
           const prepared = tool.prepare(request.args)
+          audited = prepared.audited
           // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
           // before anything is judged; each file the references name is judged where it lands, and its first use asks a
           // person (docs/secrets.md).
@@ -211,7 +219,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
           // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
           const fromCopy = prepared.managesHistory === true
-          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via })
+          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(prepared.facts ? { facts: prepared.facts } : {}) })
           // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
           // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
           // finding deadline-announce invoker.ts:175).
@@ -248,7 +256,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
             const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait } : undefined
             try {
-              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}) })
+              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
               markStarted()
               return output
             } catch (error) {
@@ -324,6 +332,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         durationMs: Math.round(performance.now() - startedAt),
         replayed,
         judge: judgeAuditOf(judgment.judged),
+        ...(audited ? { audited: audited(response.outcome === 'ok' && !replayed ? response.output : undefined) } : {}),
       })
       const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
       // A call that ran answers with what it did even when its result cannot be written: refusing it
@@ -337,6 +346,17 @@ export function createInvoker(options: InvokerOptions): Invoker {
     },
   }
   return invoker
+}
+
+/**
+ * The tool a call names, from the registry. One the files route alone runs (fs_receive, fs_send) is unavailable, as an
+ * unknown tool is, to a call that carries no file of its kind, so neither an agent's call nor a script's reaches it; and
+ * a call that carries a file runs no other tool.
+ */
+function toolFor(registry: ToolRegistry, name: string, file: FileChannel | undefined): RegisteredTool {
+  const tool = registry.get(name)
+  if (tool.transfer !== file?.kind) throw new ToolExecutionError(`Tool is not available: ${name}`, { code: 'TOOL_NOT_FOUND' })
+  return tool
 }
 
 /** The line a call writes before it is judged: who asked for what, with its arguments redacted. */
@@ -378,10 +398,13 @@ function buildEntry(input: {
   /** Answered with an earlier run's outcome: nothing ran for this attempt. */
   replayed: boolean
   judge: ActionLogEntry['judge']
+  /** What the tool's result entry keeps as it is, over the arguments' shape (ToolDefinition.audited). */
+  audited?: JsonObject
 }): ActionLogEntry {
   const { request, response, gate } = input
   const detail = input.replayed ? REPLAYED : describeDetail(response)
   const decidedBy = [...new Set([...gate.decidedBy ?? [], ...input.grantUses.flatMap(use => use.decidedBy === undefined ? [] : [use.decidedBy])])]
+  const shape = redactAuditArguments(request.args) as JsonObject
   return {
     at: new Date().toISOString(),
     requestId: request.requestId.slice(0, MAX_LOGGED_ID),
@@ -390,7 +413,7 @@ function buildEntry(input: {
     outcome: describeOutcome(response),
     durationMs: input.durationMs,
     effects: [...new Set(input.effects.map(effect => effect.kind))],
-    args: redactAuditArguments(request.args),
+    args: input.audited ? { ...shape, ...input.audited } : shape,
     ...(gate.asked.length > 0 ? { asked: gate.asked.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(gate.approvedBy.length > 0 ? { approvedBy: gate.approvedBy.map(value => value.split(':')[0] ?? 'permission') } : {}),
     ...(decidedBy.length > 0 ? { decidedBy } : {}),
@@ -594,6 +617,8 @@ async function clearPermissions(input: {
   held: { claim?: ExecutionClaim }
   judgment: Judgment
   via?: NestedOrigin
+  /** What the tool settled before the rules judged the call, which its description names (PreparedCall.facts). */
+  facts?: JsonObject
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects, held } = input
   const approvedBy: string[] = []
@@ -681,7 +706,7 @@ async function clearPermissions(input: {
   // A script's call says so, and names the stage the audit log groups the script's calls under (owner decision D82).
   // What the decision AI said, or that it rates on request, beside the whole action, and its level in the reason an agent reads (D91).
   const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
-  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
+  const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}), ...(input.facts ? { facts: input.facts } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   const waited = await options.approvalService.request({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), fingerprint: input.key.fingerprint, call,
@@ -852,6 +877,8 @@ async function executeWithTimeout(input: {
    * handed beside its wait for that lock outside the timer (ToolContext.untimed).
    */
   beginRun?: () => void
+  /** The bytes of a `buckle cp`, which the files route alone hands (InvokeInput.file). */
+  file?: FileChannel
 }): Promise<JsonValue> {
   const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
   const judgedReads = judged('read_path')
@@ -892,6 +919,7 @@ async function executeWithTimeout(input: {
       signal,
       ...(input.beginRun ? { beginRun: input.beginRun, untimed } : {}),
       ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),
+      ...(input.file ? { file: input.file } : {}),
       authorizeRead: async path => {
         if (!isAbsolute(path)) return false
         // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is

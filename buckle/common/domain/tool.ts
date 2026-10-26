@@ -98,6 +98,29 @@ export interface ToolContext {
    * (re-review of the code-mode slice, finding new-surface index.ts:338).
    */
   callerCancelled?: () => boolean
+  /** Handed by the files route alone, to the tool whose `transfer` names its kind: the bytes of one `buckle cp`. */
+  file?: FileChannel
+}
+
+/**
+ * The bytes of one file copy (`buckle cp`), beside a call and never in its arguments, so no byte passes through a model:
+ * the request body the files route streams in (fs_receive), or the response it streams out (fs_send).
+ */
+export type FileChannel = IncomingFile | OutgoingFile
+
+/** A PUT /v1/files body, which fs_receive reads as its bytes land, once the call is judged and never before. */
+export interface IncomingFile {
+  kind: 'receive'
+  body: ReadableStream<Uint8Array> | null
+}
+
+/**
+ * A GET /v1/files response, which fs_send fills from the file it opened: `send` resolves once the route has handed on
+ * every chunk, and rejects where the caller left or a chunk failed.
+ */
+export interface OutgoingFile {
+  kind: 'send'
+  send(file: { size: number; sha256: string; chunks: AsyncIterable<Uint8Array> }): Promise<void>
 }
 
 /** One call a script makes: its number in the script, the tool, its arguments, and what cancels it. */
@@ -145,6 +168,22 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
   reachesTools?: boolean
   /** Never called from a script: the code tools themselves (D82, point 3: no nesting of scripts). */
   outsideScripts?: boolean
+  /**
+   * Run by the files route alone, with the bytes of a `buckle cp` (ToolContext.file): never listed in the manifest, over
+   * MCP, or to a script, and unavailable to any call that carries no file of this kind, as an unknown tool is.
+   */
+  transfer?: FileChannel['kind']
+  /**
+   * What the tool settled before any rule judged the call that its description names beside the arguments, for the
+   * person who approves it (fs_send: the file's size as it stands then).
+   */
+  facts?: (input: TInput, judged: TJudged) => JsonObject
+  /**
+   * What the call's result entry keeps as it is, beside the arguments' shape, which the audit log otherwise hides: the
+   * facts that say which file moved (fs_receive and fs_send: the path, credentials hidden, the bytes and the digest),
+   * with the call's output where it ran. Never a file's content.
+   */
+  audited?: (input: TInput, output: JsonValue | undefined) => JsonObject
   /** The call's own time limit from its input, within the node's maximum; the request's when it names none. */
   timeoutMs?: (input: TInput) => number | undefined
   /**
@@ -178,6 +217,8 @@ export interface RegisteredTool {
   capability: ToolCapability
   reachesTools?: boolean
   outsideScripts?: boolean
+  /** Run by the files route alone (ToolDefinition.transfer). */
+  transfer?: FileChannel['kind']
   /** The authoring schema, handed to MCP so it registers the same contract the CLI parses. */
   inputSchema: z.ZodType<unknown, JsonObject>
   prepare(args: JsonObject): PreparedCall
@@ -189,6 +230,10 @@ export interface PreparedCall {
   reachesTools?: boolean
   timeoutMs?: number
   replayKey?: JsonObject
+  /** ToolDefinition.facts, settled with the effects. */
+  facts?: JsonObject
+  /** ToolDefinition.audited, for the call's result entry. */
+  audited?: (output: JsonValue | undefined) => JsonObject
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
@@ -277,6 +322,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
     capability,
     ...(definition.reachesTools ? { reachesTools: true } : {}),
     ...(definition.outsideScripts ? { outsideScripts: true } : {}),
+    ...(definition.transfer ? { transfer: definition.transfer } : {}),
     inputSchema: definition.input as z.ZodType<unknown, JsonObject>,
     prepare(args) {
       const parsed = definition.input.safeParse(args)
@@ -289,6 +335,8 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
         ...(definition.reachesTools ? { reachesTools: true } : {}),
         ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs(input) } : {}),
         ...(definition.replayKey ? { replayKey: definition.replayKey(input) } : {}),
+        ...(definition.facts ? { facts: definition.facts(input, judged) } : {}),
+        ...(definition.audited ? { audited: (output: JsonValue | undefined) => definition.audited!(input, output) } : {}),
         effects: definition.effects(input, judged),
         execute: context => definition.run(input, context, judged),
       }

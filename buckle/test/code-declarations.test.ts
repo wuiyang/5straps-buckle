@@ -35,7 +35,8 @@ function builtinTools(): ToolCapability[] {
     createFsPack({ paths, runProcess, ripgrep: { path: 'rg', argv0: 'rg', args: [] }, protectedRoots: [] }),
     createWebPack({ braveSearchApiKey: 'fixture', approved: null }),
   ]
-  const byName = new Map(packs.flatMap(pack => pack.tools.map(tool => [tool.capability.name, tool.capability] as const)))
+  // A tool the files route alone runs (fs_receive, fs_send) is never a script's, as the registry offers it to no caller.
+  const byName = new Map(packs.flatMap(pack => pack.tools.filter(tool => tool.transfer === undefined).map(tool => [tool.capability.name, tool.capability] as const)))
   return [...byName.values()].filter(tool => !CODE_TOOLS.includes(tool.name)).sort((left, right) => left.name.localeCompare(right.name))
 }
 

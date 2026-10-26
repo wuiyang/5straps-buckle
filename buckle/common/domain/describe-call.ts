@@ -35,7 +35,7 @@ export const SUMMARY_CUT = '[summary cut; the arguments below are complete]'
 /** How a call a script made opens its description. */
 export const SCRIPT_CALL_NOTE = 'Called by a'
 
-export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; parentRequestId: string } }): string {
+export function describeCall(input: { tool: string; args: JsonObject; cwd: string; via?: { tool: string; parentRequestId: string }; facts?: JsonObject }): string {
   const cut = { truncated: false }
   const facts = factsOf(cut)
   // A call a script made opens with that, ahead of anything a cut could drop (owner decision D82, point 6): the
@@ -44,7 +44,7 @@ export function describeCall(input: { tool: string; args: JsonObject; cwd: strin
   // only the size of (review of the code-mode slice, coordinator decision 4). The script is context; the call shown
   // whole is what is approved (owner decision D17).
   const via = input.via ? `${SCRIPT_CALL_NOTE} ${facts.fact(input.via.tool)} script, request ${facts.fact(input.via.parentRequestId)}; buckle approvals show <token> prints the script: ` : ''
-  return `${via}${capped(`${describeAction(input.tool, input.args, facts)} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut, MAX_DESCRIPTION_LENGTH - via.length)}`
+  return `${via}${capped(`${describeAction(input.tool, input.args, facts, input.facts ?? {})} in ${facts.fact(input.cwd, PATH_LENGTH)}`, cut, MAX_DESCRIPTION_LENGTH - via.length)}`
 }
 
 interface Facts {
@@ -54,10 +54,17 @@ interface Facts {
   names(prefix: string, value: JsonValue | undefined): string
 }
 
-function describeAction(tool: string, args: JsonObject, facts: Facts): string {
+/**
+ * `settled`: what the tool settled before the rules judged the call (PreparedCall.facts), named beside the arguments:
+ * the size of the file fs_send would send, as it stood then.
+ */
+function describeAction(tool: string, args: JsonObject, facts: Facts, settled: JsonObject): string {
   const { fact, paths, names } = facts
   const path = (key = 'path') => fact(text(args[key]) ?? '.', PATH_LENGTH)
   switch (tool) {
+    // A copy's bytes stand behind their count and digest, the one thing about the action not shown as it is (D17).
+    case 'fs_receive': return `Receive ${count(integer(args.bytes), 'byte')} (sha256 ${digest(args.sha256, fact)}) into ${path()}`
+    case 'fs_send': return `Send ${path()}${typeof settled.bytes === 'number' ? ` (${count(settled.bytes, 'byte')})` : ''}`
     case 'fs_read': return `Read ${path()}`
     case 'fs_read_batch': return `Read ${count(strings(args.paths).length, 'file')}: ${paths(strings(args.paths))}`
     case 'fs_write': return `Write ${bytes(args.content, args.encoding)} to ${path()}`
@@ -165,6 +172,16 @@ function byteCount(value: JsonValue | undefined, encoding?: JsonValue): number {
 
 function count(value: number, noun: string): string {
   return `${value} ${noun}${value === 1 ? '' : 's'}`
+}
+
+function integer(value: JsonValue | undefined): number {
+  return typeof value === 'number' && Number.isSafeInteger(value) ? value : 0
+}
+
+/** A sha256 digest as hex, bare where it is one, else quoted as any fact the caller chose. */
+function digest(value: JsonValue | undefined, fact: Facts['fact']): string {
+  const shown = text(value) ?? ''
+  return /^[a-f0-9]{64}$/.test(shown) ? shown : fact(shown)
 }
 
 function text(value: JsonValue | undefined): string | undefined {
