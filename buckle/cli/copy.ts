@@ -48,8 +48,12 @@ const CONNECT_TIMEOUT_MS = 30_000
 const POLL_MS = 2_000
 /** The mode a downloaded file is made with where none is replaced: owner only, as the workspace's file may be a secret. */
 const NEW_FILE_MODE = 0o600
-/** The signals that stop a copy where it stands, which remove a download's new file before the process ends. */
-const STOPPING: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
+/**
+ * The signals that stop a copy where it stands, which remove a download's new file before the process ends. SIGHUP is not
+ * one: a handler for it would end `nohup buckle cp` on a hangup that Node would otherwise let it ignore. A hangup without
+ * nohup still ends the process, and may leave the 0600 partial file beside the target.
+ */
+const STOPPING: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM']
 /** What a JSON answer may hold; a node's answer is far smaller. */
 const MAX_ANSWER_BYTES = 1_048_576
 const CHUNK_BYTES = 1_048_576

@@ -39,8 +39,10 @@ that others read. Where nothing is replaced, the file is made readable by its ow
 workspace file may be a secret.
 
 A rename onto a file that Windows holds open is tried again a few times. A file still held is
-named in the refusal. Ctrl-C, `SIGTERM`, and a closed terminal remove the new file of a download under
-way and end the copy, so no unverified bytes stay beside the target.
+named in the refusal. Ctrl-C and `SIGTERM` remove the new file of a download under way and end the
+copy, so no unverified bytes stay beside the target. A closed terminal (`SIGHUP`) is left alone, so
+`nohup buckle cp` survives it. Without `nohup` it ends the copy, and the owner-only partial file
+`.buckle-cp-<id>.part` may stay beside the target.
 
 The CLI connects with a 30-second connection timeout. It sets no other timeout. The output on success
 is one line:

@@ -352,24 +352,42 @@ describe('buckle cp out of a workspace, onto what is here', () => {
 describe('buckle cp stopped by a signal', () => {
   const signals = () => Object.assign(new EventEmitter(), { exit: vi.fn() })
 
-  it.each(['SIGINT', 'SIGTERM', 'SIGHUP'] as const)('removes the new file of a download %s cut short, exits with the signal\'s code, and leaves no listener', async (signal) => {
+  /** A download that has 50 of 1000 bytes and stalls; resolves once its new file holds the 50, with the copy still running. */
+  async function stalledDownload(options: CopyOptions): Promise<{ folder: string; copying: ReturnType<typeof cp> }> {
     const stalled: Answer = (_seen, response) => { response.writeHead(200, { 'content-length': '1000', 'x-buckle-sha256': 'a'.repeat(64) }); response.write(Buffer.alloc(50, 1)) }
     const node = await fakeNode([stalled])
     const { folder } = local()
-    const host = signals()
-    const copying = cp(['site:a.bin', join(folder, 'a.bin'), '--node', node.url], {}, undefined, { signals: host })
+    const copying = cp(['site:a.bin', join(folder, 'a.bin'), '--node', node.url], {}, undefined, options)
     const deadline = Date.now() + 10_000
     const partial = () => readdirSync(folder).find(name => name.startsWith('.buckle-cp-') && statSync(join(folder, name)).size === 50)
     while (partial() === undefined) {
       if (Date.now() > deadline) throw new Error('The download never began')
       await new Promise(resolve => setTimeout(resolve, 10))
     }
+    return { folder, copying }
+  }
+
+  it.each(['SIGINT', 'SIGTERM'] as const)('removes the new file of a download %s cut short, exits with the signal\'s code, and leaves no listener', async (signal) => {
+    const host = signals()
+    const { folder, copying } = await stalledDownload({ signals: host })
+    expect(host.eventNames()).toEqual(['SIGINT', 'SIGTERM'])
     host.emit(signal)
-    expect(host.exit).toHaveBeenCalledWith({ SIGINT: 130, SIGTERM: 143, SIGHUP: 129 }[signal])
+    expect(host.exit).toHaveBeenCalledWith({ SIGINT: 130, SIGTERM: 143 }[signal])
     expect(readdirSync(folder)).toEqual(['app.tgz'])
     servers.at(-1)!.closeAllConnections()
     await copying
-    for (const name of ['SIGINT', 'SIGTERM', 'SIGHUP']) expect(host.listenerCount(name)).toBe(0)
+    expect(host.eventNames()).toEqual([])
+  })
+
+  it('installs no SIGHUP listener while a copy runs, as Node would end a nohup copy on the hangup it was set to ignore', async () => {
+    const before = { hangup: process.listenerCount('SIGHUP'), interrupt: process.listenerCount('SIGINT') }
+    const { copying } = await stalledDownload({})
+    expect(process.listenerCount('SIGINT')).toBe(before.interrupt + 1)
+    expect(process.listenerCount('SIGHUP')).toBe(before.hangup)
+    servers.at(-1)!.closeAllConnections()
+    await copying
+    expect(process.listenerCount('SIGINT')).toBe(before.interrupt)
+    expect(process.listenerCount('SIGHUP')).toBe(before.hangup)
   })
 
   it('takes its listeners off once a copy ends, whether it copied or was refused', async () => {
