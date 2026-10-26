@@ -18,12 +18,12 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: BuckleRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-copy-stream-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   return { workspace, runtime }
@@ -63,6 +63,21 @@ describe('the response stream of GET /v1/files', () => {
     await reader.read()
     await reader.cancel()
     expect((await running).outcome).toBe('error')
+  })
+
+  it('ends the call at its timeout, and errors the response stream, where the caller holds the connection and reads no more', async () => {
+    const { runtime, workspace } = await node({ BUCKLE_MAX_TIMEOUT_MS: '300' })
+    writeFileSync(join(workspace, 'stalled.bin'), Buffer.alloc(3 * 1_048_576, 3))
+    const outgoing = outgoingFile()
+    const running = call(runtime, 'stalled.bin', outgoing.channel)
+    const reader = (await outgoing.ready).stream.getReader()
+    await reader.read()
+    // The caller reads nothing more and does not leave: only the call's own timeout can end it.
+    const ended = await Promise.race([running, new Promise<'still running'>(resolve => setTimeout(() => resolve('still running'), 5_000))])
+    expect(ended).not.toBe('still running')
+    expect((ended as InvokeResponse).outcome).toBe('error')
+    await expect(reader.read()).rejects.toBeDefined()
+    expect(await runtime.hasActiveWork()).toBe(false)
   })
 })
 

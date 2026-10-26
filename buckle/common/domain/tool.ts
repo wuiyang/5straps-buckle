@@ -116,11 +116,12 @@ export interface IncomingFile {
 
 /**
  * A GET /v1/files response, which fs_send fills from the file it opened: `send` resolves once the route has handed on
- * every chunk, and rejects where the caller left or a chunk failed.
+ * every chunk, and rejects where the caller left, a chunk failed, or the call's `signal` fired (its timeout, the
+ * shutdown), whether or not the caller is still reading, which the route cuts the response short for.
  */
 export interface OutgoingFile {
   kind: 'send'
-  send(file: { size: number; sha256: string; chunks: AsyncIterable<Uint8Array> }): Promise<void>
+  send(file: { size: number; sha256: string; chunks: AsyncIterable<Uint8Array>; signal: AbortSignal }): Promise<void>
 }
 
 /** One call a script makes: its number in the script, the tool, its arguments, and what cancels it. */

@@ -118,7 +118,7 @@ export async function sendFile(input: z.output<typeof schemas.sendInput>, contex
       if (size > context.maxTransferBytes) throw tooLarge(size, context.maxTransferBytes, 'nothing was sent')
       const read = { descriptor, size, signal: context.signal, named: input.path }
       const sha256 = await digestOf(read)
-      await outgoing.send({ size, sha256, chunks: chunksOf({ ...read, sha256 }) })
+      await outgoing.send({ size, sha256, chunks: chunksOf({ ...read, sha256 }), signal: context.signal })
       return { path: context.paths.display(path), size, sha256 }
     })
   } catch (error) {

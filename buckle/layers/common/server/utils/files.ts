@@ -106,7 +106,8 @@ export interface ReadyFile { size: number; sha256: string; stream: ReadableStrea
 /**
  * The response side of fs_send's channel: `ready` resolves once the tool has the file open and hashed, and the stream
  * pulls its chunks one at a time as the caller reads. The tool's `send` settles when the last chunk is handed on, or
- * with the failure that cut the stream: a chunk that failed, or the caller who left.
+ * with the failure that cut the stream: a chunk that failed, the caller who left, or the call's own end (its timeout,
+ * the shutdown), which cuts the response and settles the send though the caller holds the connection and reads nothing.
  */
 export function outgoingFile(): { channel: OutgoingFile; ready: Promise<ReadyFile> } {
   let announce: (file: ReadyFile) => void = () => {}
@@ -115,25 +116,39 @@ export function outgoingFile(): { channel: OutgoingFile; ready: Promise<ReadyFil
     kind: 'send',
     send: file => new Promise<void>((resolve, reject) => {
       const chunks = file.chunks[Symbol.asyncIterator]()
-      const stream = new ReadableStream<Uint8Array>({
+      let responseStream: ReadableStreamDefaultController<Uint8Array> | undefined
+      const ended = () => file.signal.removeEventListener('abort', cut)
+      const cut = () => {
+        ended()
+        try { responseStream?.error(file.signal.reason) } catch { /* Closed already. */ }
+        reject(file.signal.reason)
+        void chunks.return?.(undefined)
+      }
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) { responseStream = controller },
         async pull(controller) {
           try {
             const next = await chunks.next()
             if (next.done) {
+              ended()
               controller.close()
               resolve()
             } else controller.enqueue(next.value)
           } catch (error) {
+            ended()
             controller.error(error)
             reject(error)
           }
         },
         async cancel(reason) {
+          ended()
           reject(reason instanceof Error ? reason : new Error('The caller left before the whole file was sent'))
           await chunks.return?.(undefined)
         },
       }, { highWaterMark: 0 })
-      announce({ size: file.size, sha256: file.sha256, stream })
+      if (file.signal.aborted) cut()
+      else file.signal.addEventListener('abort', cut, { once: true })
+      announce({ size: file.size, sha256: file.sha256, stream: body })
     }),
   }
   return { channel, ready }
