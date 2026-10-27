@@ -15,6 +15,13 @@ const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard'
  */
 export const PATH_SPELLING_REASON = 'A command written as a path runs the program at that path, which an allow rule naming the bare command does not admit; asked rather than run (a path written plainly with slashes can be named by an allow rule that spells it)'
 
+/**
+ * A target word that stands for more than one file, or for one Buckle cannot see: a glob character, a brace group of
+ * choices or a range (`{a,b}.txt`, `{1..9}`), a variable or a command substitution (`$FILES`, `$(ls)`, a backtick), and
+ * the `{}` that find -exec fills with each file it finds.
+ */
+const SEVERAL_TARGETS = /[*?[$`]|\{[^{}]*(?:,|\.\.)[^{}]*\}|^\{\}$/
+
 /** Shell text is not argv, so these run against the script body of `bash -c`. */
 const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /\|\s*(sudo\s+)?(ba|z|k)?sh\b/, reason: 'Pipes a downloaded payload into a shell' },
@@ -96,22 +103,25 @@ function subjectOf(effect: { command: string; args: readonly string[] }): string
 }
 
 function firstReason(forms: readonly string[][]): string | null {
+  // An rm with no target of its own is one only xargs gives its files.
+  const fed = forms.some(([command = '', ...args]) => parseArgv(command, args).command === 'xargs')
   for (const [command = '', ...args] of forms) {
     const argv = parseArgv(command, args)
-    const reason = classifyArgv(argv, args) ?? classifyShellScript(argv)
+    const reason = classifyArgv(argv, args, fed) ?? classifyShellScript(argv)
     if (reason) return reason
   }
   return null
 }
 
-function classifyArgv(argv: ParsedArgv, args: readonly string[]): string | null {
+function classifyArgv(argv: ParsedArgv, args: readonly string[], fed: boolean): string | null {
   if (PRIVILEGE_COMMANDS.has(argv.command)) return `${argv.command} escalates privileges`
   if (DISK_COMMANDS.has(argv.command) || argv.command.startsWith('mkfs.')) return `${argv.command} destroys disk contents`
 
   if (argv.command === 'rm' && hasFlag(argv, 'r', 'recursive') ) return 'Recursive delete'
   if (argv.command === 'rm' && hasFlag(argv, 'f', 'force')) return 'Forced delete'
-  // A plain rm of one literal path stays as it was; a glob or a second target deletes what nobody named (the fs-verbs brief).
-  if (argv.command === 'rm' && (argv.positionals.length >= 2 || argv.positionals.some(target => /[*?[]/.test(target)))) return 'Delete of several files'
+  // A plain rm of one literal path stays as it was; a glob, a second target, or a word the shell expands into targets
+  // deletes what nobody named (the fs-verbs brief), and so does an rm that xargs feeds its targets.
+  if (argv.command === 'rm' && (argv.positionals.length >= 2 || (argv.positionals.length === 0 && fed) || argv.positionals.some(target => SEVERAL_TARGETS.test(target)))) return 'Delete of several files'
   if (argv.command === 'dd' && argv.positionals.some(item => item.startsWith('of='))) return 'dd writes over a target'
   if (argv.command === 'truncate') return 'Truncates a file in place'
   if ((argv.command === 'chmod' || argv.command === 'chown') && hasFlag(argv, 'R', 'recursive')) {

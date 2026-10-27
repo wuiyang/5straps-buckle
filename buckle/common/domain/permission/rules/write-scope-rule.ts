@@ -1,6 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
 import { outsideMountReason, readOnlyMountReason, type PathView } from '../../path-view.js'
-import { isInside, isInsideAny } from '../../paths.js'
+import { isInside, isInsideAny, isInsideComparable } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny } from '../decision.js'
 import { isFloorSubject } from './destructive-path-rule.js'
@@ -11,6 +11,8 @@ export interface WriteScopeOptions {
   /** Strict mode refuses to persist write grants, so every directory asks every session. */
   strict: boolean
   pathDecision?: (path: string) => 'inherit' | 'allow' | 'ask' | 'deny'
+  /** Whether the volume ignores case, which decides a root by any spelling of it; the platform's default when absent. */
+  caseInsensitive?: boolean
 }
 
 /**
@@ -22,7 +24,7 @@ export interface WriteScopeOptions {
  * one, or a read-only mount's source. One at the destructive floor asks there alone (destructive-path-rule.ts); a move's
  * source that moves a file and replaces nothing asks as a write to its folder does.
  */
-export function createWriteScopeRule({ paths, strict, pathDecision }: WriteScopeOptions): PermissionRule {
+export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensitive }: WriteScopeOptions): PermissionRule {
   const offeredScopes: GrantScope[] = strict ? ['once'] : ['once', 'session', 'always']
   const reachable = paths.reachableRoots
   const readOnly = paths.mounts.filter(mount => mount.access === 'ro').map(mount => mount.source)
@@ -32,7 +34,8 @@ export function createWriteScopeRule({ paths, strict, pathDecision }: WriteScope
     evaluate({ effect, grants }) {
       if (effect.kind !== 'write_path' && effect.kind !== 'delete_path') return null
       if (effect.kind === 'delete_path') {
-        const holder = [...reachable, ...readOnly].find(root => isInside(effect.path, root))
+        // Any spelling a volume that ignores case reads as the root is the root: a refusal never answers by case.
+        const holder = [...reachable, ...readOnly].find(root => isInsideComparable(effect.path, root, caseInsensitive))
         if (holder !== undefined) return deny('write_scope', effect.path, `${paths.toVirtual(effect.path)} is or holds ${paths.toVirtual(holder)}, a folder the workspace shows or a read-only mount, which no tool removes or moves`)
       }
       // A delete at the floor in a scratch root still asks there (destructive-path-rule.ts): only its refusals are here.

@@ -102,6 +102,16 @@ describe('a delete is refused where a write is', () => {
     expect(own.evaluate({ tool: 'fs_delete', effects: [removed('/work', { tree: counted(1, 1) })], grants: lookup() })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope', reason: '/work is or holds /work/project, a folder the workspace shows or a read-only mount, which no tool removes or moves' } })
   })
 
+  it('for the workspace\'s own folder by any spelling a volume that ignores case reads as it, and by its exact spelling elsewhere', () => {
+    const paths = createPathView({ root: '/work/proj', mount: null })
+    const variant = removed('/work/PROJ', { tree: counted(1, 1) })
+    const folded = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: true })])
+    expect(folded.evaluate({ tool: 'fs_delete', effects: [variant], grants: lookup() })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope' } })
+    const exact = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: false })])
+    expect(exact.evaluate({ tool: 'fs_delete', effects: [variant], grants: lookup() }).kind).not.toBe('deny')
+    expect(folded.evaluate({ tool: 'fs_move', effects: [removed('/work/Proj/', { tree: counted(1, 1) })], grants: lookup() }).kind).toBe('deny')
+  })
+
   it('where the workspace policy denies a write on the entry or on a path beneath the folder', () => {
     const rules = [{ path: 'secrets', write: 'deny' as const }, { path: 'docs/draft.md', write: 'ask' as const }]
     expect(evaluate([removed(`${WORKSPACE}/secrets/a.txt`)], {}, { rules })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy' } })
