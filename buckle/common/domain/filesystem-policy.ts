@@ -74,27 +74,35 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
       // A delete is a write; a folder removed or moved whole meets a rule on any path beneath it too.
       const operation = effect.kind === 'write_path' || effect.kind === 'delete_path' ? 'write' : 'read'
       const own = filesystemPathDecision({ ...input, path: effect.path, operation })
-      const decision = own === 'deny' || effect.kind !== 'delete_path' ? own : restrictionBeneath({ ...input, path: effect.path }) ?? own
-      const subject = `${operation}:${effect.path}`
-      if (decision === 'deny') return deny('filesystem_policy', subject, `Workspace policy denies ${operation} access`)
-      if (decision !== 'ask') return null
+      const verdicts = [{ operation: operation as 'read' | 'write', decision: own }]
+      // Removed whole, the folder takes the paths beneath it with it; landed whole, it puts them where its landing names them.
+      if (effect.kind === 'delete_path' || (effect.kind === 'write_path' && effect.folder)) verdicts.push({ operation: 'write', decision: restrictionBeneath({ ...input, path: effect.path, operation: 'write' }) ?? 'inherit' })
+      // Moved whole, it takes them out from under a rule that read-denied or read-asked them where they stood.
+      if (effect.kind === 'delete_path' && effect.moved) verdicts.push({ operation: 'read', decision: restrictionBeneath({ ...input, path: effect.path, operation: 'read' }) ?? 'inherit' })
+      const denied = verdicts.find(verdict => verdict.decision === 'deny')
+      if (denied) return deny('filesystem_policy', `${denied.operation}:${effect.path}`, `Workspace policy denies ${denied.operation} access`)
+      const asked = verdicts.find(verdict => verdict.decision === 'ask')
+      if (!asked) return null
+      const subject = `${asked.operation}:${effect.path}`
       if (grants.subjectsFor('filesystem_policy').includes(subject)) return allowedVia('filesystem_policy', subject)
-      return ask('filesystem_policy', subject, `Workspace policy requires approval for ${operation} access`, ['once'])
+      return ask('filesystem_policy', subject, `Workspace policy requires approval for ${asked.operation} access`, ['once'])
     },
   }
 }
 
 /**
- * The strictest write rule on a path inside `path`, not covering it: `deny` before `ask`, or null for none. A folder
- * removed with everything in it takes those paths with it, so their rules judge it too.
+ * The strictest rule for an operation on a path inside `path`, not covering it: `deny` before `ask`, or null for none. A
+ * folder removed with everything in it takes those paths with it, one landed whole puts files on them, and one moved whole
+ * takes them out from under a read rule, so their rules judge it too.
  */
-function restrictionBeneath(input: { root: string; path: string; policy: WorkspacePolicy; caseInsensitive?: boolean; platform?: NodeJS.Platform }): 'deny' | 'ask' | null {
+function restrictionBeneath(input: { root: string; path: string; operation: 'read' | 'write'; policy: WorkspacePolicy; caseInsensitive?: boolean; platform?: NodeJS.Platform }): 'deny' | 'ask' | null {
   const platform = input.platform ?? process.platform
   const met = (input.policy.filesystem?.rules ?? []).flatMap((rule) => {
-    if (rule.write !== 'deny' && rule.write !== 'ask') return []
+    const restriction = rule[input.operation]
+    if (restriction !== 'deny' && restriction !== 'ask') return []
     const named = rulePath(input.root, rule.path, platform)
     const targets = [named, canonicalPolicyPath(named, platform)]
-    return targets.some(target => isInsideComparable(input.path, target, input.caseInsensitive, platform)) ? [rule.write] : []
+    return targets.some(target => isInsideComparable(input.path, target, input.caseInsensitive, platform)) ? [restriction] : []
   })
   return met.includes('deny') ? 'deny' : met.includes('ask') ? 'ask' : null
 }

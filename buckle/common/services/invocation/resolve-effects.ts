@@ -20,9 +20,9 @@ export async function resolveEffects(input: { effects: ToolEffect[]; paths: Path
 async function resolveOne(effect: ToolEffect, paths: PathView): Promise<ResolvedEffect> {
   if (effect.kind === 'delete_path') {
     const entry = await entryEffect(effect.path, paths)
-    return { kind: 'delete_path', ...entry, floor: effect.floor, ...(effect.tree ? { tree: effect.tree } : {}) }
+    return { kind: 'delete_path', ...entry, floor: effect.floor, ...(effect.tree ? { tree: effect.tree } : {}), ...(effect.moved ? { moved: true as const } : {}) }
   }
-  if (effect.kind === 'write_path' && effect.entry) return { kind: 'write_path', ...await entryEffect(effect.path, paths), entry: true }
+  if (effect.kind === 'write_path' && effect.entry) return { kind: 'write_path', ...await entryEffect(effect.path, paths), entry: true, ...(effect.folder ? { folder: true as const } : {}) }
   if (effect.kind === 'read_path' || effect.kind === 'write_path') {
     // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
     const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)

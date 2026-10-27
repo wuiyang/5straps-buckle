@@ -1,7 +1,7 @@
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { InvokeResponse, JsonObject } from '@5straps/protocol'
+import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
@@ -132,6 +132,44 @@ describe('fs_move is safe by default', () => {
     writeFileSync(join(workspace, 'a.md'), 'a')
     await call(runtime, { from: 'a.md', to: 'b.md' })
     expect(runtime.actions.read(10).filter(entry => entry.tool === 'fs_move' && entry.event === 'result').at(-1)).toMatchObject({ outcome: 'ok', args: { from: 'a.md', to: 'b.md' } })
+  })
+})
+
+describe('fs_move meets the workspace rules beneath a folder it moves', () => {
+  const policy = (rules: unknown[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules } })
+
+  it('refuses to land a folder where a file inside would stand on a path the rules deny writing, as a direct write is refused', async () => {
+    const { runtime, workspace } = await node()
+    await runtime.policy.apply(policy([{ path: '.github/workflows', write: 'deny' }]))
+    mkdirSync(join(workspace, 'stuff/workflows'), { recursive: true })
+    writeFileSync(join(workspace, 'stuff/workflows/x.yml'), 'on: push')
+    mkdirSync(join(workspace, 'stuff2'))
+    const direct = await runtime.invoke({ request: { requestId: 'direct', tool: 'fs_write', args: { path: '.github/workflows/x.yml', content: 'x', createParents: true }, approvalTokens: [] }, sessionId: 'agent' })
+    expect(errorOf(direct)).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(errorOf(await call(runtime, { from: 'stuff', to: '.github' }))).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(existsSync(join(workspace, '.github'))).toBe(false)
+    expect(existsSync(join(workspace, 'stuff/workflows/x.yml'))).toBe(true)
+  })
+
+  it('refuses to move a folder out from under a rule that denies reading a file inside it', async () => {
+    const { runtime, workspace } = await node()
+    await runtime.policy.apply(policy([{ path: 'config/prod.json', read: 'deny' }]))
+    mkdirSync(join(workspace, 'config'))
+    writeFileSync(join(workspace, 'config/prod.json'), '{"key":"value"}')
+    const read = (path: string) => runtime.invoke({ request: { requestId: `read-${path}`, tool: 'fs_read', args: { path }, approvalTokens: [] }, sessionId: 'agent' })
+    expect(errorOf(await read('config/prod.json'))).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(errorOf(await call(runtime, { from: 'config', to: 'cfg2' }))).toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(existsSync(join(workspace, 'cfg2'))).toBe(false)
+    expect(readFileSync(join(workspace, 'config/prod.json'), 'utf8')).toBe('{"key":"value"}')
+  })
+
+  it('moves a folder that holds nothing the rules restrict', async () => {
+    const { runtime, workspace } = await node()
+    await runtime.policy.apply(policy([{ path: 'config/prod.json', read: 'deny' }]))
+    mkdirSync(join(workspace, 'other'))
+    writeFileSync(join(workspace, 'other/a.txt'), 'a')
+    expect(await approved(runtime, { from: 'other', to: 'moved' })).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(workspace, 'moved/a.txt'), 'utf8')).toBe('a')
   })
 })
 

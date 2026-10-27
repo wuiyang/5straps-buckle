@@ -13,7 +13,7 @@ export type ToolEffect =
    * so it is judged where it is and never read through the agent's view, where a mount would take a host
    * path under its name for one of its own (review L4).
    */
-  | { kind: 'write_path'; path: string; host?: true; entry?: true }
+  | { kind: 'write_path'; path: string; host?: true; entry?: true; folder?: true }
   | DeleteEffect
   | { kind: 'network'; url: string }
   | ExecEffect
@@ -24,9 +24,10 @@ export type ToolEffect =
  * unlinked and never followed, so its folder is resolved and its own name is not. `floor`: a person is asked at the
  * destructive floor whatever the folder's write grant says (destructive-path-rule.ts); a move's source that moves a file
  * and replaces nothing is judged as a write to its folder instead (the fs-verbs brief). `tree`: a folder removed with
- * everything in it, and what it held when counted, before the ask.
+ * everything in it, and what it held when counted, before the ask. `moved`: a folder that is moved, not destroyed, so
+ * everything in it stands elsewhere afterwards and the read rules beneath it judge the move as well.
  */
-export interface DeleteEffect { kind: 'delete_path'; path: string; floor: boolean; tree?: TreeCount }
+export interface DeleteEffect { kind: 'delete_path'; path: string; floor: boolean; tree?: TreeCount; moved?: true }
 
 /**
  * What a folder held when it was counted, before the ask (MAX_COUNTED_ENTRIES at most, `more` past that), or `counted:
@@ -46,10 +47,13 @@ export interface ExecEffect { kind: 'exec'; command: string; args: string[]; sho
 
 export type ResolvedEffect =
   | { kind: 'read_path'; path: string; directory: string }
-  /** `entry`: the path names the entry itself (a move's landing), its folder resolved and its own name not followed. */
-  | { kind: 'write_path'; path: string; directory: string; entry?: true }
+  /**
+   * `entry`: the path names the entry itself (a move's landing), its folder resolved and its own name not followed.
+   * `folder`: a folder lands there whole, so the write rules beneath that path judge it too.
+   */
+  | { kind: 'write_path'; path: string; directory: string; entry?: true; folder?: true }
   /** `path`: the entry where it really is, its folder resolved and its own name not followed; `directory`: that folder. */
-  | { kind: 'delete_path'; path: string; directory: string; floor: boolean; tree?: TreeCount }
+  | { kind: 'delete_path'; path: string; directory: string; floor: boolean; tree?: TreeCount; moved?: true }
   | { kind: 'network'; url: URL }
   | ExecEffect
   | { kind: 'process_probe' }

@@ -106,8 +106,8 @@ export function moveEffects(input: z.output<typeof schemas.moveInput>, judged: S
   const folder = judged.from.kind === 'directory'
   return [
     { kind: 'read_path', path: input.from },
-    { kind: 'delete_path', path: input.from, floor: input.replace || folder, ...(folder && judged.from.tree ? { tree: judged.from.tree } : {}) },
-    { kind: 'write_path', path: judged.landing, entry: true },
+    { kind: 'delete_path', path: input.from, floor: input.replace || folder, ...(folder && judged.from.tree ? { tree: judged.from.tree } : {}), ...(folder ? { moved: true as const } : {}) },
+    { kind: 'write_path', path: judged.landing, entry: true, ...(folder ? { folder: true as const } : {}) },
     ...(judged.replaces ? [{ kind: 'delete_path' as const, path: judged.landing, floor: true }] : []),
   ]
 }

@@ -20,7 +20,7 @@ function lookup(granted: Partial<Record<PermissionRuleId, string[]>> = {}): Gran
   return { subjectsFor: rule => granted[rule] ?? [] }
 }
 
-function engine(options: { strict?: boolean; mount?: string; readOnly?: string; rules?: Array<{ path: string; write: 'deny' | 'ask' }> } = {}) {
+function engine(options: { strict?: boolean; mount?: string; readOnly?: string; rules?: Array<{ path: string; read?: 'deny' | 'ask'; write?: 'deny' | 'ask' }> } = {}) {
   const mounts = options.readOnly ? [{ source: options.readOnly, target: '/data', access: 'ro' as const }] : []
   const paths = createPathView({ root: WORKSPACE, mount: options.mount ?? null, mounts })
   const policy = { ...emptyWorkspacePolicy(), filesystem: { rules: options.rules ?? [] } }
@@ -33,6 +33,10 @@ function engine(options: { strict?: boolean; mount?: string; readOnly?: string; 
 }
 
 const removed = (path: string, input: { floor?: boolean; tree?: TreeCount } = {}): ResolvedEffect => ({ kind: 'delete_path', path, directory: path.slice(0, path.lastIndexOf('/')) || '/', floor: input.floor ?? true, ...(input.tree ? { tree: input.tree } : {}) })
+/** A folder moved whole: the source of an fs_move, read and removed from its place, with a count. */
+const movedFolder = (path: string): ResolvedEffect => ({ ...removed(path, { tree: counted(2, 1) }), moved: true } as ResolvedEffect)
+/** The landing of a folder moved whole. */
+const landedFolder = (path: string): ResolvedEffect => ({ kind: 'write_path', path, directory: path.slice(0, path.lastIndexOf('/')), entry: true, folder: true })
 const counted = (files: number, folders: number, more = false): TreeCount => ({ counted: true, files, folders, more })
 
 function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<PermissionRuleId, string[]>>, options?: Parameters<typeof engine>[0]) {
@@ -104,6 +108,39 @@ describe('a delete is refused where a write is', () => {
     expect(evaluate([removed(`${WORKSPACE}/secrets`, { tree: counted(1, 0) })], {}, { rules })).toMatchObject({ kind: 'deny' })
     const docs = evaluate([removed(`${WORKSPACE}/docs`, { tree: counted(1, 0) })], {}, { rules })
     expect(docs.kind === 'ask' ? docs.asks.map(item => item.rule).sort() : []).toEqual(['filesystem_policy', 'write_scope'])
+  })
+})
+
+describe('a folder moved whole meets the workspace rules beneath it', () => {
+  const rules = [{ path: '.github/workflows', write: 'deny' as const }, { path: 'config/secret.json', read: 'deny' as const }, { path: 'notes/private.md', read: 'ask' as const }, { path: 'drafts/a.md', write: 'ask' as const }]
+
+  it('denies a landing that would put files where the rules deny a write, and one that would ask', () => {
+    expect(evaluate([landedFolder(`${WORKSPACE}/.github`)], {}, { rules })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy', subject: `write:${WORKSPACE}/.github` } })
+    const asked = evaluate([landedFolder(`${WORKSPACE}/drafts`)], { write_scope: [WORKSPACE] }, { rules })
+    expect(asked).toMatchObject({ kind: 'ask', asks: [{ rule: 'filesystem_policy', subject: `write:${WORKSPACE}/drafts`, offeredScopes: ['once'] }] })
+    expect(evaluate([landedFolder(`${WORKSPACE}/elsewhere`)], { write_scope: [WORKSPACE] }, { rules }).kind).toBe('allow')
+  })
+
+  it('does not read a file landing as a folder', () => {
+    const file: ResolvedEffect = { kind: 'write_path', path: `${WORKSPACE}/.github`, directory: WORKSPACE, entry: true }
+    expect(evaluate([file], { write_scope: [WORKSPACE] }, { rules }).kind).toBe('allow')
+  })
+
+  it('denies a source that holds a file the rules deny reading, and asks where one asks', () => {
+    expect(evaluate([movedFolder(`${WORKSPACE}/config`)], { write_scope: [`delete-tree:${WORKSPACE}/config`] }, { rules })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy', subject: `read:${WORKSPACE}/config` } })
+    const asked = evaluate([movedFolder(`${WORKSPACE}/notes`)], {}, { rules })
+    expect(asked.kind === 'ask' ? asked.asks.map(item => `${item.rule}:${item.subject}`).sort() : []).toEqual([`filesystem_policy:read:${WORKSPACE}/notes`, `write_scope:delete-tree:${WORKSPACE}/notes`])
+  })
+
+  it('leaves a folder removed, not moved, to the write rules alone: deleting a file reads nothing', () => {
+    expect(evaluate([removed(`${WORKSPACE}/config`, { tree: counted(2, 1) })], {}, { rules }).kind).toBe('ask')
+    expect(evaluate([removed(`${WORKSPACE}/config`, { tree: counted(2, 1) })], {}, { rules })).not.toMatchObject({ kind: 'deny' })
+  })
+
+  it('is not turned by the dangerously-allow switch, which answers an ask and never a deny', () => {
+    const allowed = withDangerouslyAllow(engine({ rules }), { level: () => 'all', root: () => WORKSPACE })
+    expect(allowed.evaluate({ tool: 'fs_move', effects: [landedFolder(`${WORKSPACE}/.github`)], grants: lookup() }).kind).toBe('deny')
+    expect(allowed.evaluate({ tool: 'fs_move', effects: [movedFolder(`${WORKSPACE}/config`)], grants: lookup() }).kind).toBe('deny')
   })
 })
 
