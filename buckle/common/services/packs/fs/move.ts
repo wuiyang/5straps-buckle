@@ -18,8 +18,10 @@ import { entryOf, kindOf, lstatOrNone, type Entry, type EntryKind } from './dele
 import { auditedPath, FILE_NOT_FOUND, PARENT_MISSING } from './transfer.js'
 import type * as schemas from './schemas.js'
 
-/** A `to` where something stands already, which a move does not replace unless asked to. */
+/** A landing where something stands already, which `replace: false` (the default) refuses. */
 export const TARGET_EXISTS = 'TARGET_EXISTS'
+/** `replace: true` where nothing stands at the landing: the flag says what the caller expects there, and nothing is there. */
+export const NOTHING_TO_REPLACE = 'NOTHING_TO_REPLACE'
 /** A folder too large for its checkpoint to cover whole (MAX_COUNTED_ENTRIES). */
 export const FOLDER_TOO_LARGE = 'FOLDER_TOO_LARGE'
 
@@ -36,13 +38,14 @@ const SYSTEM_MOVE: MoveIo = { rename: renameSync, unlink: unlinkSync, rmdir: rmd
 
 /**
  * A move as it stood before any rule judged it: the source and what it is, where it lands (`to` itself, or `to/<name>`
- * where `to` is a folder or ends in a separator), what stands there, and whether the move replaces it.
+ * where `to` is a folder or ends in a separator), what stands there, and whether the move replaces it. `target.tree`:
+ * what a folder at the landing holds, counted where the move replaces it and it lies inside the roots the agent may name.
  */
 export interface SettledMove {
   from: Entry & { kind: EntryKind; tree?: TreeCount }
   /** The landing as the agent's path names it, which its effects name and its run opens. */
   landing: string
-  target: Entry & { kind: EntryKind | 'same' }
+  target: Entry & { kind: EntryKind | 'same'; tree?: TreeCount }
   replaces: boolean
 }
 
@@ -59,10 +62,13 @@ export interface MoveContext {
 /**
  * What fs_move settles before any rule judges it (ToolDefinition.judge): the landing, which a folder `to` or a trailing
  * separator makes `to/<the source's name>` (a backslash is a separator on Windows alone), what stands at each end, and
- * what a folder moved whole holds. Inside the roots the agent may name, a move that would not happen is refused at
- * once, so no person is asked about it: no source, a landing taken without `replace`, a landing that is a folder, a
- * missing folder to land in (a move makes none), a folder moved into itself, or one past the entries its checkpoint
- * covers. Elsewhere the same refusals come once a person allowed the call.
+ * what a folder moved whole holds. `replace` states what the caller expects at the landing, and a mismatch is a refusal
+ * either way: anything standing there without it, nothing standing there with it. A folder standing there is replaced
+ * whole, and counted as fs_delete counts one removed whole. Inside the roots the agent may name, a move that would not
+ * happen is refused at once, so no person is asked about it: no source, a landing taken without `replace`, nothing at the
+ * landing with it, a missing folder to land in (a move makes none), a folder moved into itself or a landing folder that
+ * holds the source, or a folder moved or replaced past the entries its checkpoint covers. Elsewhere the same refusals
+ * come once a person allowed the call.
  */
 export function settleMove(input: z.output<typeof schemas.moveInput>, context: { paths: PathView; platform?: NodeJS.Platform }): SettledMove {
   const platform = context.platform ?? process.platform
@@ -83,13 +89,18 @@ export function settleMove(input: z.output<typeof schemas.moveInput>, context: {
   if (target.path === from.path || targetKind === 'same') throw new ToolInputError(`${input.from} and ${named} name the same file, so nothing was moved`)
   if (fromKind === 'directory' && isInside(from.path, target.path)) throw new ToolInputError(`${input.to} lies inside ${input.from}, and a folder is not moved into itself`)
   if (!statSync(target.directory, { throwIfNoEntry: false })?.isDirectory()) refuseInside(target.directory, () => parentMissing(context.paths.display(target.directory)))
-  if (targetKind !== 'missing') {
+  if (targetKind === 'missing') {
+    if (input.replace) refuseInside(target.path, () => nothingToReplace(named))
+  } else {
     if (!input.replace) refuseInside(target.path, () => taken(named))
-    if (targetKind === 'directory') refuseInside(target.path, () => folderAtLanding(named))
+    if (input.replace && targetKind === 'directory' && isInside(target.path, from.path)) throw holdsSource(named, input.from)
   }
   const tree = fromKind === 'directory' ? (inside(from.path) ? counted(from, input.from) : { counted: false as const }) : undefined
   if (tree?.counted && tree.more) throw tooLarge(input.from)
-  return { from: { ...from, kind: fromKind, ...(tree ? { tree } : {}) }, landing: named, target: { ...target, kind: targetKind }, replaces: input.replace && targetKind !== 'missing' }
+  // A folder replaced is removed whole, so it is counted as a recursive delete counts one, names an entry Buckle cannot remove by name, and has the same bound.
+  const replacedTree = targetKind === 'directory' && input.replace ? (inside(target.path) ? counted(target, named, true) : { counted: false as const }) : undefined
+  if (replacedTree?.counted && replacedTree.more) throw tooLarge(named, true)
+  return { from: { ...from, kind: fromKind, ...(tree ? { tree } : {}) }, landing: named, target: { ...target, kind: targetKind, ...(replacedTree ? { tree: replacedTree } : {}) }, replaces: input.replace && targetKind !== 'missing' }
 }
 
 /**
@@ -127,22 +138,30 @@ function volumeIgnoresCase(path: string, own: BigIntStats): boolean {
 
 /**
  * fs_move's effects: the source read and removed from its place, and the landing written. The source's removal asks at
- * the destructive floor where the move takes a folder whole or may replace a file (the fs-verbs brief); a file moved
- * where nothing stands asks as a write to each folder does. A file replaced is removed at the floor as well.
+ * the destructive floor where the move takes a folder whole or replaces what stands at the landing (the fs-verbs
+ * brief); a file moved where nothing stands asks as a write to each folder does. What is replaced is removed at the
+ * floor as well: a file or a link under its folder's delete subject, a folder removed whole under its own
+ * `delete-tree` subject with the count of what it holds, as a recursive fs_delete asks.
  */
 export function moveEffects(input: z.output<typeof schemas.moveInput>, judged: SettledMove): ToolEffect[] {
   const folder = judged.from.kind === 'directory'
+  const replacedFolder = judged.replaces && judged.target.kind === 'directory'
   return [
     { kind: 'read_path', path: input.from },
     { kind: 'delete_path', path: input.from, floor: input.replace || folder, ...(folder && judged.from.tree ? { tree: judged.from.tree } : {}), ...(folder ? { moved: true as const } : {}) },
     { kind: 'write_path', path: judged.landing, entry: true, ...(folder ? { folder: true as const } : {}) },
-    ...(judged.replaces ? [{ kind: 'delete_path' as const, path: judged.landing, floor: true }] : []),
+    ...(judged.replaces ? [{ kind: 'delete_path' as const, path: judged.landing, floor: true, ...(replacedFolder && judged.target.tree ? { tree: judged.target.tree } : {}) }] : []),
   ]
 }
 
-/** What the description names beside the arguments: the landing where it is not `to` itself, and that the move replaces a file. */
+/**
+ * What the description names beside the arguments: the landing where it is not `to` itself, that the move replaces what
+ * stands there, and for a folder, how many entries it holds where they were counted (not outside the workspace's folders).
+ */
 export function moveFacts(input: z.output<typeof schemas.moveInput>, judged: SettledMove): JsonObject {
-  return { ...(judged.landing === input.to ? {} : { landing: judged.landing }), replaces: judged.replaces }
+  const folder = judged.replaces && judged.target.kind === 'directory'
+  const held = folder && judged.target.tree?.counted ? judged.target.tree.files + judged.target.tree.folders : undefined
+  return { ...(judged.landing === input.to ? {} : { landing: judged.landing }), replaces: judged.replaces, ...(folder ? { replacesFolder: true } : {}), ...(held === undefined ? {} : { entries: held }) }
 }
 
 /** fs_move's audit facts: both paths, credentials hidden. */
@@ -154,8 +173,9 @@ export function movedFacts(input: z.output<typeof schemas.moveInput>): JsonObjec
  * Moves the source to its landing where the permission check judged both, each folder reached without following a link:
  * a rename where both lie on one device, tried again where Windows holds the file (replaceFile); across devices or
  * mounts a copy beside the landing, then the rename onto it, then the source's removal, and a failure before that last
- * step leaves the source where it was and removes what the copy made. Nothing that stands at the landing is replaced
- * unless the call says `replace` and its check saw it.
+ * step leaves the source where it was and removes what the copy made. What stands at the landing is replaced only where
+ * the call says `replace` and its check saw it; it is set aside first and removed once the move stands (a folder whole),
+ * and put back where the move fails. Nothing standing there with `replace` is refused (NOTHING_TO_REPLACE).
  */
 export async function moveEntry(input: z.output<typeof schemas.moveInput>, context: MoveContext, judged: SettledMove): Promise<JsonValue> {
   const io = context.io ?? SYSTEM_MOVE
@@ -175,30 +195,40 @@ export async function moveEntry(input: z.output<typeof schemas.moveInput>, conte
       if (kind === 'directory' && !judged.from.tree?.counted && countTree(source, from.name, input.from).more) throw tooLarge(input.from)
       const standing = standingAt(source.child(from.name), landing.child(target.name))
       if (standing === 'same') throw new ToolInputError(`${input.from} and ${judged.landing} name the same file, so nothing was moved`)
-      if (standing !== 'missing') {
+      if (standing === 'missing') {
+        if (input.replace) throw nothingToReplace(judged.landing)
+      } else {
         if (!input.replace) throw taken(judged.landing)
-        if (standing === 'directory') throw folderAtLanding(judged.landing)
         if (!judged.replaces) throw new ToolInputError(`Something now stands at ${judged.landing} that its permission check did not see, so nothing was moved; send the call again`, { code: 'PERMISSION_DENIED' })
+        // A folder where the check saw a file (or the reverse) is another removal than the one a person allowed.
+        if ((standing === 'directory') !== (judged.target.kind === 'directory')) throw new ToolInputError(`${judged.landing} is a ${standing === 'directory' ? 'folder' : 'file'} now, not the ${judged.target.kind === 'directory' ? 'folder' : 'file'} its permission check saw, so nothing was moved; send the call again`, { code: 'PERMISSION_DENIED' })
+        if (standing === 'directory') {
+          if (isInside(target.path, from.path)) throw holdsSource(judged.landing, input.from)
+          if (!judged.target.tree?.counted && countTree(landing, target.name, judged.landing, context.platform ? { platform: context.platform } : {}).more) throw tooLarge(judged.landing, true)
+        }
       }
-      const ends: Ends = { source, name: from.name, landing, as: target.name, shown: input.from, landingShown: judged.landing, replaces: standing !== 'missing', folder: kind === 'directory', io, platform: context.platform ?? process.platform }
+      const ends: Ends = { source, name: from.name, landing, as: target.name, shown: input.from, landingShown: judged.landing, replaces: standing !== 'missing', folder: kind === 'directory', landingFolder: standing === 'directory', io, platform: context.platform ?? process.platform }
       const moved = await renameOrCopy(ends)
-      // A folder moved across devices whose removal stopped part way: the copy is whole, the rest is named.
       context.relocated?.(from.path, target.path)
-      const rest: JsonObject = moved.rest === undefined ? {} : { leftOver: context.paths.display(`${from.directory}/${moved.rest}`) }
+      // A folder moved across devices whose removal stopped part way, or a replaced entry that could not be removed whole: what the move landed is whole, the rest is named.
+      const rest: JsonObject = moved.rest.length === 0 ? {} : { leftOver: moved.rest.map(left => context.paths.display(`${left.in === 'source' ? from.directory : target.directory}/${left.name}`)).join(', ') }
       return { from: context.paths.display(from.path), to: context.paths.display(target.path), replaced: ends.replaces, ...(moved.copied ? { copied: true } : {}), ...rest }
     } finally { landing.close() }
   } finally { source.close() }
 }
 
-interface Ends { source: PinnedDirectory; name: string; landing: PinnedDirectory; as: string; shown: string; /** The landing as the agent's path names it, for what concerns it. */ landingShown: string; replaces: boolean; folder: boolean; io: MoveIo; platform: NodeJS.Platform }
+interface Ends { source: PinnedDirectory; name: string; landing: PinnedDirectory; as: string; shown: string; /** The landing as the agent's path names it, for what concerns it. */ landingShown: string; replaces: boolean; folder: boolean; /** What stands at the landing, and is replaced, is a folder. */ landingFolder: boolean; io: MoveIo; platform: NodeJS.Platform }
+
+/** What a move left behind in one of its two folders: the source's, or the landing's. */
+interface Left { in: 'source' | 'landing'; name: string }
 
 /**
  * A rename where one device holds both ends; a copy where it answers EXDEV. What the move did: whether it copied, and
- * where a folder copied across devices left part of itself behind (copyAcross).
+ * what it left behind: part of a folder copied across devices, or what a replacement could not remove (copyAcross).
  */
-async function renameOrCopy(ends: Ends): Promise<{ copied: boolean; rest?: string }> {
-  // A folder lands where a file stood only once that file is set aside: rename does not put one over the other.
-  const aside = ends.replaces && ends.folder ? setAside(ends.landing, ends.as, ends.io) : null
+async function renameOrCopy(ends: Ends): Promise<{ copied: boolean; rest: Left[] }> {
+  // A folder lands where a file stood, and a file or a folder where a folder stood, only once that entry is set aside: rename does not put one over the other.
+  const aside = ends.replaces && (ends.folder || ends.landingFolder) ? setAside(ends.landing, ends.as, ends.io) : null
   try {
     await renamed(ends, ends.source.child(ends.name), ends.landing.child(ends.as))
   } catch (error) {
@@ -206,20 +236,19 @@ async function renameOrCopy(ends: Ends): Promise<{ copied: boolean; rest?: strin
       if (aside) ends.io.rename(ends.landing.child(aside), ends.landing.child(ends.as))
       throw error
     }
-    return { copied: true, ...await copyAcross(ends, aside) }
+    return { copied: true, rest: await copyAcross(ends, aside) }
   }
-  if (aside) await removeAside(ends, aside)
-  return { copied: false }
+  return { copied: false, rest: await removeAside(ends, aside) }
 }
 
 /**
  * The move across devices: the source copied beside the landing, the file standing there set aside, the copy renamed
  * onto the landing, then the source taken from its place. Where any step fails before the source is gone, what the copy
- * made is removed and the file set aside is put back, so the source stays where it was. A folder is renamed aside in its
+ * made is removed and the entry set aside is put back, so the source stays where it was. A folder is renamed aside in its
  * own folder before it is removed, so a removal that fails part way leaves the whole copy at the landing, and the move
- * answers with where the rest of the source is left (`rest`).
+ * answers with where the rest of the source is left, and of what it replaced.
  */
-async function copyAcross(ends: Ends, setAsideAlready: string | null): Promise<{ rest?: string }> {
+async function copyAcross(ends: Ends, setAsideAlready: string | null): Promise<Left[]> {
   const partial = `${PARTIAL_PREFIX}${randomUUID()}`
   let aside = setAsideAlready
   let made = partial
@@ -244,25 +273,34 @@ async function copyAcross(ends: Ends, setAsideAlready: string | null): Promise<{
     let restored = false
     try {
       if (aside) { ends.io.rename(ends.landing.child(aside), ends.landing.child(ends.as)); restored = true }
-    } catch (restore) { trouble.push(`the file it replaces could not be put back (${String(errorCode(restore) ?? 'an error')}) and is kept beside it as ${aside}`) }
-    if (copyTrouble !== null && !(restored && !ends.folder)) trouble.unshift(copyTrouble)
+    } catch (restore) { trouble.push(`the ${ends.landingFolder ? 'folder' : 'file'} it replaces could not be put back (${String(errorCode(restore) ?? 'an error')}) and is kept beside it as ${aside}`) }
+    if (copyTrouble !== null && !(restored && !ends.folder && !ends.landingFolder)) trouble.unshift(copyTrouble)
     const reason = error instanceof ToolInputError ? error.message : `${ends.shown} could not be moved to the other device (${String(errorCode(error) ?? 'an error')}), so what the copy made was removed and ${ends.shown} is where it was`
     if (trouble.length === 0) throw error instanceof ToolInputError ? error : new ToolInputError(reason)
     throw new ToolInputError(`${reason.replace(/, so what the copy made was removed and .* is where it was$/, '')}; ${trouble.join(', and ')}; ${ends.shown} is where it was`, { code: error instanceof ToolInputError ? error.code : 'MOVE_FAILED' })
   }
-  if (aside) await removeAside(ends, aside)
-  if (away === null) return {}
+  const rest = await removeAside(ends, aside)
+  if (away === null) return rest
   try {
     await removeBeneath({ directory: ends.source, name: away, shown: ends.shown, tree: true, io: ends.io, platform: ends.platform })
-    return {}
+    return rest
   } catch {
-    return { rest: away }
+    return [{ in: 'source', name: away }, ...rest]
   }
 }
 
-/** The file a replacing move set aside, removed once the move stands. */
-function removeAside(ends: Ends, aside: string): Promise<void> {
-  return removeBeneath({ directory: ends.landing, name: aside, shown: ends.landingShown, tree: false, io: ends.io, platform: ends.platform })
+/**
+ * The entry a replacing move set aside, removed once the move stands, a folder with everything in it. The move has landed
+ * by then, so a removal that fails (a read-only file inside, a lock) is not the move's failure: what is left is named.
+ */
+async function removeAside(ends: Ends, aside: string | null): Promise<Left[]> {
+  if (aside === null) return []
+  try {
+    await removeBeneath({ directory: ends.landing, name: aside, shown: ends.landingShown, tree: ends.landingFolder, io: ends.io, platform: ends.platform })
+    return []
+  } catch {
+    return [{ in: 'landing', name: aside }]
+  }
 }
 
 async function renamed(ends: Ends, from: string, to: string): Promise<void> {
@@ -311,9 +349,10 @@ function withoutSeparator(named: string, platform: NodeJS.Platform): string {
   return trimmed === '' ? named.slice(0, 1) : trimmed
 }
 
-function counted(entry: Entry, named: string): TreeCount {
+/** What a folder holds; with `removal`, as a folder that is removed whole: an entry Buckle cannot remove by name is refused now, with nothing yet changed. */
+function counted(entry: Entry, named: string, removal = false): TreeCount {
   const parent = openRealDirectory(entry.directory, { refusal: { shown: named, outcome: 'nothing was moved' } })
-  try { return countTree(parent, entry.name, named) } finally { parent.close() }
+  try { return countTree(parent, entry.name, named, removal ? {} : undefined) } finally { parent.close() }
 }
 
 function noSource(named: string): ToolInputError {
@@ -328,16 +367,20 @@ function taken(named: string): ToolInputError {
   return new ToolInputError(`Something already stands at ${named}: send replace: true to replace it, or move to a name that is free`, { code: TARGET_EXISTS })
 }
 
-function folderAtLanding(named: string): ToolInputError {
-  return new ToolInputError(`${named} is a folder, and a move replaces a file, never a folder: delete it first, or move into it by name`, { code: TARGET_EXISTS })
+function nothingToReplace(named: string): ToolInputError {
+  return new ToolInputError(`Nothing stands at ${named}, so replace: true has nothing to replace and nothing was moved: send replace: false to move there`, { code: NOTHING_TO_REPLACE })
+}
+
+function holdsSource(landing: string, source: string): ToolInputError {
+  return new ToolInputError(`${landing} is a folder that holds ${source}, so replacing it would remove what is being moved`)
 }
 
 function parentMissing(folder: string): ToolInputError {
   return new ToolInputError(`The folder ${folder} does not exist, and a move makes no folder: create it first, or move into one that exists`, { code: PARENT_MISSING })
 }
 
-function tooLarge(named: string): ToolInputError {
-  return new ToolInputError(`${named} holds more than 10000 entries, more than one checkpoint covers: move the folder in parts`, { code: FOLDER_TOO_LARGE })
+function tooLarge(named: string, replaced = false): ToolInputError {
+  return new ToolInputError(`${named} holds more than 10000 entries, more than one checkpoint covers: ${replaced ? 'delete the folder in parts first, then move' : 'move the folder in parts'}`, { code: FOLDER_TOO_LARGE })
 }
 
 function errorCode(error: unknown): unknown {

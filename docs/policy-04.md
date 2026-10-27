@@ -12,10 +12,14 @@ call meets, and [known limits, part eight](known-limits-08.md) lists what the fl
   missing inside the workspace asks nothing. A batch asks once for each folder it names, and a
   folder removed whole asks on its own. The reason reads "Deleting ... asks a person, whatever
   the folder's write grant says".
-- `fs_move` asks at the floor when `replace` is true, or when `from` is a folder. The replaced
-  file gets its own ask, and its reason names that file. Otherwise the move asks as a write to
-  `to`'s folder does: the first write into a directory asks, and a grant is remembered. Its removal
-  of `from` is judged as a write to `from`'s folder.
+- `fs_move` asks at the floor when `replace` is true, or when `from` is a folder. `replace: true`
+  means something stands at the landing, and the move replaces it. A file or link replaced gets its
+  own ask, and its reason names it. A folder replaced is removed whole, so it asks as a recursive
+  delete does: under `delete-tree:` for that path, naming how many files and folders it holds,
+  with the same 10,000-entry bound (`FOLDER_TOO_LARGE`). It is checkpointed like a recursive
+  delete, and the move lands only after the ask. Otherwise the move asks as a write to `to`'s
+  folder does: the first write into a directory asks, and a grant is remembered. Its removal of
+  `from` is judged as a write to `from`'s folder.
 - A write that empties an existing file, or leaves it under half its size, asks when the session
   has not seen that file lately. The writing tools are `fs_write`, `fs_write_batch`, `fs_patch`,
   `fs_apply_patch`, and `fs_receive` over an existing file. The reason reads "Writing ... empties
@@ -51,13 +55,16 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 
 ## Refused, not asked
 
-- Deleting or moving the workspace folder, a mount's source, a folder that holds one of them, a
+- Deleting, moving, or replacing the workspace folder, a mount's source, a folder that holds one of them, a
   read-only mount's source, or a folder that holds Buckle's state, by any spelling the volume
   reads as the same name, so `C:/ws/PROJ` is `C:/ws/proj` on Windows and macOS. A folder holding Buckle's state
   is refused with "The folder holds Buckle's own state and policy, which no tool removes or moves".
 - A folder with entries, without `recursive: true`, is refused as `FOLDER_NOT_EMPTY`, before any
   ask. So are a socket, a device, and a pipe, and a recursive delete of a folder that holds an
   entry named with a backslash on Linux or macOS (`FOLDER_NOT_REMOVABLE`).
+- A move whose `replace` does not match its landing: `replace: true` with nothing there
+  (`NOTHING_TO_REPLACE`), `replace: false` with anything there (`TARGET_EXISTS`), or a replaced
+  folder that holds the source. Each is refused before any ask.
 - A `deny` on `fs_write` also denies `fs_delete`, `fs_move`, and `fs_apply_patch`, as the tool
   policy maps it. `allow-tool fs_write` lifts it; `allow-tool` on one of the three does not.
 - A filesystem `deny` rule beneath a folder removed whole denies that delete. An `ask` rule

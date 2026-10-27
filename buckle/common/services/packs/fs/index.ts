@@ -116,7 +116,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_move',
-      description: 'Move or rename a file, link, or folder. A to that exists is refused unless replace is set; a folder to, or a trailing slash, moves into it.',
+      description: 'Move or rename a file, link, or folder. A folder to, or a trailing slash, moves into it by name. replace must match what stands at the destination: false (the default) refuses if anything does, true refuses if nothing does and otherwise replaces it, a folder with everything in it. A person is asked unless a delete grant holds.',
       risk: 'write',
       tags: ['filesystem'],
       input: schemas.moveInput,

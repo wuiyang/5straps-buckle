@@ -10,11 +10,12 @@ covers the shell.
 
 | The message says | Code | Fix |
 |---|---|---|
-| "Something already stands at ...: send replace: true to replace it" | `TARGET_EXISTS` | send `replace: true`, or move to a free name |
-| "... is a folder, and a move replaces a file, never a folder" | `TARGET_EXISTS` | delete the folder first, or move into it by name |
+| "Something already stands at ...: send replace: true to replace it" | `TARGET_EXISTS` | send `replace: true`, which replaces a folder whole, or move to a free name |
+| "Nothing stands at ..., so replace: true has nothing to replace" | `NOTHING_TO_REPLACE` | send `replace: false` to move there |
+| "... is a folder that holds ..., so replacing it would remove what is being moved" | none | move the source out of that folder first, or name another landing |
 | "The folder ... does not exist, and a move makes no folder" | `PARENT_MISSING` | create the folder first |
 | "... is a folder that holds entries: send recursive: true" | `FOLDER_NOT_EMPTY` | send `recursive: true`, after reading the ask's count |
-| "... holds more than 10000 entries, more than one checkpoint covers" | `FOLDER_TOO_LARGE` | move the folder in parts |
+| "... holds more than 10000 entries, more than one checkpoint covers" | `FOLDER_TOO_LARGE` | move the folder in parts; for a folder to replace, delete it in parts first |
 | "... is held open by another program" | `ENTRY_HELD` | close the program, then send the call again; on Windows alone, a read-only file also gives this |
 | "... could not be moved to ... (EPERM)", or "could not be removed (EACCES)" | `PERMISSION_DENIED` | the system refused: check the folder's permissions; a delete lists the paths removed before it |
 | "... could not be removed (EIO)", or "could not be moved to ... (EBUSY)" | `REMOVAL_FAILED` or `MOVE_FAILED` | the error is the system's own; a folder removed whole may be gone in part |

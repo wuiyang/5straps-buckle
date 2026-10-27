@@ -2,7 +2,7 @@ import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, r
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { moveEntry, settleMove, standingAt, type MoveIo } from '../common/services/packs/fs/move.js'
@@ -13,9 +13,18 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // fs_move (the fs-verbs brief): safe by default, `replace` to replace a file, into a folder by name, no folder made, a
 // rename beneath parents reached without following a link, and a copy then a removal across devices.
 
+// The bound a folder is counted to before a person is asked (MAX_COUNTED_ENTRIES), which a test lowers rather than
+// build 10,001 entries on a slow disk; the count and the refusal it feeds are the real ones.
+const counting = vi.hoisted(() => ({ limit: 10_000 }))
+vi.mock('../common/domain/effect.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/domain/effect.js')>()
+  return Object.defineProperty({ ...actual }, 'MAX_COUNTED_ENTRIES', { get: () => counting.limit, enumerable: true })
+})
+
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
 afterEach(async () => {
+  counting.limit = 10_000
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -143,6 +152,168 @@ describe('fs_move is safe by default', () => {
   })
 })
 
+describe('fs_move\'s replace flag states what the caller expects to stand at the destination', () => {
+  const asks = (response: InvokeResponse) => (response.outcome === 'approval_required' ? response.approvals : [])
+
+  it('refuses replace where nothing stands at to, naming the path, before anyone is asked, and moves nothing', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'docs'))
+    writeFileSync(join(workspace, 'a.md'), 'a')
+    expect(errorOf(await call(runtime, { from: 'a.md', to: 'b.md', replace: true }))).toMatchObject({ code: 'NOTHING_TO_REPLACE', message: 'Nothing stands at b.md, so replace: true has nothing to replace and nothing was moved: send replace: false to move there' })
+    // Into a folder, the check is on the joined path: a folder `to`, or a trailing separator, names `to/<the source's name>`.
+    expect(errorOf(await call(runtime, { from: 'a.md', to: 'docs', replace: true }))).toMatchObject({ code: 'NOTHING_TO_REPLACE', message: expect.stringContaining('Nothing stands at docs/a.md,') })
+    expect(errorOf(await call(runtime, { from: 'a.md', to: 'docs/', replace: true }))).toMatchObject({ code: 'NOTHING_TO_REPLACE', message: expect.stringContaining('Nothing stands at docs/a.md,') })
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'a.md'), 'utf8')).toBe('a')
+    expect(readdirSync(workspace).sort()).toEqual(['a.md', 'docs'])
+    expect(readdirSync(join(workspace, 'docs'))).toEqual([])
+  })
+
+  it('refuses a folder moved with replace where nothing stands at its landing, before anyone is asked', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src'))
+    writeFileSync(join(workspace, 'src/a.ts'), 'a')
+    expect(errorOf(await call(runtime, { from: 'src', to: 'app', replace: true }))).toMatchObject({ code: 'NOTHING_TO_REPLACE' })
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'src/a.ts'), 'utf8')).toBe('a')
+  })
+
+  it('refuses replace outside the workspace\'s folders only once a person allowed the call, and still moves nothing', async () => {
+    const { runtime, workspace, root } = await node()
+    mkdirSync(join(root, 'outside'))
+    writeFileSync(join(workspace, 'a.md'), 'a')
+    const args = { from: 'a.md', to: '../outside/b.md', replace: true }
+    expect(asks(await call(runtime, args)).length).toBeGreaterThan(0)
+    expect(errorOf(await approved(runtime, args))).toMatchObject({ code: 'NOTHING_TO_REPLACE', message: expect.stringContaining('../outside/b.md') })
+    expect(readFileSync(join(workspace, 'a.md'), 'utf8')).toBe('a')
+    expect(readdirSync(join(root, 'outside'))).toEqual([])
+  })
+
+  it('still refuses without replace whatever stands at the landing: a file, a link, a link that points nowhere, or a folder', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'one'), 'one')
+    writeFileSync(join(workspace, 'file'), 'f')
+    symlinkSync('file', join(workspace, 'link'))
+    symlinkSync('nowhere', join(workspace, 'dangling'))
+    mkdirSync(join(workspace, 'dest/one'), { recursive: true })
+    writeFileSync(join(workspace, 'dest/one/old'), 'old')
+    for (const to of ['file', 'link', 'dangling']) {
+      for (const args of [{ from: 'one', to }, { from: 'one', to, replace: false }] as JsonObject[]) expect(errorOf(await call(runtime, args))).toMatchObject({ code: 'TARGET_EXISTS' })
+    }
+    for (const to of ['dest', 'dest/']) {
+      expect(errorOf(await call(runtime, { from: 'one', to }))).toMatchObject({ code: 'TARGET_EXISTS', message: 'Something already stands at dest/one: send replace: true to replace it, or move to a name that is free' })
+    }
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'dest/one/old'), 'utf8')).toBe('old')
+    expect(readFileSync(join(workspace, 'one'), 'utf8')).toBe('one')
+    expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('f')
+  })
+
+  it('counts a link as standing there, even one that points nowhere, and replaces the link itself', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.md'), 'a')
+    symlinkSync('nowhere', join(workspace, 'dangling'))
+    expect(await approved(runtime, { from: 'a.md', to: 'dangling', replace: true })).toMatchObject({ outcome: 'ok', output: { replaced: true } })
+    expect(lstatSync(join(workspace, 'dangling')).isFile()).toBe(true)
+    expect(readFileSync(join(workspace, 'dangling'), 'utf8')).toBe('a')
+  })
+})
+
+describe('fs_move replaces a folder when replace is true and a folder stands at the landing', () => {
+  const asks = (response: InvokeResponse) => (response.outcome === 'approval_required' ? response.approvals : [])
+  /** archive/notes holds a.txt and deep/b.txt: two files and one folder, three entries in all. */
+  function archive(workspace: string) {
+    mkdirSync(join(workspace, 'archive/notes/deep'), { recursive: true })
+    writeFileSync(join(workspace, 'archive/notes/a.txt'), 'a')
+    writeFileSync(join(workspace, 'archive/notes/deep/b.txt'), 'b')
+  }
+
+  it('replaces a folder with a file: the ask is the delete-tree floor for that folder, with its count, and the history brings it back', async () => {
+    const { runtime, workspace } = await node()
+    archive(workspace)
+    writeFileSync(join(workspace, 'notes'), 'the new file')
+    const args = { from: 'notes', to: 'archive', replace: true }
+    const asked = await call(runtime, args)
+    const landing = join(runtime.paths().root, 'archive/notes')
+    const replaced = asks(asked).find(ask => ask.subject === `delete-tree:${landing}`)
+    expect(replaced).toMatchObject({ rule: 'write_scope' })
+    expect(replaced?.reason).toContain('and everything in it (2 files and 1 folder)')
+    const ask = runtime.approvalService.waiting().find(item => item.request.tool === 'fs_move')
+    expect(ask?.call?.description).toBe(`Move "notes" to "archive" as "archive/notes", replacing the folder there, 3 entries in ${JSON.stringify(runtime.paths().displayRoot)}`)
+    expect(await approved(runtime, args)).toMatchObject({ outcome: 'ok', output: { replaced: true } })
+    expect(readFileSync(join(workspace, 'archive/notes'), 'utf8')).toBe('the new file')
+    expect(readdirSync(join(workspace, 'archive'))).toEqual(['notes'])
+    expect(existsSync(join(workspace, 'notes'))).toBe(false)
+    const [checkpoint] = (await runtime.history.list()).filter(item => item.tool === 'fs_move')
+    await runtime.history.restore(checkpoint!.id)
+    expect(readFileSync(join(workspace, 'notes'), 'utf8')).toBe('the new file')
+    expect(readFileSync(join(workspace, 'archive/notes/a.txt'), 'utf8')).toBe('a')
+    expect(readFileSync(join(workspace, 'archive/notes/deep/b.txt'), 'utf8')).toBe('b')
+  })
+
+  it('replaces a folder with a folder: each asks under its own delete-tree subject, the old one goes whole, and the history brings both back', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src/lib'), { recursive: true })
+    writeFileSync(join(workspace, 'src/lib/new.ts'), 'new')
+    mkdirSync(join(workspace, 'app/src/deep'), { recursive: true })
+    writeFileSync(join(workspace, 'app/src/old.ts'), 'old')
+    writeFileSync(join(workspace, 'app/src/deep/b.ts'), 'b')
+    const args = { from: 'src', to: 'app', replace: true }
+    const root = runtime.paths().root
+    const subjects = asks(await call(runtime, args)).map(ask => ask.subject)
+    expect(subjects).toEqual(expect.arrayContaining([`delete-tree:${join(root, 'src')}`, `delete-tree:${join(root, 'app/src')}`]))
+    expect(await approved(runtime, args)).toMatchObject({ outcome: 'ok', output: { replaced: true } })
+    expect(readFileSync(join(workspace, 'app/src/lib/new.ts'), 'utf8')).toBe('new')
+    expect(existsSync(join(workspace, 'app/src/old.ts'))).toBe(false)
+    expect(existsSync(join(workspace, 'app/src/deep'))).toBe(false)
+    expect(existsSync(join(workspace, 'src'))).toBe(false)
+    expect(readdirSync(join(workspace, 'app'))).toEqual(['src'])
+    const [checkpoint] = (await runtime.history.list()).filter(item => item.tool === 'fs_move')
+    await runtime.history.restore(checkpoint!.id)
+    expect(readFileSync(join(workspace, 'src/lib/new.ts'), 'utf8')).toBe('new')
+    expect(readFileSync(join(workspace, 'app/src/old.ts'), 'utf8')).toBe('old')
+    expect(readFileSync(join(workspace, 'app/src/deep/b.ts'), 'utf8')).toBe('b')
+    expect(existsSync(join(workspace, 'app/src/lib'))).toBe(false)
+  })
+
+  it('refuses a folder past the entries one checkpoint covers before anyone is asked, as fs_delete does, and replaces nothing', async () => {
+    const { runtime, workspace } = await node()
+    archive(workspace)
+    writeFileSync(join(workspace, 'notes'), 'the new file')
+    counting.limit = 2
+    expect(errorOf(await call(runtime, { from: 'notes', to: 'archive', replace: true }))).toMatchObject({ code: 'FOLDER_TOO_LARGE', message: 'archive/notes holds more than 10000 entries, more than one checkpoint covers: delete the folder in parts first, then move' })
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'archive/notes/a.txt'), 'utf8')).toBe('a')
+    expect(readFileSync(join(workspace, 'notes'), 'utf8')).toBe('the new file')
+  })
+
+  it('does not look into a folder outside the workspace\'s folders before a person allows the call, then counts it and replaces it', async () => {
+    const { runtime, workspace, root } = await node()
+    mkdirSync(join(root, 'outside/notes/deep'), { recursive: true })
+    writeFileSync(join(root, 'outside/notes/deep/b.txt'), 'b')
+    writeFileSync(join(workspace, 'notes'), 'the new file')
+    const args = { from: 'notes', to: '../outside', replace: true }
+    const asked = await call(runtime, args)
+    expect(asks(asked).find(ask => ask.subject === `delete-tree:${join(root, 'outside/notes')}`)?.reason).toContain('not counted')
+    expect(runtime.approvalService.waiting().find(item => item.request.tool === 'fs_move')?.call?.description).toMatch(/, replacing the folder there in /)
+    counting.limit = 1
+    expect(errorOf(await approved(runtime, args))).toMatchObject({ code: 'FOLDER_TOO_LARGE' })
+    expect(readFileSync(join(root, 'outside/notes/deep/b.txt'), 'utf8')).toBe('b')
+    counting.limit = 10_000
+    expect(await approved(runtime, args)).toMatchObject({ outcome: 'ok', output: { replaced: true } })
+    expect(readFileSync(join(root, 'outside/notes'), 'utf8')).toBe('the new file')
+  })
+
+  it('refuses a landing folder that holds the source, as replacing it would remove what is being moved', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'x/y'), { recursive: true })
+    writeFileSync(join(workspace, 'x/y/x'), 'inner')
+    expect(errorOf(await call(runtime, { from: 'x/y/x', to: '.', replace: true }))?.message).toBe('./x is a folder that holds x/y/x, so replacing it would remove what is being moved')
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'x/y/x'), 'utf8')).toBe('inner')
+  })
+})
+
 describe('fs_move meets the workspace rules beneath a folder it moves', () => {
   const policy = (rules: unknown[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules } })
 
@@ -198,6 +369,73 @@ describe('moveEntry', () => {
       pause: async () => {},
     }
   }
+
+  /** The system's own operations, with the one rename of `name` onto a path of that name answered EXDEV, and the first removal of `name` failed if asked. */
+  function acrossDevicesToTheSameName(input: { name: string; failFirstUnlink?: boolean }): MoveIo {
+    let crossed = false
+    let failed = false
+    return {
+      rename: (from, to) => { if (!crossed && from.endsWith(`/${input.name}`) && to.endsWith(`/${input.name}`)) { crossed = true; throw Object.assign(new Error('EXDEV: cross-device link not permitted'), { code: 'EXDEV' }) } renameSync(from, to) },
+      unlink: (path) => { if (input.failFirstUnlink && !failed && path.endsWith(`/${input.name}`)) { failed = true; throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } unlinkSync(path) },
+      rmdir: path => rmdirSync(path),
+      pause: async () => {},
+    }
+  }
+
+  it('replaces a folder across devices: the copy lands, the source goes, and the old folder is removed whole', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other/a.md/deep'), { recursive: true })
+    writeFileSync(join(root, 'other/a.md/old.txt'), 'old')
+    writeFileSync(join(root, 'other/a.md/deep/o.txt'), 'o')
+    writeFileSync(join(root, 'a.md'), 'source')
+    const input = moveInput.parse({ from: 'a.md', to: 'other', replace: true })
+    expect(await moveEntry(input, { paths, io: acrossDevicesToTheSameName({ name: 'a.md' }) }, settleMove(input, { paths }))).toMatchObject({ copied: true, replaced: true, to: 'other/a.md' })
+    expect(readFileSync(join(root, 'other/a.md'), 'utf8')).toBe('source')
+    expect(existsSync(join(root, 'a.md'))).toBe(false)
+    expect(readdirSync(join(root, 'other'))).toEqual(['a.md'])
+  })
+
+  it('puts the old folder back where a move across devices fails after the copy, and leaves the source where it was', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other/a.md/deep'), { recursive: true })
+    writeFileSync(join(root, 'other/a.md/old.txt'), 'old')
+    writeFileSync(join(root, 'other/a.md/deep/o.txt'), 'o')
+    writeFileSync(join(root, 'a.md'), 'source')
+    const input = moveInput.parse({ from: 'a.md', to: 'other', replace: true })
+    await expect(moveEntry(input, { paths, io: acrossDevicesToTheSameName({ name: 'a.md', failFirstUnlink: true }) }, settleMove(input, { paths }))).rejects.toThrow('could not be moved to the other device (EACCES)')
+    expect(readFileSync(join(root, 'a.md'), 'utf8')).toBe('source')
+    expect(readFileSync(join(root, 'other/a.md/old.txt'), 'utf8')).toBe('old')
+    expect(readFileSync(join(root, 'other/a.md/deep/o.txt'), 'utf8')).toBe('o')
+    expect(readdirSync(join(root, 'other'))).toEqual(['a.md'])
+  })
+
+  it('answers ok with the old folder\'s name where its removal stops part way, as the move has landed', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other/a.md'), { recursive: true })
+    writeFileSync(join(root, 'other/a.md/old.txt'), 'old')
+    writeFileSync(join(root, 'a.md'), 'source')
+    const input = moveInput.parse({ from: 'a.md', to: 'other', replace: true })
+    const io: MoveIo = { rename: renameSync, unlink: (path) => { if (path.endsWith('/old.txt')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); unlinkSync(path) }, rmdir: rmdirSync, pause: async () => {} }
+    const answer = await moveEntry(input, { paths, io }, settleMove(input, { paths }))
+    expect(answer).toMatchObject({ replaced: true, to: 'other/a.md', leftOver: expect.stringMatching(/^other\/\.buckle-aside-/) })
+    expect(readFileSync(join(root, 'other/a.md'), 'utf8')).toBe('source')
+    expect(readdirSync(join(root, 'other')).filter(name => name !== 'a.md')).toHaveLength(1)
+  })
+
+  it('refuses a landing that was a file at its check and is a folder now, and one that was taken away', async () => {
+    const { root, paths } = folder()
+    writeFileSync(join(root, 'a.md'), 'source')
+    writeFileSync(join(root, 'b.md'), 'file at the check')
+    const input = moveInput.parse({ from: 'a.md', to: 'b.md', replace: true })
+    const judged = settleMove(input, { paths })
+    rmSync(join(root, 'b.md'))
+    await expect(moveEntry(input, { paths }, judged)).rejects.toMatchObject({ code: 'NOTHING_TO_REPLACE', message: expect.stringContaining('b.md') })
+    mkdirSync(join(root, 'b.md'))
+    writeFileSync(join(root, 'b.md/inner'), 'a folder arrived meanwhile')
+    await expect(moveEntry(input, { paths }, judged)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    expect(readFileSync(join(root, 'b.md/inner'), 'utf8')).toBe('a folder arrived meanwhile')
+    expect(readFileSync(join(root, 'a.md'), 'utf8')).toBe('source')
+  })
 
   it('copies across devices, then removes the source', async () => {
     const { root, paths } = folder()

@@ -53,8 +53,11 @@ buckle fs move draft.md final.md --replace
 deletes in that folder: relay it.
 A link is removed, never followed; a folder that holds entries needs `recursive`. A missing
 path is reported, not an error. Never empty a file with `fs_write` to get rid of it.
-`fs_move` refuses a `to` that exists unless `replace` is set, and makes no folder; moving a
-folder, or replacing a file, asks a person as a delete does.
+`fs_move`'s `replace` says what you expect at the destination, and a mismatch is refused: without
+it, anything standing there is refused (`TARGET_EXISTS`); with it, nothing standing there is
+refused (`NOTHING_TO_REPLACE`). A folder there is replaced whole, which asks a person and names
+how many entries it holds. `fs_move` makes no folder; moving a folder, or replacing anything,
+asks a person as a delete does.
 
 ## Finding things
 

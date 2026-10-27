@@ -77,7 +77,7 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
     }
     case 'fs_patch': return `Replace text in ${path()} (${count(records(args.edits).length, 'edit')})`
     // Every path named, none counted away (owner decisions D9 and D17): a delete is the floor's own ask.
-    case 'fs_move': return `Move ${path('from')} to ${path('to')}${typeof settled.landing === 'string' ? ` as ${fact(settled.landing, PATH_LENGTH)}` : ''}${settled.replaces === true ? ', replacing the file there' : ''}`
+    case 'fs_move': return `Move ${path('from')} to ${path('to')}${typeof settled.landing === 'string' ? ` as ${fact(settled.landing, PATH_LENGTH)}` : ''}${replacing(settled)}`
     // The diff itself is the call's argument, shown whole beside this (D17); here every file it touches is named.
     case 'fs_apply_patch': return `Apply a patch to ${count(strings(settled.files).length, 'file')}: ${facts.allPaths(strings(settled.files))}`
     case 'fs_delete': return `Delete ${count(strings(args.paths).length, 'file')}: ${facts.allPaths(strings(args.paths))}${args.recursive === true ? ', each folder among them with everything in it' : ''}`
@@ -98,6 +98,14 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
     case 'lsp_rename': return `Rename the symbol at ${path()} line ${fact(String(args.line ?? ''))} to ${fact(text(args.newName) ?? '')}`
     default: return `Call ${fact(tool)}${text(args.path) === undefined ? '' : ` on ${path()}`}`
   }
+}
+
+/** What a move replaces: a folder named with the entries counted in it where they were counted, or the file or link there. */
+function replacing(settled: JsonObject): string {
+  if (settled.replaces !== true) return ''
+  if (settled.replacesFolder !== true) return ', replacing the file there'
+  const held = integer(settled.entries)
+  return `, replacing the folder there${typeof settled.entries === 'number' ? `, ${held} ${held === 1 ? 'entry' : 'entries'}` : ''}`
 }
 
 /** What else a shell call reaches: its own working directory, the network, variables it sets and credential files it reads. */

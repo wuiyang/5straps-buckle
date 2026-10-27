@@ -154,6 +154,32 @@ describe('a folder moved whole meets the workspace rules beneath it', () => {
   })
 })
 
+describe('a folder replaced by a move', () => {
+  /** What fs_move declares for a file moved onto a folder: the source read and removed, the landing written, and the folder there removed whole. */
+  const replacing = (landing: string, held: TreeCount): ResolvedEffect[] => [
+    { kind: 'read_path', path: `${WORKSPACE}/notes`, directory: WORKSPACE },
+    removed(`${WORKSPACE}/notes`),
+    { kind: 'write_path', path: landing, directory: landing.slice(0, landing.lastIndexOf('/')), entry: true },
+    removed(landing, { tree: held }),
+  ]
+
+  it('asks for the folder under its own delete-tree subject with its count, which a delete grant for its folder does not cover', () => {
+    const landing = `${WORKSPACE}/archive/notes`
+    const outcome = evaluate(replacing(landing, counted(2, 1)), { write_scope: [WORKSPACE, `delete:${WORKSPACE}`, `delete:${WORKSPACE}/archive`] })
+    expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete-tree:${landing}`, offeredScopes: ['once', 'session', 'always'] }] })
+    if (outcome.kind !== 'ask') return
+    expect(outcome.asks[0]!.reason).toBe(`Deleting the folder ${landing} and everything in it (2 files and 1 folder) asks a person, whatever the folder's write grant says`)
+    expect(evaluate(replacing(landing, counted(2, 1)), { write_scope: [WORKSPACE, `delete:${WORKSPACE}`, `delete-tree:${landing}`] }).kind).toBe('allow')
+  })
+
+  it('is refused where the folder is or holds a root, a read-only mount\'s source, or Buckle\'s state, as a recursive delete is', () => {
+    expect(evaluate(replacing(WORKSPACE, counted(2, 1)), { write_scope: [`delete-tree:${WORKSPACE}`] }).kind).toBe('deny')
+    expect(evaluate(replacing('/work', counted(2, 1)), { write_scope: ['delete-tree:/work'] })).toMatchObject({ kind: 'deny' })
+    expect(evaluate(replacing('/srv/data', counted(1, 0)), {}, { mount: '/workspace', readOnly: '/srv/data' })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope' } })
+    expect(evaluate(replacing(STATE, counted(1, 0)))).toMatchObject({ kind: 'deny', denial: { rule: 'sensitive_path' } })
+  })
+})
+
 describe('the dangerously-allow switch', () => {
   it('answers a delete inside the workspace and leaves one outside it to a person', () => {
     const allowed = withDangerouslyAllow(engine(), { level: () => 'command', root: () => WORKSPACE })

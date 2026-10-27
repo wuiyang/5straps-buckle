@@ -8,8 +8,10 @@ asks.
 ## What the file tools leave alone
 
 - An access ACL on a replaced or moved file is not kept, as for every write. Modes are kept.
-- A move checks that `to` is free, then renames. A process outside Buckle that creates `to`
-  between those two steps is not detected.
+- A move checks what stands at `to` against `replace`, then renames. A process outside Buckle that
+  creates `to` between those two steps is not detected. A replaced entry is renamed aside and removed
+  once the move stands; if a folder's removal stops part way, the answer is `ok` and `leftOver`
+  names what remains.
 - A move across devices or mounts copies the file, then removes the source. The copy is whole
   before the removal, but the two steps are not one change. If the removal of a folder stops part
   way, the answer is `ok` with `leftOver` naming what remains. Times are not kept, and links copy
@@ -21,7 +23,7 @@ asks.
   code is reported as it is.
 - A move refuses hard links of one file as "the same file". A link that resolves outside a mount
   cannot be moved, though only the link itself would move. The check is conservative.
-- A folder of more than 10,000 entries cannot be moved in one call. A delete's count stops at
+- A folder of more than 10,000 entries cannot be moved, or replaced by a move, in one call. A delete's count stops at
   10,000 and says "more than". A removal the system refuses, such as a read-only folder, is that
   path's refusal in the answer; a folder removed whole may then be gone in part.
 - A delete or a move outside the workspace is checkpointed from the entry alone. A path that does not
