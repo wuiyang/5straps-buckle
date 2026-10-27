@@ -1,10 +1,10 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
-import { applyHunks, parseUnifiedDiff } from '../common/services/packs/fs/unified-diff.js'
+import { applyHunks, MAX_PLACEMENT_COMPARISONS, parseUnifiedDiff } from '../common/services/packs/fs/unified-diff.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -96,6 +96,45 @@ describe('the unified diff', () => {
     expect(() => apply(patch, { 'f.txt': 'a\nb\nc \nd\n' })).toThrow('Hunk 1 of f.txt (@@ -1,2 +1,2 @@) does not match the file')
   })
 
+  it('places a hunk with less context at one end of the file at that end alone, so a patch sent twice is refused the second time', () => {
+    const append = '--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,4 @@\n a\n b\n c\n+d\n'
+    const appended = apply(append, { 'f.txt': 'a\nb\nc\n' })[0]!.content
+    expect(appended).toBe('a\nb\nc\nd\n')
+    expect(() => apply(append, { 'f.txt': appended })).toThrow('Hunk 1 of f.txt (@@ -1,3 +1,4 @@) does not match the file, so nothing was written: it has fewer context lines at its end than at the other, which marks it as standing at the end of the file')
+    const prepend = '--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,4 @@\n+h\n a\n b\n c\n'
+    const prepended = apply(prepend, { 'f.txt': 'a\nb\nc\n' })[0]!.content
+    expect(prepended).toBe('h\na\nb\nc\n')
+    expect(() => apply(prepend, { 'f.txt': prepended })).toThrow('which marks it as standing at the start of the file')
+    // The same text in the middle of a longer file is not at an end, so it is refused rather than placed there.
+    expect(() => apply(append, { 'f.txt': 'a\nb\nc\nmore\n' })).toThrow('does not match the file')
+    // Equal context on both sides leaves a hunk free to stand anywhere, as before.
+    expect(apply('--- a/f.txt\n+++ b/f.txt\n@@ -3,3 +3,3 @@\n a\n-b\n+B\n c\n', { 'f.txt': 'x\na\nb\nc\ny\n' })[0]!.content).toBe('x\na\nB\nc\ny\n')
+  })
+
+  it('refuses a patch whose hunks cannot be placed within the comparison budget, without a long stall', () => {
+    const context = Array.from({ length: 4_000 }, () => ' x')
+    const patch = ['--- a/big.txt', '+++ b/big.txt', '@@ -1,8001 +1,8001 @@', ...context, '-y', '+z', ...context, ''].join('\n')
+    const started = performance.now()
+    expect(() => apply(patch, { 'big.txt': 'x\n'.repeat(80_000) })).toThrow(`could not be placed within ${MAX_PLACEMENT_COMPARISONS} line comparisons, so nothing was written`)
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('reads the diff --git block of an empty file made or removed, which git writes with no --- or +++ lines', () => {
+    const patch = [
+      'diff --git a/empty.txt b/empty.txt', 'new file mode 100644', 'index 0000000..e69de29',
+      'diff --git "a/caf\\303\\251 menu/x.txt" "b/caf\\303\\251 menu/x.txt"', 'new file mode 100644', 'index 0000000..e69de29',
+      'diff --git a/with space/gone.txt b/with space/gone.txt', 'deleted file mode 100644', 'index e69de29..0000000',
+      'diff --git a/f.txt b/f.txt', 'index 1111111..2222222 100644', '--- a/f.txt', '+++ b/f.txt', '@@ -1 +1 @@', '-a', '+b', '',
+    ].join('\n')
+    expect(parseUnifiedDiff(patch).map(change => [change.kind, change.path, change.hunks.length])).toEqual([['create', 'empty.txt', 0], ['create', 'café menu/x.txt', 0], ['delete', 'with space/gone.txt', 0], ['modify', 'f.txt', 1]])
+    expect(apply(patch, { 'with space/gone.txt': '', 'f.txt': 'a\n' })[0]).toEqual({ path: 'empty.txt', kind: 'create', content: '' })
+  })
+
+  it('refuses a diff --git block that holds nothing to apply, a mode change alone included, rather than skip it', () => {
+    expect(() => parseUnifiedDiff('diff --git a/run.sh b/run.sh\nold mode 100644\nnew mode 100755\n')).toThrow('a change to run.sh with no lines to apply but its mode')
+    expect(() => parseUnifiedDiff('diff --git a/x b/x\nindex 1..2 100644\n--- a/y\n+++ b/y\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/z b/z\nindex 1..2\n')).toThrow('a change to z with no lines to apply')
+  })
+
   it('reads a name git quoted', () => {
     const patch = '--- "a/caf\\303\\251 menu.txt"\n+++ "b/caf\\303\\251 menu.txt"\n@@ -1 +1 @@\n-x\n+y\n'
     expect(parseUnifiedDiff(patch)[0]!.path).toBe('café menu.txt')
@@ -162,6 +201,66 @@ describe('fs_apply_patch on a node', () => {
     expect(await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'floor-1', tokens })).toMatchObject({ outcome: 'ok', output: { files: [{ change: 'created' }, { change: 'deleted' }] } })
     expect(readFileSync(join(workspace, 'new/deep/file.txt'), 'utf8')).toBe('made\n')
     expect(existsSync(join(workspace, 'gone.txt'))).toBe(false)
+  })
+
+  it('creates and removes an empty file that git writes with no --- or +++ lines, beside a change to another file', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'f.txt'), 'a\n')
+    writeFileSync(join(workspace, 'empty-old.txt'), '')
+    writeFileSync(join(workspace, 'full.txt'), 'not empty')
+    const made = ['diff --git a/empty.txt b/empty.txt', 'new file mode 100644', 'index 0000000..e69de29', 'diff --git a/f.txt b/f.txt', '--- a/f.txt', '+++ b/f.txt', '@@ -1 +1 @@', '-a', '+b', ''].join('\n')
+    expect(await call(runtime, 'fs_apply_patch', { patch: made })).toMatchObject({ outcome: 'ok', output: { files: [{ path: 'empty.txt', change: 'created', size: 0 }, { change: 'modified' }] } })
+    expect(readFileSync(join(workspace, 'empty.txt'), 'utf8')).toBe('')
+    expect(readFileSync(join(workspace, 'f.txt'), 'utf8')).toBe('b\n')
+    // A file with content is not removed by a block that says nothing of its lines, once a person allowed the delete.
+    const patch = 'diff --git a/full.txt b/full.txt\ndeleted file mode 100644\nindex e69de29..0000000\n'
+    const asked = await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'full-1' })
+    const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(item => item.token) : []
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    expect(errorOf(await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'full-1', tokens }))).toMatchObject({ code: 'PATCH_DOES_NOT_APPLY', message: 'The patch deletes full.txt but its hunks leave lines in it, so nothing was written' })
+    expect(existsSync(join(workspace, 'full.txt'))).toBe(true)
+    // An empty file goes the same way and is removed.
+    const removed = 'diff --git a/empty-old.txt b/empty-old.txt\ndeleted file mode 100644\nindex e69de29..0000000\n'
+    const askedEmpty = await call(runtime, 'fs_apply_patch', { patch: removed }, { requestId: 'empty-1' })
+    const emptyTokens = askedEmpty.outcome === 'approval_required' ? askedEmpty.approvals.map(item => item.token) : []
+    for (const token of emptyTokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    expect(await call(runtime, 'fs_apply_patch', { patch: removed }, { requestId: 'empty-1', tokens: emptyTokens })).toMatchObject({ outcome: 'ok', output: { files: [{ change: 'deleted' }] } })
+    expect(existsSync(join(workspace, 'empty-old.txt'))).toBe(false)
+  })
+
+  it('refuses a patch sent twice that appends at the end of a file, and writes nothing the second time', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'f.txt'), 'a\nb\nc\n')
+    await call(runtime, 'fs_read', { path: 'f.txt' })
+    const patch = 'diff --git a/f.txt b/f.txt\nindex 1..2 100644\n--- a/f.txt\n+++ b/f.txt\n@@ -1,3 +1,4 @@\n a\n b\n c\n+d\n'
+    expect(await call(runtime, 'fs_apply_patch', { patch })).toMatchObject({ outcome: 'ok' })
+    expect(errorOf(await call(runtime, 'fs_apply_patch', { patch }))).toMatchObject({ code: 'PATCH_DOES_NOT_APPLY' })
+    expect(readFileSync(join(workspace, 'f.txt'), 'utf8')).toBe('a\nb\nc\nd\n')
+  })
+
+  it('refuses before writing anything a created file whose folder would have to be made where a file stands', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.txt'), 'one\ntwo\n')
+    writeFileSync(join(workspace, 'b.txt'), 'a file')
+    const patch = '--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n--- /dev/null\n+++ b/b.txt/c.txt\n@@ -0,0 +1 @@\n+new\n'
+    expect(errorOf(await call(runtime, 'fs_apply_patch', { patch }))).toMatchObject({ code: 'PATCH_DOES_NOT_APPLY', message: expect.stringContaining('b.txt is a file, not a folder, so nothing was written') })
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('one\ntwo\n')
+  })
+
+  it.skipIf(process.getuid?.() === 0)('names the files already written where the disk refuses a later one, and the one that stopped it', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.txt'), 'one\ntwo\n')
+    mkdirSync(join(workspace, 'locked'))
+    writeFileSync(join(workspace, 'locked/b.txt'), 'alpha\nbeta\n')
+    chmodSync(join(workspace, 'locked'), 0o555)
+    try {
+      const patch = '--- a/a.txt\n+++ b/a.txt\n@@ -1,2 +1,2 @@\n one\n-two\n+TWO\n--- a/locked/b.txt\n+++ b/locked/b.txt\n@@ -1,2 +1,2 @@\n alpha\n-beta\n+BETA\n'
+      const failed = errorOf(await call(runtime, 'fs_apply_patch', { patch }))
+      expect(failed?.message).toBe('locked/b.txt could not be written (EACCES). Already written: modified a.txt. The patch no longer matches those files: read them again and send only what is left; the change history can restore them')
+      expect(failed?.code).not.toBe('TOOL_EXECUTION_FAILED')
+      expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('one\nTWO\n')
+      expect(readFileSync(join(workspace, 'locked/b.txt'), 'utf8')).toBe('alpha\nbeta\n')
+    } finally { chmodSync(join(workspace, 'locked'), 0o755) }
   })
 
   it('asks where a hunk cuts a file this session never read to under half', async () => {

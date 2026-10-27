@@ -22,12 +22,23 @@ export function parseUnifiedDiff(text: string): FileChange[] {
   const lines = text.split('\n')
   if (lines.at(-1) === '') lines.pop()
   const changes: FileChange[] = []
+  // A `diff --git` block is open until a ---/+++ pair or the next block closes it: git writes none for an empty file made or
+  // removed, or a mode changed, so the block itself says what the file is (gitBlockChange).
+  let block: GitBlock | null = null
+  const closeBlock = () => { if (block !== null) changes.push(gitBlockChange(block)); block = null }
   let index = 0
   while (index < lines.length) {
     const line = withoutCr(lines[index]!)
+    if (line.startsWith('diff --git ')) { closeBlock(); block = { header: line, created: false, deleted: false, mode: false }; index++; continue }
     if (/^(rename|copy) (from|to) /.test(line)) throw new ToolInputError(`The patch renames or copies a file (${line}), which fs_apply_patch does not apply: move it with fs_move, then patch it`)
     if (line.startsWith('GIT binary patch') || /^Binary files .* differ$/.test(line)) throw new ToolInputError('The patch holds a binary change, which fs_apply_patch does not apply')
+    if (block !== null) {
+      if (line.startsWith('new file mode ')) block.created = true
+      else if (line.startsWith('deleted file mode ')) block.deleted = true
+      else if (line.startsWith('old mode ') || line.startsWith('new mode ')) block.mode = true
+    }
     if (!line.startsWith('--- ') || !withoutCr(lines[index + 1] ?? '').startsWith('+++ ')) { index++; continue }
+    block = null
     const oldName = headerName(line.slice(4))
     const newName = headerName(withoutCr(lines[index + 1]!).slice(4))
     index += 2
@@ -39,17 +50,78 @@ export function parseUnifiedDiff(text: string): FileChange[] {
     }
     changes.push(fileChange(oldName, newName, hunks))
   }
+  closeBlock()
   if (changes.length === 0) throw new ToolInputError('The patch holds no unified diff: each file needs a --- and a +++ line, then its @@ hunks')
   return changes
 }
 
+/** A `diff --git` line whose block has no ---/+++ pair yet, and what its lines after it said. */
+interface GitBlock { header: string; created: boolean; deleted: boolean; mode: boolean }
+
+/**
+ * What a `diff --git` block with no ---/+++ lines is: an empty file created (`new file mode`) or removed (`deleted file
+ * mode`), which holds no hunk. A mode change alone, or a block that says nothing, is refused, as nothing applies it and
+ * a part of the diff must not be skipped without a word.
+ */
+function gitBlockChange(block: GitBlock): FileChange {
+  const names = gitNames(block.header)
+  if (block.created) return { kind: 'create', path: names, hunks: [] }
+  if (block.deleted) return { kind: 'delete', path: names, hunks: [] }
+  throw new ToolInputError(`The patch holds a change to ${names} with no lines to apply${block.mode ? ' but its mode' : ''}, which fs_apply_patch does not apply`)
+}
+
+/**
+ * The one name a `diff --git a/X b/X` line gives its file, as git writes it for a file made or removed (both sides the
+ * same), quoted as git quotes a name that holds a space or a byte outside ASCII.
+ */
+function gitNames(header: string): string {
+  const rest = header.slice('diff --git '.length)
+  if (rest.startsWith('"')) {
+    const first = unquote(rest)
+    const closing = closingQuote(rest)
+    const second = rest.slice(closing + 1).trimStart()
+    const other = second.startsWith('"') ? unquote(second) : second
+    if (first.startsWith('a/') && other.startsWith('b/') && first.slice(2) === other.slice(2)) return first.slice(2)
+  } else {
+    for (let at = rest.indexOf(' b/'); at !== -1; at = rest.indexOf(' b/', at + 1)) {
+      const left = rest.slice(0, at)
+      const right = rest.slice(at + 1)
+      const quotedRight = right.startsWith('"b/') ? unquote(right) : right
+      if (left.startsWith('a/') && quotedRight.startsWith('b/') && left.slice(2) === quotedRight.slice(2)) return left.slice(2)
+    }
+  }
+  throw new ToolInputError(`A diff --git line of the patch names no one file (${header}), which fs_apply_patch reads for a file made or removed empty`)
+}
+
+/** Where the quote opened at the start of `raw` closes, an escaped quote passed over. */
+function closingQuote(raw: string): number {
+  for (let index = 1; index < raw.length; index++) {
+    if (raw[index] === '\\') { index++; continue }
+    if (raw[index] === '"') return index
+  }
+  return raw.length - 1
+}
+
+/** The line comparisons one patch may spend placing its hunks: past it the patch is refused, so no file can stall the node (a coordinator default, reversible). */
+export const MAX_PLACEMENT_COMPARISONS = 5_000_000
+
+/** What is left to spend on placing the hunks of one patch, shared by all its files. */
+export interface PlacementBudget { left: number }
+
+export function placementBudget(): PlacementBudget {
+  return { left: MAX_PLACEMENT_COMPARISONS }
+}
+
 /**
  * A file's new content, every hunk applied in order with its context exact: each hunk where its lines stand, at the line
- * its header names or the nearest one after the hunk before it, and refused, naming the hunk, where they stand nowhere.
- * Kept lines keep the file's own endings; an added line ends with CRLF where the patch's line did, or where the file's
- * first line does, and with LF otherwise. A deleted file must be emptied by its hunks; a created one has none to match.
+ * its header names or the nearest one after the hunk before it, and refused, naming the hunk, where they stand nowhere. A
+ * hunk with fewer context lines on one side than the other stands at that end of the file, as diff and git write one, so
+ * it is placed there alone: a patch sent twice is refused the second time, never applied again. Kept lines keep the
+ * file's own endings; an added line ends with CRLF where the patch's line did, or where the file's first line does, and
+ * with LF otherwise. A deleted file must be emptied by its hunks; a created one has none to match. The search for a
+ * place spends `budget`, and a patch that spends it all is refused.
  */
-export function applyHunks(change: FileChange, current: Buffer | null): Buffer {
+export function applyHunks(change: FileChange, current: Buffer | null, budget: PlacementBudget = placementBudget()): Buffer {
   if (current !== null && !isUtf8(current)) throw new ToolInputError(`${change.path} is not UTF-8 text, which fs_apply_patch patches`)
   const file = current === null ? [] : splitLines(current.toString('utf8'))
   const crlf = file[0]?.ending === '\r\n'
@@ -57,8 +129,10 @@ export function applyHunks(change: FileChange, current: Buffer | null): Buffer {
   let cursor = 0
   for (const [index, hunk] of change.hunks.entries()) {
     const old = hunk.lines.filter(line => line.kind !== '+')
-    const at = findHunk({ file, old, from: cursor, wanted: hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart - 1 })
-    if (at === null) throw new ToolInputError(`Hunk ${index + 1} of ${change.path} (${hunk.header}) does not match the file, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
+    const anchor = anchorOf(hunk)
+    const at = findHunk({ file, old, from: cursor, wanted: hunk.oldCount === 0 ? hunk.oldStart : hunk.oldStart - 1, anchor, budget })
+    if (at === 'limit') throw new ToolInputError(`Hunk ${index + 1} of ${change.path} (${hunk.header}) could not be placed within ${MAX_PLACEMENT_COMPARISONS} line comparisons, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
+    if (at === null) throw new ToolInputError(`Hunk ${index + 1} of ${change.path} (${hunk.header}) does not match the file, so nothing was written${anchor ? `: it has fewer context lines at its ${anchor === 'start' ? 'start' : 'end'} than at the other, which marks it as standing at the ${anchor} of the file, and it does not stand there; give it the same context on both sides if it stands elsewhere` : ''}`, { code: 'PATCH_DOES_NOT_APPLY' })
     for (const line of file.slice(cursor, at)) out.push(line.text + line.ending)
     let taken = at
     for (const line of hunk.lines) {
@@ -72,6 +146,20 @@ export function applyHunks(change: FileChange, current: Buffer | null): Buffer {
   const result = out.join('')
   if (change.kind === 'delete' && result !== '') throw new ToolInputError(`The patch deletes ${change.path} but its hunks leave lines in it, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
   return Buffer.from(result, 'utf8')
+}
+
+/**
+ * Where a hunk must stand, by its context: fewer lines of context before its first change than after its last one means
+ * it opens the file, and fewer after than before means it ends it (diff -u writes less context only at an end of the
+ * file). Equal context, none, or no change at all leaves it free to stand anywhere.
+ */
+function anchorOf(hunk: Hunk): 'start' | 'end' | null {
+  const first = hunk.lines.findIndex(line => line.kind !== ' ')
+  if (first === -1) return null
+  const leading = first
+  const trailing = hunk.lines.length - 1 - hunk.lines.findLastIndex(line => line.kind !== ' ')
+  if (leading === trailing) return null
+  return leading < trailing ? 'start' : 'end'
 }
 
 interface FileLine { text: string; ending: '' | '\n' | '\r\n' }
@@ -88,22 +176,34 @@ function splitLines(content: string): FileLine[] {
 }
 
 /**
- * Where a hunk's kept and removed lines stand in the file, at `wanted` or the nearest line to it, never before `from`.
- * Each must match a file line's text exactly; a line the hunk marks as ending the file without a newline must be the
- * file's last, so ending, and any other must end with one. A hunk with none of its own is placed at `wanted` alone.
+ * Where a hunk's kept and removed lines stand in the file, at `wanted` or the nearest line to it, never before `from`, or
+ * at the file's start or end alone where the hunk is anchored there. Each must match a file line's text exactly; a line
+ * the hunk marks as ending the file without a newline must be the file's last, so ending, and any other must end with
+ * one. A hunk with none of its own is placed at `wanted` alone. Every offset tried and line compared spends `budget`:
+ * 'limit' where it ran out.
  */
-function findHunk(input: { file: readonly FileLine[]; old: readonly DiffLine[]; from: number; wanted: number }): number | null {
-  const { file, old, from } = input
+function findHunk(input: { file: readonly FileLine[]; old: readonly DiffLine[]; from: number; wanted: number; anchor: 'start' | 'end' | null; budget: PlacementBudget }): number | 'limit' | null {
+  const { file, old, from, budget } = input
   const last = file.length - old.length
   if (old.length === 0) return input.wanted >= from && input.wanted <= file.length ? input.wanted : null
-  const matches = (at: number) => old.every((line, offset) => {
-    const standing = file[at + offset]!
-    return standing.text === line.text && (standing.ending === '') === line.noNewline
-  })
+  const matches = (at: number) => {
+    for (const [offset, line] of old.entries()) {
+      budget.left--
+      const standing = file[at + offset]!
+      if (standing.text !== line.text || (standing.ending === '') !== line.noNewline) return false
+    }
+    return true
+  }
+  if (input.anchor !== null) {
+    const at = input.anchor === 'start' ? 0 : last
+    return at >= from && at <= last && matches(at) ? at : null
+  }
   for (let distance = 0; distance <= file.length; distance++) {
     for (const at of distance === 0 ? [input.wanted] : [input.wanted - distance, input.wanted + distance]) {
+      budget.left--
       if (at >= from && at <= last && matches(at)) return at
     }
+    if (budget.left < 0) return 'limit'
     if (input.wanted - distance < from && input.wanted + distance > last) break
   }
   return null

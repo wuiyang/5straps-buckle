@@ -1,4 +1,4 @@
-import { constants, fstatSync, readFileSync, writeSync } from 'node:fs'
+import { constants, fstatSync, readFileSync, statSync, writeSync } from 'node:fs'
 import { basename, dirname } from 'pathe'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
@@ -11,7 +11,7 @@ import { ToolInputError, type WrittenFile } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { judgedPath } from '../judged-path.js'
 import { entryOf, kindOf, lstatOrNone } from './delete.js'
-import { applyHunks, parseUnifiedDiff, type FileChange } from './unified-diff.js'
+import { applyHunks, parseUnifiedDiff, placementBudget, type FileChange, type PlacementBudget } from './unified-diff.js'
 import { auditedPath } from './transfer.js'
 import type * as schemas from './schemas.js'
 
@@ -67,11 +67,13 @@ export function patchEffects(judged: SettledPatch): ToolEffect[] {
 
 /** What each changed file holds afterwards, for the destructive-write check, where the file may be read; a deleted one is at the floor already. */
 export function patchedSizes(judged: SettledPatch, current: (path: string) => Buffer | null): WrittenFile[] {
+  // One budget for the patch: a hunk that cannot be placed within it is refused when the patch runs, and writes nothing.
+  const budget = placementBudget()
   return judged.files.flatMap((file) => {
     if (file.kind !== 'modify') return []
     const before = current(file.path)
     if (before === null) return []
-    try { return [{ path: file.path, size: applyHunks(file, before).byteLength }] } catch { return [] }
+    try { return [{ path: file.path, size: applyHunks(file, before, budget).byteLength }] } catch { return [] }
   })
 }
 
@@ -92,44 +94,83 @@ export function patchedFacts(input: z.output<typeof schemas.applyPatchInput>): J
  * createParents makes them, and each deleted file is removed. MAX_FILE_BYTES holds for each file a patch leaves.
  */
 export async function applyPatch(context: PatchContext, judged: SettledPatch): Promise<JsonValue> {
-  const planned = judged.files.map(file => plan(file, context))
+  const budget = placementBudget()
+  const planned = judged.files.map(file => plan(file, context, budget))
   const results: JsonObject[] = []
   for (const step of planned) {
-    if (step.file.kind === 'delete') {
-      const directory = openRealDirectory(step.directory, { refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })
-      try { await removeBeneath({ directory, name: basename(step.target), shown: step.file.path, tree: false }) } finally { directory.close() }
-      context.relocated?.(step.target, null)
-      results.push({ path: context.paths.display(step.target), change: 'deleted' })
-      continue
-    }
-    const directory = openRealDirectory(step.directory, { create: step.file.kind === 'create', refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })
     try {
-      await replaceBeneath({ directory, name: basename(step.target), named: step.file.path, signal: context.signal, fill: async descriptor => writeAll(descriptor, step.content) })
-    } finally { directory.close() }
-    context.known?.(step.target)
-    results.push({ path: context.paths.display(step.target), change: step.file.kind === 'create' ? 'created' : 'modified', size: step.content.byteLength })
+      results.push(await writeStep(step, context))
+    } catch (error) {
+      throw interrupted({ error, step, written: results, context })
+    }
   }
   return { files: results }
+}
+
+/** One planned file written, created, or deleted. */
+async function writeStep(step: Step, context: PatchContext): Promise<JsonObject> {
+  if (step.file.kind === 'delete') {
+    const directory = openRealDirectory(step.directory, { refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })
+    try { await removeBeneath({ directory, name: basename(step.target), shown: step.file.path, tree: false }) } finally { directory.close() }
+    context.relocated?.(step.target, null)
+    return { path: context.paths.display(step.target), change: 'deleted' }
+  }
+  const directory = openRealDirectory(step.directory, { create: step.file.kind === 'create', refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })
+  try {
+    await replaceBeneath({ directory, name: basename(step.target), named: step.file.path, signal: context.signal, fill: async descriptor => writeAll(descriptor, step.content) })
+  } finally { directory.close() }
+  context.known?.(step.target)
+  return { path: context.paths.display(step.target), change: step.file.kind === 'create' ? 'created' : 'modified', size: step.content.byteLength }
+}
+
+/**
+ * A write that failed after the plan held: the refusal says which file stopped it and, where earlier files were already
+ * written, lists them and says to read them again before anything more is sent, since the patch no longer matches them.
+ * A call that was cut off (an abort) stays an abort. With nothing written yet a refusal keeps its own words and code, and
+ * an error the disk gave is worded with its code, so nothing was written.
+ */
+function interrupted(input: { error: unknown; step: Step; written: JsonObject[]; context: PatchContext }): unknown {
+  const { error, step, written, context } = input
+  if (context.signal.aborted || (error instanceof Error && error.name === 'AbortError')) return error
+  if (written.length === 0 && error instanceof ToolInputError) return error
+  const reason = error instanceof ToolInputError
+    ? error.message.split(';')[0]!.replace(/, so nothing (was|more was) (written|changed)$/, '')
+    : `${step.file.path} could not be written (${String(error instanceof Error && 'code' in error ? error.code : 'an error')})`
+  const options = error instanceof ToolInputError ? { code: error.code } : {}
+  if (written.length === 0) return new ToolInputError(`${reason}, so nothing was written`, options)
+  const done = written.map(item => `${String(item.change)} ${String(item.path)}`).join(', ')
+  return new ToolInputError(`${reason}. Already written: ${done}. The patch no longer matches those files: read them again and send only what is left; the change history can restore them`, options)
 }
 
 interface Step { file: FileChange; target: string; directory: string; content: Buffer }
 
 /** One file's new content, worked out where its check judged it, before anything is written. */
-function plan(file: FileChange, context: PatchContext): Step {
+function plan(file: FileChange, context: PatchContext, budget: PlacementBudget): Step {
   if (file.kind === 'delete') {
     const entry = entryOf(file.path, context.paths)
     if (context.authorizeDelete && !context.authorizeDelete(entry.path)) throw new ToolInputError(`${file.path} now lands where its permission check did not see, so nothing was written; send the call again`, { code: 'PERMISSION_DENIED' })
     const kind = kindOf(lstatOrNone(entry.path))
     if (kind !== 'file') throw new ToolInputError(kind === 'missing' ? `The patch deletes ${file.path}, which does not exist, so nothing was written` : `The patch deletes ${file.path}, which is a ${kind}, not a file, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
-    return { file, target: entry.path, directory: entry.directory, content: applyHunks(file, readJudged(entry.path, file.path, context)) }
+    return { file, target: entry.path, directory: entry.directory, content: applyHunks(file, readJudged(entry.path, file.path, context), budget) }
   }
   const target = judgedPath({ named: file.path, kind: 'write', paths: context.paths, context })
   if (file.kind === 'create') {
     if (lstatOrNone(target) !== undefined) throw new ToolInputError(`The patch creates ${file.path}, which exists already, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
-    return { file, target, directory: dirname(target), content: sized(applyHunks(file, null), file.path) }
+    const blocking = firstNonFolder(dirname(target))
+    if (blocking !== null) throw new ToolInputError(`The patch creates ${file.path}, but ${context.paths.display(blocking)} is a file, not a folder, so nothing was written`, { code: 'PATCH_DOES_NOT_APPLY' })
+    return { file, target, directory: dirname(target), content: sized(applyHunks(file, null, budget), file.path) }
   }
   if (context.authorizeReadTarget && !context.authorizeReadTarget(target)) throw new ToolInputError(`${file.path} now resolves to a place its permission check did not see; send the call again`, { code: 'PERMISSION_DENIED' })
-  return { file, target, directory: dirname(target), content: sized(applyHunks(file, readJudged(target, file.path, context)), file.path) }
+  return { file, target, directory: dirname(target), content: sized(applyHunks(file, readJudged(target, file.path, context), budget), file.path) }
+}
+
+/** The nearest existing entry at or above a folder a created file lands in, if it is not a folder (or a link to one): a file there stops the folders from being made. */
+function firstNonFolder(folder: string): string | null {
+  for (let path = folder; ; path = dirname(path)) {
+    const info = lstatOrNone(path)
+    if (info !== undefined) return kindOf(info) === 'directory' || (info.isSymbolicLink() && statSync(path, { throwIfNoEntry: false })?.isDirectory() === true) ? null : path
+    if (dirname(path) === path) return null
+  }
 }
 
 function readJudged(target: string, named: string, context: PatchContext): Buffer {

@@ -64,7 +64,7 @@ async function replaceOnto(input: { directory: PinnedDirectory; name: string; na
   try {
     await replaceFile(input.directory.child(partial), input.directory.child(input.name), input.io)
   } catch (error) {
-    if (isHeldOpen(error)) throw new ToolInputError(`${input.named} is held open by another program, so it was not replaced; close it and send the call again`)
+    if (isHeldOpen(error)) throw new ToolInputError(`${input.named} is held open by another program, so it was not replaced; close it and send the call again`, { code: 'ENTRY_HELD' })
     throw error
   }
 }

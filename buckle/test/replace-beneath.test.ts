@@ -38,7 +38,7 @@ describe('replaceBeneath where the target is held open', () => {
     const folder = mkdtempSync(join(tmpdir(), 'replace-beneath-'))
     roots.push(folder)
     writeFileSync(join(folder, 'target.txt'), 'old')
-    await expect(replace(folder, { rename: () => { throw held() }, pause: async () => {} })).rejects.toThrow('target.txt is held open by another program, so it was not replaced; close it and send the call again')
+    await expect(replace(folder, { rename: () => { throw held() }, pause: async () => {} })).rejects.toMatchObject({ message: 'target.txt is held open by another program, so it was not replaced; close it and send the call again', code: 'ENTRY_HELD' })
     expect(readFileSync(join(folder, 'target.txt'), 'utf8')).toBe('old')
     expect(readdirSync(folder)).toEqual(['target.txt'])
   })
