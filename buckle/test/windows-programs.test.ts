@@ -335,11 +335,12 @@ describe('the packs on Windows, imitated, with every program on PATH outside the
 })
 
 describe('the packs on Windows, imitated, with programs planted in the workspace', () => {
-  it('withhold search, git, and the browser, and refuse the language server, ps, and the shell\'s command word', async () => {
+  it('search with Buckle\'s own walker in place of the planted rg, withhold git and the browser, and refuse the language server, ps, and the shell\'s command word', async () => {
     const planted = (root: string) => Object.fromEntries(['rg', 'git', 'ps', 'agent-browser', 'typescript-language-server', 'node'].map(name => [name, `${root}\\bin\\${name}.exe`]))
     const { root, call, spawned, pack } = builtins({ table: planted })
     mkdirSync(join(root, 'bin'))
-    expect(pack('fs').tools.map(tool => tool.capability.name)).not.toContain('fs_search_content')
+    expect(pack('fs').tools.map(tool => tool.capability.name)).toContain('fs_search_content')
+    expect(pack('fs').searcher).toBe('builtin')
     expect(pack('git').unavailableReason).toBe('git is found in or through a workspace of this node, where an agent can write, so Buckle does not run it')
     expect(pack('forge').unavailableReason).toMatch(/BUCKLE_FORGE_GITHUB_TOKEN/)
     expect(pack('browser').unavailableReason).toBe(BROWSER_UNTRUSTED)

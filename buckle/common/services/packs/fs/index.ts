@@ -8,6 +8,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { MAX_TRANSFER_BYTES } from '../browser/file-transfer.js'
 import { findNames, listTree, patchedSize, patchFile, readFileEntry, writeFileEntry, writtenSize } from './operations.js'
 import * as schemas from './schemas.js'
+import { searchBuiltin } from './builtin-search.js'
 import { searchContent } from './search.js'
 import { deletedFacts, deleteEffects, deletePaths, settleDelete } from './delete.js'
 import { movedFacts, moveEffects, moveEntry, moveFacts, settleMove } from './move.js'
@@ -20,7 +21,7 @@ const DEFAULT_MAX_TIMEOUT_MS = 300_000
 export interface FsPackOptions {
   paths: PathView
   runProcess: ProcessRunner
-  /** The ripgrep this node runs, by its absolute path (resolveProgram); null withholds fs_search_content. */
+  /** The ripgrep this node runs, by its absolute path (resolveProgram); null runs fs_search_content's own walker instead. */
   ripgrep: Program | null
   /** Buckle's own state: a hard-linked file on its device is never read or searched (review L3 of the second re-review). */
   protectedRoots?: readonly string[]
@@ -161,29 +162,21 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
   ]
 
+  // Offered wherever the fs pack is: ripgrep runs the search where it is installed, Buckle's own walker elsewhere (the fs-verbs brief).
   const ripgrep = options.ripgrep
-  if (ripgrep !== null) {
-    tools.push(defineTool(PACK_ID, {
-      name: 'fs_search_content',
-      description: 'Search file contents with a regular expression. Respects .gitignore.',
-      risk: 'read',
-      tags: ['filesystem', 'search', 'regex'],
-      input: schemas.searchInput,
-      effects: input => [{ kind: 'read_path', path: input.path }],
-      run: (input, toolContext) => searchContent({
-        args: input,
-        paths: options.paths,
-        runProcess: options.runProcess,
-        ripgrep,
-        timeoutMs: toolContext.timeoutMs,
-        signal: toolContext.signal,
-        authorizeRead: toolContext.authorizeRead ?? (async () => false),
-        ...(toolContext.known ? { known: toolContext.known } : {}),
-        protectedRoots: options.protectedRoots ?? [],
-        ...(options.environment ? { environment: options.environment } : {}),
-      }),
-    }))
-  }
+  tools.push(defineTool(PACK_ID, {
+    name: 'fs_search_content',
+    description: 'Search file contents with a regular expression. Respects .gitignore.',
+    risk: 'read',
+    tags: ['filesystem', 'search', 'regex'],
+    input: schemas.searchInput,
+    effects: input => [{ kind: 'read_path', path: input.path }],
+    run: (input, toolContext) => {
+      const shared = { args: input, paths: options.paths, signal: toolContext.signal, authorizeRead: toolContext.authorizeRead ?? (async () => false), protectedRoots: options.protectedRoots ?? [], ...(toolContext.known ? { known: toolContext.known } : {}) }
+      if (ripgrep === null) return searchBuiltin(shared)
+      return searchContent({ ...shared, runProcess: options.runProcess, ripgrep, timeoutMs: toolContext.timeoutMs, ...(options.environment ? { environment: options.environment } : {}) })
+    },
+  }))
 
   return {
     id: PACK_ID,
@@ -191,5 +184,6 @@ export function createFsPack(options: FsPackOptions): Pack {
     tools,
     skills: [loadPackSkill(PACK_ID)],
     unavailableReason: null,
+    searcher: ripgrep === null ? 'builtin' : 'rg',
   }
 }

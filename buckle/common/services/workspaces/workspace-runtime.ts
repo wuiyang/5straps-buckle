@@ -1010,9 +1010,17 @@ function buildManifest(input: {
       // What `buckle cp` moves at most, where the fs pack serves fs_receive and fs_send (PUT and GET /v1/files) and the
       // tool policy lets a copy in; a node that refuses every copy offers no limit.
       ...(input.copies && input.registry.has('fs_receive') ? { maxTransferBytes: input.config.maxTransferBytes } : {}),
+      // What runs a content search here, so Rings can tell a node without ripgrep (the fs-verbs brief).
+      ...searcherOf(input),
     },
     generatedAt: new Date().toISOString(),
   }
+}
+
+/** The manifest's `searcher`, where the registry offers fs_search_content and the fs pack names what runs it. */
+function searcherOf(input: { packs: Pack[]; registry: ToolRegistry }): { searcher?: 'rg' | 'builtin' } {
+  const searcher = input.packs.find(pack => pack.searcher !== undefined && pack.tools.some(tool => tool.capability.name === 'fs_search_content'))?.searcher
+  return searcher !== undefined && input.registry.has('fs_search_content') ? { searcher } : {}
 }
 
 /**

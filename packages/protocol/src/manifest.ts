@@ -44,6 +44,8 @@ export const HarnessManifestSchema = z.object({
     maxTimeoutMs: z.number().int().positive(),
     /** The largest file one copy moves through PUT and GET /v1/files; absent where the node offers no file copy. */
     maxTransferBytes: z.number().int().positive().optional(),
+    /** What runs a content search: ripgrep, or the node's own walker where ripgrep is not installed; absent with no search. */
+    searcher: z.enum(['rg', 'builtin']).optional(),
   }),
   generatedAt: z.iso.datetime(),
 })

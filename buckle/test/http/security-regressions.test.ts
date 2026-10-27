@@ -1,7 +1,6 @@
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { hasExecutable } from '../../common/domain/executable.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 
 const roots: string[] = []
@@ -50,10 +49,9 @@ describe('owner approval authority', () => {
   })
 })
 
-// fs_search_content is only registered when a real ripgrep binary is on PATH, so on a host
-// without one this block would fail with "Unknown tool" and prove nothing. Skipping keeps the
-// skip visible in the run summary. To run it here, put a ripgrep binary on PATH first.
-describe.skipIf(!hasExecutable('rg'))('recursive credential search', () => {
+// fs_search_content runs ripgrep where a real ripgrep binary is on PATH and Buckle's own walker elsewhere, so this
+// block holds on every host, through whichever searcher the node has.
+describe('recursive credential search', () => {
   it('searches permitted content but excludes protected credentials before reading', async () => {
     const { runtime, workspace } = await fixture()
     writeFileSync(join(workspace, 'credentials.json'), '{"synthetic":"private-marker"}')

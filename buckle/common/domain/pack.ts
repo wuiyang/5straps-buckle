@@ -17,6 +17,8 @@ export interface Pack {
    * relaunched (fix brief 2, R2). `close` when absent.
    */
   retire?(): void | Promise<void>
+  /** The fs pack's alone: what runs fs_search_content here, ripgrep or Buckle's own walker, named in the manifest's limits. */
+  searcher?: 'rg' | 'builtin'
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {
