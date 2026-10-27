@@ -51,6 +51,9 @@ export const moveInput = z.object({
   replace: z.boolean().default(false),
 }).strict()
 
+/** fs_apply_patch's argument: a unified diff, whole, which the ask shows as it is. */
+export const applyPatchInput = z.object({ patch: z.string().min(1).max(10 * 1_048_576) }).strict()
+
 export const patchInput = z.object({
   path: pathInput,
   edits: z.array(z.object({

@@ -10,6 +10,7 @@ import { findNames, listTree, patchedSize, patchFile, readFileEntry, writeFileEn
 import * as schemas from './schemas.js'
 import { searchBuiltin } from './builtin-search.js'
 import { searchContent } from './search.js'
+import { applyPatch, patchedFacts, patchedSizes, patchEffects, patchFacts, settleApplyPatch } from './apply-patch.js'
 import { deletedFacts, deleteEffects, deletePaths, settleDelete } from './delete.js'
 import { movedFacts, moveEffects, moveEntry, moveFacts, settleMove } from './move.js'
 import { receivedFacts, receiveFile, sendFile, sentFacts, settleReceive, settleSend } from './transfer.js'
@@ -88,6 +89,19 @@ export function createFsPack(options: FsPackOptions): Pack {
       effects: input => [{ kind: 'write_path', path: input.path }, { kind: 'read_path', path: input.path }],
       written: (input, current) => patchedSize(input, current),
       run: (input, toolContext) => patchFile(input, { ...context, authorizeWrite: toolContext.authorizeWrite, known: toolContext.known }),
+    }),
+    defineTool(PACK_ID, {
+      name: 'fs_apply_patch',
+      description: 'Apply a unified diff to one or more files. Every hunk must match exactly or nothing is written.',
+      risk: 'write',
+      tags: ['filesystem', 'batch'],
+      input: schemas.applyPatchInput,
+      judge: input => settleApplyPatch(input, context),
+      effects: (_input, judged) => patchEffects(judged),
+      facts: (_input, judged) => patchFacts(judged),
+      written: (_input, current, judged) => patchedSizes(judged, current),
+      audited: input => patchedFacts(input),
+      run: (_input, toolContext, judged) => applyPatch({ ...context, authorizeReadTarget: toolContext.authorizeReadTarget, authorizeWrite: toolContext.authorizeWrite, authorizeDelete: toolContext.authorizeDelete, known: toolContext.known, signal: toolContext.signal }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',

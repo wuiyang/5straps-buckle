@@ -78,6 +78,8 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
     case 'fs_patch': return `Replace text in ${path()} (${count(records(args.edits).length, 'edit')})`
     // Every path named, none counted away (owner decisions D9 and D17): a delete is the floor's own ask.
     case 'fs_move': return `Move ${path('from')} to ${path('to')}${typeof settled.landing === 'string' ? ` as ${fact(settled.landing, PATH_LENGTH)}` : ''}${settled.replaces === true ? ', replacing the file there' : ''}`
+    // The diff itself is the call's argument, shown whole beside this (D17); here every file it touches is named.
+    case 'fs_apply_patch': return `Apply a patch to ${count(strings(settled.files).length, 'file')}: ${facts.allPaths(strings(settled.files))}`
     case 'fs_delete': return `Delete ${count(strings(args.paths).length, 'file')}: ${facts.allPaths(strings(args.paths))}${args.recursive === true ? ', each folder among them with everything in it' : ''}`
     case 'fs_list': return `List ${path()}`
     case 'fs_find_names': return `Find names matching ${fact(text(args.pattern) ?? '')} under ${path()}`

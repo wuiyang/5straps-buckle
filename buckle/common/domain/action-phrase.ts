@@ -20,6 +20,7 @@ const PHRASES: Readonly<Record<string, string>> = {
   fs_patch: 'patch a file',
   fs_delete: 'delete files',
   fs_move: 'move a file',
+  fs_apply_patch: 'apply a patch',
   fs_list: 'list a folder',
   fs_find_names: 'find files by name',
   fs_search_content: 'search file contents',

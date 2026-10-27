@@ -33,7 +33,11 @@ buckle fs patch src/app.ts --old "const x = 1" --new "const x = 2"
 
 `fs_patch` requires each `oldText` to match exactly once unless `replaceAll` is set, and
 writes nothing if any edit fails to match. Prefer it over `fs_write` for edits, because it cannot
-silently clobber a file that changed underneath you.
+silently clobber a file that changed underneath you. `fs_apply_patch` takes a unified diff for
+one or more files instead; every hunk must match exactly, or nothing is written.
+
+A write that empties a file, or cuts it to under half, asks a person unless you read that
+file in this session first; so does one call that rewrites more than ten existing files.
 
 ## Deleting and moving
 
