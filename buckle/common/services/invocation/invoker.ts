@@ -21,7 +21,9 @@ import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/acti
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
+import { destructiveWrites } from './destructive-writes.js'
 import { resolveEffects, resolveHostRead } from './resolve-effects.js'
+import type { SessionReads } from './session-reads.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
@@ -75,6 +77,8 @@ export interface InvokerOptions {
   filledSecrets?: FilledSecrets
   /** Buckle's own state, which no secret file may be a hard link to (beneath.ts, isLinkedOnStateDevice). */
   protectedRoots?: readonly string[]
+  /** The files each session has seen the content of, for the destructive-write check; none counts as read where absent. */
+  reads?: SessionReads
   paths: PathView
   serverId: string
   workspaceId: string
@@ -208,6 +212,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // person (docs/secrets.md).
           const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
           effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+          // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
+          effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
           // How the command reader reads each reference in a shell call, refused where the rules could not read it as
           // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
           const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
@@ -857,6 +863,12 @@ function buildLookup(input: {
   }
 }
 
+/** Whether the session may read a real path without asking a person: the rules and the standing grants it holds allow it. */
+function readsFreely(input: { options: InvokerOptions; tool: string; sessionId: string; target: string }): boolean {
+  const grants = buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] })
+  return input.options.permissions.evaluate({ tool: input.tool, effects: [{ kind: 'read_path', path: input.target, directory: parentDirectory(input.target) }], grants }).kind === 'allow'
+}
+
 async function executeWithTimeout(input: {
   options: InvokerOptions
   request: InvokeRequest
@@ -939,6 +951,7 @@ async function executeWithTimeout(input: {
       authorizeReadTarget: target => judgedReads.has(target),
       authorizeWrite: target => judgedWrites.has(target),
       authorizeDelete: target => judgedDeletes.has(target),
+      known: target => input.options.reads?.note(input.sessionId, target),
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {

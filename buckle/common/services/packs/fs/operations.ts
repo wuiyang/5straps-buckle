@@ -29,6 +29,8 @@ export interface FsContext {
   authorizeRead?: (path: string) => Promise<boolean>
   authorizeReadTarget?: (target: string) => boolean
   authorizeWrite?: (target: string) => boolean
+  /** Marks a real path whose content this session now has, read or written (ToolContext.known). */
+  known?: (target: string) => void
   /** The host's unless a test imitates another: on Windows and macOS a name search ignores case. */
   platform?: NodeJS.Platform
 }
@@ -49,6 +51,7 @@ export async function readFileEntry(
     if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
     return { buffer: readFileSync(descriptor), size: info.size }
   })
+  context.known?.(target)
   const hash = createHash('sha256').update(buffer).digest('hex')
   if (input.encoding === 'base64') {
     return { path: context.paths.display(path), encoding: 'base64', hash, content: buffer.toString('base64'), size }
@@ -97,6 +100,7 @@ export async function writeFileEntry(
   } else {
     withFileBeneath(target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents }, descriptor => writeAll(descriptor, content))
   }
+  context.known?.(target)
   return { path: context.paths.display(path), size: content.byteLength, hash: createHash('sha256').update(content).digest('hex') }
 }
 
@@ -106,24 +110,46 @@ export async function patchFile(
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'write', context)
-  return withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
-    let content = readFileSync(descriptor, 'utf8')
-    const replacements: number[] = []
-
-    for (const edit of input.edits) {
-      const count = countOccurrences(content, edit.oldText)
-      if (count === 0) throw new ToolInputError('Patch text was not found')
-      if (!edit.replaceAll && count !== 1) {
-        throw new ToolInputError(`Patch text matched ${count} times; set replaceAll or add surrounding context`)
-      }
-      content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, edit.newText)
-      replacements.push(edit.replaceAll ? count : 1)
-    }
-
+  const patched = withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
+    const { content, replacements } = applyEdits(readFileSync(descriptor, 'utf8'), input.edits)
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
     replaceContent(descriptor, Buffer.from(content, 'utf8'))
     return { path: context.paths.display(path), replacements, size: Buffer.byteLength(content) }
   })
+  context.known?.(target)
+  return patched
+}
+
+/** fs_patch's edits applied in order to a file's text; one that matches nowhere, or more than once without replaceAll, is refused. */
+export function applyEdits(text: string, edits: z.output<typeof schemas.patchInput>['edits']): { content: string; replacements: number[] } {
+  let content = text
+  const replacements: number[] = []
+  for (const edit of edits) {
+    const count = countOccurrences(content, edit.oldText)
+    if (count === 0) throw new ToolInputError('Patch text was not found')
+    if (!edit.replaceAll && count !== 1) {
+      throw new ToolInputError(`Patch text matched ${count} times; set replaceAll or add surrounding context`)
+    }
+    content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, edit.newText)
+    replacements.push(edit.replaceAll ? count : 1)
+  }
+  return { content, replacements }
+}
+
+/** What fs_patch leaves of its file, for the destructive-write check: worked out from the file as it stands, where it may be read. */
+export function patchedSize(input: z.output<typeof schemas.patchInput>, current: (path: string) => Buffer | null): Array<{ path: string; size: number }> {
+  const before = current(input.path)
+  if (before === null) return []
+  try {
+    return [{ path: input.path, size: Buffer.byteLength(applyEdits(before.toString('utf8'), input.edits).content) }]
+  } catch {
+    return []
+  }
+}
+
+/** What fs_write and each file of fs_write_batch leaves: the content it writes. */
+export function writtenSize(input: z.output<typeof schemas.writeInput>): { path: string; size: number } {
+  return { path: input.path, size: Buffer.byteLength(input.content, input.encoding) }
 }
 
 /**

@@ -93,7 +93,7 @@ export function settleSend(input: z.output<typeof schemas.sendInput>, context: T
  * onto the target only once every declared byte arrived and their digest is the one named (replaceBeneath). A body that
  * runs long or short, hashes to another digest, or is cut off leaves the target as it was and nothing beside it.
  */
-export async function receiveFile(input: z.output<typeof schemas.receiveInput>, context: TransferContext & { authorizeWrite?: (target: string) => boolean; signal: AbortSignal; file: FileChannel | undefined; staleAfterMs: number }): Promise<JsonValue> {
+export async function receiveFile(input: z.output<typeof schemas.receiveInput>, context: TransferContext & { authorizeWrite?: (target: string) => boolean; known?: ((target: string) => void) | undefined; signal: AbortSignal; file: FileChannel | undefined; staleAfterMs: number }): Promise<JsonValue> {
   const body = incoming(context.file).body
   if (!body) throw new ToolInputError('The request carried no body to receive')
   const path = context.paths.resolve(input.path)
@@ -105,6 +105,7 @@ export async function receiveFile(input: z.output<typeof schemas.receiveInput>, 
     sweepPartials(directory, context.staleAfterMs)
     await replaceBeneath({ directory, name: basename(target), named: input.path, signal: context.signal, fill: descriptor => land({ body, descriptor, declared: input, signal: context.signal, named: input.path }) })
   } finally { directory.close() }
+  context.known?.(target)
   return { path: context.paths.display(path), size: input.bytes, sha256: input.sha256 }
 }
 

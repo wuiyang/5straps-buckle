@@ -34,6 +34,8 @@ export async function searchContent(input: {
   platform?: NodeJS.Platform
   /** The environment ripgrep runs with, its PATH clear of every root an agent writes (hostEnvironment); the view's own roots alone when absent. */
   environment?: HostEnvironment
+  /** Marks a file a match was read from as one this session has seen (ToolContext.known). */
+  known?: (target: string) => void
 }): Promise<JsonValue> {
   const root = input.paths.resolve(input.args.path)
   const environment = (input.environment ?? hostEnvironment(() => ownRoots(input.paths), input.platform))()
@@ -65,11 +67,13 @@ export async function searchContent(input: {
       args.push('--regexp', input.args.pattern, '--', '-')
       const result = await input.runProcess({ command: input.ripgrep.path, args: [...input.ripgrep.args, ...args], stdin: file.fd, cwd: root, environment, timeoutMs: input.timeoutMs, signal: input.signal })
       if (result.exitCode !== 0 && result.exitCode !== 1) throw searchError(result)
+      const found = matches.length
       for (const line of result.stdout.split('\n')) {
         if (!line || matches.length >= input.args.limit) break
         const parsed = parseMatch(line)
         if (parsed) matches.push({ path: name, line: parsed.line_number, text: parsed.lines.text.replace(/\r?\n$/, ''), ranges: parsed.submatches })
       }
+      if (matches.length > found) input.known?.(canonical)
       truncated ||= result.truncated
     } finally {
       await file.close()

@@ -53,6 +53,11 @@ export interface ToolContext {
   /** Whether a real entry path is one the call's permission check judged as a delete; a remover refuses any other. */
   authorizeDelete?: (target: string) => boolean
   /**
+   * Marks a real path as a file this session has seen the content of, read or written, for the destructive-write check
+   * (the fs-verbs brief): a later write that empties or halves it asks no person on that account.
+   */
+  known?: (target: string) => void
+  /**
    * The request headers whose values Buckle filled from secret references (docs/secrets.md): a fetch drops them on a
    * hop to another origin, as it drops a credential header.
    */
@@ -187,6 +192,12 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
    * with the call's output where it ran. Never a file's content.
    */
   audited?: (input: TInput, output: JsonValue | undefined) => JsonObject
+  /**
+   * What each file the call writes holds afterwards, for the destructive-write check (the fs-verbs brief): `size`, the
+   * bytes it is left with, worked out from the input alone, or from the file as it stands, which `current` hands where
+   * the session may read the file without asking a person (null otherwise). A path left out is not checked.
+   */
+  written?: (input: TInput, current: (path: string) => Buffer | null, judged: TJudged) => WrittenFile[]
   /** The call's own time limit from its input, within the node's maximum; the request's when it names none. */
   timeoutMs?: (input: TInput) => number | undefined
   /**
@@ -237,9 +248,14 @@ export interface PreparedCall {
   facts?: JsonObject
   /** ToolDefinition.audited, for the call's result entry. */
   audited?: (output: JsonValue | undefined) => JsonObject
+  /** ToolDefinition.written, for the destructive-write check. */
+  written?: (current: (path: string) => Buffer | null) => WrittenFile[]
   effects: ToolEffect[]
   execute(context: ToolContext): Promise<JsonValue>
 }
+
+/** A file a call writes, as the agent's path names it, and the bytes it holds afterwards. */
+export interface WrittenFile { path: string; size: number }
 
 export class ToolInputError extends Error {
   readonly code: string
@@ -340,6 +356,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
         ...(definition.replayKey ? { replayKey: definition.replayKey(input) } : {}),
         ...(definition.facts ? { facts: definition.facts(input, judged) } : {}),
         ...(definition.audited ? { audited: (output: JsonValue | undefined) => definition.audited!(input, output) } : {}),
+        ...(definition.written ? { written: (current: (path: string) => Buffer | null) => definition.written!(input, current, judged) } : {}),
         effects: definition.effects(input, judged),
         execute: context => definition.run(input, context, judged),
       }

@@ -6,7 +6,7 @@ import { defineTool } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { MAX_TRANSFER_BYTES } from '../browser/file-transfer.js'
-import { findNames, listTree, patchFile, readFileEntry, writeFileEntry } from './operations.js'
+import { findNames, listTree, patchedSize, patchFile, readFileEntry, writeFileEntry, writtenSize } from './operations.js'
 import * as schemas from './schemas.js'
 import { searchContent } from './search.js'
 import { deletedFacts, deleteEffects, deletePaths, settleDelete } from './delete.js'
@@ -45,7 +45,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.readInput,
       effects: input => [{ kind: 'read_path', path: input.path }],
-      run: (input, toolContext) => readFileEntry(input, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget }),
+      run: (input, toolContext) => readFileEntry(input, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget, known: toolContext.known }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_read_batch',
@@ -55,7 +55,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       input: schemas.readBatchInput,
       effects: input => input.paths.map(path => ({ kind: 'read_path' as const, path })),
       run: async (input, toolContext) => ({
-        files: await Promise.all(input.paths.map(path => readFileEntry({ path, encoding: input.encoding }, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget }))),
+        files: await Promise.all(input.paths.map(path => readFileEntry({ path, encoding: input.encoding }, { ...context, authorizeReadTarget: toolContext.authorizeReadTarget, known: toolContext.known }))),
       }),
     }),
     defineTool(PACK_ID, {
@@ -65,7 +65,8 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.writeInput,
       effects: input => [{ kind: 'write_path', path: input.path }],
-      run: (input, toolContext) => writeFileEntry(input, { ...context, authorizeWrite: toolContext.authorizeWrite }),
+      written: input => [writtenSize(input)],
+      run: (input, toolContext) => writeFileEntry(input, { ...context, authorizeWrite: toolContext.authorizeWrite, known: toolContext.known }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_write_batch',
@@ -74,7 +75,8 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem', 'batch'],
       input: schemas.writeBatchInput,
       effects: input => input.files.map(file => ({ kind: 'write_path' as const, path: file.path })),
-      run: async (input, toolContext) => ({ files: await Promise.all(input.files.map(file => writeFileEntry(file, { ...context, authorizeWrite: toolContext.authorizeWrite }))) }),
+      written: input => input.files.map(writtenSize),
+      run: async (input, toolContext) => ({ files: await Promise.all(input.files.map(file => writeFileEntry(file, { ...context, authorizeWrite: toolContext.authorizeWrite, known: toolContext.known }))) }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_patch',
@@ -83,7 +85,8 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.patchInput,
       effects: input => [{ kind: 'write_path', path: input.path }, { kind: 'read_path', path: input.path }],
-      run: (input, toolContext) => patchFile(input, { ...context, authorizeWrite: toolContext.authorizeWrite }),
+      written: (input, current) => patchedSize(input, current),
+      run: (input, toolContext) => patchFile(input, { ...context, authorizeWrite: toolContext.authorizeWrite, known: toolContext.known }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',
@@ -138,8 +141,10 @@ export function createFsPack(options: FsPackOptions): Pack {
       timeoutMs: () => maxTimeoutMs,
       judge: input => settleReceive(input, transfer),
       effects: input => [{ kind: 'write_path', path: input.path }],
+      // A copy over an existing file is a write: the destructive-write check reads the digest's byte count.
+      written: input => [{ path: input.path, size: input.bytes }],
       audited: input => receivedFacts(input),
-      run: (input, toolContext) => receiveFile(input, { ...transfer, authorizeWrite: toolContext.authorizeWrite, signal: toolContext.signal, file: toolContext.file, staleAfterMs: 2 * maxTimeoutMs }),
+      run: (input, toolContext) => receiveFile(input, { ...transfer, authorizeWrite: toolContext.authorizeWrite, known: toolContext.known, signal: toolContext.signal, file: toolContext.file, staleAfterMs: 2 * maxTimeoutMs }),
     }),
     defineTool(PACK_ID, {
       name: 'fs_send',
@@ -173,6 +178,7 @@ export function createFsPack(options: FsPackOptions): Pack {
         timeoutMs: toolContext.timeoutMs,
         signal: toolContext.signal,
         authorizeRead: toolContext.authorizeRead ?? (async () => false),
+        ...(toolContext.known ? { known: toolContext.known } : {}),
         protectedRoots: options.protectedRoots ?? [],
         ...(options.environment ? { environment: options.environment } : {}),
       }),

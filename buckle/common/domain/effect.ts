@@ -54,6 +54,17 @@ export type ResolvedEffect =
   | ExecEffect
   | { kind: 'process_probe' }
   | SecretFileEffect
+  | DestructiveWriteEffect
+
+/**
+ * What the destructive-write check found (the fs-verbs brief), added by the invoker and never declared by a tool: a write
+ * that empties a file, or leaves it under half its size, which the session has not read lately (`unread_shrink`, at the
+ * file's real path), or one call that rewrites more existing files than BATCH_REWRITE_LIMIT (`many_rewrites`). Each asks
+ * at the destructive floor, whatever the folder's write grant says (destructive-path-rule.ts).
+ */
+export type DestructiveWriteEffect =
+  | { kind: 'unread_shrink'; path: string; empties: boolean }
+  | { kind: 'many_rewrites'; files: number }
 
 /**
  * A file the call's secret references name (docs/secrets.md), added by the invoker and never declared by a tool: `path`
@@ -75,6 +86,8 @@ export function summarizeEffect(effect: ResolvedEffect): string {
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
     case 'process_probe': return 'process probe'
     case 'secret_file': return `secrets ${effect.names.join(', ')} from ${wordList(effect.written)}`
+    case 'unread_shrink': return `${effect.empties ? 'empties' : 'shrinks to under half its size'} ${effect.path}, a file this session never read`
+    case 'many_rewrites': return `rewrites ${effect.files} existing files at once`
   }
 }
 

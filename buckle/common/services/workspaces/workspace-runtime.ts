@@ -34,6 +34,7 @@ import { createPermissionEngine, type PermissionEngine } from '../../domain/perm
 import { createCommandPolicyRule } from '../../domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../../domain/permission/rules/destructive-command-rule.js'
 import { createDestructivePathRule } from '../../domain/permission/rules/destructive-path-rule.js'
+import { createSessionReads } from '../invocation/session-reads.js'
 import { createNetworkEgressRule } from '../../domain/permission/rules/network-egress-rule.js'
 import { createProcessProbeRule } from '../../domain/permission/rules/process-probe-rule.js'
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
@@ -402,6 +403,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/secrets.md).
   const filledSecrets = browserFilledSecrets(browserStateDirectory)
   const executions = createExecutions({ budget: executionBudget })
+  // What each session read or wrote lately, in memory alone, for the destructive-write check: a restart forgets it.
+  const sessionReads = createSessionReads()
   // Every call running here, so shutdown can cancel them and wait for each to answer.
   const inFlight = new Set<Promise<unknown>>()
   const stopping = new AbortController()
@@ -733,6 +736,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         secrets: settled.secrets,
         filledSecrets,
         protectedRoots: protectedStateRoots(config),
+        reads: sessionReads,
         shutdown: stopping.signal,
         // A script's calls run here too, so they are counted, cancelled at shutdown, and kept to this workspace.
         nested: nestedCall => invokeNow(nestedCall, settled),
