@@ -8,6 +8,7 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { findExecutable } from '../common/domain/executable.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { searchBuiltin, SCAN_BUDGET_BYTES } from '../common/services/packs/fs/builtin-search.js'
+import { matchesPattern, passesGlob } from '../common/services/packs/fs/ignore-files.js'
 import { searchInput } from '../common/services/packs/fs/schemas.js'
 import { searchContent } from '../common/services/packs/fs/search.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -133,6 +134,94 @@ describe('the walker', () => {
 
   it('refuses a pattern no regular expression reads', async () => {
     await expect(builtin(fixture(), { pattern: '(unclosed' })).rejects.toThrow('is not a regular expression this search reads')
+  })
+})
+
+describe('the glob matcher', () => {
+  it('keeps case and reads a backslash as an escape, on every platform', () => {
+    expect(passesGlob('*.md', 'README.MD')).toBe(false)
+    expect(passesGlob('*.md', 'docs/readme.md')).toBe(true)
+    expect(matchesPattern('Build', 'build')).toBe(false)
+    expect(matchesPattern('x/a.txt', 'x\\*.txt')).toBe(false)
+    expect(matchesPattern('x*.txt', 'x\\*.txt')).toBe(true)
+    expect(matchesPattern('xa.txt', 'x\\*.txt')).toBe(false)
+  })
+
+  it.each([
+    ['a*b', 'axxb', true], ['a*b', 'a/b', false], ['a?c', 'abc', true], ['a?c', 'a/c', false],
+    ['**/foo', 'foo', true], ['**/foo', 'a/b/foo', true], ['a/**/b', 'a/b', true], ['a/**/b', 'a/x/y/b', true], ['a/**', 'a/x/y', true], ['a/**', 'a', false],
+    ['**', 'a/b/c', true], ['a**b', 'a/b', false], ['a**b', 'axb', true],
+    ['*.{ts,tsx}', 'a.tsx', true], ['*.{ts,tsx}', 'a.js', false], ['{a,b}/{c,d}', 'b/c', true], ['{a,b}/{c,d}', 'c/a', false], ['{solo}', '{solo}', true],
+    ['[abc].txt', 'b.txt', true], ['[!abc].txt', 'b.txt', false], ['[!abc].txt', 'd.txt', true], ['[a-c]x', 'bx', true], ['[a-c]x', 'dx', false], ['[]]x', ']x', true], ['[unclosed', '[unclosed', true],
+  ])('reads %s against %s as %s', (pattern, subject, expected) => {
+    expect(matchesPattern(subject, pattern)).toBe(expected)
+  })
+
+  it('answers a pattern of many stars on a long text at once, where a backtracking matcher would not', () => {
+    const started = performance.now()
+    expect(matchesPattern('a'.repeat(3_000), `${'*a'.repeat(30)}*b`)).toBe(false)
+    expect(performance.now() - started).toBeLessThan(2_000)
+  })
+
+  it('matches nothing for a pattern too long or with too many choices, rather than fail', () => {
+    expect(matchesPattern('a', 'a'.repeat(2_000))).toBe(false)
+    expect(matchesPattern('a', `${'{a,b}'.repeat(7)}`)).toBe(false)
+  })
+
+  it('leaves a name out of the search by an ignore rule and a glob that keep case', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-case-'))
+    roots.push(root)
+    mkdirSync(join(root, '.git'))
+    mkdirSync(join(root, 'Build'))
+    mkdirSync(join(root, 'build'))
+    writeFileSync(join(root, '.gitignore'), 'Build/\n')
+    writeFileSync(join(root, 'Build/a.txt'), 'hit\n')
+    writeFileSync(join(root, 'build/b.txt'), 'hit\n')
+    writeFileSync(join(root, 'c.MD'), 'hit\n')
+    writeFileSync(join(root, 'd.md'), 'hit\n')
+    expect(sorted(await builtin(root, { pattern: 'hit' })).map(match => match.path)).toEqual(['./build/b.txt', './c.MD', './d.md'])
+    expect(sorted(await builtin(root, { pattern: 'hit', glob: '*.md' })).map(match => match.path)).toEqual(['./d.md'])
+  })
+})
+
+describe('a search that cannot stall the node', () => {
+  it('stops a pattern that backtracks without end at its limit and leaves the node free to answer', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-redos-'))
+    roots.push(root)
+    writeFileSync(join(root, 'bad.txt'), `${'a'.repeat(60)}b\n`)
+    let ticks = 0
+    const timer = setInterval(() => { ticks++ }, 10)
+    const started = performance.now()
+    try {
+      await expect(builtin(root, { pattern: '(a+)+$' }, { matchTimeoutMs: 300 })).rejects.toThrow('The pattern took more than 0.3 seconds on one file, so the search stopped')
+    } finally { clearInterval(timer) }
+    expect(performance.now() - started).toBeLessThan(3_000)
+    // The node's thread was not held while the pattern ran, so its timers kept firing.
+    expect(ticks).toBeGreaterThan(10)
+  })
+
+  it('ends at once when the call is cancelled while the pattern runs', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-cancel-'))
+    roots.push(root)
+    writeFileSync(join(root, 'bad.txt'), `${'a'.repeat(60)}b\n`)
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 100)
+    await expect(builtin(root, { pattern: '(a+)+$' }, { signal: controller.signal })).rejects.toThrow('cancelled')
+  })
+
+  it('gives the cancel a turn while it walks folders that hold nothing it searches', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-walk-'))
+    roots.push(root)
+    for (let index = 0; index < 600; index++) mkdirSync(join(root, `dir${String(index).padStart(3, '0')}`))
+    const controller = new AbortController()
+    setTimeout(() => controller.abort(new Error('cancelled')), 1)
+    await expect(builtin(root, { pattern: 'x', glob: '*.none' }, { signal: controller.signal })).rejects.toThrow('cancelled')
+  })
+
+  it('still finds what a plain pattern matches, with byte ranges and a limit, through the worker', async () => {
+    const root = fixture()
+    expect(sorted(await builtin(root, { pattern: 'h.llo', limit: 2 }))).toHaveLength(2)
+    expect(sorted(await builtin(root, { pattern: 'w.rld', glob: '*.md' }))).toEqual([{ path: './unicode.md', line: 1, text: 'héllo hello wörld hello', ranges: [{ start: 13, end: 19 }] }])
   })
 })
 

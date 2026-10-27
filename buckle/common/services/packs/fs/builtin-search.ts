@@ -7,6 +7,7 @@ import { childPath, isInsideAny, isPlainName, parentDirectory } from '../../../d
 import { ToolInputError } from '../../../domain/tool.js'
 import { resolveTarget } from '../../invocation/real-path.js'
 import { IGNORE_FILES, isIgnored, parseIgnoreFile, passesGlob, type IgnoreRule } from './ignore-files.js'
+import { createLineMatcher, type LineMatcher } from './line-matcher.js'
 import type * as schemas from './schemas.js'
 
 /** The most files one search reads, as the ripgrep search lists at most (search.ts). */
@@ -19,6 +20,10 @@ export const SCAN_BUDGET_BYTES = 64 * 1_048_576
 const BINARY_SNIFF_BYTES = 8_192
 /** The largest ignore file read; a larger one is skipped, as it is no list of patterns. */
 const MAX_IGNORE_BYTES = 1_048_576
+/** The most entries (files and folders) one search looks at, past which it stops and says it was cut short (a coordinator default, reversible). */
+const MAX_ENTRIES = 200_000
+/** How many entries the walk looks at before it gives the node's other work a turn. */
+const ENTRIES_PER_TURN = 64
 /** How deep the walk descends; each level holds one open directory while the walk is beneath it. */
 const MAX_DEPTH = 256
 
@@ -43,28 +48,38 @@ export async function searchBuiltin(input: {
   platform?: NodeJS.Platform
   /** The bytes read in all, SCAN_BUDGET_BYTES unless a test sets a smaller one. */
   scanBudgetBytes?: number
+  /** How long the pattern may take on one file, MATCH_TIMEOUT_MS unless a test sets another. */
+  matchTimeoutMs?: number
 }): Promise<JsonValue> {
-  const pattern = compile(input.args.pattern, input.args.caseSensitive)
+  const compiled = compile(input.args.pattern, input.args.caseSensitive)
   const root = resolveTarget(input.paths.resolve(input.args.path), { shares: input.paths.shares })
   const platform = input.platform ?? process.platform
   const directory = openRealDirectory(root, { refusal: { shown: input.args.path, outcome: 'nothing was searched' } })
-  const state: Walk = { matches: [], files: 0, bytes: 0, budget: input.scanBudgetBytes ?? SCAN_BUDGET_BYTES, excluded: 0, cut: false }
+  const state: Walk = { matches: [], files: 0, entries: 0, bytes: 0, budget: input.scanBudgetBytes ?? SCAN_BUDGET_BYTES, excluded: 0, cut: false }
+  const pattern = createLineMatcher({ source: input.args.pattern, flags: compiled, signal: input.signal, ...(input.matchTimeoutMs ? { timeoutMs: input.matchTimeoutMs } : {}) })
   try {
     const above = ancestorRules({ root, paths: input.paths })
     await walk({ ...input, pattern, platform, state }, { directory, real: root, shown: '', rules: [...above.rules, ...ignoreRules(directory, '', above.repository)], repository: above.repository, depth: 0 })
-  } finally { directory.close() }
+  } finally {
+    pattern.close()
+    directory.close()
+  }
   return { matches: state.matches, truncated: state.cut || state.matches.length >= input.args.limit, excludedFiles: state.excluded }
 }
 
-interface Walk { matches: JsonObject[]; files: number; bytes: number; budget: number; excluded: number; cut: boolean }
+interface Walk { matches: JsonObject[]; files: number; entries: number; bytes: number; budget: number; excluded: number; cut: boolean }
 
 interface Level { directory: PinnedDirectory; real: string; shown: string; rules: readonly IgnoreRule[]; repository: boolean; depth: number }
 
-async function walk(input: { args: z.output<typeof schemas.searchInput>; pattern: RegExp; signal: AbortSignal; authorizeRead: (path: string) => Promise<boolean>; protectedRoots: readonly string[]; paths: PathView; known?: (target: string) => void; platform: NodeJS.Platform; state: Walk }, level: Level): Promise<void> {
+async function walk(input: { args: z.output<typeof schemas.searchInput>; pattern: LineMatcher; signal: AbortSignal; authorizeRead: (path: string) => Promise<boolean>; protectedRoots: readonly string[]; paths: PathView; known?: (target: string) => void; platform: NodeJS.Platform; state: Walk }, level: Level): Promise<void> {
   const { state } = input
   for (const name of readdirSync(level.directory.self).sort()) {
+    // The walk reads folders and entries in one turn of the event loop; it gives the rest of the node a turn every so many
+    // entries, so the call's timeout and cancel can end it and no other session waits on it.
+    if (++state.entries % ENTRIES_PER_TURN === 0) await new Promise<void>(resolve => setImmediate(resolve))
     input.signal.throwIfAborted()
     if (state.cut || state.matches.length >= input.args.limit) return
+    if (state.entries > MAX_ENTRIES) { state.cut = true; return }
     // Hidden names are left out, as ripgrep leaves them out, and a name read as another path is never judged as one.
     if (name.startsWith('.') || !isPlainName(name, input.platform)) continue
     const shown = level.shown === '' ? name : `${level.shown}/${name}`
@@ -86,7 +101,7 @@ async function walk(input: { args: z.output<typeof schemas.searchInput>; pattern
   }
 }
 
-async function searchFile(input: { args: z.output<typeof schemas.searchInput>; pattern: RegExp; authorizeRead: (path: string) => Promise<boolean>; protectedRoots: readonly string[]; paths: PathView; known?: (target: string) => void; state: Walk }, file: { directory: PinnedDirectory; name: string; real: string; shown: string }): Promise<void> {
+async function searchFile(input: { args: z.output<typeof schemas.searchInput>; pattern: LineMatcher; authorizeRead: (path: string) => Promise<boolean>; protectedRoots: readonly string[]; paths: PathView; known?: (target: string) => void; state: Walk }, file: { directory: PinnedDirectory; name: string; real: string; shown: string }): Promise<void> {
   const { state } = input
   if (!await input.authorizeRead(file.real)) { state.excluded++; return }
   let descriptor: number
@@ -106,33 +121,15 @@ async function searchFile(input: { args: z.output<typeof schemas.searchInput>; p
   } finally { closeQuietly(descriptor) }
   if (content.subarray(0, BINARY_SNIFF_BYTES).includes(0)) return
   const found = state.matches.length
-  const lines = content.toString('utf8').split('\n')
-  if (lines.at(-1) === '') lines.pop()
-  for (const [index, raw] of lines.entries()) {
-    if (state.matches.length >= input.args.limit) break
-    const text = raw.endsWith('\r') ? raw.slice(0, -1) : raw
-    const ranges = rangesOf(input.pattern, text)
-    if (ranges.length > 0) state.matches.push({ path: `./${file.shown}`, line: index + 1, text, ranges })
-  }
+  for (const match of await input.pattern.search(content, input.args.limit - found)) state.matches.push({ path: `./${file.shown}`, ...match })
   if (state.matches.length > found) input.known?.(file.real)
 }
 
-/** Each match on a line, as ripgrep reports it: its start and end in bytes of the line's UTF-8. */
-function rangesOf(pattern: RegExp, text: string): Array<{ start: number; end: number }> {
-  const ranges: Array<{ start: number; end: number }> = []
-  pattern.lastIndex = 0
-  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
-    const start = Buffer.byteLength(text.slice(0, match.index))
-    ranges.push({ start, end: start + Buffer.byteLength(match[0]) })
-    if (match[0] === '') pattern.lastIndex++
-  }
-  return ranges
-}
-
-function compile(pattern: string, caseSensitive: boolean): RegExp {
+/** The flags the pattern is run with: Unicode where the pattern is valid with it, and case folded where the call asks. */
+function compile(pattern: string, caseSensitive: boolean): string {
   const flags = caseSensitive ? 'g' : 'gi'
-  try { return new RegExp(pattern, `${flags}u`) } catch { /* Not valid with Unicode: read it without. */ }
-  try { return new RegExp(pattern, flags) } catch {
+  try { new RegExp(pattern, `${flags}u`); return `${flags}u` } catch { /* Not valid with Unicode: read it without. */ }
+  try { new RegExp(pattern, flags); return flags } catch {
     throw new ToolInputError(`${pattern} is not a regular expression this search reads (ripgrep is not installed here, so JavaScript's syntax applies)`)
   }
 }
