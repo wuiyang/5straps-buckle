@@ -10,6 +10,7 @@ import { findNames, listTree, patchFile, readFileEntry, writeFileEntry } from '.
 import * as schemas from './schemas.js'
 import { searchContent } from './search.js'
 import { deletedFacts, deleteEffects, deletePaths, settleDelete } from './delete.js'
+import { movedFacts, moveEffects, moveEntry, moveFacts, settleMove } from './move.js'
 import { receivedFacts, receiveFile, sendFile, sentFacts, settleReceive, settleSend } from './transfer.js'
 
 const PACK_ID = 'fs'
@@ -94,6 +95,18 @@ export function createFsPack(options: FsPackOptions): Pack {
       effects: (input, judged) => deleteEffects(input, judged, options.paths),
       audited: input => deletedFacts(input),
       run: (input, toolContext, judged) => deletePaths(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete }, judged),
+    }),
+    defineTool(PACK_ID, {
+      name: 'fs_move',
+      description: 'Move or rename a file, link, or folder. A to that exists is refused unless replace is set; a folder to, or a trailing slash, moves into it.',
+      risk: 'write',
+      tags: ['filesystem'],
+      input: schemas.moveInput,
+      judge: input => settleMove(input, context),
+      effects: (input, judged) => moveEffects(input, judged),
+      facts: (input, judged) => moveFacts(input, judged),
+      audited: input => movedFacts(input),
+      run: (input, toolContext, judged) => moveEntry(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete, authorizeWrite: toolContext.authorizeWrite }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_list',

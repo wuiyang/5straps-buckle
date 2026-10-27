@@ -36,6 +36,16 @@ export function entryOf(named: string, paths: PathView): Entry {
   return entry
 }
 
+/** lstat, or undefined where nothing stands: a missing name, or one beneath a file (ENOTDIR). */
+export function lstatOrNone(path: string): Stats | undefined {
+  try {
+    return lstatSync(path)
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined
+    throw error
+  }
+}
+
 export function kindOf(info: Stats | undefined): EntryKind {
   if (info === undefined) return 'missing'
   if (info.isSymbolicLink()) return 'link'
@@ -54,7 +64,7 @@ export function settleDelete(input: z.output<typeof schemas.deleteInput>, contex
   return {
     entries: input.paths.map((named) => {
       const entry = entryOf(named, context.paths)
-      const kind = kindOf(lstatSync(entry.path, { throwIfNoEntry: false }))
+      const kind = kindOf(lstatOrNone(entry.path))
       const inside = isInsideAny(context.paths.reachableRoots, entry.path)
       if (kind !== 'directory') {
         if (kind === 'other' && inside) throw notRemovable(named)
@@ -111,7 +121,7 @@ async function deleteOne(input: { named: string; judged: SettledDelete['entries'
   const entry = entryOf(named, context.paths)
   if (context.authorizeDelete && !context.authorizeDelete(entry.path)) {
     // Judged missing where nothing is looked into, and missing still: reported. Anything else lands where no check saw.
-    if (input.judged.kind === 'missing' && lstatSync(entry.path, { throwIfNoEntry: false }) === undefined) return missing
+    if (input.judged.kind === 'missing' && lstatOrNone(entry.path) === undefined) return missing
     throw new ToolInputError(`${named} now lands where its permission check did not see, so nothing was removed there; send the call again`, { code: 'PERMISSION_DENIED' })
   }
   let directory: PinnedDirectory
@@ -122,7 +132,7 @@ async function deleteOne(input: { named: string; judged: SettledDelete['entries'
     throw error
   }
   try {
-    const kind = kindOf(lstatSync(directory.child(entry.name), { throwIfNoEntry: false }))
+    const kind = kindOf(lstatOrNone(directory.child(entry.name)))
     if (kind === 'missing') return missing
     if (kind === 'other') throw notRemovable(named)
     if (kind !== input.judged.kind) throw new ToolInputError(`${named} is a ${kind} now, not the ${input.judged.kind} its permission check saw, so nothing was removed; send the call again`, { code: 'PERMISSION_DENIED' })

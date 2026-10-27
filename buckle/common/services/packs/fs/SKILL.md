@@ -35,15 +35,19 @@ buckle fs patch src/app.ts --old "const x = 1" --new "const x = 2"
 writes nothing if any edit fails to match. Prefer it over `fs_write` for edits, because it cannot
 silently clobber a file that changed underneath you.
 
-## Deleting
+## Deleting and moving
 
 ```
 buckle fs delete old-notes.md build --recursive
+buckle fs move draft.md docs/            # into docs, keeping the name
+buckle fs move draft.md final.md --replace
 ```
 
 `fs_delete` always returns `approval_required`, even where writes are granted: relay it.
 A link is removed, never followed; a folder that holds entries needs `recursive`. A missing
 path is reported, not an error. Never empty a file with `fs_write` to get rid of it.
+`fs_move` refuses a `to` that exists unless `replace` is set, and makes no folder; moving a
+folder, or replacing a file, asks a person as a delete does.
 
 ## Finding things
 

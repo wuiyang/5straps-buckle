@@ -46,7 +46,7 @@ export async function removeBeneath(input: { directory: PinnedDirectory; name: s
  * What a folder holds, counted from beneath its parent without following a link, up to MAX_COUNTED_ENTRIES and `more`
  * past that: every entry that is not a folder counts as a file, a link included.
  */
-export function countTree(parent: PinnedDirectory, name: string, shown: string): TreeCount {
+export function countTree(parent: PinnedDirectory, name: string, shown: string): Extract<TreeCount, { counted: true }> {
   const count = { files: 0, folders: 0, more: false }
   const walk = (directory: PinnedDirectory, depth: number): void => {
     for (const child of readdirSync(directory.self, { withFileTypes: true })) {

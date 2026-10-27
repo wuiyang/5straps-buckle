@@ -44,6 +44,13 @@ export const deleteInput = z.object({
   recursive: z.boolean().default(false),
 }).strict()
 
+/** fs_move's arguments: the entry, where it goes (into a folder `to` names, or as `to`), and whether a file there is replaced. */
+export const moveInput = z.object({
+  from: pathInput,
+  to: pathInput,
+  replace: z.boolean().default(false),
+}).strict()
+
 export const patchInput = z.object({
   path: pathInput,
   edits: z.array(z.object({
