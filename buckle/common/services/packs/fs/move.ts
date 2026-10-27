@@ -1,13 +1,13 @@
 import { randomUUID } from 'node:crypto'
-import { lstatSync, readdirSync, renameSync, rmdirSync, statSync, unlinkSync } from 'node:fs'
+import { lstatSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync, unlinkSync, type BigIntStats } from 'node:fs'
 import { setTimeout as delay } from 'node:timers/promises'
 import { basename } from 'pathe'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openRealDirectory, type PinnedDirectory } from '../../../adapters/beneath.js'
-import { copyBeneath } from '../../../adapters/copy-beneath.js'
-import { countTree, removeBeneath, type RemoveIo } from '../../../adapters/remove-beneath.js'
+import { copyBeneath, type SymlinkIo } from '../../../adapters/copy-beneath.js'
 import { PARTIAL_PREFIX } from '../../../adapters/replace-beneath.js'
+import { countTree, removeBeneath, type RemoveIo } from '../../../adapters/remove-beneath.js'
 import { isHeldOpen, replaceFile, type RenameIo } from '../../../adapters/replace-file.js'
 import type { ToolEffect, TreeCount } from '../../../domain/effect.js'
 import type { PathView } from '../../../domain/path-view.js'
@@ -23,8 +23,14 @@ export const TARGET_EXISTS = 'TARGET_EXISTS'
 /** A folder too large for its checkpoint to cover whole (MAX_COUNTED_ENTRIES). */
 export const FOLDER_TOO_LARGE = 'FOLDER_TOO_LARGE'
 
-/** The renames, removals, and pause a move uses; a test hands in its own. */
-export type MoveIo = RenameIo & RemoveIo
+/** The renames, removals, links, and pause a move uses; a test hands in its own. */
+export type MoveIo = RenameIo & RemoveIo & { symlink?: SymlinkIo }
+
+/**
+ * A file or folder set aside while a move across devices runs: hidden and new for each one, and not named as the partial
+ * deliveries fs_receive sweeps by age (PARTIAL_PREFIX), so a set-aside original that could not be put back is never swept.
+ */
+const ASIDE_PREFIX = '.buckle-aside-'
 
 const SYSTEM_MOVE: MoveIo = { rename: renameSync, unlink: unlinkSync, rmdir: rmdirSync, pause: ms => delay(ms) }
 
@@ -89,14 +95,34 @@ export function settleMove(input: z.output<typeof schemas.moveInput>, context: {
 /**
  * What stands at a landing beside its source: nothing, an entry of its own, or the source's own file under another name.
  * Where the volume ignores case, a landing that differs from the source in case alone is the same entry, which a rename
- * renames (`missing`); any other name of the same file is a hard link, which a rename would leave both of (`same`).
+ * renames (`missing`); any other name of the same file, and a case-only name on a volume that keeps case (two hard
+ * links of one file), is a hard link, which a rename would leave both of (`same`). Files are told apart by the whole
+ * of their volume and file numbers (bigint), as numbers past 2^53 would otherwise compare equal.
  */
-function standingAt(source: string, landing: string): EntryKind | 'same' {
-  const standing = lstatOrNone(landing)
+export function standingAt(source: string, landing: string, stat: (path: string) => BigIntStats | undefined = lstatBigOrNone): EntryKind | 'same' {
+  const standing = stat(landing)
   const kind = kindOf(standing)
-  const own = lstatOrNone(source)
-  if (standing === undefined || own === undefined || standing.ino !== own.ino || standing.dev !== own.dev || standing.ino === 0) return kind
-  return basename(source).toLowerCase() === basename(landing).toLowerCase() && basename(source) !== basename(landing) ? 'missing' : 'same'
+  const own = stat(source)
+  if (standing === undefined || own === undefined || standing.ino !== own.ino || standing.dev !== own.dev || standing.ino === 0n) return kind
+  return basename(source).toLowerCase() === basename(landing).toLowerCase() && basename(source) !== basename(landing) && volumeIgnoresCase(source, own) ? 'missing' : 'same'
+}
+
+function lstatBigOrNone(path: string): BigIntStats | undefined {
+  try {
+    return lstatSync(path, { bigint: true })
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined
+    throw error
+  }
+}
+
+/** Whether the volume of `path` ignores case: its own name, spelled in the other case, is the same file. */
+function volumeIgnoresCase(path: string, own: BigIntStats): boolean {
+  const name = basename(path)
+  const swapped = [...name].map(character => (character === character.toLowerCase() ? character.toUpperCase() : character.toLowerCase())).join('')
+  if (swapped === name) return false
+  const probe = lstatBigOrNone(`${path.slice(0, path.length - name.length)}${swapped}`)
+  return probe !== undefined && probe.ino === own.ino && probe.dev === own.dev
 }
 
 /**
@@ -154,7 +180,7 @@ export async function moveEntry(input: z.output<typeof schemas.moveInput>, conte
         if (standing === 'directory') throw folderAtLanding(judged.landing)
         if (!judged.replaces) throw new ToolInputError(`Something now stands at ${judged.landing} that its permission check did not see, so nothing was moved; send the call again`, { code: 'PERMISSION_DENIED' })
       }
-      const ends: Ends = { source, name: from.name, landing, as: target.name, shown: input.from, replaces: standing !== 'missing', folder: kind === 'directory', io, platform: context.platform ?? process.platform }
+      const ends: Ends = { source, name: from.name, landing, as: target.name, shown: input.from, landingShown: judged.landing, replaces: standing !== 'missing', folder: kind === 'directory', io, platform: context.platform ?? process.platform }
       const moved = await renameOrCopy(ends)
       // A folder moved across devices whose removal stopped part way: the copy is whole, the rest is named.
       context.relocated?.(from.path, target.path)
@@ -164,7 +190,7 @@ export async function moveEntry(input: z.output<typeof schemas.moveInput>, conte
   } finally { source.close() }
 }
 
-interface Ends { source: PinnedDirectory; name: string; landing: PinnedDirectory; as: string; shown: string; replaces: boolean; folder: boolean; io: MoveIo; platform: NodeJS.Platform }
+interface Ends { source: PinnedDirectory; name: string; landing: PinnedDirectory; as: string; shown: string; /** The landing as the agent's path names it, for what concerns it. */ landingShown: string; replaces: boolean; folder: boolean; io: MoveIo; platform: NodeJS.Platform }
 
 /**
  * A rename where one device holds both ends; a copy where it answers EXDEV. What the move did: whether it copied, and
@@ -199,18 +225,30 @@ async function copyAcross(ends: Ends, setAsideAlready: string | null): Promise<{
   let made = partial
   let away: string | null = null
   try {
-    copyBeneath({ from: ends.source, name: ends.name, to: ends.landing, as: partial, shown: ends.shown })
+    copyBeneath({ from: ends.source, name: ends.name, to: ends.landing, as: partial, shown: ends.shown, platform: ends.platform, ...(ends.io.symlink ? { symlink: ends.io.symlink } : {}) })
     if (ends.replaces && aside === null) aside = setAside(ends.landing, ends.as, ends.io)
     // Nothing is replaced that the check did not see: a landing taken while the copy ran stays as it is.
-    if (!ends.replaces && lstatSync(ends.landing.child(ends.as), { throwIfNoEntry: false }) !== undefined) throw taken(ends.shown)
+    if (!ends.replaces && lstatSync(ends.landing.child(ends.as), { throwIfNoEntry: false }) !== undefined) throw taken(ends.landingShown)
     await renamed(ends, ends.landing.child(partial), ends.landing.child(ends.as))
     made = ends.as
     if (ends.folder) away = setAside(ends.source, ends.name, ends.io)
     else await removeBeneath({ directory: ends.source, name: ends.name, shown: ends.shown, tree: false, io: ends.io, platform: ends.platform })
   } catch (error) {
-    if (lstatSync(ends.landing.child(made), { throwIfNoEntry: false }) !== undefined) await removeBeneath({ directory: ends.landing, name: made, shown: ends.shown, tree: true, io: ends.io, platform: ends.platform })
-    if (aside) ends.io.rename(ends.landing.child(aside), ends.landing.child(ends.as))
-    throw error instanceof ToolInputError ? error : new ToolInputError(`${ends.shown} could not be moved to the other device (${String(errorCode(error) ?? 'an error')}), so what the copy made was removed and ${ends.shown} is where it was`)
+    // Both clean-up steps run whatever the first does: the file set aside goes back even where the copy cannot be removed,
+    // and a file renamed onto a copy that is a file replaces it.
+    const trouble: string[] = []
+    let copyTrouble: string | null = null
+    try {
+      if (lstatSync(ends.landing.child(made), { throwIfNoEntry: false }) !== undefined) await removeBeneath({ directory: ends.landing, name: made, shown: ends.landingShown, tree: true, io: ends.io, platform: ends.platform })
+    } catch (cleanup) { copyTrouble = `the copy at ${ends.landingShown} could not be removed (${String(errorCode(cleanup) ?? 'an error')})` }
+    let restored = false
+    try {
+      if (aside) { ends.io.rename(ends.landing.child(aside), ends.landing.child(ends.as)); restored = true }
+    } catch (restore) { trouble.push(`the file it replaces could not be put back (${String(errorCode(restore) ?? 'an error')}) and is kept beside it as ${aside}`) }
+    if (copyTrouble !== null && !(restored && !ends.folder)) trouble.unshift(copyTrouble)
+    const reason = error instanceof ToolInputError ? error.message : `${ends.shown} could not be moved to the other device (${String(errorCode(error) ?? 'an error')}), so what the copy made was removed and ${ends.shown} is where it was`
+    if (trouble.length === 0) throw error instanceof ToolInputError ? error : new ToolInputError(reason)
+    throw new ToolInputError(`${reason.replace(/, so what the copy made was removed and .* is where it was$/, '')}; ${trouble.join(', and ')}; ${ends.shown} is where it was`, { code: error instanceof ToolInputError ? error.code : 'MOVE_FAILED' })
   }
   if (aside) await removeAside(ends, aside)
   if (away === null) return {}
@@ -224,20 +262,27 @@ async function copyAcross(ends: Ends, setAsideAlready: string | null): Promise<{
 
 /** The file a replacing move set aside, removed once the move stands. */
 function removeAside(ends: Ends, aside: string): Promise<void> {
-  return removeBeneath({ directory: ends.landing, name: aside, shown: ends.shown, tree: false, io: ends.io, platform: ends.platform })
+  return removeBeneath({ directory: ends.landing, name: aside, shown: ends.landingShown, tree: false, io: ends.io, platform: ends.platform })
 }
 
 async function renamed(ends: Ends, from: string, to: string): Promise<void> {
   try {
     await replaceFile(from, to, ends.io)
   } catch (error) {
-    if (isHeldOpen(error)) throw new ToolInputError(`${ends.shown} is held open by another program, so it was not moved; close it and send the call again`, { code: 'ENTRY_HELD' })
-    throw error
+    // A move across devices is told by this code alone; the copy takes it up (renameOrCopy).
+    if (errorCode(error) === 'EXDEV' || error instanceof ToolInputError) throw error
+    // Only Windows reads these as a program holding the file; elsewhere they are a sticky folder, an immutable file, or a mount point.
+    if (ends.platform === 'win32' && isHeldOpen(error)) {
+      const held = ends.replaces ? `${ends.shown} or ${ends.landingShown}, the file it replaces, is` : `${ends.shown} is`
+      throw new ToolInputError(`${held} held open by another program, so it was not moved; close it and send the call again`, { code: 'ENTRY_HELD' })
+    }
+    const code = String(errorCode(error) ?? 'an error')
+    throw new ToolInputError(`${ends.shown} could not be moved to ${ends.landingShown} (${code}), so it was not moved`, { code: ['EACCES', 'EPERM', 'EROFS'].includes(code) ? 'PERMISSION_DENIED' : 'MOVE_FAILED' })
   }
 }
 
 function setAside(directory: PinnedDirectory, name: string, io: MoveIo): string {
-  const aside = `${PARTIAL_PREFIX}${randomUUID()}`
+  const aside = `${ASIDE_PREFIX}${randomUUID()}`
   io.rename(directory.child(name), directory.child(aside))
   return aside
 }

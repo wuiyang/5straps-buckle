@@ -1,11 +1,11 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, renameSync, rmSync, rmdirSync, symlinkSync, unlinkSync, writeFileSync, type BigIntStats } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { moveEntry, settleMove, type MoveIo } from '../common/services/packs/fs/move.js'
+import { moveEntry, settleMove, standingAt, type MoveIo } from '../common/services/packs/fs/move.js'
 import { moveInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -127,6 +127,14 @@ describe('fs_move is safe by default', () => {
     expect(existsSync(join(root, 'renamed.md'))).toBe(false)
   })
 
+  it('refuses a case-only name for a second hard link of one file on a volume that keeps case, which a rename would leave both of', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.txt'), 'one file')
+    linkSync(join(workspace, 'a.txt'), join(workspace, 'A.txt'))
+    expect(errorOf(await call(runtime, { from: 'a.txt', to: 'A.txt' }))?.message).toBe('a.txt and A.txt name the same file, so nothing was moved')
+    expect(readdirSync(workspace).sort()).toEqual(['A.txt', 'a.txt'])
+  })
+
   it('keeps both paths in its audit entry', async () => {
     const { runtime, workspace } = await node()
     writeFileSync(join(workspace, 'a.md'), 'a')
@@ -241,6 +249,96 @@ describe('moveEntry', () => {
     await expect(moveEntry(input, context, judged)).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
     expect(readFileSync(join(root, 'elsewhere/a.md'), 'utf8')).toBe('not judged')
     expect(existsSync(join(root, 'b.md'))).toBe(false)
+  })
+
+  it('says the landing, not the source, where it was taken while the copy across devices ran', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other'))
+    writeFileSync(join(root, 'a.md'), 'source')
+    const input = moveInput.parse({ from: 'a.md', to: 'other/b.md' })
+    const judged = settleMove(input, { paths })
+    const io = acrossDevices({ from: 'a.md' })
+    const crossing: MoveIo = { ...io, rename: (from, to) => { try { io.rename(from, to) } catch (error) { writeFileSync(join(root, 'other/b.md'), 'arrived meanwhile'); throw error } } }
+    await expect(moveEntry(input, { paths, io: crossing }, judged)).rejects.toMatchObject({ code: 'TARGET_EXISTS', message: 'Something already stands at other/b.md: send replace: true to replace it, or move to a name that is free' })
+    expect(readFileSync(join(root, 'other/b.md'), 'utf8')).toBe('arrived meanwhile')
+    expect(readFileSync(join(root, 'a.md'), 'utf8')).toBe('source')
+    expect(readdirSync(join(root, 'other'))).toEqual(['b.md'])
+  })
+
+  it('puts the replaced file back even where the copy cannot be removed, and keeps nothing hidden beside it', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other'))
+    writeFileSync(join(root, 'a.md'), 'source')
+    writeFileSync(join(root, 'other/b.md'), 'replaced file')
+    const input = moveInput.parse({ from: 'a.md', to: 'other/b.md', replace: true })
+    const base = acrossDevices({ from: 'a.md', failUnlinkOf: 'a.md' })
+    // The source cannot be removed, and neither can the copy that was renamed onto the landing.
+    const io: MoveIo = { ...base, unlink: (path) => { if (path.endsWith('/b.md')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); base.unlink(path) } }
+    await expect(moveEntry(input, { paths, io }, settleMove(input, { paths }))).rejects.toThrow('could not be moved to the other device (EACCES), so what the copy made was removed and a.md is where it was')
+    expect(readFileSync(join(root, 'other/b.md'), 'utf8')).toBe('replaced file')
+    expect(readFileSync(join(root, 'a.md'), 'utf8')).toBe('source')
+    expect(readdirSync(join(root, 'other'))).toEqual(['b.md'])
+  })
+
+  it('names what it could not undo where neither the copy nor the replaced file can be put right, and the set-aside file is not one a sweep removes', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'other/sub'), { recursive: true })
+    writeFileSync(join(root, 'a.md'), 'source')
+    writeFileSync(join(root, 'other/b.md'), 'replaced file')
+    const input = moveInput.parse({ from: 'a.md', to: 'other/b.md', replace: true })
+    const base = acrossDevices({ from: 'a.md', failUnlinkOf: 'a.md' })
+    // The source removal fails; then the copy cannot be removed, and the file set aside cannot be renamed back.
+    const io: MoveIo = { ...base, rename: (from, to) => { if (from.includes('.buckle-aside-')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); base.rename(from, to) }, unlink: (path) => { if (path.endsWith('/b.md')) throw Object.assign(new Error('EBUSY'), { code: 'EBUSY' }); base.unlink(path) } }
+    await expect(moveEntry(input, { paths, io }, settleMove(input, { paths }))).rejects.toThrow(/the copy at other\/b\.md could not be removed \(EBUSY\), and the file it replaces could not be put back \(EBUSY\) and is kept beside it as \.buckle-aside-/)
+    const names = readdirSync(join(root, 'other')).filter(name => name !== 'sub' && name !== 'b.md')
+    expect(names).toHaveLength(1)
+    expect(names[0]).toMatch(/^\.buckle-aside-/)
+    expect(readFileSync(join(root, 'other', names[0]!), 'utf8')).toBe('replaced file')
+  })
+
+  it('tells the platform\'s refusal of a rename from a program holding the file, and names both ends where a file is replaced', async () => {
+    const { root, paths } = folder()
+    writeFileSync(join(root, 'a.md'), 'a')
+    writeFileSync(join(root, 'b.md'), 'b')
+    const refused = (code: string): MoveIo => ({ rename: () => { throw Object.assign(new Error(code), { code }) }, unlink: unlinkSync, rmdir: rmdirSync, pause: async () => {} })
+    const input = moveInput.parse({ from: 'a.md', to: 'b.md', replace: true })
+    const judged = settleMove(input, { paths })
+    await expect(moveEntry(input, { paths, io: refused('EPERM'), platform: 'linux' }, judged)).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: 'a.md could not be moved to b.md (EPERM), so it was not moved' })
+    await expect(moveEntry(input, { paths, io: refused('EBUSY'), platform: 'darwin' }, judged)).rejects.toMatchObject({ code: 'MOVE_FAILED', message: 'a.md could not be moved to b.md (EBUSY), so it was not moved' })
+    await expect(moveEntry(input, { paths, io: refused('EPERM'), platform: 'win32' }, judged)).rejects.toMatchObject({ code: 'ENTRY_HELD', message: 'a.md or b.md, the file it replaces, is held open by another program, so it was not moved; close it and send the call again' })
+    const plain = moveInput.parse({ from: 'a.md', to: 'c.md' })
+    await expect(moveEntry(plain, { paths, io: refused('EBUSY'), platform: 'win32' }, settleMove(plain, { paths }))).rejects.toMatchObject({ code: 'ENTRY_HELD', message: 'a.md is held open by another program, so it was not moved; close it and send the call again' })
+    expect(readFileSync(join(root, 'a.md'), 'utf8')).toBe('a')
+  })
+
+  it('compares files by the whole of their numbers, not as doubles that past 2^53 lose their low bits', () => {
+    const info = (ino: bigint, dev = 1n) => ({ ino, dev, isSymbolicLink: () => false, isDirectory: () => false, isFile: () => true }) as unknown as BigIntStats
+    const stats: Record<string, BigIntStats> = { '/w/a': info(9_007_199_254_740_992n), '/w/b': info(9_007_199_254_740_993n), '/w/c': info(9_007_199_254_740_992n) }
+    expect(standingAt('/w/a', '/w/b', path => stats[path])).toBe('file')
+    expect(standingAt('/w/a', '/w/c', path => stats[path])).toBe('same')
+  })
+
+  it('copies a link across devices on Windows as the kind of link it is, and says which link where Windows refuses to make one', async () => {
+    const { root, paths } = folder()
+    mkdirSync(join(root, 'src/real'), { recursive: true })
+    mkdirSync(join(root, 'other'))
+    writeFileSync(join(root, 'src/real/f.txt'), 'f')
+    symlinkSync(join(root, 'src/real'), join(root, 'src/absolute-folder-link'))
+    symlinkSync('real', join(root, 'src/relative-folder-link'))
+    symlinkSync('real/f.txt', join(root, 'src/file-link'))
+    const made: Array<[string, string | undefined]> = []
+    const input = moveInput.parse({ from: 'src', to: 'other' })
+    const link = (_target: string, path: string, type?: string) => { made.push([path.slice(path.lastIndexOf('/') + 1), type]); symlinkSync(_target, path) }
+    await moveEntry(input, { paths, platform: 'win32', io: { ...acrossDevices({ from: 'src' }), symlink: link } }, settleMove(input, { paths }))
+    expect(made.sort()).toEqual([['absolute-folder-link', 'junction'], ['file-link', 'file'], ['relative-folder-link', 'dir']])
+    // Where Windows refuses a link, the whole move is refused naming that link, and the source stays whole.
+    mkdirSync(join(root, 'src2'))
+    symlinkSync('x', join(root, 'src2/dangling'))
+    const second = moveInput.parse({ from: 'src2', to: 'other' })
+    const refusing = { ...acrossDevices({ from: 'src2' }), symlink: () => { throw Object.assign(new Error('EPERM: operation not permitted'), { code: 'EPERM' }) } }
+    await expect(moveEntry(second, { paths, platform: 'win32', io: refusing }, settleMove(second, { paths }))).rejects.toThrow('src2/dangling is a link, and Windows lets only an administrator, or a user with Developer Mode on, make one, so it was not copied')
+    expect(readlinkSync(join(root, 'src2/dangling'))).toBe('x')
+    expect(existsSync(join(root, 'other/src2'))).toBe(false)
   })
 
   it('refuses a landing taken after its check without replace', async () => {

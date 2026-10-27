@@ -1,4 +1,4 @@
-import { lstatSync, readdirSync, type Stats } from 'node:fs'
+import { lstatSync, readdirSync, type BigIntStats, type Stats } from 'node:fs'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { z } from 'zod'
 import { openRealDirectory, type PinnedDirectory } from '../../../adapters/beneath.js'
@@ -48,7 +48,7 @@ export function lstatOrNone(path: string): Stats | undefined {
   }
 }
 
-export function kindOf(info: Stats | undefined): EntryKind {
+export function kindOf(info: Stats | BigIntStats | undefined): EntryKind {
   if (info === undefined) return 'missing'
   if (info.isSymbolicLink()) return 'link'
   if (info.isDirectory()) return 'directory'
