@@ -111,6 +111,8 @@ export async function patchFile(
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'write', context)
   const patched = withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
+    // As fs_read and fs_apply_patch hold it: a file this size is not read whole, and the destructive-write check cannot size its result.
+    if (fstatSync(descriptor).size > MAX_FILE_BYTES) throw new ToolInputError(`${input.path} exceeds ${MAX_FILE_BYTES} bytes, so nothing was patched`)
     const { content, replacements } = applyEdits(readFileSync(descriptor, 'utf8'), input.edits)
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
     replaceContent(descriptor, Buffer.from(content, 'utf8'))
@@ -149,7 +151,8 @@ export function patchedSize(input: z.output<typeof schemas.patchInput>, current:
 
 /** What fs_write and each file of fs_write_batch leaves: the content it writes. */
 export function writtenSize(input: z.output<typeof schemas.writeInput>): { path: string; size: number } {
-  return { path: input.path, size: Buffer.byteLength(input.content, input.encoding) }
+  // The bytes the writer decodes, not the length the text promises: Buffer.byteLength overstates malformed base64.
+  return { path: input.path, size: input.encoding === 'base64' ? Buffer.from(input.content, 'base64').byteLength : Buffer.byteLength(input.content) }
 }
 
 /**

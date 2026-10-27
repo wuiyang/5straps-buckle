@@ -952,6 +952,7 @@ async function executeWithTimeout(input: {
       authorizeWrite: target => judgedWrites.has(target),
       authorizeDelete: target => judgedDeletes.has(target),
       known: target => input.options.reads?.note(input.sessionId, target),
+      relocated: (from, to) => input.options.reads?.relocate(from, to),
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {

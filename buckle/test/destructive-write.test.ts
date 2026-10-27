@@ -96,6 +96,51 @@ describe('a write that empties or halves a file the session never read', () => {
     expect(readFileSync(join(workspace, 'big.bin'), 'utf8')).toBe('x'.repeat(100))
   })
 
+  it('sizes a base64 write by the bytes it decodes to, not the length of its text', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'data.bin'), 'x'.repeat(5_000))
+    // Eight thousand characters that are no base64 decode to nothing, which Buffer.byteLength reads as six thousand bytes.
+    const response = await call(runtime, 'fs_write', { path: 'data.bin', content: '%'.repeat(8_000), encoding: 'base64' })
+    expect(reasons(response)[0]).toContain('empties a file this session never read')
+    expect(readFileSync(join(workspace, 'data.bin'), 'utf8')).toBe('x'.repeat(5_000))
+    const batch = await call(runtime, 'fs_write_batch', { files: [{ path: 'data.bin', content: '%'.repeat(8_000), encoding: 'base64' }] })
+    expect(reasons(batch)[0]).toContain('empties a file this session never read')
+    expect(await call(runtime, 'fs_write', { path: 'data.bin', content: Buffer.from('y'.repeat(4_000)).toString('base64'), encoding: 'base64' })).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('refuses fs_patch on a file over the size fs_read reads, which the check could not size', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'huge.txt'), 'a'.repeat(10 * 1_048_576 + 1))
+    const response = await call(runtime, 'fs_patch', { path: 'huge.txt', edits: [{ oldText: 'a', newText: '', replaceAll: true }] })
+    expect(response).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('exceeds 10485760 bytes, so nothing was patched') } })
+    expect(readFileSync(join(workspace, 'huge.txt'), 'utf8').length).toBe(10 * 1_048_576 + 1)
+  })
+
+  it('does not count a file moved onto a path the session read as read, and follows a read file to where it moves', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.txt'), 'four')
+    writeFileSync(join(workspace, 'big.txt'), 'x'.repeat(90_000))
+    await call(runtime, 'fs_read', { path: 'a.txt' })
+    expect(await call(runtime, 'fs_move', { from: 'a.txt', to: 'old.txt' })).toMatchObject({ outcome: 'ok' })
+    expect(await call(runtime, 'fs_move', { from: 'big.txt', to: 'a.txt' })).toMatchObject({ outcome: 'ok' })
+    expect(reasons(await call(runtime, 'fs_write', { path: 'a.txt', content: '' }))[0]).toContain('empties a file this session never read')
+    // What was read stands at old.txt now, and the session still knows it.
+    expect(await call(runtime, 'fs_write', { path: 'old.txt', content: '' })).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('forgets a file the session read once it is deleted, so one created there by another hand is not known', async () => {
+    const { runtime, workspace } = await node()
+    writeFileSync(join(workspace, 'a.txt'), 'read')
+    await call(runtime, 'fs_read', { path: 'a.txt' })
+    const asked = await call(runtime, 'fs_delete', { paths: ['a.txt'] })
+    const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    const done = await runtime.invoke({ request: { requestId: 'delete-again', tool: 'fs_delete', args: { paths: ['a.txt'] }, approvalTokens: tokens }, sessionId: 'agent' })
+    expect(done).toMatchObject({ outcome: 'ok' })
+    writeFileSync(join(workspace, 'a.txt'), 'x'.repeat(5_000))
+    expect(reasons(await call(runtime, 'fs_write', { path: 'a.txt', content: '' }))[0]).toContain('empties a file this session never read')
+  })
+
   it('forgets every read when the node restarts, so the first such write after it asks', async () => {
     const first = await node()
     writeFileSync(join(first.workspace, 'a.md'), 'remembered until a restart')
@@ -133,6 +178,25 @@ describe('a batch that rewrites many existing files', () => {
 })
 
 describe('the session read set', () => {
+  it('carries a sighting to where its file moves, forgets what stood at the landing, and forgets a deleted file, for every session', () => {
+    const reads = createSessionReads()
+    reads.note('s', '/w/dir/a', 0)
+    reads.note('s', '/w/dir/sub/b', 0)
+    reads.note('t', '/w/dir/a', 0)
+    reads.note('s', '/w/new/old', 0)
+    reads.relocate('/w/dir', '/w/new')
+    expect(reads.knows('s', '/w/new/a', 0)).toBe(true)
+    expect(reads.knows('s', '/w/new/sub/b', 0)).toBe(true)
+    expect(reads.knows('t', '/w/new/a', 0)).toBe(true)
+    expect(reads.knows('s', '/w/dir/a', 0)).toBe(false)
+    expect(reads.knows('s', '/w/new/old', 0)).toBe(false)
+    reads.relocate('/w/new/a', null)
+    expect(reads.knows('s', '/w/new/a', 0)).toBe(false)
+    expect(reads.knows('s', '/w/new/sub/b', 0)).toBe(true)
+    reads.relocate('/w/new/s', '/w/new/z')
+    expect(reads.knows('s', '/w/new/sub/b', 0)).toBe(true)
+  })
+
   it('counts a read for an hour, then forgets it', () => {
     const reads = createSessionReads()
     reads.note('s', '/w/a', 0)

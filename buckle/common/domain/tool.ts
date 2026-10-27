@@ -58,6 +58,11 @@ export interface ToolContext {
    */
   known?: (target: string) => void
   /**
+   * The entry at a real path (a file, or a folder with everything in it) now stands at `to`, or is gone (`to` is null): the
+   * session read sets follow it and forget whatever stood at `to`, so a file moved onto a path someone read does not count as read.
+   */
+  relocated?: (from: string, to: string | null) => void
+  /**
    * The request headers whose values Buckle filled from secret references (docs/secrets.md): a fetch drops them on a
    * hop to another origin, as it drops a credential header.
    */

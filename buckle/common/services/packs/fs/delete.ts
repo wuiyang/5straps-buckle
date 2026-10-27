@@ -24,6 +24,8 @@ export interface DeleteContext {
   paths: PathView
   /** Whether a real entry path is one the call's permission check judged as a delete (ToolContext.authorizeDelete). */
   authorizeDelete?: (target: string) => boolean
+  /** An entry removed: the session's read set forgets it (ToolContext.relocated). */
+  relocated?: (from: string, to: null) => void
   /** The removals, for a test to hand in its own; the host's `platform` unless a test imitates another. */
   io?: RemoveIo
   platform?: NodeJS.Platform
@@ -137,6 +139,7 @@ async function deleteOne(input: { named: string; judged: SettledDelete['entries'
     if (kind === 'other') throw notRemovable(named)
     if (kind !== input.judged.kind) throw new ToolInputError(`${named} is a ${kind} now, not the ${input.judged.kind} its permission check saw, so nothing was removed; send the call again`, { code: 'PERMISSION_DENIED' })
     await removeBeneath({ directory, name: entry.name, shown: named, tree: input.recursive && kind === 'directory', ...(context.io ? { io: context.io } : {}), ...(context.platform ? { platform: context.platform } : {}) })
+    context.relocated?.(entry.path, null)
     return { path: named, removed: true }
   } finally { directory.close() }
 }

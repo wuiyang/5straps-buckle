@@ -29,6 +29,8 @@ export interface PatchContext {
   authorizeWrite?: (target: string) => boolean
   authorizeDelete?: (target: string) => boolean
   known?: (target: string) => void
+  /** A file the patch deleted: the session's read set forgets it (ToolContext.relocated). */
+  relocated?: (from: string, to: null) => void
   /** Buckle's protected roots: a hard-linked file on their device is not read (isLinkedOnStateDevice), as fs_read refuses it. */
   protectedRoots?: readonly string[]
   signal: AbortSignal
@@ -96,6 +98,7 @@ export async function applyPatch(context: PatchContext, judged: SettledPatch): P
     if (step.file.kind === 'delete') {
       const directory = openRealDirectory(step.directory, { refusal: { shown: step.file.path, outcome: 'nothing more was changed' } })
       try { await removeBeneath({ directory, name: basename(step.target), shown: step.file.path, tree: false }) } finally { directory.close() }
+      context.relocated?.(step.target, null)
       results.push({ path: context.paths.display(step.target), change: 'deleted' })
       continue
     }

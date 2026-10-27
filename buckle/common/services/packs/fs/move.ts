@@ -44,6 +44,8 @@ export interface MoveContext {
   paths: PathView
   authorizeDelete?: (target: string) => boolean
   authorizeWrite?: (target: string) => boolean
+  /** The move done: the session's read set follows the entry (ToolContext.relocated). */
+  relocated?: (from: string, to: string | null) => void
   io?: MoveIo
   platform?: NodeJS.Platform
 }
@@ -155,6 +157,7 @@ export async function moveEntry(input: z.output<typeof schemas.moveInput>, conte
       const ends: Ends = { source, name: from.name, landing, as: target.name, shown: input.from, replaces: standing !== 'missing', folder: kind === 'directory', io, platform: context.platform ?? process.platform }
       const moved = await renameOrCopy(ends)
       // A folder moved across devices whose removal stopped part way: the copy is whole, the rest is named.
+      context.relocated?.(from.path, target.path)
       const rest: JsonObject = moved.rest === undefined ? {} : { leftOver: context.paths.display(`${from.directory}/${moved.rest}`) }
       return { from: context.paths.display(from.path), to: context.paths.display(target.path), replaced: ends.replaces, ...(moved.copied ? { copied: true } : {}), ...rest }
     } finally { landing.close() }

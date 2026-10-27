@@ -1,3 +1,5 @@
+import { comparablePath } from '../../domain/paths.js'
+
 /** How long a read counts as the session knowing a file, for the destructive-write check (a coordinator default, reversible). */
 export const READ_WINDOW_MS = 3_600_000
 /** The most files one session's read set remembers, its oldest forgotten first (the fs-verbs brief). */
@@ -15,6 +17,12 @@ export interface SessionReads {
   note(sessionId: string, path: string, now?: number): void
   /** Whether the session saw the file's content within READ_WINDOW_MS. */
   knows(sessionId: string, path: string, now?: number): boolean
+  /**
+   * The entry at `from` (a file, or a folder with the files under it) now stands at `to`, or is gone (null). Every session's
+   * sightings of what stood at `to` are forgotten, and its sightings of `from` follow it: a file moved onto a path that was
+   * read is not a file that was read, and a file that was read still is where it was moved to.
+   */
+  relocate(from: string, to: string | null): void
 }
 
 export function createSessionReads(): SessionReads {
@@ -33,6 +41,18 @@ export function createSessionReads(): SessionReads {
     knows(sessionId, path, now = Date.now()) {
       const at = sessions.get(sessionId)?.get(path)
       return at !== undefined && now - at <= READ_WINDOW_MS
+    },
+    relocate(from, to) {
+      const under = (base: string, path: string) => { const folded = comparablePath(path); const root = comparablePath(base); return folded === root || folded.startsWith(`${root}/`) }
+      for (const known of sessions.values()) {
+        const carried: Array<[string, number]> = []
+        for (const [path, at] of known) {
+          if (to !== null && (path === from || path.startsWith(`${from}/`))) carried.push([`${to}${path.slice(from.length)}`, at])
+          // A sighting of `from` that only a folded spelling reaches is forgotten, not carried: the safe side.
+          if (under(from, path) || (to !== null && under(to, path))) known.delete(path)
+        }
+        for (const [path, at] of carried) known.set(path, at)
+      }
     },
   }
 }

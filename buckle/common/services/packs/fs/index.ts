@@ -101,7 +101,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       facts: (_input, judged) => patchFacts(judged),
       written: (_input, current, judged) => patchedSizes(judged, current),
       audited: input => patchedFacts(input),
-      run: (_input, toolContext, judged) => applyPatch({ ...context, authorizeReadTarget: toolContext.authorizeReadTarget, authorizeWrite: toolContext.authorizeWrite, authorizeDelete: toolContext.authorizeDelete, known: toolContext.known, signal: toolContext.signal }, judged),
+      run: (_input, toolContext, judged) => applyPatch({ ...context, authorizeReadTarget: toolContext.authorizeReadTarget, authorizeWrite: toolContext.authorizeWrite, authorizeDelete: toolContext.authorizeDelete, known: toolContext.known, ...(toolContext.relocated ? { relocated: toolContext.relocated } : {}), signal: toolContext.signal }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',
@@ -112,7 +112,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       judge: input => settleDelete(input, context),
       effects: (input, judged) => deleteEffects(input, judged, options.paths),
       audited: input => deletedFacts(input),
-      run: (input, toolContext, judged) => deletePaths(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete }, judged),
+      run: (input, toolContext, judged) => deletePaths(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete, ...(toolContext.relocated ? { relocated: toolContext.relocated } : {}) }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_move',
@@ -124,7 +124,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       effects: (input, judged) => moveEffects(input, judged),
       facts: (input, judged) => moveFacts(input, judged),
       audited: input => movedFacts(input),
-      run: (input, toolContext, judged) => moveEntry(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete, authorizeWrite: toolContext.authorizeWrite }, judged),
+      run: (input, toolContext, judged) => moveEntry(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete, authorizeWrite: toolContext.authorizeWrite, ...(toolContext.relocated ? { relocated: toolContext.relocated } : {}) }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_list',
