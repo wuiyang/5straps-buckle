@@ -110,6 +110,8 @@ function classifyArgv(argv: ParsedArgv, args: readonly string[]): string | null 
 
   if (argv.command === 'rm' && hasFlag(argv, 'r', 'recursive') ) return 'Recursive delete'
   if (argv.command === 'rm' && hasFlag(argv, 'f', 'force')) return 'Forced delete'
+  // A plain rm of one literal path stays as it was; a glob or a second target deletes what nobody named (the fs-verbs brief).
+  if (argv.command === 'rm' && (argv.positionals.length >= 2 || argv.positionals.some(target => /[*?[]/.test(target)))) return 'Delete of several files'
   if (argv.command === 'dd' && argv.positionals.some(item => item.startsWith('of='))) return 'dd writes over a target'
   if (argv.command === 'truncate') return 'Truncates a file in place'
   if ((argv.command === 'chmod' || argv.command === 'chown') && hasFlag(argv, 'R', 'recursive')) {
