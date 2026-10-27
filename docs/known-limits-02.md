@@ -10,15 +10,15 @@ its commands write, and the forge pack.
 ## Where programs come from
 
 - Buckle runs each program it needs, such as `rg`, `git`, the sandbox program `bwrap`, or the
-  environment validator, from where `PATH`, or a place it looks after `PATH`, really leads, and
+  environment validator, from where `PATH`, or a place it looks after `PATH`, leads, and
   refuses one an agent could have written: one found in, or through a link in, any workspace or
   scratch root this node knows, or the source of any workspace's read-write
-  [mount](mounts.md), whichever workspace runs it. A read-only mount's source is no such place,
-  so a program there runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin`
-  first on `PATH`, so an `rg` there leaves content search out of every workspace, and a `bwrap`
-  there leaves no sandbox: the shell tools are withheld rather than run without one. A node
+  [mount](mounts.md), whichever runs it. A read-only mount's source is no such place, so
+  a program there runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin`
+  first on `PATH`, so an `rg` there leaves content search on Buckle's walker in every workspace, and a
+  `bwrap` there leaves no sandbox: the shell tools are withheld rather than run without one. A node
   started while its workspace registry cannot be read runs no program: repair the registry, then
-  restart the node (`buckle service restart` where a service runs it).
+  restart the node (`buckle service restart` for a service).
 - Each program Buckle runs gets a `PATH` with those places taken out, so a script it runs that
   starts `#!/usr/bin/env node` never finds a `node` an agent planted. Under bubblewrap, a shell
   command gets Buckle's own `PATH` instead ([what the agent sees](mounts.md#what-the-agent-sees)).

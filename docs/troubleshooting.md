@@ -1,10 +1,11 @@
 # Troubleshooting
 
-The failures people meet first with Buckle, the approval and sandbox runtime on their machine,
-each with the message it prints and the fix. Buckle logs text at terminals, JSON elsewhere; a
+The failures people meet with Buckle, the approval and sandbox runtime on their machine,
+each with its message and fix. Buckle logs text at terminals, JSON elsewhere; a
 one-shot command prints its reason on one line and exits 1.
 [Refused commands](troubleshooting-02.md), such as a shell wrapper, an interpreter, a call
-Buckle cannot read whole, or a push the receive guard refuses, continue on the next page.
+Buckle cannot read whole, a push the receive guard refuses, continue on the next page, and
+[refused file calls](troubleshooting-03.md) on the one after.
 
 ## node-pty was not built
 

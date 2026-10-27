@@ -8,7 +8,7 @@ question.
 
 ## Where it lives
 
-Each [workspace](workspaces.md) has its own policy, in its `workspace.json`, which `buckle policy`
+Each [workspace](workspaces.md) keeps its policy in `workspace.json`, which `buckle policy`
 writes: its command lists, its approved list, its [allowed interpreters](policy-02.md#interpreters),
 its tool lists, its filesystem rules, and where the agent sees its folder. The node's lists in
 `buckle.env` are every workspace's defaults: an allow list a workspace has none of is the node's,
@@ -82,11 +82,10 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 ## Tools and files
 
 - `buckle policy deny-tool fs_write` refuses a tool outright; `allow-tool` lifts that. A tool
-  in a withheld pack stays withheld. The [copy tools](sandbox-and-tools.md#packs) follow `fs_write` and `fs_read`.
+  in a withheld pack stays withheld. The [copy tools](sandbox-and-tools.md#packs) follow `fs_write` and `fs_read`, and so do `fs_delete`, `fs_move`, and `fs_apply_patch` (see [the file floor](policy-04.md)).
 - `buckle policy mount /workspace` shows the workspace to the agent at that path; every path
   outside it and its [mounts](mounts.md) is then refused, not asked. The folder may not show under
-  `/bin`, `/etc`, `/home`, `/tmp`, `/usr`, or another system directory; extra mounts follow that
-  page's list.
+  `/bin`, `/etc`, `/home`, `/tmp`, `/usr`, or another system directory, per [mounts](mounts.md).
 - Sensitive files ask every time, matched on the exact path, so a granted directory never unlocks
   one: anything under `.ssh`, `.gnupg`, `.aws`, `.kube`, `.docker`, `.config/gcloud`,
   `.password-store`, browser and mail profiles, or `keychains`; `.env` files except
@@ -111,7 +110,7 @@ buckle policy clear         # empties every list, keeping the mount
 
 `buckle policy` exits 0 when done, 1 on a refused change, and 2 on a conflict: an open workbench,
 active work such as a shell copy awaiting review for a mount, or an imported file naming the
-dangerously-allow switch. A list changes while a shell copy awaits review.
+dangerously-allow switch.
 
 A running `buckle serve` or `buckle mcp` takes a change up at the workspace's next call
 ([When a change applies](workspaces-02.md#when-a-change-applies)), and reads the

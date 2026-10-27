@@ -47,7 +47,9 @@ Naming a tool that is not in `ALL_TOOLS` throws a `TypeError` at once, and nothi
 
 The tools a script can call are the workspace's tools as `buckle manifest` lists them at that
 moment, after the node's and the workspace's tool policy, without `code_run` and `code_api`:
-scripts cannot start scripts. A script runs in the workspace whose token its call presented, and its
+scripts cannot start scripts. The file tools `fs_delete`, `fs_move`, and `fs_apply_patch` are typed
+in `code_api` like the rest, and a script's delete or move asks as a direct call would
+([the file floor](policy-04.md)). A script runs in the workspace whose token its call presented, and its
 calls reach only that workspace's tools, sessions, approvals, replay records, and audit log. They
 carry the caller's own session and stage, so a script's `browser_command` drives the browser the
 agent's direct calls opened, on the same page.

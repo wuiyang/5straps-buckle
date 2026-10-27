@@ -2,14 +2,13 @@
 
 Buckle, the approval and sandbox runtime on your machine, groups its tools into packs. A pack
 that cannot run here is withheld with a reason rather than failing at call time, so
-`buckle tools` lists only what works and `buckle manifest` says why the rest is missing, but for
-`fs_search_content`, absent without `rg`.
+`buckle tools` lists only what works and `buckle manifest` says why the rest is missing.
 
 ## Packs
 
 | Pack | Tools | Needs |
 |---|---|---|
-| `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_list`, `fs_find_names`, `fs_search_content`, `fs_receive`, `fs_send` | nothing; `fs_search_content` needs `rg`; the last two run only for [`buckle cp`](copy.md) |
+| `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_apply_patch`, `fs_delete`, `fs_move`, `fs_list`, `fs_find_names`, `fs_search_content`, `fs_receive`, `fs_send` | nothing; `fs_search_content` uses `rg` when it is installed, else Buckle's own walker; the last two run only for [`buckle cp`](copy.md) |
 | `web` | `web_fetch`, `web_search` | `web_search` needs `BUCKLE_BRAVE_SEARCH_API_KEY` |
 | `shell` | `shell_exec`, `script_run` | a process sandbox, below; on unless the workspace sets `packs.shell` off |
 | `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git`, and `packs.hostGit` on |
@@ -18,6 +17,13 @@ that cannot run here is withheld with a reason rather than failing at call time,
 | `browser` | `browser_command` | `agent-browser`, a browser for agents, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
 | `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless the workspace sets `packs.code` off |
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
+
+The file tools change files in these ways. `fs_apply_patch` applies a unified diff to several
+files, all or nothing. `fs_delete` removes files, and a folder only with `recursive: true`.
+`fs_move` renames or moves, and replaces a file at `to` only with `replace: true`. Each change is
+checkpointed, so [`buckle history restore`](sandbox-and-tools-02.md#change-history) brings it back.
+The [file floor](policy-04.md) asks before some of these calls. Without `rg`, `fs_search_content`
+runs more slowly and skips binary files ([known limits](known-limits-08.md#search-without-rg)).
 
 `buckle workspace set packs.enabled fs,web,shell` offers only the named
 [packs](workspaces-02.md#settings), and naming any turns plugins off.

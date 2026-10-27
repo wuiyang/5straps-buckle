@@ -17,13 +17,13 @@ closing its console stops it, as read from the code and Linux tests that imitate
 Buckle looks for these programs on `PATH`, then beside its `buckle` command and Node.js, and on
 Windows in `%APPDATA%\npm`. Without one, the matching pack or tool is withheld; a missing
 language server withholds nothing, and a call needing it fails. `buckle init`
-checks the first four; `buckle manifest` says why a pack is withheld, and without `rg` leaves out
-`fs_search_content` with no reason.
+checks the first four; `buckle manifest` says why a pack is withheld. Without `rg`,
+`fs_search_content` runs through Buckle's own, slower walker.
 
 | Program | Unlocks |
 |---|---|
 | `bwrap` (bubblewrap), Linux | the sandboxed shell pack |
-| `rg` (ripgrep) | the `fs_search_content` tool |
+| `rg` (ripgrep) | a faster `fs_search_content`; without it, Buckle's own walker |
 | `git` | the `git` and `forge` packs, once host Git is turned on |
 | `agent-browser`, a browser for agents | the `browser` pack |
 | `typescript-language-server`, `rust-analyzer`, `gopls`, `pyright-langserver`, or `pylsp` | language support in the `dev` pack, once host language servers are turned on |

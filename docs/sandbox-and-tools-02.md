@@ -47,8 +47,9 @@ the 2 MiB already read is returned.
 
 ## Change history
 
-Tool writes and shell publications are recorded as checkpoints under `history/`, kept up to
-`BUCKLE_HISTORY_MAX_BYTES` (1 GiB) and `BUCKLE_HISTORY_RETENTION_DAYS` (30):
+Tool writes, deletes, moves, and patches, and shell publications are recorded as checkpoints under
+`history/`, kept up to `BUCKLE_HISTORY_MAX_BYTES` (1 GiB) and `BUCKLE_HISTORY_RETENTION_DAYS` (30).
+A delete's checkpoint names the delete and keeps each removed file's content:
 
 ```bash
 buckle history list
