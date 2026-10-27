@@ -70,4 +70,8 @@ buckle fs search-content "createInvoker" --glob "*.ts"
 `fs_list` and `fs_find_names` skip `node_modules`, `.git`, `dist`, and similar by default;
 pass `includeIgnored` when you actually need them. `fs_search_content` respects `.gitignore`;
 where ripgrep is not installed the node searches by itself, more slowly, with a JavaScript
-regular expression, and the manifest's `limits.searcher` says `builtin`.
+regular expression, and the manifest's `limits.searcher` says `builtin`. Its result then also has
+`skipped`, the files and folders it left out with a reason (`held`, `vanished`, `changed`,
+`unreadable`, `too-large`, `binary`, or `timeout`), at most 100 and `skippedMore` counting the
+rest. A file it cannot read does not fail the search; look in `skipped` before you trust an empty
+result. With ripgrep there is no `skipped`.

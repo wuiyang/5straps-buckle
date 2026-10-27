@@ -17,7 +17,7 @@ const RETURNS: Readonly<Record<string, string>> = {
   fs_delete: '{ removed: number, results: Array<{ path, removed: boolean, missing?, refused?, code?, notAttempted? }> }',
   fs_list: '{ path, entries: Array<{ path (inside the listed path), name, type: "file" | "directory" | "symlink", size, modifiedAt }>, truncated }',
   fs_find_names: '{ path, matches: string[], truncated }',
-  fs_search_content: '{ matches: Array<{ path, line, text, ranges }>, truncated, excludedFiles }',
+  fs_search_content: '{ matches: Array<{ path, line, text, ranges }>, truncated, excludedFiles, skipped?: Array<{ path, reason }>, skippedMore?: number }',
   web_fetch: '{ url, status, headers, body: string, truncated }',
   web_search: '{ query, results: Array<{ title, url, description }> }',
   git_status: '{ branch, upstream, entries: Array<{ state, path }>, clean }',

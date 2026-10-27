@@ -180,14 +180,14 @@ export function createFsPack(options: FsPackOptions): Pack {
   const ripgrep = options.ripgrep
   tools.push(defineTool(PACK_ID, {
     name: 'fs_search_content',
-    description: 'Search file contents with a regular expression. Respects .gitignore.',
+    description: 'Search file contents with a regular expression. Respects .gitignore. Where ripgrep is not installed, the result also has skipped: the files and folders left out with a reason (held, vanished, changed, unreadable, too-large, binary, timeout), at most 100, the rest counted in skippedMore. With ripgrep it has no skipped.',
     risk: 'read',
     tags: ['filesystem', 'search', 'regex'],
     input: schemas.searchInput,
     effects: input => [{ kind: 'read_path', path: input.path }],
     run: (input, toolContext) => {
       const shared = { args: input, paths: options.paths, signal: toolContext.signal, authorizeRead: toolContext.authorizeRead ?? (async () => false), protectedRoots: options.protectedRoots ?? [], ...(toolContext.known ? { known: toolContext.known } : {}) }
-      if (ripgrep === null) return searchBuiltin(shared)
+      if (ripgrep === null) return searchBuiltin({ ...shared, timeoutMs: toolContext.timeoutMs })
       return searchContent({ ...shared, runProcess: options.runProcess, ripgrep, timeoutMs: toolContext.timeoutMs, ...(options.environment ? { environment: options.environment } : {}) })
     },
   }))

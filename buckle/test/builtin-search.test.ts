@@ -220,7 +220,7 @@ describe('the glob matcher', () => {
 })
 
 describe('a search that cannot stall the node', () => {
-  it('stops a pattern that backtracks without end at its limit and leaves the node free to answer', async () => {
+  it('leaves out a file a pattern that backtracks without end runs past its limit on, and leaves the node free to answer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-search-redos-'))
     roots.push(root)
     writeFileSync(join(root, 'bad.txt'), `${'a'.repeat(60)}b\n`)
@@ -228,7 +228,7 @@ describe('a search that cannot stall the node', () => {
     const timer = setInterval(() => { ticks++ }, 10)
     const started = performance.now()
     try {
-      await expect(builtin(root, { pattern: '(a+)+$' }, { matchTimeoutMs: 300 })).rejects.toThrow('The pattern took more than 0.3 seconds on one file, so the search stopped')
+      expect(await builtin(root, { pattern: '(a+)+$' }, { matchTimeoutMs: 300 })).toMatchObject({ matches: [], truncated: false, skipped: [{ path: './bad.txt', reason: 'timeout' }] })
     } finally { clearInterval(timer) }
     expect(performance.now() - started).toBeLessThan(3_000)
     // The node's thread was not held while the pattern ran, so its timers kept firing.

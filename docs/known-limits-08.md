@@ -64,12 +64,17 @@ When `rg` is not installed, `fs_search_content` runs Buckle's own walker. Its re
   Past the file, byte, or entry limit the result is marked `truncated`. A file over 10 MiB is left
   out and counted in `excludedFiles`.
 - The pattern runs in a worker thread, so a pattern that backtracks without end cannot stall the
-  node. It stops after 5 seconds on one file, or when the call times out or is cancelled, and the
-  search fails with "The pattern took more than 5 seconds".
+  node. A file it takes more than 5 seconds on is left out as `timeout`, and after three such files
+  the search stops, marked `truncated`. A call whose time runs out fails with `SEARCH_TIMED_OUT`.
 - Globs and ignore files are matched by Buckle's own matcher: case is kept, a backslash escapes
   the character after it, and extended patterns such as `+(a|b)` are not read.
-- It skips binary files, those with a NUL byte in the first 8 KiB. `rg` searches them and reports
-  their matches.
+- It skips binary files, those with a NUL byte in the first 8 KiB, and lists them as `binary`. `rg`
+  searches them and reports their matches.
+- A file or folder it cannot read never fails the search. One that vanished, changed while read (a
+  file still being received), is held open by another program (Windows only), or cannot
+  be read is counted in `excludedFiles` and listed in `skipped` with a reason
+  ([tools](sandbox-and-tools.md#packs)). `rg` skips such files silently, so `skipped` is absent
+  where it ran.
 - It approximates `rg`'s ignore rules. Hidden names are skipped. `.gitignore` is read only inside
   a git repository. `.ignore` and `.rgignore` are read, and a parent folder's ignore files only
   inside the roots and only with slash-free patterns. No global gitignore and no

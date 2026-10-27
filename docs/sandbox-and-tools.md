@@ -25,7 +25,12 @@ refused: without it, anything standing there is refused (`TARGET_EXISTS`); with 
 there is refused (`NOTHING_TO_REPLACE`), and otherwise the file, link, or folder there is replaced,
 a folder with everything in it. Each change is checkpointed, so [`buckle history restore`](sandbox-and-tools-02.md#change-history) brings it back.
 The [file floor](policy-04.md) asks before some of these calls. Without `rg`, `fs_search_content`
-runs more slowly and skips binary files ([known limits](known-limits-08.md#search-without-rg)).
+runs more slowly ([known limits](known-limits-08.md#search-without-rg)), and its result also holds
+`skipped`: the files and folders it left out, each with a reason (`held`, `vanished`, `changed`,
+`unreadable`, `too-large`, `binary`, or `timeout`), at most 100, with `skippedMore` counting the
+rest. One file it cannot read never fails the search. Only the search itself fails, with a code and
+the cause: `INVALID_PATTERN`, `FILE_NOT_FOUND`, `SEARCH_ROOT_UNREADABLE`, or `SEARCH_TIMED_OUT`.
+With `rg`, `skipped` is absent.
 
 `buckle workspace set packs.enabled fs,web,shell` offers only the named
 [packs](workspaces-02.md#settings), and naming any turns plugins off.
