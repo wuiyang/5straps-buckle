@@ -9,6 +9,7 @@ import { MAX_TRANSFER_BYTES } from '../browser/file-transfer.js'
 import { findNames, listTree, patchFile, readFileEntry, writeFileEntry } from './operations.js'
 import * as schemas from './schemas.js'
 import { searchContent } from './search.js'
+import { deletedFacts, deleteEffects, deletePaths, settleDelete } from './delete.js'
 import { receivedFacts, receiveFile, sendFile, sentFacts, settleReceive, settleSend } from './transfer.js'
 
 const PACK_ID = 'fs'
@@ -82,6 +83,17 @@ export function createFsPack(options: FsPackOptions): Pack {
       input: schemas.patchInput,
       effects: input => [{ kind: 'write_path', path: input.path }, { kind: 'read_path', path: input.path }],
       run: (input, toolContext) => patchFile(input, { ...context, authorizeWrite: toolContext.authorizeWrite }),
+    }),
+    defineTool(PACK_ID, {
+      name: 'fs_delete',
+      description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. A person is always asked.',
+      risk: 'write',
+      tags: ['filesystem', 'batch'],
+      input: schemas.deleteInput,
+      judge: input => settleDelete(input, context),
+      effects: (input, judged) => deleteEffects(input, judged, options.paths),
+      audited: input => deletedFacts(input),
+      run: (input, toolContext, judged) => deletePaths(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete }, judged),
     }),
     defineTool(PACK_ID, {
       name: 'fs_list',

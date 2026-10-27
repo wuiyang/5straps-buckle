@@ -51,6 +51,8 @@ interface Facts {
   fact(value: string, limit?: number): string
   command(command: string, args: string[]): string
   paths(values: string[]): string
+  /** Every path, none counted away, for an action a person must see each target of (a delete, a patch's files). */
+  allPaths(values: string[]): string
   names(prefix: string, value: JsonValue | undefined): string
 }
 
@@ -74,6 +76,8 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
       return `Write ${count(files.length, 'file')}, ${total} bytes in all: ${paths(files.map(file => text(file.path) ?? ''))}`
     }
     case 'fs_patch': return `Replace text in ${path()} (${count(records(args.edits).length, 'edit')})`
+    // Every path named, none counted away (owner decisions D9 and D17): a delete is the floor's own ask.
+    case 'fs_delete': return `Delete ${count(strings(args.paths).length, 'file')}: ${facts.allPaths(strings(args.paths))}${args.recursive === true ? ', each folder among them with everything in it' : ''}`
     case 'fs_list': return `List ${path()}`
     case 'fs_find_names': return `Find names matching ${fact(text(args.pattern) ?? '')} under ${path()}`
     case 'fs_search_content': return `Search file contents for ${fact(text(args.pattern) ?? '')} under ${path()}`
@@ -123,6 +127,7 @@ function factsOf(cut: { truncated: boolean }): Facts {
       const listed = values.slice(0, LISTED_PATHS).map(value => fact(value, PATH_LENGTH)).join(', ')
       return values.length > LISTED_PATHS ? `${listed} and ${values.length - LISTED_PATHS} more` : listed
     },
+    allPaths: values => values.map(value => fact(value, PATH_LENGTH)).join(', '),
     /** The names a record sets (never their values), as `prefix A, B`. */
     names(prefix, value) {
       const keys = value !== null && typeof value === 'object' && !Array.isArray(value) ? Object.keys(value).sort() : []

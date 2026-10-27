@@ -38,6 +38,12 @@ export const receiveInput = z.object({
 /** fs_send's arguments: the file the files route streams back. */
 export const sendInput = z.object({ path: pathInput }).strict()
 
+/** fs_delete's arguments: the entries to remove, and whether a folder goes with everything in it. */
+export const deleteInput = z.object({
+  paths: z.array(pathInput).min(1).max(MAX_BATCH_FILES),
+  recursive: z.boolean().default(false),
+}).strict()
+
 export const patchInput = z.object({
   path: pathInput,
   edits: z.array(z.object({

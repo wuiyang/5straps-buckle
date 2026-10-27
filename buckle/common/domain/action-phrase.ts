@@ -18,6 +18,7 @@ const PHRASES: Readonly<Record<string, string>> = {
   fs_write: 'write a file',
   fs_write_batch: 'write files',
   fs_patch: 'patch a file',
+  fs_delete: 'delete files',
   fs_list: 'list a folder',
   fs_find_names: 'find files by name',
   fs_search_content: 'search file contents',

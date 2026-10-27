@@ -1,5 +1,6 @@
 import { lstatSync, readlinkSync, realpathSync, type Stats } from 'node:fs'
-import { childPath, nativePath, parentDirectory, pathRoot, refuseDrive, withForwardSlashes } from '../../domain/paths.js'
+import { basename } from 'pathe'
+import { childPath, isPlainName, nativePath, parentDirectory, pathRoot, refuseDrive, withForwardSlashes } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 
 /** How many links one path may pass through, as Linux allows (SYMLOOP_MAX). */
@@ -45,6 +46,19 @@ function whereItLands(absolutePath: string, landing: LandingRead): string {
     return walked.kind === 'directory' ? diskCase(walked.path, read) : walked.path
   }
   return read(real)
+}
+
+/**
+ * Where an entry really is, the entry itself and never what a link there points to: its folder resolved as resolveTarget
+ * resolves any path, and its own name kept as written, as a delete unlinks a link and a move moves or replaces it. Null
+ * where the path names no entry in a folder: a root (`/`, a drive), or a name Buckle would read as another path.
+ */
+export function resolveEntry(absolutePath: string, landing: LandingRead = {}): { path: string; directory: string; name: string } | null {
+  const parent = parentDirectory(absolutePath)
+  const name = basename(absolutePath)
+  if (parent === absolutePath || !isPlainName(name, landing.platform)) return null
+  const directory = resolveTarget(parent, landing)
+  return { path: childPath(directory, name), directory, name }
 }
 
 /** The same resolution for callers that await; kept async so a later non-blocking lookup changes no caller. */

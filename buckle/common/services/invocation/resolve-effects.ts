@@ -1,11 +1,10 @@
 import { stat } from 'node:fs/promises'
-import { basename, dirname } from 'pathe'
+import { dirname } from 'pathe'
 import type { ResolvedEffect, ToolEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
-import { childPath, isPlainName, parentDirectory } from '../../domain/paths.js'
 import { missingMountReason, mountSourceState } from '../../domain/sandbox-mounts.js'
 import { ToolInputError } from '../../domain/tool.js'
-import { realPathOrPlanned } from './real-path.js'
+import { realPathOrPlanned, resolveEntry } from './real-path.js'
 
 /**
  * Turns declared effects into the absolute, symlink-resolved form rules judge. Resolution
@@ -20,10 +19,10 @@ export async function resolveEffects(input: { effects: ToolEffect[]; paths: Path
 
 async function resolveOne(effect: ToolEffect, paths: PathView): Promise<ResolvedEffect> {
   if (effect.kind === 'delete_path') {
-    const entry = await resolveEntry(effect.path, paths)
+    const entry = await entryEffect(effect.path, paths)
     return { kind: 'delete_path', ...entry, floor: effect.floor, ...(effect.tree ? { tree: effect.tree } : {}) }
   }
-  if (effect.kind === 'write_path' && effect.entry) return { kind: 'write_path', ...await resolveEntry(effect.path, paths), entry: true }
+  if (effect.kind === 'write_path' && effect.entry) return { kind: 'write_path', ...await entryEffect(effect.path, paths), entry: true }
   if (effect.kind === 'read_path' || effect.kind === 'write_path') {
     // A host path the tool settled is judged as resolveHostRead judges one, never through the agent's view.
     const named = effect.kind === 'write_path' && effect.host ? effect.path : paths.resolve(effect.path)
@@ -41,20 +40,12 @@ async function resolveOne(effect: ToolEffect, paths: PathView): Promise<Resolved
   return effect
 }
 
-/**
- * Where an entry the agent named really is, the entry itself and never what a link there points to: its folder resolved
- * as any path is (realPathOrPlanned), and its own name kept as written. A delete unlinks a link, and a move moves or
- * replaces it, so the rules judge the link's own place. A root (the drive, `/`) names no entry in a folder and is refused.
- */
-export async function resolveEntry(named: string, paths: PathView): Promise<{ path: string; directory: string }> {
-  const absolute = paths.resolve(named)
-  const parent = parentDirectory(absolute)
-  const name = basename(absolute)
-  if (parent === absolute || !isPlainName(name)) throw new ToolInputError(`${named} names no entry in a folder, so it is not removed or moved`)
-  const directory = await realPathOrPlanned(parent, { shares: paths.shares })
-  const path = childPath(directory, name)
-  refuseMissingMount(path, paths)
-  return { path, directory }
+/** An entry the agent named, the entry itself (resolveEntry), refused where it names none or lies in a mount whose source is gone. */
+async function entryEffect(named: string, paths: PathView): Promise<{ path: string; directory: string }> {
+  const entry = resolveEntry(paths.resolve(named), { shares: paths.shares })
+  if (entry === null) throw new ToolInputError(`${named} names no entry in a folder, so it is not removed or moved`)
+  refuseMissingMount(entry.path, paths)
+  return { path: entry.path, directory: entry.directory }
 }
 
 /**

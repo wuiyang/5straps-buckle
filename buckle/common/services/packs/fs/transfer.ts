@@ -145,7 +145,8 @@ export function sentFacts(input: z.output<typeof schemas.sendInput>, output: Jso
   return { path: auditedPath(input.path), ...(typeof sent.size === 'number' ? { bytes: sent.size } : {}), ...(typeof sent.sha256 === 'string' ? { sha256: sent.sha256 } : {}) }
 }
 
-function auditedPath(path: string): string {
+/** A path as an audit entry keeps it: any credential in it hidden, AUDITED_PATH_LENGTH characters at most. */
+export function auditedPath(path: string): string {
   return redactCredentials(path, 'value').slice(0, AUDITED_PATH_LENGTH)
 }
 
