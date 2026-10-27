@@ -807,6 +807,7 @@ describe('buckle init checks the programs Buckle runs', () => {
   it('reads an empty BUCKLE_AGENT_BROWSER_COMMAND as unset, as the node reads it', async () => {
     vi.stubEnv('BUCKLE_AGENT_BROWSER_COMMAND', '')
     expect(await programs({ platform: 'linux', programSearch: { environment: { PATH: '' }, places: [] } })).toContain('  agent-browser   not found on PATH (0 directories); it unlocks the browser pack;')
+    expect(await programs({ platform: 'linux', programSearch: { environment: { PATH: '' }, places: [] } })).toContain('  rg              not found on PATH (0 directories); it unlocks a faster fs_search_content, which Buckle runs with its own walker without it\n')
     expect(configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_AGENT_BROWSER_COMMAND: '' }).agentBrowserCommand).toBe('agent-browser')
   })
 

@@ -573,7 +573,8 @@ function describePrograms(input: { node: NodeConfig; folder: string; platform: N
   const config = input.node
   const programs: CheckedProgram[] = [
     ...(input.platform === 'linux' ? [{ label: 'bwrap', name: 'bwrap', unlocks: 'the sandboxed shell pack' }] : []),
-    { label: 'rg', name: 'rg', unlocks: 'the fs_search_content tool' },
+    // fs_search_content runs without it, on Buckle's own slower walker (the fs-verbs brief).
+    { label: 'rg', name: 'rg', unlocks: 'a faster fs_search_content, which Buckle runs with its own walker without it' },
     { label: 'git', name: 'git', unlocks: 'the git and forge packs, once host Git is turned on' },
     { label: 'agent-browser', name: config.agentBrowserCommand, unlocks: 'the browser pack', install: BROWSER_INSTALL, setting: 'BUCKLE_AGENT_BROWSER_COMMAND' },
   ]
