@@ -1,5 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import * as nodePath from 'node:path'
 import { join } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { HarnessManifestSchema } from '@5straps/protocol'
@@ -137,6 +138,37 @@ describe('the walker', () => {
   })
 })
 
+/** A pattern, a subject, whether ripgrep's rules match the two, and (where node:path matchesGlob answers otherwise) why. */
+type GlobCase = [pattern: string, subject: string, expected: boolean, nodeDiffers?: string]
+
+const GLOB_CASES: GlobCase[] = [
+  // `*` and `?` stay within one name
+  ['a*b', 'axxb', true], ['a*b', 'a/b', false], ['a?c', 'abc', true], ['a?c', 'a/c', false],
+  ['*.ts', 'a.ts', true], ['*.ts', 'a/b.ts', false], ['**/*.ts', 'a/b.ts', true], ['**/*.ts', 'b.ts', true], ['**/*.ts', 'a/b.js', false],
+  // a leading `**/` is none or more whole names, and a name cannot end it halfway
+  ['**/foo', 'foo', true], ['**/foo', 'a/foo', true], ['**/foo', 'a/b/foo', true],
+  ['**/foo', 'xfoo', false], ['**/foo', 'a/b/xfoo', false], ['**/foo', 'foox', false], ['**/foo', 'foo/bar', false],
+  ['**/dist', 'dist', true], ['**/dist', 'x/dist', true], ['**/dist', 'xdist', false], ['**/build', 'a/build', true], ['**/build', 'abuild', false],
+  // `**/` between names
+  ['a/**/b', 'a/b', true], ['a/**/b', 'a/x/b', true], ['a/**/b', 'a/x/y/b', true],
+  ['a/**/b', 'a/xb', false], ['a/**/b', 'axb', false], ['a/**/b', 'a/x/yb', false],
+  ['dir/**/ab', 'dir/ab', true], ['dir/**/ab', 'dir/z/ab', true], ['dir/**/ab', 'dir/zab', false],
+  ['src/**/test', 'src/test', true], ['src/**/test', 'src/a/test', true], ['src/**/test', 'src/xtest', false], ['src/**/test', 'src/a/xtest', false],
+  ['**/**/foo', 'a/foo', true], ['**/**/foo', 'xfoo', false], ['a/**/**/b', 'a/x/y/b', true], ['a/**/**/b', 'a/xb', false],
+  ['**/a/**/b', 'x/a/y/b', true], ['**/a/**/b', 'a/b', true], ['**/a/**/b', 'x/xa/y/b', false], ['**/a/**/b', 'xa/b', false],
+  // `**` alone, at the end, and beside other characters
+  ['**', 'a/b/c', true], ['a/**', 'a/x/y', true], ['a/**', 'a', false], ['**/dist/**', 'a/dist/b/c', true], ['**/dist/**', 'adist/b', false],
+  ['a**b', 'a/b', false], ['a**b', 'axb', true],
+  // braces
+  ['*.{ts,tsx}', 'a.tsx', true], ['*.{ts,tsx}', 'a.js', false], ['{a,b}.txt', 'a.txt', true], ['{a,b}.txt', 'c.txt', false],
+  ['{a,b}/{c,d}', 'b/c', true], ['{a,b}/{c,d}', 'c/a', false], ['{solo}', '{solo}', true],
+  // classes
+  ['[abc].txt', 'b.txt', true], ['[!abc].txt', 'b.txt', false], ['[!abc].txt', 'd.txt', true], ['[a-c]x', 'bx', true], ['[a-c]x', 'dx', false],
+  ['[!x]oo', 'foo', true], ['[!x]oo', 'xoo', false], ['[^x]oo', 'xoo', false], ['[]]x', ']x', true], ['[unclosed', '[unclosed', true],
+  // case is kept, and a backslash escapes
+  ['build', 'Build', false, 'node:path matchesGlob ignores case on Windows and macOS'], ['\\*lit', '*lit', true, 'node:path matchesGlob does not read the backslash as an escape'], ['\\*lit', 'xlit', false],
+]
+
 describe('the glob matcher', () => {
   it('keeps case and reads a backslash as an escape, on every platform', () => {
     expect(passesGlob('*.md', 'README.MD')).toBe(false)
@@ -147,14 +179,17 @@ describe('the glob matcher', () => {
     expect(matchesPattern('xa.txt', 'x\\*.txt')).toBe(false)
   })
 
-  it.each([
-    ['a*b', 'axxb', true], ['a*b', 'a/b', false], ['a?c', 'abc', true], ['a?c', 'a/c', false],
-    ['**/foo', 'foo', true], ['**/foo', 'a/b/foo', true], ['a/**/b', 'a/b', true], ['a/**/b', 'a/x/y/b', true], ['a/**', 'a/x/y', true], ['a/**', 'a', false],
-    ['**', 'a/b/c', true], ['a**b', 'a/b', false], ['a**b', 'axb', true],
-    ['*.{ts,tsx}', 'a.tsx', true], ['*.{ts,tsx}', 'a.js', false], ['{a,b}/{c,d}', 'b/c', true], ['{a,b}/{c,d}', 'c/a', false], ['{solo}', '{solo}', true],
-    ['[abc].txt', 'b.txt', true], ['[!abc].txt', 'b.txt', false], ['[!abc].txt', 'd.txt', true], ['[a-c]x', 'bx', true], ['[a-c]x', 'dx', false], ['[]]x', ']x', true], ['[unclosed', '[unclosed', true],
-  ])('reads %s against %s as %s', (pattern, subject, expected) => {
+  it.each(GLOB_CASES.map(([pattern, subject, expected]) => [pattern, subject, expected] as const))('reads %s against %s as %s', (pattern, subject, expected) => {
     expect(matchesPattern(subject, pattern)).toBe(expected)
+  })
+
+  const nodeMatchesGlob = (nodePath as { matchesGlob?: (path: string, pattern: string) => boolean }).matchesGlob
+  it.skipIf(typeof nodeMatchesGlob !== 'function')('answers as node:path matchesGlob does on every case but the documented differences', () => {
+    const disagreements = GLOB_CASES
+      .filter(([, , , difference]) => difference === undefined)
+      .filter(([pattern, subject]) => nodeMatchesGlob!(subject, pattern) !== matchesPattern(subject, pattern))
+      .map(([pattern, subject, expected]) => `${pattern} against ${subject}: expected ${expected}`)
+    expect(disagreements).toEqual([])
   })
 
   it('answers a pattern of many stars on a long text at once, where a backtracking matcher would not', () => {

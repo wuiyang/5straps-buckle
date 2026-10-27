@@ -63,7 +63,7 @@ function globMatches(subject: string, pattern: string): boolean {
 //
 // Not node:path's matchesGlob, which ignores case on Windows and macOS and reads a backslash as a separator, where
 // ripgrep and git match case and read a backslash as an escape. A pattern is read as ripgrep reads one: `*` and `?` stay
-// within one name, `**` crosses folders (`**/` for none or more, `/**` for what lies beneath), `[abc]`, `[a-z]`, and
+// within one name, `**` crosses folders (`**/` for none or more whole names, `/**` for what lies beneath), `[abc]`, `[a-z]`, and
 // `[!abc]` match one character, `{a,b}` is a choice, and `\` escapes the character after it. Matching is a walk over
 // the set of places in the pattern the text so far could be at, so its cost is the text times the pattern, never more.
 
@@ -190,16 +190,22 @@ function classToken(body: string): Token {
 }
 
 function matchesTokens(subject: string, parts: readonly Token[]): boolean {
-  // `places[i]` holds when the text so far can have used the first i tokens.
+  // `places[i]` holds when the text so far can have used the first i tokens; `within` holds the folders tokens the text so far
+  // ends inside a name of, which only a slash can end: a name cannot be left halfway (`**/foo` is not `xfoo`).
   let places = new Set<number>()
+  let within = new Set<number>()
   const open = (set: Set<number>, index: number) => {
     set.add(index)
-    // A run, a globstar, and folders can each match nothing, so the place after them is reached as well.
+    // A run, a globstar, and folders can each match nothing, so the place after them is reached as well. A folders token
+    // is only ever entered at the start or after a `/`, so passing it over here is at a name boundary.
     while (index < parts.length && (parts[index]!.kind === 'run' || parts[index]!.kind === 'any' || parts[index]!.kind === 'folders')) { index++; set.add(index) }
   }
   open(places, 0)
   for (const character of subject) {
     const next = new Set<number>()
+    const nextWithin = new Set<number>()
+    // A slash ends a name of the folders and starts the next (or the token after); any other character stays inside one.
+    const inFolders = (index: number) => { if (character === '/') open(next, index); else nextWithin.add(index) }
     for (const index of places) {
       const part = parts[index]
       if (part === undefined) continue
@@ -209,14 +215,13 @@ function matchesTokens(subject: string, parts: readonly Token[]): boolean {
         case 'set': if (character !== '/' && inSet(part, character)) open(next, index + 1); break
         case 'run': if (character !== '/') open(next, index); break
         case 'any': open(next, index); break
-        case 'folders':
-          open(next, index)
-          if (character === '/') open(next, index + 1)
-          break
+        case 'folders': inFolders(index); break
       }
     }
-    if (next.size === 0) return false
+    for (const index of within) inFolders(index)
+    if (next.size === 0 && nextWithin.size === 0) return false
     places = next
+    within = nextWithin
   }
   return places.has(parts.length)
 }
