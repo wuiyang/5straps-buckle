@@ -33,6 +33,7 @@ import { isToolAllowed } from '../../domain/tool-policy.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
 import { createCommandPolicyRule } from '../../domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../../domain/permission/rules/destructive-command-rule.js'
+import { createDestructivePathRule } from '../../domain/permission/rules/destructive-path-rule.js'
 import { createNetworkEgressRule } from '../../domain/permission/rules/network-egress-rule.js'
 import { createProcessProbeRule } from '../../domain/permission/rules/process-probe-rule.js'
 import { createReadScopeRule } from '../../domain/permission/rules/read-scope-rule.js'
@@ -963,6 +964,7 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
+    createDestructivePathRule({ paths, strict: config.strictWrites }),
     networkEgressRule(compiled),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),

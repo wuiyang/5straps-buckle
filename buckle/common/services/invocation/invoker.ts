@@ -267,8 +267,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
               throw error
             }
           }
-          const writes = effects.filter(effect => effect.kind === 'write_path')
-          const roots = [...options.historyRoots?.() ?? [], ...writes.map(effect => { let path = effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
+          // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
+          const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
+          const roots = [...options.historyRoots?.() ?? [], ...writes.map(effect => { let path = effect.kind === 'delete_path' || effect.entry ? effect.directory : effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
@@ -880,9 +881,10 @@ async function executeWithTimeout(input: {
   /** The bytes of a `buckle cp`, which the files route alone hands (InvokeInput.file). */
   file?: FileChannel
 }): Promise<JsonValue> {
-  const judged = (kind: 'read_path' | 'write_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
+  const judged = (kind: 'read_path' | 'write_path' | 'delete_path') => new Set(input.effects.flatMap(effect => effect.kind === kind ? [effect.path] : []))
   const judgedReads = judged('read_path')
   const judgedWrites = judged('write_path')
+  const judgedDeletes = judged('delete_path')
   const timeoutMs = Math.min(input.timeoutMs ?? input.request.timeoutMs ?? input.options.defaultTimeoutMs, input.options.maxTimeoutMs)
   const controller = new AbortController()
   // A script's own deadline ends it first and reads as a timeout; this one only backs it (owner decision D82).
@@ -936,6 +938,7 @@ async function executeWithTimeout(input: {
       },
       authorizeReadTarget: target => judgedReads.has(target),
       authorizeWrite: target => judgedWrites.has(target),
+      authorizeDelete: target => judgedDeletes.has(target),
       judgeNetwork: url => judgeNetwork({ ...input, url }),
     })
   } finally {

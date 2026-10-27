@@ -13,10 +13,29 @@ export type ToolEffect =
    * so it is judged where it is and never read through the agent's view, where a mount would take a host
    * path under its name for one of its own (review L4).
    */
-  | { kind: 'write_path'; path: string; host?: true }
+  | { kind: 'write_path'; path: string; host?: true; entry?: true }
+  | DeleteEffect
   | { kind: 'network'; url: string }
   | ExecEffect
   | { kind: 'process_probe' }
+
+/**
+ * An entry removed (fs_delete, a move's source, the file a replacing move or a patch removes): the entry itself, a link
+ * unlinked and never followed, so its folder is resolved and its own name is not. `floor`: a person is asked at the
+ * destructive floor whatever the folder's write grant says (destructive-path-rule.ts); a move's source that moves a file
+ * and replaces nothing is judged as a write to its folder instead (the fs-verbs brief). `tree`: a folder removed with
+ * everything in it, and what it held when counted, before the ask.
+ */
+export interface DeleteEffect { kind: 'delete_path'; path: string; floor: boolean; tree?: TreeCount }
+
+/**
+ * What a folder held when it was counted, before the ask (MAX_COUNTED_ENTRIES at most, `more` past that), or `counted:
+ * false` where it lies outside the roots the agent may name, which are not looked into before a person allows the call.
+ */
+export type TreeCount = { counted: true; files: number; folders: number; more: boolean } | { counted: false }
+
+/** How many entries a folder is counted to before the ask names it as holding more (the fs-verbs brief). */
+export const MAX_COUNTED_ENTRIES = 10_000
 
 /**
  * A program run. `shownAs`: the word the decision AI's stages are shown in place of `command` where `command` is a host
@@ -27,7 +46,10 @@ export interface ExecEffect { kind: 'exec'; command: string; args: string[]; sho
 
 export type ResolvedEffect =
   | { kind: 'read_path'; path: string; directory: string }
-  | { kind: 'write_path'; path: string; directory: string }
+  /** `entry`: the path names the entry itself (a move's landing), its folder resolved and its own name not followed. */
+  | { kind: 'write_path'; path: string; directory: string; entry?: true }
+  /** `path`: the entry where it really is, its folder resolved and its own name not followed; `directory`: that folder. */
+  | { kind: 'delete_path'; path: string; directory: string; floor: boolean; tree?: TreeCount }
   | { kind: 'network'; url: URL }
   | ExecEffect
   | { kind: 'process_probe' }
@@ -48,9 +70,17 @@ export function summarizeEffect(effect: ResolvedEffect): string {
   switch (effect.kind) {
     case 'read_path': return `read ${effect.path}`
     case 'write_path': return `write ${effect.path}`
+    case 'delete_path': return `delete ${effect.path}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''}`
     case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
     case 'process_probe': return 'process probe'
     case 'secret_file': return `secrets ${effect.names.join(', ')} from ${wordList(effect.written)}`
   }
+}
+
+/** What a counted folder holds, in words: `3 files and 1 folder`, `more than 10000 entries`, or that it was not counted. */
+export function treeWords(tree: TreeCount): string {
+  if (!tree.counted) return 'not counted, as it lies outside the workspace\'s folders'
+  if (tree.more) return `more than ${MAX_COUNTED_ENTRIES} entries`
+  return `${tree.files} ${tree.files === 1 ? 'file' : 'files'} and ${tree.folders} ${tree.folders === 1 ? 'folder' : 'folders'}`
 }

@@ -1,5 +1,5 @@
 import { basename } from 'pathe'
-import { comparablePath, isInsideAny, segments } from '../../paths.js'
+import { comparablePath, isInside, isInsideAny, segments } from '../../paths.js'
 import { wordList } from '../../word-list.js'
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionDecision, PermissionRule, RuleInput } from '../decision.js'
@@ -84,9 +84,13 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
     id: 'sensitive_path',
     evaluate({ effect, grants }) {
       if (effect.kind === 'secret_file') return secretFileDecision({ effect, grants, protectedRoots, fold, options })
-      if (effect.kind !== 'read_path' && effect.kind !== 'write_path') return null
+      if (effect.kind !== 'read_path' && effect.kind !== 'write_path' && effect.kind !== 'delete_path') return null
       if (isInsideAny(protectedRoots, fold(effect.path))) {
         return deny('sensitive_path', effect.path, "Buckle's own state and policy are not reachable from a tool")
+      }
+      // A folder removed or moved whole takes Buckle's state with it where it holds it.
+      if (effect.kind === 'delete_path' && protectedRoots.some(root => isInside(fold(effect.path), root))) {
+        return deny('sensitive_path', effect.path, "The folder holds Buckle's own state and policy, which no tool removes or moves")
       }
       // A remembered deny meets every spelling the volume reads as the same file, a missing one included: it is
       // compared folded where the disk ignores case, as the protected roots are, and only ever denies more

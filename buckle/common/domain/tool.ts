@@ -50,6 +50,8 @@ export interface ToolContext {
   authorizeReadTarget?: (target: string) => boolean
   /** Whether a real path is one the call's permission check judged as a write; a writer refuses any other. */
   authorizeWrite?: (target: string) => boolean
+  /** Whether a real entry path is one the call's permission check judged as a delete; a remover refuses any other. */
+  authorizeDelete?: (target: string) => boolean
   /**
    * The request headers whose values Buckle filled from secret references (docs/secrets.md): a fetch drops them on a
    * hop to another origin, as it drops a credential header.

@@ -3,6 +3,7 @@ import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../../../ty
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
+import { floorSubjectPath } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<level>:<rule>:<subject>`. */
@@ -62,8 +63,10 @@ function askedPath(ask: Ask): string | null {
     case 'sensitive_path':
       return isSecretFileSubject(ask.subject) ? ask.subject.slice(SECRET_FILE_PREFIX.length) : ask.subject
     case 'read_scope':
-    case 'write_scope':
       return ask.subject
+    // A delete at the floor is asked about as `delete:<folder>` or `delete-tree:<folder>` (destructive-path-rule.ts).
+    case 'write_scope':
+      return floorSubjectPath(ask.subject) ?? ask.subject
     // `read:<path>` or `write:<path>` (filesystem-policy.ts).
     case 'filesystem_policy':
       return ask.subject.slice(ask.subject.indexOf(':') + 1)

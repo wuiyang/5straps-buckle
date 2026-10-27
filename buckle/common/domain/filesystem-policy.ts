@@ -70,9 +70,11 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
     id: 'filesystem_policy',
     evaluate({ effect, grants }) {
       // A secret file a reference names is read, by Buckle, as any read of it is judged (docs/secrets.md).
-      if (effect.kind !== 'read_path' && effect.kind !== 'write_path' && effect.kind !== 'secret_file') return null
-      const operation = effect.kind === 'write_path' ? 'write' : 'read'
-      const decision = filesystemPathDecision({ ...input, path: effect.path, operation })
+      if (effect.kind !== 'read_path' && effect.kind !== 'write_path' && effect.kind !== 'delete_path' && effect.kind !== 'secret_file') return null
+      // A delete is a write; a folder removed or moved whole meets a rule on any path beneath it too.
+      const operation = effect.kind === 'write_path' || effect.kind === 'delete_path' ? 'write' : 'read'
+      const own = filesystemPathDecision({ ...input, path: effect.path, operation })
+      const decision = own === 'deny' || effect.kind !== 'delete_path' ? own : restrictionBeneath({ ...input, path: effect.path }) ?? own
       const subject = `${operation}:${effect.path}`
       if (decision === 'deny') return deny('filesystem_policy', subject, `Workspace policy denies ${operation} access`)
       if (decision !== 'ask') return null
@@ -80,6 +82,21 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
       return ask('filesystem_policy', subject, `Workspace policy requires approval for ${operation} access`, ['once'])
     },
   }
+}
+
+/**
+ * The strictest write rule on a path inside `path`, not covering it: `deny` before `ask`, or null for none. A folder
+ * removed with everything in it takes those paths with it, so their rules judge it too.
+ */
+function restrictionBeneath(input: { root: string; path: string; policy: WorkspacePolicy; caseInsensitive?: boolean; platform?: NodeJS.Platform }): 'deny' | 'ask' | null {
+  const platform = input.platform ?? process.platform
+  const met = (input.policy.filesystem?.rules ?? []).flatMap((rule) => {
+    if (rule.write !== 'deny' && rule.write !== 'ask') return []
+    const named = rulePath(input.root, rule.path, platform)
+    const targets = [named, canonicalPolicyPath(named, platform)]
+    return targets.some(target => isInsideComparable(input.path, target, input.caseInsensitive, platform)) ? [rule.write] : []
+  })
+  return met.includes('deny') ? 'deny' : met.includes('ask') ? 'ask' : null
 }
 
 export async function projectFilesystemSandbox(input: { root: string; policy: WorkspacePolicy; signal?: AbortSignal; platform?: NodeJS.Platform }) {
