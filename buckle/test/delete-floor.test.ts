@@ -48,7 +48,7 @@ describe('a delete at the destructive floor', () => {
     const outcome = evaluate([removed(`${WORKSPACE}/src/a.ts`)], { write_scope: [WORKSPACE] })
     expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete:${WORKSPACE}/src`, offeredScopes: ['once', 'session', 'always'] }] })
     if (outcome.kind !== 'ask') return
-    expect(outcome.asks[0]!.reason).toBe(`Deleting ${WORKSPACE}/src/a.ts always asks a person, whatever the folder's write grant says`)
+    expect(outcome.asks[0]!.reason).toBe(`Deleting ${WORKSPACE}/src/a.ts asks a person, whatever the folder's write grant says`)
   })
 
   it('asks once for two entries of one folder, and once per folder otherwise', () => {

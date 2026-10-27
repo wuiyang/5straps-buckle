@@ -34,7 +34,9 @@ buckle fs patch src/app.ts --old "const x = 1" --new "const x = 2"
 `fs_patch` requires each `oldText` to match exactly once unless `replaceAll` is set, and
 writes nothing if any edit fails to match. Prefer it over `fs_write` for edits, because it cannot
 silently clobber a file that changed underneath you. `fs_apply_patch` takes a unified diff for
-one or more files instead; every hunk must match exactly, or nothing is written.
+one or more files instead; every hunk must match exactly, or nothing is written. A hunk with
+less context before it than after, or after than before, must stand at the start or the end of
+the file, so give a change in the middle the same context on both sides.
 
 A write that empties a file, or cuts it to under half, asks a person unless you read that
 file in this session first; so does one call that rewrites more than ten existing files.
@@ -47,7 +49,8 @@ buckle fs move draft.md docs/            # into docs, keeping the name
 buckle fs move draft.md final.md --replace
 ```
 
-`fs_delete` always returns `approval_required`, even where writes are granted: relay it.
+`fs_delete` returns `approval_required` even where writes are granted, unless a person granted
+deletes in that folder: relay it.
 A link is removed, never followed; a folder that holds entries needs `recursive`. A missing
 path is reported, not an error. Never empty a file with `fs_write` to get rid of it.
 `fs_move` refuses a `to` that exists unless `replace` is set, and makes no folder; moving a

@@ -54,6 +54,6 @@ function floorAsk(effect: ResolvedEffect, paths: PathView): { subject: string; r
   if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says` }
   if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says` }
   if (effect.kind !== 'delete_path' || !effect.floor) return null
-  if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) always asks a person, whatever the folder's write grant says` }
-  return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} always asks a person, whatever the folder's write grant says` }
+  if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) asks a person, whatever the folder's write grant says` }
+  return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} asks a person, whatever the folder's write grant says` }
 }
