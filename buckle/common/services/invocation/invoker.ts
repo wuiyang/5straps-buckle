@@ -1,8 +1,8 @@
 import { deniedSubjects } from '../../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
-import { existsSync, realpathSync } from 'node:fs'
-import { isAbsolute } from 'pathe'
+import { existsSync, lstatSync, realpathSync } from 'node:fs'
+import { basename, isAbsolute } from 'pathe'
 import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
@@ -28,7 +28,7 @@ import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
 import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
-import { nativePath, parentDirectory } from '../../domain/paths.js'
+import { childPath, nativePath, parentDirectory } from '../../domain/paths.js'
 import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
 import { secretFileEffects } from '../secrets/secret-file.js'
 import { checkSecrets, runWithSecrets, type FilledSecrets } from '../secrets/call-secrets.js'
@@ -275,7 +275,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           }
           // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
           const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
-          const roots = [...options.historyRoots?.() ?? [], ...writes.map(effect => { let path = effect.kind === 'delete_path' || effect.entry ? effect.directory : effect.path; while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path); return nativePath(realpathSync(path)) })]
+          const roots = [...options.historyRoots?.() ?? [], ...writes.map(checkpointRoot)]
           const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
@@ -867,6 +867,20 @@ function buildLookup(input: {
 function readsFreely(input: { options: InvokerOptions; tool: string; sessionId: string; target: string }): boolean {
   const grants = buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] })
   return input.options.permissions.evaluate({ tool: input.tool, effects: [{ kind: 'read_path', path: input.target, directory: parentDirectory(input.target) }], grants }).kind === 'allow'
+}
+
+/**
+ * Where a write or delete is checkpointed from. An entry that exists (a delete, a move's source, a landing that replaces
+ * one) is its own root, its folder resolved and its own name not followed: a link is recorded as a link, and a folder
+ * elsewhere on the disk is not walked, nor refused for what it holds that history cannot restore. A path that does not
+ * exist yet is covered from the nearest folder that does, as its first write may make it.
+ */
+function checkpointRoot(effect: Extract<ResolvedEffect, { kind: 'write_path' | 'delete_path' }>): string {
+  const entry = effect.kind === 'delete_path' || effect.entry === true
+  if (entry && lstatSync(effect.path, { throwIfNoEntry: false }) !== undefined) return childPath(nativePath(realpathSync(effect.directory)), basename(effect.path))
+  let path = entry ? effect.directory : effect.path
+  while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path)
+  return nativePath(realpathSync(path))
 }
 
 async function executeWithTimeout(input: {

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
@@ -151,6 +151,34 @@ describe('fs_delete removes each kind of entry as itself', () => {
     const description = describeCall({ tool: 'fs_delete', args: { paths }, cwd: '/workspace' })
     for (const path of paths) expect(description).toContain(`"${path}"`)
     expect(description).not.toContain('more')
+  })
+})
+
+describe('the checkpoint of a delete outside the workspace', () => {
+  it('covers the entry alone, so a hard-linked pair beside it does not stop an approved delete, and a restore brings it back', async () => {
+    const { runtime, workspace, root } = await node()
+    mkdirSync(join(root, 'outside'))
+    writeFileSync(join(root, 'outside/x.txt'), 'outside content')
+    writeFileSync(join(root, 'outside/h1'), 'linked')
+    linkSync(join(root, 'outside/h1'), join(root, 'outside/h2'))
+    expect(await approved(runtime, 'fs_delete', { paths: ['../outside/x.txt'] })).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
+    expect(existsSync(join(root, 'outside/x.txt'))).toBe(false)
+    const [checkpoint] = (await runtime.history.list()).filter(item => item.tool === 'fs_delete')
+    await runtime.history.restore(checkpoint!.id)
+    expect(readFileSync(join(root, 'outside/x.txt'), 'utf8')).toBe('outside content')
+    expect(existsSync(workspace)).toBe(true)
+  })
+
+  it('records a link as a link and never follows it', async () => {
+    const { runtime, root } = await node()
+    mkdirSync(join(root, 'outside'))
+    writeFileSync(join(root, 'outside/target.txt'), 'target')
+    symlinkSync('target.txt', join(root, 'outside/link.txt'))
+    expect(await approved(runtime, 'fs_delete', { paths: ['../outside/link.txt'] })).toMatchObject({ outcome: 'ok' })
+    const [checkpoint] = (await runtime.history.list()).filter(item => item.tool === 'fs_delete')
+    await runtime.history.restore(checkpoint!.id)
+    expect(readlinkSync(join(root, 'outside/link.txt'))).toBe('target.txt')
+    expect(readFileSync(join(root, 'outside/target.txt'), 'utf8')).toBe('target')
   })
 })
 
