@@ -76,7 +76,7 @@ export function settleDelete(input: z.output<typeof schemas.deleteInput>, contex
         if (inside && readdirSync(entry.path).length > 0) throw new ToolInputError(`${named} is a folder that holds entries: send recursive: true to delete it and everything in it`, { code: FOLDER_NOT_EMPTY })
         return { kind }
       }
-      return { kind, tree: inside ? counted(entry, named) : { counted: false } }
+      return { kind, tree: inside ? counted(entry, named, true) : { counted: false } }
     }),
   }
 }
@@ -131,22 +131,39 @@ async function deleteOne(input: { named: string; judged: SettledDelete['entries'
     directory = openRealDirectory(entry.directory, { refusal: { shown: named, outcome: 'nothing was removed' } })
   } catch (error) {
     if (isMissingPathError(error)) return missing
-    throw error
+    if (error instanceof ToolInputError) throw error
+    throw notRemoved(named, error, false)
   }
   try {
     const kind = kindOf(lstatOrNone(directory.child(entry.name)))
     if (kind === 'missing') return missing
     if (kind === 'other') throw notRemovable(named)
     if (kind !== input.judged.kind) throw new ToolInputError(`${named} is a ${kind} now, not the ${input.judged.kind} its permission check saw, so nothing was removed; send the call again`, { code: 'PERMISSION_DENIED' })
-    await removeBeneath({ directory, name: entry.name, shown: named, tree: input.recursive && kind === 'directory', ...(context.io ? { io: context.io } : {}), ...(context.platform ? { platform: context.platform } : {}) })
+    const tree = input.recursive && kind === 'directory'
+    try {
+      await removeBeneath({ directory, name: entry.name, shown: named, tree, ...(context.io ? { io: context.io } : {}), ...(context.platform ? { platform: context.platform } : {}) })
+    } catch (error) {
+      // What the system refuses (a read-only folder, a lock) is this path's refusal, not the batch's failure: the paths removed before it are reported.
+      if (error instanceof ToolInputError || (error instanceof Error && error.name === 'AbortError')) throw error
+      // A folder removed whole that stopped part way is gone in part: what it held is no longer known to the session.
+      if (tree) context.relocated?.(entry.path, null)
+      throw notRemoved(named, error, tree)
+    }
     context.relocated?.(entry.path, null)
     return { path: named, removed: true }
   } finally { directory.close() }
 }
 
-function counted(entry: Entry, named: string): TreeCount {
+function counted(entry: Entry, named: string, removal = false): TreeCount {
   const parent = openRealDirectory(entry.directory, { refusal: { shown: named, outcome: 'nothing was removed' } })
-  try { return countTree(parent, entry.name, named) } finally { parent.close() }
+  try { return countTree(parent, entry.name, named, removal ? {} : undefined) } finally { parent.close() }
+}
+
+/** A removal the system refused (EACCES, EPERM, EROFS) or failed, as the path's own refusal; a folder removed whole may be gone in part. */
+function notRemoved(named: string, error: unknown, tree: boolean): ToolInputError {
+  const code = error instanceof Error && 'code' in error ? String(error.code) : 'an error'
+  const refused = ['EACCES', 'EPERM', 'EROFS'].includes(code)
+  return new ToolInputError(`${named} could not be removed (${code})${tree ? ', so what it holds may be removed only in part' : ''}`, { code: refused ? 'PERMISSION_DENIED' : 'REMOVAL_FAILED' })
 }
 
 function notRemovable(named: string): ToolInputError {

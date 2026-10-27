@@ -23,6 +23,8 @@ const SYSTEM_REMOVE: RemoveIo = { unlink: unlinkSync, rmdir: rmdirSync, pause: m
 
 /** A folder that holds entries, removed without `recursive`. */
 export const FOLDER_NOT_EMPTY = 'FOLDER_NOT_EMPTY'
+/** A folder with an entry removal would stop at, found when it was counted: nothing was removed. */
+export const FOLDER_NOT_REMOVABLE = 'FOLDER_NOT_REMOVABLE'
 
 /**
  * Removes `name` from a folder reached without following a link: a file or a link is unlinked, the link itself and never
@@ -44,24 +46,32 @@ export async function removeBeneath(input: { directory: PinnedDirectory; name: s
 
 /**
  * What a folder holds, counted from beneath its parent without following a link, up to MAX_COUNTED_ENTRIES and `more`
- * past that: every entry that is not a folder counts as a file, a link included.
+ * past that: every entry that is not a folder counts as a file, a link included. With `removal` set, as the count that
+ * precedes a delete, an entry whose name Buckle would read as another path is refused (FOLDER_NOT_REMOVABLE) while
+ * nothing is removed yet, where the removal itself would stop at it part way through (`platform`: the host's unless a
+ * test imitates another).
  */
-export function countTree(parent: PinnedDirectory, name: string, shown: string): Extract<TreeCount, { counted: true }> {
+export function countTree(parent: PinnedDirectory, name: string, shown: string, removal?: { platform?: NodeJS.Platform }): Extract<TreeCount, { counted: true }> {
   const count = { files: 0, folders: 0, more: false }
-  const walk = (directory: PinnedDirectory, depth: number): void => {
+  const walk = (directory: PinnedDirectory, depth: number, trail: string): void => {
     for (const child of readdirSync(directory.self, { withFileTypes: true })) {
       if (count.files + count.folders >= MAX_COUNTED_ENTRIES) { count.more = true; return }
+      if (removal && !isPlainName(child.name, removal.platform)) throw unreadableName(`${trail}/${child.name}`, 'nothing was removed')
       const descend = child.isDirectory() && isPlainName(child.name) && depth < MAX_REMOVE_DEPTH
       if (!child.isDirectory()) { count.files++; continue }
       count.folders++
       if (!descend) continue
       const below = openDirectoryBeneath(directory, child.name, shown)
-      try { walk(below, depth + 1) } finally { below.close() }
+      try { walk(below, depth + 1, `${trail}/${child.name}`) } finally { below.close() }
     }
   }
   const directory = openDirectoryBeneath(parent, name, shown)
-  try { walk(directory, 0) } finally { directory.close() }
+  try { walk(directory, 0, shown) } finally { directory.close() }
   return { counted: true, ...count }
+}
+
+function unreadableName(entry: string, outcome: string): ToolInputError {
+  return new ToolInputError(`${entry} has a name Buckle would read as another path, so it cannot be removed by name and ${outcome}: remove that entry another way first`, { code: FOLDER_NOT_REMOVABLE })
 }
 
 interface Removal { io: RemoveIo; platform: NodeJS.Platform }
@@ -72,7 +82,7 @@ async function removeTree(input: Removal & { parent: PinnedDirectory; name: stri
   try {
     for (const child of readdirSync(directory.self, { withFileTypes: true })) {
       // A name read as another path (a backslash on Linux, a dot or a space that ends it on Windows) is never removed by name.
-      if (!isPlainName(child.name, input.platform)) throw new ToolInputError(`${input.shown} holds an entry whose name Buckle would read as another path, so it was removed only in part`)
+      if (!isPlainName(child.name, input.platform)) throw unreadableName(`${input.shown}/${child.name}`, 'the folder was removed only in part')
       const path = directory.child(child.name)
       if (lstatSync(path).isDirectory()) await removeTree({ ...input, parent: directory, name: child.name, shown: `${input.shown}/${child.name}`, depth: input.depth + 1 })
       else await retried(input, `${input.shown}/${child.name}`, () => input.io.unlink(path))

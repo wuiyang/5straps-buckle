@@ -199,6 +199,41 @@ describe('deletePaths', () => {
     expect(existsSync(join(root, 'c.txt'))).toBe(true)
   })
 
+  it('reports a removal the system refuses as that path\'s refusal, keeping the paths removed before it, and stops there', async () => {
+    const { root, paths } = workspaceOf()
+    mkdirSync(join(root, 'locked'))
+    for (const name of ['a.txt', 'locked/b.txt', 'c.txt']) writeFileSync(join(root, name), name)
+    const input = deleteInput.parse({ paths: ['a.txt', 'locked/b.txt', 'c.txt'] })
+    const refuse = (code: string) => Object.assign(new Error(`${code}: permission denied`), { code })
+    const io = { unlink: (path: string) => { if (path.endsWith('b.txt')) throw refuse('EACCES'); rmSync(path) }, rmdir: () => {}, pause: async () => {} }
+    expect(await deletePaths(input, { paths, io }, settleDelete(input, { paths }))).toEqual({ removed: 1, results: [
+      { path: 'a.txt', removed: true },
+      { path: 'locked/b.txt', removed: false, refused: 'locked/b.txt could not be removed (EACCES)', code: 'PERMISSION_DENIED' },
+      { path: 'c.txt', removed: false, notAttempted: true },
+    ] })
+    expect(existsSync(join(root, 'a.txt'))).toBe(false)
+    expect(existsSync(join(root, 'c.txt'))).toBe(true)
+    // A folder removed whole that stops part way says it may be gone in part, and a code other than a refusal keeps its own.
+    mkdirSync(join(root, 'tree'))
+    writeFileSync(join(root, 'tree/x.txt'), 'x')
+    const whole = deleteInput.parse({ paths: ['tree'], recursive: true })
+    const failing = { unlink: () => { throw refuse('EIO') }, rmdir: () => {}, pause: async () => {} }
+    expect(await deletePaths(whole, { paths, io: failing }, settleDelete(whole, { paths }))).toEqual({ removed: 0, results: [
+      { path: 'tree', removed: false, refused: 'tree could not be removed (EIO), so what it holds may be removed only in part', code: 'REMOVAL_FAILED' },
+    ] })
+  })
+
+  it.skipIf(process.platform === 'win32')('refuses a folder holding an entry it cannot remove by name before removing anything', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'build'))
+    for (const name of ['a.js', 'b.js', 'c\\d.js', 'z.js']) writeFileSync(join(workspace, 'build', name), name)
+    const response = await call(runtime, 'fs_delete', { paths: ['build'], recursive: true })
+    expect(errorOf(response)).toMatchObject({ code: 'FOLDER_NOT_REMOVABLE', message: 'build/c\\d.js has a name Buckle would read as another path, so it cannot be removed by name and nothing was removed: remove that entry another way first' })
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'build/a.js'), 'utf8')).toBe('a.js')
+    expect(readFileSync(join(workspace, 'build/z.js'), 'utf8')).toBe('z.js')
+  })
+
   it('removes a file Windows held for a moment once it lets go', async () => {
     const { root, paths } = workspaceOf()
     writeFileSync(join(root, 'a.txt'), 'a')
