@@ -35,8 +35,9 @@ exist, a trailing slash on a file, a folder where the file would go, and a link 
 A `<to>` that is a link to a file is written through, as `cp` does.
 
 The new file takes the mode of the file it replaces, exactly, so a private file never becomes one
-that others read. Where nothing is replaced, the file is made readable by its owner alone, because a
-workspace file may be a secret.
+that others read. Where nothing is replaced, the new file gets the mode any new file gets in that
+folder, as a shell redirect or `touch` would make it: `0666` narrowed by the umask, so `644` under
+the usual `022`.
 
 A rename onto a file that Windows holds open is tried again a few times. A file still held is
 named in the refusal. Ctrl-C and `SIGTERM` remove the new file of a download under way and end the

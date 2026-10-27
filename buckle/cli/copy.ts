@@ -46,8 +46,10 @@ Exits 0 once copied, 1 when the node or the copy refuses, 2 on a command line it
 const CONNECT_TIMEOUT_MS = 30_000
 /** How often a copy waiting for a person is sent again; the node holds each one for its own wait first. */
 const POLL_MS = 2_000
-/** The mode a downloaded file is made with where none is replaced: owner only, as the workspace's file may be a secret. */
-const NEW_FILE_MODE = 0o600
+/** The mode a download's partial file has while it fills where nothing is replaced: owner only, as the workspace's file may be a secret. */
+const PARTIAL_MODE = 0o600
+/** The mode a new file gets in any folder before the umask narrows it, as a shell redirect or `touch` makes one. */
+const ORDINARY_MODE = 0o666
 /**
  * The signals that stop a copy where it stands, which remove a download's new file before the process ends. SIGHUP is not
  * one: a handler for it would end `nohup buckle cp` on a hangup that Node would otherwise let it ignore. A hangup without
@@ -289,22 +291,25 @@ async function getOnce(client: NodeClient, input: { workspace: string; path: str
 /**
  * The response's bytes into a new file beside `target`, counted and hashed as they land, and renamed onto it only when
  * every byte the node declared arrived with the digest it named; on anything else the new file is removed. The new file
- * has the mode of the file it replaces, exactly, so a private file is never replaced by one others read, and is owner
- * only where there is none to replace, as the node side's replaceBeneath keeps it (re-checks of 2026-10-14). A signal that
- * stops the copy removes it too (guardSignals).
+ * has the mode of the file it replaces, exactly, so a private file is never replaced by one others read. Where there is
+ * none to replace it has the ordinary mode of a new file, 0666 under the umask as the owner ruled on 2026-10-27; it is
+ * owner only while it fills, so no secret bytes sit readable beside the target if the copy is cut off, and gets that mode
+ * just before the rename. A signal that stops the copy removes it too (guardSignals).
  */
 async function receive(input: { response: IncomingMessage; size: number; digest: string; target: string; renameIo?: RenameIo }): Promise<void> {
   const existing = lstatSync(input.target, { throwIfNoEntry: false })
-  const mode = existing === undefined ? NEW_FILE_MODE : existing.mode & 0o777
+  const replacedMode = existing === undefined ? undefined : existing.mode & 0o777
   const partial = join(dirname(input.target), `.buckle-cp-${randomUUID()}.part`)
-  const handle = await open(partial, 'wx', mode).catch((error: unknown) => { throw unwritable(input.target, error) })
+  const handle = await open(partial, 'wx', replacedMode ?? PARTIAL_MODE).catch((error: unknown) => { throw unwritable(input.target, error) })
   partials.add(partial)
   let kept = false
   try {
     // The kernel only narrows the mode a file is created with; the old file's own is set exactly. A folder that holds no
     // modes (a FAT mount) refuses that, and the file is then no wider than the one it replaces, which is all that is owed.
-    if (existing !== undefined) await handle.chmod(mode).catch(() => undefined)
+    if (replacedMode !== undefined) await handle.chmod(replacedMode).catch(() => undefined)
     await land({ response: input.response, size: input.size, digest: input.digest, handle, target: input.target })
+    // A refusal leaves the owner-only file, which is narrower than the ordinary mode and so harmless. process.umask() reads the mask and leaves it.
+    if (replacedMode === undefined) await handle.chmod(ORDINARY_MODE & ~process.umask()).catch(() => undefined)
     await handle.close()
     await replaceDownload(partial, input.target, input.renameIo)
     kept = true

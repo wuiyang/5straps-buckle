@@ -256,15 +256,20 @@ describe('buckle cp out of a workspace, onto what is here', () => {
     expect(readdirSync(folder).sort()).toEqual(['app.tgz', 'closed.env', 'open.env'])
   })
 
-  it('makes a new file owner-only, as the node\'s file may be a secret, whatever the umask', async () => {
+  it.each([
+    { umask: '022', shown: '644', mask: 0o022, expected: 0o644 },
+    { umask: '077', shown: '600', mask: 0o077, expected: 0o600 },
+    { umask: '000', shown: '666', mask: 0o000, expected: 0o666 },
+  ])('a new file takes the folder\'s ordinary mode: under umask $umask it is $shown', async ({ mask, expected }) => {
     const content = Buffer.from('a new file')
     const { folder } = local()
     const target = join(folder, 'new.bin')
-    await underUmask(0o000, async () => {
+    await underUmask(mask, async () => {
       expect((await cp(['site:new.bin', target, '--node', (await fakeNode([sent(content)])).url])).exitCode).toBe(0)
     })
     expect(readFileSync(target)).toEqual(content)
-    expect(modeOf(target)).toBe(0o600)
+    expect(modeOf(target)).toBe(expected)
+    expect(readdirSync(folder).sort()).toEqual(['app.tgz', 'new.bin'])
   })
 
   it('still replaces a file on a folder that holds no modes, where the call that sets the mode is refused, no wider than it was', async () => {
