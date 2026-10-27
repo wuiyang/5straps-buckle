@@ -455,7 +455,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     browserHeldBy: () => browserHeldBy?.() ?? null,
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null }), tools: manifestTools() }),
+    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null, searches: toolDenial('fs_search_content') === null }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
       return reason ? [{ name: tool.name, reason }] : []
@@ -986,6 +986,8 @@ function buildManifest(input: {
   skills: LoadedSkill[]
   /** Whether the tool policy lets fs_receive run, which a copy into the workspace needs. */
   copies: boolean
+  /** Whether the tool policy lets fs_search_content run, which the manifest's `searcher` says what runs. */
+  searches: boolean
 }): HarnessManifest {
   return {
     protocolVersion: PROTOCOL_VERSION,
@@ -1017,10 +1019,10 @@ function buildManifest(input: {
   }
 }
 
-/** The manifest's `searcher`, where the registry offers fs_search_content and the fs pack names what runs it. */
-function searcherOf(input: { packs: Pack[]; registry: ToolRegistry }): { searcher?: 'rg' | 'builtin' } {
+/** The manifest's `searcher`, where the registry offers fs_search_content, the tool policy lets it run, and the fs pack names what runs it. */
+function searcherOf(input: { packs: Pack[]; registry: ToolRegistry; searches: boolean }): { searcher?: 'rg' | 'builtin' } {
   const searcher = input.packs.find(pack => pack.searcher !== undefined && pack.tools.some(tool => tool.capability.name === 'fs_search_content'))?.searcher
-  return searcher !== undefined && input.registry.has('fs_search_content') ? { searcher } : {}
+  return searcher !== undefined && input.searches && input.registry.has('fs_search_content') ? { searcher } : {}
 }
 
 /**

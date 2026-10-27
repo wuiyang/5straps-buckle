@@ -54,6 +54,15 @@ describe('the manifest and the tool policy', () => {
     expect(manifest.tools.map(tool => tool.name)).toEqual(expect.arrayContaining([...NEW_TOOLS]))
   })
 
+  it('leaves the manifest\'s searcher out where the tool policy denies fs_search_content, as it leaves the tool out', async () => {
+    const { runtime } = await node()
+    expect(runtime.manifest().limits.searcher).toBeDefined()
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), tools: { deny: ['fs_search_content'] } })
+    const manifest = runtime.manifest()
+    expect(manifest.tools.map(tool => tool.name)).not.toContain('fs_search_content')
+    expect(manifest.limits.searcher).toBeUndefined()
+  })
+
   it.each(NEW_TOOLS)('reads a denial of fs_write as a denial of %s, and an allowlist must name it', (tool) => {
     expect(isToolAllowed({ tools: { deny: ['fs_write'] } }, tool)).toBe(false)
     expect(isToolAllowed({ tools: { deny: [] } }, tool)).toBe(true)
