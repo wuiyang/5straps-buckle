@@ -65,7 +65,7 @@ The log keeps the shape of a call, not its content:
   host, or command;
 - identifiers are cut to 200 characters.
 
-Two exceptions keep text as it is. In `judge`, the thorough model's reasoning about the command
+Three exceptions keep text as it is. In `judge`, the thorough model's reasoning about the command
 and its code is kept as it wrote it, clipped at 2,000 characters, with credentials hidden.
 
 A file copy is the other. Its entry (`fs_receive` for a copy in, `fs_send` for a copy out, from
@@ -73,6 +73,11 @@ A file copy is the other. Its entry (`fs_receive` for a copy in, `fs_send` for a
 characters, the byte count, and the file's sha256, so the log says which file moved. It never keeps
 the content. A digest can be guessed for a short or predictable file, and Rings reports carry the
 entry as the log keeps it.
+
+The file tools that remove or reshape files are the third. `fs_delete` keeps every path it was
+asked to remove, `fs_move` both of its paths, and `fs_apply_patch` every file the diff names, each
+as written, with credentials hidden and at most 1,024 characters. They never keep content or the
+diff, and Rings reports carry them too.
 
 Apart from those, the log says that `fs_write` wrote something and which gate asked, not what it wrote or
 where. Approvers see the whole call when they decide; the log does not keep it.

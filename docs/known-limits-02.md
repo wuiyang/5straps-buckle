@@ -13,7 +13,7 @@ its commands write, and the forge pack.
   environment validator, from where `PATH`, or a place it looks after `PATH`, leads, and
   refuses one an agent could have written: one found in, or through a link in, any workspace or
   scratch root this node knows, or the source of any workspace's read-write
-  [mount](mounts.md), whichever runs it. A read-only mount's source is no such place, so
+  [mount](mounts.md), whichever workspace runs it. A read-only mount's source is no such place, so
   a program there runs. `npx` and `pnpm exec` put a workspace's `node_modules/.bin`
   first on `PATH`, so an `rg` there leaves content search on Buckle's walker in every workspace, and a
   `bwrap` there leaves no sandbox: the shell tools are withheld rather than run without one. A node

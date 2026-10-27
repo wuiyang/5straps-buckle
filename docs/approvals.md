@@ -52,7 +52,7 @@ and `git checkout --force`. In a shell body it catches a pipe into a shell, a fo
 and asks about an `eval` of text that only exists at run time and a call past the
 [reading limits](policy-02.md#reading-limits).
 
-`buckle policy destructive-command '<glob>'` adds to the floor; none is removed.
+`buckle policy destructive-command '<glob>'` adds to the floor, and nothing removes a built-in.
 The command floor never offers `always`, and its subject is the exact command with its
 arguments' digest, so approving `rm -rf build` does not approve `rm -rf /`. The
 [file floor](policy-04.md) offers `always`.

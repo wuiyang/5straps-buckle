@@ -19,7 +19,7 @@ that cannot run here is withheld with a reason rather than failing at call time,
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
 
 The file tools change files in these ways. `fs_apply_patch` applies a unified diff to several
-files, all or nothing. `fs_delete` removes files, and a folder only with `recursive: true`.
+files, checking every hunk before it writes any. `fs_delete` removes files, and a folder only with `recursive: true`.
 `fs_move` renames or moves, and replaces a file at `to` only with `replace: true`. Each change is
 checkpointed, so [`buckle history restore`](sandbox-and-tools-02.md#change-history) brings it back.
 The [file floor](policy-04.md) asks before some of these calls. Without `rg`, `fs_search_content`
