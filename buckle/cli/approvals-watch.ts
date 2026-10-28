@@ -4,7 +4,7 @@ import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/pro
 import { describeQuestion, marked } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval-deadline.js'
-import { approveCommand, denyCommand, describeAskOfShownCall, workspaceLabel } from '../common/domain/approval-instruction.js'
+import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
@@ -21,10 +21,16 @@ export const WATCH_POLL_MS = { first: 500, idle: 2_000 }
  * A grant needs its own key. Enter and anything unrecognised grant nothing and ask again. A
  * persisted grant takes the whole word, so no stray single key can write one.
  */
-const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string }> = [
+const SCOPE_KEYS: Array<{ key: string; scope: GrantScope; label: string; wider?: true }> = [
   { key: 'o', scope: 'once', label: 'once' },
   { key: 's', scope: 'session', label: 'session' },
   { key: 'always', scope: 'always', label: 'always' },
+]
+
+/** The wider subject's keys (the delete policy brief): the session or always, for a delete's folder and its subfolders. */
+const WIDER_KEYS: typeof SCOPE_KEYS = [
+  { key: 'sb', scope: 'session', label: 'session, folder and below', wider: true },
+  { key: 'always-below', scope: 'always', label: 'always, folder and below', wider: true },
 ]
 
 /** One workspace's queue a watch asks from. */
@@ -166,7 +172,7 @@ async function askOne(context: AskContext): Promise<Ending> {
   // with above. An ask recorded before this build shows its request and the note, and offers denials only: nobody
   // approves an action they were not shown whole (review L9).
   const shown = call?.complete ? call : undefined
-  const offered = shown ? SCOPE_KEYS.filter(entry => request.offeredScopes.includes(entry.scope)) : []
+  const offered = shown ? [...SCOPE_KEYS, ...(request.widerSubject === undefined ? [] : WIDER_KEYS)].filter(entry => request.offeredScopes.includes(entry.scope)) : []
   const prompt = `${marked(context, [''])[0]}  ${[...offered.map(entry => `${entry.key}) ${request.rule === 'sensitive_path' && entry.scope === 'once' ? 'allow once' : entry.label}`), 'd) deny', ...(request.rule === 'sensitive_path' ? ['ds) deny this session', 'da) always deny'] : []), 'n) skip'].join('  ')} > `
   const question = { ...request, workspaceId: context.workspaceId, ...(context.workspaceName === undefined ? {} : { workspaceName: context.workspaceName }), ...(context.judgeApproves ? { approves: context.judgeApproves() } : {}), ...(shown ? { call: shown } : {}) }
   output.write(`${shown && context.shownWith !== undefined ? `\n${marked(question, describeAskOfShownCall(question, context.shownWith)).join('\n')}\n` : describeQuestion(question)}${marked(question, [`  token: ${request.token}`])[0]}\n`)
@@ -220,7 +226,8 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
   if (request.rule === 'sensitive_path' && (answer === 'ds' || answer === 'da')) return { token: request.token, approved: false, scope: answer === 'ds' ? 'session' : 'always' }
   if (answer === 'd') return { token: request.token, approved: false, scope: 'once' }
   const chosen = offered.find(entry => entry.key === answer)
-  return chosen ? { token: request.token, approved: true, scope: chosen.scope } : null
+  if (!chosen) return null
+  return { token: request.token, approved: true, scope: chosen.scope, ...(chosen.wider && request.widerSubject !== undefined ? { subject: request.widerSubject } : {}) }
 }
 
 /**
@@ -235,7 +242,7 @@ async function record(context: AskContext, decision: ApprovalDecision): Promise<
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return
   }
-  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
+  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${result.granted === undefined ? '' : ` for ${printable(result.granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
 }
 
 /** The workspace a source's commands name: its name where the source carries one, else its id. */

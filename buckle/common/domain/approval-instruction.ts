@@ -212,6 +212,8 @@ export interface ShownAsk {
   tool: string
   rule: PermissionRuleId
   subject: string
+  /** What a person may grant for the session or always in place of `subject`: a delete's folder and its subfolders. */
+  widerSubject?: string
   reason: string
   expiresAt: string
   /** The workspace the ask waits in, which every approver names with its name (the workspace-model brief, item 6). */
@@ -272,6 +274,7 @@ function askHead(ask: ShownAsk, expiry: (expiresAt: string) => string = describe
     `${printable(ask.tool)} needs approval${ask.workspaceId === undefined ? '' : ` in workspace ${workspaceLabel(ask.workspaceId, ask.workspaceName)}`}`,
     `  ${printable(ask.reason)}`,
     `  subject: ${printable(ask.subject)}`,
+    ...(ask.widerSubject === undefined ? [] : [`  or:      ${printable(ask.widerSubject)} (every delete in that folder and its subfolders, for the session or always)`]),
     `  ${expiry(ask.expiresAt)}`,
   ]
 }

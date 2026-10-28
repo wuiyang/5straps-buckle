@@ -6,7 +6,7 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
 import { askAtTerminal } from './ask.js'
 import { parseArgs } from 'node:util'
-import type { InvokeResponse } from '@5straps/protocol'
+import type { GrantScope, InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { approveCommand, denyCommand, describeAction, describeApprovalRequest, describeAsk, FLOOR_WARNING, judgeLine, judgeNoteFor, printable, RECORDED_BEFORE_NOTE, sameCallNote, workspaceArgument, workspaceLabel } from '../common/domain/approval-instruction.js'
@@ -14,6 +14,7 @@ import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -324,7 +325,7 @@ function printUsage(): CliResult {
                                    --approve-if-safe approves an interpreter request, or an allowed command the
                                    quick stage turned into an ask, once where the thorough stage rates it safe
                                    at 0.8 or above, and never one at the destructive floor
-  buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]
+  buckle approve <token> [--scope once|session|always] [--host '*.example.com' | --below] [--deny] [--workspace <name> | --all]
                                    Shows the whole action, then approves only once you confirm at a terminal
   buckle check-url <url|host> [--session <id>] [--workspace <name>]   Exits 0 approved, 1 denied, 3 asks, 4 not listed
   buckle grants list | revoke <id>
@@ -640,10 +641,10 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
  * nothing is approved (a denial still is), and an ask recorded before this build, whose whole call was never
  * kept, can only be denied (review H2).
  */
-const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com'] [--deny] [--workspace <name> | --all]"
+const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com' | --below] [--deny] [--workspace <name> | --all]"
 
 function approveArguments(argv: string[]) {
-  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' } }, allowPositionals: true })
+  return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, below: { type: 'boolean' } }, allowPositionals: true })
 }
 
 async function approve(input: CommandInput & { confirm: Confirm | null }): Promise<CliResult> {
@@ -659,20 +660,27 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   const { runtime } = input
   // The named ask alone, and its call file alone, however many asks its call made (review M1 of the slice 5 re-review).
   const ask = runtime.approvalService.waitingAsk(token)
+  // --below grants the ask's wider subject (the delete policy brief): a delete's folder and its subfolders, for the session or always.
+  const below = values.below === true ? belowSubject({ ask, token, scope: scope.data, deny: values.deny === true, host: values.host !== undefined }) : null
+  if (below !== null && 'refusal' in below) return fail(below.refusal)
   if (ask) process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.config.serverId, runtime }).join('\n')}\n`)
   // A token no longer waiting reaches the queue as it is: it can repeat the decision already recorded, and decide nothing new.
   if (values.deny !== true && ask) {
     if (!ask.call?.complete) return fail(`Not approved: ${printable(token)} was ${RECORDED_BEFORE_NOTE}. Deny it with ${denyCommand({ request: ask.request, ...named(runtime) })}`)
     if (!input.confirm) return fail(`Not approved: buckle approve records an approval only after a person at a terminal confirms the action above, and this process's input and output are not both a terminal. ${noTerminal(runtime.workspaceName())}`)
-    const widened = values.host === undefined ? '' : ` for ${printable(values.host)}`
+    const widened = values.host !== undefined ? ` for ${printable(values.host)}` : below !== null ? ` for every delete in ${printable(below.folder)} and its subfolders` : ''
     if (!await input.confirm(`Approve ${token} (${scope.data})${widened} in workspace ${runtime.workspaceName()}? Type yes to approve; anything else leaves it waiting.\n`)) {
       process.stdout.write(`Nothing decided; ${token} is still waiting in workspace ${runtime.workspaceName()}\n`)
       return { exitCode: 1 }
     }
   }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
-  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data }, authority: 'admin', ...(values.host === undefined ? {} : { widenTo: values.host }) })
+  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, authority: 'admin', ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceName()}`)
+  if (result.granted !== undefined) {
+    process.stdout.write(`Approved ${token} (${scope.data}) for ${printable(result.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}\n`)
+    return { exitCode: 0, detail: `write_scope ${scope.data} approval widened to the folder and its subfolders` }
+  }
   if (result.widened) {
     const { pattern, askedBy } = result.widened
     process.stdout.write(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceName()}\n`)
@@ -680,6 +688,20 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   }
   process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}\n`)
   return { exitCode: 0 }
+}
+
+/**
+ * The subject `--below` grants: the waiting ask's wider one, and the folder it names, or why there is none to grant. It
+ * widens an approval, never a denial, and a host pattern is the other widening, which does not combine with it.
+ */
+function belowSubject(input: { ask: PendingAsk | undefined; token: string; scope: GrantScope; deny: boolean; host: boolean }): { subject: string; folder: string } | { refusal: string } {
+  if (input.deny) return { refusal: '--below widens an approval; deny without it' }
+  if (input.scope === 'once') return { refusal: 'A once approval covers the one call that asked; grant the folder and its subfolders with --scope session or --scope always' }
+  if (input.host) return { refusal: '--below and --host do not combine: --host widens a network approval, --below a delete outside the workspace\'s folder' }
+  if (!input.ask) return { refusal: `Not approved: nothing named ${printable(input.token)} is waiting for a decision, so --below has no folder to grant` }
+  const wider = input.ask.request.widerSubject
+  if (wider === undefined) return { refusal: `Not approved: ${printable(input.token)} offers no folder and subfolders to grant; --below takes a delete outside the workspace's folder. Approve it without --below` }
+  return { subject: wider, folder: floorSubjectPath(wider) ?? wider }
 }
 
 /** The decision AI's line for a waiting ask, where its call carries a note about its command (D91). */
