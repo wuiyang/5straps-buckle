@@ -85,6 +85,8 @@ export interface BuiltinPackOptions {
   maxTransferBytes?: number
   /** The workspace's change history, which the history pack reads and restores; the pack is withheld where absent. */
   history?: ChangeHistory
+  /** The workspace setting packs.history: false withholds the history pack (slice D, rollback). On when absent. */
+  allowHistory?: boolean
   /** The VM code mode runs scripts in; pi-codemode's when absent. */
   scriptVm?: ScriptVm
   shellNetwork?: boolean
@@ -145,7 +147,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.maxTransferBytes === undefined ? {} : { maxTransferBytes: options.maxTransferBytes }),
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
     }),
-    createHistoryPack({ paths: options.paths, history: options.history ?? null }),
+    createHistoryPack({ paths: options.paths, history: options.history ?? null, unavailableReason: options.allowHistory === false ? HISTORY_OFF : null }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({
@@ -232,6 +234,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
 }
 
 const CODE_OFF = 'Code mode is turned off in this workspace: its setting packs.code is off'
+const HISTORY_OFF = 'The change history tools are turned off in this workspace: its setting packs.history is off'
 
 function forgeUnavailableReason(options: BuiltinPackOptions, git: ResolvedProgram): string | null {
   if (!options.forge.token) return 'BUCKLE_FORGE_GITHUB_TOKEN is not set, so this node holds no forge credential and cannot commit, push or open a pull request'

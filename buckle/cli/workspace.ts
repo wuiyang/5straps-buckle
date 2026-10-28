@@ -221,7 +221,7 @@ function show(context: Context): CliResult {
     ...(table.length === 0 ? [['mounts', '(none)', inForce.sources.mounts!] as [string, string, SettingSource]] : table.map((row): [string, string, SettingSource] => ['mounts', formatMountRow(row), row.from === 'folder' ? inForce.sources.mount! : inForce.sources.mounts!])),
     ['approvalWaitMs', inForce.approvalWaitMs === 0 ? '0 (until someone answers)' : String(inForce.approvalWaitMs), inForce.sources.approvalWaitMs!],
     ['packs.enabled', inForce.packs.enabled?.join(', ') ?? '(every built-in pack, and plugins)', inForce.sources['packs.enabled']!],
-    ...(['shell', 'code', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
+    ...(['shell', 'code', 'history', 'hostGit', 'hostLsp'] as const).map((pack): [string, string, SettingSource] => [`packs.${pack}`, onOff(inForce.packs[pack]), inForce.sources[`packs.${pack}`]!]),
     ...(['network', 'isolation'] as const).map((key): [string, string, SettingSource] => [`shell.${key}`, onOff(inForce.shell[key]), inForce.sources[`shell.${key}`]!]),
     ['browser.idleTimeoutMs', String(inForce.browser.idleTimeoutMs), inForce.sources['browser.idleTimeoutMs']!],
     // The owner's terminal: the profile folder and the endpoint show, as buckle workspace show prints the file whole.

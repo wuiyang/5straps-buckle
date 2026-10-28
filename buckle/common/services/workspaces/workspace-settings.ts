@@ -58,6 +58,7 @@ const PacksSchema = z.object({
   enabled: z.array(z.string().refine(id => PACK_IDS.includes(id), { error: issue => `Unknown pack ${String(issue.input)}; packs: ${PACK_IDS.join(', ')}` })).min(1).nullable().optional(),
   shell: z.boolean().optional(),
   code: z.boolean().optional(),
+  history: z.boolean().optional(),
   hostGit: z.boolean().optional(),
   hostLsp: z.boolean().optional(),
 }).strict()
@@ -297,7 +298,7 @@ export type SettingSource = 'workspace' | 'node' | 'built-in'
 
 /** What Buckle holds where neither the workspace nor the node names a value. */
 export const BUILT_IN_SETTINGS = Object.freeze({
-  packs: Object.freeze({ enabled: null, shell: true, code: true, hostGit: false, hostLsp: false }),
+  packs: Object.freeze({ enabled: null, shell: true, code: true, history: true, hostGit: false, hostLsp: false }),
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
@@ -313,7 +314,7 @@ export interface ResolvedSettings {
   mount: string | null
   /** The owner's mounts in force: the workspace's own, else the node's (BUCKLE_MOUNTS, and BUCKLE_SCRATCH_ROOTS as scratch). */
   mounts: readonly TableMount[]
-  packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
+  packs: { enabled: string[] | null; shell: boolean; code: boolean; history: boolean; hostGit: boolean; hostLsp: boolean }
   approvalWaitMs: number
   shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
@@ -387,6 +388,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     enabled: pick('packs.enabled', stored.packs.enabled, node.packs.enabled, BUILT_IN_SETTINGS.packs.enabled),
     shell: pick('packs.shell', stored.packs.shell, node.packs.shell, BUILT_IN_SETTINGS.packs.shell),
     code: pick('packs.code', stored.packs.code, node.packs.code, BUILT_IN_SETTINGS.packs.code),
+    history: pick('packs.history', stored.packs.history, node.packs.history, BUILT_IN_SETTINGS.packs.history),
     hostGit: pick('packs.hostGit', stored.packs.hostGit, node.packs.hostGit, BUILT_IN_SETTINGS.packs.hostGit),
     hostLsp: pick('packs.hostLsp', stored.packs.hostLsp, node.packs.hostLsp, BUILT_IN_SETTINGS.packs.hostLsp),
   }

@@ -59,6 +59,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_ALLOW_SHELL', alias: 'shell', kind: 'boolean', fallback: 'true', workspace: { key: 'packs.shell', change: 'buckle workspace set packs.shell on|off' } },
   // Code mode (owner decision D82): false withholds code_run and code_api.
   { key: 'BUCKLE_ALLOW_CODE', alias: 'code', kind: 'boolean', fallback: 'true', workspace: { key: 'packs.code', change: 'buckle workspace set packs.code on|off' } },
+  // The change history tools (slice D, rollback): false withholds history_list and history_restore.
+  { key: 'BUCKLE_ALLOW_HISTORY', alias: 'history', kind: 'boolean', fallback: 'true', workspace: { key: 'packs.history', change: 'buckle workspace set packs.history on|off' } },
   { key: 'BUCKLE_ALLOW_HOST_GIT', alias: 'host-git', kind: 'boolean', fallback: 'false', workspace: { key: 'packs.hostGit', change: 'buckle workspace set packs.hostGit on|off' } },
   // The shell's network and isolation (Phase 2 item 4): every workspace's defaults where its own settings hold none.
   { key: 'BUCKLE_SHELL_NETWORK', alias: 'shell-network', kind: 'boolean', fallback: 'false', workspace: { key: 'shell.network', change: 'buckle workspace set shell.network on|off' } },

@@ -147,6 +147,8 @@ export interface BuckleConfig extends NodeConfig {
   enableShell: boolean
   /** Code mode's code_run and code_api (owner decision D82). */
   allowCode: boolean
+  /** The history pack's history_list and history_restore (slice D, rollback). */
+  allowHistory: boolean
   /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers. */
   approvalTimeoutMs: number | null
   /** The plain variables the workspace's settings give its shell commands (Q13); a call's own `env` is set over them. */
@@ -301,7 +303,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
 /** The node settings that are every workspace's defaults (D85, Q3), which a node reads from its environment file alone. */
 export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_COMMAND_ALLOW', 'BUCKLE_COMMAND_DENY', 'BUCKLE_COMMAND_DESTRUCTIVE', 'BUCKLE_ALLOWED_INTERPRETERS', 'BUCKLE_NETWORK_ALLOW',
-  'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
+  'BUCKLE_WORKSPACE_MOUNT', 'BUCKLE_PACKS', 'BUCKLE_ALLOW_SHELL', 'BUCKLE_ALLOW_CODE', 'BUCKLE_ALLOW_HISTORY', 'BUCKLE_ALLOW_HOST_GIT', 'BUCKLE_ALLOW_HOST_LSP',
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
@@ -404,7 +406,7 @@ export interface WorkspaceScope {
   /** The owner's mounts in force: its own table's, else the node's. */
   mounts: readonly TableMount[]
   policy: WorkspacePolicy
-  packs: { enabled: string[] | null; shell: boolean; code: boolean; hostGit: boolean; hostLsp: boolean }
+  packs: { enabled: string[] | null; shell: boolean; code: boolean; history: boolean; hostGit: boolean; hostLsp: boolean }
   /** Milliseconds a gated call is held for an answer; 0 holds it until someone answers. */
   approvalWaitMs: number
   /** Whether its shell may reach the network, and runs on private copies (Phase 2 item 4). */
@@ -442,7 +444,7 @@ export interface NodeDefaults {
    * the targets it names, and each BUCKLE_SCRATCH_ROOTS folder writable without asking at its own path.
    */
   mounts?: TableMount[]
-  packs: { enabled?: string[]; shell?: boolean; code?: boolean; hostGit?: boolean; hostLsp?: boolean }
+  packs: { enabled?: string[]; shell?: boolean; code?: boolean; history?: boolean; hostGit?: boolean; hostLsp?: boolean }
   /** 0 holds a gated call until someone answers. */
   approvalWaitMs?: number
   /** BUCKLE_SHELL_NETWORK and BUCKLE_SHELL_ISOLATION, where buckle.env names them. */
@@ -473,6 +475,7 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
   const flag = (key: string, on: string): boolean | undefined => (environment[key] ? environment[key] === on : undefined)
   const shell = environment.BUCKLE_ALLOW_SHELL ? environment.BUCKLE_ALLOW_SHELL !== 'false' : undefined
   const code = environment.BUCKLE_ALLOW_CODE ? environment.BUCKLE_ALLOW_CODE !== 'false' : undefined
+  const history = environment.BUCKLE_ALLOW_HISTORY ? environment.BUCKLE_ALLOW_HISTORY !== 'false' : undefined
   const packs = parseList(environment.BUCKLE_PACKS)
   const approvalWait = environment.BUCKLE_APPROVAL_TIMEOUT_MS ? parseApprovalTimeout(environment.BUCKLE_APPROVAL_TIMEOUT_MS, DEFAULT_APPROVAL_WAIT_MS) ?? 0 : undefined
   const mounts = nodeMounts(environment, platform)
@@ -484,6 +487,7 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
       ...(packs.length > 0 ? { enabled: [...new Set(packs)] } : {}),
       ...(shell === undefined ? {} : { shell }),
       ...(code === undefined ? {} : { code }),
+      ...(history === undefined ? {} : { history }),
       ...defined('hostGit', flag('BUCKLE_ALLOW_HOST_GIT', 'true')),
       ...defined('hostLsp', flag('BUCKLE_ALLOW_HOST_LSP', 'true')),
     },
@@ -592,7 +596,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env'>): WorkspaceFields {
   return {
@@ -617,6 +621,7 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     enabledPacks: scope.packs.enabled === null ? undefined : [...scope.packs.enabled],
     enableShell: scope.packs.shell,
     allowCode: scope.packs.code,
+    allowHistory: scope.packs.history,
     allowHostGit: scope.packs.hostGit,
     allowHostLsp: scope.packs.hostLsp,
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,

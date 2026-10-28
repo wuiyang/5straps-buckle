@@ -38,7 +38,7 @@ function onOff(key: string, raw: string): boolean {
   throw new SettingValueError(`${key} is on or off: true, false, on, off, yes or no`)
 }
 
-type PackKey = 'enabled' | 'shell' | 'code' | 'hostGit' | 'hostLsp'
+type PackKey = 'enabled' | 'shell' | 'code' | 'history' | 'hostGit' | 'hostLsp'
 
 /** The packs block with `name` taken out: unset, so the node's value stands for it. */
 function withoutPack(settings: WorkspaceSettings, name: PackKey): WorkspaceSettings {
@@ -46,7 +46,7 @@ function withoutPack(settings: WorkspaceSettings, name: PackKey): WorkspaceSetti
   return { ...settings, packs }
 }
 
-const pack = (name: 'shell' | 'code' | 'hostGit' | 'hostLsp'): SettingKey => ({
+const pack = (name: Exclude<PackKey, 'enabled'>): SettingKey => ({
   key: `packs.${name}`,
   takes: `on or off (the node's, else ${BUILT_IN_SETTINGS.packs[name] ? 'on' : 'off'})`,
   set: (settings, raw) => ({ ...settings, packs: { ...settings.packs, [name]: onOff(`packs.${name}`, raw) } }),
@@ -174,7 +174,7 @@ export const SETTING_KEYS: readonly SettingKey[] = [
     set: (settings, raw) => ({ ...settings, packs: { ...settings.packs, enabled: [...new Set(raw.split(',').map(item => item.trim()).filter(Boolean))] } }),
     unset: settings => withoutPack(settings, 'enabled'),
   },
-  pack('shell'), pack('code'), pack('hostGit'), pack('hostLsp'),
+  pack('shell'), pack('code'), pack('history'), pack('hostGit'), pack('hostLsp'),
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
   // The decision AI (D91): the node's BUCKLE_APPROVAL_JUDGE and its kin stand where these are unset.

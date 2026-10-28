@@ -856,6 +856,7 @@ async function buildPacks(input: {
     serviceInstalled: () => serviceInstalled(input.config.nodeStateDirectory ?? input.config.stateDirectory),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
+    allowHistory: input.config.allowHistory,
     reachableTools: input.reachableTools,
     maxRequestBytes: input.config.maxRequestBytes,
     maxTransferBytes: input.config.maxTransferBytes,
@@ -939,7 +940,7 @@ function storedPolicy(settings: WorkspaceSettings): WorkspacePolicy {
 function settingsOf(config: BuckleConfig): WorkspaceSettings {
   return WorkspaceSettingsSchema.parse({
     ...withMount(withPolicy(WorkspaceSettingsSchema.parse({ version: 1 }), config.policy), config.policy.mount),
-    packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
+    packs: { enabled: config.enabledPacks ?? null, shell: config.enableShell, code: config.allowCode, history: config.allowHistory, hostGit: config.allowHostGit, hostLsp: config.allowHostLsp },
     browser: { ...(config.browserCdp ? { cdp: config.browserCdp } : {}), ...(config.browserProfile ? { profile: config.browserProfile } : {}), ...(config.browserArgs ? { args: config.browserArgs } : {}), headed: config.browserHeaded, idleTimeoutMs: config.browserIdleTimeoutMs },
     approvalWaitMs: config.approvalTimeoutMs ?? 0,
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
