@@ -343,8 +343,9 @@ export interface ResolveOptions {
  * On a widened grant, the pattern recorded and the host it was asked for, for the audit entry.
  * `repeated` marks an answer identical to the one already recorded, which changes nothing. `asked`
  * is the rule and subject the decision answered, for the decision's audit entry (review item 6).
+ * `granted`: the ask's wider subject, where the decision granted it in place of the ask's own (the delete policy brief).
  */
-export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string } } | { ok: false; reason: string }
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string } | { ok: false; reason: string }
 
 /**
  * A joined call gets the requests still waiting and the tokens of its asks already answered, so its
@@ -641,7 +642,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
           // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
           // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
-          const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'), tool, offeredScopes: item.offeredScopes, expiresAt }))
+          const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'), tool, offeredScopes: item.offeredScopes, expiresAt, ...(item.widerSubject === undefined ? {} : { widerSubject: item.widerSubject }) }))
           const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
           assertDeliveryRoom(state, entries, notifies)
           // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
@@ -669,7 +670,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const widenedTo = widening?.pattern
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
         if (previous) {
-          return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo
+          return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo && previous.decision.subject === decision.subject
             ? { ok: true, repeated: true, ...(previous.request ? { asked: { rule: previous.request.rule, subject: previous.request.subject } } : {}) }
             : { ok: false, reason: 'Approval already has a different decision' }
         }
@@ -685,6 +686,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         }
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
+        const wider = widerGrant({ decision, request: approval.request, widened: widenedTo !== undefined })
+        if (wider !== null && 'reason' in wider) return wider
         const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
         const coded = options.code === undefined ? {} : { code: options.code }
         // A once covers the call that asked and no other, whichever route decided it: the terminal,
@@ -712,12 +715,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         })
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
-          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
+          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? wider?.subject ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
           // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
-          logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo ? { widened: true } : {}) })
+          logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
         }
         if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true, ...decider })
         const answered = { rule, subject }
+        if (wider) return { ok: true, asked: answered, granted: wider.subject }
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
       })
     },
@@ -1005,6 +1009,21 @@ function unclaimedReliedOn(input: {
     if (input.check([...input.usable, ...without].map(other => other.subject)).kind === 'allow') needed = without
   }
   return needed
+}
+
+/**
+ * The subject a decision grants in place of the ask's own, or null where it names none (or the ask's own): only the ask's
+ * `widerSubject`, which its rule offered, approved for the session or always, and never beside a host pattern (the
+ * delete policy brief). A `once` covers the one call that asked, so it stays the ask's own subject.
+ */
+function widerGrant(input: { decision: ApprovalDecision; request: ApprovalRequest; widened: boolean }): { subject: string } | { ok: false; reason: string } | null {
+  const named = input.decision.subject
+  if (named === undefined || named === input.request.subject) return null
+  if (!input.decision.approved) return { ok: false, reason: 'A denial names no subject: it denies the ask\'s own' }
+  if (input.request.widerSubject === undefined || named !== input.request.widerSubject) return { ok: false, reason: `This ask grants ${input.request.subject}${input.request.widerSubject === undefined ? '' : ` or ${input.request.widerSubject}`}, not ${named}` }
+  if (input.decision.scope === 'once') return { ok: false, reason: 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead' }
+  if (input.widened) return { ok: false, reason: 'A host pattern and a wider subject do not combine' }
+  return { subject: named }
 }
 
 /**

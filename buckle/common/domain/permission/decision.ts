@@ -3,7 +3,8 @@ import type { ResolvedEffect } from '../effect.js'
 
 export type PermissionDecision =
   | { kind: 'allow'; via?: GrantReference }
-  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause }
+  /** `widerSubject`: what a person may grant for the session or always in place of `subject` (a delete's folder and subfolders). */
+  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string }
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
 
 /**

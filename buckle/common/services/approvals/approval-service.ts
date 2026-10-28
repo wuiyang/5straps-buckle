@@ -29,8 +29,11 @@ export const INLINE_CALL_BYTES = 16 * 1_024
 const SWEEP_MARGIN_MS = 1_000
 const MAX_TIMER_MS = 2_147_483_647
 
-/** What a terminal answer may choose. Its token is always the one its question asked about. */
-export type ApprovalChoice = 'once' | 'session' | 'always' | 'deny' | 'deny_session' | 'deny_always'
+/**
+ * What a terminal answer may choose. Its token is always the one its question asked about. `session_below` and
+ * `always_below` grant the ask's wider subject (a delete's folder and its subfolders) in place of its own.
+ */
+export type ApprovalChoice = 'once' | 'session' | 'always' | 'session_below' | 'always_below' | 'deny' | 'deny_session' | 'deny_always'
 
 export interface ApprovalAskInput {
   sessionId: string
@@ -359,6 +362,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         if (!signed.success) return { status: 'invalid' }
         const { challenge, ...decision } = signed.data
         if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return { status: 'invalid' }
+        // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
+        if (decision.subject !== undefined) return settledDecision({ decision, challenge, result: { ok: false, reason: 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below' } })
         const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
         return settledDecision({ decision, challenge, result })
       }
@@ -751,6 +756,7 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
       details: {
         tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
         scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
+        ...(approval.widerSubject === undefined ? {} : { wider: approval.widerSubject }),
         ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
         approve: approveCommand({ request: approval, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
         ...(input.node === undefined ? {} : { node: input.node }),
@@ -778,6 +784,7 @@ function questionWait(expiresAt: string): CliWait {
 function decisionFor(approval: ApprovalRequest, outcome: Extract<CliOutcome, { status: 'answered' | 'denied' }>): ApprovalDecision {
   const choice = outcome.status === 'answered' ? outcome.answer.choice : 'deny'
   if (choice === 'once' || choice === 'session' || choice === 'always') return { token: approval.token, approved: true, scope: choice }
+  if ((choice === 'session_below' || choice === 'always_below') && approval.widerSubject !== undefined) return { token: approval.token, approved: true, scope: choice === 'session_below' ? 'session' : 'always', subject: approval.widerSubject }
   if (choice === 'deny_session') return { token: approval.token, approved: false, scope: 'session' }
   if (choice === 'deny_always') return { token: approval.token, approved: false, scope: 'always' }
   return { token: approval.token, approved: false, scope: 'once' }
