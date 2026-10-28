@@ -88,6 +88,26 @@ describe('a write to workspace.json from another process', () => {
     expect(config).toMatchObject({ approvalTimeoutMs: 1_234, commandEnvironment: { GREETING: 'hello' } })
   })
 
+  // The delete policy brief, items 1 and 2: the permission rules are rebuilt from the settings in force, so a change to
+  // either delete setting is the next call's policy with no restart.
+  it('applies files.deleteInWorkspace and files.massDeleteLimit at the next call', async () => {
+    const { runtime } = await serving.resolve(site)
+    await runtime.grants.grant({ sessionId: 'live', rule: 'write_scope', subject: runtime.paths().root, scope: 'session' })
+    const root = runtime.paths().root
+    const remove = (...names: string[]) => runtime.invoke({ request: { requestId: `delete-${randomUUID()}`, tool: 'fs_delete', args: { paths: names }, approvalTokens: [] }, sessionId: 'live' })
+    for (const name of ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt', 'f.txt']) writeFileSync(join(folder, name), name)
+
+    expect(await remove('a.txt')).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
+    await owner.updateSettings(site, settings => ({ ...settings, files: { ...settings.files, deleteInWorkspace: 'ask' } }))
+    expect(await remove('b.txt')).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete:${root}` }] })
+
+    await owner.updateSettings(site, settings => ({ ...settings, files: { deleteInWorkspace: 'allow', massDeleteLimit: 1 } }))
+    expect(await remove('b.txt', 'c.txt')).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-batch:${root}` }] })
+
+    await owner.updateSettings(site, settings => ({ ...settings, files: { ...settings.files, massDeleteLimit: 0 } }))
+    expect(await remove('d.txt', 'e.txt', 'f.txt')).toMatchObject({ outcome: 'ok', output: { removed: 3 } })
+  })
+
   it('rebuilds the packs at the next call while no work is active', async () => {
     const { runtime } = await serving.resolve(site)
     expect(runtime.manifest().packs.map(pack => pack.id)).toEqual(['fs'])
