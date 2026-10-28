@@ -18,7 +18,6 @@ import { floorSubjectPath } from '../common/domain/permission/rules/destructive-
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import type { CheckpointSummary } from '../common/services/history/journal.js'
 import { initializeCommon, type BuckleCommon } from '../common/runtime/initialize.js'
 import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
@@ -32,6 +31,7 @@ import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
 import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
 import { workspaceRegistryCommand } from './workspace.js'
+import { historyCommand } from './history.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
 import { serviceCommand } from './service.js'
@@ -334,7 +334,8 @@ function printUsage(): CliResult {
   buckle workspace set <key> <value> | unset <key>
   buckle workspace token create [--label <text>] | list | revoke <token-id>
   buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
-  buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune
+  buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune
+                                   The change history; --last shows n checkpoints back from the current one
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
@@ -390,10 +391,12 @@ function printLog(runtime: BuckleRuntime, argv: string[]): CliResult {
   return { exitCode: 0 }
 }
 
+/** Each tool by the command that runs it: its group and verb, or `call <name>` where an owner command holds that group (history). */
 function printTools(runtime: BuckleRuntime): CliResult {
   for (const capability of runtime.registry().capabilities()) {
     const { group, verb } = toolNameToCommand(capability.name)
-    process.stdout.write(`${`${group} ${verb}`.padEnd(24)} ${capability.risk.padEnd(8)} ${capability.description}\n`)
+    const command = OWNER_COMMANDS.includes(group) ? `call ${capability.name}` : `${group} ${verb}`
+    process.stdout.write(`${command.padEnd(24)} ${capability.risk.padEnd(8)} ${capability.description}\n`)
   }
   return { exitCode: 0 }
 }
@@ -834,32 +837,6 @@ function print(value: unknown): CliResult {
 function fail(message: string): CliResult {
   process.stderr.write(`${message}\n`)
   return { exitCode: 1 }
-}
-
-async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
-  const [command = 'list', id] = argv
-  if (command === 'list') return print((await runtime.history.list()).map(printableCheckpoint))
-  if (command === 'prune') return print(await runtime.history.prune())
-  if (command === 'restore-stage' && id && argv[2]) return print(await runtime.history.restoreStage(id, argv[2]))
-  if (command === 'restore' && id) return print(await runtime.history.restore(id))
-  if (command === 'recover' && id) return print(await runtime.history.recover(id))
-  return fail('Usage: buckle history list | restore <id> | restore-stage <stage> <session> | recover <id> | prune')
-}
-
-/**
- * A checkpoint as a person reads it: the session, stage and paths an agent chose, escaped as every
- * other rendering of agent text is (review L8 of B15-B17).
- */
-function printableCheckpoint(checkpoint: CheckpointSummary): CheckpointSummary {
-  return {
-    ...checkpoint,
-    sessionId: printable(checkpoint.sessionId),
-    stageId: printable(checkpoint.stageId),
-    tool: printable(checkpoint.tool),
-    paths: checkpoint.paths.map(printable),
-    changes: checkpoint.changes.map(change => ({ ...change, path: printable(change.path) })),
-    notRestorable: checkpoint.notRestorable.map(printable),
-  }
 }
 
 async function shellWorkspacesCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
