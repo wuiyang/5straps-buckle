@@ -36,7 +36,7 @@ whatever the [policy](policy.md) denies.
 Only the owner's authority records a `session` or `always` grant: every local route below,
 `buckle mcp` elicitation included, and over HTTP only the admin face.
 
-A path grant covers its directory and everything below it. A network grant covers one host and
+A path grant covers its directory and all below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern
 covering the asking host, `--below` [a delete](policy-05.md) outside the workspace to its folder
 and subfolders. `buckle grants list` shows grants and remembered denials;
@@ -111,8 +111,8 @@ buckle policy dangerously-allow off
 
 Warning: this removes the person. At level `command`, the default, every ask about a path inside
 the workspace, and every command, host, and process ask, is allowed, sensitive files, writes, and
-destructive commands included, except a secret reference's file and a history restore; `all`
-allows that file too. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
+destructive commands included, except a secret reference's file. Level `all` allows that file
+too. History restores ask. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
 directory still refuse.
 
 Only the local CLI sets it, per workspace; `buckle policy import` refuses a file that names it,
