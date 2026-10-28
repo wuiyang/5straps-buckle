@@ -8,6 +8,7 @@ import { browserBlockRefusal, parseApprovalTimeout, parseBrowserArgs, parseBrows
 import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/index.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
+import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit } from '../common/domain/delete-policy.js'
 
 /**
  * The node settings `BUCKLE-D19` names: what the owner changes with `buckle settings` or answers in
@@ -18,7 +19,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope' | 'delete-mode' | 'entry-limit'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
   /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
@@ -48,6 +49,9 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_APPROVAL_QUICK_JUDGE', alias: 'approval-quick-judge', kind: 'quick-scope', fallback: 'off', workspace: { key: 'approval.quickJudge', change: 'buckle workspace set approval.quickJudge off|interpreters|asks|all' } },
   { key: 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', alias: 'approval-quick-judge-model', kind: 'judge-model', fallback: 'jev-latest', workspace: { key: 'approval.quickJudgeModel', change: 'buckle workspace set approval.quickJudgeModel <model>' } },
   { key: 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS', alias: 'approval-judge-standard-scripts', kind: 'script-list', fallback: '(the built-in list: npm run *, pnpm dev, npx vitest *, and the rest)', workspace: { key: 'approval.judgeStandardScripts', change: 'buckle workspace set approval.judgeStandardScripts <globs separated by ;;>' } },
+  // The delete policy (the delete policy brief): every workspace's defaults where its own settings hold none.
+  { key: 'BUCKLE_DELETE_IN_WORKSPACE', alias: 'delete-in-workspace', kind: 'delete-mode', fallback: 'allow', workspace: { key: 'files.deleteInWorkspace', change: 'buckle workspace set files.deleteInWorkspace allow|ask' } },
+  { key: 'BUCKLE_MASS_DELETE_LIMIT', alias: 'mass-delete-limit', kind: 'entry-limit', fallback: '100', workspace: { key: 'files.massDeleteLimit', change: 'buckle workspace set files.massDeleteLimit <entries>' } },
   // Every workspace's mounts where its own table holds none (Phase 2 item 1): writable without asking, at their own path.
   { key: 'BUCKLE_SCRATCH_ROOTS', alias: 'scratch-roots', kind: 'directory-list', fallback: '(none)', workspace: { key: 'mounts', change: 'buckle workspace mount add <folder>:<sandbox-path>' } },
   { key: 'BUCKLE_WORKSPACE_MOUNT', alias: 'mount', kind: 'mount', fallback: '(none: the real path shows through)', workspace: { key: 'mount', change: 'buckle workspace set mount <path>' } },
@@ -223,6 +227,14 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
       return (QUICK_JUDGE_SCOPES as readonly string[]).includes(raw.toLowerCase()) ? { ok: true, value: raw.toLowerCase() } : refuse(`${input.setting.key} is ${QUICK_JUDGE_SCOPES.join(', ')}`)
     case 'judge-model':
       return JUDGE_MODEL_NAME.test(raw) ? { ok: true, value: raw } : refuse(`${input.setting.key} is a model name, with no blank, such as gpt-6-luna`)
+    case 'delete-mode': {
+      const mode = parseDeleteInWorkspace(raw)
+      return mode === null ? refuse(`${input.setting.key} is allow or ask`) : { ok: true, value: mode }
+    }
+    case 'entry-limit': {
+      const limit = parseMassDeleteLimit(raw)
+      return limit === null ? refuse(`${input.setting.key} is entries, 0 to ${MAX_MASS_DELETE_LIMIT}, 0 for no limit`) : { ok: true, value: String(limit) }
+    }
     case 'browser-cdp': return parsed(input.setting, raw, () => parseBrowserCdp(raw))
     case 'browser-profile': return parsed(input.setting, raw, () => parseBrowserProfile(raw, process.platform))
     case 'browser-args': return parsed(input.setting, raw, () => parseBrowserArgs(raw, process.platform))

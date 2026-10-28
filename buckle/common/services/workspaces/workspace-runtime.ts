@@ -940,6 +940,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
     shell: { network: config.shellNetwork, isolation: config.isolateShell },
     approval: { judge: config.approvalJudge, judgeProvider: config.approvalJudgeProvider, judgeModel: config.approvalJudgeModel, judgeStandardScripts: [...config.approvalJudgeStandardScripts], quickJudge: config.approvalQuickJudge, quickJudgeProvider: config.approvalQuickJudgeProvider, quickJudgeModel: config.approvalQuickJudgeModel },
     ...(config.secretsEnabled === undefined && config.secretFiles === undefined ? {} : { secrets: { ...(config.secretsEnabled === undefined ? {} : { enabled: config.secretsEnabled }), ...(config.secretFiles === undefined ? {} : { files: [...config.secretFiles] }) } }),
+    files: { deleteInWorkspace: config.deleteInWorkspace, massDeleteLimit: config.massDeleteLimit },
     env: config.commandEnvironment,
   })
 }

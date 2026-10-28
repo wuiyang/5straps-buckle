@@ -16,6 +16,7 @@ import { compileCommandGlob, CommandGlobError } from '../domain/command-glob.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type JudgeProvider } from '../types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
 import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
+import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, type DeleteInWorkspace } from '../domain/delete-policy.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -154,6 +155,13 @@ export interface BuckleConfig extends NodeConfig {
   secretsEnabled?: boolean
   /** The files whose use by a secret reference needs no ask (secrets.files), as a reference writes their paths; none where absent. */
   secretFiles?: readonly string[]
+  /**
+   * Its delete policy (the delete policy brief): whether a delete inside its own folder runs under the write gate or asks
+   * at the destructive floor (files.deleteInWorkspace), and how many entries one call may remove there before it asks
+   * anyway (files.massDeleteLimit, 0 for no limit).
+   */
+  deleteInWorkspace: DeleteInWorkspace
+  massDeleteLimit: number
   /** The workspace's policy, from its workspace.json, with its mount's target as `mount`. */
   policy: WorkspacePolicy
   /** Its mount table in force (Phase 2 item 1): its own mounts, else the node's. */
@@ -297,7 +305,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
-  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL',
+  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
 ])
 
 /**
@@ -410,6 +418,8 @@ export interface WorkspaceScope {
   approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
   /** Its secret references (docs/secrets.md); on, and no file listed, where absent. */
   secrets?: { enabled: boolean; files: readonly string[] }
+  /** Its delete policy (the delete policy brief). */
+  files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
   /** Variables its shell commands see. */
   env: Readonly<Record<string, string>>
 }
@@ -440,6 +450,8 @@ export interface NodeDefaults {
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
   /** BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, and BUCKLE_APPROVAL_QUICK_JUDGE and its _MODEL, where buckle.env names them (D91). */
   approval: { judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
+  /** BUCKLE_DELETE_IN_WORKSPACE and BUCKLE_MASS_DELETE_LIMIT, where buckle.env names them (the delete policy brief). */
+  files: { deleteInWorkspace?: DeleteInWorkspace; massDeleteLimit?: number }
   env: Readonly<Record<string, string>>
 }
 
@@ -479,8 +491,20 @@ export function nodeDefaultsFrom(environment: NodeJS.ProcessEnv, platform: NodeJ
     shell: { ...defined('network', flag('BUCKLE_SHELL_NETWORK', 'true')), ...(environment.BUCKLE_SHELL_ISOLATION ? { isolation: environment.BUCKLE_SHELL_ISOLATION !== 'false' } : {}) },
     browser: { ...browser.browserCdp ? { cdp: browser.browserCdp } : {}, ...browser.browserProfile ? { profile: browser.browserProfile } : {}, ...browser.browserArgs ? { args: browser.browserArgs } : {}, ...defined('headed', flag('BUCKLE_BROWSER_HEADED', 'true')) },
     approval: approvalDefaults(environment),
+    files: deleteDefaults(environment),
     env: {},
   }
+}
+
+/** The node's delete policy defaults (the delete policy brief), each checked as a workspace's own is, so a value Buckle refuses stops the node, naming the variable. */
+function deleteDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['files'] {
+  const mode = environment.BUCKLE_DELETE_IN_WORKSPACE || undefined
+  const limit = environment.BUCKLE_MASS_DELETE_LIMIT || undefined
+  const deleteInWorkspace = mode === undefined ? undefined : parseDeleteInWorkspace(mode)
+  if (deleteInWorkspace === null) throw new Error('Invalid BUCKLE_DELETE_IN_WORKSPACE: allow or ask')
+  const massDeleteLimit = limit === undefined ? undefined : parseMassDeleteLimit(limit)
+  if (massDeleteLimit === null) throw new Error(`Invalid BUCKLE_MASS_DELETE_LIMIT: entries, 0 to ${MAX_MASS_DELETE_LIMIT}, 0 for no limit`)
+  return { ...defined('deleteInWorkspace', deleteInWorkspace), ...defined('massDeleteLimit', massDeleteLimit) }
 }
 
 /**
@@ -568,9 +592,9 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env'>): WorkspaceFields {
   return {
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
@@ -598,6 +622,8 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
     secretsEnabled: scope.secrets?.enabled ?? true,
     secretFiles: [...scope.secrets?.files ?? []],
+    deleteInWorkspace: scope.files.deleteInWorkspace,
+    massDeleteLimit: scope.files.massDeleteLimit,
     commandEnvironment: { ...scope.env },
   }
 }

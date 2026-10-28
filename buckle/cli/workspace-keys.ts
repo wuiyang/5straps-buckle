@@ -6,6 +6,7 @@ import { BROWSER_IDLE_BOUNDS, BUILT_IN_SETTINGS, MAX_LISTED_SECRET_FILES, withMo
 import { referencePathRefusal } from '../common/domain/secret-reference.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
+import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit } from '../common/domain/delete-policy.js'
 
 /**
  * A setting `buckle workspace set` and `unset` change, by its path in workspace.json. `set` gives the workspace a value
@@ -139,6 +140,23 @@ const approval = (name: ApprovalKey, takes: string, read: (raw: string) => Works
   unset: settings => withoutApproval(settings, name),
 })
 
+type FilesKey = 'deleteInWorkspace' | 'massDeleteLimit'
+
+/** The files block with `name` taken out, and the block itself once it holds nothing: unset, so the node's value stands for it. */
+function withoutFiles(settings: WorkspaceSettings, name: FilesKey): WorkspaceSettings {
+  const { files: block, ...rest } = settings
+  const { [name]: _dropped, ...files } = block ?? {}
+  return Object.keys(files).length === 0 ? rest : { ...rest, files }
+}
+
+/** A delete policy setting (the delete policy brief), over the node's BUCKLE_DELETE_IN_WORKSPACE or BUCKLE_MASS_DELETE_LIMIT. */
+const files = <K extends FilesKey>(name: K, takes: string, read: (raw: string) => NonNullable<WorkspaceSettings['files']>[K]): SettingKey => ({
+  key: `files.${name}`,
+  takes,
+  set: (settings, raw) => ({ ...settings, files: { ...settings.files, [name]: read(raw) } }),
+  unset: settings => withoutFiles(settings, name),
+})
+
 export const SETTING_KEYS: readonly SettingKey[] = [
   {
     key: 'approvalWaitMs',
@@ -206,6 +224,16 @@ export const SETTING_KEYS: readonly SettingKey[] = [
       return Object.keys(secrets).length === 0 ? rest : { ...rest, secrets }
     },
   },
+  files('deleteInWorkspace', `allow or ask: whether a delete inside the workspace's own folder runs where its writes are granted, or always asks a person (the node's, else ${BUILT_IN_SETTINGS.files.deleteInWorkspace})`, (raw) => {
+    const mode = parseDeleteInWorkspace(raw)
+    if (mode === null) throw new SettingValueError('files.deleteInWorkspace is allow or ask')
+    return mode
+  }),
+  files('massDeleteLimit', `entries one call may delete in the folder before a person is asked anyway, 0 to ${MAX_MASS_DELETE_LIMIT}, 0 for no limit (the node's, else ${BUILT_IN_SETTINGS.files.massDeleteLimit})`, (raw) => {
+    const limit = parseMassDeleteLimit(raw)
+    if (limit === null) throw new SettingValueError(`files.massDeleteLimit is entries, 0 to ${MAX_MASS_DELETE_LIMIT}, 0 for no limit`)
+    return limit
+  }),
   {
     key: 'mount',
     takes: 'where the agent sees the folder, such as /workspace (the node\'s, else its real path)',

@@ -15,6 +15,7 @@ import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES, type QuickJudgeProvider, typ
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
+import { BUILT_IN_DELETE_POLICY, DELETE_IN_WORKSPACE_MODES, MAX_MASS_DELETE_LIMIT, type DeleteInWorkspace } from '../../domain/delete-policy.js'
 
 /** The browser's idle timeout when a workspace names none, and its bounds (Q10 of the workspace-model brief): 60 s to 24 h. */
 export const DEFAULT_BROWSER_IDLE_MS = DEFAULT_IDLE_TIMEOUT_MS
@@ -103,6 +104,17 @@ const ApprovalSchema = z.object({
   quickJudge: z.enum(QUICK_JUDGE_SCOPES).optional(),
   quickJudgeProvider: z.enum(QUICK_JUDGE_PROVIDERS).optional(),
   quickJudgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
+}).strict()
+
+/**
+ * Its file tools' delete policy (the delete policy brief): `deleteInWorkspace` says whether a delete inside its own folder
+ * runs under the write gate (allow) or asks at the destructive floor (ask); `massDeleteLimit` how many entries one call
+ * may remove there before it asks anyway, 0 for no limit. Absent from a file that sets none, so a workspace.json written
+ * before it reads as it did.
+ */
+const FilesSchema = z.object({
+  deleteInWorkspace: z.enum(DELETE_IN_WORKSPACE_MODES).optional(),
+  massDeleteLimit: z.number().int().min(0).max(MAX_MASS_DELETE_LIMIT).optional(),
 }).strict()
 
 /** The most files secrets.files may list. */
@@ -260,6 +272,7 @@ export const WorkspaceSettingsSchema = z.object({
   browser: BrowserSchema.default({}),
   approval: ApprovalSchema.default({}),
   secrets: SecretsSchema.optional(),
+  files: FilesSchema.optional(),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
@@ -290,6 +303,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
   approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
   secrets: Object.freeze({ enabled: true, files: Object.freeze([] as string[]) }),
+  files: Object.freeze({ deleteInWorkspace: BUILT_IN_DELETE_POLICY.inWorkspace, massDeleteLimit: BUILT_IN_DELETE_POLICY.massLimit }),
 })
 
 /** A workspace's settings in force, each with where it came from (resolveSettings). */
@@ -306,6 +320,8 @@ export interface ResolvedSettings {
   approval: ResolvedApproval
   /** Its secret references (docs/secrets.md): the workspace's own alone, else Buckle's; the node names none. */
   secrets: { enabled: boolean; files: readonly string[] }
+  /** Its file tools' delete policy (the delete policy brief): the workspace's own, else the node's, else Buckle's. */
+  files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }
   env: Readonly<Record<string, string>>
   /** Each setting's source, by its key in workspace.json (`packs.shell`, `mount`, `policy.commands.allow`). */
   sources: Readonly<Record<string, SettingSource>>
@@ -411,6 +427,10 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     secrets: {
       enabled: pick('secrets.enabled', stored.secrets?.enabled, undefined, BUILT_IN_SETTINGS.secrets.enabled),
       files: pick('secrets.files', stored.secrets?.files, undefined, BUILT_IN_SETTINGS.secrets.files),
+    },
+    files: {
+      deleteInWorkspace: pick('files.deleteInWorkspace', stored.files?.deleteInWorkspace, node.files.deleteInWorkspace, BUILT_IN_SETTINGS.files.deleteInWorkspace),
+      massDeleteLimit: pick('files.massDeleteLimit', stored.files?.massDeleteLimit, node.files.massDeleteLimit, BUILT_IN_SETTINGS.files.massDeleteLimit),
     },
     env: { ...node.env, ...stored.env },
     sources,
@@ -558,9 +578,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, env: resolved.env }
+  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, files: resolved.files, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */
