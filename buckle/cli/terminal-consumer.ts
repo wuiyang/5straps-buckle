@@ -139,6 +139,7 @@ export function createTerminalConsumer(options: TerminalOptions = {}): TerminalC
       stopping = true
     },
     async prompt(request, { signal }) {
+      if (request.kind === 'history_recovery') return recoveryPrompt({ request, input, writer, signal: AbortSignal.any([signal, interrupted.signal]), interrupt })
       const question = approvalQuestion(request)
       const cancelled = AbortSignal.any([signal, interrupted.signal])
       cancelled.throwIfAborted()
@@ -399,4 +400,30 @@ export async function confirmAtTerminal(prompt: string, options: Pick<TerminalOp
     keys.stop()
     readline.close()
   }
+}
+
+async function recoveryPrompt(input: { request: CliRequest; input: Readable; writer: ConsoleWriter; signal: AbortSignal; interrupt: () => void }): Promise<{ status: 'answered'; answer: { choice: string } }> {
+  const checkpoint = input.request.action.details?.checkpoint
+  if (typeof checkpoint !== 'string' || !/^change-[a-zA-Z0-9-]+$/.test(checkpoint)) throw new Error('Invalid history recovery checkpoint')
+  await input.writer.block([`History checkpoint ${checkpoint} needs recovery.`, `buckle history recover ${checkpoint}`, 'Press r to recover, any other key to leave it pending.'], new Date())
+  const keys = watchKeys(input.input)
+  const keyboard = input.input as Readable & { isRaw?: boolean; setRawMode?: (raw: boolean) => void }
+  const wasRaw = keyboard.isRaw === true
+  try {
+    keyboard.setRawMode?.(true)
+    await keys.quiet(QUIET_MS, input.signal)
+    input.signal.throwIfAborted()
+    return await new Promise((resolve, reject) => {
+      const cleanup = () => { input.input.off('data', heard); input.signal.removeEventListener('abort', cancelled) }
+      const cancelled = () => { cleanup(); reject(input.signal.reason) }
+      const heard = (chunk: Buffer | string) => {
+        cleanup()
+        const key = String(chunk).toLowerCase()
+        if (key === '\u0003') { input.interrupt(); reject(new Error('Interrupted')); return }
+        resolve({ status: 'answered', answer: { choice: key === 'r' ? 'recover' : 'deny' } })
+      }
+      input.signal.addEventListener('abort', cancelled, { once: true })
+      input.input.on('data', heard)
+    })
+  } finally { keyboard.setRawMode?.(wasRaw); keys.stop() }
 }

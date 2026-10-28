@@ -17,7 +17,7 @@ import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths,
  * `restores`: the checkpoint a restore undid, and with `undoes`, how many it undid from that one to the newest, as a
  * restore to before a checkpoint does (rollback).
  */
-const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), requestId: z.string().optional(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional(), undoes: z.number().int().min(1).optional() })
+const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), requestId: z.string().optional(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), reason: z.string().optional(), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional(), undoes: z.number().int().min(1).optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
 export interface HistoryInput { sessionId: string; stageId: string; tool: string; requestId?: string; roots: string[]; excluded?: string[] }
 export type CheckpointSummary = ReturnType<typeof summary>
@@ -62,6 +62,12 @@ export function withConflictPath(refusal: { message: string }, shown: string | u
  * The newest checkpoint never finished: its call is still at work, or was interrupted. Told apart by whoever holds the
  * execution lock (plan), since a call at work holds it and an interrupted one does not.
  */
+export class HistoryRecoveryNeededError extends Error implements ServiceFailure {
+  readonly code = 'HISTORY_RECOVERY_NEEDED'
+  readonly status = 409
+  constructor(readonly checkpoint: string) { super(`Checkpoint ${checkpoint} needs owner recovery; run buckle history recover ${checkpoint}`) }
+}
+
 class PendingCheckpointError extends RestoreRefusedError {
   constructor(readonly checkpoint: string) {
     super(`A checkpoint waits for the owner's recovery (buckle history recover ${checkpoint}), so nothing is restored until then`)
@@ -99,6 +105,7 @@ export interface ChangeHistoryOptions {
   maxBytes: number
   retentionDays: number
   label?: string
+  onRecoveryNeeded?: (id: string) => Promise<void>
   lockDeadlineMs?: number
   /** The clock, in milliseconds: the host's unless a test moves time on to pass a checkpoint's retention. */
   now?: () => number
@@ -200,7 +207,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    */
   async function begin(details: HistoryInput, restore: { restores: string; undoes?: number | undefined } | null = null): Promise<Checkpoint> {
     const record = await section((connection): Checkpoint => {
-      if (records(connection).some(item => item.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
+      const pending = records(connection).find(item => item.status === 'pending')
+      if (pending) {
+        const error = new HistoryRecoveryNeededError(pending.id)
+        logger.warn(error.message, { code: error.code, checkpoint: pending.id })
+        throw error
+      }
       if (restore === null) prune(connection)
       const requestId = details.requestId?.slice(0, MAX_REQUEST_ID)
       return { ...details, ...(requestId === undefined ? {} : { requestId }), id: `change-${randomUUID()}`, createdAt: new Date(now()).toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), ...(restore === null ? {} : { restores: restore.restores }), ...(restore?.undoes === undefined ? {} : { undoes: restore.undoes }) }
@@ -209,9 +221,16 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     return record
   }
   async function finish(record: Checkpoint, status: 'complete' | 'interrupted' = 'complete'): Promise<void> {
-    record.after = await section(connection => capture(connection, record.roots, record.excluded))
-    record.status = status
-    await save(record)
+    try {
+      record.after = await section(connection => capture(connection, record.roots, record.excluded))
+      record.status = status
+      await save(record)
+    } catch {
+      record.status = 'interrupted'
+      record.reason = 'History capture did not finish; this checkpoint may not be restorable. Later writes can continue'
+      await section(connection => { connection.prepare('INSERT OR REPLACE INTO checkpoints(id,data) VALUES(?,?)').run(record.id, JSON.stringify(record)) })
+      logger.warn(`Checkpoint ${record.id}: ${record.reason}`)
+    }
   }
   async function findRecord(predicate: (record: Checkpoint) => boolean): Promise<Checkpoint | undefined> {
     return section(connection => records(connection).find(predicate))
@@ -304,10 +323,15 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       }, input.signal)
     },
     async run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-      return locked(async () => {
-        const record = await begin(details)
-        try { return await execute() } finally { await finish(record) }
-      }, signal)
+      try {
+        return await locked(async () => {
+          const record = await begin(details)
+          try { return await execute() } finally { await finish(record) }
+        }, signal)
+      } catch (error) {
+        if (error instanceof HistoryRecoveryNeededError) void input.onRecoveryNeeded?.(error.checkpoint).catch(() => logger.warn('Inline history recovery could not finish'))
+        throw error
+      }
     },
     /** Runs `execute` under the workspace's execution lock with no checkpoint: it writes nothing history restores, and nothing else writes while it runs. */
     exclusive<T>(execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -369,7 +393,7 @@ export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
  * restore puts back.
  */
 function summary(record: Checkpoint) {
-  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, restores: record.restores, undoes: record.undoes, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, reason: record.reason, restores: record.restores, undoes: record.undoes, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
 }
 
 /** Each path that differs between two states, with what the change from `before` to `after` did to it. */

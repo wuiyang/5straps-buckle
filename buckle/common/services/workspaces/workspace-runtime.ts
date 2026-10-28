@@ -274,7 +274,12 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? config.workspaceId}` })
+  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? config.workspaceId}`, onRecoveryNeeded: async id => {
+    const interaction = await input.interaction?.()
+    if (!interaction) return
+    const answer = await interaction.requestCli({ id: `recover-${id}`, kind: 'history_recovery', correlationId: id, action: { summary: `Recover checkpoint ${id}`, details: { checkpoint: id } }, wait: { mode: 'finite', timeoutMs: 60_000 } })
+    if (answer.status === 'answered' && answer.answer.choice === 'recover') await history.recover(id)
+  } })
   let closeApprovals: (() => Promise<void>) | undefined
   try {
     return await assembleRuntime({ ...input, history, onApprovalCleanup: close => { closeApprovals = close } })

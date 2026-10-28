@@ -920,3 +920,17 @@ describe('the serve terminal\'s question', () => {
     expect(await call).toMatchObject({ settled: false })
   })
 })
+
+describe('inline history recovery', () => {
+  it('offers the checkpoint command and recovers with one key', async () => {
+    const terminal = silentTerminal()
+    const cli = setupCli({ terminal })
+    try {
+      const pending = cli.requestCli({ id: 'recover-change-one', correlationId: 'change-one', kind: 'history_recovery', action: { summary: 'Recover checkpoint change-one', details: { checkpoint: 'change-one' } }, wait: { mode: 'finite', timeoutMs: 3000 } })
+      await new Promise(resolve => setTimeout(resolve, 600))
+      terminal.input.write('r')
+      expect(await pending).toMatchObject({ status: 'answered', answer: { choice: 'recover' } })
+      expect(terminal.shown()).toContain('buckle history recover change-one')
+    } finally { await cli.close() }
+  })
+})

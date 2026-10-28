@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { basename, isAbsolute } from 'pathe'
-import type { ChangeHistory } from '../history/journal.js'
+import { HistoryRecoveryNeededError, type ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
 import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from '../../domain/delete-policy.js'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
@@ -1131,6 +1131,7 @@ function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
 function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
   // A tool's own wait for the write lock answers as the invoker's wait would: a busy lock as busy state, to retry.
   if (error instanceof LockWaitError) return shapeError(error.cause, tool)
+  if (error instanceof HistoryRecoveryNeededError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof InvocationsClosedError) return { code: 'BUCKLE_SHUTTING_DOWN', message: 'Buckle shut down during this call and cancelled it; if it had started, its effects are unknown', retryable: false }
   if (error instanceof ScriptEndedError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof ToolInputError) return { code: error.code, message: error.message, retryable: false }
