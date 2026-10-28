@@ -45,6 +45,16 @@ export class RestoreRefusedError extends Error implements ServiceFailure {
   readonly status = 409
 }
 
+/**
+ * The newest checkpoint never finished: its call is still at work, or was interrupted. Told apart by whoever holds the
+ * execution lock (plan), since a call at work holds it and an interrupted one does not.
+ */
+class PendingCheckpointError extends RestoreRefusedError {
+  constructor(readonly checkpoint: string) {
+    super(`A checkpoint waits for the owner's recovery (buckle history recover ${checkpoint}), so nothing is restored until then`)
+  }
+}
+
 // A section that waited past its bound for another flow: busy, and the runtime's message names the
 // history directory, so the caller is told the plain reason instead.
 async function busyAsHistory<T>(work: Promise<T>): Promise<T> {
@@ -77,6 +87,8 @@ export interface ChangeHistoryOptions {
   retentionDays: number
   label?: string
   lockDeadlineMs?: number
+  /** The clock, in milliseconds: the host's unless a test moves time on to pass a checkpoint's retention. */
+  now?: () => number
   /** The host's unless a test imitates another: on Windows a file held open without read sharing is recorded as unreadable. */
   platform?: NodeJS.Platform
 }
@@ -95,6 +107,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const owner = createConnectionOwner(db, { owned: true, label: input.label ?? `history:${input.directory}` })
   const excluded = [...input.excluded, input.directory]
   const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS
+  const now = input.now ?? Date.now
   await section(connection => connection.exec(SCHEMA))
   // Each entry left out for its name (isPlainName) is named once, not at every capture.
   const warnedNames = new Set<string>()
@@ -112,9 +125,17 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function records(connection: DatabaseSync): Checkpoint[] {
     return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid').all().map(row => checkpointSchema.parse(JSON.parse(String(row.data))))
   }
-  /** The newest `count` checkpoints, newest first: one execution saves at a time, so rowid order is the order they were made in. */
+  /** Past its retention, so the next change prunes it: a checkpoint that never finished is kept until the owner recovers it. */
+  function expired(record: Checkpoint): boolean {
+    return record.status !== 'pending' && Date.parse(record.createdAt) < now() - input.retentionDays * 86_400_000
+  }
+  /**
+   * The newest `count` checkpoints still within their retention, newest first: one execution saves at a time, so rowid
+   * order is the order they were made in. One past it is left out though nothing has pruned it yet, so no restore is
+   * planned from a checkpoint the next change deletes.
+   */
   function newest(connection: DatabaseSync, count: number): Checkpoint[] {
-    return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid DESC LIMIT ?').all(count).map(row => checkpointSchema.parse(JSON.parse(String(row.data))))
+    return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid DESC LIMIT ?').all(count).map(row => checkpointSchema.parse(JSON.parse(String(row.data)))).filter(record => !expired(record))
   }
   function checkBudget(connection: DatabaseSync): void {
     const pages = Number(connection.prepare('PRAGMA page_count').get()!.page_count)
@@ -146,18 +167,30 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       throw error
     }
   }
+  /** Runs `operation` under the execution lock without waiting for it: refused as a wait where another call holds it. */
+  async function whileIdle<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: 'none' }, operation)
+    } catch (error) {
+      if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new RestoreRefusedError('Another call is changing the files now; try again once it finishes', { cause: error })
+      throw error
+    }
+  }
   function prune(connection: DatabaseSync): void {
-    const cutoff = Date.now() - input.retentionDays * 86_400_000
-    for (const record of records(connection)) if (record.status !== 'pending' && Date.parse(record.createdAt) < cutoff) connection.prepare('DELETE FROM checkpoints WHERE id=?').run(record.id)
+    for (const record of records(connection)) if (expired(record)) connection.prepare('DELETE FROM checkpoints WHERE id=?').run(record.id)
     const referenced = new Set(records(connection).flatMap(record => [...Object.values(record.before), ...Object.values(record.after ?? {})].flatMap(entry => entry.hash ? [entry.hash] : [])))
     for (const row of connection.prepare('SELECT hash FROM objects').all()) if (!referenced.has(String(row.hash))) connection.prepare('DELETE FROM objects WHERE hash=?').run(String(row.hash))
   }
-  async function begin(details: HistoryInput, restores?: string, undoes?: number): Promise<Checkpoint> {
+  /**
+   * A restore (`restores`, `undoes`) prunes nothing: the checkpoints it restores from may have passed their retention
+   * since it was planned, and pruning them takes the content it is putting back (the next change prunes them).
+   */
+  async function begin(details: HistoryInput, restore: { restores: string; undoes?: number | undefined } | null = null): Promise<Checkpoint> {
     const record = await section((connection): Checkpoint => {
       if (records(connection).some(item => item.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
-      prune(connection)
+      if (restore === null) prune(connection)
       const requestId = details.requestId?.slice(0, MAX_REQUEST_ID)
-      return { ...details, ...(requestId === undefined ? {} : { requestId }), id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), restores, ...(undoes === undefined ? {} : { undoes }) }
+      return { ...details, ...(requestId === undefined ? {} : { requestId }), id: `change-${randomUUID()}`, createdAt: new Date(now()).toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), ...(restore === null ? {} : { restores: restore.restores }), ...(restore?.undoes === undefined ? {} : { undoes: restore.undoes }) }
     })
     await save(record)
     return record
@@ -183,7 +216,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const current = await section(connection => capture(connection, record.roots, record.excluded))
     assertSnapshotMatches({ current, expected: after, target: record.before, paths, operation: 'Restore' })
     const by = options.by ?? { sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore' }
-    const restore = await begin({ ...by, roots: record.roots, excluded: record.excluded }, record.id, options.undoes)
+    const restore = await begin({ ...by, roots: record.roots, excluded: record.excluded }, { restores: record.id, undoes: options.undoes })
     try {
       await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash), roots: record.roots }))
     } finally { await finish(restore) }
@@ -198,7 +231,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if ('steps' in target && !(Number.isSafeInteger(target.steps) && target.steps >= 1 && target.steps <= RECENT_CHECKPOINTS_MAX)) throw new RestoreRefusedError(`steps counts checkpoints back from the current state, 1 to ${RECENT_CHECKPOINTS_MAX}`)
     const reach = 'steps' in target ? target.steps : RECENT_CHECKPOINTS_MAX
     const recent = newest(connection, reach)
-    if (recent[0]?.status === 'pending') throw new RestoreRefusedError('A checkpoint waits for the owner\'s recovery (buckle history recover <id>), so nothing is restored until then')
+    if (recent[0]?.status === 'pending') throw new PendingCheckpointError(recent[0].id)
     if ('steps' in target) {
       if (recent.length < target.steps) throw new RestoreRefusedError(`The change history holds ${recent.length} ${recent.length === 1 ? 'checkpoint' : 'checkpoints'}, fewer than the ${target.steps} steps named`)
       return recent.reverse()
@@ -218,8 +251,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       const shown = found.slice(0, count)
       return { checkpoints: shown.map((record, index) => ({ ...summary(record), current: index === 0 && record.status !== 'pending' })), more: found.length > shown.length }
     }),
-    /** What a restore to before `target` would undo now, read without the execution lock: the call that restores plans again under it. */
-    plan: (target: RollbackTarget) => section(connection => planOf(since(connection, target))),
+    /**
+     * What a restore to before `target` would undo now, read without the execution lock: the call that restores plans
+     * again under it. Where the newest checkpoint is pending it is told whether a call is at work (the lock is held: try
+     * again) or one was interrupted (the owner recovers it).
+     */
+    async plan(target: RollbackTarget): Promise<RollbackPlan> {
+      try {
+        return await section(connection => planOf(since(connection, target)))
+      } catch (error) {
+        if (!(error instanceof PendingCheckpointError)) throw error
+        return await whileIdle(() => section(connection => planOf(since(connection, target))))
+      }
+    },
     /**
      * Restores the workspace to before `target`: that checkpoint and every later one undone together, through the restore
      * path, and recorded as a checkpoint of its own made `by` the caller, which a restore of one step undoes. `onLocked` is

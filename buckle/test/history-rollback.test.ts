@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory, RestoreRefusedError } from '../common/services/history/journal.js'
@@ -13,16 +14,29 @@ import { configFromEnvironment } from './support/workspace-config.js'
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
-async function fixture() {
+async function fixture(options: { now?: () => number } = {}) {
   const root = mkdtempSync('/tmp/buckle-rollback-'); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
-  const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30 })
+  const directory = join(root, 'history')
+  const history = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, retentionDays: 30, ...options })
   let call = 0
   /** One write as an agent call makes it: its own checkpoint, its request named. */
   const write = (name: string, content: string, sessionId = 'chat-1') => history.run({ sessionId, stageId: `req-${++call}`, tool: 'fs_write', requestId: `req-${call}`, roots: [workspace] }, async () => { writeFileSync(join(workspace, name), content) })
   const read = (name: string) => (existsSync(join(workspace, name)) ? readFileSync(join(workspace, name), 'utf8') : null)
   const by = { sessionId: 'chat-1', stageId: 'undo-1', tool: 'history_restore', requestId: 'undo-1' }
-  return { workspace, history, write, read, by }
+  return { workspace, history, directory, write, read, by }
+}
+
+/** What a process killed mid-call leaves: the checkpoint pending, its state before the call kept and no state after. */
+function interrupt(directory: string, id: string): void {
+  const database = new DatabaseSync(join(directory, 'history.sqlite'))
+  try {
+    const row = database.prepare('SELECT data FROM checkpoints WHERE id=?').get(id) as { data: string }
+    const record = JSON.parse(row.data) as Record<string, unknown>
+    delete record.after
+    record.status = 'pending'
+    database.prepare('UPDATE checkpoints SET data=? WHERE id=?').run(JSON.stringify(record), id)
+  } finally { database.close() }
 }
 
 describe('the newest checkpoints', () => {
@@ -112,16 +126,86 @@ describe('a restore to before a checkpoint', () => {
     expect((await history.recent(5)).checkpoints).toHaveLength(2)
   })
 
-  it('is refused while a checkpoint waits for the owner\'s recovery', async () => {
+  // Review m2 of the Slice D rules review and m4 of its tests review: a call at work holds the execution lock, and an
+  // interrupted one leaves a pending checkpoint and no lock, so an agent is told to try again for the one and the owner is
+  // named for the other.
+  it('is refused while another call is changing the files, as a wait and not as a recovery', async () => {
     const { history, workspace, write } = await fixture()
     await write('a.txt', 'one')
     let release: () => void = () => undefined
     const running = history.run({ sessionId: 's', stageId: 'x', tool: 'fs_write', roots: [workspace] }, () => new Promise<void>(resolve => { release = resolve }))
     await new Promise(resolve => setTimeout(resolve, 50))
-    await expect(history.plan({ steps: 1 })).rejects.toThrow('waits for the owner\'s recovery')
+    const refused = history.plan({ steps: 1 })
+    await expect(refused).rejects.toBeInstanceOf(RestoreRefusedError)
+    await expect(refused).rejects.toThrow('Another call is changing the files now; try again once it finishes')
+    await expect(refused).rejects.not.toThrow('recover')
     release()
     await running
     expect((await history.plan({ steps: 1 })).undoes).toBe(1)
+  })
+
+  it('is refused naming the checkpoint an interrupted call left, until the owner recovers it, and then restores through it', async () => {
+    const { history, directory, write, read, by } = await fixture()
+    await write('a.txt', 'one')
+    await write('b.txt', 'two')
+    const newest = (await history.recent(1)).checkpoints[0]!
+    interrupt(directory, newest.id)
+    await expect(history.plan({ steps: 1 })).rejects.toThrow(`waits for the owner's recovery (buckle history recover ${newest.id})`)
+    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toThrow(`buckle history recover ${newest.id}`)
+    expect((await history.recent(1)).checkpoints[0]).toMatchObject({ id: newest.id, status: 'pending', current: false })
+    expect(read('b.txt')).toBe('two')
+    await history.recover(newest.id)
+    expect((await history.recent(1)).checkpoints[0]).toMatchObject({ id: newest.id, status: 'interrupted', current: true })
+    await history.rollback({ target: { steps: 1 }, by })
+    expect([read('a.txt'), read('b.txt')]).toEqual(['one', null])
+  })
+
+  // Review M2 of the Slice D rules review: a checkpoint past its retention is pruned as the next change begins, and a
+  // restore that began by pruning the checkpoints it was restoring from left the files half restored.
+  describe('past the retention', () => {
+    const DAY = 86_400_000
+    async function aged() {
+      const clock = { now: Date.now() }
+      return { ...await fixture({ now: () => clock.now }), clock }
+    }
+
+    it('leaves a checkpoint out of the newest and out of a restore, though nothing has pruned it yet, and changes nothing', async () => {
+      const { history, write, read, by, clock } = await aged()
+      await write('a.txt', 'one')
+      await write('b.txt', 'two')
+      clock.now += 31 * DAY
+      expect(await history.recent(5)).toEqual({ checkpoints: [], more: false })
+      await expect(history.plan({ steps: 1 })).rejects.toThrow('holds 0 checkpoints')
+      await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toBeInstanceOf(RestoreRefusedError)
+      expect([read('a.txt'), read('b.txt')]).toEqual(['one', 'two'])
+      expect(await history.list()).toHaveLength(2)
+    })
+
+    it('refuses a restore judged just before the retention ran out, whole, once it has', async () => {
+      const { history, write, read, by, clock } = await aged()
+      await write('a.txt', 'one')
+      await write('b.txt', 'two')
+      clock.now += 29 * DAY
+      expect((await history.plan({ steps: 2 })).undoes).toBe(2)
+      clock.now += 2 * DAY
+      await expect(history.rollback({ target: { steps: 2 }, by })).rejects.toBeInstanceOf(RestoreRefusedError)
+      expect([read('a.txt'), read('b.txt')]).toEqual(['one', 'two'])
+    })
+
+    it('restores every file when the checkpoints it restores from pass their retention as it begins', async () => {
+      const { history, workspace, write, read, by, clock } = await aged()
+      await write('a.txt', 'one')
+      await history.run({ sessionId: 'chat-1', stageId: 'both', tool: 'shell_exec', roots: [workspace] }, async () => {
+        writeFileSync(join(workspace, 'a.txt'), 'two')
+        writeFileSync(join(workspace, 'b.txt'), 'new')
+      })
+      clock.now += 29 * DAY
+      const restored = await history.rollback({ target: { steps: 1 }, by, check: () => { clock.now += 2 * DAY } })
+      expect([read('a.txt'), read('b.txt')]).toEqual(['one', null])
+      expect(restored).toMatchObject({ tool: 'history_restore', undoes: 1, changes: [{ kind: 'modified' }, { kind: 'deleted' }] })
+      await write('c.txt', 'four')
+      expect((await history.list()).map(item => item.tool)).toEqual(['history_restore', 'fs_write'])
+    })
   })
 })
 
