@@ -19,6 +19,16 @@ export interface WriteScopeOptions {
 }
 
 /**
+ * The root the agent may name, or the source of a read-only mount, that a delete of `path` would remove or hold: the
+ * path is that folder, or a folder above it. None for a path that holds no such root. `caseInsensitive` is the volume's;
+ * the platform's default when absent.
+ */
+export function rootHeldBy(path: string, paths: PathView, caseInsensitive?: boolean): string | undefined {
+  const readOnly = paths.mounts.filter(mount => mount.access === 'ro').map(mount => mount.source)
+  return [...paths.reachableRoots, ...readOnly].find(root => isInsideComparable(path, root, caseInsensitive))
+}
+
+/**
  * A write inside a scratch root is free; inside a mount the owner shares read-only it is refused, as no approval makes
  * it writable (Q6); beyond a mounted view's roots it is refused; anywhere else, the workspace and a read-write mount
  * among it, the first write to a directory asks, and an approval is remembered as the scope offered allows.
@@ -39,7 +49,7 @@ export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensit
       if (effect.kind !== 'write_path' && effect.kind !== 'delete_path') return null
       if (effect.kind === 'delete_path') {
         // Any spelling a volume that ignores case reads as the root is the root: a refusal never answers by case.
-        const holder = [...reachable, ...readOnly].find(root => isInsideComparable(effect.path, root, caseInsensitive))
+        const holder = rootHeldBy(effect.path, paths, caseInsensitive)
         if (holder !== undefined) return deny('write_scope', effect.path, `${paths.toVirtual(effect.path)} is or holds ${paths.toVirtual(holder)}, a folder the workspace shows or a read-only mount, which no tool removes or moves`)
       }
       // A delete at the floor in a scratch root still asks there (destructive-path-rule.ts): only its refusals are here.

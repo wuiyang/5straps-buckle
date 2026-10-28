@@ -5,6 +5,7 @@ import { openRealDirectory, type PinnedDirectory } from '../../../adapters/benea
 import { countTree, FOLDER_NOT_EMPTY, removeBeneath, type RemoveIo } from '../../../adapters/remove-beneath.js'
 import type { DeleteEffect, TreeCount } from '../../../domain/effect.js'
 import type { PathView } from '../../../domain/path-view.js'
+import { rootHeldBy } from '../../../domain/permission/rules/write-scope-rule.js'
 import { isInsideAny } from '../../../domain/paths.js'
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveEntry } from '../../invocation/real-path.js'
@@ -60,7 +61,8 @@ export function kindOf(info: Stats | BigIntStats | undefined): EntryKind {
  * whole holds, counted where it lies inside the roots the agent may name, so the ask can say so. There too, a folder
  * that holds entries named without `recursive`, or an entry that is neither a file, a link, nor a folder, is refused at
  * once, so no person is asked about a delete that would not happen; elsewhere nothing is looked into before a person
- * allows the call, and the same refusals come as it runs.
+ * allows the call, and the same refusals come as it runs. A folder the workspace shows is neither counted nor told to
+ * send `recursive`: the write rule refuses it whatever it holds, with its reason (rootHeldBy).
  */
 export function settleDelete(input: z.output<typeof schemas.deleteInput>, context: { paths: PathView }): SettledDelete {
   return {
@@ -72,6 +74,7 @@ export function settleDelete(input: z.output<typeof schemas.deleteInput>, contex
         if (kind === 'other' && inside) throw notRemovable(named)
         return { kind }
       }
+      if (rootHeldBy(entry.path, context.paths) !== undefined) return { kind }
       if (!input.recursive) {
         if (inside && readdirSync(entry.path).length > 0) throw new ToolInputError(`${named} is a folder that holds entries: send recursive: true to delete it and everything in it`, { code: FOLDER_NOT_EMPTY })
         return { kind }

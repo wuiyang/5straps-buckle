@@ -202,6 +202,40 @@ describe('fs_delete is refused where a write is', () => {
   })
 })
 
+describe('fs_delete of a folder the workspace shows', () => {
+  // The 0.1.8 publish test: the folder first answered FOLDER_NOT_EMPTY and told the agent to send recursive: true, which was then refused.
+  it('is refused once, with the reason and no hint to send recursive, whether or not recursive is sent', async () => {
+    const { runtime, workspace } = await node({ BUCKLE_WORKSPACE_MOUNT: '/workspace' })
+    writeFileSync(join(workspace, 'a.txt'), 'a')
+    const attempts: JsonObject[] = [{ paths: ['/workspace'] }, { paths: ['/workspace'], recursive: false }, { paths: ['/workspace'], recursive: true }, { paths: ['.'] }]
+    for (const args of attempts) {
+      const error = errorOf(await call(runtime, 'fs_delete', args))
+      expect(error, JSON.stringify(args)).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('a folder the workspace shows or a read-only mount, which no tool removes or moves') })
+      expect(error?.message).not.toContain('recursive')
+    }
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(existsSync(join(workspace, 'a.txt'))).toBe(true)
+  })
+
+  it('does not count what a folder it is refused for holds, so a workspace of any size gets the same refusal', async () => {
+    const { paths, root } = (() => {
+      const dir = mkdtempSync(join(tmpdir(), 'buckle-fs-delete-root-'))
+      roots.push(dir)
+      return { root: dir, paths: createPathView({ root: dir, mount: null }) }
+    })()
+    mkdirSync(join(root, 'sub'))
+    writeFileSync(join(root, 'sub', 'a.txt'), 'a')
+    for (const recursive of [false, true]) expect(() => settleDelete(deleteInput.parse({ paths: ['.'], recursive }), { paths })).not.toThrow()
+  })
+
+  it('still tells the agent to send recursive for a folder inside it that holds entries', async () => {
+    const { runtime, workspace } = await node({ BUCKLE_WORKSPACE_MOUNT: '/workspace' })
+    mkdirSync(join(workspace, 'full'))
+    writeFileSync(join(workspace, 'full', 'a.txt'), 'a')
+    expect(errorOf(await call(runtime, 'fs_delete', { paths: ['/workspace/full'] }))).toMatchObject({ code: 'FOLDER_NOT_EMPTY', message: expect.stringContaining('send recursive: true') })
+  })
+})
+
 describe('deletePaths', () => {
   const workspaceOf = () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-fs-delete-unit-'))

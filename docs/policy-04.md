@@ -70,7 +70,8 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
   reads as the same name, so `C:/ws/PROJ` is `C:/ws/proj` on Windows and macOS. A folder holding Buckle's state
   is refused with "The folder holds Buckle's own state and policy, which no tool removes or moves".
 - A folder with entries, without `recursive: true`, is refused as `FOLDER_NOT_EMPTY`, before any
-  ask. So are a socket, a device, and a pipe, and a recursive delete of a folder that holds an
+  ask (not a folder the first item refuses, which is refused with its reason, `recursive` or not).
+  So are a socket, a device, and a pipe, and a recursive delete of a folder that holds an
   entry named with a backslash on Linux or macOS (`FOLDER_NOT_REMOVABLE`).
 - A move whose `replace` does not match its landing: `replace: true` with nothing there
   (`NOTHING_TO_REPLACE`), `replace: false` with anything there (`TARGET_EXISTS`), or a replaced
