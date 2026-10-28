@@ -3,7 +3,7 @@ import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../../../ty
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
-import { floorSubjectPath, isRestoreSubject } from './destructive-path-rule.js'
+import { floorSubjectPath, isFloorSubject, isRestoreSubject } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<level>:<rule>:<subject>`. */
@@ -66,9 +66,10 @@ function askedPath(ask: Ask): string | null {
       return isSecretFileSubject(ask.subject) ? ask.subject.slice(SECRET_FILE_PREFIX.length) : ask.subject
     case 'read_scope':
       return ask.subject
-    // A delete at the floor is asked about as `delete:<folder>` or `delete-tree:<folder>` (destructive-path-rule.ts).
+    // A delete at the floor is asked about as `delete:<folder>` or `delete-tree:<folder>` (destructive-path-rule.ts). A floor
+    // subject that names no path (a restore's) is never read as one: its text would resolve against the working folder.
     case 'write_scope':
-      return floorSubjectPath(ask.subject) ?? ask.subject
+      return isFloorSubject(ask.subject) ? floorSubjectPath(ask.subject) : ask.subject
     // `read:<path>` or `write:<path>` (filesystem-policy.ts).
     case 'filesystem_policy':
       return ask.subject.slice(ask.subject.indexOf(':') + 1)

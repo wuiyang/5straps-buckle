@@ -84,9 +84,11 @@ describe('a restore of the change history', () => {
   })
 
   it('is never answered by the dangerously-allow switch at either level, nor rated by the decision AI', () => {
-    for (const level of ['command', 'all'] as const) {
-      const allowed = withDangerouslyAllow(engine(), { level: () => level, root: () => WORKSPACE })
-      expect(allowed.evaluate({ tool: 'history_restore', effects: [restore(), restored(`${WORKSPACE}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'ask', asks: [{ subject: `restore:${CHECKPOINT}..${HEAD}` }] })
+    // Review M1 of the Slice D tests review: a subject read as a path is resolved against the working folder, so the switch
+    // is also tried with the root a node started in the project's own folder has, where `restore:...` lies inside it.
+    for (const root of [WORKSPACE, process.cwd()]) for (const level of ['command', 'all'] as const) {
+      const allowed = withDangerouslyAllow(engine(), { level: () => level, root: () => root })
+      expect(allowed.evaluate({ tool: 'history_restore', effects: [restore(), restored(`${root}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'ask', asks: [{ subject: `restore:${CHECKPOINT}..${HEAD}` }] })
     }
     const outcome = evaluate([restore()])
     const ask = outcome.kind === 'ask' ? outcome.asks[0]! : null
