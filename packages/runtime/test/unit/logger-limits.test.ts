@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto'
+import { randomBytes, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrl, runInScope, type CredentialContext, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
@@ -669,5 +669,53 @@ describe('bounded redaction scans (URL pattern super-linear)', () => {
     expect(elapsedMs(() => root.logger.info('adversarial', { note: text }))).toBeLessThan(100)
     await root.flush()
     expect(sink.events).toHaveLength(1)
+  })
+})
+
+
+describe('checkpoint identifiers in logs', () => {
+  it('keeps generated checkpoint identifiers readable in recovery text and fields', async () => {
+    const checkpoint = `change-${randomUUID()}`
+    const message = `Checkpoint ${checkpoint} needs owner recovery; run buckle history recover ${checkpoint}`
+    const event = await logOnce({ checkpoint }, { message })
+    expect(event.message).toBe(message)
+    expect(event.fields).toEqual({ checkpoint })
+  })
+
+  it('redacts checkpoint-shaped values in credential contexts', async () => {
+    const checkpoint = `change-${randomUUID()}`
+    const contexts = [
+      `Authorization: Bearer ${checkpoint}`,
+      `Basic ${checkpoint}`,
+      `https://user:${checkpoint}@service.example/path`,
+      `https://service.example/path?token=${checkpoint}`,
+      `token ${checkpoint}`,
+      `token${' '.repeat(80)}${checkpoint}`,
+      `password:${' '.repeat(80)}${checkpoint}`,
+      `password: '${checkpoint}'`,
+      `Authorization: ${checkpoint}`,
+      `API_KEY=${checkpoint}`,
+      JSON.stringify({ token: checkpoint }),
+    ]
+    for (const text of contexts) expect(redactText(text).includes(checkpoint)).toBe(false)
+    const sink = memorySink()
+    const root = createLogger({ component: 'test', sinks: [sink], allowKeys: ['token', 'password', 'authorization'] })
+    root.logger.info('credentials', { token: checkpoint, password: checkpoint, authorization: checkpoint })
+    await root.flush()
+    expect(sink.events[0]!.fields).toEqual({ token: '[redacted]', password: '[redacted]', authorization: '[redacted]' })
+  })
+
+  it('redacts arbitrary change-prefixed runs and values touching a valid checkpoint identifier', () => {
+    const checkpoint = `change-${randomUUID()}`
+    const candidates = [
+      `change-${randomBytes(32).toString('hex')}`,
+      checkpoint.toUpperCase(),
+      checkpoint.replace(/^(change-[a-f0-9]{8}-[a-f0-9]{4}-)4/, (_, prefix: string) => `${prefix}1`),
+      `prefix${checkpoint}`,
+      `${checkpoint}tail`,
+      `${checkpoint}=`,
+      `${checkpoint}/tail`,
+    ]
+    for (const value of candidates) expect(redactText(`seen ${value}`).includes(value)).toBe(false)
   })
 })

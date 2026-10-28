@@ -1,7 +1,7 @@
 import { clearScreenDown, cursorTo, moveCursor } from 'node:readline'
 import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
-import type { CliConsumer, CliRequest } from '@5straps/runtime'
+import type { CliConsumer, CliConsumerResult, CliRequest } from '@5straps/runtime'
 import { JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
 import { actionPhrase } from '../common/domain/action-phrase.js'
@@ -402,28 +402,94 @@ export async function confirmAtTerminal(prompt: string, options: Pick<TerminalOp
   }
 }
 
-async function recoveryPrompt(input: { request: CliRequest; input: Readable; writer: ConsoleWriter; signal: AbortSignal; interrupt: () => void }): Promise<{ status: 'answered'; answer: { choice: string } }> {
-  const checkpoint = input.request.action.details?.checkpoint
-  if (typeof checkpoint !== 'string' || !/^change-[a-zA-Z0-9-]+$/.test(checkpoint)) throw new Error('Invalid history recovery checkpoint')
-  await input.writer.block([`History checkpoint ${checkpoint} needs recovery.`, `buckle history recover ${checkpoint}`, 'Press r to recover, any other key to leave it pending.'], new Date())
-  const keys = watchKeys(input.input)
+const RecoveryDetailsSchema = z.object({
+  checkpoint: z.string().regex(/^change-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/),
+  workspace: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+  workspaceName: z.string(),
+  command: z.string().min(1),
+})
+
+type RecoveryEnding = { result: CliConsumerResult } | { error: unknown }
+
+async function recoveryPrompt(input: { request: CliRequest; input: Readable; writer: ConsoleWriter; signal: AbortSignal; interrupt: () => void }): Promise<CliConsumerResult> {
+  input.signal.throwIfAborted()
+  const details = RecoveryDetailsSchema.parse(input.request.action.details)
+  const keyboard = openRecoveryKeyboard(input)
+  try {
+    await input.writer.block(marked({ workspaceId: details.workspace, workspaceName: details.workspaceName }, [
+      `History checkpoint ${details.checkpoint} needs recovery.`,
+      printable(details.command),
+      'Press r to recover, any other key to leave it pending.',
+    ]), new Date())
+    return await keyboard.answer()
+  } finally { keyboard.close() }
+}
+
+function openRecoveryKeyboard(input: { input: Readable; signal: AbortSignal; interrupt: () => void }) {
   const keyboard = input.input as Readable & { isRaw?: boolean; setRawMode?: (raw: boolean) => void }
   const wasRaw = keyboard.isRaw === true
+  const wasFlowing = input.input.readableFlowing === true
+  const keys = watchKeys(input.input)
+  const stopped = new AbortController()
+  const ending = Promise.withResolvers<RecoveryEnding>()
+  let accepting = false
+  let finished = false
+  let closed = false
+
+  function close(): void {
+    if (closed) return
+    closed = true
+    stopped.abort()
+    input.input.off('data', heard)
+    input.input.off('end', ended)
+    input.input.off('close', ended)
+    input.input.off('error', failed)
+    input.signal.removeEventListener('abort', cancelled)
+    try { keyboard.setRawMode?.(wasRaw) }
+    finally {
+      keys.stop()
+      if (!wasFlowing && input.input.listenerCount('data') === 0) input.input.pause()
+    }
+  }
+
+  function finish(result: RecoveryEnding): void {
+    if (finished) return
+    finished = true
+    try { close(); ending.resolve(result) }
+    catch (error) { ending.resolve({ error }) }
+  }
+
+  function cancelled(): void { finish({ error: input.signal.reason }) }
+  function ended(): void { finish({ result: { status: 'denied', reason: 'Terminal input closed' } }) }
+  function failed(error: Error): void { finish({ error }) }
+  function heard(chunk: Buffer | string): void {
+    const key = String(chunk).toLowerCase()
+    if (key.includes('\u0003')) {
+      finish({ error: new Error('Interrupted') })
+      input.interrupt()
+    } else if (key.includes('\u0004')) ended()
+    else if (accepting) finish({ result: { status: 'answered', answer: { choice: key === 'r' ? 'recover' : 'deny' } } })
+  }
+
+  input.input.on('data', heard)
+  input.input.once('end', ended)
+  input.input.once('close', ended)
+  input.input.once('error', failed)
+  input.signal.addEventListener('abort', cancelled, { once: true })
   try {
-    keyboard.setRawMode?.(true)
-    await keys.quiet(QUIET_MS, input.signal)
-    input.signal.throwIfAborted()
-    return await new Promise((resolve, reject) => {
-      const cleanup = () => { input.input.off('data', heard); input.signal.removeEventListener('abort', cancelled) }
-      const cancelled = () => { cleanup(); reject(input.signal.reason) }
-      const heard = (chunk: Buffer | string) => {
-        cleanup()
-        const key = String(chunk).toLowerCase()
-        if (key === '\u0003') { input.interrupt(); reject(new Error('Interrupted')); return }
-        resolve({ status: 'answered', answer: { choice: key === 'r' ? 'recover' : 'deny' } })
-      }
-      input.signal.addEventListener('abort', cancelled, { once: true })
-      input.input.on('data', heard)
-    })
-  } finally { keyboard.setRawMode?.(wasRaw); keys.stop() }
+    if (input.signal.aborted) cancelled()
+    else if (input.input.readableEnded || input.input.destroyed) ended()
+    else { keyboard.setRawMode?.(true); input.input.resume() }
+  } catch (error) { finish({ error }) }
+
+  return {
+    async answer(): Promise<CliConsumerResult> {
+      await keys.quiet(QUIET_MS, stopped.signal)
+      accepting = !finished
+      const result = await ending.promise
+      if ('error' in result) throw result.error
+      return result.result
+    },
+    close,
+  }
 }

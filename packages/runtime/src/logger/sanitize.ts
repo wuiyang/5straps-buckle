@@ -43,8 +43,10 @@ const PIECE_SEPARATOR = /[/_-]/
 const HASH_SUFFIX = /[-_][\w-]{1,12}$/
 // A lowercase 40-character hex run reads as a git SHA-1, unless a credential word or an assignment sits just before it.
 const GIT_SHA = /^[a-f0-9]{40}$/
-const SHA_CONTEXT_CHARS = 32
-const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth)\b|=\s*$/i
+// Only a complete generated checkpoint identifier, outside a credential context.
+const CHECKPOINT_ID = /^change-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/
+const IDENTIFIER_CONTEXT_CHARS = 32
+const CREDENTIAL_NEARBY = /token|secret|passw(?:or)?d|passphrase|credential|cookie|signature|bearer|api[-_ ]?key|private[-_ ]?key|\b(?:pat|key|auth(?:orization)?)\b|=\s*$/i
 const HAS_DIGIT = /\d/
 const HAS_LETTER = /[A-Za-z]/
 // Slack beyond the byte limit so a secret straddling the cut is still matched whole before truncation.
@@ -90,7 +92,7 @@ function redactContext(text: string): string {
 
 function redactValues(text: string): string {
   return text
-    .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - SHA_CONTEXT_CHARS), offset) }) ? match : REDACTED))
+    .replace(SECRET_VALUE, (match: string, offset: number, whole: string) => (isGitSha({ match, before: whole.slice(Math.max(0, offset - IDENTIFIER_CONTEXT_CHARS), offset) }) ? match : REDACTED))
     .replace(OPAQUE_RUN, redactOpaqueRun)
 }
 
@@ -99,7 +101,11 @@ function isGitSha({ match, before }: { match: string; before: string }): boolean
 }
 
 // A path is judged segment by segment; any other run is judged whole, so a slash cannot split a secret.
-function redactOpaqueRun(run: string): string {
+function redactOpaqueRun(run: string, offset: number, whole: string): string {
+  if (CHECKPOINT_ID.test(run)) {
+    const before = whole.slice(0, offset).trimEnd().slice(-IDENTIFIER_CONTEXT_CHARS)
+    if (!CREDENTIAL_NEARBY.test(before)) return run
+  }
   if (!isPathShaped(run)) return isOpaque(run) ? REDACTED : run
   return run.split('/').map(segment => (isOpaque(segment) ? REDACTED : segment)).join('/')
 }

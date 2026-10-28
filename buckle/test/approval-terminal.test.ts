@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -922,15 +923,133 @@ describe('the serve terminal\'s question', () => {
 })
 
 describe('inline history recovery', () => {
-  it('offers the checkpoint command and recovers with one key', async () => {
+  function recovery(workspaceName = 'The site'): CliRequest {
+    const checkpoint = `change-${randomUUID()}`
+    const workspace = 'workspace-1'
+    return { id: `recover-${checkpoint}`, correlationId: checkpoint, kind: 'history_recovery', action: { summary: `Recover checkpoint ${checkpoint}`, details: { checkpoint, workspace, workspaceName, command: `buckle history recover ${checkpoint} --workspace ${workspace}` } }, wait: { mode: 'finite', timeoutMs: 3000 } }
+  }
+
+  function recoveryTerminal() {
     const terminal = silentTerminal()
+    let raw = false
+    Object.defineProperty(terminal.input, 'isRaw', { get: () => raw })
+    Object.assign(terminal.input, { setRawMode: (value: boolean) => { raw = value } })
+    terminal.input.pause()
+    return { ...terminal, raw: () => raw }
+  }
+
+  async function reachPhase(terminal: ReturnType<typeof recoveryTerminal>, phase: 'quiet' | 'prompt') {
+    await vi.waitFor(() => expect(terminal.raw()).toBe(true))
+    if (phase === 'prompt') await new Promise(resolve => setTimeout(resolve, 550))
+  }
+
+  function expectReleased(terminal: ReturnType<typeof recoveryTerminal>) {
+    expect(terminal.raw()).toBe(false)
+    expect(terminal.input.listenerCount('data')).toBe(0)
+    expect(terminal.input.listenerCount('end')).toBe(0)
+    expect(terminal.input.listenerCount('close')).toBe(0)
+    expect(terminal.input.isPaused()).toBe(true)
+  }
+
+  it('names the workspace on every escaped line and offers its exact recovery command', async () => {
+    const terminal = recoveryTerminal()
     const cli = setupCli({ terminal })
+    const name = 'The site\n\u001b[31m\u202e'
+    const request = recovery(name)
     try {
-      const pending = cli.requestCli({ id: 'recover-change-one', correlationId: 'change-one', kind: 'history_recovery', action: { summary: 'Recover checkpoint change-one', details: { checkpoint: 'change-one' } }, wait: { mode: 'finite', timeoutMs: 3000 } })
-      await new Promise(resolve => setTimeout(resolve, 600))
+      const pending = cli.requestCli(request)
+      await reachPhase(terminal, 'prompt')
       terminal.input.write('r')
       expect(await pending).toMatchObject({ status: 'answered', answer: { choice: 'recover' } })
-      expect(terminal.shown()).toContain('buckle history recover change-one')
+      const mark = `[${printable(name)}] `
+      const shown = terminal.shown()
+      expect(shown.trimEnd().split('\n').every(line => line.startsWith(mark))).toBe(true)
+      expect(shown).toContain(`${mark}${request.action.details!.command}`)
+      expect(shown).not.toMatch(/[\u001b\u202e]/)
+      expectReleased(terminal)
     } finally { await cli.close() }
+  })
+
+  it.each(['quiet', 'prompt'] as const)('handles Ctrl-C during the recovery %s period and releases the terminal', async (phase) => {
+    const terminal = recoveryTerminal()
+    const stop = new AbortController()
+    const interrupted = vi.fn()
+    const pending = createTerminalConsumer({ ...terminal, onInterrupt: interrupted }).prompt(recovery(), { signal: stop.signal }).catch(() => undefined)
+    try {
+      await reachPhase(terminal, phase)
+      terminal.input.write('\u0003')
+      await vi.waitFor(() => expect(interrupted).toHaveBeenCalledOnce(), { timeout: 150 })
+      await pending
+      expectReleased(terminal)
+    } finally { stop.abort(); await pending }
+  })
+
+  it.each(['quiet', 'prompt'] as const)('declines EOF during the recovery %s period and releases the terminal', async (phase) => {
+    const terminal = recoveryTerminal()
+    const stop = new AbortController()
+    const pending = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(recovery(), { signal: stop.signal })
+    const settled = pending.catch(() => undefined)
+    try {
+      await reachPhase(terminal, phase)
+      terminal.input.end()
+      expect(await Promise.race([settled, new Promise(resolve => setTimeout(() => resolve('still waiting'), 150))])).toMatchObject({ status: 'denied' })
+      expectReleased(terminal)
+    } finally { stop.abort(); await settled }
+  })
+
+  it.each(['quiet', 'prompt'] as const)('cleans up an abort during the recovery %s period', async (phase) => {
+    const terminal = recoveryTerminal()
+    const stop = new AbortController()
+    const pending = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(recovery(), { signal: stop.signal }).catch(() => undefined)
+    try {
+      await reachPhase(terminal, phase)
+      stop.abort()
+      await pending
+      expectReleased(terminal)
+    } finally { stop.abort(); await pending }
+  })
+
+  it('releases initially idle input after a recovery answer', async () => {
+    const terminal = silentTerminal()
+    const cli = setupCli({ terminal })
+    expect(terminal.input.readableFlowing).toBe(null)
+    try {
+      const pending = cli.requestCli(recovery())
+      await vi.waitFor(() => expect(terminal.shown()).toContain('Press r to recover'))
+      await new Promise(resolve => setTimeout(resolve, 550))
+      terminal.input.write('r')
+      expect(await pending).toMatchObject({ status: 'answered', answer: { choice: 'recover' } })
+      expect(terminal.input.listenerCount('data')).toBe(0)
+      expect(terminal.input.isPaused()).toBe(true)
+    } finally { await cli.close() }
+  })
+
+  it('discards a recovery key typed before the quiet period ends', async () => {
+    const terminal = recoveryTerminal()
+    const cli = setupCli({ terminal })
+    let answered = false
+    try {
+      const pending = cli.requestCli(recovery()).then(result => { answered = true; return result })
+      await reachPhase(terminal, 'quiet')
+      terminal.input.write('r')
+      await new Promise(resolve => setTimeout(resolve, 100))
+      expect(answered).toBe(false)
+      await new Promise(resolve => setTimeout(resolve, 550))
+      terminal.input.write('r')
+      expect(await pending).toMatchObject({ status: 'answered', answer: { choice: 'recover' } })
+      expectReleased(terminal)
+    } finally { await cli.close() }
+  })
+
+  it.each(['checkpoint', 'workspace'] as const)('refuses a malformed recovery %s before taking keyboard input', async (field) => {
+    const terminal = recoveryTerminal()
+    const stop = new AbortController()
+    const request = recovery()
+    const invalid = { ...request, action: { ...request.action, details: { ...request.action.details, [field]: '../another' } } }
+    const pending = createTerminalConsumer({ ...terminal, onInterrupt: () => {} }).prompt(invalid, { signal: stop.signal }).then(() => 'answered', () => 'rejected')
+    try {
+      expect(await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve('still waiting'), 150))])).toBe('rejected')
+      expectReleased(terminal)
+    } finally { stop.abort(); await pending }
   })
 })
