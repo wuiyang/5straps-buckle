@@ -68,9 +68,9 @@ first version with file copies.
 
 ## Approvals
 
-A copy that needs a person waits for one. The node holds the copy for a short time first, 15 seconds
-by default, then answers that a person must approve it. The CLI prints what the node asks and the
-command that approves it there:
+A copy that needs a person waits for one. The node holds the copy for the workspace's wait first, 15
+seconds by default and 120 at most, then answers that a person must approve it. The CLI prints what
+the node asks and the command that approves it there, and one line naming the ask, never its token:
 
 ```
 This copy needs a person to approve it at the node, with these commands there:
@@ -80,7 +80,7 @@ This copy needs a person to approve it at the node, with these commands there:
   waiting on node http://127.0.0.1:4320, workspace my-project
   see the whole action with: buckle approvals --workspace my-project
   then approve with: buckle approve <token> --scope once --workspace my-project (it shows the action again and asks to confirm)
-Waiting for the approval...
+Waiting for approval of write_scope /srv/my-project; sending the copy again under the same request until it is decided (Ctrl-C stops)
 ```
 
 The whole action is shown at the node, by `buckle approvals` and again by `buckle approve`, as every
@@ -91,8 +91,10 @@ count and digest, and the node refuses a body whose digest does not match.
 While the copy waits, the CLI sends the same request again 2 seconds after each answer, and the node
 holds each send for its own wait first. Each send joins the same pending ask, so the copy does not
 start over. Once the ask is answered, the copy runs. When the ask is denied, the copy stops and exits
-1. When the ask expires before anyone answers, the copy also stops and exits 1, and nothing is
-copied.
+1. An ask that expires before anyone answers is asked again by the next send, which shows the fresh
+ask. A node that holds a copy past node:http's 300 seconds answers HTTP 408; the CLI says so on one
+line and sends the same request again too. Ctrl-C stops the wait, exit 130, and nothing is copied
+([approvals over MCP, and copies](approvals-03.md#copies)).
 
 Each copy asks in a session of its own, `buckle-cp-` and a random id. Callers name their own sessions,
 so a fixed name would let an approval at session scope cover anyone who used it, an agent's own writes

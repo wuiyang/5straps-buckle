@@ -82,7 +82,7 @@ The answer can come from a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can post each pending approval to
 the relay `BUCKLE_APPROVAL_WEBHOOK` names, for a person away from the machine. A
-call waits 15 seconds by default (`approvalWaitMs`) before handing the agent a retry token.
+call waits 15 seconds by default (`approvalWaitMs`), 30 at most on `/mcp`; sent again, it joins its ask.
 
 ```bash
 buckle approvals --watch

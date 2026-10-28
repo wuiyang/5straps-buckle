@@ -128,7 +128,9 @@ curl -s -X POST http://127.0.0.1:4320/v1/invoke \
 
 The answer's `outcome` is `ok`, `error`, or `approval_required`. `context.sessionId` names the
 session a session grant belongs to; calls without one share the session `rpc`. A body over
-`BUCKLE_MAX_REQUEST_BYTES`, 1 MiB by default, gets a 413.
+`BUCKLE_MAX_REQUEST_BYTES`, 1 MiB by default, gets a 413. `/mcp` holds a call that needs a
+person 30 seconds at most, then answers with the ask, as no error; the agent sends the same call
+again once it is decided ([approvals over MCP](approvals-03.md)).
 
 ## The first approval
 

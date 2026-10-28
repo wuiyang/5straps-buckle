@@ -8,8 +8,8 @@ handle, each with an example. [What stays unread](policy-03.md) goes deeper on c
 forge pack,
 [part five](known-limits-05.md) services and the terminal,
 [parts six](known-limits-06.md) and [seven](known-limits-07.md) the decision AI,
-[part eight](known-limits-08.md) the file tools, and [part nine](known-limits-09.md) pushes from
-read-only mounts.
+[part eight](known-limits-08.md) the file tools, and [part nine](known-limits-09.md) read-only
+pushes and MCP asks.
 
 ## Reading commands
 

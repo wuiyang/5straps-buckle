@@ -91,10 +91,10 @@ decides; [Rings](rings.md#approval-webhook) describes what it sends.
 
 ## Timeouts
 
-`buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs` (15000
-by default); an answer within it lets it run. `0` holds until someone answers. When a
-hold ends unanswered, the call returns `approval_required`, its asks stay answerable ten more
-minutes, and the agent retries it once answered. An HTTP caller's
+`buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000
+by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. An answer within
+the hold lets it run. Unanswered, the call returns `approval_required`; the agent sends the same
+call again once decided ([over MCP](approvals-03.md)). An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
 command waits only while its terminal question is open. `buckle workspace set approvalWaitMs

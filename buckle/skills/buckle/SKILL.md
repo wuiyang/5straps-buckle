@@ -39,6 +39,8 @@ to do and why, then ask them to read the whole action in `buckle approvals` (or 
 `buckle approvals --watch`) on the Buckle machine. `buckle approve` shows the action again and
 approves only once they confirm it at a terminal. Reaching for a different tool, a shell one-liner, or
 a rephrased path hits the same gate, because the gate is on the effect rather than the wording.
+Over MCP the ask comes back as a result that is no error. Once the person has decided, send the
+same call again, unchanged: it joins the ask and runs once if approved.
 
 Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`.
 
