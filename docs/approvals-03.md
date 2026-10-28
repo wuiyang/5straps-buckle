@@ -41,9 +41,9 @@ token it came with). It runs under the requestId the first call was given, so it
 - answers with the outcome of a run its client missed, audited `REPLAYED`, without running it
   again; a run cut short as its client left answers that its effects are unknown.
 
-A replayed answer says so: its text begins `Replayed: this call already ran (at <time>) for its
-approval and was not run again`, and its `_meta` carries `5straps/replayed: true`, since the
-client may have read that run already. Send the call once more to run it anew.
+A replayed answer says so: its text begins `Replayed: this call already ran` and gives the time
+of that run where it is known, and its `_meta` carries `5straps/replayed: true`, since the client
+may have read that run already. Send the call once more to run it anew.
 
 A call never runs twice for one decision. Buckle remembers each call that asked, for ten minutes
 from its last use and 256 calls per workspace at most. It forgets the call once a call under it
