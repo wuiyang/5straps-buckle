@@ -45,8 +45,8 @@ These are asks, not refusals. They wait for a person, as [approvals](approvals.m
   Outside the workspace's folder the ask also offers that folder and its subfolders; inside it,
   this ask comes only under `files.deleteInWorkspace ask` ([deletes](policy-05.md)).
 - "... removes more than 100 entries at once", "..., at the top of the workspace, asks a person",
-  or "This call deletes N entries in the workspace at once": the mass-delete guard. Approve it,
-  delete in smaller calls, or raise `files.massDeleteLimit`.
+  "This call deletes N entries in the workspace at once", or "This script has deleted N entries in
+  the workspace so far": the mass-delete guard. Approve it, or raise `files.massDeleteLimit`.
 - "Writing ... empties a file this session never read", or "shrinks a file this session never
   read to under half its size": read the file with `fs_read` first. A read within the hour lets
   the write run without this ask.

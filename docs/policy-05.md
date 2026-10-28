@@ -39,7 +39,10 @@ Under `allow`, one call still asks at the floor when it would remove:
 
 The reason says which: "removes more than 100 entries at once", "at the top of the workspace", or
 "This call deletes 140 entries in the workspace at once". A folder moved whole removes nothing,
-since all of it lands elsewhere, so it is not counted. A grant of `delete-tree:<folder>` or
+since all of it lands elsewhere, so it is not counted. In a script ([code mode](code-mode.md)) the
+calls count together, so a loop of single deletes asks once it passes the limit, with "This script
+has deleted N entries in the workspace so far"; a folder at the top that the script took entries
+out of asks when it is removed, though it holds nothing by then. A grant of `delete-tree:<folder>` or
 `delete-batch:<workspace folder>`, for the session or always, lets that removal through again.
 `buckle workspace set files.massDeleteLimit 0` turns the guard off, and `250` raises it, up to
 10000; the node's default is `BUCKLE_MASS_DELETE_LIMIT` (`mass-delete-limit`).
@@ -51,6 +54,10 @@ A delete outside the folder asks at the floor, whatever the folder's write grant
 ask also offers `delete-below:<folder>`: the folder that holds the target, with its subfolders. A
 grant of it covers every later delete of that folder or of anything in it, at any depth, matched
 as a write grant matches, except inside the workspace's own folder, which its setting decides.
+The ask offers the target alone, and a held grant of such a folder covers nothing, where the
+folder is the home folder or above it, or holds the workspace's folder, a mount, or a scratch
+root: the agent picks the target, and that grant would cover other projects or the disk. A file
+moved from outside the folder into it asks as the delete it is, since a delete inside runs free.
 
 | Choice | What it grants |
 |---|---|

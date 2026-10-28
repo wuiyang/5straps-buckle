@@ -57,9 +57,10 @@ the [first part](known-limits.md) lists the other limits.
 
 ## Deletes
 
-- The mass-delete guard counts one call. An agent, or a script, that deletes 100 entries in each of
-  many calls is never asked by it; each call meets the write gate alone. A folder moved whole is not
-  counted, as nothing of it is removed.
+- The mass-delete guard counts one call, or all the calls of one script together. An agent that
+  deletes 100 entries in each of many direct calls is never asked by it; each call meets the write
+  gate alone. A script that stopped at an ask and is sent again counts from that send, as the calls
+  it replays do not run again. A folder moved whole is not counted, as nothing of it is removed.
 - The wider subject, `delete-below:<folder>`, is not part of the challenge a device key signs, so a
   person's device cannot grant it yet, and Rings at protocol 0.1.7 offers the ask's own subject
   alone. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
