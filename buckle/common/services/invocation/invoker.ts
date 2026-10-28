@@ -306,6 +306,13 @@ export function createInvoker(options: InvokerOptions): Invoker {
             gate = { ...gate, asked: error.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
             return { requestId: request.requestId, outcome: 'approval_required', approvals: error.approvals }
           }
+          // The caller left before anything ran, as a client that closes its connection while the call waits for a person
+          // does: nothing ran, and the audit entry says so in a code of its own, never as a tool that failed (the MCP asks
+          // brief, item 5). A script's call cut by its script's end keeps that reason.
+          if (!ran && !via && signal?.aborted && error === signal.reason && !options.shutdown?.aborted) {
+            logger.info('A call ended before it ran: its caller left', { tool: request.tool.slice(0, MAX_LOGGED_ID) })
+            return failed(request, CALLER_LEFT)
+          }
           // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
           // tool ran, the caller is told it ran with effects unknown and not to retry, as a re-send is: a
           // plain refusal would read as "nothing ran", and a retry under a new requestId would run it
@@ -831,6 +838,8 @@ function ranUnrecorded(code: string): { code: string; message: string; retryable
 }
 
 const SUPERSEDED = { code: 'REQUEST_SUPERSEDED', message: 'A newer call with the same requestId joined this approval wait and carries it on; this call did not run', retryable: false }
+/** What a call whose caller left before it ran answers, and its audit entry's detail: nothing ran. */
+export const CALLER_LEFT = { code: 'CALLER_LEFT', message: 'The caller left before this call ran, so nothing ran; an ask it made stays pending, and the same call sent again joins it', retryable: true }
 const UNANSWERED = { code: 'APPROVAL_UNANSWERED', message: 'The approval this call waited for expired, was withdrawn or was spent by another call; send the call again to ask again', retryable: true }
 const REUSED = { code: REQUEST_ID_REUSED, message: 'This requestId already names a different call from this session; send a new requestId', retryable: false }
 const SCRIPT_CALL_REUSED = { code: CODE_REPLAY_DIVERGED, message: 'This script ran lately and made another call at this point then; Buckle does not mix the two runs. Change the script, even by a comment, to run it from its start', retryable: false }
