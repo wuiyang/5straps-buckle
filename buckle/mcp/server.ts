@@ -100,7 +100,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
-          const response = await invokeJoined({
+          const { response, replay } = await invokeJoined({
             runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
             ...(options.isCancel ? { isCancel: options.isCancel } : {}), ...(wait ? { wait } : {}),
           })
@@ -110,7 +110,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
               ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), approves: runtime.judgeApproves(), ...(options.serverId === undefined ? {} : { node: options.serverId }) })
               : relayApproval({ response, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
           }
-          return toCallToolResult(response)
+          return toCallToolResult(response, replay)
         } catch (error) {
           return failedCall(error)
         }
@@ -137,6 +137,7 @@ function joinsOf(runtime: BuckleRuntime): ResendJoin {
  * remembered under sameCallKey. It is forgotten once a call under that key answered its outcome to a client still there
  * within MCP_HOLD_MS, inside any client's own timeout; it is kept where the answer was approval_required, the client
  * left, a newer call carried the wait on, or the outcome came later than that, as a client may have stopped reading.
+ * `replay` is set where the invoker answered with an earlier run's outcome instead of running the call.
  */
 async function invokeJoined(input: {
   runtime: BuckleRuntime
@@ -149,27 +150,33 @@ async function invokeJoined(input: {
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
-}): Promise<InvokeResponse> {
+}): Promise<{ response: InvokeResponse; replay?: Replay }> {
   const { hints } = input
   const key = sameCallKey({ sessionId: input.sessionId, actor: useScopeSafe()?.context.actor, tool: input.tool, args: input.args })
   const remembered = hints.requestId === undefined ? input.joins.requestIdOf(key) : undefined
   const requestId = hints.requestId ?? remembered ?? randomUUID()
   const arrived = performance.now()
   let asked = false
+  let replay: Replay | undefined
   const response = await input.runtime.invoke({
     request: { requestId, tool: input.tool, args: input.args, approvalTokens: input.approvalTokens, context: { ...(hints.stageId === undefined ? {} : { stageId: hints.stageId }) } },
     sessionId: input.sessionId,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.isCancel ? { isCancel: input.isCancel } : {}),
     ...(input.wait ? { approvalWait: input.wait } : {}),
+    onReplayed: (earlier) => { replay = earlier },
     // A client that names its own requestId joins by it, and nothing is remembered for it.
     ...(hints.requestId === undefined ? { onAsked: () => { asked = true; input.joins.remember(key, requestId) } } : {}),
   })
-  if (hints.requestId !== undefined || (!asked && remembered === undefined && response.outcome !== 'approval_required')) return response
+  const answered = { response, ...(replay ? { replay } : {}) }
+  if (hints.requestId !== undefined || (!asked && remembered === undefined && response.outcome !== 'approval_required')) return answered
   if (delivered({ response, arrived, ...(input.signal ? { signal: input.signal } : {}) })) input.joins.forget(key)
   else input.joins.remember(key, requestId)
-  return response
+  return answered
 }
+
+/** An answer that came from an earlier run of the same call, and when that run ended (absent while it ran). */
+type Replay = { at?: number }
 
 /** Whether a call's final outcome reached a client still there: its connection open, and within the hold cap. */
 function delivered(input: { response: InvokeResponse; arrived: number; signal?: AbortSignal }): boolean {
@@ -410,14 +417,26 @@ function failedCall(error: unknown) {
   return { isError: true, content: [{ type: 'text' as const, text: agentFailureMessage(error) }] }
 }
 
-function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>) {
-  if (response.outcome === 'error') {
-    return {
-      isError: true,
-      content: [{ type: 'text' as const, text: `${response.error.code}: ${response.error.message}` }],
-    }
+/** The `_meta` key that marks an answer replayed from an earlier run (review of the MCP asks slice, finding M1). */
+const REPLAYED_META = '5straps/replayed'
+
+/**
+ * A replayed answer says so first, in words and in `_meta`: the client may have read this run's outcome already, and
+ * an agent that sends an identical call to run it again (a test after an edit) must not take the old output for a new one.
+ * The face forgets the call once the replay is delivered, so the next identical call runs.
+ */
+function replayNotice(replay: Replay): string {
+  const when = replay.at === undefined ? '' : ` (at ${new Date(replay.at).toISOString()})`
+  return `Replayed: this call already ran${when} for its approval and was not run again, so this is that run's answer. To run it anew, send the call again.`
+}
+
+function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>, replay?: Replay) {
+  const text = response.outcome === 'error' ? `${response.error.code}: ${response.error.message}` : JSON.stringify(response.output, null, 2)
+  return {
+    ...(response.outcome === 'error' ? { isError: true } : {}),
+    content: [{ type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text }],
+    ...(replay ? { _meta: { [REPLAYED_META]: true } } : {}),
   }
-  return { content: [{ type: 'text' as const, text: JSON.stringify(response.output, null, 2) }] }
 }
 
 function mcpSessionId(context: { sessionId?: string }): string {

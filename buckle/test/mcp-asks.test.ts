@@ -37,7 +37,7 @@ async function node(wait: string) {
   return { root, config, runtime }
 }
 
-interface ToolResult { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown> }
+interface ToolResult { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown>; _meta?: Record<string, unknown> }
 
 /** One tools/call over the face, as an MCP client sends it, and the tool result it answers. */
 async function call(workspace: { config: BuckleConfig; runtime: BuckleRuntime }, input: { tool: string; args: Record<string, unknown>; meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> {
@@ -151,6 +151,57 @@ describe('an identical re-send (item 2)', () => {
     const again = await call(workspace, writeOutside(workspace.root))
     expect(again.isError).toBeUndefined()
     expect(results(workspace.runtime).map(entry => entry.detail)).toEqual([undefined, 'REPLAYED'])
+  })
+
+  // Review of the MCP asks slice, finding M1: a client still connected had read the run, and got its answer again unmarked.
+  it('marks an answer replayed from the earlier run, in its text and its _meta, and runs the call anew when sent once more', async () => {
+    const workspace = await node('60000')
+    const note = join(workspace.root, 'outside', 'note.md')
+    vi.useFakeTimers({ toFake: ['performance'] })
+    const held = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    vi.advanceTimersByTime(MCP_HOLD_MS + 1_000)
+    await approve(workspace.runtime, 'session')
+    const first = await held
+    expect(first.isError).toBeUndefined()
+    expect(first.content[0]!.text).not.toContain('Replayed')
+    expect(first._meta?.['5straps/replayed']).toBeUndefined()
+    writeFileSync(note, 'changed in between')
+
+    const again = await call(workspace, writeOutside(workspace.root))
+    expect(again.isError).toBeUndefined()
+    expect(again.content[0]!.text).toMatch(/^Replayed: this call already ran \(at \d{4}-\d\d-\d\dT[\d:.]+Z\) for its approval and was not run again, so this is that run's answer\. To run it anew, send the call again\./)
+    expect(again.content[0]!.text).toContain(first.content[0]!.text)
+    expect(again._meta).toMatchObject({ '5straps/replayed': true })
+    expect(readFileSync(note, 'utf8')).toBe('changed in between')
+
+    // The replay was delivered, so the face forgot the call: the next identical one runs, under the session grant.
+    const anew = await call(workspace, writeOutside(workspace.root))
+    expect(anew.isError).toBeUndefined()
+    expect(anew.content[0]!.text).not.toContain('Replayed')
+    expect(anew._meta?.['5straps/replayed']).toBeUndefined()
+    expect(readFileSync(note, 'utf8')).toBe('from the agent')
+    expect(results(workspace.runtime).map(entry => entry.detail)).toEqual([undefined, 'REPLAYED', undefined])
+  })
+
+  it('marks an error replayed from the earlier run the same way', async () => {
+    const workspace = await node('60000')
+    // A file where a directory is wanted: the write asks, is approved, and fails as it runs.
+    writeFileSync(join(workspace.root, 'outside', 'file.md'), 'a file')
+    const blocked = { tool: 'fs_write', args: { path: join(workspace.root, 'outside', 'file.md', 'child.md'), content: 'x' } }
+    vi.useFakeTimers({ toFake: ['performance'] })
+    const held = call(workspace, blocked)
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    vi.advanceTimersByTime(MCP_HOLD_MS + 1_000)
+    await approve(workspace.runtime, 'session')
+    const first = await held
+    expect(first.isError).toBe(true)
+
+    const again = await call(workspace, blocked)
+    expect(again.isError).toBe(true)
+    expect(again.content[0]!.text).toMatch(/^Replayed: this call already ran/)
+    expect(again.content[0]!.text).toContain(first.content[0]!.text)
+    expect(again._meta).toMatchObject({ '5straps/replayed': true })
   })
 
   // Review of the MCP asks slice, finding M2: the replay store drops a run after 256 finished calls, the join still remembers it.

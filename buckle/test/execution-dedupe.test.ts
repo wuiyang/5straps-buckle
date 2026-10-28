@@ -64,13 +64,16 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const first = runtime.invoke({ sessionId: 'chat-1', request: read('rings-1') })
     await vi.waitFor(() => expect(runs.runs()).toBe(1))
 
-    const second = runtime.invoke({ sessionId: 'chat-1', request: read('rings-1') })
+    const onReplayed = vi.fn()
+    const second = runtime.invoke({ sessionId: 'chat-1', request: read('rings-1'), onReplayed })
     runs.release()
 
     const [one, two] = await Promise.all([first, second])
     expect(one).toMatchObject({ outcome: 'ok' })
     expect(two).toEqual(one)
     expect(runs.runs()).toBe(1)
+    // Told it was answered by the earlier run (whether that still ran, and so had no time, depends on the timing).
+    expect(onReplayed).toHaveBeenCalledOnce()
     expect(results(runtime, 'rings-1').map(entry => entry.detail ?? 'ran')).toEqual(['ran', 'REPLAYED'])
   })
 
@@ -79,11 +82,20 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const runs = watchRuns(runtime, 'fs_read')
     const first = await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2') })
     writeFileSync(join(workspace, 'note.md'), 'second body')
-    const second = await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2') })
+    const onReplayed = vi.fn()
+    const ranBefore = Date.now()
+    const second = await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2'), onReplayed })
 
     expect(first).toMatchObject({ outcome: 'ok', output: { content: 'first body' } })
     expect(second).toEqual(first)
     expect(runs.runs()).toBe(1)
+    // Told it replayed an earlier run, and when that ended (review of the MCP asks slice, finding M1).
+    expect(onReplayed).toHaveBeenCalledOnce()
+    expect(onReplayed.mock.calls[0]![0].at).toBeLessThanOrEqual(ranBefore)
+    expect(onReplayed.mock.calls[0]![0].at).toBeGreaterThan(ranBefore - 60_000)
+    const fresh = vi.fn()
+    await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2b'), onReplayed: fresh })
+    expect(fresh).not.toHaveBeenCalled()
     expect(results(runtime, 'rings-2').map(entry => `${entry.outcome}:${entry.detail ?? 'ran'}`)).toEqual(['ok:ran', 'ok:REPLAYED'])
   })
 
@@ -273,6 +285,25 @@ describe('the execution store', () => {
     expect(await replayed(executions, 'r1')).toEqual(response('r1'))
     now += EXECUTION_TTL_MS
     expect(executions.earlier(key('r1'))).toBeUndefined()
+  })
+
+  it('says when a finished call ended, to a re-send that replays it, and not while it runs', async () => {
+    let now = 5_000
+    const executions = createExecutions({ now: () => now })
+    const running = executions.claim(key('running'))
+    if (running.kind !== 'owner') throw new Error('expected to own the execution')
+    expect(executions.earlier(key('running'))).toMatchObject({ kind: 'replay' })
+    expect(executions.earlier(key('running'))).not.toHaveProperty('at')
+
+    ran(executions, 'done')
+    now += 60_000
+    expect(executions.earlier(key('done'))).toMatchObject({ kind: 'replay', at: 5_000 })
+    // The same for a stub: a script's call, and a call the store dropped.
+    ran(executions, 'script', response('script'), true)
+    for (let index = 0; index < EXECUTION_LIMIT; index += 1) ran(executions, `later:${index}`)
+    expect(executions.earlier(key('script'))).toMatchObject({ kind: 'replay', at: 65_000 })
+    expect(executions.earlier(key('done'))).toMatchObject({ kind: 'replay', at: 5_000 })
+    running.execution.settle({ response: response('running'), auditId: 'a', callerLeft: false })
   })
 
   it('keeps the newest calls up to its limit, and a stub for the one it drops', async () => {

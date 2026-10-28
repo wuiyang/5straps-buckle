@@ -125,6 +125,12 @@ export interface InvokeInput {
    */
   onAsked?: () => void
   /**
+   * Told when the call did not run but was answered with an earlier run's outcome, with when that run ended on the
+   * store's clock (absent where it was still running). The MCP face marks such an answer, since its client may have read it
+   * already (review of the MCP asks slice, finding M1).
+   */
+  onReplayed?: (replay: { at?: number }) => void
+  /**
    * Set only by the files route: the bytes of one `buckle cp`, which reach the tool through its context and never its
    * arguments. Only the tool whose `transfer` names this kind runs with them, and no such tool runs without them.
    */
@@ -162,7 +168,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, file }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, file }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -190,7 +196,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
         if (earlier.kind === 'reused') return failed(request, via ? SCRIPT_CALL_REUSED : REUSED)
         replayed = true
         // The key hashes the whole requestId, so the earlier call's is the same; the caller's own is echoed all the same.
-        return { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
+        const answer = { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
+        onReplayed?.(earlier.at === undefined ? {} : { at: earlier.at })
+        return answer
       }
 
       let answered: InvokeResponse | undefined

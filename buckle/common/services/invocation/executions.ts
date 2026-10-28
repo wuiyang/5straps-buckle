@@ -71,9 +71,12 @@ export interface Execution {
   settle(input: { response: InvokeResponse; auditId: string; callerLeft: boolean; script?: boolean }): void
 }
 
-/** A call of the same key that runs now or ran lately: its outcome, or a refusal when it asked for something else. */
+/**
+ * A call of the same key that runs now or ran lately: its outcome, or a refusal when it asked for something else.
+ * `at`: when a finished call ended, on the store's clock; absent while it still runs.
+ */
 export type Earlier =
-  | { kind: 'replay'; response: Promise<InvokeResponse> }
+  | { kind: 'replay'; response: Promise<InvokeResponse>; at?: number }
   | { kind: 'reused' }
 
 export type ExecutionClaim = { kind: 'owner'; execution: Execution } | Earlier
@@ -100,12 +103,13 @@ interface Kept<T> {
 
 interface Finished extends Kept<InvokeResponse> {
   expiresAt: number
+  at: number
   slot: BudgetSlot
   auditId: string
 }
 
 /** An answer kept without its body: it only says the call ran. */
-type Stub = Kept<InvokeResponse> & { expiresAt: number }
+type Stub = Kept<InvokeResponse> & { expiresAt: number; at: number }
 
 /** One kept response as the node's budget counts it; `evict` drops it from its workspace's store. */
 export interface BudgetSlot {
@@ -179,11 +183,11 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
     const entry = finished.get(id)
     forget(id)
     if (!entry) return
-    dropped.set(id, { fingerprint: entry.fingerprint, outcome: alreadyExecuted({ requestId: entry.outcome.requestId, auditId: entry.auditId, reason: 'evicted' }), expiresAt: entry.expiresAt })
+    dropped.set(id, { fingerprint: entry.fingerprint, outcome: alreadyExecuted({ requestId: entry.outcome.requestId, auditId: entry.auditId, reason: 'evicted' }), expiresAt: entry.expiresAt, at: entry.at })
     trim(dropped, EVICTED_STUB_LIMIT)
   }
 
-  function finishedFor(id: string): Kept<InvokeResponse> | undefined {
+  function finishedFor(id: string): (Kept<InvokeResponse> & { at: number }) | undefined {
     const entry = finished.get(id) ?? stubs.get(id) ?? dropped.get(id)
     if (entry && entry.expiresAt <= now()) forget(id)
     return finished.get(id) ?? stubs.get(id) ?? dropped.get(id)
@@ -191,14 +195,14 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
 
   function keepStub(id: string, entry: Kept<InvokeResponse>): void {
     forget(id)
-    stubs.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS })
+    stubs.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, at: now() })
     trim(stubs, SCRIPT_STUB_LIMIT)
   }
 
   function keep(id: string, entry: Kept<InvokeResponse>, size: number, auditId: string): void {
     forget(id)
     const slot: BudgetSlot = { bytes: size, evict: () => { if (finished.get(id)?.slot === slot) drop(id) } }
-    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, slot, auditId })
+    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, at: now(), slot, auditId })
     bytes += size
     budget.add(slot)
     for (const oldest of finished.keys()) {
@@ -210,9 +214,10 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
   function earlier(key: ExecutionKey): Earlier | undefined {
     const id = executionId(key)
     const done = finishedFor(id)
-    const found = done ? { fingerprint: done.fingerprint, outcome: Promise.resolve(done.outcome) } : running.get(id)
+    const found = done ? { fingerprint: done.fingerprint, outcome: Promise.resolve(done.outcome), at: done.at } : running.get(id)
     if (!found) return undefined
-    return found.fingerprint === key.fingerprint ? { kind: 'replay', response: found.outcome } : { kind: 'reused' }
+    if (found.fingerprint !== key.fingerprint) return { kind: 'reused' }
+    return { kind: 'replay', response: found.outcome, ...('at' in found ? { at: found.at } : {}) }
   }
 
   return {
