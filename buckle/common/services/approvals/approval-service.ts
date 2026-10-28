@@ -274,8 +274,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
+      const ownHold = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
+      // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it (the MCP asks brief, item 5).
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), holdMs: ownHold, ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
       const { requests: approvals, answered } = issued
+      if (issued.evicted?.length) notices.cancelled(issued.evicted)
+      if (issued.lapsesAt !== undefined) scheduleSweepAt(issued.lapsesAt)
       // Joined to asks all answered, one of them denied: nothing to wait for, and the caller refuses.
       if (issued.joined && approvals.length === 0) return { settled: true, approvals, answered }
       const tokens = approvals.map(approval => approval.token)
@@ -293,7 +297,6 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
       await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
       if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
-      const ownHold = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
       const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
       // No hold left for a script's call is a wait that elapsed, not one the caller declined.
       const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
@@ -316,7 +319,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const participant = new AbortController()
       ask.participants.add(participant)
       const result = waitFor({ ask, participant, hold: interaction.hold, holdMs, signal: input.signal })
-        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, held: holdMs, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
       track(result)
       return result
     },
@@ -428,7 +431,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
   function scheduleSweep(approvals: ApprovalRequest[]): void {
     if (approvals.length === 0) return
-    const remaining = Math.max(...approvals.map(approval => remainingMs(approval.expiresAt)))
+    sweepIn(Math.max(...approvals.map(approval => remainingMs(approval.expiresAt))))
+  }
+
+  /** A sweep at the moment an ask lapses, so it is reported expired on time (the MCP asks brief, item 5). */
+  function scheduleSweepAt(at: number): void {
+    sweepIn(Math.max(0, at - Date.now()))
+  }
+
+  function sweepIn(remaining: number): void {
     if (remaining === Infinity || closing.signal.aborted) return
     const sweep = setTimeout(() => {
       sweeps.delete(sweep)
@@ -555,10 +566,14 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; held: number | null; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
     const { ask, ending, own } = input
     ask.participants.delete(input.participant)
     const last = ask.participants.size === 0
+    // The last hold on the asks ended with them unanswered: a caller that left marks them abandoned, and one held until
+    // answered starts their ten minutes (the MCP asks brief, item 5). A finite hold set its lapse when it asked.
+    const dropped = ending === 'aborted' && !cancels(input.signal, input.isCancel)
+    if (last && ending !== 'settled' && ending !== 'superseded' && (dropped || input.held === null)) await holdEnded({ tokens: stillPending(ask.tokens), abandoned: dropped })
     if (ending === 'superseded') {
       // The newer caller carries the ask on; this one reports back without running.
       if (last) release({ ask, keepAsking: input.hold === 'grace' })
@@ -582,6 +597,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
   async function withdraw(tokens: string[]): Promise<void> {
     notices.cancelled(await options.registry.cancel(tokens))
+  }
+
+  /** Records that the last hold on these asks ended; a failure to is logged, never the caller's (its asks keep their expiry). */
+  async function holdEnded(input: { tokens: string[]; abandoned: boolean }): Promise<void> {
+    if (input.tokens.length === 0) return
+    try {
+      const lapse = await options.registry.holdEnded(input)
+      if (lapse !== undefined) scheduleSweepAt(lapse)
+    } catch (error) {
+      logger.warn('Could not record that an approval\'s hold ended; it keeps its expiry', { error: withoutCause(error) })
+    }
   }
 
   /** The tokens still waiting; all of them when the queue cannot be read. */

@@ -2,7 +2,10 @@ import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
-import { describe, expect, it, vi } from 'vitest'
+import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -20,6 +23,23 @@ async function node(wait = '60000') {
 
 const write = (requestId: string, path = 'one/a.md'): InvokeRequest => ({ requestId, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: [] })
 
+const MINUTE = 60_000
+
+afterEach(() => { vi.useRealTimers() })
+
+/** Moves the wall clock the asks' expiries are read on, and nothing else, so the node's own timers keep running. */
+function clockAt(time: number): void {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(time)
+}
+
+function queue() {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-queue-'))
+  return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, null)
+}
+
+const outside = (index: number) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
+
 function results(runtime: BuckleRuntime, requestId: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
 }
@@ -35,6 +55,132 @@ describe('a call whose caller left while it waited for a person', () => {
     expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT', retryable: true } })
     expect(results(runtime, 'left-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_LEFT' })])
     expect(runtime.approvalService.pending()).toHaveLength(1)
+    await runtime.history.close()
+  })
+})
+
+describe('an abandoned ask', () => {
+  it('stays answerable for the join window, ten minutes, and lapses with it', async () => {
+    const start = Date.now()
+    const { runtime } = await node()
+    const leaving = new AbortController()
+    const waiting = runtime.invoke({ sessionId: 'chat-1', request: write('left-2'), signal: leaving.signal })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    leaving.abort()
+    await waiting
+
+    const [kept] = runtime.approvalService.waiting()
+    expect(kept).toMatchObject({ abandonedAt: expect.any(String) })
+    clockAt(start + 9 * MINUTE)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 11 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
+
+  it('is answered within that window as any waiting ask is', async () => {
+    const start = Date.now()
+    const { runtime } = await node()
+    const leaving = new AbortController()
+    const waiting = runtime.invoke({ sessionId: 'chat-1', request: write('left-3'), signal: leaving.signal })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    leaving.abort()
+    await waiting
+
+    clockAt(start + 9 * MINUTE)
+    const [token] = runtime.approvalService.pending().map(request => request.token)
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    await runtime.history.close()
+  })
+
+  it(`never fills a session's ${MAX_PENDING_PER_SESSION} asks alone: the oldest abandoned one makes room, and is withdrawn`, async () => {
+    const registry = queue()
+    const asked = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
+    await registry.holdEnded({ tokens: asked.requests.map(request => request.token), abandoned: true })
+
+    const fresh = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(MAX_PENDING_PER_SESSION)], holdMs: 30_000 })
+
+    expect(fresh.joined).toBe(false)
+    expect(fresh.evicted).toHaveLength(1)
+    expect(registry.pending()).toHaveLength(MAX_PENDING_PER_SESSION)
+    expect(registry.pending().map(request => request.token)).toContain(fresh.requests[0]!.token)
+  })
+
+  it(`never fills the workspace's ${MAX_PENDING_PER_WORKSPACE} asks alone either`, async () => {
+    const registry = queue()
+    for (let session = 0; session * MAX_PENDING_PER_SESSION < MAX_PENDING_PER_WORKSPACE; session += 1) {
+      const asked = await registry.ask({ tool: 'fs_write', sessionId: `left-${session}`, asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(session * MAX_PENDING_PER_SESSION + index)), holdMs: 30_000 })
+      await registry.holdEnded({ tokens: asked.requests.map(request => request.token), abandoned: true })
+    }
+    expect((await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(MAX_PENDING_PER_WORKSPACE)], holdMs: 30_000 })).evicted).toHaveLength(1)
+  })
+
+  it('still refuses a session full of asks a caller holds or was answered about, as before', async () => {
+    const registry = queue()
+    await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(MAX_PENDING_PER_SESSION)], holdMs: 30_000 })).rejects.toThrow(/limit 50/)
+  })
+})
+
+describe('an ask at wait 0', () => {
+  it('states no deadline, and lapses ten minutes after its hold ended', async () => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    const response = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-1'), approvalWait: { mode: 'finite', ms: 50 } })
+    if (response.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${response.outcome}`)
+    expect(response.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
+
+    clockAt(start + 9 * MINUTE)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 11 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
+
+  it('lapses ten minutes after a call that would not wait returned', async () => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    const first = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-2'), approvalWait: { mode: 'none' } })
+    if (first.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${first.outcome}`)
+    expect(first.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
+
+    clockAt(start + 9 * MINUTE)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 11 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
+
+  it('restarts its clock when a re-send joins it', async () => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' } })
+    clockAt(start + 9 * MINUTE)
+    const again = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' } })
+    expect(again).toMatchObject({ outcome: 'approval_required' })
+
+    clockAt(start + 15 * MINUTE)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 20 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
+
+  it('held until decided, lapses ten minutes after its caller left', async () => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    const leaving = new AbortController()
+    const waiting = runtime.invoke({ sessionId: 'chat-1', request: write('zero-4'), signal: leaving.signal })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    clockAt(start + 30 * MINUTE)
+    // Still held: no lapse while a caller waits on it.
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    leaving.abort()
+    await waiting
+    clockAt(start + 39 * MINUTE)
+    expect(runtime.approvalService.pending()).toHaveLength(1)
+    clockAt(start + 41 * MINUTE)
+    expect(runtime.approvalService.pending()).toEqual([])
     await runtime.history.close()
   })
 })

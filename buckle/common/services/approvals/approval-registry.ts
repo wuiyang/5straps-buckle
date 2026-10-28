@@ -19,7 +19,11 @@ export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
 export const APPROVAL_OUTBOX_RETENTION_MS = 24 * 60 * 60 * 1000
 
-const PENDING_TTL_MS = 10 * 60_000
+/**
+ * How long an ask stays answerable past the hold of the call that made it, and how long one nobody holds any more lasts:
+ * the join window, the replay window's ten minutes (invocation/executions.ts).
+ */
+export const PENDING_TTL_MS = 10 * 60_000
 /** How long after a failed background prune an ordinary call tries it again. */
 const PRUNE_RETRY_MS = 5_000
 /**
@@ -82,12 +86,18 @@ const callSchema = z.object({
 })
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
+// lapsesAt: when an ask nobody holds lapses before its stated expiry, ten minutes after the last hold on it ended, and
+// again from a re-send that joins it (the MCP asks brief, item 5). An ask at wait 0 states no deadline, which its signed
+// challenge carries, so the lapse is kept beside the request rather than in it; none while a caller holds it until
+// answered. abandonedAt: when the caller that held it left before its hold ended; the oldest abandoned asks make room
+// under the caps, so a session's or the workspace's cap is never reached through them alone.
+const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.datetime().optional() }
 // callFile: the file beside approvals.json that holds the whole call of the ask's request group, once for every
 // ask the call made, so the file every update rewrites holds requests alone (review M5). `bytes` counts against
 // the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
 // call inline, in `call`.
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional() })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // code: the code a once the decision AI's thorough stage gave on request binds to (fix brief 9, B31).
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
@@ -133,11 +143,11 @@ function assertRoomFor(input: { state: State; workspace: string; sessionId: stri
   const session = waiting.filter(entry => entry.sessionId === input.sessionId && entry.actor === input.actor).length
   if (session + input.asked > MAX_PENDING_PER_SESSION) {
     logger.warn('Approval refused: the session has too many asks waiting', { waiting: session, asked: input.asked, limit: MAX_PENDING_PER_SESSION })
-    throw new ApprovalLimitError(`This session already has ${session} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_SESSION})`)
+    throw new ApprovalLimitError(`This session already has ${session} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_SESSION})`, 'session')
   }
   if (waiting.length + input.asked > MAX_PENDING_PER_WORKSPACE) {
     logger.warn('Approval refused: the workspace has too many asks waiting', { waiting: waiting.length, asked: input.asked, limit: MAX_PENDING_PER_WORKSPACE })
-    throw new ApprovalLimitError(`This workspace already has ${waiting.length} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_WORKSPACE})`)
+    throw new ApprovalLimitError(`This workspace already has ${waiting.length} approvals waiting; ask again once some are answered or withdrawn (limit ${MAX_PENDING_PER_WORKSPACE})`, 'workspace')
   }
 }
 
@@ -170,14 +180,14 @@ function assertBytesFor(input: { waiting: readonly PendingEntry[]; group: readon
   const held = footprints(input.waiting)
   const sum = (keep: (item: (typeof held)[number]) => boolean) => held.filter(keep).reduce((total, item) => total + item.bytes, 0)
   const budgets = [
-    { held: sum(item => item.sessionId === first.sessionId && item.actor === first.actor), limit: MAX_PENDING_BYTES_PER_SESSION, whose: 'This session\'s approvals waiting', per: 'per session' },
-    { held: sum(item => item.actor === first.actor), limit: MAX_PENDING_BYTES_PER_ACTOR, whose: 'The approvals waiting from this caller', per: 'per caller' },
-    { held: sum(() => true), limit: MAX_PENDING_BYTES, whose: 'The approvals waiting in this workspace', per: 'per workspace' },
+    { held: sum(item => item.sessionId === first.sessionId && item.actor === first.actor), limit: MAX_PENDING_BYTES_PER_SESSION, whose: 'This session\'s approvals waiting', per: 'per session', room: 'session' as const },
+    { held: sum(item => item.actor === first.actor), limit: MAX_PENDING_BYTES_PER_ACTOR, whose: 'The approvals waiting from this caller', per: 'per caller', room: 'actor' as const },
+    { held: sum(() => true), limit: MAX_PENDING_BYTES, whose: 'The approvals waiting in this workspace', per: 'per workspace', room: 'workspace' as const },
   ]
   for (const budget of budgets) {
     if (budget.held + asked <= budget.limit) continue
     logger.warn('Approval refused: the approvals waiting hold too much', { waiting: budget.held, asked, limit: budget.limit, per: budget.per })
-    throw new ApprovalLimitError(`${budget.whose} already hold ${budget.held} bytes and this call's asks would add ${asked}; ask again once some are answered or withdrawn (limit ${budget.limit} bytes ${budget.per})`)
+    throw new ApprovalLimitError(`${budget.whose} already hold ${budget.held} bytes and this call's asks would add ${asked}; ask again once some are answered or withdrawn (limit ${budget.limit} bytes ${budget.per})`, budget.room)
   }
 }
 
@@ -265,7 +275,13 @@ export class ApprovalConflictError extends Error {}
 export class RequestIdReusedError extends Error {}
 
 /** The session or the workspace already has its cap of asks waiting: retryable once some are answered or expire. */
-export class ApprovalLimitError extends Error {}
+export class ApprovalLimitError extends Error {
+  /** Whose cap refused: the abandoned asks there are the ones withdrawn to make room (the MCP asks brief, item 5). */
+  constructor(message: string, readonly room: LimitRoom = 'workspace') { super(message) }
+}
+
+/** The asks one cap counts: the session's (its id under its actor), the actor's, or the whole workspace's. */
+type LimitRoom = 'session' | 'actor' | 'workspace'
 
 /** One ask would hold more than MAX_ASK_BYTES: refused whole before anything is asked, never shown in part (owner decision D17). */
 export class ActionTooLargeError extends Error {
@@ -285,6 +301,12 @@ export interface AskInput {
   fingerprint?: string
   /** The whole call as a challenge shows it: its redacted arguments, their directory, the node's description and the judged effects. */
   call?: AskedCall
+  /**
+   * How long the asking caller is held, in ms; null holds it until answered. An ask that states no deadline lapses this
+   * long and ten minutes more from now, and a re-send that joins restarts that clock (the MCP asks brief, item 5); one held
+   * until answered lapses only once its hold ends (holdEnded). Absent: no lapse, as before the brief.
+   */
+  holdMs?: number | null
 }
 
 /** A call as its challenge shows it (owner decision D9). */
@@ -331,6 +353,10 @@ export interface AskResult {
   requests: ApprovalRequest[]
   joined: boolean
   answered: string[]
+  /** The abandoned asks withdrawn to make room for this one under a cap (the MCP asks brief, item 5). */
+  evicted?: string[]
+  /** When the earliest of the group's asks lapses, in ms, where one now does: a sweep then reports it. */
+  lapsesAt?: number
 }
 
 export interface ApprovalRegistry {
@@ -365,6 +391,12 @@ export interface ApprovalRegistry {
   wasDenied(tokens: string[]): boolean
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
+  /**
+   * The last hold on these asks ended with them unanswered (the MCP asks brief, item 5). `abandoned`: its caller left
+   * before the hold ended, so each stays answerable for ten minutes at most and is marked abandoned; otherwise an ask that
+   * states no deadline and was held until answered lapses ten minutes from now. Returns the earliest lapse it set, in ms.
+   */
+  holdEnded(input: { tokens: string[]; abandoned: boolean }): Promise<number | undefined>
   /**
    * Withdraws one call: the group of the ask a token names (its requestId, session and actor), waiting
    * or answered, or the asks under a hashed requestId, session and actor. Its asks still waiting are
@@ -595,24 +627,33 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
   }
 
   const registry: ApprovalRegistry = {
-    ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs }) {
-      return update(state => {
-        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: keptWhole() })
-        if (joined) return joined
-        assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
-        // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
-        // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
-        const requests = asks.map(item => ({
-          token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'),
-          tool, offeredScopes: item.offeredScopes, expiresAt: lifetime === null ? APPROVAL_NO_DEADLINE : new Date(Date.now() + PENDING_TTL_MS + lifetime).toISOString(),
-        }))
-        const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }) }))
-        assertDeliveryRoom(state, entries, notifies)
-        // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
-        if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
-        state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
-        return { requests, joined: false, answered: [] }
+    async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs, holdMs }) {
+      const evicted: PendingEntry[] = []
+      const result = await update((state): AskResult => {
+        const now = Date.now()
+        const joined = requestId === undefined ? null : joinWaiting({ state, workspace, key: { requestId, sessionId, actor }, call: { tool, asks, fingerprint: callFingerprint, ...(call === undefined ? {} : { recorded: call }) }, record: recordCall, shownWhole: keptWhole(), renew: entry => renewed(entry, holdMs, now) })
+        if (joined) return { ...joined, ...lapseOfGroup(joined.requests, state) }
+        // The group's expiry: ten minutes past the hold the node gives, or none at wait 0, where it lapses instead (item 5).
+        const expiresAt = lifetime === null ? APPROVAL_NO_DEADLINE : new Date(now + PENDING_TTL_MS + lifetime).toISOString()
+        const lapsesAt = lifetime === null ? lapseAfter(holdMs, now) : undefined
+        const admit = (): AskResult => {
+          assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
+          // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
+          // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
+          const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'), tool, offeredScopes: item.offeredScopes, expiresAt }))
+          const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
+          assertDeliveryRoom(state, entries, notifies)
+          // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
+          if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
+          state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
+          return { requests, joined: false, answered: [], ...(lapsesAt === undefined ? {} : { lapsesAt: Date.parse(lapsesAt) }) }
+        }
+        const admitted = withRoom({ state, sessionId, actor, admit, evicted })
+        for (const entry of evicted) if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'cancelled', at: new Date(now).toISOString() })
+        return evicted.length === 0 ? admitted : { ...admitted, evicted: evicted.map(entry => entry.request.token) }
       })
+      if (evicted.length > 0) logger.info('Withdrew abandoned approvals to make room for a new ask', { withdrawn: evicted.length })
+      return result
     },
 
     async resolve(decision, authority = 'admin', options = {}) {
@@ -734,6 +775,24 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       })
     },
 
+    holdEnded({ tokens, abandoned }) {
+      return update((state) => {
+        const now = Date.now()
+        const lapse = now + PENDING_TTL_MS
+        let earliest: number | undefined
+        state.pending = state.pending.map((entry) => {
+          if (entry.workspace !== workspace || !tokens.includes(entry.request.token)) return entry
+          const noDeadline = entry.request.expiresAt === APPROVAL_NO_DEADLINE
+          // Held until answered, it starts its ten minutes now; a lapse already set by a finite hold stands.
+          if (!abandoned && (!noDeadline || entry.lapsesAt !== undefined)) return entry
+          const at = Math.min(lapse, entry.lapsesAt === undefined ? Infinity : Date.parse(entry.lapsesAt))
+          earliest = Math.min(earliest ?? Infinity, at)
+          return { ...entry, lapsesAt: new Date(at).toISOString(), ...(abandoned ? { abandonedAt: new Date(now).toISOString() } : {}) }
+        })
+        return earliest
+      })
+    },
+
     cancelGroup(selector) {
       return update((state): GroupWithdrawal => {
         const pending = state.pending.filter(entry => entry.workspace === workspace)
@@ -789,17 +848,17 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     pending: () => read().pending
-      .filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
+      .filter(entry => entry.workspace === workspace && lapseOf(entry) > Date.now())
       .map(entry => entry.request),
 
     // Each group's call file is read and parsed once, and its asks share the one call (review M1 of the slice 5 re-review).
     waiting() {
-      const pending = read().pending.filter(entry => entry.workspace === workspace && Date.parse(entry.request.expiresAt) > Date.now())
+      const pending = read().pending.filter(entry => entry.workspace === workspace && lapseOf(entry) > Date.now())
       return callsRead(callOf => pending.map(entry => withCallFrom(entry, callOf)))
     },
 
     waitingAsk(token) {
-      const entry = read().pending.find(candidate => candidate.workspace === workspace && candidate.request.token === token && Date.parse(candidate.request.expiresAt) > Date.now())
+      const entry = read().pending.find(candidate => candidate.workspace === workspace && candidate.request.token === token && lapseOf(candidate) > Date.now())
       return entry === undefined ? undefined : withCall(entry)
     },
   }
@@ -814,7 +873,57 @@ function withCallFrom({ workspace: _workspace, callFile, call, ...entry }: Pendi
 
 /** When the earliest ask waiting in the file expires, any workspace's: every update prunes them all. */
 function earliestExpiry(state: State): number {
-  return Math.min(...state.pending.map(entry => Date.parse(entry.request.expiresAt)), ...state.outbox.map(entry => Date.parse(entry.expiresAt)))
+  return Math.min(...state.pending.map(lapseOf), ...state.outbox.map(entry => Date.parse(entry.expiresAt)))
+}
+
+/** When a waiting ask leaves the queue: its stated expiry, or its lapse where that comes first (the MCP asks brief, item 5). */
+function lapseOf(entry: PendingEntry): number {
+  return Math.min(Date.parse(entry.request.expiresAt), entry.lapsesAt === undefined ? Infinity : Date.parse(entry.lapsesAt))
+}
+
+/** The lapse of an ask whose caller is held `holdMs`: ten minutes past the hold, or none while held until answered. */
+function lapseAfter(holdMs: number | null | undefined, now: number): string | undefined {
+  return holdMs === undefined || holdMs === null ? undefined : new Date(now + holdMs + PENDING_TTL_MS).toISOString()
+}
+
+/**
+ * A waiting ask a re-send joined: no longer abandoned, and its clock restarted from the re-send's hold (the MCP asks brief,
+ * item 5); a re-send that gives no hold leaves it as it was.
+ */
+function renewed(entry: PendingEntry, holdMs: number | null | undefined, now: number): PendingEntry {
+  if (holdMs === undefined) return entry
+  const { lapsesAt: _lapsesAt, abandonedAt: _abandonedAt, ...rest } = entry
+  const lapsesAt = entry.request.expiresAt === APPROVAL_NO_DEADLINE ? lapseAfter(holdMs, now) : undefined
+  return lapsesAt === undefined ? rest : { ...rest, lapsesAt }
+}
+
+/** The earliest lapse among a joined group's waiting asks, for the sweep that reports it. */
+function lapseOfGroup(requests: readonly ApprovalRequest[], state: State): { lapsesAt?: number } {
+  const tokens = new Set(requests.map(request => request.token))
+  const lapses = state.pending.flatMap(entry => tokens.has(entry.request.token) && entry.lapsesAt !== undefined ? [Date.parse(entry.lapsesAt)] : [])
+  return lapses.length === 0 ? {} : { lapsesAt: Math.min(...lapses) }
+}
+
+/**
+ * Admits a new group, and while a cap refuses it withdraws the oldest abandoned ask that cap counts, one at a time, so the
+ * cap is never reached through abandoned asks alone (the MCP asks brief, item 5). Each withdrawn ask is told cancelled, as
+ * an ask whose caller left is. A cap full of asks someone holds or re-sent still refuses.
+ */
+function withRoom(input: { state: State; sessionId: string; actor: string | undefined; admit: () => AskResult; evicted: PendingEntry[] }): AskResult {
+  for (;;) {
+    try {
+      return input.admit()
+    } catch (error) {
+      if (!(error instanceof ApprovalLimitError)) throw error
+      const counted = (entry: PendingEntry) => error.room === 'workspace' || (entry.actor === input.actor && (error.room === 'actor' || entry.sessionId === input.sessionId))
+      const oldest = input.state.pending
+        .filter(entry => entry.abandonedAt !== undefined && counted(entry))
+        .sort((a, b) => Date.parse(a.abandonedAt!) - Date.parse(b.abandonedAt!))[0]
+      if (!oldest) throw error
+      input.state.pending = input.state.pending.filter(entry => entry !== oldest)
+      input.evicted.push(oldest)
+    }
+  }
 }
 
 interface JoinKey { requestId: string; sessionId: string; actor: string | undefined }
@@ -827,7 +936,7 @@ interface JoinKey { requestId: string; sessionId: string; actor: string | undefi
  * grant; anything else is a different call reusing the id. A group answered with approvals alone is
  * not joined: its call ran (a re-send replays it) or asks afresh.
  */
-function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall }; record: (input: { state: State; group: PendingEntry[]; call: AskedCall; replacing: readonly PendingEntry[] }) => PendingEntry[]; shownWhole: (entry: PendingEntry) => boolean }): AskResult | null {
+function joinWaiting(input: { state: State; workspace: string; key: JoinKey; call: { tool: string; asks: Ask[]; fingerprint?: string; recorded?: AskedCall }; record: (input: { state: State; group: PendingEntry[]; call: AskedCall; replacing: readonly PendingEntry[] }) => PendingEntry[]; shownWhole: (entry: PendingEntry) => boolean; renew: (entry: PendingEntry) => PendingEntry }): AskResult | null {
   const { key } = input
   const inGroup = (entry: { workspace: string; sessionId?: string; requestId?: string; actor?: string }) =>
     entry.workspace === input.workspace && entry.requestId === key.requestId && entry.sessionId === key.sessionId && entry.actor === key.actor
@@ -850,6 +959,8 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
     const recorded = input.record({ state: input.state, group: partial.map(({ call: _call, callFile: _callFile, ...entry }) => entry), call: whole, replacing: partial })
     input.state.pending = input.state.pending.map(entry => { const index = partial.indexOf(entry); return index === -1 ? entry : recorded[index]! })
   }
+  // The re-send holds the asks now: they are no longer abandoned, and their clock restarts (the MCP asks brief, item 5).
+  input.state.pending = input.state.pending.map(entry => inGroup(entry) ? input.renew(entry) : entry)
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
 }
 
@@ -937,8 +1048,8 @@ function patternRefusal(input: { rule: PermissionRuleId; subject: string; patter
 function prune(state: State): State['pending'] {
   const now = Date.now()
   state.outbox = state.outbox.filter(entry => Date.parse(entry.expiresAt) > now)
-  const expired = state.pending.filter(entry => Date.parse(entry.request.expiresAt) <= now)
-  state.pending = state.pending.filter(entry => Date.parse(entry.request.expiresAt) > now)
+  const expired = state.pending.filter(entry => lapseOf(entry) <= now)
+  state.pending = state.pending.filter(entry => lapseOf(entry) > now)
   state.once = state.once.filter(entry => Date.parse(entry.expiresAt) > now)
   state.resolved = state.resolved.filter(entry => Date.parse(entry.expiresAt) > now)
   return expired
@@ -961,7 +1072,7 @@ function assertDeliveryRoom(state: State, additional: readonly PendingEntry[], n
     return state.outbox.some(item => item.workspace === entry.workspace && item.notice.token === entry.request.token) ? [reservation] : [reservation, reservation]
   })
   if (pastDeliveryLimits([...state.outbox, ...reserved])) {
-    throw new ApprovalLimitError('Approval outcome delivery is full; restore the webhook receiver before asking for more approvals')
+    throw new ApprovalLimitError('Approval outcome delivery is full; restore the webhook receiver before asking for more approvals', 'workspace')
   }
 }
 
