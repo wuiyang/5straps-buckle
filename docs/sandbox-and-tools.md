@@ -9,10 +9,11 @@ that cannot run here is withheld with a reason rather than failing at call time,
 | Pack | Tools | Needs |
 |---|---|---|
 | `fs` | `fs_read`, `fs_read_batch`, `fs_write`, `fs_write_batch`, `fs_patch`, `fs_apply_patch`, `fs_delete`, `fs_move`, `fs_list`, `fs_find_names`, `fs_search_content`, `fs_receive`, `fs_send` | nothing; `fs_search_content` uses `rg` when it is installed, else Buckle's own walker; the last two run only for [`buckle cp`](copy.md) |
+| `history` | `history_list`, `history_restore`: the [change history](change-history.md), each restore asking a person | nothing; on unless the workspace sets `packs.history` off |
 | `web` | `web_fetch`, `web_search` | `web_search` needs `BUCKLE_BRAVE_SEARCH_API_KEY` |
 | `shell` | `shell_exec`, `script_run` | a process sandbox, below; on unless the workspace sets `packs.shell` off |
 | `git` | `git_status`, `git_diff`, `git_log`, `git_blame`, `git_branch` | `git`, and `packs.hostGit` on |
-| `forge` | `git_commit`, `git_push`, `pr_open`, `pr_read` | the same, and `BUCKLE_FORGE_GITHUB_TOKEN` |
+| `forge` | `git_commit`, `git_revert`, `git_push`, `pr_open`, `pr_read` | the same, and `BUCKLE_FORGE_GITHUB_TOKEN` |
 | `dev` | `lsp_discover`, `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_rename`, `lsp_diagnostics` | `packs.hostLsp` on, and a language server |
 | `browser` | `browser_command` | `agent-browser`, a browser for agents, or the command `BUCKLE_AGENT_BROWSER_COMMAND` names |
 | `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless the workspace sets `packs.code` off |
@@ -23,7 +24,7 @@ files, checking every hunk before it writes any. `fs_delete` removes files, and 
 `fs_move` renames or moves. Its `replace` flag says what you expect at `to`, and a mismatch is
 refused: without it, anything standing there is refused (`TARGET_EXISTS`); with it, nothing standing
 there is refused (`NOTHING_TO_REPLACE`), and otherwise the file, link, or folder there is replaced,
-a folder with everything in it. Each change is checkpointed, so [`buckle history restore`](sandbox-and-tools-02.md#change-history) brings it back.
+a folder with everything in it. Each change is checkpointed, so [`buckle history restore`](change-history.md) brings it back.
 The [file floor](policy-04.md) asks before some of these calls; inside the workspace's folder a
 delete runs where writes are granted, unless its [delete policy](policy-05.md) asks. Without `rg`, `fs_search_content`
 runs more slowly ([known limits](known-limits-08.md#search-without-rg)), and its result also holds

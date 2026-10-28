@@ -5,7 +5,8 @@ harness can drive over CLI, MCP, or HTTP, which runs what its owner allows, asks
 before anything else runs, and refuses the rest.
 
 It gives an agent files, a shell, Git, web fetch, a browser (once agent-browser is installed),
-and language tools inside one workspace, and logs its actions.
+and language tools inside one workspace, logs its actions, and keeps a
+[change history](https://github.com/wuiyang/5straps-buckle/blob/main/docs/change-history.md) to roll back.
 
 ## Install
 
@@ -81,7 +82,7 @@ and the decision binds the whole call.
 The answer can come from a prompt in the terminal running `buckle
 serve`, MCP elicitation over stdio where the host supports it (HTTP `/mcp` never elicits), or
 `buckle approve <token>` from another terminal. Buckle can post each pending approval to
-the relay `BUCKLE_APPROVAL_WEBHOOK` names, for a person away from the machine. A
+the relay `BUCKLE_APPROVAL_WEBHOOK` names. A
 call waits 15 seconds by default (`approvalWaitMs`), 30 at most on `/mcp`; sent again, it joins its ask.
 
 ```bash
@@ -163,8 +164,8 @@ For users:
   Chromium arguments.
 - [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
 - [Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md): the optional pairing and its settings.
-- [Troubleshooting](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting-02.md)): the first
-  failures, with their messages.
+- [Troubleshooting](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting.md) ([refused commands](https://github.com/wuiyang/5straps-buckle/blob/main/docs/troubleshooting-02.md)): first
+  failures and their messages.
 - [Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md): what Buckle does not yet read or hide.
 
 For developers:

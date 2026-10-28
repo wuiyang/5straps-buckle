@@ -57,8 +57,10 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 - A delete outside the workspace's folder also offers `delete-below:<folder>`, every delete in
   that folder and its subfolders, and the guard asks under `delete-batch:<folder>`
   ([deletes](policy-05.md)).
-- The other subjects are `overwrite:<file>`, for the destructive-write check on one file, and
-  `rewrite-batch:<folder>`, for a batch. A folder's write grant never matches any of these.
+- The other subjects are `overwrite:<file>`, for the destructive-write check on one file,
+  `rewrite-batch:<folder>`, for a batch, and `restore:<checkpoint>..<newest>`, for a restore of
+  the [change history](change-history.md#every-restore-asks), which offers `once` alone. A folder's
+  write grant never matches any of these.
 - `buckle grants list` shows the grants, and `buckle grants revoke <id>` removes one.
 
 ## Refused, not asked
@@ -83,6 +85,6 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 
 Inside the workspace folder, the [dangerously-allow switch](approvals.md#dangerously-allow)
 answers the file floor as it answers `rm -r`. Outside that folder, and in a scratch root, a
-person still decides.
+person still decides, and for every restore of the change history.
 
 The [decision AI](judge.md) never rates these asks. A person decides each one.

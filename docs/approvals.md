@@ -6,7 +6,7 @@ on any effect refuses the call, an ask waits for a person, and otherwise it runs
 
 ## What runs, asks, or is refused
 
-Runs: reads inside the workspace, writes inside `BUCKLE_SCRATCH_ROOTS`, http and https to
+Runs: reads inside the workspace, writes inside `BUCKLE_SCRATCH_ROOTS`, http(s) to
 public addresses when no approved list is set, and anything a standing grant covers.
 
 Asks:
@@ -56,13 +56,14 @@ and asks about an `eval` of text that only exists at run time and a call past th
 `buckle policy destructive-command '<glob>'` adds to the floor, and nothing removes a built-in.
 The command floor never offers `always`, and its subject is the exact command with its
 arguments' digest, so approving `rm -rf build` does not approve `rm -rf /`. The
-[file floor](policy-04.md) offers `always`.
+[file floor](policy-04.md) offers `always`, a [history restore](change-history.md) `once`
+alone.
 
 ## What the approver sees
 
 Every deciding route shows the ask, then the whole action:
 node, workspace, a summary, rule, subject, reason, working directory, every effect, and every
-argument as JSON. Nothing is cut or paged. Scripts and free text show as written; a plain value under a key naming password,
+argument as JSON, uncut. Scripts and free text show as written; a plain value under a key naming password,
 secret, or token, and a URL's password and credential query values, read `[redacted]`, with
 [known limits](known-limits.md#credential-hiding). Control and invisible characters show as escapes. Hiding is display only; the decision binds the exact arguments. An
 ask whose whole call was not recorded can be denied, never approved.
@@ -87,7 +88,7 @@ Nothing the agent token reaches can decide. With the experimental
 under the admin credential, and an approval only when a device key enrolled with `buckle keys
 enroll` signed it, as `buckle client approve <node-url> <token> --workspace <name>` does.
 
-`BUCKLE_APPROVAL_WEBHOOK` names a URL Buckle posts each new ask to. It announces, never
+`BUCKLE_APPROVAL_WEBHOOK` names a URL each new ask is posted to. It never
 decides; [Rings](rings.md#approval-webhook) describes what it sends.
 
 ## Timeouts
@@ -98,7 +99,7 @@ the hold, it runs; unanswered, it returns `approval_required`; the agent sends t
 call again once decided ([over MCP](approvals-03.md)). An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
-command waits only while its question is open. `buckle workspace set approvalWaitMs
+command waits while its question is open. `buckle workspace set approvalWaitMs
 60000` changes it from the next call.
 
 ## Dangerously allow
@@ -110,8 +111,8 @@ buckle policy dangerously-allow off
 
 Warning: this removes the person. At level `command`, the default, every ask about a path inside
 the workspace, and every command, host, and process ask, is allowed, sensitive files, writes, and
-destructive commands included, except a secret reference's file. Level `all` allows that file
-too. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
+destructive commands included, except a secret reference's file and a history restore; `all`
+allows that file too. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
 directory still refuse.
 
 Only the local CLI sets it, per workspace; `buckle policy import` refuses a file that names it,

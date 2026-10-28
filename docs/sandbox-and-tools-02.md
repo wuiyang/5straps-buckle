@@ -48,13 +48,8 @@ the 2 MiB already read is returned.
 ## Change history
 
 Tool writes, deletes, moves, and patches, and shell publications are recorded as checkpoints under
-`history/`, kept up to `BUCKLE_HISTORY_MAX_BYTES` (1 GiB) and `BUCKLE_HISTORY_RETENTION_DAYS` (30).
-A delete's checkpoint names the delete and keeps each removed file's content:
-
-```bash
-buckle history list
-buckle history restore <id>
-```
+`history/`, which `buckle history` lists and restores, and the agent's `history_list` and
+`history_restore` too, a person approving each restore ([the change history](change-history.md)).
 
 ## Host Git, forge, and language servers
 
@@ -94,4 +89,7 @@ an empty directory Buckle owns, and overrides the repository's program settings,
 repository hook or configured program runs. The forge pack holds `BUCKLE_FORGE_GITHUB_TOKEN`
 in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_API_URL`
 (`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
-rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`.
+rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`. `git_revert` commits the undoing of one
+commit and never resets: a merge commit needs `mainline`, a dirty tree is git's own refusal, a
+revert that stops on a conflict is aborted, and a repository defining a merge driver or a filter is
+refused.
