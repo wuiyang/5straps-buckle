@@ -108,16 +108,27 @@ export async function deletePaths(input: z.output<typeof schemas.deleteInput>, c
   const results: JsonObject[] = []
   let refused = false
   for (const [index, named] of input.paths.entries()) {
-    if (refused) { results.push({ path: named, removed: false, notAttempted: true }); continue }
+    const shown = shownPath(named, context.paths)
+    if (refused) { results.push({ path: shown, removed: false, notAttempted: true }); continue }
     try {
-      results.push(await deleteOne({ named, judged: judged.entries[index]!, recursive: input.recursive, context }))
+      results.push({ ...await deleteOne({ named, judged: judged.entries[index]!, recursive: input.recursive, context }), path: shown })
     } catch (error) {
       if (!(error instanceof ToolInputError)) throw error
       refused = true
-      results.push({ path: named, removed: false, refused: error.message, code: error.code })
+      results.push({ path: shown, removed: false, refused: error.message, code: error.code })
     }
   }
   return { removed: results.filter(result => result.removed === true).length, results }
+}
+
+/** A path as the other tools answer it: relative to the workspace's folder inside it; as it was sent where the view cannot place it. */
+function shownPath(named: string, paths: PathView): string {
+  try {
+    return paths.display(paths.resolve(named))
+  } catch (error) {
+    if (error instanceof ToolInputError) return named
+    throw error
+  }
 }
 
 async function deleteOne(input: { named: string; judged: SettledDelete['entries'][number]; recursive: boolean; context: DeleteContext }): Promise<JsonObject> {

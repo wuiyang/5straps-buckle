@@ -236,6 +236,37 @@ describe('fs_delete of a folder the workspace shows', () => {
   })
 })
 
+describe('the path fs_delete answers', () => {
+  it('is relative to the workspace folder, as the other tools answer it, whether it was sent absolute or relative', async () => {
+    const { runtime, workspace } = await node({ BUCKLE_WORKSPACE_MOUNT: '/workspace' })
+    mkdirSync(join(workspace, 'sub'))
+    for (const name of ['renamed.txt', 'sub/b.txt', 'c.txt']) writeFileSync(join(workspace, name), name)
+    const response = await approved(runtime, 'fs_delete', { paths: ['/workspace/renamed.txt', './sub/b.txt', '/workspace/gone.txt', 'c.txt'] })
+    expect(response).toMatchObject({ outcome: 'ok', output: { removed: 3, results: [
+      { path: 'renamed.txt', removed: true },
+      { path: 'sub/b.txt', removed: true },
+      { path: 'gone.txt', removed: false, missing: true },
+      { path: 'c.txt', removed: true },
+    ] } })
+  })
+
+  it('is relative on a refusal and on the paths not attempted after it, and the refusal still names the path as it was sent', async () => {
+    const { root, paths } = (() => {
+      const dir = mkdtempSync(join(tmpdir(), 'buckle-fs-delete-shown-'))
+      roots.push(dir)
+      return { root: dir, paths: createPathView({ root: dir, mount: '/workspace' }) }
+    })()
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) writeFileSync(join(root, name), name)
+    const input = deleteInput.parse({ paths: ['/workspace/a.txt', '/workspace/b.txt', '/workspace/c.txt'] })
+    const io = { unlink: (path: string) => { if (path.endsWith('b.txt')) throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }); rmSync(path) }, rmdir: () => {}, pause: async () => {} }
+    expect(await deletePaths(input, { paths, io }, settleDelete(input, { paths }))).toEqual({ removed: 1, results: [
+      { path: 'a.txt', removed: true },
+      { path: 'b.txt', removed: false, refused: '/workspace/b.txt could not be removed (EACCES)', code: 'PERMISSION_DENIED' },
+      { path: 'c.txt', removed: false, notAttempted: true },
+    ] })
+  })
+})
+
 describe('deletePaths', () => {
   const workspaceOf = () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-fs-delete-unit-'))
