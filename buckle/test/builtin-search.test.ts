@@ -260,6 +260,57 @@ describe('a search that cannot stall the node', () => {
   })
 })
 
+describe('an empty match beside a supplementary character', () => {
+  // A match of no width steps the search on by one code point: past a pair of UTF-16 units whole, so a Unicode pattern is
+  // not brought back to the same boundary and matched again until the file's time runs out.
+  const emptyMatches = async (lines: string[], pattern: string, extra: Record<string, unknown> = {}) => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-empty-'))
+    roots.push(root)
+    writeFileSync(join(root, 'lines.txt'), `${lines.join('\n')}\n`)
+    const found = await builtin(root, { pattern, glob: 'lines.txt', ...extra }, { matchTimeoutMs: 2_000 }) as { matches: Array<{ line: number; ranges: Array<{ start: number; end: number }> }>; skipped?: unknown[] }
+    expect(found.skipped ?? []).toEqual([])
+    return found.matches.map(match => ({ line: match.line, ranges: match.ranges.map(range => [range.start, range.end]) }))
+  }
+
+  it('finds ^ on a line that starts with an emoji', async () => {
+    expect(await emptyMatches(['😀 ordinary text', 'plain'], '^')).toEqual([{ line: 1, ranges: [[0, 0]] }, { line: 2, ranges: [[0, 0]] }])
+  })
+
+  it('finds $ on a line that ends with an emoji, in bytes', async () => {
+    expect(await emptyMatches(['text 😀', '😀'], '$')).toEqual([{ line: 1, ranges: [[9, 9]] }, { line: 2, ranges: [[4, 4]] }])
+  })
+
+  it('finds \\b around words that sit beside emoji, and none on emoji alone', async () => {
+    expect(await emptyMatches(['😀 ab 😀', '😀😀'], '\\b')).toEqual([{ line: 1, ranges: [[5, 5], [7, 7]] }])
+  })
+
+  it('finds an empty match at every code point boundary and none inside a pair', async () => {
+    expect(await emptyMatches(['a😀b', '😀😀'], '(?:)')).toEqual([
+      { line: 1, ranges: [[0, 0], [1, 1], [5, 5], [6, 6]] },
+      { line: 2, ranges: [[0, 0], [4, 4], [8, 8]] },
+    ])
+  })
+
+  it('finds both the empty and the filled branch of an alternation with an empty side', async () => {
+    expect(await emptyMatches(['😀x😀'], 'x|')).toEqual([{ line: 1, ranges: [[0, 0], [4, 5], [5, 5], [9, 9]] }])
+    expect(await emptyMatches(['😀x😀'], 'X|', { caseSensitive: false })).toEqual([{ line: 1, ranges: [[0, 0], [4, 5], [5, 5], [9, 9]] }])
+  })
+
+  it('steps one unit at a time over ASCII and control characters', async () => {
+    expect(await emptyMatches(['\ta\u0001b\t'], '(?:)')).toEqual([{ line: 1, ranges: [[0, 0], [1, 1], [2, 2], [3, 3], [4, 4], [5, 5]] }])
+    expect(await emptyMatches(['\t\u0001', 'ab'], '^')).toEqual([{ line: 1, ranges: [[0, 0]] }, { line: 2, ranges: [[0, 0]] }])
+    expect(await emptyMatches(['ab\u0007'], '$')).toEqual([{ line: 1, ranges: [[3, 3]] }])
+    expect(await emptyMatches(['a b'], '\\b')).toEqual([{ line: 1, ranges: [[0, 0], [1, 1], [2, 2], [3, 3]] }])
+  })
+
+  it('still ends, and matches the line, for a pattern read without the Unicode flag', async () => {
+    // `\-` is not valid in Unicode mode, so this pattern is run as plain code units.
+    const found = await emptyMatches(['😀 text'], '\\-?')
+    expect(found).toHaveLength(1)
+    expect(found[0]!.line).toBe(1)
+  })
+})
+
 describe('fs_search_content on a node', () => {
   it('is offered with the fs pack, and the manifest names what runs it', async () => {
     const root = fixture()

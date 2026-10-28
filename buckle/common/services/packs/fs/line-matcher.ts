@@ -84,6 +84,7 @@ export function createLineMatcher(input: { source: string; flags: string; signal
 const WORKER_SOURCE = `
 const { parentPort, workerData } = require('node:worker_threads')
 const pattern = new RegExp(workerData.source, workerData.flags)
+const unicode = pattern.unicode || pattern.unicodeSets
 parentPort.on('message', (message) => {
   const text = Buffer.from(message.bytes.buffer, message.bytes.byteOffset, message.bytes.byteLength).toString('utf8')
   const lines = text.split('\\n')
@@ -97,7 +98,8 @@ parentPort.on('message', (message) => {
     for (let match = pattern.exec(line); match !== null; match = pattern.exec(line)) {
       const start = Buffer.byteLength(line.slice(0, match.index))
       ranges.push({ start, end: start + Buffer.byteLength(match[0]) })
-      if (match[0] === '') pattern.lastIndex++
+      // After an empty match, past a whole code point: a Unicode pattern steps back from the middle of a pair and matches there again.
+      if (match[0] === '') pattern.lastIndex += unicode && line.codePointAt(pattern.lastIndex) > 0xffff ? 2 : 1
     }
     if (ranges.length > 0) found.push({ line: index + 1, text: line, ranges })
   }
