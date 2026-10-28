@@ -1,11 +1,15 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
+import { useScopeSafe } from '@5straps/runtime'
 import type { ApprovalRequest, ApprovalWait, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
 import type { ApprovalAuthority, PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { MCP_HOLD_MS } from './holds.js'
+import { createResendJoin, sameCallKey, type ResendJoin } from './resend-join.js'
 
 interface ApprovalAnswer extends Record<string, unknown> {
   approve?: boolean
@@ -92,19 +96,11 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
           const wait = elicits ? { mode: 'none' as const } : options.approvalWait?.()
+          const stage = context.mcpReq?._meta?.['5straps/stageId']
 
-          const response = await runtime.invoke({
-            request: {
-              requestId: randomUUID(),
-              tool: tool.capability.name,
-              args: args as JsonObject,
-              approvalTokens,
-              context: { stageId: typeof context.mcpReq?._meta?.['5straps/stageId'] === 'string' ? String(context.mcpReq._meta['5straps/stageId']).slice(0, 200) : undefined },
-            },
-            sessionId: mcpSessionId(context),
-            signal: context.mcpReq.signal,
-            ...(options.isCancel ? { isCancel: options.isCancel } : {}),
-            ...(wait ? { approvalWait: wait } : {}),
+          const response = await invokeJoined({
+            runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, approvalTokens, ...(typeof stage === 'string' ? { stageId: stage.slice(0, 200) } : {}), sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
+            ...(options.isCancel ? { isCancel: options.isCancel } : {}), ...(wait ? { wait } : {}),
           })
 
           if (response.outcome === 'approval_required') {
@@ -120,6 +116,62 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
     ))
   }
   return registrations
+}
+
+/** The MCP calls each runtime remembers for a re-send, kept as long as the runtime: an HTTP server lives for one request. */
+const joins = new WeakMap<BuckleRuntime, ResendJoin>()
+
+function joinsOf(runtime: BuckleRuntime): ResendJoin {
+  const existing = joins.get(runtime)
+  if (existing) return existing
+  const created = createResendJoin()
+  joins.set(runtime, created)
+  return created
+}
+
+/**
+ * One call through the invoker under the requestId a re-send joins by (the MCP asks brief, item 2): the one an identical
+ * call that asked was given, else a new one. A call that asks is remembered under sameCallKey. It is forgotten once a
+ * call under that key answered its outcome to a client still there within MCP_HOLD_MS, inside any client's own timeout;
+ * it is kept where the answer was approval_required, the client left, a newer call carried the wait on, or the outcome
+ * came later than that, as a client may have stopped reading.
+ */
+async function invokeJoined(input: {
+  runtime: BuckleRuntime
+  joins: ResendJoin
+  tool: string
+  args: JsonObject
+  stageId?: string
+  approvalTokens: string[]
+  sessionId: string
+  signal?: AbortSignal
+  isCancel?: (reason: unknown) => boolean
+  wait?: ApprovalWait
+}): Promise<InvokeResponse> {
+  const key = sameCallKey({ sessionId: input.sessionId, actor: useScopeSafe()?.context.actor, tool: input.tool, args: input.args })
+  const remembered = input.joins.requestIdOf(key)
+  const requestId = remembered ?? randomUUID()
+  const arrived = performance.now()
+  let asked = false
+  const response = await input.runtime.invoke({
+    request: { requestId, tool: input.tool, args: input.args, approvalTokens: input.approvalTokens, context: { ...(input.stageId === undefined ? {} : { stageId: input.stageId }) } },
+    sessionId: input.sessionId,
+    ...(input.signal ? { signal: input.signal } : {}),
+    ...(input.isCancel ? { isCancel: input.isCancel } : {}),
+    ...(input.wait ? { approvalWait: input.wait } : {}),
+    onAsked: () => { asked = true; input.joins.remember(key, requestId) },
+  })
+  if (!asked && remembered === undefined && response.outcome !== 'approval_required') return response
+  if (delivered({ response, arrived, ...(input.signal ? { signal: input.signal } : {}) })) input.joins.forget(key)
+  else input.joins.remember(key, requestId)
+  return response
+}
+
+/** Whether a call's final outcome reached a client still there: its connection open, and within the hold cap. */
+function delivered(input: { response: InvokeResponse; arrived: number; signal?: AbortSignal }): boolean {
+  const { response } = input
+  if (response.outcome === 'approval_required' || (response.outcome === 'error' && response.error.code === REQUEST_SUPERSEDED)) return false
+  return input.signal?.aborted !== true && performance.now() - input.arrived < MCP_HOLD_MS
 }
 
 /**

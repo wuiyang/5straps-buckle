@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InvokeResponseSchema, type InvokeResponse } from '@5straps/protocol'
@@ -9,9 +9,11 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { fixedInteraction } from './support/interaction.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { MCP_HOLD_MS, mcpWait } from '../mcp/holds.js'
+import { sameCallKey } from '../mcp/resend-join.js'
 
 // The MCP asks brief, over the HTTP face's own handler (mcp/http.ts) with a real workspace runtime: the hold is capped,
-// and an unanswered hold answers structurally and is no error.
+// an unanswered hold answers structurally and is no error, and an identical re-send joins the call that asked, so it
+// never runs twice for one decision.
 
 const PROTOCOL = '2026-07-28'
 const handlers = createMcpHttpHandlers()
@@ -54,6 +56,15 @@ async function call(workspace: { config: BuckleConfig; runtime: BuckleRuntime },
 
 const writeOutside = (root: string, name = 'note.md') => ({ tool: 'fs_write', args: { path: join(root, 'outside', name), content: 'from the agent' } })
 
+function results(runtime: BuckleRuntime, tool = 'fs_write') {
+  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
+}
+
+async function approve(runtime: BuckleRuntime, scope: 'once' | 'session' = 'once') {
+  const [token] = runtime.approvalService.pending().map(request => request.token)
+  expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, authority: 'admin' })).ok).toBe(true)
+}
+
 describe('the HTTP MCP face\'s hold (item 1)', () => {
   it(`holds a call for the workspace's wait, at most ${MCP_HOLD_MS} ms, and reads 0 as that cap`, () => {
     expect(MCP_HOLD_MS).toBe(30_000)
@@ -80,5 +91,90 @@ describe('the HTTP MCP face\'s hold (item 1)', () => {
     const answer = InvokeResponseSchema.parse(result.structuredContent) as Extract<InvokeResponse, { outcome: 'approval_required' }>
     expect(answer).toMatchObject({ outcome: 'approval_required', requestId: expect.any(String) })
     expect(answer.approvals.map(approval => approval.token)).toEqual(workspace.runtime.approvalService.pending().map(request => request.token))
+  })
+})
+
+describe('an identical re-send (item 2)', () => {
+  it('reuses the requestId of the call that asked, joins its ask, and runs once when approved', async () => {
+    const workspace = await node('50')
+    const first = await call(workspace, writeOutside(workspace.root))
+    const again = await call(workspace, writeOutside(workspace.root))
+
+    expect(again.structuredContent?.['requestId']).toBe(first.structuredContent?.['requestId'])
+    expect(workspace.runtime.approvalService.pending()).toHaveLength(1)
+    await approve(workspace.runtime)
+    const ran = await call(workspace, writeOutside(workspace.root))
+
+    expect(ran.isError).toBeUndefined()
+    expect(readFileSync(join(workspace.root, 'outside', 'note.md'), 'utf8')).toBe('from the agent')
+    expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
+  })
+
+  it('carries a wait on from a call still held, which ends without running, and runs once', async () => {
+    const workspace = await node('60000')
+    const held = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    const again = call(workspace, writeOutside(workspace.root))
+
+    expect((await held).content[0]!.text).toContain('REQUEST_SUPERSEDED')
+    await approve(workspace.runtime)
+    expect((await again).isError).toBeUndefined()
+    expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
+  })
+
+  it('runs once after a client that closed its connection sends the call again, once approved', async () => {
+    const workspace = await node('60000')
+    const leaving = new AbortController()
+    const held = call(workspace, { ...writeOutside(workspace.root), signal: leaving.signal }).catch((error: unknown) => error)
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    leaving.abort()
+    await held
+    await vi.waitFor(() => expect(results(workspace.runtime)).toContainEqual(expect.objectContaining({ detail: 'CALLER_LEFT' })))
+    expect(existsSync(join(workspace.root, 'outside', 'note.md'))).toBe(false)
+
+    await approve(workspace.runtime)
+    expect((await call(workspace, writeOutside(workspace.root))).isError).toBeUndefined()
+    expect(workspace.runtime.approvalService.pending()).toEqual([])
+    expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
+  })
+
+  it('replays a run that answered later than the hold cap, as its client may have stopped reading, and never runs it again', async () => {
+    const workspace = await node('60000')
+    vi.useFakeTimers({ toFake: ['performance'] })
+    const held = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    vi.advanceTimersByTime(MCP_HOLD_MS + 1_000)
+    await approve(workspace.runtime)
+    expect((await held).isError).toBeUndefined()
+
+    const again = await call(workspace, writeOutside(workspace.root))
+    expect(again.isError).toBeUndefined()
+    expect(results(workspace.runtime).map(entry => entry.detail)).toEqual([undefined, 'REPLAYED'])
+  })
+
+  it('forgets a call whose outcome its client read in time: the next identical call is a call of its own', async () => {
+    const workspace = await node('60000')
+    const held = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    await approve(workspace.runtime)
+    expect((await held).isError).toBeUndefined()
+
+    // The approval was once, so the same write asks again, under a requestId of its own.
+    workspace.config.approvalTimeoutMs = 50
+    const next = await call(workspace, writeOutside(workspace.root))
+    expect(next.structuredContent).toMatchObject({ outcome: 'approval_required' })
+    expect(results(workspace.runtime).map(entry => entry.detail)).not.toContain('REPLAYED')
+  })
+
+  it('counts as identical the same tool and arguments, keys in any order, from the same session and actor, and nothing else', () => {
+    const base = { sessionId: 'mcp', actor: 'agent', tool: 'fs_write', args: { path: 'a.md', content: 'x', options: { mode: 1, create: true } } }
+    expect(sameCallKey({ ...base, args: { options: { create: true, mode: 1 }, content: 'x', path: 'a.md' } })).toBe(sameCallKey(base))
+    for (const other of [
+      { ...base, sessionId: 'mcp-2' },
+      { ...base, actor: undefined },
+      { ...base, tool: 'fs_patch' },
+      { ...base, args: { ...base.args, content: 'x ' } },
+      { ...base, args: { ...base.args, options: { mode: '1', create: true } } },
+    ]) expect(sameCallKey(other)).not.toBe(sameCallKey(base))
   })
 })
