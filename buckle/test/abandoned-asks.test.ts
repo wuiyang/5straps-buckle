@@ -57,6 +57,19 @@ describe('a call whose caller left while it waited for a person', () => {
     expect(runtime.approvalService.pending()).toHaveLength(1)
     await runtime.history.close()
   })
+
+  it('answers CALLER_CANCELLED where the caller cancelled it explicitly, which withdraws its ask', async () => {
+    const { runtime } = await node()
+    const cancelling = new AbortController()
+    const waiting = runtime.invoke({ sessionId: 'chat-1', request: write('cancelled-1'), signal: cancelling.signal, isCancel: () => true })
+    await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
+    cancelling.abort()
+
+    expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'CALLER_CANCELLED' } })
+    expect(results(runtime, 'cancelled-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_CANCELLED' })])
+    expect(runtime.approvalService.pending()).toEqual([])
+    await runtime.history.close()
+  })
 })
 
 describe('an abandoned ask', () => {
