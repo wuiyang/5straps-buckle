@@ -15,6 +15,7 @@ import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
 import { missingRefusal, parentRefusal, refusing } from './missing-path.js'
+import { pageLines } from './read-lines.js'
 import type * as schemas from './schemas.js'
 
 const MAX_FILE_BYTES = 10 * 1_048_576
@@ -58,22 +59,13 @@ export async function readFileEntry(
     return { path: context.paths.display(path), encoding: 'base64', hash, content: buffer.toString('base64'), size }
   }
 
-  const lines = buffer.toString('utf8').split('\n')
-  const start = (input.offset ?? 1) - 1
-  const end = input.limit === undefined ? lines.length : start + input.limit
-  const slice = lines.slice(start, end)
-
   return {
     path: context.paths.display(path),
     encoding: 'utf8',
     validUtf8: isUtf8(buffer),
     hash,
-    content: slice.join('\n'),
     size,
-    firstLine: start + 1,
-    lineCount: slice.length,
-    totalLines: lines.length,
-    truncated: end < lines.length || start > 0,
+    ...pageLines(buffer.toString('utf8'), input),
   }
 }
 

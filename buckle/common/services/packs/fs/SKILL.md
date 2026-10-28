@@ -22,7 +22,7 @@ buckle fs read src/app.ts --offset 200 --limit 100    # page a large file by lin
 buckle fs read-batch src/a.ts src/b.ts
 ```
 
-`fs_read` returns `totalLines`, so page rather than pulling a whole large file into context.
+`fs_read` returns `totalLines`, so page rather than pulling a whole large file into context. A line ends at a newline or at the end of the file: `hello world\n` is one line, an empty file none, and `lineCount` counts the lines in the page.
 
 ## Writing
 

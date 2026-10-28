@@ -7,6 +7,7 @@ import { matchesGlob } from 'node:path'
 import type { JsonObject, JsonValue } from '@5straps/protocol'
 import { createPathView } from '../../domain/path-view.js'
 import { isIgnoredDirectory } from '../packs/fs/ignore.js'
+import { pageLines } from '../packs/fs/read-lines.js'
 import { readInput, writeInput, listInput, findInput, searchInput } from '../packs/fs/schemas.js'
 import { WorkbenchError, workbenchHash } from './storage.js'
 import { comparablePath, ignoresCase, isPlainName } from '../../domain/paths.js'
@@ -84,8 +85,7 @@ export function invokePinnedWorkbenchFile(input: SafeFilesInput): JsonValue {
     return file(path, false, (descriptor): JsonValue => {
       const buffer = content(descriptor), hash = workbenchHash(buffer)
       if (args.encoding === 'base64') return { path, hash, encoding: 'base64', content: buffer.toString('base64'), size: buffer.length }
-      const lines = buffer.toString('utf8').split('\n'), start = (args.offset ?? 1) - 1, end = args.limit === undefined ? lines.length : start + args.limit
-      return { path, hash, encoding: 'utf8', validUtf8: isUtf8(buffer), content: lines.slice(start, end).join('\n'), size: buffer.length, firstLine: start + 1, lineCount: lines.slice(start, end).length, totalLines: lines.length, truncated: start > 0 || end < lines.length }
+      return { path, hash, encoding: 'utf8', validUtf8: isUtf8(buffer), size: buffer.length, ...pageLines(buffer.toString('utf8'), args) }
     })
   }
   if (input.tool === 'fs_write') {

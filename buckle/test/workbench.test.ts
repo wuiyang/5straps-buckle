@@ -101,6 +101,12 @@ describe('staged workbench files and publication', () => {
     expect(readFileSync(join(f.sourceRoot, 'note.txt'), 'utf8')).toBe('original')
   })
 
+  it('counts the lines of a staged file as fs_read does: a final newline ends the last line', async () => {
+    const f = await fixture()
+    await f.edit('hello world\n')
+    expect((await f.read()).result).toMatchObject({ content: 'hello world\n', lineCount: 1, totalLines: 1, truncated: false })
+  })
+
   it('refuses source conflicts and keeps staged edits available', async () => {
     const f = await fixture()
     await f.edit('staged')
