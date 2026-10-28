@@ -44,7 +44,7 @@ node's applies again:
 | `files.deleteInWorkspace` | `allow` or `ask`: whether a delete inside the folder runs where its writes are granted, or asks a person ([deletes](policy-05.md)) | `allow` |
 | `files.massDeleteLimit` | entries one call may delete inside the folder before a person is asked anyway, `0` to `10000`, `0` for no limit | `100` |
 | `history.keepTurns` | recent user turns retained in history | `10` |
-| `history.turnIdleMs` | idle milliseconds before a new turn without `stageId` | `60000` |
+| `history.turnIdleMs` | idle milliseconds before a new turn in that session without a real `5straps/stageId` | `60000` |
 | `history.maxFileBytes` | file size in bytes above which its content is not stored or restorable | `33554432` |
 
 The browser's mode is one setting: a workspace that sets its own `browser.cdp` or

@@ -14,19 +14,27 @@ protected paths, and can read the workspace repository's object store as a read-
 captures raw file bytes without applying Git filters.
 
 The node setting `BUCKLE_HISTORY_MAX_BYTES` limits each shadow store to 268435456 bytes (256 MiB)
-by default. Older turns are removed first to keep the store within its rolling cap. If a
-checkpoint still cannot fit, Buckle records paths and hashes without content and lets the write
-finish. Git garbage collection runs at most once an hour and never on the write path.
+by default. Buckle drops the oldest turns first and reclaims bounded, unreachable loose objects
+under the history lock. Packed objects wait for eligible background Git garbage collection, at
+most once an hour and off the write path. Until then, packed bytes can leave too little room for
+content: Buckle records the checkpoint's paths and hashes without content and lets the write
+finish. Very small budgets can also be consumed by history metadata.
 
 The workspace setting `history.maxFileBytes` defaults to 33554432 bytes (32 MiB). A larger file is
 recorded by path, size, and hash, without content, and cannot be restored. `history.keepTurns`
-defaults to 10. A `5straps/stageId` groups calls in the same session as one turn. Without it,
-Buckle starts a new turn after the session is idle for `history.turnIdleMs`, 60000 milliseconds by
-default. [Workspace settings](workspaces-02.md#settings) lists these keys.
+defaults to 10. A real `5straps/stageId` groups calls only within the same session. Without one,
+a new turn starts after more than `history.turnIdleMs` milliseconds without a call in that session
+(60000 by default). Calls, including reads, refresh idle activity, which survives restart; approval
+and lock waits keep a call in its starting turn. [Workspace settings](workspaces-02.md#settings)
+lists these keys.
 
-If Buckle cannot use trusted host Git, it records changed paths and hashes but no file contents;
-restores are unavailable. Older SQLite history remains readable by `list` and `recover` until
-`buckle history prune --legacy` removes it. Buckle writes new checkpoints only to Git.
+If Git is missing, disabled, or untrusted, the manifest reports hash-only history and content
+restores are unavailable. Other capture limits can also make an individual checkpoint
+non-restorable. Buckle includes the reason and warns the caller: MCP returns structured history
+metadata, while the CLI and `buckle cp` print the warning to stderr. Older SQLite history remains
+readable by `list` and `recover` until `buckle history prune --legacy` removes it. Buckle writes
+new checkpoints only to Git. The separate `BUCKLE_HISTORY_RETENTION_DAYS` setting still controls
+isolated-shell recovery copies, not these turns.
 
 ## From the terminal
 
@@ -39,10 +47,11 @@ buckle history prune
 buckle history prune --legacy         # remove the old SQLite store
 ```
 
-`--last` accepts 1 to 100 checkpoints, newest first, grouped by turn. `list` reads without the
-history lock. `recover`, `restore`, and `prune` wait up to three seconds for a lock. If its
-process is still running, the refusal names its pid, start time, and label. `--force` clears a
-lock only after that process has exited.
+`--last` accepts 1 to 100 checkpoints, newest first, under turn headings. It prints up to ten
+changed and ten non-restorable paths per checkpoint, counts the remainder, and shows any
+non-restorable reason. `list` reads without the history lock. `recover`, `restore`, and `prune`
+wait up to three seconds for a lock. If its process is still running, the refusal names its pid,
+start time, and label. `--force` clears a lock only after that process has exited.
 
 A checkpoint whose finish fails is marked `interrupted` with the reason, and later writes can
 continue. A crash may leave a checkpoint `pending`; the agent gets `HISTORY_RECOVERY_NEEDED`, its
@@ -58,8 +67,9 @@ lists `history_list` and `history_restore`. Tool rules treat them as read and wr
 lists must name each one.
 
 `history_list({ last })` returns checkpoints and `more`, with 10 by default and 100 at most. Each
-checkpoint has a `turnId`; `turns` groups checkpoints, and `changed` lists readable paths from
-Git. Paths hidden by read rules count in `unlisted` instead of being named.
+checkpoint has a `turnId`; `turns` groups checkpoints. `changed` and `notRestorable` each list up
+to 100 readable paths; `changedUnlisted` and `notRestorableUnlisted` count omitted or read-denied
+paths instead of naming them.
 
 `history_restore({ id })`, `history_restore({ steps })`, and `history_restore({ turns })` accept
 exactly one target. An id returns the workspace to the state before that checkpoint and later
