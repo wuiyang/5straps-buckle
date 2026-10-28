@@ -11,9 +11,9 @@ import { createMcpHttpHandlers } from '../mcp/http.js'
 import { MCP_HOLD_MS, mcpWait } from '../mcp/holds.js'
 import { sameCallKey } from '../mcp/resend-join.js'
 
-// The MCP asks brief, over the HTTP face's own handler (mcp/http.ts) with a real workspace runtime: the hold is capped,
-// an unanswered hold answers structurally and is no error, and an identical re-send joins the call that asked, so it
-// never runs twice for one decision.
+// The MCP asks brief, items 1 to 3, over the HTTP face's own handler (mcp/http.ts) with a real workspace runtime: the
+// hold is capped, an unanswered hold answers structurally and is no error, an identical re-send joins the call that
+// asked, so it never runs twice for one decision, and the `_meta` hints shorten the wait and name the requestId.
 
 const PROTOCOL = '2026-07-28'
 const handlers = createMcpHttpHandlers()
@@ -176,5 +176,47 @@ describe('an identical re-send (item 2)', () => {
       { ...base, args: { ...base.args, content: 'x ' } },
       { ...base, args: { ...base.args, options: { mode: '1', create: true } } },
     ]) expect(sameCallKey(other)).not.toBe(sameCallKey(base))
+  })
+})
+
+describe('the _meta hints (item 3)', () => {
+  it('5straps/approvalWait shortens the hold', async () => {
+    const workspace = await node('60000')
+    const started = performance.now()
+    const result = await call(workspace, { ...writeOutside(workspace.root), meta: { '5straps/approvalWait': 50 } })
+    expect(result.structuredContent).toMatchObject({ outcome: 'approval_required' })
+    expect(performance.now() - started).toBeLessThan(10_000)
+  })
+
+  it('5straps/approvalWait never lengthens the hold past the face\'s own, and 0 answers at once', async () => {
+    const workspace = await node('15000')
+    const invoke = vi.spyOn(workspace.runtime, 'invoke').mockResolvedValue({ requestId: 'r', outcome: 'ok', output: null, meta: { durationMs: 0, truncated: false } })
+    await call(workspace, { ...writeOutside(workspace.root), meta: { '5straps/approvalWait': 120_000 } })
+    await call(workspace, { ...writeOutside(workspace.root), meta: { '5straps/approvalWait': 0 } })
+    expect(invoke.mock.calls.map(([input]) => input.approvalWait)).toEqual([{ mode: 'finite', ms: 15_000 }, { mode: 'none' }])
+  })
+
+  it('5straps/requestId names the call exactly: the answer carries it, and a re-send under it joins the ask', async () => {
+    const workspace = await node('50')
+    const requestId = '0f8b4c52-7a1d-4e3b-9c55-2d6e8f1a3b70'
+    const first = await call(workspace, { ...writeOutside(workspace.root), meta: { '5straps/requestId': requestId } })
+    expect(first.structuredContent).toMatchObject({ outcome: 'approval_required', requestId })
+    const again = await call(workspace, { ...writeOutside(workspace.root), meta: { '5straps/requestId': requestId } })
+    expect(again.structuredContent).toMatchObject({ requestId })
+    expect(workspace.runtime.approvalService.pending()).toHaveLength(1)
+  })
+
+  it.each([
+    ['5straps/requestId', 'not-a-uuid'],
+    ['5straps/requestId', 42],
+    ['5straps/approvalWait', -1],
+    ['5straps/approvalWait', 1.5],
+    ['5straps/approvalWait', '1000'],
+  ])('refuses %s of %j with a clear error, before anything is asked', async (hint, value) => {
+    const workspace = await node('50')
+    const result = await call(workspace, { ...writeOutside(workspace.root), meta: { [hint]: value } })
+    expect(result.isError).toBe(true)
+    expect(result.content[0]!.text).toContain(`INVALID_HINT: ${hint} takes`)
+    expect(workspace.runtime.approvalService.pending()).toEqual([])
   })
 })

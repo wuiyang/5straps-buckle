@@ -6,6 +6,7 @@ import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeC
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
 import type { ApprovalAuthority, PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { MCP_HOLD_MS } from './holds.js'
@@ -46,7 +47,7 @@ export interface McpServerOptions {
   beforeCall?: () => Promise<void>
   /**
    * The face's own wait for a person, read at each call (the MCP asks brief, item 1): over HTTP the workspace's, at most
-   * MCP_HOLD_MS; over stdio the workspace's.
+   * MCP_HOLD_MS; over stdio the workspace's. A caller's `5straps/approvalWait` only shortens it.
    */
   approvalWait?: () => ApprovalWait | undefined
 }
@@ -91,15 +92,16 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
       async (args, context) => inScope(async () => {
         try {
           await options.beforeCall?.()
+          const hints = callHints(context.mcpReq?._meta)
+          if ('refused' in hints) return refusedHint(hints.refused)
           const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
           const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
-          const wait = elicits ? { mode: 'none' as const } : options.approvalWait?.()
-          const stage = context.mcpReq?._meta?.['5straps/stageId']
+          const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const response = await invokeJoined({
-            runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, approvalTokens, ...(typeof stage === 'string' ? { stageId: stage.slice(0, 200) } : {}), sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
+            runtime, joins: joinsOf(runtime), tool: tool.capability.name, args: args as JsonObject, hints, approvalTokens, sessionId: mcpSessionId(context), signal: context.mcpReq?.signal,
             ...(options.isCancel ? { isCancel: options.isCancel } : {}), ...(wait ? { wait } : {}),
           })
 
@@ -130,38 +132,40 @@ function joinsOf(runtime: BuckleRuntime): ResendJoin {
 }
 
 /**
- * One call through the invoker under the requestId a re-send joins by (the MCP asks brief, item 2): the one an identical
- * call that asked was given, else a new one. A call that asks is remembered under sameCallKey. It is forgotten once a
- * call under that key answered its outcome to a client still there within MCP_HOLD_MS, inside any client's own timeout;
- * it is kept where the answer was approval_required, the client left, a newer call carried the wait on, or the outcome
- * came later than that, as a client may have stopped reading.
+ * One call through the invoker under the requestId a re-send joins by (the MCP asks brief, items 2 and 3): the client's
+ * own `5straps/requestId`, else the one an identical call that asked was given, else a new one. A call that asks is
+ * remembered under sameCallKey. It is forgotten once a call under that key answered its outcome to a client still there
+ * within MCP_HOLD_MS, inside any client's own timeout; it is kept where the answer was approval_required, the client
+ * left, a newer call carried the wait on, or the outcome came later than that, as a client may have stopped reading.
  */
 async function invokeJoined(input: {
   runtime: BuckleRuntime
   joins: ResendJoin
   tool: string
   args: JsonObject
-  stageId?: string
+  hints: CallHints
   approvalTokens: string[]
   sessionId: string
   signal?: AbortSignal
   isCancel?: (reason: unknown) => boolean
   wait?: ApprovalWait
 }): Promise<InvokeResponse> {
+  const { hints } = input
   const key = sameCallKey({ sessionId: input.sessionId, actor: useScopeSafe()?.context.actor, tool: input.tool, args: input.args })
-  const remembered = input.joins.requestIdOf(key)
-  const requestId = remembered ?? randomUUID()
+  const remembered = hints.requestId === undefined ? input.joins.requestIdOf(key) : undefined
+  const requestId = hints.requestId ?? remembered ?? randomUUID()
   const arrived = performance.now()
   let asked = false
   const response = await input.runtime.invoke({
-    request: { requestId, tool: input.tool, args: input.args, approvalTokens: input.approvalTokens, context: { ...(input.stageId === undefined ? {} : { stageId: input.stageId }) } },
+    request: { requestId, tool: input.tool, args: input.args, approvalTokens: input.approvalTokens, context: { ...(hints.stageId === undefined ? {} : { stageId: hints.stageId }) } },
     sessionId: input.sessionId,
     ...(input.signal ? { signal: input.signal } : {}),
     ...(input.isCancel ? { isCancel: input.isCancel } : {}),
     ...(input.wait ? { approvalWait: input.wait } : {}),
-    onAsked: () => { asked = true; input.joins.remember(key, requestId) },
+    // A client that names its own requestId joins by it, and nothing is remembered for it.
+    ...(hints.requestId === undefined ? { onAsked: () => { asked = true; input.joins.remember(key, requestId) } } : {}),
   })
-  if (!asked && remembered === undefined && response.outcome !== 'approval_required') return response
+  if (hints.requestId !== undefined || (!asked && remembered === undefined && response.outcome !== 'approval_required')) return response
   if (delivered({ response, arrived, ...(input.signal ? { signal: input.signal } : {}) })) input.joins.forget(key)
   else input.joins.remember(key, requestId)
   return response
@@ -172,6 +176,45 @@ function delivered(input: { response: InvokeResponse; arrived: number; signal?: 
   const { response } = input
   if (response.outcome === 'approval_required' || (response.outcome === 'error' && response.error.code === REQUEST_SUPERSEDED)) return false
   return input.signal?.aborted !== true && performance.now() - input.arrived < MCP_HOLD_MS
+}
+
+const STAGE_HINT = '5straps/stageId'
+const WAIT_HINT = '5straps/approvalWait'
+const REQUEST_HINT = '5straps/requestId'
+const MAX_WAIT_MS = 2_147_483_647
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** What a call's `_meta` asks of it (the MCP asks brief, item 3): its stage, a shorter wait, and the requestId it joins by. */
+interface CallHints {
+  stageId?: string
+  approvalWait?: ApprovalWait
+  requestId?: string
+}
+
+/**
+ * Reads a call's hints. `5straps/approvalWait` is milliseconds, 0 for none; it shortens the face's own hold and never
+ * lengthens it. `5straps/requestId` is a UUID the client chooses, sent again to join the call's ask exactly. A hint that
+ * reads otherwise refuses the call, naming it; a stage that is not text is ignored, as before.
+ */
+function callHints(meta: Record<string, unknown> | undefined): CallHints | { refused: string } {
+  const stage = meta?.[STAGE_HINT]
+  const wait = meta?.[WAIT_HINT]
+  const requestId = meta?.[REQUEST_HINT]
+  if (wait !== undefined && !(typeof wait === 'number' && Number.isSafeInteger(wait) && wait >= 0 && wait <= MAX_WAIT_MS)) {
+    return { refused: `${WAIT_HINT} takes a whole number of milliseconds from 0 to ${MAX_WAIT_MS}, 0 to answer at once; nothing was asked or run` }
+  }
+  if (requestId !== undefined && !(typeof requestId === 'string' && UUID.test(requestId))) {
+    return { refused: `${REQUEST_HINT} takes a UUID such as crypto.randomUUID() makes, sent again to join the call's ask; nothing was asked or run` }
+  }
+  return {
+    ...(typeof stage === 'string' ? { stageId: stage.slice(0, 200) } : {}),
+    ...(typeof wait === 'number' ? { approvalWait: wait === 0 ? { mode: 'none' as const } : { mode: 'finite' as const, ms: wait } } : {}),
+    ...(typeof requestId === 'string' ? { requestId } : {}),
+  }
+}
+
+function refusedHint(message: string) {
+  return { isError: true, content: [{ type: 'text' as const, text: `INVALID_HINT: ${message}` }] }
 }
 
 /**
