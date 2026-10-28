@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonObject, type PermissionRuleId } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
-import { BUILT_IN_DELETE_POLICY, type DeletePolicy } from '../common/domain/delete-policy.js'
+import { BUILT_IN_DELETE_POLICY, newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRunView } from '../common/domain/delete-policy.js'
 import type { ResolvedEffect, TreeCount } from '../common/domain/effect.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import type { GrantLookup } from '../common/domain/permission/decision.js'
@@ -170,6 +170,68 @@ describe('the mass-delete guard', () => {
   it('is answered by the dangerously-allow switch, as every ask inside the workspace is', () => {
     const allowed = withDangerouslyAllow(engine(), { level: () => 'command', root: () => WORKSPACE })
     expect(allowed.evaluate({ tool: 'fs_delete', effects: folders(3, 40), grants: lookup(granted) })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:command:write_scope:delete-batch:${WORKSPACE}`] })
+  })
+})
+
+// The delete policy review, R1: within one script, what its earlier calls removed counts toward the limit, and a
+// top-level folder they took entries out of asks when it is removed itself.
+describe('the mass-delete guard over one script', () => {
+  const granted = { write_scope: [WORKSPACE] }
+  const during = (effects: ResolvedEffect[], run: DeleteRunView, input: Parameters<typeof engine>[0] = {}) => engine(input).evaluate({ tool: 'fs_delete', effects, grants: lookup(granted), run })
+
+  it('adds what the script removed before the call to the call\'s own deletes', () => {
+    expect(during([removed(`${WORKSPACE}/src/a.ts`)], { removed: 99, tops: [] }).kind).toBe('allow')
+    const outcome = during([removed(`${WORKSPACE}/src/a.ts`)], { removed: 100, tops: [] })
+    expect(subjects(outcome)).toEqual([`delete-batch:${WORKSPACE}`])
+    if (outcome.kind === 'ask') expect(outcome.asks[0]!.reason).toBe('This script has deleted 101 entries in the workspace so far, more than 100, so a person decides, though the workspace allows deletes in its folder')
+    expect(during(folders(2, 30), { removed: 41, tops: [] }).kind).toBe('ask')
+    expect(during([removed(`${WORKSPACE}/src/a.ts`)], { removed: 5_000, tops: [] }, { deletes: { inWorkspace: 'allow', massLimit: 0 } }).kind).toBe('allow')
+  })
+
+  it('asks about a top-level folder the script took entries out of, though it holds nothing now', () => {
+    const top = `${WORKSPACE}/src`
+    for (const effect of [removed(top), removed(top, { tree: counted(0, 0) })]) {
+      const outcome = during([effect], { removed: 3, tops: [top] })
+      expect(subjects(outcome)).toEqual([`delete-tree:${top}`])
+      if (outcome.kind === 'ask') expect(outcome.asks[0]!.reason).toContain(`Deleting the folder ${top}`)
+      if (outcome.kind === 'ask') expect(outcome.asks[0]!.reason).toContain('at the top of the workspace and emptied by this script, asks a person')
+    }
+    expect(during([removed(`${WORKSPACE}/lib`)], { removed: 3, tops: [top] }).kind).toBe('allow')
+    expect(during([removed(top)], { removed: 0, tops: [] }).kind).toBe('allow')
+  })
+})
+
+describe('what a cleared call adds to its script\'s run', () => {
+  const paths = createPathView({ root: WORKSPACE, mount: null, scratchRoots: [SCRATCH] })
+  const record = (effects: ResolvedEffect[], policy: DeletePolicy = BUILT_IN_DELETE_POLICY) => {
+    const run = newDeleteRun()
+    recordRemovals(run, effects, paths, policy)
+    return run
+  }
+
+  it('counts the entries removed, a folder with all it held, and the top-level folder each came out of', () => {
+    const run = record([removed(`${WORKSPACE}/src/a.ts`), removed(`${WORKSPACE}/src/deep/b.ts`), removed(`${WORKSPACE}/lib/old`, { tree: counted(9, 0) }), removed(`${WORKSPACE}/README.md`)])
+    expect(run).toEqual({ removed: 13, tops: [`${WORKSPACE}/src`, `${WORKSPACE}/lib`] })
+  })
+
+  it('adds up across calls, and names a top-level folder once', () => {
+    const run = newDeleteRun()
+    for (const name of ['a', 'b', 'c']) recordRemovals(run, [removed(`${WORKSPACE}/src/${name}.ts`)], paths, BUILT_IN_DELETE_POLICY)
+    expect(run).toEqual({ removed: 3, tops: [`${WORKSPACE}/src`] })
+  })
+
+  it('leaves out a folder the guard asked about, a folder moved whole, a delete outside the folder, a move of a file, and every delete when the guard is off or deletes ask', () => {
+    expect(record([removed(`${WORKSPACE}/src/big`, { tree: counted(500, 0) })])).toEqual({ removed: 0, tops: [`${WORKSPACE}/src`] })
+    expect(record([removed(`${WORKSPACE}/src/lib`, { tree: counted(30, 2), moved: true })])).toEqual({ removed: 0, tops: [] })
+    expect(record([removed(`${SCRATCH}/x.txt`), removed(`${WORKSPACE}/src/keep.ts`, { floor: false })])).toEqual({ removed: 0, tops: [] })
+    expect(record([removed(`${WORKSPACE}/src/a.ts`)], { inWorkspace: 'allow', massLimit: 0 })).toEqual({ removed: 0, tops: [] })
+    expect(record([removed(`${WORKSPACE}/src/a.ts`)], { inWorkspace: 'ask', massLimit: 100 })).toEqual({ removed: 0, tops: [] })
+  })
+
+  it('judges a call\'s own removals against the run as it stood before the call', () => {
+    const run = newDeleteRun()
+    recordRemovals(run, [removed(`${WORKSPACE}/src/a.ts`), removed(`${WORKSPACE}/src`, { tree: counted(0, 0) })], paths, BUILT_IN_DELETE_POLICY)
+    expect(run.removed).toBe(2)
   })
 })
 

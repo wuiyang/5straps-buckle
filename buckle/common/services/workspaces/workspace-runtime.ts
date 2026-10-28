@@ -27,6 +27,7 @@ import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/fil
 import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
+import type { DeletePolicy } from '../../domain/delete-policy.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
 import { ToolInputError } from '../../domain/tool.js'
 import { isToolAllowed } from '../../domain/tool-policy.js'
@@ -95,6 +96,8 @@ const TOOL_DISABLED = 'Disabled by workspace tool policy'
 interface InForce {
   registry: ToolRegistry
   permissions: PermissionEngine
+  /** The delete policy the permission rules were built from, which a script's deletes are counted by (DeleteRun). */
+  deletes: DeletePolicy
   paths: PathView
   toolDenial(tool: string): string | null
   /** The decision AI as the call found the settings (D91). */
@@ -681,7 +684,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    return { registry, permissions, paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
+    return { registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
   }
 
   /**
@@ -717,6 +720,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       const running = createInvoker({
         registry: settled.registry,
         permissions: settled.permissions,
+        deletes: settled.deletes,
         approvals,
         approvalService,
         executions,
@@ -966,7 +970,7 @@ function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowLevel: () => DangerouslyAllowLevel | null }): PermissionEngine {
   const { config, compiled, paths } = input
   // One policy for both rules, so a delete the floor leaves to the write scope is always judged there (relievedDelete).
-  const deletes = { inWorkspace: config.deleteInWorkspace, massLimit: config.massDeleteLimit }
+  const deletes = deletePolicyOf(config)
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
@@ -978,6 +982,11 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
     createReadScopeRule({ paths }),
     createWriteScopeRule({ paths, strict: config.strictWrites, deletes, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy }) }),
   ]), { level: input.dangerouslyAllowLevel, root: () => paths.root })
+}
+
+/** The delete settings in force, as the rules and a script's delete count read them. */
+function deletePolicyOf(config: BuckleConfig): DeletePolicy {
+  return { inWorkspace: config.deleteInWorkspace, massLimit: config.massDeleteLimit }
 }
 
 function buildManifest(input: {

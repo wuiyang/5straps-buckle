@@ -5,6 +5,7 @@ import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { basename, isAbsolute } from 'pathe'
 import type { ChangeHistory } from '../history/journal.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from '../../domain/delete-policy.js'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
@@ -79,6 +80,11 @@ export interface InvokerOptions {
   protectedRoots?: readonly string[]
   /** The files each session has seen the content of, for the destructive-write check; none counts as read where absent. */
   reads?: SessionReads
+  /**
+   * The workspace's delete policy as the call found it, which a script's calls are counted by (DeleteRun); none counted
+   * where absent.
+   */
+  deletes?: DeletePolicy
   paths: PathView
   serverId: string
   workspaceId: string
@@ -119,6 +125,11 @@ export interface InvokeInput {
   holdUntil?: number
   /** Set only by the invoker on a call a script made: told when the tool begins to run (NestedCall.onExecute). */
   onExecute?: () => void
+  /**
+   * Set only by the invoker on a call a script made: what the script's calls removed inside the workspace's folder, which
+   * the mass-delete guard adds to the call, and which the call adds to once it is cleared (delete-policy.ts DeleteRun).
+   */
+  deleteRun?: DeleteRun
   /**
    * Told when the call is about to wait for a person: it asked, or joined an ask it made before. The MCP face remembers
    * such a call, so an identical re-send joins it (the MCP asks brief, item 2).
@@ -173,7 +184,7 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun }) {
       const startedAt = performance.now()
       const auditId = randomUUID()
       // A required audit write that fails stops the call here, before anything runs (data.md).
@@ -243,7 +254,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
           // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
           const fromCopy = prepared.managesHistory === true
-          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
+          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
           // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
           // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
           // finding deadline-announce invoker.ts:175).
@@ -650,12 +661,15 @@ async function clearPermissions(input: {
   held: { claim?: ExecutionClaim }
   judgment: Judgment
   via?: NestedOrigin
+  /** For a call a script made: what the script removed before it, which the call is judged with and added to once cleared. */
+  deleteRun?: DeleteRun
   /** What the tool settled before the rules judged the call, which its description names (PreparedCall.facts). */
   facts?: JsonObject
   onAsked?: () => void
   resends?: boolean
 }): Promise<GateOutcome> {
   const { options, request, sessionId, effects, held } = input
+  const run = input.deleteRun ? { run: input.deleteRun } : {}
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
   let decidedBy: string[] = []
@@ -680,10 +694,13 @@ async function clearPermissions(input: {
       consumed = subjects
       approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
       const grants = buildLookup({ grants: options.grants, sessionId, consumed: subjects })
-      return withJudged(withFlagged(options.permissions.evaluate({ tool: request.tool, effects, grants }), flagged, grants), passed)
+      return withJudged(withFlagged(options.permissions.evaluate({ tool: request.tool, effects, grants, ...run }), flagged, grants), passed)
     },
+    // Where a call is cleared and owns its execution, its deletes count toward its script's run, in the same step the last
+    // check was made in, so calls made at once cannot each be checked against the run before any is counted.
     admit: () => {
       held.claim = options.executions.claim(input.key)
+      if (held.claim.kind === 'owner' && input.deleteRun && options.deletes) recordRemovals(input.deleteRun, effects, options.paths, options.deletes)
       return held.claim.kind === 'owner'
     },
   })
@@ -695,7 +712,7 @@ async function clearPermissions(input: {
   // no ask names; a danger at 0.8 or above makes it an ask, and anything else, no verdict included, lets it run as before.
   // Never past a deny; the gate screens nothing while the dangerously-allow switch is on.
   if (judging?.screens) {
-    const before = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }) })
+    const before = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }), ...run })
     if (before.kind !== 'deny') {
       const asked = new Set(before.kind === 'ask' ? before.asks.filter(item => item.rule === 'destructive_command').map(item => item.subject) : [])
       input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, fromCopy: input.fromCopy, ...(input.signal ? { signal: input.signal } : {}) })
@@ -1055,6 +1072,8 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
   // Each wait ends before the script's deadline, so an unanswered ask comes back as approval_required, never as a
   // timeout that leaves it pending unannounced (same finding, and invoker-audit 228).
   const waitEnds = performance.now() + input.timeoutMs - NESTED_WAIT_MARGIN_MS
+  // What this script's calls remove inside the workspace's folder, counted together by the mass-delete guard (R1 of the delete policy review).
+  const deleteRun = newDeleteRun()
   const parentOf = (call: NestedCall) => (call.parentRequestId ?? nestedParent).slice(0, MAX_LOGGED_ID)
   return {
     nestedKey,
@@ -1071,6 +1090,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       ...(nesting.resends ? { resends: true } : {}),
       holdUntil: waitEnds,
       ...(call.onExecute ? { onExecute: call.onExecute } : {}),
+      deleteRun,
       via: { tool: request.tool, parentRequestId: parentOf(call) },
     }),
     forgetNested: (ids) => {

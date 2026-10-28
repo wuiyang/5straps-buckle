@@ -1,5 +1,5 @@
 import type { GrantScope } from '@5straps/protocol'
-import { guardedBatch, guardedTree, inWorkspaceFolder, relievedDelete, type DeletePolicy } from '../../delete-policy.js'
+import { guardedBatch, guardedTree, inWorkspaceFolder, relievedDelete, type DeletePolicy, type DeleteRunView } from '../../delete-policy.js'
 import { treeWords, type ResolvedEffect } from '../../effect.js'
 import type { PathView } from '../../path-view.js'
 import { homeDirectory, isInside } from '../../paths.js'
@@ -62,8 +62,8 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
   const grantable = (folder: string) => !isInside(folder, home) && !input.paths.reachableRoots.some(root => isInside(folder, root) && !isInside(root, folder))
   return {
     id: 'write_scope',
-    evaluate({ effect, effects, grants }) {
-      const floor = floorAsk(effect, effects ?? [effect], input)
+    evaluate({ effect, effects, run, grants }) {
+      const floor = floorAsk(effect, effects ?? [effect], run, input)
       if (floor === null) return null
       const held = grants.subjectsFor('write_scope')
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
@@ -79,12 +79,12 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
 /** What the floor asks about one effect, and, for a delete outside the workspace's folder, the entry a wider grant may cover. */
 interface FloorAsk { subject: string; reason: string; outside?: { path: string; directory: string } }
 
-function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
+function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], run: DeleteRunView | undefined, input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
   const { paths } = input
   if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says` }
   if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says` }
   if (effect.kind !== 'delete_path' || !effect.floor) return null
-  if (relievedDelete(effect, paths, input.deletes)) return massDeleteAsk(effect, effects, input)
+  if (relievedDelete(effect, paths, input.deletes)) return massDeleteAsk(effect, effects, run, input)
   const outside = inWorkspaceFolder(effect.path, paths) ? {} : { outside: { path: effect.path, directory: effect.directory } }
   if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) asks a person, whatever the folder's write grant says`, ...outside }
   return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} asks a person, whatever the folder's write grant says`, ...outside }
@@ -94,15 +94,23 @@ function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], in
  * The mass-delete guard over deletes the workspace allows (the delete policy brief, item 2): a folder removed whole that
  * holds more than the limit, or stands at the top of the workspace's folder, asks under its own `delete-tree` subject;
  * the rest of the call's deletes, past the limit together, ask once under `delete-batch`. Otherwise nothing asks here.
+ * Within a script (`run`), what its earlier calls removed counts toward the limit, and a top-level folder they took
+ * entries out of asks when it is removed itself, though it holds nothing by then (the delete policy review, R1).
  */
-function massDeleteAsk(effect: Extract<ResolvedEffect, { kind: 'delete_path' }>, effects: readonly ResolvedEffect[], input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
+function massDeleteAsk(effect: Extract<ResolvedEffect, { kind: 'delete_path' }>, effects: readonly ResolvedEffect[], run: DeleteRunView | undefined, input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
   const { paths, deletes } = input
-  const tree = guardedTree(effect, paths, deletes)
-  if (tree !== null && effect.tree) {
-    const why = tree === 'large' ? ` removes more than ${deletes.massLimit} entries at once, so a person decides` : ', at the top of the workspace, asks a person'
-    return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)})${why}, though the workspace allows deletes in its folder` }
+  const tree = guardedTree(effect, paths, deletes, run)
+  if (tree !== null) {
+    const subject = `${DELETE_TREE_PREFIX}${effect.path}`
+    const folder = paths.toVirtual(effect.path)
+    const held = effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''
+    const why = tree === 'large' ? ` removes more than ${deletes.massLimit} entries at once, so a person decides` : tree === 'top' ? ', at the top of the workspace, asks a person' : ', at the top of the workspace and emptied by this script, asks a person'
+    return { subject, reason: `Deleting the folder ${folder}${held}${why}, though the workspace allows deletes in its folder` }
   }
-  const batch = guardedBatch(effects, paths, deletes)
+  const batch = guardedBatch(effects, paths, deletes, run)
   if (batch === null) return null
-  return { subject: `${DELETE_BATCH_PREFIX}${paths.root}`, reason: `This call deletes ${batch} entries in the workspace at once, more than ${deletes.massLimit}, so a person decides, though the workspace allows deletes in its folder` }
+  const reason = (run?.removed ?? 0) > 0
+    ? `This script has deleted ${batch} entries in the workspace so far, more than ${deletes.massLimit}, so a person decides, though the workspace allows deletes in its folder`
+    : `This call deletes ${batch} entries in the workspace at once, more than ${deletes.massLimit}, so a person decides, though the workspace allows deletes in its folder`
+  return { subject: `${DELETE_BATCH_PREFIX}${paths.root}`, reason }
 }

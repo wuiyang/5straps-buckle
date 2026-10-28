@@ -105,7 +105,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',
-      description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. Inside the workspace folder a delete runs where writes are granted, unless the owner set deletes to ask; a delete outside it, of a folder at its top, or of many entries in one call asks a person.',
+      description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. Inside the workspace folder a delete runs where writes are granted, unless the owner set deletes to ask; a delete outside it, of a folder at its top, or of many entries in one call or one script asks a person.',
       risk: 'write',
       tags: ['filesystem', 'batch'],
       input: schemas.deleteInput,

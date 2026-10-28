@@ -1,4 +1,5 @@
 import type { GrantScope, PermissionRuleId } from '@5straps/protocol'
+import type { DeleteRunView } from '../delete-policy.js'
 import type { ResolvedEffect } from '../effect.js'
 
 export type PermissionDecision =
@@ -35,6 +36,8 @@ export interface RuleInput {
   effect: ResolvedEffect
   /** Every effect of the call, for a rule that judges the call as a whole (the mass-delete guard); `effect` alone where absent. */
   effects?: readonly ResolvedEffect[]
+  /** What the script this call belongs to removed before it, for the mass-delete guard; absent for a call no script made. */
+  run?: DeleteRunView
   grants: GrantLookup
 }
 

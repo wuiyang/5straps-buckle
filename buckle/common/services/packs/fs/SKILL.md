@@ -51,7 +51,7 @@ buckle fs move draft.md final.md --replace
 
 Inside the workspace folder, `fs_delete` runs where writes are granted, unless the owner set
 deletes to ask. A delete outside the folder, of a folder at its top, or of many entries in one
-call (100 by default) returns `approval_required`: relay it.
+call or one script (100 by default) returns `approval_required`: relay it.
 A link is removed, never followed; a folder that holds entries needs `recursive`. A missing
 path is reported, not an error. Never empty a file with `fs_write` to get rid of it.
 `fs_move`'s `replace` says what you expect at the destination, and a mismatch is refused: without

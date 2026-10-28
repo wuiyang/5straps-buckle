@@ -1,4 +1,5 @@
 import type { PermissionRuleId } from '@5straps/protocol'
+import type { DeleteRunView } from '../delete-policy.js'
 import type { ResolvedEffect } from '../effect.js'
 import type { GrantLookup, PermissionDecision, PermissionRule } from './decision.js'
 
@@ -9,7 +10,8 @@ export type PermissionOutcome =
   | { kind: 'deny'; denial: Extract<PermissionDecision, { kind: 'deny' }> }
 
 export interface PermissionEngine {
-  evaluate(input: { tool: string; effects: ResolvedEffect[]; grants: GrantLookup }): PermissionOutcome
+  /** `run`: what the script this call belongs to removed before it, which the mass-delete guard adds to the call (delete-policy.ts). */
+  evaluate(input: { tool: string; effects: ResolvedEffect[]; grants: GrantLookup; run?: DeleteRunView }): PermissionOutcome
 }
 
 /**
@@ -18,13 +20,13 @@ export interface PermissionEngine {
  */
 export function createPermissionEngine(rules: PermissionRule[]): PermissionEngine {
   return {
-    evaluate({ tool, effects, grants }) {
+    evaluate({ tool, effects, grants, run }) {
       const asks = new Map<string, Extract<PermissionDecision, { kind: 'ask' }>>()
       const allowedBy = new Set<string>()
 
       for (const rule of rules) {
         for (const effect of effects) {
-          const decision = rule.evaluate({ tool, effect, effects, grants })
+          const decision = rule.evaluate({ tool, effect, effects, grants, ...(run ? { run } : {}) })
           if (!decision) continue
           if (decision.kind === 'allow') {
             if (decision.via) allowedBy.add(askKey(decision.via.rule, decision.via.subject))
