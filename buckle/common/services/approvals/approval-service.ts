@@ -296,7 +296,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       }
       // Checked before any question is drawn: a caller that cancelled during the announce is asked about no more (review L5).
       await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
-      if (closing.signal.aborted) return skip({ approvals, answered, reason: 'shutdown' })
+      // A hold until answered that ends before it starts still starts its asks' ten minutes (the MCP asks brief, item 5).
+      const unheld = async (reason: ApprovalSkipReason) => {
+        if (ownHold === null) await holdEnded({ tokens, abandoned: false })
+        return skip({ approvals, answered, reason })
+      }
+      if (closing.signal.aborted) return unheld('shutdown')
       const holdMs = atMost(ownHold, input.holdUntil === undefined ? undefined : Math.max(0, Math.floor(input.holdUntil - performance.now())))
       // No hold left for a script's call is a wait that elapsed, not one the caller declined.
       const zeroHold: ApprovalSkipReason = ownHold === 0 ? 'caller_declined_wait' : 'wait_elapsed'
@@ -304,7 +309,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // its terminal whatever the hint says, and keeps asking after the caller returns (owner ruling).
       const keepAsking = interaction.hold === 'grace'
       // A hold of 0 comes only from the caller's hint `none`: the node's own is positive or null (D3).
-      if (holdMs === 0 && !keepAsking) return skip({ approvals, answered, reason: zeroHold })
+      if (holdMs === 0 && !keepAsking) return unheld(zeroHold)
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const context = { correlationId: scope?.context.correlationId ?? input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId }
@@ -314,12 +319,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
       if (holdMs === 0) {
         if (ask.participants.size === 0) release({ ask, keepAsking: true })
-        return skip({ approvals, answered, reason: zeroHold })
+        return unheld(zeroHold)
       }
       const participant = new AbortController()
       ask.participants.add(participant)
       const result = waitFor({ ask, participant, hold: interaction.hold, holdMs, signal: input.signal })
-        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, held: holdMs, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, held: ownHold, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
       track(result)
       return result
     },
@@ -566,7 +571,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; held: number | null; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; /** The hold the asks were recorded with (ownHold). */ held: number | null; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
     const { ask, ending, own } = input
     ask.participants.delete(input.participant)
     const last = ask.participants.size === 0

@@ -6,6 +6,7 @@ import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
+import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -195,5 +196,20 @@ describe('an ask at wait 0', () => {
     clockAt(start + 41 * MINUTE)
     expect(runtime.approvalService.pending()).toEqual([])
     await runtime.history.close()
+  })
+
+  // A script's call (owner decision D82) waits no later than its script's deadline: held until answered by the node, its
+  // hold still ends, and its ask lapses ten minutes after, whether the deadline left it some wait or none.
+  it.each([['some wait', 50], ['no wait', -1]] as const)('held until answered within a script\'s deadline, with %s left, lapses ten minutes after', async (_, leftMs) => {
+    const start = Date.now()
+    const registry = queue()
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: null, interaction: fixedInteraction() })
+    const waited = await service.request({ sessionId: 's', requestId: `script-${leftMs}`, tool: 'fs_write', asks: [outside(1)], holdUntil: performance.now() + leftMs })
+    expect(waited.settled).toBe(false)
+    clockAt(start + 9 * MINUTE)
+    expect(registry.pending()).toHaveLength(1)
+    clockAt(start + 11 * MINUTE)
+    expect(registry.pending()).toEqual([])
+    await service.close()
   })
 })
