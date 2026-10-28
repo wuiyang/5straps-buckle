@@ -240,7 +240,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // before anything is judged; each file the references name is judged where it lands, and its first use asks a
           // person (docs/secrets.md).
           const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
-          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
           // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
           effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
           // How the command reader reads each reference in a shell call, refused where the rules could not read it as

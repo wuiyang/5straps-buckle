@@ -2,7 +2,8 @@ import { parseArgs } from 'node:util'
 import { relative } from 'pathe'
 import { printable } from '../common/domain/approval-instruction.js'
 import { isInside } from '../common/domain/paths.js'
-import { RECENT_CHECKPOINTS_MAX, type CheckpointSummary } from '../common/services/history/journal.js'
+import { SnapshotConflictError } from '../common/services/history/snapshot.js'
+import { RECENT_CHECKPOINTS_MAX, RestoreRefusedError, withConflictPath, type CheckpointSummary } from '../common/services/history/journal.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 export interface CliResult {
@@ -18,10 +19,20 @@ export async function historyCommand(runtime: BuckleRuntime, argv: string[]): Pr
   const [command = 'list', id] = argv
   if (command === 'list') return listCommand(runtime, argv.slice(1))
   if (command === 'prune') return print(await runtime.history.prune())
-  if (command === 'restore-stage' && id && argv[2]) return print(await runtime.history.restoreStage(id, argv[2]))
-  if (command === 'restore' && id) return print(await runtime.history.restore(id))
+  if (command === 'restore-stage' && id && argv[2]) return restored(runtime, () => runtime.history.restoreStage(id, argv[2]!))
+  if (command === 'restore' && id) return restored(runtime, () => runtime.history.restore(id))
   if (command === 'recover' && id) return print(await runtime.history.recover(id))
   return fail(USAGE)
+}
+
+/** A restore's result, or its refusal as a conflict: the path in conflict named as it lies in the workspace's folder. Any other failure is the caller's. */
+async function restored(runtime: BuckleRuntime, restore: () => Promise<unknown>): Promise<CliResult> {
+  try {
+    return print(await restore())
+  } catch (error) {
+    if (!(error instanceof SnapshotConflictError || error instanceof RestoreRefusedError) || error.path === undefined) throw error
+    return fail(withConflictPath(error, printable(ownerPath(error.path, runtime.paths().root))))
+  }
 }
 
 /** Every checkpoint as JSON, oldest first, or with `--last <n>` the n back from the current state, as text. */

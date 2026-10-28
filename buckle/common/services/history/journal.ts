@@ -44,6 +44,18 @@ export interface RollbackPlan { checkpoint: string; head: string; undoes: number
 export class RestoreRefusedError extends Error implements ServiceFailure {
   readonly code = 'RESTORE_REFUSED'
   readonly status = 409
+  /** The path a conflict is about, as the checkpoints name it (the disk's); the message leaves it out, for each caller to name it in its own words (withConflictPath). */
+  readonly path: string | undefined
+
+  constructor(message: string, options?: ErrorOptions & { path?: string }) {
+    super(message, options)
+    this.path = options?.path
+  }
+}
+
+/** A refusal's message with the path in conflict, where it has one and the caller names it (`shown`): the text is the message alone otherwise. */
+export function withConflictPath(refusal: { message: string }, shown: string | undefined): string {
+  return shown === undefined ? refusal.message : `${refusal.message} (${shown})`
 }
 
 /**
@@ -286,7 +298,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         try {
           return await restoreRecord(combined, { by: input.by, undoes: plan.undoes, notRestorable })
         } catch (error) {
-          if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error })
+          if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error, ...(error.path === undefined ? {} : { path: error.path }) })
           throw error
         }
       }, input.signal)
@@ -389,7 +401,7 @@ function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } 
   for (const record of selected) {
     if (!record.after) throw new RestoreRefusedError('A checkpoint among those it undoes never completed, so nothing is restored')
     for (const path of changedPaths(record.before, record.after)) {
-      if (last.has(path) && !sameEntry(last.get(path), record.before[path])) throw new RestoreRefusedError('Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes')
+      if (last.has(path) && !sameEntry(last.get(path), record.before[path])) throw new RestoreRefusedError('Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes', { path })
       if (!first.has(path)) first.set(path, record.before[path])
       last.set(path, record.after[path])
     }

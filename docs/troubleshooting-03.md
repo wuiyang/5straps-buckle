@@ -23,6 +23,7 @@ covers the shell.
 | "... is a link, and Windows lets only an administrator ... make one" | none | turn on Developer Mode or run with rights to make links, or move the folder without that link |
 | "There is no file or folder at ..." (a move), "There is no file at ..." (a read, a patch), or "There is no folder at ..." (a list, a search) | `FILE_NOT_FOUND` | check the path as you sent it; the same code answers a path that runs through a file |
 | "The folder holds Buckle's own state and policy" | `PERMISSION_DENIED` | choose another folder; no tool reaches Buckle's state |
+| "Restore conflict: a changed path no longer matches the checkpoint (src/a.txt)" | `RESTORE_REFUSED` | the file named changed since; put it back or leave it, then restore again. The owner's command names it from the folder; the agent's leaves out a path its read rules keep |
 | "Hunk N of ... does not match the file, so nothing was written" | `PATCH_DOES_NOT_APPLY` | the header names the hunk; rebuild the diff from the file as it stands |
 | "The patch creates ..., which exists already" | `PATCH_DOES_NOT_APPLY` | diff against the file that exists, or use a free path |
 | "The patch creates ..., but ... is a file, not a folder" | `PATCH_DOES_NOT_APPLY` | use a path whose folders are not files, or remove that file first |

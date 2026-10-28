@@ -4,7 +4,7 @@ import type { ResolvedEffect, RestoreTarget, ToolEffect } from '../../domain/eff
 import type { PathView } from '../../domain/path-view.js'
 import { missingMountReason, mountSourceState } from '../../domain/sandbox-mounts.js'
 import { ToolExecutionError, ToolInputError } from '../../domain/tool.js'
-import { RestoreRefusedError, type ChangeHistory } from '../history/journal.js'
+import { RestoreRefusedError, withConflictPath, type ChangeHistory } from '../history/journal.js'
 import { realPathOrPlanned, resolveEntry } from './real-path.js'
 
 /**
@@ -14,7 +14,7 @@ import { realPathOrPlanned, resolveEntry } from './real-path.js'
  * change history is settled from `history` into the checkpoint it goes back to, with each path
  * it puts back judged as a write beside it.
  */
-export async function resolveEffects(input: { effects: ToolEffect[]; paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined }): Promise<ResolvedEffect[]> {
+export async function resolveEffects(input: { effects: ToolEffect[]; paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined; readable?: ((path: string) => boolean) | undefined }): Promise<ResolvedEffect[]> {
   const resolved: ResolvedEffect[] = []
   for (const effect of input.effects) {
     if (effect.kind === 'restore_checkpoint') resolved.push(...await resolveRestore(effect.target, input))
@@ -36,12 +36,13 @@ function insideGitDirectory(path: string): boolean {
  * puts back, the entry itself where it lies now (its folder resolved, its own name not followed), as a write. One the
  * history refuses (a step past its start, an id it does not hold, a checkpoint waiting for recovery) is refused here,
  * before anything asks, and so is one that would put back a file inside a Git directory (review M1 of the Slice D rules
- * review): the history keeps `.git`, and putting it back is a hard reset, not an undo of files.
+ * review): the history keeps `.git`, and putting it back is a hard reset, not an undo of files. A refusal over a path in
+ * conflict names it as the agent does, unless `readable` says the read rules keep it from the agent (or is not given).
  */
-async function resolveRestore(target: RestoreTarget, input: { paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined }): Promise<ResolvedEffect[]> {
+async function resolveRestore(target: RestoreTarget, input: { paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined; readable?: ((path: string) => boolean) | undefined }): Promise<ResolvedEffect[]> {
   if (!input.history) throw new ToolExecutionError('This workspace keeps no change history to restore from', { code: 'HISTORY_UNAVAILABLE' })
   const plan = await input.history.plan(target).catch((error: unknown) => {
-    if (error instanceof RestoreRefusedError) throw new ToolInputError(error.message, { code: error.code })
+    if (error instanceof RestoreRefusedError) throw new ToolInputError(withConflictPath(error, error.path !== undefined && input.readable?.(error.path) ? input.paths.display(error.path) : undefined), { code: error.code })
     throw error
   })
   if (plan.changes.some(change => insideGitDirectory(change.path))) throw new ToolInputError(GIT_DIRECTORY_REFUSAL, { code: 'RESTORE_REFUSED' })

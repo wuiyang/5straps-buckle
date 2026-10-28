@@ -4,7 +4,7 @@ import type { RestoreTarget } from '../../../domain/effect.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { defineTool, LockWaitError, ToolExecutionError, ToolInputError, type ToolContext } from '../../../domain/tool.js'
-import { RECENT_CHECKPOINTS_MAX, RestoreRefusedError, type ChangeHistory, type CheckpointSummary } from '../../history/journal.js'
+import { RECENT_CHECKPOINTS_MAX, RestoreRefusedError, withConflictPath, type ChangeHistory, type CheckpointSummary } from '../../history/journal.js'
 import { loadPackSkill } from '../pack-skill.js'
 
 const PACK_ID = 'history'
@@ -109,9 +109,15 @@ async function restore(input: { history: ChangeHistory; target: RestoreTarget; p
     return { checkpoint: restored.id, restores: restored.restores ?? null, undoes: restored.undoes ?? 1, changes: shown.changes, ...(shown.unlisted > 0 ? { unlisted: shown.unlisted } : {}), ...(notRestorable.length > 0 ? { notRestorable } : {}) }
   } catch (error) {
     if (waiting) throw new LockWaitError(error)
-    if (error instanceof RestoreRefusedError) throw new ToolExecutionError(error.message, { code: error.code })
+    if (error instanceof RestoreRefusedError) throw new ToolExecutionError(await refusalText(error, input), { code: error.code })
     throw error
   }
+}
+
+/** A refusal's message, with the path in conflict as the agent names it, unless the read rules keep the path from it. */
+async function refusalText(refusal: RestoreRefusedError, input: { paths: PathView; context: ToolContext }): Promise<string> {
+  const shown = refusal.path !== undefined && await readable(refusal.path, input.context) ? input.paths.display(refusal.path) : undefined
+  return withConflictPath(refusal, shown)
 }
 
 /** A checkpoint as history_list answers it: no snapshot, its paths as the agent names them. */
