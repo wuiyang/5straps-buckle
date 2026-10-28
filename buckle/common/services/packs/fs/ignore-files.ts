@@ -70,7 +70,8 @@ function globMatches(subject: string, pattern: string): boolean {
 type Token =
   | { kind: 'char'; value: string }
   | { kind: 'one' }
-  | { kind: 'set'; negate: boolean; ranges: Array<[string, string]> }
+  /** Each range as its first and last code point. */
+  | { kind: 'set'; negate: boolean; ranges: Array<[number, number]> }
   /** `*`: any run of characters but `/`. */
   | { kind: 'run' }
   /** A globstar at the end: any run of characters, `/` too. */
@@ -148,17 +149,27 @@ function classEnd(pattern: string, start: number): number | null {
   return null
 }
 
+/** The whole character at a position: both units of a surrogate pair, so a pattern is read in the code points the text is walked in. */
+function characterAt(text: string, at: number): string {
+  return String.fromCodePoint(text.codePointAt(at)!)
+}
+
 function tokens(pattern: string): Token[] {
   const out: Token[] = []
   for (let at = 0; at < pattern.length; at++) {
-    const character = pattern[at]!
-    if (character === '\\') { out.push({ kind: 'char', value: pattern[++at] ?? '\\' }); continue }
+    const character = characterAt(pattern, at)
+    if (character === '\\') {
+      const escaped = at + 1 < pattern.length ? characterAt(pattern, at + 1) : '\\'
+      out.push({ kind: 'char', value: escaped })
+      at += escaped.length
+      continue
+    }
     if (character === '?') { out.push({ kind: 'one' }); continue }
     if (character === '[') {
       const end = classEnd(pattern, at)
       if (end !== null) { out.push(classToken(pattern.slice(at + 1, end))); at = end; continue }
     }
-    if (character !== '*') { out.push({ kind: 'char', value: character }); continue }
+    if (character !== '*') { out.push({ kind: 'char', value: character }); at += character.length - 1; continue }
     let stars = 1
     while (pattern[at + stars] === '*') stars++
     const atStart = at === 0 || pattern[at - 1] === '/'
@@ -175,16 +186,17 @@ function tokens(pattern: string): Token[] {
 function classToken(body: string): Token {
   const negate = body.startsWith('!') || body.startsWith('^')
   const text = negate ? body.slice(1) : body
-  const ranges: Array<[string, string]> = []
-  for (let at = 0; at < text.length; at++) {
-    let low = text[at]!
-    if (low === '\\' && at + 1 < text.length) low = text[++at]!
-    if (text[at + 1] === '-' && at + 2 < text.length) {
-      let high = text[at + 2]!
+  const ranges: Array<[number, number]> = []
+  const characters = Array.from(text)
+  for (let at = 0; at < characters.length; at++) {
+    let low = characters[at]!
+    if (low === '\\' && at + 1 < characters.length) low = characters[++at]!
+    if (characters[at + 1] === '-' && at + 2 < characters.length) {
+      let high = characters[at + 2]!
       at += 2
-      if (high === '\\' && at + 1 < text.length) high = text[++at]!
-      ranges.push([low, high])
-    } else ranges.push([low, low])
+      if (high === '\\' && at + 1 < characters.length) high = characters[++at]!
+      ranges.push([low.codePointAt(0)!, high.codePointAt(0)!])
+    } else ranges.push([low.codePointAt(0)!, low.codePointAt(0)!])
   }
   return { kind: 'set', negate, ranges }
 }
@@ -227,5 +239,6 @@ function matchesTokens(subject: string, parts: readonly Token[]): boolean {
 }
 
 function inSet(part: Extract<Token, { kind: 'set' }>, character: string): boolean {
-  return part.ranges.some(([low, high]) => character >= low && character <= high) !== part.negate
+  const point = character.codePointAt(0)!
+  return part.ranges.some(([low, high]) => point >= low && point <= high) !== part.negate
 }

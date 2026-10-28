@@ -219,6 +219,56 @@ describe('the glob matcher', () => {
   })
 })
 
+describe('the glob matcher on supplementary characters', () => {
+  // A pattern and a name are read in code points, as ripgrep reads them: 📄 is one character, not the two UTF-16 units it is stored in.
+  it.each([
+    ['a literal', '📄.txt', '📄.txt', true],
+    ['a literal against a character that shares its first unit', '📄.txt', '📃.txt', false],
+    ['a literal among others', 'a📄b', 'a📄b', true],
+    ['a literal after a star', '*📄', 'note📄', true],
+    ['a literal after a star, not matching', '*📄', 'note📃', false],
+    ['one ? for one character', '?.txt', '📄.txt', true],
+    ['two ? for one character', '??.txt', '📄.txt', false],
+    ['an escaped literal', '\\📄.txt', '📄.txt', true],
+    ['an escaped literal, not matching', '\\📄.txt', '📃.txt', false],
+    ['an escaped literal beside an escaped star', '\\📄\\*', '📄*', true],
+    ['a literal in a choice', '{📄,📃}.txt', '📃.txt', true],
+    ['a class holding it', '[📄a].txt', '📄.txt', true],
+    ['a class holding another', '[📄a].txt', '📃.txt', false],
+    ['a negated class', '[!📄].txt', '📃.txt', true],
+    ['a negated class, holding it', '[!📄].txt', '📄.txt', false],
+    ['a caret class', '[^📄]', '📄', false],
+    ['a class with an escaped member', '[\\📄].txt', '📄.txt', true],
+    ['a range of them, inside', '[📀-📅].txt', '📄.txt', true],
+    ['a range of them, below', '[📀-📅].txt', '📿.txt', false],
+    ['a range of them, above', '[📄-📅].txt', '📃.txt', false],
+    ['a range from the basic plane up, inside', '[a-📄].txt', '📃.txt', true],
+    ['a range from the basic plane up, beyond', '[a-📄].txt', '📅.txt', false],
+    ['a range across the surrogate range of code units', '[Ａ-😀].txt', '🌀.txt', true],
+    ['a range of escaped ends', '[\\📀-\\📅]', '📄', true],
+    ['a class and a literal in one name', '[📄]📄', '📄📄', true],
+    ['a class on a name of units', '[a-z]', 'm', true],
+    ['a path with one', '📁/📄.txt', '📁/📄.txt', true],
+    ['a globstar over one', '**/📄.txt', '📁/sub/📄.txt', true],
+  ])('reads %s: %s against %s as %s', (_name, pattern, subject, expected) => {
+    expect(matchesPattern(subject, pattern)).toBe(expected)
+  })
+
+  it('leaves out and keeps a name by an ignore rule and the call glob', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-search-emoji-'))
+    roots.push(root)
+    mkdirSync(join(root, '.git'))
+    writeFileSync(join(root, '.gitignore'), '📃.txt\n')
+    writeFileSync(join(root, '📄.txt'), 'marker\n')
+    writeFileSync(join(root, '📃.txt'), 'marker\n')
+    writeFileSync(join(root, 'plain.txt'), 'marker\n')
+    expect(sorted(await builtin(root, { pattern: 'marker', glob: '📄.txt' })).map(match => match.path)).toEqual(['./📄.txt'])
+    expect(sorted(await builtin(root, { pattern: 'marker', glob: '[📀-📅].txt' })).map(match => match.path)).toEqual(['./📄.txt'])
+    expect(sorted(await builtin(root, { pattern: 'marker', glob: '!📄.txt' })).map(match => match.path)).toEqual(['./plain.txt'])
+    expect(sorted(await builtin(root, { pattern: 'marker' })).map(match => match.path)).toEqual(['./📄.txt', './plain.txt'])
+  })
+})
+
 describe('a search that cannot stall the node', () => {
   it('leaves out a file a pattern that backtracks without end runs past its limit on, and leaves the node free to answer', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-search-redos-'))
