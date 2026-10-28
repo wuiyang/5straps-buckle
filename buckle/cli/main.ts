@@ -837,7 +837,11 @@ function describeWaitingAsk(input: { ask: PendingAsk; node: string; runtime: Buc
 
 function reportResponse(input: { response: InvokeResponse; workspaceId: string; workspaceName: string }): CliResult {
   const { response } = input
-  if (response.outcome === 'ok') return print(response.output)
+  if (response.outcome === 'ok') {
+    const history = response.meta.history
+    if (history) process.stderr.write(`History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}\n`)
+    return print(response.output)
+  }
 
   if (response.outcome === 'approval_required') {
     // Leads with buckle approvals, which shows the whole action, and names buckle approve after it (owner decision D17).

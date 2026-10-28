@@ -434,10 +434,11 @@ function replayNotice(replay: Replay): string {
 
 function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>, replay?: Replay) {
   const text = response.outcome === 'error' ? `${response.error.code}: ${response.error.message}` : JSON.stringify(response.output, null, 2)
+  const history = response.outcome === 'ok' ? response.meta.history : undefined
   return {
     ...(response.outcome === 'error' ? { isError: true } : {}),
-    content: [{ type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text }],
-    ...(replay ? { _meta: { [REPLAYED_META]: true } } : {}),
+    content: [{ type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text }, ...(history ? [{ type: 'text' as const, text: `History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}` }] : [])],
+    ...(replay || history ? { _meta: { ...(replay ? { [REPLAYED_META]: true } : {}), ...(history ? { '5straps/history': history } : {}) } } : {}),
   }
 }
 

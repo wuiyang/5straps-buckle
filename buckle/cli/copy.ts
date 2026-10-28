@@ -170,6 +170,8 @@ async function upload(client: NodeClient, source: { path: string; name: string }
         continue
       }
       if (answer.outcome !== 'ok') throw refusalOf(answer)
+      const history = answer.meta?.history
+      if (history) client.stderr.write(`History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}\n`)
       return { size: file.size, sha256: file.sha256, end: { ...to, path } }
     }
   } finally {
