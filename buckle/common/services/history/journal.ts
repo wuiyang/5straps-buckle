@@ -7,7 +7,8 @@ import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { createConnectionOwner, openDatabase, rawConnection, SqliteErrorCode, withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
-import { STATE_BUSY } from '../../adapters/json-file-store.js'
+import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
+export { HistoryBusyError } from './execution-lock.js'
 import { logger } from '../../runtime/log.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
@@ -94,10 +95,6 @@ const EXECUTION_LOCK_DEADLINE_MS = 300_000
 const EXECUTION_LOCK_POLL_MS = 25
 
 /** Another execution held the workspace's history lock, or another flow its database, past the wait. */
-export class HistoryBusyError extends Error implements ServiceFailure {
-  readonly code = STATE_BUSY
-  readonly status = 503
-}
 
 export interface ChangeHistoryOptions {
   directory: string
@@ -179,13 +176,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (!row || !(row.content instanceof Uint8Array)) throw new Error('History content is missing')
     return Buffer.from(row.content)
   }
-  async function locked<T>(operation: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    try {
-      return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: lockDeadlineMs, pollMs: EXECUTION_LOCK_POLL_MS }, ...(signal ? { signal } : {}) }, operation)
-    } catch (error) {
-      if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new HistoryBusyError(`Another execution held this workspace's history for ${Math.round(lockDeadlineMs / 1000)} s; retry once it finishes`, { cause: error })
-      throw error
-    }
+  async function locked<T>(operation: () => Promise<T>, signal?: AbortSignal, options: { owner?: boolean; force?: boolean } = {}): Promise<T> {
+    return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs: options.owner ? Math.min(lockDeadlineMs, OWNER_LOCK_WAIT_MS) : lockDeadlineMs, ...(signal ? { signal } : {}), ...(options.force ? { force: true } : {}) }, operation)
   }
   /** Runs `operation` under the execution lock without waiting for it: refused as a wait where another call holds it. */
   async function whileIdle<T>(operation: () => Promise<T>): Promise<T> {
@@ -350,20 +342,20 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         return summary(record)
       })
     },
-    async recover(id: string) {
+    async recover(id: string, options: { force?: boolean } = {}) {
       return locked(async () => {
         const record = await findRecord(item => item.id === id)
         if (!record || record.status !== 'pending') throw new Error('Pending checkpoint not found')
         await finish(record, 'interrupted')
         return summary(record)
-      })
+      }, undefined, { owner: true, ...options })
     },
-    async restore(id: string) {
+    async restore(id: string, options: { force?: boolean } = {}) {
       return locked(async () => {
         const record = await findRecord(item => item.id === id)
         if (!record) throw new Error('Checkpoint not found')
         return restoreRecord(record)
-      })
+      }, undefined, { owner: true, ...options })
     },
     async restoreStage(stageId: string, sessionId: string) {
       return locked(async () => {
@@ -380,7 +372,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         return restoreRecord({ ...selected[0]!, id: `stage:${stageId}`, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], before, after })
       })
     },
-    prune: () => locked(async () => { await section(connection => { prune(connection); connection.exec('VACUUM') }); return { ok: true } }),
+    prune: (options: { force?: boolean; legacy?: boolean } = {}) => locked(async () => { await section(connection => { prune(connection); connection.exec('VACUUM') }); return { ok: true } }, undefined, { owner: true, ...options }),
     /** Closes the database once queued sections finish; later calls are refused. */
     close: () => owner.close(),
   }

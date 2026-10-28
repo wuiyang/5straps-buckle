@@ -10,7 +10,7 @@ export interface CliResult {
   exitCode: number
 }
 
-export const USAGE = 'Usage: buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune'
+export const USAGE = 'Usage: buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune [--legacy] [--force]'
 /** How many files `list --last` names for one checkpoint before it counts the rest. */
 const SHOWN_FILES = 10
 
@@ -18,10 +18,11 @@ const SHOWN_FILES = 10
 export async function historyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
   const [command = 'list', id] = argv
   if (command === 'list') return listCommand(runtime, argv.slice(1))
-  if (command === 'prune') return print(await runtime.history.prune())
+  const force = argv.includes('--force')
+  if (command === 'prune') return print(await runtime.history.prune({ force, legacy: argv.includes('--legacy') }))
   if (command === 'restore-stage' && id && argv[2]) return restored(runtime, () => runtime.history.restoreStage(id, argv[2]!))
-  if (command === 'restore' && id) return restored(runtime, () => runtime.history.restore(id))
-  if (command === 'recover' && id) return print(await runtime.history.recover(id))
+  if (command === 'restore' && id) return restored(runtime, () => runtime.history.restore(id, { force }))
+  if (command === 'recover' && id) return print(await runtime.history.recover(id, { force }))
   return fail(USAGE)
 }
 
