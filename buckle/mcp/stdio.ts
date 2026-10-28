@@ -3,7 +3,7 @@ import { resolve } from 'pathe'
 import { SdkErrorCode } from '@modelcontextprotocol/server'
 import { serveStdio } from '@modelcontextprotocol/server/stdio'
 import { withOperationScope, type Logger } from '@5straps/runtime'
-import type { NodeConfig } from '../common/runtime/config.js'
+import type { BuckleConfig, NodeConfig } from '../common/runtime/config.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { createAuditedStdioTransport } from './audited-stdio-transport.js'
 import { WorkspaceError, WorkspaceRegistryError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -34,15 +34,24 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
   const workspaces = await common.services.getWorkspaces()
   const legacy = input.target.workspace === undefined && input.target.dir === undefined && input.config.callerWorkspaceRoot !== undefined ? { dir: input.config.callerWorkspaceRoot } : {}
   const { config, runtime } = await workspaces.resolve(workspaces.target({ ...input.target, ...legacy, cwd: process.cwd() }))
-  const version = runtime.manifest().version
   const transport = createAuditedStdioTransport({
     transport: createStdioWire({ stdin: process.stdin, stdout: process.stdout, maxBufferBytes: config.maxRequestBytes }),
     actions: { ...runtime.actions, record: entry => loggedIn(workspaces, runtime).record(entry) }, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
-  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel, beforeCall: stillServed(workspaces, runtime), approvalWait: () => workspaceWait(config.approvalTimeoutMs) }), { transport })
+  const stdio = serveStdio(() => createStdioServer({ runtime, config, callScope, beforeCall: stillServed(workspaces, runtime) }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
+}
+
+/**
+ * The MCP server a stdio session is served by. The owner's own host answers an ask, so its answers count as a person's;
+ * a call that asks waits the workspace's own wait, which a caller's hint may shorten, where the HTTP face holds at most
+ * MCP_HOLD_MS (the MCP asks brief, item 1).
+ */
+export function createStdioServer(input: { runtime: BuckleRuntime; config: Pick<BuckleConfig, 'serverName' | 'serverId' | 'approvalTimeoutMs'>; callScope: ToolCallScope; beforeCall: () => Promise<void> }) {
+  const { runtime, config } = input
+  return createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, trustedApprovalResponses: true, callScope: input.callScope, isCancel: isExplicitCancel, beforeCall: input.beforeCall, approvalWait: () => workspaceWait(config.approvalTimeoutMs) })
 }
 
 /**
