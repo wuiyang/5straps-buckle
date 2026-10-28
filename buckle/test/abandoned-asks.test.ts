@@ -1,11 +1,11 @@
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeRequest } from '@5straps/protocol'
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
+import { APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -143,6 +143,32 @@ describe('an abandoned ask', () => {
     expect(other.pending().map(request => request.token)).toEqual(older.requests.map(request => request.token))
   })
 
+  // Review of the MCP asks slice, finding minor-5: every other test abandons its asks in one call, at one time.
+  it('withdraws the oldest abandoned ask first, by when its caller left', async () => {
+    const registry = queue()
+    const older = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
+    await registry.holdEnded({ tokens: older.requests.map(request => request.token), abandoned: true })
+    clockAt(Date.now() + 1_000)
+    const newer = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION - 1 }, (_, index) => outside(index + 1)), holdMs: 30_000 })
+    await registry.holdEnded({ tokens: newer.requests.map(request => request.token), abandoned: true })
+
+    const fresh = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(99)], holdMs: 30_000 })
+    expect(fresh.evicted).toEqual(older.requests.map(request => request.token))
+  })
+
+  // Finding minor-6: a re-send that joins an abandoned ask holds it again, so a cap must not withdraw it for room.
+  it('no longer withdraws an abandoned ask a re-send joined to make room', async () => {
+    const registry = queue()
+    const first = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', requestId: 'r-a', asks: [outside(0)], holdMs: 30_000 })
+    await registry.holdEnded({ tokens: first.requests.map(request => request.token), abandoned: true })
+    const rejoined = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', requestId: 'r-a', asks: [outside(0)], holdMs: 30_000 })
+    expect(rejoined.joined).toBe(true)
+    await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION - 1 }, (_, index) => outside(index + 1)), holdMs: 30_000 })
+
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(99)], holdMs: 30_000 })).rejects.toThrow(/limit 50/)
+    expect(registry.pending().map(request => request.token)).toContain(first.requests[0]!.token)
+  })
+
   it('still refuses a session full of asks a caller holds or was answered about, as before', async () => {
     const registry = queue()
     await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
@@ -267,5 +293,69 @@ describe('an ask at wait 0', () => {
     expect(registry.waiting()[0]).not.toHaveProperty('lapsesAt')
     clockAt(start + 3 * 60 * MINUTE)
     expect(registry.pending()).toHaveLength(1)
+  })
+})
+
+// Finding minor-4: the caps the builder's eviction covers besides the count of asks in a session and a workspace. The
+// asks here are large (a long reason) so a few of them fill a byte budget; the budgets are the registry's own.
+describe('an abandoned ask under the other caps', () => {
+  const MEGABYTE = 1_000_000
+  const large = (index: number, bytes: number) => ({ ...outside(index), reason: `${index}:${'x'.repeat(bytes)}` })
+  const asking = (registry: ReturnType<typeof queue>, input: { session: string; actor?: string; index: number; bytes: number }) =>
+    registry.ask({ tool: 'fs_write', sessionId: input.session, asks: [large(input.index, input.bytes)], holdMs: 30_000, ...(input.actor === undefined ? {} : { actor: input.actor }) })
+  const abandon = (registry: ReturnType<typeof queue>, asked: { requests: Array<{ token: string }> }) => registry.holdEnded({ tokens: asked.requests.map(request => request.token), abandoned: true })
+
+  it(`withdraws the oldest abandoned ask of a session when its ${MAX_PENDING_BYTES_PER_SESSION} bytes are full`, async () => {
+    const registry = queue()
+    const older = await asking(registry, { session: 'mcp', index: 0, bytes: 10 * MEGABYTE })
+    await abandon(registry, older)
+
+    const fresh = await asking(registry, { session: 'mcp', index: 1, bytes: 10 * MEGABYTE })
+    expect(fresh.evicted).toEqual(older.requests.map(request => request.token))
+    expect(registry.pending().map(request => request.token)).toEqual(fresh.requests.map(request => request.token))
+  })
+
+  it(`withdraws the oldest abandoned ask of the same caller across its sessions when the caller's ${MAX_PENDING_BYTES_PER_ACTOR} bytes are full, and no other caller's`, async () => {
+    const registry = queue()
+    const another = await registry.ask({ tool: 'fs_write', sessionId: 's0', asks: [outside(100)], holdMs: 30_000, actor: 'agent:another' })
+    await abandon(registry, another)
+    const oldest = await asking(registry, { session: 's1', actor: 'agent:mine', index: 0, bytes: 12 * MEGABYTE })
+    await abandon(registry, oldest)
+    await asking(registry, { session: 's2', actor: 'agent:mine', index: 1, bytes: 12 * MEGABYTE })
+
+    // Its own session has room, so only the caller's budget refuses.
+    const fresh = await asking(registry, { session: 's3', actor: 'agent:mine', index: 2, bytes: 12 * MEGABYTE })
+    expect(fresh.evicted).toEqual(oldest.requests.map(request => request.token))
+    expect(registry.pending().map(request => request.token)).toContain(another.requests[0]!.token)
+    expect(registry.pending()).toHaveLength(3)
+  })
+
+  it('withdraws abandoned asks when the outbox of undelivered notices has no room for another ask, and tells it cancelled', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-outbox-'))
+    const file = join(root, 'approvals.json')
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, root, 1, { durableNotices: true })
+    const older = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
+    await registry.holdEnded({ tokens: older.requests.map(request => request.token), abandoned: true })
+    // Notices the receiver has not taken, leaving room for the waiting ask's two and no ask besides it.
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { outbox: unknown[] }
+    state.outbox = Array.from({ length: APPROVAL_OUTBOX_COUNT_MAX - 3 }, () => ({ id: crypto.randomUUID(), workspace: root, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString(), notice: { token: crypto.randomUUID(), event: 'cancelled', at: new Date().toISOString() } }))
+    writeFileSync(file, JSON.stringify(state))
+
+    const fresh = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(1)], holdMs: 30_000 })
+    expect(fresh.evicted).toEqual(older.requests.map(request => request.token))
+    expect(registry.pending().map(request => request.token)).toEqual(fresh.requests.map(request => request.token))
+    expect(registry.pendingDeliveries()).toContainEqual(expect.objectContaining({ notice: expect.objectContaining({ token: older.requests[0]!.token, event: 'cancelled' }) }))
+  })
+
+  it('still refuses when the outbox has no room and no ask is abandoned', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-outbox-'))
+    const file = join(root, 'approvals.json')
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, root, 1, { durableNotices: true })
+    await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { outbox: unknown[] }
+    state.outbox = Array.from({ length: APPROVAL_OUTBOX_COUNT_MAX - 3 }, () => ({ id: crypto.randomUUID(), workspace: root, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString(), notice: { token: crypto.randomUUID(), event: 'cancelled', at: new Date().toISOString() } }))
+    writeFileSync(file, JSON.stringify(state))
+
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(1)], holdMs: 30_000 })).rejects.toThrow('delivery is full')
   })
 })
