@@ -19,7 +19,7 @@ export function pageLines(text: string, paging: { offset?: number | undefined; l
   const start = (paging.offset ?? 1) - 1
   const end = paging.limit === undefined ? pieces.length : start + paging.limit
   return {
-    content: pieces.slice(start, end).join('\n'),
+    content: pieces.slice(start, end >= totalLines ? pieces.length : end).join('\n'),
     firstLine: start + 1,
     lineCount: Math.max(0, Math.min(end, totalLines) - start),
     totalLines,

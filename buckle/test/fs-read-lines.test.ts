@@ -40,7 +40,9 @@ describe('fs_read counts lines as a file has them', () => {
   })
 
   it('does not call a page truncated when it holds every line, though the file ends in a newline', async () => {
-    expect(await read('a\nb\n', { limit: 2 })).toMatchObject({ content: 'a\nb', lineCount: 2, totalLines: 2, truncated: false })
+    expect(await read('a\nb\n', { limit: 2 })).toMatchObject({ content: 'a\nb\n', lineCount: 2, totalLines: 2, truncated: false })
+    expect(await read('a\nb\n', { offset: 2, limit: 1 })).toMatchObject({ content: 'b\n', firstLine: 2, lineCount: 1, totalLines: 2, truncated: true })
+    expect(await read('a\nb', { limit: 2 })).toMatchObject({ content: 'a\nb', lineCount: 2, totalLines: 2, truncated: false })
     expect(await read('a\nb\n', { limit: 50 })).toMatchObject({ content: 'a\nb\n', lineCount: 2, totalLines: 2, truncated: false })
   })
 
