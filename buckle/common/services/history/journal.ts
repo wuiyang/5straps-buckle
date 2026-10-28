@@ -35,7 +35,8 @@ export type RollbackTarget = RestoreTarget
 
 /**
  * What a restore to before a checkpoint undoes, as the history stands: that checkpoint, the newest one (`head`), how many
- * from the one to the other, and the paths it puts back with what the checkpoints did to each. A restore is applied only as planned (rollback's `check`).
+ * from the one to the other, and the paths it puts back with what the checkpoints did to each. A restore is applied only
+ * as planned (rollback's `check`).
  */
 export interface RollbackPlan { checkpoint: string; head: string; undoes: number; changes: Array<{ path: string; kind: ChangeKind }> }
 
@@ -107,7 +108,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const owner = createConnectionOwner(db, { owned: true, label: input.label ?? `history:${input.directory}` })
   const excluded = [...input.excluded, input.directory]
   const lockDeadlineMs = input.lockDeadlineMs ?? EXECUTION_LOCK_DEADLINE_MS
-  const now = input.now ?? Date.now
+  const now = input.now ?? (() => Date.now())
   await section(connection => connection.exec(SCHEMA))
   // Each entry left out for its name (isPlainName) is named once, not at every capture.
   const warnedNames = new Set<string>()
