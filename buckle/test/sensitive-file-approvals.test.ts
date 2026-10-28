@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -103,7 +104,9 @@ it('declares shell file effects, checks approval and overlays read-only without 
   await call.execute({ ...context, authorizeRead: async path => path === secret })
   expect(readFileSync(secret, 'utf8')).toBe('SYNTHETIC=private')
   expect((await history.list())[0]!.paths).toEqual([join(workspace, 'result.txt')])
-  expect(readFileSync(join(state, 'history/history.sqlite')).includes(Buffer.from('SYNTHETIC=private'))).toBe(false)
+  const stored = execFileSync('git', ['--git-dir', join(state, 'history/git'), 'cat-file', '--batch-all-objects', '--batch'])
+  expect(stored.includes(Buffer.from('SCHEMA=true'))).toBe(true)
+  expect(stored.includes(Buffer.from('SYNTHETIC=private'))).toBe(false)
   expect(pack.tools[1]!.prepare({ runtime: 'node', script: 'void 0', sensitiveFiles: ['/workspace/.env.local'] }).effects).toContainEqual({ kind: 'read_path', path: '/workspace/.env.local' })
 })
 

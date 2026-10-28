@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
@@ -95,7 +95,7 @@ describe('the workspace\'s own folder swapped for a link', () => {
   async function runtimeOver(site: string, root: string) {
     mkdirSync(join(root, 'state'), { mode: 0o700, recursive: true })
     mkdirSync(join(root, 'scratch'))
-    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: site, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs,shell,code', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_SCRATCH_ROOTS: join(root, 'scratch') })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: site, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs,shell,code', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_WORKSPACE_MOUNT: '/workspace', BUCKLE_SCRATCH_ROOTS: join(root, 'scratch') })
     return { config, runtime: await createRuntime({ config, interaction: fixedInteraction() }) }
   }
 
@@ -103,12 +103,14 @@ describe('the workspace\'s own folder swapped for a link', () => {
   function history(root: string): { roots: string[][]; objects: string[] } {
     const state = join(root, 'state')
     const found = { roots: [] as string[][], objects: [] as string[] }
-    for (const name of readdirSync(state, { recursive: true }).map(String).filter(entry => entry.endsWith('history.sqlite'))) {
-      const database = new DatabaseSync(join(state, name), { readOnly: true })
-      try {
-        found.roots.push(...database.prepare('SELECT data FROM checkpoints').all().map(row => (JSON.parse(String(row.data)) as { roots: string[] }).roots))
-        found.objects.push(...database.prepare('SELECT content FROM objects').all().map(row => Buffer.from(row.content as Uint8Array).toString('utf8')))
-      } finally { database.close() }
+    const files = readdirSync(state, { recursive: true }).map(String)
+    for (const name of files.filter(entry => entry.endsWith('checkpoints.json'))) {
+      const data = JSON.parse(readFileSync(join(state, name), 'utf8')) as { checkpoints: Array<{ roots: string[] }> }
+      found.roots.push(...data.checkpoints.map(record => record.roots))
+    }
+    for (const name of files.filter(entry => entry.endsWith('/git/HEAD'))) {
+      const git = join(state, name.slice(0, -'/HEAD'.length))
+      found.objects.push(execFileSync('git', ['--git-dir', git, 'cat-file', '--batch-all-objects', '--batch']).toString())
     }
     return found
   }
@@ -126,8 +128,10 @@ describe('the workspace\'s own folder swapped for a link', () => {
     expect(bwrap.map(call => call.args.at(-1))).toEqual(['swap'])
     expect(existsSync(join(ssh, 'planted.txt'))).toBe(false)
     // The swap's own call was checkpointed over the stored folder; no call since, and nothing where the link lands.
-    expect(history(root).roots).toEqual([[site, join(root, 'scratch')]])
-    expect(history(root).objects.join('\n')).not.toMatch(/PRIVATE/)
+    const captured = history(root)
+    expect(captured.roots).toEqual([[site, join(root, 'scratch')]])
+    expect(captured.objects.length).toBeGreaterThan(0)
+    expect(captured.objects.join('\n')).not.toMatch(/PRIVATE/)
     // A runtime opened before the swap answers each later call with the same refusal, reads included.
     expect(await invoke('read-1', 'fs_read', { path: '/workspace/notes.txt' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: swapped } })
     await runtime.closeSessions()

@@ -112,7 +112,7 @@ describe('a workspace\'s tools over its mounts', () => {
     for (const directory of ['site', 'data', 'docs']) mkdirSync(join(root, directory))
     writeFileSync(join(root, 'data', 'a.txt'), 'shared data')
     writeFileSync(join(root, 'docs', 'guide.md'), 'read only')
-    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs' }))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_HOST_GIT: 'true' }))
     await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
     await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: join(root, 'data'), target: '/data', access: 'rw' }, { source: join(root, 'docs'), target: '/docs', access: 'ro' }], '/workspace'))
     const { runtime } = await byName(manager, 'site')

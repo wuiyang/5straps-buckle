@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { JsonValue } from '@5straps/protocol'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
@@ -94,7 +94,7 @@ describe('a mount source swapped for a link', () => {
     // The link's landing holds more than the history budget: a checkpoint that took it would refuse the write.
     writeFileSync(join(root, 'home', '.ssh', 'big.bin'), Buffer.alloc(200_000, 1))
     mkdirSync(join(root, 'site'))
-    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_HISTORY_MAX_BYTES: '100000' }))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_HISTORY_MAX_BYTES: '100000' }))
     await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
     await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: assets, target: '/assets', access: 'rw' }], '/workspace'))
     const { runtime } = await byName(manager, 'site')
@@ -104,9 +104,7 @@ describe('a mount source swapped for a link', () => {
     expect(await call({ path: '/workspace/b.txt', content: 'written' })).toMatchObject({ outcome: 'ok' })
     const history = join(root, 'state', 'workspaces', idOf(manager, 'site'), 'history')
     const [key] = readdirSync(history).filter(name => !name.startsWith('.'))
-    const database = new DatabaseSync(join(history, key!, 'history.sqlite'), { readOnly: true })
-    const checkpoints = database.prepare('SELECT data FROM checkpoints').all().map(row => JSON.parse(String(row.data)) as { roots: string[] })
-    database.close()
+    const checkpoints = (JSON.parse(readFileSync(join(history, key!, 'checkpoints.json'), 'utf8')) as { checkpoints: Array<{ roots: string[] }> }).checkpoints
     expect(checkpoints.map(checkpoint => checkpoint.roots)).toEqual([[join(root, 'site')]])
     await manager.close()
   })
@@ -152,7 +150,7 @@ describe('a mount whose source is gone', () => {
     writeFileSync(join(home, 'big.bin'), Buffer.alloc(200_000, 1))
     writeFileSync(join(home, 'secret.txt'), 'owner secret')
     mkdirSync(join(root, 'site'))
-    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_HISTORY_MAX_BYTES: '100000' }))
+    const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_HISTORY_MAX_BYTES: '100000' }))
     await registerWorkspace(manager, { id: 'site', dir: join(root, 'site') })
     await manager.updateSettings(idOf(manager, 'site'), settings => withOwnerMounts(settings, [{ source: join(home, 'data'), target: '/data', access: 'rw' }], '/workspace'))
     const { runtime } = await byName(manager, 'site')
@@ -168,10 +166,9 @@ describe('a mount whose source is gone', () => {
     expect(await write('/workspace/b.txt')).toMatchObject({ outcome: 'ok' })
     const history = join(root, 'state', 'workspaces', idOf(manager, 'site'), 'history')
     const [key] = readdirSync(history).filter(name => !name.startsWith('.'))
-    const database = new DatabaseSync(join(history, key!, 'history.sqlite'), { readOnly: true })
-    const roots = database.prepare('SELECT data FROM checkpoints').all().map(row => (JSON.parse(String(row.data)) as { roots: string[] }).roots)
-    const copied = database.prepare('SELECT content FROM objects').all().map(row => Buffer.from(row.content as Uint8Array).toString('utf8'))
-    database.close()
+    const records = (JSON.parse(readFileSync(join(history, key!, 'checkpoints.json'), 'utf8')) as { checkpoints: Array<{ roots: string[] }> }).checkpoints
+    const roots = records.map(record => record.roots)
+    const copied = execFileSync('git', ['--git-dir', join(history, key!, 'git'), 'cat-file', '--batch-all-objects', '--batch']).toString()
     expect(roots).toEqual([[join(root, 'site')]])
     expect(copied).not.toContain('owner secret')
     await manager.close()

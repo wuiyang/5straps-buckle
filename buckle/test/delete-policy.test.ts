@@ -249,7 +249,7 @@ async function node(extra: Record<string, string> = {}, scratch?: string): Promi
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   if (scratch !== undefined) mkdirSync(join(workspace, scratch))
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...(scratch === undefined ? {} : { BUCKLE_SCRATCH_ROOTS: join(workspace, scratch) }), ...extra })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...(scratch === undefined ? {} : { BUCKLE_SCRATCH_ROOTS: join(workspace, scratch) }), ...extra })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   return { workspace, runtime }

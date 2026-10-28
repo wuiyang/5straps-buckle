@@ -16,7 +16,7 @@ async function fixture() {
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'owner-token' } })
+  const app = await createBuckleHttp({ environment: { BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AUTH_TOKEN: 'agent-token', BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: 'owner-token' } })
   nodes.push(app)
   return { root, workspace, config: app.config, runtime: app.runtime, app }
 }
