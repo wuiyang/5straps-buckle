@@ -26,7 +26,7 @@ function stdioCall(approvalTimeoutMs: number | null) {
     inputSchema: z.object({}),
     prepare: () => ({ effects: [], execute: async () => null }),
   }])
-  const invoke = vi.fn(async () => ({ requestId: 'r', outcome: 'ok' as const, output: null, meta: { durationMs: 0, truncated: false } }))
+  const invoke = vi.fn(async (_input: Record<string, unknown>) => ({ requestId: 'r', outcome: 'ok' as const, output: null, meta: { durationMs: 0, truncated: false } }))
   const runtime = {
     registry: () => registry, manifest: () => ({ tools: registry.capabilities(), version: '0.0.0' }), skills: () => [], onToolsChanged: () => undefined,
     approvalService: { answer: async () => ({ ok: true }), waiting: () => [] }, invoke,
