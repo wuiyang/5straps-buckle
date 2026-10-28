@@ -864,6 +864,7 @@ async function buildPacks(input: {
     shellNetwork: input.config.shellNetwork,
     commandEnvironment: input.config.commandEnvironment,
     filesystemPolicy: { policy: input.compiled.policy },
+    history: input.history,
     shellIsolation: input.config.isolateShell ? { directory: join(input.config.stateDirectory, 'isolated-shell', workspaceStateKey(input.config.cwd)), maxBytes: input.config.isolationMaxBytes, history: input.history } : undefined,
     environmentValidator: input.config.environmentValidator,
   })

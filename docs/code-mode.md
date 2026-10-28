@@ -16,7 +16,7 @@ directly. [Code mode, part two](code-mode-02.md) covers replay, and
 | `code_run` | runs `{ script, timeoutMs? }` and returns what it printed, what it returned, and the calls it made |
 | `code_api` | returns the TypeScript declarations of the tools a script can call, or of the ones named in `{ tools }` |
 
-The `code_run` description declares the tools a script can call, as far as fits in about 4000
+The `code_run` description declares the tools a script can call, as far as fits in about 4500
 tokens, and names the rest. `code_api` returns the declaration of any of them, including those
 the description only names.
 `buckle skills buckle-code` prints the guide the agent reads.

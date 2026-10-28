@@ -23,6 +23,8 @@ import { createDevPack } from './dev/index.js'
 import { createForgePack } from './forge/index.js'
 import { createFsPack } from './fs/index.js'
 import { createGitPack } from './git/index.js'
+import { createHistoryPack } from './history/index.js'
+import type { ChangeHistory } from '../history/journal.js'
 import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
 
@@ -81,6 +83,8 @@ export interface BuiltinPackOptions {
   maxRequestBytes?: number
   /** BUCKLE_MAX_TRANSFER_BYTES: the largest file one `buckle cp` moves through fs_receive or fs_send. */
   maxTransferBytes?: number
+  /** The workspace's change history, which the history pack reads and restores; the pack is withheld where absent. */
+  history?: ChangeHistory
   /** The VM code mode runs scripts in; pi-codemode's when absent. */
   scriptVm?: ScriptVm
   shellNetwork?: boolean
@@ -103,6 +107,7 @@ export interface BuiltinPackOptions {
  */
 export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
   { id: 'fs', summary: 'read, write and search files' },
+  { id: 'history', summary: 'list the change history and restore the files to before a checkpoint, a person approving each restore' },
   { id: 'web', summary: 'fetch URLs and search the web' },
   { id: 'git', summary: 'read the repository: status, diff, log, blame, branches (needs host Git on)' },
   { id: 'forge', summary: 'commit, push and open pull requests (needs host Git on and a forge token)' },
@@ -140,6 +145,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.maxTransferBytes === undefined ? {} : { maxTransferBytes: options.maxTransferBytes }),
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
     }),
+    createHistoryPack({ paths: options.paths, history: options.history ?? null }),
     createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({

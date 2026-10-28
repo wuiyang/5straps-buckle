@@ -81,7 +81,7 @@ function commandLines(content: string): string[][] {
 
 const skills = [
   { id: 'buckle', content: loadRootSkill().content },
-  ...['fs', 'web', 'git', 'forge', 'dev', 'browser', 'shell'].map(pack => ({ id: pack, content: loadPackSkill(pack).content })),
+  ...['fs', 'history', 'web', 'git', 'forge', 'dev', 'browser', 'shell'].map(pack => ({ id: pack, content: loadPackSkill(pack).content })),
 ]
 
 describe('every shipped SKILL.md names real CLI commands', () => {
