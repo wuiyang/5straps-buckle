@@ -51,15 +51,19 @@ export const MAX_COUNTED_ENTRIES = 10_000
  */
 export interface ExecEffect { kind: 'exec'; command: string; args: string[]; shownAs?: string }
 
+/** What a change did to a path: made it, rewrote it, or removed it. */
+export type ChangeKind = 'created' | 'modified' | 'deleted'
+
 export type ResolvedEffect =
   | { kind: 'read_path'; path: string; directory: string }
   /**
    * `entry`: the path names the entry itself (a move's landing), its folder resolved and its own name not followed.
    * `folder`: a folder lands there whole, so the write rules beneath that path judge it too. `restore`: a path a restore
    * of the change history puts back, beside its RestoreEffect, whose ask at the floor stands for the folder's write ask:
-   * the write scope refuses it where it refuses a write, and asks nothing of it.
+   * the write scope refuses it where it refuses a write, and asks nothing of it. It holds what the checkpoints undone did
+   * to the path, so a `created` one reads to the approver as removed, not as written back.
    */
-  | { kind: 'write_path'; path: string; directory: string; entry?: true; folder?: true; restore?: true }
+  | { kind: 'write_path'; path: string; directory: string; entry?: true; folder?: true; restore?: ChangeKind }
   /** `path`: the entry where it really is, its folder resolved and its own name not followed; `directory`: that folder. */
   | { kind: 'delete_path'; path: string; directory: string; floor: boolean; tree?: TreeCount; moved?: true }
   | { kind: 'network'; url: URL }
@@ -100,7 +104,7 @@ export interface SecretFileEffect { kind: 'secret_file'; path: string; written: 
 export function summarizeEffect(effect: ResolvedEffect): string {
   switch (effect.kind) {
     case 'read_path': return `read ${effect.path}`
-    case 'write_path': return `${effect.restore ? 'restore' : 'write'} ${effect.path}`
+    case 'write_path': return effect.restore ? restoredPathWords(effect.path, effect.restore) : `write ${effect.path}`
     case 'delete_path': return `delete ${effect.path}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''}`
     case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
@@ -110,6 +114,12 @@ export function summarizeEffect(effect: ResolvedEffect): string {
     case 'many_rewrites': return `rewrites ${effect.files} existing files at once`
     case 'restore_checkpoint': return `restore the workspace to before checkpoint ${effect.checkpoint}, undoing ${undoneWords(effect.undoes)}, to ${effect.head} the newest`
   }
+}
+
+/** A path a restore puts back, in words: a file the checkpoints made is removed, and the ask says so (owner rulings D9, D17). */
+function restoredPathWords(path: string, kind: ChangeKind): string {
+  if (kind === 'created') return `remove ${path} (it was created after that checkpoint)`
+  return `restore ${path}${kind === 'deleted' ? ' (it was deleted after that checkpoint)' : ''}`
 }
 
 /** What a restore undoes, in words: `it alone`, or `it and the 2 checkpoints after it`. */

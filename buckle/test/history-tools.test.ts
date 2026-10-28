@@ -107,7 +107,7 @@ describe('history_restore', () => {
     expect(ask?.call?.effects).toEqual([
       `restore the workspace to before checkpoint ${middle!.id}, undoing it and the 1 checkpoint after it, to ${newest!.id} the newest`,
       `restore ${join(runtime.paths().root, 'a.txt')}`,
-      `restore ${join(runtime.paths().root, 'b.txt')}`,
+      `remove ${join(runtime.paths().root, 'b.txt')} (it was created after that checkpoint)`,
     ])
     expect([readFileSync(join(workspace, 'a.txt'), 'utf8'), existsSync(join(workspace, 'b.txt'))]).toEqual(['three', true])
 

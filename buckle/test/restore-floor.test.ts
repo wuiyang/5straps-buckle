@@ -40,7 +40,7 @@ function engine(options: { strict?: boolean; mount?: string; readOnly?: string; 
 }
 
 const restore = (undoes = 3): ResolvedEffect => ({ kind: 'restore_checkpoint', checkpoint: CHECKPOINT, head: HEAD, undoes })
-const restored = (path: string): ResolvedEffect => ({ kind: 'write_path', path, directory: path.slice(0, path.lastIndexOf('/')), entry: true, restore: true })
+const restored = (path: string, kind: 'created' | 'modified' | 'deleted' = 'modified'): ResolvedEffect => ({ kind: 'write_path', path, directory: path.slice(0, path.lastIndexOf('/')), entry: true, restore: kind })
 
 function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<PermissionRuleId, string[]>>, options?: Parameters<typeof engine>[0]) {
   return engine(options).evaluate({ tool: 'history_restore', effects, grants: lookup(granted) })
@@ -98,6 +98,9 @@ describe('a restore of the change history', () => {
   it('reads to its approver as the checkpoint it goes back to and each path it puts back', () => {
     expect(summarizeEffect(restore())).toBe(`restore the workspace to before checkpoint ${CHECKPOINT}, undoing it and the 2 checkpoints after it, to ${HEAD} the newest`)
     expect(summarizeEffect(restored(`${WORKSPACE}/a.txt`))).toBe(`restore ${WORKSPACE}/a.txt`)
+    // Review m4 of the Slice D rules review: a path the restore removes does not read as one it writes back (owner rulings D9, D17).
+    expect(summarizeEffect(restored(`${WORKSPACE}/b.txt`, 'created'))).toBe(`remove ${WORKSPACE}/b.txt (it was created after that checkpoint)`)
+    expect(summarizeEffect(restored(`${WORKSPACE}/c.txt`, 'deleted'))).toBe(`restore ${WORKSPACE}/c.txt (it was deleted after that checkpoint)`)
     expect(describeCall({ tool: 'history_restore', args: { steps: 2 }, cwd: '/workspace' })).toBe('Restore the workspace 2 checkpoints back in "/workspace"')
     expect(describeCall({ tool: 'history_restore', args: { id: CHECKPOINT }, cwd: '/workspace' })).toBe(`Restore the workspace to before checkpoint "${CHECKPOINT}" in "/workspace"`)
     expect(describeCall({ tool: 'history_list', args: { last: 5 }, cwd: '/workspace' })).toBe('List the newest 5 checkpoints of the change history in "/workspace"')

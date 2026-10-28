@@ -231,9 +231,22 @@ describe('a restore as the rules judge it', () => {
     const effects = await resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 2 } }], paths, history })
     expect(effects).toEqual([
       { kind: 'restore_checkpoint', checkpoint: oldest!.id, head: newest!.id, undoes: 2 },
-      { kind: 'write_path', path: join(workspace, 'a.txt'), directory: workspace, entry: true, restore: true },
-      { kind: 'write_path', path: join(workspace, 'b.txt'), directory: workspace, entry: true, restore: true },
+      { kind: 'write_path', path: join(workspace, 'a.txt'), directory: workspace, entry: true, restore: 'created' },
+      { kind: 'write_path', path: join(workspace, 'b.txt'), directory: workspace, entry: true, restore: 'created' },
     ])
+  })
+
+  it('carries what the checkpoints did to each path it puts back, so an approver sees a removal as one', async () => {
+    const { history, write, workspace } = await fixture()
+    writeFileSync(join(workspace, 'old.txt'), 'kept')
+    writeFileSync(join(workspace, 'gone.txt'), 'deleted since')
+    await write('a.txt', 'one')
+    await write('a.txt', 'two')
+    await history.run({ sessionId: 'chat-1', stageId: 'del', tool: 'fs_delete', requestId: 'del-1', roots: [workspace] }, async () => { rmSync(join(workspace, 'gone.txt')); writeFileSync(join(workspace, 'old.txt'), 'changed') })
+    const paths = createPathView({ root: workspace, mount: null })
+    const effects = await resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 3 } }], paths, history })
+    expect(effects.flatMap(effect => (effect.kind === 'write_path' ? [[effect.path.slice(workspace.length + 1), effect.restore]] : []))).toEqual([['a.txt', 'created'], ['gone.txt', 'deleted'], ['old.txt', 'modified']])
+    expect((await history.plan({ steps: 3 })).changes).toEqual([{ path: join(workspace, 'a.txt'), kind: 'created' }, { path: join(workspace, 'gone.txt'), kind: 'deleted' }, { path: join(workspace, 'old.txt'), kind: 'modified' }])
   })
 
   it('is refused before any rule judges it where the history cannot go back that far, or is not kept', async () => {

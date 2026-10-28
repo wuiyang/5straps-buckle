@@ -44,12 +44,12 @@ async function resolveRestore(target: RestoreTarget, input: { paths: PathView; h
     if (error instanceof RestoreRefusedError) throw new ToolInputError(error.message, { code: error.code })
     throw error
   })
-  if (plan.paths.some(insideGitDirectory)) throw new ToolInputError(GIT_DIRECTORY_REFUSAL, { code: 'RESTORE_REFUSED' })
-  const writes = plan.paths.map((path): ResolvedEffect => {
+  if (plan.changes.some(change => insideGitDirectory(change.path))) throw new ToolInputError(GIT_DIRECTORY_REFUSAL, { code: 'RESTORE_REFUSED' })
+  const writes = plan.changes.map(({ path, kind }): ResolvedEffect => {
     const entry = resolveEntry(path, { shares: input.paths.shares })
     if (entry === null) throw new ToolInputError('A path the restore would put back names no entry in a folder, so nothing is restored', { code: 'RESTORE_REFUSED' })
     refuseMissingMount(entry.path, input.paths)
-    return { kind: 'write_path', path: entry.path, directory: entry.directory, entry: true, restore: true }
+    return { kind: 'write_path', path: entry.path, directory: entry.directory, entry: true, restore: kind }
   })
   return [{ kind: 'restore_checkpoint', checkpoint: plan.checkpoint, head: plan.head, undoes: plan.undoes }, ...writes]
 }

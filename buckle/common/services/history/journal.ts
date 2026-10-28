@@ -1,4 +1,4 @@
-import type { RestoreTarget } from '../../domain/effect.js'
+import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
@@ -35,9 +35,9 @@ export type RollbackTarget = RestoreTarget
 
 /**
  * What a restore to before a checkpoint undoes, as the history stands: that checkpoint, the newest one (`head`), how many
- * from the one to the other, and the paths it puts back. A restore is applied only as planned (rollback's `check`).
+ * from the one to the other, and the paths it puts back with what the checkpoints did to each. A restore is applied only as planned (rollback's `check`).
  */
-export interface RollbackPlan { checkpoint: string; head: string; undoes: number; paths: string[] }
+export interface RollbackPlan { checkpoint: string; head: string; undoes: number; changes: Array<{ path: string; kind: ChangeKind }> }
 
 /** A restore to before a checkpoint refused before anything changed, for a reason its caller may read. */
 export class RestoreRefusedError extends Error implements ServiceFailure {
@@ -356,7 +356,12 @@ export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
  * restore puts back.
  */
 function summary(record: Checkpoint) {
-  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, restores: record.restores, undoes: record.undoes, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, restores: record.restores, undoes: record.undoes, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
+}
+
+/** Each path that differs between two states, with what the change from `before` to `after` did to it. */
+function changesOf(before: Snapshot, after: Snapshot): Array<{ path: string; kind: ChangeKind }> {
+  return changedPaths(before, after).map(path => ({ path, kind: !before[path] ? 'created' : !after[path] ? 'deleted' : 'modified' }))
 }
 
 function assertExcludedUntouched(paths: string[], excluded: string[] = []): void {
@@ -366,7 +371,7 @@ function assertExcludedUntouched(paths: string[], excluded: string[] = []): void
 /** What restoring to before the oldest of `selected` (oldest first) undoes. */
 function planOf(selected: Checkpoint[], chain = chained(selected)): RollbackPlan {
   const { before, after } = chain
-  return { checkpoint: selected[0]!.id, head: selected.at(-1)!.id, undoes: selected.length, paths: changedPaths(before, after) }
+  return { checkpoint: selected[0]!.id, head: selected.at(-1)!.id, undoes: selected.length, changes: changesOf(before, after) }
 }
 
 /**
