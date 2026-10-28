@@ -17,8 +17,8 @@ import { judgedPath } from '../judged-path.js'
 import { resolveTarget } from '../../invocation/real-path.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
-import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
+import { configuredFilterPrograms, configuredKeyNames, ensureHooksDirectory, filterProgramKeys, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, mergeDriverKeys, transportConfig, type GitConfig } from '../git-isolation.js'
+import { assertNoFilters, assertNoFilterPrograms, assertNoMergeDrivers } from './isolation.js'
 import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
 import { privateGitDirectory } from './private-git-directory.js'
 import { guardedReceivePackCommand, receiveGuard } from './receive-pack-guard.js'
@@ -30,6 +30,10 @@ const MAX_DIFF_BYTES = 524_288
 const FIELD_SEPARATOR = '\x1f'
 /** No leading dash, so a branch can never be read as a flag, and no `..` or ref-name punctuation. */
 const BRANCH_PATTERN = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/
+/** A commit as git_revert takes it: an object name or a revision (`HEAD~2`, `main^`, `v1.0`), never a flag. */
+const REVISION_PATTERN = /^[A-Za-z0-9._@][A-Za-z0-9._/~^@{}-]*$/
+/** Said where a revert stopped on a conflict: git's own `git revert --abort` put back what the revert wrote, and only that. */
+const REVERT_ABORTED = 'the revert stopped on a conflict and was aborted, so the repository stands as it was'
 /** What a refusal of a redirected repository tells the caller to do instead (review H1 of the continuation review). */
 const PUSH_REMEDY = 'push to the real repository by its own path (set origin to it) so the permission rules judge it'
 const COMMIT_REMEDY = 'commit in the real repository by its own path so the permission rules judge it'
@@ -52,6 +56,12 @@ const openInput = repoInput.extend({
   base: z.string().min(1).max(255),
   title: z.string().min(1).max(500),
   body: z.string().max(60_000).default(''),
+})
+
+const revertInput = repoInput.extend({
+  commit: z.string().min(1).max(255),
+  /** For a merge commit: the parent, from 1, whose side the revert keeps. */
+  mainline: z.number().int().min(1).max(64).optional(),
 })
 
 const readInput = repoInput.extend({
@@ -253,6 +263,34 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return repositoryOf(remote)
   }
 
+  /** The identity every commit a forge tool makes carries, author and committer both. */
+  const identity = {
+    GIT_AUTHOR_NAME: options.author.name,
+    GIT_AUTHOR_EMAIL: options.author.email,
+    GIT_COMMITTER_NAME: options.author.name,
+    GIT_COMMITTER_EMAIL: options.author.email,
+  }
+
+  /**
+   * The commit git_revert undoes, by its full object name, and its parents, refused where the name is no commit here, or
+   * is a merge commit and the call names no mainline.
+   */
+  const commitToRevert = async (input: { repository: string; commit: string; mainline: number | undefined; context: ToolContext }): Promise<{ hash: string; parents: string[] }> => {
+    const found = await runGit({ repository: input.repository, args: ['rev-parse', '--verify', '--quiet', `${input.commit}^{commit}`], context: input.context })
+    if (found.exitCode !== 0) throw new ToolInputError(`${input.commit} names no commit in this repository`)
+    const hash = scrub(found.stdout).trim()
+    const [, ...parents] = (await gitOutput({ repository: input.repository, args: ['rev-list', '--parents', '--max-count=1', hash], context: input.context })).trim().split(' ').filter(Boolean)
+    if (parents.length > 1 && input.mainline === undefined) throw new ToolInputError(`${input.commit} is a merge commit; name mainline, the parent whose side the revert keeps (1 for the branch it was merged into)`)
+    return { hash, parents }
+  }
+
+  /** The paths a revert of `hash` touches, against the parent it keeps (the first, unless mainline names another), or all of a root commit's. */
+  const revertedPaths = async (input: { repository: string; hash: string; parents: string[]; mainline: number | undefined; context: ToolContext }): Promise<string[]> => {
+    const parent = input.parents[(input.mainline ?? 1) - 1]
+    const args = parent === undefined ? ['diff-tree', '-r', '--root', '--no-commit-id', '--name-only', '-z', input.hash] : ['diff-tree', '-r', '--name-only', '-z', parent, input.hash]
+    return (await gitOutput({ repository: input.repository, args, context: input.context })).split('\0').filter(Boolean)
+  }
+
   const requireClient = (): ForgeClient => {
     if (!forge.client) throw new ToolExecutionError('This node holds no forge credential; BUCKLE_FORGE_GITHUB_TOKEN is unset', { code: 'FORGE_UNCONFIGURED' })
     return forge.client
@@ -273,17 +311,42 @@ export function createForgePack(options: ForgePackOptions): Pack {
         assertNoFilters({ repository, paths: input.paths })
         await assertGitResolvesOwn({ repository, gitDirectory, remedy: COMMIT_REMEDY, context })
         assertNoFilterPrograms({ repository, keys: await filterPrograms({ repository, context }) })
-        const identity = {
-          GIT_AUTHOR_NAME: options.author.name,
-          GIT_AUTHOR_EMAIL: options.author.email,
-          GIT_COMMITTER_NAME: options.author.name,
-          GIT_COMMITTER_EMAIL: options.author.email,
-        }
         await gitOutput({ repository, args: ['add', '--', ...input.paths], context })
         await gitOutput({ repository, args: ['commit', '--message', input.message, '--', ...input.paths], extra: identity, context })
         const [hash = '', subject = ''] = (await gitOutput({ repository, args: ['show', '--no-patch', `--format=%H${FIELD_SEPARATOR}%s`, 'HEAD'], context })).trim().split(FIELD_SEPARATOR)
         const files = (await gitOutput({ repository, args: ['show', '--name-only', '--format=', 'HEAD'], context })).split('\n').filter(Boolean)
         return { hash, subject, files }
+      },
+    }),
+
+    defineTool(PACK_ID, {
+      name: 'git_revert',
+      description: 'Commit the undoing of one commit (git revert) under the node\'s agent identity; never a reset. A merge commit needs mainline; a dirty tree or a conflict reverts nothing.',
+      risk: 'write',
+      tags: ['git', 'forge'],
+      input: revertInput,
+      // A write on the repository, as git_commit's, and a read of it, as git_log's: the commit is read to undo it.
+      effects: input => [{ kind: 'write_path', path: input.repo }, { kind: 'read_path', path: input.repo }],
+      run: async (input, context): Promise<JsonValue> => {
+        const commit = assertRevision(input.commit)
+        const repository = judgedPath({ named: input.repo, kind: 'write', paths, context })
+        const gitDirectory = ownGitDirectory({ repository, remedy: COMMIT_REMEDY })
+        await assertGitResolvesOwn({ repository, gitDirectory, remedy: COMMIT_REMEDY, context })
+        const keys = await configuredKeyNames({ spawn: args => runGit({ repository, args, context }), describeFailure: result => scrub(describeProcessFailure('git config --list', result)) })
+        assertNoFilterPrograms({ repository, keys: filterProgramKeys(keys) })
+        assertNoMergeDrivers({ repository, keys: mergeDriverKeys(keys) })
+        const target = await commitToRevert({ repository, commit, mainline: input.mainline, context })
+        const files = await revertedPaths({ repository, ...target, mainline: input.mainline, context })
+        assertNoFilters({ repository, paths: files })
+        const reverted = await runGit({ repository, args: ['revert', '--no-edit', ...(input.mainline === undefined ? [] : ['--mainline', String(input.mainline)]), target.hash], extra: identity, context })
+        if (reverted.exitCode !== 0) {
+          // A revert that stopped on a conflict is aborted by git's own sequencer, which puts back only what it wrote.
+          const stopped = (await runGit({ repository, args: ['rev-parse', '--verify', '--quiet', 'REVERT_HEAD'], context })).exitCode === 0
+          if (stopped) await gitOutput({ repository, args: ['revert', '--abort'], context })
+          throw new ToolExecutionError(scrub(`${describeProcessFailure('git', reverted)}${stopped ? `; ${REVERT_ABORTED}` : ''}`), { code: 'GIT_FAILED' })
+        }
+        const [hash = '', subject = ''] = (await gitOutput({ repository, args: ['show', '--no-patch', `--format=%H${FIELD_SEPARATOR}%s`, 'HEAD'], context })).trim().split(FIELD_SEPARATOR)
+        return { hash, subject, reverted: target.hash, files }
       },
     }),
 
@@ -574,6 +637,13 @@ function assertDestinationAllowed(input: { remote: ForgeRemote; forge: ForgeEndp
   if (isForgeEndpoint(remote, input.forge)) return
   if (input.approved?.matches(remote.url)) return
   throw new ToolInputError(`origin is ${remote.display}, and the configured forge host is ${input.forge.gitHost}. Pushing elsewhere needs that host on this workspace's approved URL list (the owner runs \`buckle policy allow-url <host>\`), and the forge credential is never sent there.`, { code: 'PERMISSION_DENIED' })
+}
+
+function assertRevision(commit: string): string {
+  if (!REVISION_PATTERN.test(commit) || commit.includes('..') || commit.endsWith('.lock')) {
+    throw new ToolInputError(`Not a usable commit name: ${commit}; name one commit, by its hash or a revision such as HEAD~1`)
+  }
+  return commit
 }
 
 function assertBranchName(branch: string): string {

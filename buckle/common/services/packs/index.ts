@@ -112,7 +112,7 @@ export const BUILTIN_PACKS: ReadonlyArray<{ id: string; summary: string }> = [
   { id: 'history', summary: 'list the change history and restore the files to before a checkpoint, a person approving each restore' },
   { id: 'web', summary: 'fetch URLs and search the web' },
   { id: 'git', summary: 'read the repository: status, diff, log, blame, branches (needs host Git on)' },
-  { id: 'forge', summary: 'commit, push and open pull requests (needs host Git on and a forge token)' },
+  { id: 'forge', summary: 'commit, revert a commit, push and open pull requests (needs host Git on and a forge token)' },
   { id: 'dev', summary: 'language-server navigation and diagnostics' },
   { id: 'browser', summary: 'drive a browser through agent-browser, fresh for each session by default' },
   { id: 'shell', summary: 'run commands in the sandbox (needs the shell on)' },

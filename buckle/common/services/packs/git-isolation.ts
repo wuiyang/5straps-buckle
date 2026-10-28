@@ -222,12 +222,25 @@ export async function configuredKeyNames<Listing extends ConfigListing>(input: {
   return result.stdout.split('\0').filter(Boolean)
 }
 
+/** `merge.<driver>.driver`: a program git runs to merge a path whose attributes name that driver, as a revert merges. */
+const MERGE_DRIVER_KEY = /^merge\..+\.driver$/
+
+/** The merge drivers among a repository's config keys (configuredKeyNames), each a program a revert would run. */
+export function mergeDriverKeys(configuredKeys: readonly string[]): string[] {
+  return configuredKeys.filter(key => MERGE_DRIVER_KEY.test(key))
+}
+
+/** The filter programs among a repository's config keys (configuredKeyNames). */
+export function filterProgramKeys(configuredKeys: readonly string[]): string[] {
+  return configuredKeys.filter(key => FILTER_PROGRAM_KEY.test(key))
+}
+
 /** The filter programs this repository defines: the keys `filterProgramOverrides` empties. */
 export async function configuredFilterPrograms<Listing extends ConfigListing>(input: {
   spawn: (args: string[]) => Promise<Listing>
   describeFailure: (result: Listing) => string
 }): Promise<string[]> {
-  return (await configuredKeyNames(input)).filter(key => FILTER_PROGRAM_KEY.test(key))
+  return filterProgramKeys(await configuredKeyNames(input))
 }
 
 /** Config git reads after every file, so nothing the workspace wrote can override it. */

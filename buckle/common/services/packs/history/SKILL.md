@@ -47,3 +47,5 @@ so `{ "steps": 1 }` right after it undoes the restore.
   `buckle history recover <id>`.
 - A path it would put back in a read-only mount, in Buckle's state, or where the workspace
   policy denies writing: refused as that write would be.
+
+Git history is another thing: `git_revert` in the forge pack makes a new commit that undoes one.

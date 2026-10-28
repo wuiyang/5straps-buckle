@@ -1666,7 +1666,7 @@ describe('the credential', () => {
     const descriptor = runtime.manifest().packs.find(candidate => candidate.id === 'forge')
     expect(descriptor?.unavailableReason).toContain('BUCKLE_FORGE_GITHUB_TOKEN')
     expect(runtime.manifest().tools.map(tool => tool.name)).not.toContain('pr_open')
-    expect(descriptor?.toolNames).toEqual(['git_commit', 'git_push', 'pr_open', 'pr_read'])
+    expect(descriptor?.toolNames).toEqual(['git_commit', 'git_revert', 'git_push', 'pr_open', 'pr_read'])
   })
 })
 

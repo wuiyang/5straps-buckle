@@ -1,12 +1,13 @@
 ---
 name: buckle-forge
-description: Commit, push and open or read a pull request from a 5straps Buckle node, under a credential the owner holds. Use when work must reach a branch and a review, instead of running git push or curl through shell_exec.
+description: Commit, revert a commit, push and open or read a pull request from a 5straps Buckle node, under a credential the owner holds. Use when work must reach a branch and a review, instead of running git push or curl through shell_exec.
 ---
 
 # Buckle forge
 
 ```
 buckle git commit --message "fix the slug" --paths src/slugify.js
+buckle git revert --commit HEAD~1
 buckle git push forge-live-check --set-upstream
 buckle pr open --head forge-live-check --base main --title "collapse separators"
 buckle pr read 7 --include diff --include files
@@ -42,6 +43,13 @@ refused.
 
 `git_commit` stages exactly the paths you name and commits them. An empty commit is refused with
 git's own message, so read it rather than retrying.
+
+`git_revert` makes a new commit that undoes one (`git revert --no-edit`), under the same identity;
+it never resets. A merge commit needs `mainline`, the parent whose side the revert keeps (1 for the
+branch it was merged into). A dirty work tree or index is refused with git's own message. A revert
+that stops on a conflict is aborted, so the repository stands as it was. A repository that defines
+a merge driver or a filter is refused, since a revert would run that program. To undo Buckle's own
+file changes rather than a commit, use `history_restore`.
 
 `git_push` pushes one branch to `origin`. `force: true` is always refused: rewriting a published
 branch is a `shell_exec` decision the destructive-command gate asks about. Only the configured

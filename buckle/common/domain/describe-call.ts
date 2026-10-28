@@ -90,6 +90,7 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
     case 'web_search': return `Search the web for ${fact(text(args.query) ?? '')}`
     case 'browser_command': return `Run the browser command ${facts.command(text(args.command) ?? '', strings(args.args))}`
     case 'git_commit': return `Commit ${count(strings(args.paths).length, 'path')} in ${path('repo')}: ${paths(strings(args.paths))}`
+    case 'git_revert': return `Revert commit ${fact(text(args.commit) ?? '')}${typeof args.mainline === 'number' ? ` (mainline ${integer(args.mainline)})` : ''} in ${path('repo')}`
     case 'git_push': return `Push branch ${fact(text(args.branch) ?? '')} of ${path('repo')}${args.force === true ? ', forced' : ''}${args.setUpstream === true ? ', setting its upstream' : ''}`
     case 'pr_open': return `Open a pull request from ${fact(text(args.head) ?? '')} into ${fact(text(args.base) ?? '')} for ${path('repo')}`
     case 'pr_read': return `Read pull request ${fact(String(args.number ?? ''))} of ${path('repo')}`

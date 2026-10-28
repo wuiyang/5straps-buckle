@@ -61,3 +61,13 @@ function attributeFiles(input: { repository: string; paths: string[] }): string[
   }
   return [...files].filter(file => existsSync(file))
 }
+
+/**
+ * The merge drivers git resolves here, refused whatever scope defines them: a revert merges, and git runs a driver's
+ * program for each path whose attributes name it. As with a filter, no config key empties a driver the repository names.
+ */
+export function assertNoMergeDrivers(input: { repository: string; keys: string[] }): void {
+  const [defined] = input.keys
+  if (!defined) return
+  throw new ToolInputError(`${input.repository} defines the git merge driver ${defined}, whose value is a program git runs while reverting; git_revert refuses the repository rather than running workspace code under the node's identity`, { code: 'PERMISSION_DENIED' })
+}
