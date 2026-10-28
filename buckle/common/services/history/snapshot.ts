@@ -15,7 +15,7 @@ import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePa
  * key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
  * program held open without read sharing (EBUSY), so its content could not be read.
  */
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), hash: z.string().optional(), target: z.string().optional() })
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size']).optional(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>
@@ -272,6 +272,10 @@ export function assertSnapshotMatches(input: { current: Snapshot; expected: Snap
     if (newer !== undefined) throw new SnapshotConflictError(`${input.operation} conflict: a directory contains newer files`, newer)
     // Removing it would remove a file history never captured and leaves untouched.
     const uncaptured = [...Object.entries(input.current), ...Object.entries(input.expected)].filter(([child, entry]) => isUncaptured(entry) && child.startsWith(below))
+    const ignored = uncaptured.find(([, entry]) => entry.reason === 'ignored')
+    if (ignored) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds ignored files history does not capture; move those files before restoring the directory`, ignored[0])
+    const oversized = uncaptured.find(([, entry]) => entry.reason === 'size')
+    if (oversized) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds files above the history content cap; move those files before restoring the directory`, oversized[0])
     const misnamed = uncaptured.find(([child]) => child.includes('\\') || /[. ]$/.test(child))
     if (misnamed) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds a name Buckle would read as another path, which history does not capture; rename or remove it and restore again`, misnamed[0])
     const held = uncaptured.find(([, entry]) => entry.kind === 'unreadable')

@@ -233,7 +233,7 @@ export function createWorkbenchManager(options: WorkbenchManagerOptions) {
         const before = files.base(id)
         files.assertWritableChanges(before, target)
         try {
-          const checkpoint = await options.history.promote({ sessionId: record.chatId, stageId: id, tool: 'workbench_apply', roots: [options.sourceRoot] },
+          const checkpoint = await options.history.promote({ sessionId: record.chatId, stageId: id, turnStageId: null, tool: 'workbench_apply', roots: [options.sourceRoot] },
             before, target, hash => files.object(id, hash), () => { record.status = 'applying'; save(record) })
           record.status = 'applied'; save(record); purge(record)
           return { workbench: publicWorkbench(record), checkpoint }

@@ -12,6 +12,7 @@ import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSa
 import { createShellWorkspaceRecovery } from '../shell/isolated-shell.js'
 import { dirname, join } from 'pathe'
 import { existsSync, realpathSync, watch, type FSWatcher } from 'node:fs'
+import { workspaceArgument } from '../../domain/approval-instruction.js'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
 import { arch, hostname, platform } from 'node:os'
@@ -274,10 +275,10 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
-  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, retentionDays: config.historyRetentionDays, label: `history:${input.workspaceId ?? config.workspaceId}`, onRecoveryNeeded: async id => {
+  const history = await openChangeHistory({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), excluded: protectedStateRoots(config), maxBytes: config.historyMaxBytes, allowHostGit: config.allowHostGit, untrusted: () => workspaceProgramTrust(input), ...config.history, label: `history:${input.workspaceId ?? config.workspaceId}`, onRecoveryNeeded: async id => {
     const interaction = await input.interaction?.()
     if (!interaction) return
-    const answer = await interaction.requestCli({ id: `recover-${id}`, kind: 'history_recovery', correlationId: id, action: { summary: `Recover checkpoint ${id}`, details: { checkpoint: id } }, wait: { mode: 'finite', timeoutMs: 60_000 } })
+    const answer = await interaction.requestCli({ id: `recover-${id}`, kind: 'history_recovery', correlationId: id, action: { summary: `Recover checkpoint ${id}`, details: { checkpoint: id, workspace: config.workspaceId, workspaceName: config.serverName, command: `buckle history recover ${id} --workspace ${workspaceArgument(config.workspaceId)}` } }, wait: { mode: 'finite', timeoutMs: 60_000 } })
     if (answer.status === 'answered' && answer.answer.choice === 'recover') await history.recover(id)
   } })
   let closeApprovals: (() => Promise<void>) | undefined
@@ -296,7 +297,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   mkdirSync(browserStateDirectory, { recursive: true })
 
   // Where no program run here may come from: this workspace's roots and every root the node knows, read at each resolution.
-  const untrusted = (): UntrustedRoots => workspaceUntrusted({ root: config.cwd, scratchRoots: scratchSources(config.mounts), mounts: config.mounts }, input.nodeRoots)
+  const untrusted = (): UntrustedRoots => workspaceProgramTrust(input)
   // The sandbox program is refused where an agent writes, as every other program Buckle runs is.
   const sandbox = resolveSandbox({
     requested: config.sandboxMode,
@@ -463,7 +464,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     hasActiveWork: async () => activeInvocations > 0 || await workbenches.hasActiveWork() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
     browserHeldBy: () => browserHeldBy?.() ?? null,
     inspectActiveWork: () => activeInvocations > 0 || workbenches.inspectActive() || runtime.shellWorkspaces.list().some(item => item.status !== 'published'),
-    manifest: () => ({ ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null, searches: toolDenial('fs_search_content') === null }), tools: manifestTools() }),
+    manifest: () => ({ history: history.capability(), ...buildManifest({ config, packs, registry, sandbox, paths, skills: allSkills(), copies: toolDenial('fs_receive') === null, searches: toolDenial('fs_search_content') === null }), tools: manifestTools() }),
     toolCatalog: () => ({ tools: registry.capabilities(), unavailable: registry.capabilities().flatMap(tool => {
       const reason = toolDenial(tool.name)
       return reason ? [{ name: tool.name, reason }] : []
@@ -671,6 +672,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
     if (policyMoved) await judgeCache.clear().catch((error: unknown) => { logger.warn('The decision AI\'s kept verdicts could not be cleared after a policy change', { workspaceId, error }) })
     Object.assign(config, fields)
+    history.configure({ ...config.history, allowHostGit: config.allowHostGit })
     applied = input.settings
     appliedVersion = input.version
     unreadVersion = undefined
@@ -1075,3 +1077,5 @@ function refusedAsWorkbench<T>(check: () => T): T {
     throw error
   }
 }
+
+function workspaceProgramTrust(input: RuntimeInput): UntrustedRoots { return workspaceUntrusted({ root: input.config.cwd, scratchRoots: scratchSources(input.config.mounts), mounts: input.config.mounts }, input.nodeRoots) }

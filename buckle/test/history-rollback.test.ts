@@ -1,6 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory, RestoreRefusedError } from '../common/services/history/journal.js'
@@ -12,13 +11,15 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // names the call that made each, and restores the workspace to before one, undoing it and every later one together.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const histories: Awaited<ReturnType<typeof openChangeHistory>>[] = []
+afterEach(async () => { for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 async function fixture(options: { now?: () => number } = {}) {
   const root = mkdtempSync('/tmp/buckle-rollback-'); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const directory = join(root, 'history')
   const history = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, retentionDays: 30, ...options })
+  histories.push(history)
   let call = 0
   /** One write as an agent call makes it: its own checkpoint, its request named. */
   const write = (name: string, content: string, sessionId = 'chat-1') => history.run({ sessionId, stageId: `req-${++call}`, tool: 'fs_write', requestId: `req-${call}`, roots: [workspace] }, async () => { writeFileSync(join(workspace, name), content) })
@@ -29,14 +30,12 @@ async function fixture(options: { now?: () => number } = {}) {
 
 /** What a process killed mid-call leaves: the checkpoint pending, its state before the call kept and no state after. */
 function interrupt(directory: string, id: string): void {
-  const database = new DatabaseSync(join(directory, 'history.sqlite'))
-  try {
-    const row = database.prepare('SELECT data FROM checkpoints WHERE id=?').get(id) as { data: string }
-    const record = JSON.parse(row.data) as Record<string, unknown>
-    delete record.after
-    record.status = 'pending'
-    database.prepare('UPDATE checkpoints SET data=? WHERE id=?').run(JSON.stringify(record), id)
-  } finally { database.close() }
+  const file = join(directory, 'checkpoints.json')
+  const state = JSON.parse(readFileSync(file, 'utf8'))
+  const record = state.checkpoints.find((item: { id: string }) => item.id === id)
+  delete record.after
+  record.status = 'pending'
+  writeFileSync(file, JSON.stringify(state))
 }
 
 describe('the newest checkpoints', () => {
@@ -56,7 +55,7 @@ describe('the newest checkpoints', () => {
     const { history, workspace } = await fixture()
     let release: () => void = () => undefined
     const running = history.run({ sessionId: 's', stageId: 'x', tool: 'fs_write', roots: [workspace] }, () => new Promise<void>(resolve => { release = resolve }))
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await waitForCheckpoint(history)
     expect((await history.recent(5)).checkpoints.map(item => [item.status, item.current])).toEqual([['pending', false]])
     release()
     await running
@@ -134,7 +133,7 @@ describe('a restore to before a checkpoint', () => {
     await write('a.txt', 'one')
     let release: () => void = () => undefined
     const running = history.run({ sessionId: 's', stageId: 'x', tool: 'fs_write', roots: [workspace] }, () => new Promise<void>(resolve => { release = resolve }))
-    await new Promise(resolve => setTimeout(resolve, 50))
+    await waitForCheckpoint(history)
     const refused = history.plan({ steps: 1 })
     await expect(refused).rejects.toBeInstanceOf(RestoreRefusedError)
     await expect(refused).rejects.toThrow('Another call is changing the files now; try again once it finishes')
@@ -150,7 +149,7 @@ describe('a restore to before a checkpoint', () => {
     await write('b.txt', 'two')
     const newest = (await history.recent(1)).checkpoints[0]!
     interrupt(directory, newest.id)
-    await expect(history.plan({ steps: 1 })).rejects.toThrow(`waits for the owner's recovery (buckle history recover ${newest.id})`)
+    await expect(history.plan({ steps: 1 })).rejects.toThrow(`buckle history recover ${newest.id}`)
     await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toThrow(`buckle history recover ${newest.id}`)
     expect((await history.recent(1)).checkpoints[0]).toMatchObject({ id: newest.id, status: 'pending', current: false })
     expect(read('b.txt')).toBe('two')
@@ -162,37 +161,36 @@ describe('a restore to before a checkpoint', () => {
 
   // Review M2 of the Slice D rules review: a checkpoint past its retention is pruned as the next change begins, and a
   // restore that began by pruning the checkpoints it was restoring from left the files half restored.
-  describe('past the retention', () => {
+  describe('retained turns beyond the former time cutoff', () => {
     const DAY = 86_400_000
     async function aged() {
       const clock = { now: Date.now() }
       return { ...await fixture({ now: () => clock.now }), clock }
     }
 
-    it('leaves a checkpoint out of the newest and out of a restore, though nothing has pruned it yet, and changes nothing', async () => {
+    it('keeps the last user turns through a long idle gap', async () => {
       const { history, write, read, by, clock } = await aged()
       await write('a.txt', 'one')
       await write('b.txt', 'two')
       clock.now += 31 * DAY
-      expect(await history.recent(5)).toEqual({ checkpoints: [], more: false })
-      await expect(history.plan({ steps: 1 })).rejects.toThrow('holds 0 checkpoints')
-      await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toBeInstanceOf(RestoreRefusedError)
+      expect((await history.recent(5)).checkpoints).toHaveLength(2)
+      expect((await history.plan({ steps: 1 })).undoes).toBe(1)
       expect([read('a.txt'), read('b.txt')]).toEqual(['one', 'two'])
       expect(await history.list()).toHaveLength(2)
     })
 
-    it('refuses a restore judged just before the retention ran out, whole, once it has', async () => {
+    it('restores retained turns even after the former time cutoff', async () => {
       const { history, write, read, by, clock } = await aged()
       await write('a.txt', 'one')
       await write('b.txt', 'two')
       clock.now += 29 * DAY
       expect((await history.plan({ steps: 2 })).undoes).toBe(2)
       clock.now += 2 * DAY
-      await expect(history.rollback({ target: { steps: 2 }, by })).rejects.toBeInstanceOf(RestoreRefusedError)
-      expect([read('a.txt'), read('b.txt')]).toEqual(['one', 'two'])
+      expect((await history.rollback({ target: { steps: 2 }, by })).undoes).toBe(2)
+      expect([read('a.txt'), read('b.txt')]).toEqual([null, null])
     })
 
-    it('restores every file when the checkpoints it restores from pass their retention as it begins', async () => {
+    it('retains turns when time advances during capture', async () => {
       const { history, workspace, write, read, by, clock } = await aged()
       await write('a.txt', 'one')
       await history.run({ sessionId: 'chat-1', stageId: 'both', tool: 'shell_exec', roots: [workspace] }, async () => {
@@ -204,7 +202,7 @@ describe('a restore to before a checkpoint', () => {
       expect([read('a.txt'), read('b.txt')]).toEqual(['one', null])
       expect(restored).toMatchObject({ tool: 'history_restore', undoes: 1, changes: [{ kind: 'modified' }, { kind: 'deleted' }] })
       await write('c.txt', 'four')
-      expect((await history.list()).map(item => item.tool)).toEqual(['history_restore', 'fs_write'])
+      expect((await history.list()).map(item => item.tool)).toEqual(['fs_write', 'shell_exec', 'history_restore', 'fs_write'])
     })
   })
 })
@@ -218,7 +216,7 @@ it('records the request of the agent call whose write a checkpoint holds', async
     const written = await runtime.invoke({ sessionId: 'chat-1', request: { requestId: 'write-42', tool: 'fs_write', args: { path: 'a.txt', content: 'one' }, approvalTokens: [] } })
     expect(written.outcome).toBe('ok')
     expect((await runtime.history.recent(1)).checkpoints[0]).toMatchObject({ tool: 'fs_write', sessionId: 'chat-1', requestId: 'write-42', current: true })
-  } finally { await runtime.approvalService.close(); await runtime.history.close() }
+  } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
 })
 
 describe('a restore as the rules judge it', () => {
@@ -257,3 +255,8 @@ describe('a restore as the rules judge it', () => {
     await expect(resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 1 } }], paths })).rejects.toMatchObject({ code: 'HISTORY_UNAVAILABLE' })
   })
 })
+
+async function waitForCheckpoint(history: Awaited<ReturnType<typeof openChangeHistory>>): Promise<void> {
+  for (let tries = 0; tries < 200; tries++) { if ((await history.recent(1)).checkpoints[0]?.status === 'pending') return; await new Promise(resolve => setTimeout(resolve, 25)) }
+  throw new Error('Checkpoint did not enter pending state')
+}

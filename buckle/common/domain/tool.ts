@@ -25,6 +25,8 @@ export interface ToolContext {
    * Set by the invoker, so a tool that checkpoints its own changes files them where every other write goes.
    */
   historyStage?: string
+  historyTurnStage?: string | null
+  historyParentRequestId?: string
   timeoutMs: number
   signal: AbortSignal
   /**

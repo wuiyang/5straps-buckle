@@ -15,6 +15,8 @@ import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES, type QuickJudgeProvider, typ
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { BUILTIN_PACKS } from '../packs/index.js'
 import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
+import { DEFAULT_HISTORY_FILE_BYTES } from '../history/git-store.js'
+import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from '../history/turn-retention.js'
 import { BUILT_IN_DELETE_POLICY, DELETE_IN_WORKSPACE_MODES, MAX_MASS_DELETE_LIMIT, type DeleteInWorkspace } from '../../domain/delete-policy.js'
 
 /** The browser's idle timeout when a workspace names none, and its bounds (Q10 of the workspace-model brief): 60 s to 24 h. */
@@ -274,6 +276,7 @@ export const WorkspaceSettingsSchema = z.object({
   approval: ApprovalSchema.default({}),
   secrets: SecretsSchema.optional(),
   files: FilesSchema.optional(),
+  history: z.object({ keepTurns: z.number().int().min(1).max(100).optional(), turnIdleMs: z.number().int().min(1).max(86_400_000).optional(), maxFileBytes: z.number().int().min(1).max(1_073_741_824).optional() }).strict().optional(),
   /** Milliseconds a gated call is held for an answer when its caller sends no wait of its own; 0 holds it until someone answers. */
   approvalWaitMs: z.number().int().min(0).max(2_147_483_647).optional(),
 }).strict()
@@ -299,6 +302,7 @@ export type SettingSource = 'workspace' | 'node' | 'built-in'
 /** What Buckle holds where neither the workspace nor the node names a value. */
 export const BUILT_IN_SETTINGS = Object.freeze({
   packs: Object.freeze({ enabled: null, shell: true, code: true, history: true, hostGit: false, hostLsp: false }),
+  history: Object.freeze({ keepTurns: DEFAULT_HISTORY_KEEP_TURNS, turnIdleMs: DEFAULT_HISTORY_TURN_IDLE_MS, maxFileBytes: DEFAULT_HISTORY_FILE_BYTES }),
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
@@ -315,6 +319,7 @@ export interface ResolvedSettings {
   /** The owner's mounts in force: the workspace's own, else the node's (BUCKLE_MOUNTS, and BUCKLE_SCRATCH_ROOTS as scratch). */
   mounts: readonly TableMount[]
   packs: { enabled: string[] | null; shell: boolean; code: boolean; history: boolean; hostGit: boolean; hostLsp: boolean }
+  history: { keepTurns: number; turnIdleMs: number; maxFileBytes: number }
   approvalWaitMs: number
   shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
@@ -411,6 +416,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     mount: pick('mount', ownMount(stored), node.mount, null),
     mounts: mountsInForce(stored, node, sources),
     packs,
+    history: { keepTurns: pick('history.keepTurns', stored.history?.keepTurns, undefined, BUILT_IN_SETTINGS.history.keepTurns), turnIdleMs: pick('history.turnIdleMs', stored.history?.turnIdleMs, undefined, BUILT_IN_SETTINGS.history.turnIdleMs), maxFileBytes: pick('history.maxFileBytes', stored.history?.maxFileBytes, undefined, BUILT_IN_SETTINGS.history.maxFileBytes) },
     approvalWaitMs: pick('approvalWaitMs', stored.approvalWaitMs, node.approvalWaitMs, BUILT_IN_SETTINGS.approvalWaitMs),
     shell: {
       network: pick('shell.network', stored.shell.network, node.shell.network, BUILT_IN_SETTINGS.shell.network),
@@ -580,9 +586,9 @@ export function openSettingsFile(input: { filePath: string; fallback?: () => Wor
 }
 
 /** What a workspace's runtime takes from its settings in force (workspaceConfig): its own, else the node's (resolveSettings). */
-export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env'> {
+export function scopeOf(settings: WorkspaceSettings, node: NodeDefaults): Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env' | 'history'> {
   const resolved = resolveSettings(settings, node)
-  return { mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, files: resolved.files, env: resolved.env }
+  return { history: resolved.history, mount: resolved.mount, mounts: resolved.mounts, policy: resolved.policy, packs: resolved.packs, approvalWaitMs: resolved.approvalWaitMs, shell: resolved.shell, browser: { ...resolved.browser, names: browserSettingNames(resolved.sources) }, approval: resolved.approval, secrets: resolved.secrets, files: resolved.files, env: resolved.env }
 }
 
 /** Where the workspace's own settings show its folder: a path, null for its real path, or undefined where the node's says. */

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'pathe'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
-import { acquireFileLock } from '@5straps/runtime/sqlite'
+import { withFileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import { STATE_BUSY } from '../../adapters/json-file-store.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
@@ -32,21 +32,16 @@ export async function withHistoryLock<T>(input: { directory: string; label: stri
     const holder = readHistoryHolder(input.directory)
     if (holder && !processGone(holder.pid)) throw new HistoryBusyError(`Cannot force a live lock: pid ${holder.pid}, started ${holder.startedAt}, label ${holder.label}`)
   }
-  let lock
   try {
-    lock = await acquireFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: input.deadlineMs, pollMs: 25 }, ...(input.signal ? { signal: input.signal } : {}) })
+    return await withFileLock({ path: join(input.directory, 'execution.lock.sqlite'), wait: { deadlineMs: input.deadlineMs, pollMs: 25 }, ...(input.signal ? { signal: input.signal } : {}) }, async () => {
+      const holder: Holder = { nonce: randomUUID(), pid: process.pid, startedAt: new Date().toISOString(), label: input.label }
+      try { writeFileSync(file, JSON.stringify(holder), { mode: 0o600 }); return await operation() }
+      finally { if (readHistoryHolder(input.directory)?.nonce === holder.nonce) rmSync(file) }
+    })
   } catch (error) {
     if (!isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw error
     const holder = readHistoryHolder(input.directory)
     const held = holder ? `pid ${holder.pid}, started ${holder.startedAt}, label ${holder.label}` : 'an unknown process'
     throw new HistoryBusyError(`History is busy with ${held}; retry shortly. Use --force only if the holder process is gone`, { cause: error })
-  }
-  const holder: Holder = { nonce: randomUUID(), pid: process.pid, startedAt: new Date().toISOString(), label: input.label }
-  try {
-    writeFileSync(file, JSON.stringify(holder), { mode: 0o600 })
-    return await operation()
-  } finally {
-    try { if (readHistoryHolder(input.directory)?.nonce === holder.nonce) rmSync(file) }
-    finally { await lock.release() }
   }
 }

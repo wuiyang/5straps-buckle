@@ -47,6 +47,7 @@ export const InvokeOkSchema = z.object({
   meta: z.object({
     durationMs: z.number().nonnegative(),
     truncated: z.boolean().default(false),
+    history: z.object({ checkpoint: z.string(), restorable: z.boolean(), reason: z.string().optional(), notRestorableCount: z.number().int().nonnegative().optional() }).optional(),
   }),
 })
 

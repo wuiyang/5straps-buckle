@@ -18,7 +18,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
 afterEach(async () => {
-  for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -27,7 +27,7 @@ async function node(packs = 'fs,history'): Promise<{ workspace: string; runtime:
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: packs, BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: packs, BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   // Writes anywhere in the folder are granted for the session, as a person's session grant would be; restores still ask.
@@ -93,6 +93,23 @@ describe('history_list', () => {
     const [entry] = output(await call(runtime, 'list-1', 'history_list', { last: 1 }))!.checkpoints as JsonObject[]
     expect(entry).toMatchObject({ changes: [{ path: 'open.txt', kind: 'created' }], unlisted: 1 })
   })
+})
+
+it('bounds native changed and skipped lists, counting hidden and excess names without leaking them', async () => {
+  const { runtime, workspace } = await node()
+  await runtime.policy.apply(WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'secret.txt', read: 'deny' }] } }))
+  await call(runtime, 'baseline', 'fs_write', { path: 'open.txt', content: 'shown' })
+  const original = await runtime.history.recent(1)
+  const paths = ['secret.txt', ...Array.from({ length: 105 }, (_, index) => `large-${index}`)].map(path => join(workspace, path))
+  const recent = vi.spyOn(runtime.history, 'recent').mockResolvedValue({ more: false, checkpoints: [{ ...original.checkpoints[0]!, changes: paths.map(path => ({ path, kind: 'modified' as const })), changed: paths, notRestorable: paths }] })
+  try {
+    const result = await call(runtime, 'bounded-list', 'history_list', {})
+    const [checkpoint] = output(result)!.checkpoints as JsonObject[]
+    expect(checkpoint).toMatchObject({ unlisted: 6, changedUnlisted: 6, notRestorableUnlisted: 6 })
+    expect((checkpoint!.changed as string[]).length).toBe(100)
+    expect((checkpoint!.notRestorable as string[]).length).toBe(100)
+    expect(JSON.stringify(result)).not.toContain('secret.txt')
+  } finally { recent.mockRestore() }
 })
 
 describe('history_restore', () => {
@@ -174,7 +191,7 @@ describe('history_restore', () => {
 
   // Review M1 of the Slice D rules review: the history keeps .git, so a restore over a commit's checkpoint rewound the
   // repository and deleted the commit objects, and a branch the owner made at that commit lost its commit.
-  it('is refused before anything asks where it would put back files inside a Git directory, and the repository stays whole', async () => {
+  it('restores working files while leaving the owner repository commits and branches whole', async () => {
     const { runtime, workspace } = await node()
     const git = (...args: string[]) => execFileSync('git', ['-C', workspace, '-c', 'user.name=owner', '-c', 'user.email=owner@example.com', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
     git('init', '-q', '-b', 'main')
@@ -186,16 +203,13 @@ describe('history_restore', () => {
       git('commit', '-q', '-am', 'second')
     })
     git('branch', 'keep')
-    const refused = await call(runtime, 'undo-1', 'history_restore', { steps: 1 })
-    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED', message: expect.stringContaining('inside a Git directory') } })
-    expect(runtime.approvalService.waiting()).toEqual([])
+    const asked = await call(runtime, 'undo-1', 'history_restore', { steps: 1 })
+    expect(asked).toMatchObject({ outcome: 'approval_required' })
+    const restored = await call(runtime, 'undo-1', 'history_restore', { steps: 1 }, await approveAll(runtime, asked))
+    expect(restored).toMatchObject({ outcome: 'ok' })
     expect(git('log', '--format=%s', 'keep')).toBe('second\nfirst\n')
     expect(() => git('fsck', '--no-progress')).not.toThrow()
-    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('two')
-    // A restore over a checkpoint that changed files outside .git too is refused whole, and one that names none still asks.
-    expect((await call(runtime, 'w-1', 'fs_write', { path: 'b.txt', content: 'x' })).outcome).toBe('ok')
-    expect(await call(runtime, 'undo-2', 'history_restore', { steps: 2 })).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED' } })
-    expect(await call(runtime, 'undo-3', 'history_restore', { steps: 1 })).toMatchObject({ outcome: 'approval_required' })
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('one')
   })
 
   it('is refused before anything asks where steps reach past the history, and names neither id and steps nor both', async () => {

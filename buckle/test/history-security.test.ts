@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -71,7 +71,9 @@ it.skipIf(process.platform === 'win32')('does not block on FIFO .git or commondi
     execFileSync('mkfifo', [marker === '.git' ? join(workspace, '.git') : join(workspace, '.git', 'commondir')])
     const directory = join(root, `history-${marker.replace('.', '')}`)
     const moduleUrl = new URL('../common/services/history/journal.ts', import.meta.url).href
-    const source = `const { openChangeHistory } = await import(${JSON.stringify(moduleUrl)}); const history = await openChangeHistory({ directory: process.argv[1], excluded: [], maxBytes: 268435456 }); try { await history.run({sessionId:'s',tool:'test',roots:[process.argv[2]]}, async () => { (await import('node:fs')).writeFileSync(process.argv[2] + '/file', 'done') }); } finally { await history.close() }`
+    const metadataUrl = new URL('../common/services/history/git-store.ts', import.meta.url).href
+    const metadata = marker === '.git' ? join(workspace, '.git') : join(workspace, '.git', 'commondir')
+    const source = `const { readGitMetadata } = await import(${JSON.stringify(metadataUrl)}); if (readGitMetadata(${JSON.stringify(metadata)}) !== undefined) throw new Error('Special metadata was read'); const { openChangeHistory } = await import(${JSON.stringify(moduleUrl)}); const history = await openChangeHistory({ directory: process.argv[1], excluded: [], maxBytes: 268435456 }); try { await history.run({sessionId:'s',tool:'test',roots:[process.argv[2]]}, async () => { (await import('node:fs')).writeFileSync(process.argv[2] + '/file', 'done') }); } finally { await history.close() }`
     await new Promise<void>((resolve, reject) => {
       const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), '--input-type=module', '-e', source, directory, workspace], { detached: true, stdio: 'ignore' })
       const timer = setTimeout(() => { if (child.pid) process.kill(-child.pid, 'SIGKILL'); reject(new Error('FIFO history capture timed out')) }, 10_000)
@@ -94,5 +96,16 @@ it('retains an interrupted checkpoint after a restore fails following its first 
     expect(fault.writes).toBe(2)
     expect([readFileSync(a, 'utf8'), readFileSync(b, 'utf8')]).toEqual(['before-a', 'after-b'])
     expect((await node.history.list()).at(-1)).toMatchObject({ status: 'interrupted', restores: original.id, reason: expect.stringContaining('some paths may have changed') })
+  } finally { await node.history.close() }
+})
+
+it.skipIf(process.platform === 'win32')('still refuses an unsafe hard link after encountering a recoverable capture limitation', async () => {
+  const node = await fixture()
+  writeFileSync(join(node.root, 'outside'), 'shared')
+  execFileSync('mkfifo', [join(node.workspace, 'a-pipe')])
+  linkSync(join(node.root, 'outside'), join(node.workspace, 'z-linked.js'))
+  try {
+    await expect(node.history.run(node.details, async () => { writeFileSync(join(node.workspace, 'note'), 'must not run') })).rejects.toMatchObject({ name: 'Error', message: 'History cannot safely restore hard-linked files' })
+    expect(existsSync(join(node.workspace, 'note'))).toBe(false)
   } finally { await node.history.close() }
 })

@@ -20,7 +20,8 @@ const listInput = z.object({ last: z.number().int().min(1).max(RECENT_CHECKPOINT
 const restoreInput = z.object({
   id: z.string().min(1).max(200).optional(),
   steps: z.number().int().min(1).max(RECENT_CHECKPOINTS_MAX).optional(),
-}).strict().refine(input => (input.id === undefined) !== (input.steps === undefined), { message: 'Name one of id, a checkpoint history_list shows, and steps, how many checkpoints back from the current state' })
+  turns: z.number().int().min(1).max(RECENT_CHECKPOINTS_MAX).optional(),
+}).strict().refine(input => [input.id, input.steps, input.turns].filter(value => value !== undefined).length === 1, { message: 'Name exactly one of id, steps, or turns back from the current state' })
 
 export interface HistoryPackOptions {
   paths: PathView
@@ -54,12 +55,13 @@ export function createHistoryPack(options: HistoryPackOptions): Pack {
         const recent = await required().recent(input.last)
         const checkpoints: JsonObject[] = []
         for (const checkpoint of recent.checkpoints) checkpoints.push(await shownCheckpoint(checkpoint, { paths, context }))
-        return { checkpoints, more: recent.more }
+        const turns = [...new Set(recent.checkpoints.map(checkpoint => checkpoint.turnId))].map(id => ({ id, checkpoints: recent.checkpoints.filter(checkpoint => checkpoint.turnId === id).map(checkpoint => checkpoint.id) }))
+        return { checkpoints, more: recent.more, turns }
       },
     }),
     defineTool(PACK_ID, {
       name: 'history_restore',
-      description: 'Restore the files to before a checkpoint, by id or steps back (steps 1 undoes the newest): it and every later one are undone. A person approves each restore.',
+      description: 'Restore files by checkpoint id, checkpoint steps, or user turns back: the selected checkpoint and every later one are undone. A person approves each restore.',
       risk: 'write',
       tags: ['history', 'filesystem'],
       input: restoreInput,
@@ -80,7 +82,7 @@ export function createHistoryPack(options: HistoryPackOptions): Pack {
 }
 
 function targetOf(input: z.infer<typeof restoreInput>): RestoreTarget {
-  return input.id !== undefined ? { id: input.id } : { steps: input.steps! }
+  return input.id !== undefined ? { id: input.id } : input.turns !== undefined ? { turns: input.turns } : { steps: input.steps! }
 }
 
 /**
@@ -90,7 +92,7 @@ function targetOf(input: z.infer<typeof restoreInput>): RestoreTarget {
  */
 async function restore(input: { history: ChangeHistory; target: RestoreTarget; paths: PathView; context: ToolContext }): Promise<JsonValue> {
   const { context } = input
-  const by = { sessionId: context.sessionId, stageId: context.historyStage ?? context.stageId ?? context.requestId, tool: 'history_restore', requestId: context.requestId }
+  const by = { sessionId: context.sessionId, stageId: context.historyStage ?? context.stageId ?? context.requestId, turnStageId: context.historyTurnStage === undefined ? context.stageId ?? null : context.historyTurnStage, tool: 'history_restore', requestId: context.requestId }
   const untimed = context.untimed ?? (<T>(wait: (signal: AbortSignal | undefined) => Promise<T>) => wait(context.signal))
   let waiting = true
   try {
@@ -106,7 +108,7 @@ async function restore(input: { history: ChangeHistory; target: RestoreTarget; p
     }))
     const shown = await shownChanges(restored.changes, input)
     const notRestorable = await shownPaths(restored.notRestorable, input)
-    return { checkpoint: restored.id, restores: restored.restores ?? null, undoes: restored.undoes ?? 1, changes: shown.changes, ...(shown.unlisted > 0 ? { unlisted: shown.unlisted } : {}), ...(notRestorable.length > 0 ? { notRestorable } : {}) }
+    return { checkpoint: restored.id, restores: restored.restores ?? null, undoes: restored.undoes ?? 1, changes: shown.changes, ...(shown.unlisted > 0 ? { unlisted: shown.unlisted } : {}), ...(notRestorable.paths.length > 0 ? { notRestorable: notRestorable.paths } : {}), ...(notRestorable.unlisted > 0 ? { notRestorableUnlisted: notRestorable.unlisted } : {}) }
   } catch (error) {
     if (waiting) throw new LockWaitError(error)
     if (error instanceof RestoreRefusedError) throw new ToolExecutionError(await refusalText(error, input), { code: error.code })
@@ -123,6 +125,8 @@ async function refusalText(refusal: RestoreRefusedError, input: { paths: PathVie
 /** A checkpoint as history_list answers it: no snapshot, its paths as the agent names them. */
 async function shownCheckpoint(checkpoint: CheckpointSummary & { current: boolean }, input: { paths: PathView; context: ToolContext }): Promise<JsonObject> {
   const shown = await shownChanges(checkpoint.changes, input)
+  const changed = await shownPaths(checkpoint.changed, input)
+  const notRestorable = await shownPaths(checkpoint.notRestorable, input)
   return {
     id: checkpoint.id,
     createdAt: checkpoint.createdAt,
@@ -130,6 +134,13 @@ async function shownCheckpoint(checkpoint: CheckpointSummary & { current: boolea
     sessionId: checkpoint.sessionId,
     ...(checkpoint.requestId === undefined ? {} : { requestId: checkpoint.requestId }),
     stageId: checkpoint.stageId,
+    turnId: checkpoint.turnId,
+    restorable: checkpoint.restorable,
+    ...(checkpoint.reason ? { reason: checkpoint.reason } : {}),
+    changed: changed.paths,
+    ...(changed.unlisted > 0 ? { changedUnlisted: changed.unlisted } : {}),
+    notRestorable: notRestorable.paths,
+    ...(notRestorable.unlisted > 0 ? { notRestorableUnlisted: notRestorable.unlisted } : {}),
     status: checkpoint.status,
     current: checkpoint.current,
     ...(checkpoint.restores === undefined ? {} : { restores: checkpoint.restores }),
@@ -152,10 +163,13 @@ async function shownChanges(changes: ReadonlyArray<{ path: string; kind: string 
   return { changes: shown, unlisted: changes.length - shown.length }
 }
 
-async function shownPaths(paths: readonly string[], input: { paths: PathView; context: ToolContext }): Promise<string[]> {
+async function shownPaths(paths: readonly string[], input: { paths: PathView; context: ToolContext }): Promise<{ paths: string[]; unlisted: number }> {
   const shown: string[] = []
-  for (const path of paths) if (await readable(path, input.context)) shown.push(input.paths.display(path))
-  return shown
+  for (const path of paths) {
+    if (shown.length === LISTED_CHANGES) break
+    if (await readable(path, input.context)) shown.push(input.paths.display(path))
+  }
+  return { paths: shown, unlisted: paths.length - shown.length }
 }
 
 /** Whether the read rules let the agent see a path's name; run outside the invoker, every path is. */

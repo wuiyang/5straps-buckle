@@ -186,207 +186,212 @@ export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
     async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun }) {
       const startedAt = performance.now()
-      const auditId = randomUUID()
-      // A required audit write that fails stops the call here, before anything runs (data.md).
-      await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
-      let effects: ResolvedEffect[] = []
-      // What the tool's result entry keeps as it is (ToolDefinition.audited), once the call is prepared.
-      let audited: PreparedCall['audited']
-      let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
-      // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
-      const key = executionKey({ request, sessionId })
-      // The key's one execution, once the gate claims it; settled below whatever happens after.
-      const held: { claim?: ExecutionClaim } = {}
-      // What the decision AI said of the call's command asks, for its audit entry (D91), and the onces the thorough stage
-      // gave on request that this call may spend, with the subjects whose bound code changed since (fix brief 9, B31).
-      const judgment: Judgment = { judged: [], codes: [], stale: new Set() }
-      let replayed = false
-      let ran = false
-      // The caller leaving or the runtime shutting down: either stops a running tool.
-      const stop = anySignal(signal, options.shutdown)
-      // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
-      const grantUses = grantUseRecorder({ grants: options.grants, sessionId })
-      const auditUses = useAuditor({ options, request, sessionId, grantUses })
-      const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
-        // A script cannot send a new requestId: it is told to change the script (review of the code-mode slice, finding invoker-audit 134).
-        if (earlier.kind === 'reused') return failed(request, via ? SCRIPT_CALL_REUSED : REUSED)
-        replayed = true
-        // The key hashes the whole requestId, so the earlier call's is the same; the caller's own is echoed all the same.
-        const answer = { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
-        onReplayed?.(earlier.at === undefined ? {} : { at: earlier.at })
-        return answer
-      }
+      const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(sessionId, request.context?.stageId) : undefined
+      try {
+        const auditId = randomUUID()
+        // A required audit write that fails stops the call here, before anything runs (data.md).
+        await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
+        let effects: ResolvedEffect[] = []
+        // What the tool's result entry keeps as it is (ToolDefinition.audited), once the call is prepared.
+        let audited: PreparedCall['audited']
+        let gate: GateOutcome = { response: null, asked: [], approvedBy: [] }
+        // A re-send is the same call when it comes from the same session and actor (review M2 of B13-B14).
+        const key = executionKey({ request, sessionId })
+        // The key's one execution, once the gate claims it; settled below whatever happens after.
+        const held: { claim?: ExecutionClaim } = {}
+        // What the decision AI said of the call's command asks, for its audit entry (D91), and the onces the thorough stage
+        // gave on request that this call may spend, with the subjects whose bound code changed since (fix brief 9, B31).
+        const judgment: Judgment = { judged: [], codes: [], stale: new Set() }
+        let replayed = false
+        let ran = false
+        // The caller leaving or the runtime shutting down: either stops a running tool.
+        const stop = anySignal(signal, options.shutdown)
+        // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
+        const grantUses = grantUseRecorder({ grants: options.grants, sessionId })
+        const auditUses = useAuditor({ options, request, sessionId, grantUses })
+        const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
+          // A script cannot send a new requestId: it is told to change the script (review of the code-mode slice, finding invoker-audit 134).
+          if (earlier.kind === 'reused') return failed(request, via ? SCRIPT_CALL_REUSED : REUSED)
+          replayed = true
+          // The key hashes the whole requestId, so the earlier call's is the same; the caller's own is echoed all the same.
+          const answer = { ...await untilAborted(earlier.response, stop), requestId: request.requestId }
+          onReplayed?.(earlier.at === undefined ? {} : { at: earlier.at })
+          return answer
+        }
 
-      let answered: InvokeResponse | undefined
-      try { answered = await (async (): Promise<InvokeResponse> => {
-        try {
-          stop?.throwIfAborted()
-          if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
-          const earlier = options.executions.earlier(key)
-          if (earlier) return await answerEarlier(earlier)
-          const reason = options.toolDenial?.(request.tool)
-          // Scripts cannot start scripts (owner decision D82, point 3), whatever name a script reaches them by.
-          const refusal = reason ?? (via && options.registry.has(request.tool) && options.registry.get(request.tool).outsideScripts ? SCRIPT_REFUSAL : null)
-          if (refusal) {
-            const response = denied(request, refusal)
-            gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason: refusal } }
-            return response
-          }
-          options.checkFolder?.()
-          const tool = toolFor(options.registry, request.tool, file)
-          const prepared = tool.prepare(request.args)
-          audited = prepared.audited
-          // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
-          // before anything is judged; each file the references name is judged where it lands, and its first use asks a
-          // person (docs/secrets.md).
-          const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
-          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
-          // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
-          effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
-          // How the command reader reads each reference in a shell call, refused where the rules could not read it as
-          // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
-          const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
-          // Every browser call goes through it where the workspace keeps filled values, read as it runs and once it answers.
-          const masksBrowser = request.tool === 'browser_command' && tool.capability.pack === 'browser' && options.filledSecrets !== undefined
-          const run = checked || masksBrowser
-            ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
-            : prepared.execute
+        let answered: InvokeResponse | undefined
+        try { answered = await (async (): Promise<InvokeResponse> => {
+          try {
+            stop?.throwIfAborted()
+            if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
+            const earlier = options.executions.earlier(key)
+            if (earlier) return await answerEarlier(earlier)
+            const reason = options.toolDenial?.(request.tool)
+            // Scripts cannot start scripts (owner decision D82, point 3), whatever name a script reaches them by.
+            const refusal = reason ?? (via && options.registry.has(request.tool) && options.registry.get(request.tool).outsideScripts ? SCRIPT_REFUSAL : null)
+            if (refusal) {
+              const response = denied(request, refusal)
+              gate = { response, asked: [], approvedBy: [], denial: { rule: 'tool_policy', subject: request.tool, reason: refusal } }
+              return response
+            }
+            options.checkFolder?.()
+            const tool = toolFor(options.registry, request.tool, file)
+            const prepared = tool.prepare(request.args)
+            audited = prepared.audited
+            // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
+            // before anything is judged; each file the references name is judged where it lands, and its first use asks a
+            // person (docs/secrets.md).
+            const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
+            effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+            // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
+            effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
+            // How the command reader reads each reference in a shell call, refused where the rules could not read it as
+            // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
+            const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
+            // Every browser call goes through it where the workspace keeps filled values, read as it runs and once it answers.
+            const masksBrowser = request.tool === 'browser_command' && tool.capability.pack === 'browser' && options.filledSecrets !== undefined
+            const run = checked || masksBrowser
+              ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+              : prepared.execute
 
-          // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
-          const fromCopy = prepared.managesHistory === true
-          gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
-          // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
-          // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
-          // finding deadline-announce invoker.ts:175).
-          if (!(via && gate.response?.outcome === 'approval_required')) stop?.throwIfAborted()
-          if (gate.earlier) return await answerEarlier(gate.earlier)
-          if (gate.response) return gate.response
-          // Cleared: the gate claimed this key's one execution as it spent the call's approvals.
-          if (held.claim?.kind !== 'owner') throw new Error('A cleared call holds no execution claim')
-          const owned = held.claim.execution
-          await auditUses(gate.approvedBy)
-          // The folder may have changed while the call waited for its approval: nothing runs where it lands now.
-          options.checkFolder?.()
-          // The tool begins to run once. A pass of the decision AI, and a once its thorough stage gave on request, binds to
-          // the code it rated: that code is read again under the write lock, just before the program starts, and where it
-          // changed nothing runs and a person decides (fix brief 9, B31). A tool that takes the lock itself, the isolated
-          // shell, is handed the check to call once its copy of the workspace is taken.
-          let begun = false
-          const markStarted = () => {
-            if (begun) return
-            begun = true
-            owned.started()
-            ran = true
-            onExecute?.()
-          }
-          const beginRun = () => {
-            if (begun) return
-            const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args, fromCopy } })
-            if (changed.length > 0) throw new CodeChangedError(changed)
-            markStarted()
-          }
-          const execute = async () => {
-            if (!prepared.managesHistory) beginRun()
-            // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
-            const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
-            const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends } : undefined
-            try {
-              const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
+            // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
+            const fromCopy = prepared.managesHistory === true
+            gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
+            // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
+            // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
+            // finding deadline-announce invoker.ts:175).
+            if (!(via && gate.response?.outcome === 'approval_required')) stop?.throwIfAborted()
+            if (gate.earlier) return await answerEarlier(gate.earlier)
+            if (gate.response) return gate.response
+            // Cleared: the gate claimed this key's one execution as it spent the call's approvals.
+            if (held.claim?.kind !== 'owner') throw new Error('A cleared call holds no execution claim')
+            const owned = held.claim.execution
+            await auditUses(gate.approvedBy)
+            // The folder may have changed while the call waited for its approval: nothing runs where it lands now.
+            options.checkFolder?.()
+            // The tool begins to run once. A pass of the decision AI, and a once its thorough stage gave on request, binds to
+            // the code it rated: that code is read again under the write lock, just before the program starts, and where it
+            // changed nothing runs and a person decides (fix brief 9, B31). A tool that takes the lock itself, the isolated
+            // shell, is handed the check to call once its copy of the workspace is taken.
+            let begun = false
+            const markStarted = () => {
+              if (begun) return
+              begun = true
+              owned.started()
+              ran = true
+              onExecute?.()
+            }
+            const beginRun = () => {
+              if (begun) return
+              const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args, fromCopy } })
+              if (changed.length > 0) throw new CodeChangedError(changed)
               markStarted()
-              return output
-            } catch (error) {
-              // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
-              // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
-              // (D91 follow-ups, F4 residue).
-              if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
+            }
+            const execute = async () => {
+              if (!prepared.managesHistory) beginRun()
+              // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
+              const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
+              const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends } : undefined
+              try {
+                const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
+                markStarted()
+                return output
+              } catch (error) {
+                // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
+                // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
+                // (D91 follow-ups, F4 residue).
+                if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
+                throw error
+              }
+            }
+            // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
+            const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
+            const roots = [...options.historyRoots?.() ?? [], ...writes.map(checkpointRoot)]
+            const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
+            // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
+            // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
+            const output = options.history && tracksChanges && !prepared.managesHistory
+              ? await options.history.run({ sessionId, stageId: historyStage(request, via), turnStageId: request.context?.stageId ?? null, ...(via ? { parentRequestId: via.parentRequestId } : {}), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)] }, execute, stop)
+              : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
+            // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
+            // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
+            if (options.shutdown?.aborted) throw options.shutdown.reason
+            const checkpoint = options.history && (tracksChanges || prepared.managesHistory || prepared.reachesTools) ? options.history.notice(sessionId, request.requestId) : null
+            const historyNotice = checkpoint && (!checkpoint.restorable || checkpoint.notRestorable.length) ? { checkpoint: checkpoint.id, restorable: checkpoint.restorable, reason: checkpoint.reason ?? 'This checkpoint includes files history cannot restore; history_list names them', notRestorableCount: checkpoint.notRestorable.length } : undefined
+            return {
+              requestId: request.requestId,
+              outcome: 'ok',
+              output,
+              meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output), ...(historyNotice ? { history: historyNotice } : {}) },
+            }
+          } catch (error) {
+            // The code a pass rated changed before the program started: nothing ran, so the claim is settled unstarted (a
+            // re-send asks again) and the asks the passes lifted go to a person with the reason (fix brief 9, B31).
+            if (error instanceof CodeChangedError && !ran && !options.shutdown?.aborted) {
+              const after = await askAfterChange({ options, request, sessionId, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
+              const lifted = new Set(error.subjects.map(subject => `${JUDGE}:destructive_command:${subject}`))
+              gate = { ...gate, asked: after.asked, approvedBy: gate.approvedBy.filter(item => !lifted.has(item)) }
+              return after.response
+            }
+            // A script whose call needs a person answers as that call would (owner decision D82, point 6): the asks are the
+            // nested call's own, recorded whole by it, and the outer call is audited as approval_required.
+            if (error instanceof NestedApprovalRequired && !options.shutdown?.aborted) {
+              gate = { ...gate, asked: error.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
+              return { requestId: request.requestId, outcome: 'approval_required', approvals: error.approvals }
+            }
+            // The caller left before anything ran, as a client that closes its connection while the call waits for a person
+            // does, or cancelled the call: nothing ran, and the audit entry says so in a code of its own, never as a tool that
+            // failed (the MCP asks brief, item 5). A script's call cut by its script's end keeps that reason.
+            if (!ran && !via && signal?.aborted && error === signal.reason && !options.shutdown?.aborted) {
+              const cancelled = isCancel?.(signal.reason) === true
+              logger.info(cancelled ? 'A call ended before it ran: its caller cancelled it' : 'A call ended before it ran: its caller left', { tool: request.tool.slice(0, MAX_LOGGED_ID) })
+              return failed(request, cancelled ? CALLER_CANCELLED : CALLER_LEFT)
+            }
+            // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
+            // tool ran, the caller is told it ran with effects unknown and not to retry, as a re-send is: a
+            // plain refusal would read as "nothing ran", and a retry under a new requestId would run it
+            // again (review item 15 of the proof-of-possession fixes).
+            if (error instanceof AuditUnavailableError) {
+              if (ran) return failed(request, ranUnrecorded(AUDIT_UNAVAILABLE))
               throw error
             }
+            // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
+            const cause = options.shutdown?.aborted ? options.shutdown.reason : error
+            const shaped = shapeError(cause, request.tool)
+            // Busy state after the tool ran is not a retry: the call happened (review L4 of B23-B25).
+            return { requestId: request.requestId, outcome: 'error', error: ran && shaped.code === 'STATE_BUSY' ? ranUnrecorded('STATE_BUSY') : shaped }
           }
-          // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
-          const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
-          const roots = [...options.historyRoots?.() ?? [], ...writes.map(checkpointRoot)]
-          const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
-          // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
-          // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
-          const output = options.history && tracksChanges && !prepared.managesHistory
-            ? await options.history.run({ sessionId, stageId: historyStage(request, via), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)] }, execute, stop)
-            : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
-          // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
-          // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
-          if (options.shutdown?.aborted) throw options.shutdown.reason
-          return {
-            requestId: request.requestId,
-            outcome: 'ok',
-            output,
-            meta: { durationMs: Math.round(performance.now() - startedAt), truncated: inferTruncated(output) },
-          }
-        } catch (error) {
-          // The code a pass rated changed before the program started: nothing ran, so the claim is settled unstarted (a
-          // re-send asks again) and the asks the passes lifted go to a person with the reason (fix brief 9, B31).
-          if (error instanceof CodeChangedError && !ran && !options.shutdown?.aborted) {
-            const after = await askAfterChange({ options, request, sessionId, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
-            const lifted = new Set(error.subjects.map(subject => `${JUDGE}:destructive_command:${subject}`))
-            gate = { ...gate, asked: after.asked, approvedBy: gate.approvedBy.filter(item => !lifted.has(item)) }
-            return after.response
-          }
-          // A script whose call needs a person answers as that call would (owner decision D82, point 6): the asks are the
-          // nested call's own, recorded whole by it, and the outer call is audited as approval_required.
-          if (error instanceof NestedApprovalRequired && !options.shutdown?.aborted) {
-            gate = { ...gate, asked: error.approvals.map(approval => `${approval.rule}:${approval.subject}`) }
-            return { requestId: request.requestId, outcome: 'approval_required', approvals: error.approvals }
-          }
-          // The caller left before anything ran, as a client that closes its connection while the call waits for a person
-          // does, or cancelled the call: nothing ran, and the audit entry says so in a code of its own, never as a tool that
-          // failed (the MCP asks brief, item 5). A script's call cut by its script's end keeps that reason.
-          if (!ran && !via && signal?.aborted && error === signal.reason && !options.shutdown?.aborted) {
-            const cancelled = isCancel?.(signal.reason) === true
-            logger.info(cancelled ? 'A call ended before it ran: its caller cancelled it' : 'A call ended before it ran: its caller left', { tool: request.tool.slice(0, MAX_LOGGED_ID) })
-            return failed(request, cancelled ? CALLER_CANCELLED : CALLER_LEFT)
-          }
-          // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
-          // tool ran, the caller is told it ran with effects unknown and not to retry, as a re-send is: a
-          // plain refusal would read as "nothing ran", and a retry under a new requestId would run it
-          // again (review item 15 of the proof-of-possession fixes).
-          if (error instanceof AuditUnavailableError) {
-            if (ran) return failed(request, ranUnrecorded(AUDIT_UNAVAILABLE))
-            throw error
-          }
-          // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
-          const cause = options.shutdown?.aborted ? options.shutdown.reason : error
-          const shaped = shapeError(cause, request.tool)
-          // Busy state after the tool ran is not a retry: the call happened (review L4 of B23-B25).
-          return { requestId: request.requestId, outcome: 'error', error: ran && shaped.code === 'STATE_BUSY' ? ranUnrecorded('STATE_BUSY') : shaped }
+        })() } finally {
+          // Settled whatever happened, before the result is recorded, so a re-send never waits on a call
+          // that stopped (review L1 of B20-B22). An audit failure before the tool ran answers as a
+          // retryable 503 would; once it ran, never retryable, so the same requestId never runs it again
+          // (review L4 of B23-B25; nitro/coordination.md: reconnection must not execute a request twice).
+          if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true, ...(via ? { script: true } : {}) })
         }
-      })() } finally {
-        // Settled whatever happened, before the result is recorded, so a re-send never waits on a call
-        // that stopped (review L1 of B20-B22). An audit failure before the tool ran answers as a
-        // retryable 503 would; once it ran, never retryable, so the same requestId never runs it again
-        // (review L4 of B23-B25; nitro/coordination.md: reconnection must not execute a request twice).
-        if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true, ...(via ? { script: true } : {}) })
-      }
-      const response = answered
+        const response = answered
 
-      const entry = buildEntry({
-        request,
-        sessionId,
-        effects,
-        gate,
-        grantUses: grantUses.uses(),
-        response,
-        durationMs: Math.round(performance.now() - startedAt),
-        replayed,
-        judge: judgeAuditOf(judgment.judged),
-        ...(audited ? { audited: audited(response.outcome === 'ok' && !replayed ? response.output : undefined) } : {}),
-      })
-      const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
-      // A call that ran answers with what it did even when its result cannot be written: refusing it
-      // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
-      // attempt is already in the log, and recovery marks it interrupted.
-      if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, tool: entry.tool, outcome: entry.outcome, error }) })
-      else await options.actions.record(result)
-      if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
-      reportEntry({ options, entry: result, denial: gate.denial })
-      return response
+        const entry = buildEntry({
+          request,
+          sessionId,
+          effects,
+          gate,
+          grantUses: grantUses.uses(),
+          response,
+          durationMs: Math.round(performance.now() - startedAt),
+          replayed,
+          judge: judgeAuditOf(judgment.judged),
+          ...(audited ? { audited: audited(response.outcome === 'ok' && !replayed ? response.output : undefined) } : {}),
+        })
+        const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
+        // A call that ran answers with what it did even when its result cannot be written: refusing it
+        // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
+        // attempt is already in the log, and recovery marks it interrupted.
+        if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, tool: entry.tool, outcome: entry.outcome, error }) })
+        else await options.actions.record(result)
+        if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
+        reportEntry({ options, entry: result, denial: gate.denial })
+        return response
+      } finally { if (activityTurn) options.history?.finishCall(sessionId, request.context?.stageId, activityTurn) }
     },
   }
   return invoker
@@ -1012,6 +1017,8 @@ async function executeWithTimeout(input: {
       // A tool that checkpoints its own changes, the isolated shell, files them where the invoker files a write, so a
       // script's shell and file changes share one stage (recheck of the final review of 0.1.4, finding shell index.ts:151).
       historyStage: historyStage(input.request, input.via),
+      historyTurnStage: input.request.context?.stageId ?? null,
+      historyParentRequestId: input.via?.parentRequestId,
       timeoutMs,
       signal,
       ...(input.beginRun ? { beginRun: input.beginRun, untimed } : {}),

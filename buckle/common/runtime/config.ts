@@ -138,6 +138,7 @@ export interface NodeConfig {
  * record and its workspace.json (workspaceConfig). `serverName` is the workspace's name.
  */
 export interface BuckleConfig extends NodeConfig {
+  history: { keepTurns: number; turnIdleMs: number; maxFileBytes: number }
   /** The workspace's id (D85, Q15): a UUID Buckle assigned, which its records are keyed by. */
   workspaceId: string
   cwd: string
@@ -274,7 +275,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     strictWrites: environment.BUCKLE_STRICT_WRITES === 'true',
     sandboxMode,
     acknowledgedUnsandboxed: sandboxMode === 'none',
-    historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 1_073_741_824),
+    historyMaxBytes: parsePositiveInteger(environment.BUCKLE_HISTORY_MAX_BYTES, 268_435_456),
     historyRetentionDays: parsePositiveInteger(environment.BUCKLE_HISTORY_RETENTION_DAYS, 30),
     experimentalAdminHttp: environment.BUCKLE_EXPERIMENTAL_ADMIN_HTTP === 'true',
     isolationMaxBytes: parsePositiveInteger(environment.BUCKLE_ISOLATION_MAX_BYTES, 268_435_456),
@@ -395,6 +396,7 @@ export function legacyWorkspaceRoot(input: { node: Pick<NodeConfig, 'migration' 
 
 /** What one workspace's runtime is built from, beside the node's settings. */
 export interface WorkspaceScope {
+  history?: { keepTurns: number; turnIdleMs: number; maxFileBytes: number }
   id: string
   name: string
   /** True for the workspace migration made of the node's own folder (D85, Q15). */
@@ -596,10 +598,11 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment' | 'history'>
 
-export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env'>): WorkspaceFields {
+export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env' | 'history'>): WorkspaceFields {
   return {
+    history: scope.history ?? { keepTurns: 10, turnIdleMs: 60_000, maxFileBytes: 33_554_432 },
     policy: { ...scope.policy, mount: scope.mount },
     mounts: scope.mounts.map(mount => ({ ...mount })),
     shellNetwork: scope.shell.network,

@@ -239,6 +239,7 @@ function show(context: Context): CliResult {
     ['secrets.enabled', onOff(inForce.secrets.enabled), inForce.sources['secrets.enabled']!],
     ['secrets.files', inForce.secrets.files.length === 0 ? '(none)' : inForce.secrets.files.join(', '), inForce.sources['secrets.files']!],
     ['files.deleteInWorkspace', inForce.files.deleteInWorkspace, inForce.sources['files.deleteInWorkspace']!],
+    ...(['keepTurns', 'turnIdleMs', 'maxFileBytes'] as const).map((name): [string, string, SettingSource] => [`history.${name}`, String(inForce.history[name]), inForce.sources[`history.${name}`]!]),
     ['files.massDeleteLimit', inForce.files.massDeleteLimit === 0 ? '0 (no limit)' : String(inForce.files.massDeleteLimit), inForce.sources['files.massDeleteLimit']!],
     ...Object.entries(inForce.env).map(([name, value]): [string, string, SettingSource] => [`env.${name}`, value, settings.env[name] !== undefined ? 'workspace' : 'node']),
   ]

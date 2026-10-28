@@ -3,24 +3,26 @@ import { chmodSync, closeSync, existsSync, linkSync, mkdirSync, mkdtempSync, ope
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
+import type { ChangeHistory } from '../common/services/history/journal.js'
 import { snapshot } from '../common/services/history/snapshot.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 
 const roots: string[] = []
-afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+const histories: ChangeHistory[] = []
+afterEach(async () => { vi.useRealTimers(); for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 async function fixture(maxBytes = 1_000_000) {
   const root = mkdtempSync('/tmp/buckle-history-'); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const options = { directory: join(root, 'history'), excluded: [], maxBytes, retentionDays: 30 }
-  const history = await openChangeHistory(options)
+  const history = await openChangeHistory(options); histories.push(history)
   const details = { sessionId: 'test-session', stageId: 'edit-message', tool: 'test-write', roots: [workspace] }
   return { root, workspace, options, history, details }
 }
 
-describe('Git-independent file history', () => {
-  it('restores created, modified, removed, binary and executable files without Git', async () => {
+describe('Git-backed file history', () => {
+  it('restores created, modified, removed, binary and executable files through shadow Git', async () => {
     const { workspace, history, details } = await fixture()
     const file = join(workspace, 'before.bin'); writeFileSync(file, Buffer.from([0, 255, 13])); chmodSync(file, 0o755)
     const removed = join(workspace, 'removed'); writeFileSync(removed, 'original')
@@ -109,21 +111,22 @@ describe('Git-independent file history', () => {
     expect(readFileSync(file, 'utf8')).toBe('0')
   })
 
-  it('fails before a mutation when the initial snapshot exceeds the budget', async () => {
+  it('allows a mutation when its checkpoint cannot fit the rolling budget', async () => {
     const { workspace, history, details } = await fixture(8)
     writeFileSync(join(workspace, 'large'), 'larger than eight bytes')
     const execute = vi.fn(async () => undefined)
-    await expect(history.run(details, execute)).rejects.toThrow('limit')
-    expect(execute).not.toHaveBeenCalled()
+    await expect(history.run(details, execute)).resolves.toBeUndefined()
+    expect(execute).toHaveBeenCalledOnce()
+    expect((await history.list())[0]).toMatchObject({ restorable: false })
   })
 
-  it('expires completed history after 30 days, never unfinished checkpoints', async () => {
+  it('keeps retained turns beyond the former thirty-day cutoff', async () => {
     const { workspace, history, details } = await fixture()
     vi.useFakeTimers()
     await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'new') })
     vi.advanceTimersByTime(31 * 86_400_000)
     await history.prune()
-    expect(await history.list()).toEqual([])
+    expect(await history.list()).toHaveLength(1)
     expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('new')
   })
 
@@ -140,21 +143,20 @@ describe('Git-independent file history', () => {
   }, SPAWN_TEST_TIMEOUT_MS)
 })
 
-it('counts checkpoint metadata toward the history disk budget', async () => {
+it('keeps metadata compact enough to retain hundreds of unchanged empty files', async () => {
   const { workspace, history, details } = await fixture(32_768)
   for (let index = 0; index < 200; index++) writeFileSync(join(workspace, `empty-file-${index}`), '')
   const execute = vi.fn(async () => undefined)
-  await expect(history.run(details, execute)).rejects.toThrow('disk budget')
-  expect(execute).not.toHaveBeenCalled()
+  await expect(history.run(details, execute)).resolves.toBeUndefined()
+  expect(execute).toHaveBeenCalledOnce()
+  expect((await history.list())[0]).toMatchObject({ restorable: true })
 })
 
-it('preserves the before-state when the after-snapshot exceeds the budget', async () => {
-  const { workspace, history, details, options } = await fixture()
-  await expect(history.run(details, async () => { writeFileSync(join(workspace, 'large-output'), Buffer.alloc(2_000_000, 1)) })).rejects.toThrow('limit')
-  expect((await history.list())[0]!.status).toBe('pending')
-  const expanded = await openChangeHistory({ ...options, maxBytes: 4_000_000 })
-  await expanded.recover((await history.list())[0]!.id)
-  await expanded.restore((await history.list())[0]!.id)
+it('deduplicates compressible output without an interrupted checkpoint or a wall', async () => {
+  const { workspace, history, details } = await fixture()
+  await expect(history.run(details, async () => { writeFileSync(join(workspace, 'large-output'), Buffer.alloc(2_000_000, 1)) })).resolves.toBeUndefined()
+  expect((await history.list())[0]!.status).toBe('complete')
+  await history.restore((await history.list())[0]!.id)
   expect(existsSync(join(workspace, 'large-output'))).toBe(false)
 })
 
@@ -170,17 +172,12 @@ it('restores read-only directory modes after restoring their children', async ()
 })
 
 describe('the history database file', () => {
-  it('starts a new history.sqlite in WAL mode, with owner-only sidecars removed on a clean close', async () => {
-    const { options, history } = await fixture()
-    const file = join(options.directory, 'history.sqlite')
-    const header = Buffer.alloc(2)
-    const descriptor = openSync(file, 'r')
-    try { readSync(descriptor, header, 0, 2, 18) } finally { closeSync(descriptor) }
-    // Bytes 18 and 19 are the write and read format versions: 2 means WAL.
-    expect([...header]).toEqual([2, 2])
-    for (const sidecar of ['-wal', '-shm']) expect(statSync(`${file}${sidecar}`).mode & 0o777).toBe(0o600)
+  it('uses private JSON metadata and no new legacy database', async () => {
+    const { options, history, details } = await fixture()
+    await history.run(details, async () => undefined)
+    expect(statSync(join(options.directory, 'checkpoints.json')).mode & 0o777).toBe(0o600)
+    expect(existsSync(join(options.directory, 'history.sqlite'))).toBe(false)
     await history.close()
-    expect(existsSync(`${file}-wal`)).toBe(false)
   })
 
   it.runIf(process.platform === 'linux')('is closed again when a workspace runtime fails to start after opening it', async () => {
@@ -188,7 +185,7 @@ describe('the history database file', () => {
     mkdirSync(join(root, 'workspace'))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
     // A pack the node cannot build, as the environment pack is without its validator: workspace.json names packs by id alone.
-    const config = { ...configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false' }), enabledPacks: ['environment'] }
+    const config = { ...configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true' }), enabledPacks: ['environment'] }
     // A registered workspace retries its whole creation on every request.
     for (let attempt = 0; attempt < 3; attempt += 1) await expect(createRuntime({ config })).rejects.toThrow('packs.enabled names packs this node cannot build: environment')
     expect(openDescriptors(root)).toEqual([])
@@ -312,7 +309,7 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
 
   it('lets fs_write run in a workspace whose node_modules is hard-linked, and restores it', async () => {
     const { root, workspace, linked } = await linkedWorkspace()
-    const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }) })
+    const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: 'fs' }) })
     try {
       const request = { requestId: 'linked-write', tool: 'fs_write', args: { path: 'notes.md', content: 'hello' }, approvalTokens: [] as string[], context: { approvalWait: { mode: 'none' as const } } }
       const asked = await runtime.invoke({ sessionId: 's', request })
@@ -325,6 +322,6 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
       await runtime.history.restore(checkpoint!.id)
       expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
       expect(statSync(linked).nlink).toBe(2)
-    } finally { await runtime.approvalService.close(); await runtime.history.close() }
+    } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   })
 })

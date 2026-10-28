@@ -12,8 +12,8 @@ it('lists without the execution lock and names the live holder after a bounded o
   mkdirSync(join(directory, 'workspace'))
   const first = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, retentionDays: 30, label: 'test-writer', lockDeadlineMs: 30 })
   const second = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, retentionDays: 30, lockDeadlineMs: 30 })
-  let release = () => undefined
-  let entered = () => undefined
+  let release: () => void = () => undefined
+  let entered: () => void = () => undefined
   const started = new Promise<void>(resolve => { entered = resolve })
   const running = first.exclusive(() => new Promise<void>(resolve => { release = resolve; entered() }))
   await started

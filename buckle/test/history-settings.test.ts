@@ -102,3 +102,13 @@ describe('the tool policy', () => {
     expect(await call(runtime, 'history_restore', { steps: 1 })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   })
 })
+
+describe('bounded history settings', () => {
+  it('resolves ten turns, a sixty-second idle gap and a 32 MiB file cap, with workspace overrides', () => {
+    const unset = WorkspaceSettingsSchema.parse({ version: 1 })
+    expect(resolveSettings(unset, loadConfig({}).workspaceDefaults)).toMatchObject({ history: { keepTurns: 10, turnIdleMs: 60_000, maxFileBytes: 33_554_432 } })
+    const own = WorkspaceSettingsSchema.parse({ version: 1, history: { keepTurns: 3, turnIdleMs: 5000, maxFileBytes: 2048 } })
+    expect(resolveSettings(own, loadConfig({}).workspaceDefaults)).toMatchObject({ history: own.history, sources: { 'history.keepTurns': 'workspace' } })
+    expect(loadConfig({}).historyMaxBytes).toBe(268_435_456)
+  })
+})

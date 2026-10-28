@@ -20,7 +20,7 @@ export async function historyCommand(runtime: BuckleRuntime, argv: string[]): Pr
   if (command === 'list') return listCommand(runtime, argv.slice(1))
   const force = argv.includes('--force')
   if (command === 'prune') return print(await runtime.history.prune({ force, legacy: argv.includes('--legacy') }))
-  if (command === 'restore-stage' && id && argv[2]) return restored(runtime, () => runtime.history.restoreStage(id, argv[2]!))
+  if (command === 'restore-stage' && id && argv[2]) return restored(runtime, () => runtime.history.restoreStage(id, argv[2]!, { force }))
   if (command === 'restore' && id) return restored(runtime, () => runtime.history.restore(id, { force }))
   if (command === 'recover' && id) return print(await runtime.history.recover(id, { force }))
   return fail(USAGE)
@@ -59,11 +59,17 @@ function recentText(input: { checkpoints: Array<CheckpointSummary & { current: b
   if (input.checkpoints.length === 0) return 'The change history holds no checkpoint yet.\n'
   const count = input.checkpoints.length
   const lines = [`The newest ${count === 1 ? 'checkpoint' : `${count} checkpoints`}, from the current state back:`, '']
+  let turn: string | undefined
   for (const checkpoint of input.checkpoints) {
+    if (checkpoint.turnId !== turn) { turn = checkpoint.turnId; lines.push(`Turn ${printable(turn)}`) }
     const state = checkpoint.current ? 'current' : checkpoint.status === 'complete' ? '' : checkpoint.status
     lines.push(`${checkpoint.current ? '*' : ' '} ${checkpoint.id}  ${checkpoint.createdAt}${state ? `  ${state}` : ''}`)
     lines.push(`    ${callText(checkpoint)}`)
     for (const change of checkpoint.changes.slice(0, SHOWN_FILES)) lines.push(`    ${change.kind.padEnd(10)}${printable(ownerPath(change.path, input.root))}`)
+    for (const path of checkpoint.notRestorable.slice(0, SHOWN_FILES)) lines.push(`    not restorable  ${printable(ownerPath(path, input.root))}`)
+    const skipped = checkpoint.notRestorable.length - SHOWN_FILES
+    if (skipped > 0) lines.push(`    and ${skipped} more not-restorable ${skipped === 1 ? 'file' : 'files'}`)
+    if (!checkpoint.restorable && checkpoint.reason) lines.push(`    ${printable(checkpoint.reason)}`)
     const more = checkpoint.changes.length - SHOWN_FILES
     if (more > 0) lines.push(`    and ${more} more ${more === 1 ? 'file' : 'files'}`)
   }

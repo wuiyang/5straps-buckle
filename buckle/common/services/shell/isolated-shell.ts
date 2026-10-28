@@ -215,7 +215,7 @@ function removePrivateWorkspace(directory: string): void {
 
 const workspaceIdSchema = z.string().regex(/^shell-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/)
 const workspaceRecordSchema = z.object({
-  id: workspaceIdSchema, sessionId: z.string(), stageId: z.string(), tool: z.string(),
+  id: workspaceIdSchema, sessionId: z.string(), stageId: z.string(), turnStageId: z.string().nullable().optional(), tool: z.string(),
   sourceRoot: z.string(), copyRoot: z.string(), writableRoots: z.array(z.string()), excluded: z.array(z.string()), readOnlyPaths: z.array(z.string()).default([]), readOnlyOverlayPaths: z.array(z.string()).default([]),
   createdAt: z.iso.datetime(), status: z.enum(['preparing', 'running', 'needs_review', 'publishing', 'publication_uncertain', 'published']),
 })
@@ -255,7 +255,7 @@ export function createShellWorkspaceRecovery(input: IsolatedShellOptions & { sou
         const { before, after, objects } = capture(record)
         assertPublishable({ before, after, sourceRoot: input.sourceRoot, writableRoots: record.writableRoots, excluded: record.excluded, readOnlyPaths: record.readOnlyPaths })
         const saveStatus = (status: string) => writeWorkspaceRecord(join(input.directory, id), { ...record, status })
-        const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_workspace_publish', roots: [input.sourceRoot], excluded: record.readOnlyOverlayPaths }, before, after, hash => {
+        const checkpoint = await input.history.promote({ sessionId: record.sessionId, stageId: record.stageId, turnStageId: record.turnStageId ?? null, tool: 'owner_workspace_publish', roots: [input.sourceRoot], excluded: record.readOnlyOverlayPaths }, before, after, hash => {
           const content = objects.get(hash)
           if (!content) throw new Error('Retained workspace content is missing')
           return content

@@ -21,7 +21,7 @@ async function workspaceWith(writes: Array<{ requestId: string; files: Record<st
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,history' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: 'fs,history' })
   const runtime = await createRuntime({ config })
   try {
     await runtime.grants.grant({ sessionId: 'chat-1', rule: 'write_scope', subject: runtime.paths().root, scope: 'session' })
@@ -30,7 +30,7 @@ async function workspaceWith(writes: Array<{ requestId: string; files: Record<st
       const response = await runtime.invoke({ sessionId: 'chat-1', request: { requestId: write.requestId, tool: 'fs_write_batch', args: { files } as JsonObject, approvalTokens: [] } })
       expect(response.outcome).toBe('ok')
     }
-  } finally { await runtime.approvalService.close(); await runtime.history.close() }
+  } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   return { config, workspace }
 }
 
@@ -56,12 +56,13 @@ describe('buckle history list --last', () => {
     expect(shown.exitCode).toBe(0)
     const lines = shown.out.split('\n')
     expect(lines[0]).toBe('The newest 2 checkpoints, from the current state back:')
-    expect(lines[2]).toMatch(/^\* change-[0-9a-f-]{36} {2}\d{4}-\d{2}-\d{2}T[\d:.]+Z {2}current$/)
-    expect(lines[3]).toBe('    fs_write_batch, session chat-1, request w-3')
-    expect(lines.slice(4, 6)).toEqual(['    modified  a.txt', '    created   c.txt'])
-    expect(lines[6]).toMatch(/^ {2}change-[0-9a-f-]{36} {2}\S+$/)
-    expect(lines[7]).toBe('    fs_write_batch, session chat-1, request w-2')
-    expect(lines.slice(8, 10)).toEqual(['    created   src', '    created   src/b.txt'])
+    expect(lines[2]).toMatch(/^Turn turn-/)
+    expect(lines[3]).toMatch(/^\* change-[0-9a-f-]{36} {2}\d{4}-\d{2}-\d{2}T[\d:.]+Z {2}current$/)
+    expect(lines[4]).toBe('    fs_write_batch, session chat-1, request w-3')
+    expect(lines.slice(5, 7)).toEqual(['    modified  a.txt', '    created   c.txt'])
+    expect(lines[7]).toMatch(/^ {2}change-[0-9a-f-]{36} {2}\S+$/)
+    expect(lines[8]).toBe('    fs_write_batch, session chat-1, request w-2')
+    expect(lines.slice(9, 11)).toEqual(['    created   src', '    created   src/b.txt'])
     expect(shown.out).toContain('Older checkpoints are kept: buckle history list prints every one.')
     expect(shown.out).not.toContain('w-1')
   })

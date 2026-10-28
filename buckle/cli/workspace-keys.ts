@@ -157,7 +157,15 @@ const files = <K extends FilesKey>(name: K, takes: string, read: (raw: string) =
   unset: settings => withoutFiles(settings, name),
 })
 
+function historySetting(name: 'keepTurns' | 'turnIdleMs' | 'maxFileBytes', max: number): SettingKey {
+  return { key: `history.${name}`, takes: `integer, 1 to ${max} (Buckle's ${BUILT_IN_SETTINGS.history[name]})`,
+    set(settings, raw) { const value = Number(raw); if (!/^\d+$/.test(raw.trim()) || !Number.isSafeInteger(value) || value < 1 || value > max) throw new SettingValueError(`history.${name} is an integer, 1 to ${max}`); return { ...settings, history: { ...settings.history, [name]: value } } },
+    unset(settings) { const { [name]: _dropped, ...history } = settings.history ?? {}; return { ...settings, history } },
+  }
+}
+
 export const SETTING_KEYS: readonly SettingKey[] = [
+  historySetting('keepTurns', 100), historySetting('turnIdleMs', 86_400_000), historySetting('maxFileBytes', 1_073_741_824),
   {
     key: 'approvalWaitMs',
     takes: `milliseconds a gated call waits for an answer, 0 until someone answers (the node's, else ${BUILT_IN_SETTINGS.approvalWaitMs})`,

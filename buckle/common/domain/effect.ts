@@ -22,7 +22,7 @@ export type ToolEffect =
   | { kind: 'restore_checkpoint'; target: RestoreTarget }
 
 /** The checkpoint a restore goes back to before: one the history names by id, or the one `steps` back from the current state. */
-export type RestoreTarget = { id: string } | { steps: number }
+export type RestoreTarget = { id: string } | { steps: number } | { turns: number }
 
 /**
  * An entry removed (fs_delete, a move's source, the file a replacing move or a patch removes): the entry itself, a link
