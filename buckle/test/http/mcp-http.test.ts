@@ -1,5 +1,6 @@
 import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { InvokeResponseSchema } from '@5straps/protocol'
 import { useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
@@ -35,6 +36,18 @@ function toolCall(name: string, args: Record<string, unknown>): { body: string; 
   }
 }
 
+interface ToolResult { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: unknown }
+
+/** The tool result of a tools/call answer, whether the face answered as JSON or as an event stream. */
+async function toolResult(response: Response): Promise<ToolResult> {
+  const text = await response.text()
+  const message = response.headers.get('content-type')?.includes('text/event-stream')
+    ? text.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)) as { result?: ToolResult }).find(item => item.result)
+    : JSON.parse(text) as { result?: ToolResult }
+  if (!message?.result) throw new Error(`No tool result in ${text}`)
+  return message.result
+}
+
 describe('the MCP face over HTTP', () => {
   it('hands the SDK the request without the agent\'s credential or the wire\'s framing headers (review L12 of B18-B19)', async () => {
     const buckle = await node()
@@ -68,7 +81,32 @@ describe('the MCP face over HTTP', () => {
 
     const write = toolCall('fs_write', { path: join(buckle.root, 'outside.md'), content: 'x' })
     const gated = await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body })
-    expect(await gated.text()).toContain('This call needs approval')
+    // No error, and /v1/invoke's own approval_required answer beside the words (review of the MCP asks slice, finding m1).
+    const result = await toolResult(gated)
+    expect(result.content[0]!.text).toContain('This call needs approval')
+    expect(result.isError).toBe(false)
+    expect(InvokeResponseSchema.parse(result.structuredContent)).toMatchObject({ outcome: 'approval_required', approvals: [{ tool: 'fs_write', token: buckle.runtime.approvals.pending()[0]!.token }] })
+  })
+
+  it('joins an identical call sent again to the ask it made, under the agent actor of the real route, and runs it once when approved', async () => {
+    const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
+    const write = toolCall('fs_write', { path: join(buckle.root, 'joined.md'), content: 'joined' })
+    const send = async () => toolResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body }))
+
+    const first = InvokeResponseSchema.parse((await send()).structuredContent)
+    const again = InvokeResponseSchema.parse((await send()).structuredContent)
+    expect(first.outcome).toBe('approval_required')
+    expect(again.requestId).toBe(first.requestId)
+    expect(buckle.runtime.approvals.pending()).toHaveLength(1)
+
+    const [token] = buckle.runtime.approvals.pending().map(request => request.token)
+    expect((await buckle.runtime.approvals.resolve({ token: token!, approved: true, scope: 'once' }, 'admin')).ok).toBe(true)
+    const ran = await send()
+    expect(ran.isError).toBeUndefined()
+    expect(ran.structuredContent).toBeUndefined()
+    expect(existsSync(join(buckle.root, 'joined.md'))).toBe(true)
+    expect(buckle.runtime.approvals.pending()).toEqual([])
+    expect(buckle.runtime.actions.read(50).filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => entry.outcome)).toEqual(['approval_required', 'approval_required', 'ok'])
   })
 
   it('answers every method but POST with a JSON-RPC 405 and Allow: POST, after the credential', async () => {
@@ -92,7 +130,8 @@ describe('the MCP face over HTTP', () => {
     controller.abort()
     await waiting
 
-    await vi.waitFor(() => expect(buckle.runtime.actions.read(50)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result' })), { timeout: 10_000 })
+    // Audited as a call that did not run because its caller left, not as a tool that failed.
+    await vi.waitFor(() => expect(buckle.runtime.actions.read(50)).toContainEqual(expect.objectContaining({ tool: 'fs_write', event: 'result', detail: 'CALLER_LEFT' })), { timeout: 10_000 })
     expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([token])
     expect(existsSync(join(buckle.root, 'abandoned.md'))).toBe(false)
   })
