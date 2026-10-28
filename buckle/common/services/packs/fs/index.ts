@@ -121,7 +121,7 @@ export function createFsPack(options: FsPackOptions): Pack {
       tags: ['filesystem'],
       input: schemas.moveInput,
       judge: input => settleMove(input, context),
-      effects: (input, judged) => moveEffects(input, judged),
+      effects: (input, judged) => moveEffects(input, judged, options.paths),
       facts: (input, judged) => moveFacts(input, judged),
       audited: input => movedFacts(input),
       run: (input, toolContext, judged) => moveEntry(input, { paths: options.paths, authorizeDelete: toolContext.authorizeDelete, authorizeWrite: toolContext.authorizeWrite, ...(toolContext.relocated ? { relocated: toolContext.relocated } : {}) }, judged),

@@ -9,6 +9,7 @@ import { copyBeneath, type SymlinkIo } from '../../../adapters/copy-beneath.js'
 import { PARTIAL_PREFIX } from '../../../adapters/replace-beneath.js'
 import { countTree, removeBeneath, type RemoveIo } from '../../../adapters/remove-beneath.js'
 import { isHeldOpen, replaceFile, type RenameIo } from '../../../adapters/replace-file.js'
+import { inWorkspaceFolder } from '../../../domain/delete-policy.js'
 import type { ToolEffect, TreeCount } from '../../../domain/effect.js'
 import type { PathView } from '../../../domain/path-view.js'
 import { isInside, isInsideAny } from '../../../domain/paths.js'
@@ -142,13 +143,19 @@ function volumeIgnoresCase(path: string, own: BigIntStats): boolean {
  * brief); a file moved where nothing stands asks as a write to each folder does. What is replaced is removed at the
  * floor as well: a file or a link under its folder's delete subject, a folder removed whole under its own
  * `delete-tree` subject with the count of what it holds, as a recursive fs_delete asks.
+ *
+ * A file that leaves a folder outside the workspace's folder for the inside of it is a delete at the floor as well: a
+ * delete inside the folder runs under its write grant, so a file moved in, then deleted, would otherwise be gone from
+ * where it stood with no one asked (the delete policy review, R2). A rename that stays outside, and a move out of
+ * the folder, stay writes to the folders they touch.
  */
-export function moveEffects(input: z.output<typeof schemas.moveInput>, judged: SettledMove): ToolEffect[] {
+export function moveEffects(input: z.output<typeof schemas.moveInput>, judged: SettledMove, paths: PathView): ToolEffect[] {
   const folder = judged.from.kind === 'directory'
   const replacedFolder = judged.replaces && judged.target.kind === 'directory'
+  const entersFolder = !inWorkspaceFolder(judged.from.path, paths) && inWorkspaceFolder(judged.target.path, paths)
   return [
     { kind: 'read_path', path: input.from },
-    { kind: 'delete_path', path: input.from, floor: input.replace || folder, ...(folder && judged.from.tree ? { tree: judged.from.tree } : {}), ...(folder ? { moved: true as const } : {}) },
+    { kind: 'delete_path', path: input.from, floor: input.replace || folder || entersFolder, ...(folder && judged.from.tree ? { tree: judged.from.tree } : {}), ...(folder ? { moved: true as const } : {}) },
     { kind: 'write_path', path: judged.landing, entry: true, ...(folder ? { folder: true as const } : {}) },
     ...(judged.replaces ? [{ kind: 'delete_path' as const, path: judged.landing, floor: true, ...(replacedFolder && judged.target.tree ? { tree: judged.target.tree } : {}) }] : []),
   ]

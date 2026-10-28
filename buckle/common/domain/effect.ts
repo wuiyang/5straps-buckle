@@ -23,7 +23,8 @@ export type ToolEffect =
  * An entry removed (fs_delete, a move's source, the file a replacing move or a patch removes): the entry itself, a link
  * unlinked and never followed, so its folder is resolved and its own name is not. `floor`: a person is asked at the
  * destructive floor whatever the folder's write grant says (destructive-path-rule.ts); a move's source that moves a file
- * and replaces nothing is judged as a write to its folder instead (the fs-verbs brief). `tree`: a folder removed with
+ * and replaces nothing is judged as a write to its folder instead (the fs-verbs brief), unless the file leaves a folder
+ * outside the workspace's for the inside of it. `tree`: a folder removed with
  * everything in it, and what it held when counted, before the ask. `moved`: a folder that is moved, not destroyed, so
  * everything in it stands elsewhere afterwards and the read rules beneath it judge the move as well.
  */

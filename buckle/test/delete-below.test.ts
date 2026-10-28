@@ -217,3 +217,49 @@ describe('fs_delete outside the workspace\'s folder, end to end', () => {
     expect(await call({ paths: [join(root, 'other/c.txt')] }, 'outside-3')).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete:${join(root, 'other')}` }] })
   })
 })
+
+describe('fs_move of a file out of a folder outside the workspace\'s folder', () => {
+  async function setup() {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    const outside = join(root, 'outside')
+    mkdirSync(workspace)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'keep.txt'), 'keep')
+    writeFileSync(join(outside, 'rename.txt'), 'rename')
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    for (const subject of [runtime.paths().root, outside]) await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject, scope: 'session' })
+    await runtime.grants.grant({ sessionId: 'agent', rule: 'read_scope', subject: outside, scope: 'session' })
+    const call = (tool: string, args: JsonObject, requestId: string, tokens: string[] = []): Promise<InvokeResponse> => runtime.invoke({ request: { requestId, tool, args, approvalTokens: tokens }, sessionId: 'agent' })
+    return { workspace, outside, runtime, call }
+  }
+
+  it('asks as a delete in that folder when the file lands inside the workspace, which would free its delete', async () => {
+    const { workspace, outside, call } = await setup()
+    const asked = await call('fs_move', { from: join(outside, 'keep.txt'), to: 'keep.txt' }, 'move-in')
+    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', subject: `delete:${outside}`, widerSubject: `delete-below:${outside}` }] })
+    expect(existsSync(join(outside, 'keep.txt'))).toBe(true)
+    expect(existsSync(join(workspace, 'keep.txt'))).toBe(false)
+  })
+
+  it('runs once a person approved that delete, and the file is then the workspace\'s to delete', async () => {
+    const { workspace, outside, runtime, call } = await setup()
+    const asked = await call('fs_move', { from: join(outside, 'keep.txt'), to: 'keep.txt' }, 'move-in')
+    const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect(await call('fs_move', { from: join(outside, 'keep.txt'), to: 'keep.txt' }, 'move-in', [token])).toMatchObject({ outcome: 'ok' })
+    expect(await call('fs_delete', { paths: ['keep.txt'] }, 'delete-in')).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
+    expect(existsSync(join(workspace, 'keep.txt'))).toBe(false)
+  })
+
+  it('does not ask for a rename that stays outside, nor for a file moved out of the workspace', async () => {
+    const { workspace, outside, call } = await setup()
+    writeFileSync(join(workspace, 'mine.txt'), 'mine')
+    expect(await call('fs_move', { from: join(outside, 'rename.txt'), to: join(outside, 'renamed.txt') }, 'rename')).toMatchObject({ outcome: 'ok' })
+    expect(await call('fs_move', { from: 'mine.txt', to: join(outside, 'mine.txt') }, 'move-out')).toMatchObject({ outcome: 'ok' })
+    expect(existsSync(join(outside, 'renamed.txt'))).toBe(true)
+    expect(existsSync(join(outside, 'mine.txt'))).toBe(true)
+  })
+})
