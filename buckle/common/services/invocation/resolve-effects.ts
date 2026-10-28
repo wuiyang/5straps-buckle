@@ -105,6 +105,17 @@ export async function resolveHostRead(path: string, shares: readonly string[] = 
   return { kind: 'read_path', path: target, directory: await containingDirectory(target) }
 }
 
+/**
+ * A write to a host path a tool reached mid-call (a file a revert rewrites), judged as the entry it is where it lands now,
+ * as resolveHostRead judges a read: the path is already the host's, so a mount never takes it for one of its own names.
+ */
+export async function resolveHostWrite(path: string, paths: PathView): Promise<ResolvedEffect> {
+  const entry = resolveEntry(path, { shares: paths.shares })
+  if (entry === null) throw new ToolInputError(`${path} names no entry in a folder`)
+  refuseMissingMount(entry.path, paths)
+  return { kind: 'write_path', path: entry.path, directory: entry.directory, entry: true }
+}
+
 async function containingDirectory(path: string): Promise<string> {
   try {
     if ((await stat(path)).isDirectory()) return path

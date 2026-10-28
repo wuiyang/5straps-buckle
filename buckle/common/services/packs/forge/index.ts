@@ -295,6 +295,22 @@ export function createForgePack(options: ForgePackOptions): Pack {
   }
 
   /**
+   * Refused before git_revert runs where the rules do not let this call write a file the revert rewrites: a revert changes
+   * the work tree, so each file is judged as a write where it lands, as fs_write would judge it (a credential file, a file
+   * in a read-only mount), and one that would ask a person refuses the whole revert. A tool run outside the invoker has no
+   * rules to ask.
+   */
+  const assertRewritable = async (input: { repository: string; files: string[]; commit: string; context: ToolContext }): Promise<void> => {
+    const { authorizeWritePath } = input.context
+    if (!authorizeWritePath) return
+    for (const file of input.files) {
+      const path = resolve(input.repository, file)
+      if (await authorizeWritePath(path)) continue
+      throw new ToolInputError(`reverting ${input.commit} would rewrite ${paths.display(path)}, which the permission rules do not let this call write without asking a person; nothing was reverted. Change that file by hand, or ask the owner to revert it`, { code: 'PERMISSION_DENIED' })
+    }
+  }
+
+  /**
    * Refused before git_revert runs: a revert, cherry-pick, or merge already stopped here is a person's, and the abort
    * this tool runs after a conflict of its own (`reset --merge`) would discard their staged or unmerged resolution.
    */
@@ -354,6 +370,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const target = await commitToRevert({ repository, commit, mainline: input.mainline, context })
         const files = await revertedPaths({ repository, ...target, mainline: input.mainline, context })
         assertNoFilters({ repository, paths: files })
+        await assertRewritable({ repository, files, commit, context })
         await assertNoUnfinishedOperation({ repository, context })
         const reverted = await runGit({ repository, args: ['revert', '--no-edit', ...(input.mainline === undefined ? [] : ['--mainline', String(input.mainline)]), target.hash], extra: identity, context })
         if (reverted.exitCode !== 0) {

@@ -23,7 +23,7 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { destructiveWrites } from './destructive-writes.js'
-import { resolveEffects, resolveHostRead } from './resolve-effects.js'
+import { resolveEffects, resolveHostRead, resolveHostWrite } from './resolve-effects.js'
 import type { SessionReads } from './session-reads.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
@@ -990,6 +990,20 @@ async function executeWithTimeout(input: {
       if (!ended) timer = setTimeout(expire, Math.max(0, left))
     }
   }
+  // Whether the rules allow one effect a tool reached mid-call, beside the approvals this call spent. A path its resolution
+  // refuses, such as a link onto a root folder named like a drive, is unreachable: it is hidden as any other unreachable
+  // entry is, never a failure of the whole listing, search, or revert it is in.
+  const allows = async (settle: () => Promise<ResolvedEffect>): Promise<boolean> => {
+    const effect = await settle().catch((error: unknown) => { if (error instanceof ToolInputError) return null; throw error })
+    if (effect === null) return false
+    const outcome = input.options.permissions.evaluate({
+      tool: input.request.tool, effects: [effect],
+      grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
+    })
+    if (outcome.kind !== 'allow') return false
+    await input.auditUses(outcome.allowedBy)
+    return true
+  }
   try {
     return await input.execute({
       requestId: input.request.requestId,
@@ -1003,20 +1017,8 @@ async function executeWithTimeout(input: {
       ...(input.beginRun ? { beginRun: input.beginRun, untimed } : {}),
       ...(input.nesting ? nestedContext({ ...input, nesting: input.nesting, signal, timeoutMs }) : {}),
       ...(input.file ? { file: input.file } : {}),
-      authorizeRead: async path => {
-        if (!isAbsolute(path)) return false
-        // A path its resolution refuses, such as a link onto a root folder named like a drive, is unreachable: it is
-        // hidden as any other unreachable entry is, never a failure of the whole listing or search it is in.
-        const effect = await resolveHostRead(path, input.options.paths.shares).catch((error: unknown) => { if (error instanceof ToolInputError) return null; throw error })
-        if (effect === null) return false
-        const outcome = input.options.permissions.evaluate({
-          tool: input.request.tool, effects: [effect],
-          grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
-        })
-        if (outcome.kind !== 'allow') return false
-        await input.auditUses(outcome.allowedBy)
-        return true
-      },
+      authorizeRead: async path => isAbsolute(path) && await allows(() => resolveHostRead(path, input.options.paths.shares)),
+      authorizeWritePath: async path => isAbsolute(path) && await allows(() => resolveHostWrite(path, input.options.paths)),
       authorizeReadTarget: target => judgedReads.has(target),
       authorizeWrite: target => judgedWrites.has(target),
       authorizeDelete: target => judgedDeletes.has(target),

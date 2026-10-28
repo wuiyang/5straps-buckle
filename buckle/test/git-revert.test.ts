@@ -7,7 +7,10 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { describeCall } from '../common/domain/describe-call.js'
 import { forgeGitHost } from '../common/domain/forge.js'
 import { createPathView } from '../common/domain/path-view.js'
+import type { ToolContext } from '../common/domain/tool.js'
 import { createForgePack } from '../common/services/packs/forge/index.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 // Slice D, rollback as an agent option, item 4: git_revert makes a new commit that undoes one (git revert --no-edit, no
 // hard reset ever), under the node's agent identity and the forge pack's isolation, as git_commit commits. A merge commit
@@ -57,8 +60,8 @@ function revertTool(repository: string) {
   return tool
 }
 
-function revert(repository: string, args: JsonObject): Promise<JsonValue> {
-  return revertTool(repository).prepare(args).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 20_000, signal: AbortSignal.timeout(20_000) })
+function revert(repository: string, args: JsonObject, context: Partial<ToolContext> = {}): Promise<JsonValue> {
+  return revertTool(repository).prepare(args).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 20_000, signal: AbortSignal.timeout(20_000), ...context })
 }
 
 describe('git_revert', () => {
@@ -192,6 +195,27 @@ describe('git_revert', () => {
     expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
   })
 
+  // Review m3 of the Slice D rules review: a revert rewrites the work tree, so each file it rewrites is judged as a write
+  // before git starts, and one the rules do not let this call write refuses the whole revert.
+  it('judges each file the revert rewrites as a write, and reverts nothing where one is not allowed', async () => {
+    const repository = repositoryWithHistory()
+    writeFileSync(join(repository, 'secret.txt'), 'one\n')
+    git(repository, 'add', 'secret.txt')
+    git(repository, ...IDENTITY, 'commit', '-q', '-m', 'secret')
+    writeFileSync(join(repository, 'secret.txt'), 'two\n')
+    writeFileSync(join(repository, 'a.txt'), 'three\n')
+    git(repository, ...IDENTITY, 'commit', '-q', '-am', 'both')
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    const judged: string[] = []
+    const except = (name: string) => async (path: string) => { judged.push(path.slice(repository.length + 1)); return !path.endsWith(name) }
+    await expect(revert(repository, { commit: 'HEAD' }, { authorizeWritePath: except('secret.txt') })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('secret.txt') })
+    expect(judged).toEqual(['a.txt', 'secret.txt'])
+    expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
+    expect(readFileSync(join(repository, 'secret.txt'), 'utf8')).toBe('two\n')
+    expect(await revert(repository, { commit: 'HEAD' }, { authorizeWritePath: except('nothing') })).toMatchObject({ files: ['a.txt', 'secret.txt'] })
+    expect(readFileSync(join(repository, 'secret.txt'), 'utf8')).toBe('one\n')
+  })
+
   it('refuses a commit named like a flag or naming no commit, before anything is reverted', async () => {
     const repository = repositoryWithHistory()
     await expect(revert(repository, { commit: '--abort' })).rejects.toMatchObject({ code: 'INVALID_TOOL_INPUT', message: expect.stringContaining('Not a usable commit name') })
@@ -213,5 +237,51 @@ describe('git_revert', () => {
     for (const hook of ['pre-commit', 'commit-msg', 'post-commit']) writeFileSync(join(repository, '.git', 'hooks', hook), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 })
     expect(await revert(repository, { commit: 'HEAD~1' })).toMatchObject({ files: ['a.txt'] })
     expect(existsSync(marker)).toBe(false)
+  })
+})
+
+describe('git_revert through the runtime', () => {
+  const runtimes: BuckleRuntime[] = []
+  afterEach(async () => { for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() } })
+
+  async function node(repository: string, options: { grant?: boolean } = {}): Promise<BuckleRuntime> {
+    const state = mkdtempSync('/tmp/buckle-git-revert-node-')
+    roots.push(state)
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,git,forge', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_FORGE_GITHUB_TOKEN: 'ghp-git-revert-fixture', BUCKLE_FORGE_GITHUB_API_URL: 'https://api.github.com' })
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    if (options.grant !== false) await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: runtime.paths().root, scope: 'session' })
+    return runtime
+  }
+
+  const revertCall = (runtime: BuckleRuntime, requestId: string, args: JsonObject) => runtime.invoke({ request: { requestId, tool: 'git_revert', args, approvalTokens: [] }, sessionId: 'agent' })
+
+  it('refuses a revert that would rewrite a credential file the workspace\'s rules would ask about, and reverts one that does not', async () => {
+    const repository = repositoryWithHistory()
+    writeFileSync(join(repository, '.env'), 'TOKEN=one\n')
+    git(repository, 'add', '.env')
+    git(repository, ...IDENTITY, 'commit', '-q', '-m', 'env')
+    writeFileSync(join(repository, '.env'), 'TOKEN=two\n')
+    git(repository, ...IDENTITY, 'commit', '-q', '-am', 'rotate')
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    const runtime = await node(repository)
+    expect(await revertCall(runtime, 'revert-env', { commit: 'HEAD' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('.env') } })
+    expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
+    expect(readFileSync(join(repository, '.env'), 'utf8')).toBe('TOKEN=two\n')
+    expect(await revertCall(runtime, 'revert-third', { commit: 'HEAD~2' })).toMatchObject({ outcome: 'ok', output: { files: ['b.txt'] } })
+    expect(readFileSync(join(repository, 'b.txt'), 'utf8')).toBe('x\n')
+    expect(readFileSync(join(repository, '.env'), 'utf8')).toBe('TOKEN=two\n')
+  })
+
+  it('counts the folder\'s approval a person gave once for the call as allowing the files in it, so an approved revert runs', async () => {
+    const repository = repositoryWithHistory()
+    const runtime = await node(repository, { grant: false })
+    const asked = await revertCall(runtime, 'revert-second', { commit: 'HEAD~1' })
+    expect(asked.outcome).toBe('approval_required')
+    const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
+    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    const sent = await runtime.invoke({ request: { requestId: 'revert-second', tool: 'git_revert', args: { commit: 'HEAD~1' }, approvalTokens: tokens }, sessionId: 'agent' })
+    expect(sent).toMatchObject({ outcome: 'ok', output: { files: ['a.txt'] } })
+    expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe('one\n')
   })
 })

@@ -46,6 +46,12 @@ export interface ToolContext {
    * beneath its judged directory, a searched file), judged where it lands now; never an agent's name.
    */
   authorizeRead?: (path: string) => Promise<boolean>
+  /**
+   * Whether the rules allow writing an absolute host path the tool reaches mid-call (a file a revert rewrites), judged
+   * where it lands now as the entry it is, beside the approvals this call spent; never an agent's name. A rule that would
+   * ask a person is no allowance: the tool refuses, since nobody can be asked mid-call.
+   */
+  authorizeWritePath?: (path: string) => Promise<boolean>
   /** Whether a real path is one the call's permission check judged as a read; a reader refuses any other. */
   authorizeReadTarget?: (target: string) => boolean
   /** Whether a real path is one the call's permission check judged as a write; a writer refuses any other. */
