@@ -42,6 +42,8 @@ Limits on read-only `git_push`, change history, MCP asks, `buckle cp`, and delet
   its starting turn.
 - Buckle honors `.gitignore` and excludes its state directory, protected paths, and the
   workspace's `.git`. It never writes into the workspace's `.git`.
+- Owner deletion or pruning of borrowed Git objects can make a restore unavailable; missing
+  content refuses before writes.
 - Older SQLite history can be listed and recovered until `buckle history prune --legacy`
   removes it. `BUCKLE_HISTORY_RETENTION_DAYS` still controls isolated-shell recovery-copy
   retention, not change-history turns.

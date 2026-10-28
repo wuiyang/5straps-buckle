@@ -13,8 +13,9 @@ unchanged Git objects. It honors `.gitignore`, excludes the state directory, wor
 protected paths, and can read the workspace repository's object store as a read-only alternate. It
 captures raw file bytes without applying Git filters.
 
-The node setting `BUCKLE_HISTORY_MAX_BYTES` limits each shadow store to 268435456 bytes (256 MiB)
-by default. Buckle drops the oldest turns first and reclaims bounded, unreachable loose objects
+The node setting `BUCKLE_HISTORY_MAX_BYTES` limits each workspace history directory, including its shadow
+repositories and metadata, to 268435456 bytes (256 MiB) by default. It counts persisted byte
+lengths, not filesystem allocation blocks. Buckle drops the oldest turns first and reclaims bounded, unreachable loose objects
 under the history lock. Packed objects wait for eligible background Git garbage collection, at
 most once an hour and off the write path. Until then, packed bytes can leave too little room for
 content: Buckle records the checkpoint's paths and hashes without content and lets the write
