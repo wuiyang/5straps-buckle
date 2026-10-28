@@ -42,7 +42,7 @@ async function listCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliR
   try {
     values = parseArgs({ args: argv, options: { last: { type: 'string' } }, allowPositionals: false }).values
   } catch { return fail(USAGE) }
-  if (values.last === undefined) return print((await runtime.history.list()).map(printableCheckpoint))
+  if (values.last === undefined) return print(await runtime.history.list())
   const last = Number(values.last)
   if (!/^\d+$/.test(values.last) || last < 1 || last > RECENT_CHECKPOINTS_MAX) return fail(`--last takes a count of checkpoints, 1 to ${RECENT_CHECKPOINTS_MAX}`)
   const recent = await runtime.history.recent(last)
@@ -89,25 +89,8 @@ function ownerPath(path: string, root: string): string {
   return isInside(root, path) ? relative(root, path) || '.' : path
 }
 
-/**
- * A checkpoint as a person reads it: the session, stage and paths an agent chose, escaped as every
- * other rendering of agent text is (review L8 of B15-B17).
- */
-function printableCheckpoint(checkpoint: CheckpointSummary): CheckpointSummary {
-  return {
-    ...checkpoint,
-    sessionId: printable(checkpoint.sessionId),
-    stageId: printable(checkpoint.stageId),
-    tool: printable(checkpoint.tool),
-    ...(checkpoint.requestId === undefined ? {} : { requestId: printable(checkpoint.requestId) }),
-    paths: checkpoint.paths.map(printable),
-    changes: checkpoint.changes.map(change => ({ ...change, path: printable(change.path) })),
-    notRestorable: checkpoint.notRestorable.map(printable),
-  }
-}
-
 function print(value: unknown): CliResult {
-  process.stdout.write(`${JSON.stringify(value, null, 2)}\n`)
+  process.stdout.write(`${JSON.stringify(value, (_key, field: unknown) => typeof field === 'string' ? printable(field) : field, 2)}\n`)
   return { exitCode: 0 }
 }
 
