@@ -96,6 +96,17 @@ describe('buckle history list --last', () => {
   })
 })
 
+describe('buckle history list', () => {
+  // Review m3 of the Slice D tests review: JSON.stringify escapes only C0 controls, so the request an agent named is
+  // escaped before it is printed, as its session, stage, tool, and paths are.
+  it('escapes the request an agent named, which JSON leaves raw when it reorders or hides text', async () => {
+    const { config } = await workspaceWith([{ requestId: 'w-1\u202etxt.exe\u200b\u0085', files: { 'a.txt': 'one' } }])
+    const plain = await history(config, ['list'])
+    expect(plain.out).not.toMatch(/[\u202e\u200b\u0085]/)
+    expect((JSON.parse(plain.out) as Array<{ requestId: string }>)[0]!.requestId).toBe('w-1\\u202etxt.exe\\u200b\\u0085')
+  })
+})
+
 describe('buckle tools', () => {
   it('names the history tools by buckle call, since buckle history is the owner\'s own command', async () => {
     const { config } = await workspaceWith([])

@@ -228,7 +228,8 @@ it('mounts only the private copy as writable and uses the command as namespace P
   expect(calls[0]!.args[binding + 1]).not.toBe(sourceRoot)
   expect(calls[0]!.args[binding + 2]).toBe('/workspace')
   expect(readFileSync(join(sourceRoot, 'file'), 'utf8')).toBe('sandbox result')
-  expect((await history.list())[0]!.stageId).toBe('message')
+  // Review m2 of the Slice D tests review: the shell files its own checkpoint, so the call that made it is named there too.
+  expect((await history.recent(1)).checkpoints[0]).toMatchObject({ stageId: 'message', tool: 'shell_exec', sessionId: 'caller', requestId: 'request', current: true })
 })
 
 describe('owner retained workspace recovery', () => {
