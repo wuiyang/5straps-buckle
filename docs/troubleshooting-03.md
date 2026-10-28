@@ -13,7 +13,7 @@ covers the shell.
 | "Something already stands at ...: send replace: true to replace it" | `TARGET_EXISTS` | send `replace: true`, which replaces a folder whole, or move to a free name |
 | "Nothing stands at ..., so replace: true has nothing to replace" | `NOTHING_TO_REPLACE` | send `replace: false` to move there |
 | "... is a folder that holds ..., so replacing it would remove what is being moved" | none | move the source out of that folder first, or name another landing |
-| "The folder ... does not exist, and a move makes no folder" | `PARENT_MISSING` | create the folder first |
+| "The folder ... does not exist, and a move makes no folder", or "... a write makes no folder unless createParents is true" | `PARENT_MISSING` | create the folder first; a write may send `createParents: true` |
 | "... is a folder that holds entries: send recursive: true" | `FOLDER_NOT_EMPTY` | send `recursive: true`, after reading the ask's count |
 | "... holds more than 10000 entries, more than one checkpoint covers" | `FOLDER_TOO_LARGE` | move the folder in parts; for a folder to replace, delete it in parts first |
 | "... is held open by another program" | `ENTRY_HELD` | close the program, then send the call again; on Windows alone, a read-only file also gives this |
@@ -21,7 +21,7 @@ covers the shell.
 | "... could not be removed (EIO)", or "could not be moved to ... (EBUSY)" | `REMOVAL_FAILED` or `MOVE_FAILED` | the error is the system's own; a folder removed whole may be gone in part |
 | "... has a name Buckle would read as another path, so it cannot be removed by name" | `FOLDER_NOT_REMOVABLE` | remove that entry another way first; nothing was removed |
 | "... is a link, and Windows lets only an administrator ... make one" | none | turn on Developer Mode or run with rights to make links, or move the folder without that link |
-| "There is no file or folder at ..." | `FILE_NOT_FOUND` | check the path |
+| "There is no file or folder at ..." (a move), "There is no file at ..." (a read, a patch), or "There is no folder at ..." (a list, a search) | `FILE_NOT_FOUND` | check the path as you sent it; the same code answers a path that runs through a file |
 | "The folder holds Buckle's own state and policy" | `PERMISSION_DENIED` | choose another folder; no tool reaches Buckle's state |
 | "Hunk N of ... does not match the file, so nothing was written" | `PATCH_DOES_NOT_APPLY` | the header names the hunk; rebuild the diff from the file as it stands |
 | "The patch creates ..., which exists already" | `PATCH_DOES_NOT_APPLY` | diff against the file that exists, or use a free path |

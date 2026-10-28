@@ -14,6 +14,7 @@ import { childPath, comparablePath, ignoresCase, isPlainName } from '../../../do
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
+import { missingRefusal, parentRefusal, refusing } from './missing-path.js'
 import type * as schemas from './schemas.js'
 
 const MAX_FILE_BYTES = 10 * 1_048_576
@@ -46,11 +47,11 @@ export async function readFileEntry(
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'read', context)
-  const { buffer, size } = withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path, ...(context.protectedRoots ? { protectedRoots: context.protectedRoots, roots: context.paths.reachableRoots } : {}) }, (descriptor) => {
+  const { buffer, size } = refusing(() => withFileBeneath(target, { flags: constants.O_RDONLY, shown: input.path, ...(context.protectedRoots ? { protectedRoots: context.protectedRoots, roots: context.paths.reachableRoots } : {}) }, (descriptor) => {
     const info = fstatSync(descriptor)
     if (info.size > MAX_FILE_BYTES) throw new ToolInputError(`File exceeds ${MAX_FILE_BYTES} bytes`)
     return { buffer: readFileSync(descriptor), size: info.size }
-  })
+  }), error => missingRefusal(error, { named: input.path, wanted: 'file', outcome: 'nothing was read' }))
   context.known?.(target)
   const hash = createHash('sha256').update(buffer).digest('hex')
   if (input.encoding === 'base64') {
@@ -98,7 +99,8 @@ export async function writeFileEntry(
       throw error
     }
   } else {
-    withFileBeneath(target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents }, descriptor => writeAll(descriptor, content))
+    // The open creates the file, so a path of nothing is its folder's.
+    refusing(() => withFileBeneath(target, { flags: constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC, createParents }, descriptor => writeAll(descriptor, content)), error => parentRefusal(error, input.path))
   }
   context.known?.(target)
   return { path: context.paths.display(path), size: content.byteLength, hash: createHash('sha256').update(content).digest('hex') }
@@ -110,14 +112,14 @@ export async function patchFile(
 ): Promise<JsonValue> {
   const path = context.paths.resolve(input.path)
   const target = judgedTarget(path, 'write', context)
-  const patched = withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
+  const patched = refusing(() => withFileBeneath(target, { flags: constants.O_RDWR }, (descriptor) => {
     // As fs_read and fs_apply_patch hold it: a file this size is not read whole, and the destructive-write check cannot size its result.
     if (fstatSync(descriptor).size > MAX_FILE_BYTES) throw new ToolInputError(`${input.path} exceeds ${MAX_FILE_BYTES} bytes, so nothing was patched`)
     const { content, replacements } = applyEdits(readFileSync(descriptor, 'utf8'), input.edits)
     if (Buffer.byteLength(content) > MAX_FILE_BYTES) throw new ToolInputError(`Patched file exceeds ${MAX_FILE_BYTES} bytes`)
     replaceContent(descriptor, Buffer.from(content, 'utf8'))
     return { path: context.paths.display(path), replacements, size: Buffer.byteLength(content) }
-  })
+  }), error => missingRefusal(error, { named: input.path, wanted: 'file', outcome: 'nothing was patched' }))
   context.known?.(target)
   return patched
 }
@@ -186,7 +188,7 @@ export async function listTree(
 ): Promise<JsonValue> {
   const root = context.paths.resolve(input.path)
   const entries: JsonValue[] = []
-  await withDirectoryBeneath(root, context, (directory, real) => walkTree({ real, shown: '', directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
+  await withDirectoryBeneath(root, context, { named: input.path, outcome: 'nothing was listed' }, (directory, real) => walkTree({ real, shown: '', directory, depth: input.depth, includeIgnored: input.includeIgnored, entries, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
   return { path: context.paths.display(root), entries, truncated: entries.length >= MAX_TREE_ENTRIES }
 }
 
@@ -197,7 +199,7 @@ export async function findNames(
   const root = context.paths.resolve(input.path)
   const matches: string[] = []
   const walk = { deep: false }
-  await withDirectoryBeneath(root, context, (directory, real) => walkNames({ real, shown: '', directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
+  await withDirectoryBeneath(root, context, { named: input.path, outcome: 'nothing was searched' }, (directory, real) => walkNames({ real, shown: '', directory, depth: 0, walk, pattern: input.pattern, limit: input.limit, includeIgnored: input.includeIgnored, matches, authorizeRead: context.authorizeRead, platform: context.platform ?? process.platform }))
   return { path: context.paths.display(root), matches, truncated: matches.length >= input.limit || walk.deep }
 }
 
@@ -209,9 +211,9 @@ export async function findNames(
  * name, which a link flipped during the walk could point elsewhere (review H1 of the second
  * proof-of-possession re-review).
  */
-async function withDirectoryBeneath(root: string, context: FsContext, walk: (directory: PinnedDirectory, real: string) => Promise<void>): Promise<void> {
+async function withDirectoryBeneath(root: string, context: FsContext, sent: { named: string; outcome: string }, walk: (directory: PinnedDirectory, real: string) => Promise<void>): Promise<void> {
   const target = judgedTarget(root, 'read', context)
-  const directory = openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } })
+  const directory = refusing(() => openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } }), error => missingRefusal(error, { ...sent, wanted: 'folder' }))
   try { await walk(directory, target) } finally { directory.close() }
 }
 
