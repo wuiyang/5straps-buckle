@@ -1,3 +1,5 @@
+import { RuntimeError } from '@5straps/runtime'
+import { SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
@@ -56,11 +58,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
   const offered = new Set<string>()
-  const activity = openHistoryActivity(input.directory)
+  const activity = await openHistoryActivity(input.directory)
   let reconcile = true
 
   function read(): State {
-    if (closed) throw new Error('History is closed')
+    if (closed) throw new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed')
     if (!existsSync(file)) return { version: 2, checkpoints: [], lastGcAt: 0 }
     return stateSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
   }
@@ -83,7 +85,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     await save(state)
   }
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
-    if (closed) return Promise.reject(new Error('History is closed'))
+    if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
     const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
     return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, operation)
   }
@@ -319,7 +321,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }, { owner: true, ...options }),
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
-    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); await gc; activity.close(); closed = true },
+    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); await gc; await activity.close(); closed = true },
   }
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>

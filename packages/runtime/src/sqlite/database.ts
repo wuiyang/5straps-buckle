@@ -39,6 +39,18 @@ export function openDatabase(options: OpenDatabaseOptions): Promise<SqliteDataba
   return openSqlite(options, { defaults: DEFAULT_PRAGMAS, newDatabase: NEW_DATABASE_PRAGMAS })
 }
 
+// Legacy reads must not create files, restrict modes, or change journal settings.
+export function withReadOnlyDatabase<T>(input: { path: string; read: (connection: DatabaseSync) => T }): T {
+  const path = requireExplicitPath(input.path)
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) throw new RuntimeError(SqliteErrorCode.notRegularFile, 'Read-only SQLite path must be an existing regular file')
+  const connection = new DatabaseSync(path, { readOnly: true })
+  try {
+    const result = input.read(connection)
+    if (result instanceof Promise) { result.catch(() => undefined); throw new TypeError('Read-only SQLite callback must be synchronous') }
+    return result
+  } finally { connection.close() }
+}
+
 // Shared by openDatabase and the lock connections, which keep the file's own journal mode.
 export async function openSqlite(options: OpenDatabaseOptions, pragmas: SqlitePragmaDefaults): Promise<SqliteDatabase> {
   const path = requireExplicitPath(options.path)

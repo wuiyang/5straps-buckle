@@ -1,22 +1,22 @@
 import { randomUUID } from 'node:crypto'
-import { chmodSync } from 'node:fs'
-import { DatabaseSync } from 'node:sqlite'
+import { openDatabase, rawConnection, type SqliteDatabase } from '@5straps/runtime/sqlite'
 import { join } from 'pathe'
 import { logger } from '../../runtime/log.js'
 
 interface Activity { at: number; turn: string; stage: string | null }
 
-export function openHistoryActivity(directory: string) {
+export async function openHistoryActivity(directory: string) {
   const memory = new Map<string, Activity>()
   const active = new Map<string, Map<string | null, { turn: string; count: number }>>()
-  let db: DatabaseSync | undefined
+  let database: SqliteDatabase | undefined
+  let db: Awaited<ReturnType<typeof rawConnection>> | undefined
   try {
     const file = join(directory, 'activity.sqlite')
-    db = new DatabaseSync(file)
-    chmodSync(file, 0o600)
-    db.exec('PRAGMA busy_timeout = 1000; CREATE TABLE IF NOT EXISTS activity (session TEXT PRIMARY KEY, at INTEGER NOT NULL, turn TEXT NOT NULL, stage TEXT)')
+    database = await openDatabase({ path: file, pragmas: { busy_timeout: 1000, journal_mode: 'DELETE' }, requireOwnerOnlyDirectory: true, logger })
+    db = await rawConnection(database)
+    db.exec('CREATE TABLE IF NOT EXISTS activity (session TEXT PRIMARY KEY, at INTEGER NOT NULL, turn TEXT NOT NULL, stage TEXT)')
   } catch {
-    db?.close(); db = undefined
+    await database?.dispose(); database = undefined; db = undefined
     logger.warn('History activity could not be persisted; turn grouping may reset after restart')
   }
 
@@ -69,5 +69,5 @@ export function openHistoryActivity(directory: string) {
     catch { logger.warn('History activity could not be persisted; turn grouping may reset after restart') }
   }
 
-  return { observe, activeTurn, start, finish, complete, close: () => db?.close() }
+  return { observe, activeTurn, start, finish, complete, close: () => database?.dispose() ?? Promise.resolve() }
 }
