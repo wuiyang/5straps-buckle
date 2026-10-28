@@ -8,6 +8,7 @@ import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-s
 import { createPathView, OUTSIDE_PATH } from '../common/domain/path-view.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import { BUILT_IN_DELETE_POLICY } from '../common/domain/delete-policy.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
@@ -90,7 +91,7 @@ describe('the scope rules over the mounts', () => {
   const view = createPathView({ root: ROOT, mount: '/workspace', mounts: table })
   const grants = { subjectsFor: () => [], patternsFor: () => [] }
   const read = createReadScopeRule({ paths: view })
-  const write = createWriteScopeRule({ paths: view, strict: false })
+  const write = createWriteScopeRule({ paths: view, strict: false, deletes: BUILT_IN_DELETE_POLICY })
 
   it('let a read inside any mount the owner shares through without asking', () => {
     for (const path of [`${DATA}/a.txt`, `${DOCS}/b.md`]) expect(read.evaluate({ tool: 'fs_read', effect: { kind: 'read_path', path, directory: path }, grants })).toEqual({ kind: 'allow' })

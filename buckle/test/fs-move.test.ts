@@ -11,7 +11,8 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // fs_move (the fs-verbs brief): safe by default, `replace` to replace a file, into a folder by name, no folder made, a
-// rename beneath parents reached without following a link, and a copy then a removal across devices.
+// rename beneath parents reached without following a link, and a copy then a removal across devices. The workspace here
+// sets files.deleteInWorkspace ask, which keeps the floor inside its own folder (the delete policy brief).
 
 // The bound a folder is counted to before a person is asked (MAX_COUNTED_ENTRIES), which a test lowers rather than
 // build 10,001 entries on a slow disk; the count and the refusal it feeds are the real ones.
@@ -34,7 +35,7 @@ async function node(): Promise<{ root: string; workspace: string; runtime: Buckl
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', BUCKLE_DELETE_IN_WORKSPACE: 'ask' })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject: runtime.paths().root, scope: 'session' })

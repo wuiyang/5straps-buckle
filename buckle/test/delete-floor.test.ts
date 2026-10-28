@@ -8,27 +8,30 @@ import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerou
 import { createDestructivePathRule, isFloorSubject } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import type { DeletePolicy } from '../common/domain/delete-policy.js'
 import { createPathView } from '../common/domain/path-view.js'
 
 // The file side of the destructive floor (the fs-verbs brief): every delete asks a person, whatever the folder's write
-// grant says, under write_scope subjects no folder grant matches; refusals stay where a write's are.
+// grant says, under write_scope subjects no folder grant matches; refusals stay where a write's are. These tests run
+// under files.deleteInWorkspace ask, where the floor stands inside the workspace's folder too (the delete policy brief).
 
 const WORKSPACE = '/work/project'
 const STATE = '/work/project/.state'
+const ASK: DeletePolicy = { inWorkspace: 'ask', massLimit: 100 }
 
 function lookup(granted: Partial<Record<PermissionRuleId, string[]>> = {}): GrantLookup {
   return { subjectsFor: rule => granted[rule] ?? [] }
 }
 
-function engine(options: { strict?: boolean; mount?: string; readOnly?: string; rules?: Array<{ path: string; read?: 'deny' | 'ask'; write?: 'deny' | 'ask' }> } = {}) {
+function engine(options: { strict?: boolean; mount?: string; readOnly?: string; rules?: Array<{ path: string; read?: 'deny' | 'ask'; write?: 'deny' | 'ask' }>; deletes?: DeletePolicy } = {}) {
   const mounts = options.readOnly ? [{ source: options.readOnly, target: '/data', access: 'ro' as const }] : []
   const paths = createPathView({ root: WORKSPACE, mount: options.mount ?? null, mounts })
   const policy = { ...emptyWorkspacePolicy(), filesystem: { rules: options.rules ?? [] } }
   return createPermissionEngine([
     createSensitivePathRule({ protectedRoots: [STATE] }),
-    createDestructivePathRule({ paths, strict: options.strict ?? false }),
+    createDestructivePathRule({ paths, strict: options.strict ?? false, deletes: options.deletes ?? ASK }),
     createFilesystemPolicyRule({ root: WORKSPACE, policy }),
-    createWriteScopeRule({ paths, strict: options.strict ?? false }),
+    createWriteScopeRule({ paths, strict: options.strict ?? false, deletes: options.deletes ?? ASK }),
   ])
 }
 
@@ -98,16 +101,16 @@ describe('a delete is refused where a write is', () => {
     expect(evaluate([removed('/srv/data/a.txt')], {}, { mount: '/workspace', readOnly: '/srv/data' })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope' } })
     expect(evaluate([removed('/srv/data', { tree: counted(1, 0) })], {}, { mount: '/workspace', readOnly: '/srv/data' })).toMatchObject({ kind: 'deny' })
     expect(evaluate([removed('/work', { tree: counted(1, 1) })], { write_scope: ['delete-tree:/work'] })).toMatchObject({ kind: 'deny' })
-    const own = createPermissionEngine([createWriteScopeRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false })])
+    const own = createPermissionEngine([createWriteScopeRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: ASK })])
     expect(own.evaluate({ tool: 'fs_delete', effects: [removed('/work', { tree: counted(1, 1) })], grants: lookup() })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope', reason: '/work is or holds /work/project, a folder the workspace shows or a read-only mount, which no tool removes or moves' } })
   })
 
   it('for the workspace\'s own folder by any spelling a volume that ignores case reads as it, and by its exact spelling elsewhere', () => {
     const paths = createPathView({ root: '/work/proj', mount: null })
     const variant = removed('/work/PROJ', { tree: counted(1, 1) })
-    const folded = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: true })])
+    const folded = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: true, deletes: ASK })])
     expect(folded.evaluate({ tool: 'fs_delete', effects: [variant], grants: lookup() })).toMatchObject({ kind: 'deny', denial: { rule: 'write_scope' } })
-    const exact = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: false })])
+    const exact = createPermissionEngine([createWriteScopeRule({ paths, strict: false, caseInsensitive: false, deletes: ASK })])
     expect(exact.evaluate({ tool: 'fs_delete', effects: [variant], grants: lookup() }).kind).not.toBe('deny')
     expect(folded.evaluate({ tool: 'fs_move', effects: [removed('/work/Proj/', { tree: counted(1, 1) })], grants: lookup() }).kind).toBe('deny')
   })

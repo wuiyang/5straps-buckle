@@ -32,6 +32,8 @@ export interface GrantLookup {
 export interface RuleInput {
   tool: string
   effect: ResolvedEffect
+  /** Every effect of the call, for a rule that judges the call as a whole (the mass-delete guard); `effect` alone where absent. */
+  effects?: readonly ResolvedEffect[]
   grants: GrantLookup
 }
 

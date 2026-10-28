@@ -1,4 +1,5 @@
 import type { GrantScope } from '@5straps/protocol'
+import { relievedDelete, type DeletePolicy } from '../../delete-policy.js'
 import { outsideMountReason, readOnlyMountReason, type PathView } from '../../path-view.js'
 import { isInside, isInsideAny, isInsideComparable } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
@@ -13,6 +14,8 @@ export interface WriteScopeOptions {
   pathDecision?: (path: string) => 'inherit' | 'allow' | 'ask' | 'deny'
   /** Whether the volume ignores case, which decides a root by any spelling of it; the platform's default when absent. */
   caseInsensitive?: boolean
+  /** The workspace's delete policy, the same one the destructive floor reads (createDestructivePathRule). */
+  deletes: DeletePolicy
 }
 
 /**
@@ -22,9 +25,10 @@ export interface WriteScopeOptions {
  *
  * A delete is a write: refused where a write is, and where it would remove a root the agent may name or a folder holding
  * one, or a read-only mount's source. One at the destructive floor asks there alone (destructive-path-rule.ts); a move's
- * source that moves a file and replaces nothing asks as a write to its folder does.
+ * source that moves a file and replaces nothing asks as a write to its folder does, and so does a delete inside the
+ * workspace's own folder where its delete policy allows them (relievedDelete).
  */
-export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensitive }: WriteScopeOptions): PermissionRule {
+export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensitive, deletes }: WriteScopeOptions): PermissionRule {
   const offeredScopes: GrantScope[] = strict ? ['once'] : ['once', 'session', 'always']
   const reachable = paths.reachableRoots
   const readOnly = paths.mounts.filter(mount => mount.access === 'ro').map(mount => mount.source)
@@ -39,7 +43,7 @@ export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensit
         if (holder !== undefined) return deny('write_scope', effect.path, `${paths.toVirtual(effect.path)} is or holds ${paths.toVirtual(holder)}, a folder the workspace shows or a read-only mount, which no tool removes or moves`)
       }
       // A delete at the floor in a scratch root still asks there (destructive-path-rule.ts): only its refusals are here.
-      const floor = effect.kind === 'delete_path' && effect.floor
+      const floor = effect.kind === 'delete_path' && effect.floor && !relievedDelete(effect, paths, deletes)
       if (isInsideAny(paths.scratchRoots, effect.path)) return floor ? null : { kind: 'allow' }
       if (isInsideAny(readOnly, effect.path)) return deny('write_scope', effect.path, readOnlyMountReason(paths.toVirtual(effect.path)))
       // A mount is the boundary, so a write beyond it is refused rather than offered for approval.

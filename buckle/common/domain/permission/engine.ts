@@ -24,7 +24,7 @@ export function createPermissionEngine(rules: PermissionRule[]): PermissionEngin
 
       for (const rule of rules) {
         for (const effect of effects) {
-          const decision = rule.evaluate({ tool, effect, grants })
+          const decision = rule.evaluate({ tool, effect, effects, grants })
           if (!decision) continue
           if (decision.kind === 'allow') {
             if (decision.via) allowedBy.add(askKey(decision.via.rule, decision.via.subject))

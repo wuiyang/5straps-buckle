@@ -12,7 +12,8 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // fs_delete (the fs-verbs brief): every delete asks at the destructive floor, even inside a folder whose writes are
-// granted; a link goes and its target stays; the change history brings every file back.
+// granted; a link goes and its target stays; the change history brings every file back. The workspace here sets
+// files.deleteInWorkspace ask, which keeps the floor inside its own folder (the delete policy brief; delete-policy.test.ts).
 
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
@@ -27,7 +28,7 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
   const workspace = join(root, 'workspace')
   const state = join(root, 'state')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', BUCKLE_DELETE_IN_WORKSPACE: 'ask', ...extra })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   // Writes anywhere in the folder are granted for the session, as a person's session grant would; deletes still ask.

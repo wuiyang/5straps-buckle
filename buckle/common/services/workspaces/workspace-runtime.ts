@@ -965,16 +965,18 @@ function networkEgressRule(compiled: CompiledPolicy): PermissionRule {
  */
 function buildPermissionEngine(input: { config: BuckleConfig; compiled: CompiledPolicy; paths: PathView; dangerouslyAllowLevel: () => DangerouslyAllowLevel | null }): PermissionEngine {
   const { config, compiled, paths } = input
+  // One policy for both rules, so a delete the floor leaves to the write scope is always judged there (relievedDelete).
+  const deletes = { inWorkspace: config.deleteInWorkspace, massLimit: config.massDeleteLimit }
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
     createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
-    createDestructivePathRule({ paths, strict: config.strictWrites }),
+    createDestructivePathRule({ paths, strict: config.strictWrites, deletes }),
     networkEgressRule(compiled),
     createProcessProbeRule(),
     createFilesystemPolicyRule({ root: config.cwd, policy: compiled.policy }),
     createReadScopeRule({ paths }),
-    createWriteScopeRule({ paths, strict: config.strictWrites, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy }) }),
+    createWriteScopeRule({ paths, strict: config.strictWrites, deletes, pathDecision: path => filesystemPathDecision({ root: config.cwd, path, operation: 'write', policy: compiled.policy }) }),
   ]), { level: input.dangerouslyAllowLevel, root: () => paths.root })
 }
 

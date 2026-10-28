@@ -11,6 +11,7 @@ import { createProcessProbeRule } from '../common/domain/permission/rules/proces
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import { BUILT_IN_DELETE_POLICY } from '../common/domain/delete-policy.js'
 
 const WORKSPACE = '/work/project'
 
@@ -27,7 +28,7 @@ function engine(options: { scratchRoots?: string[]; strict?: boolean; mount?: st
     createNetworkEgressRule(),
     createProcessProbeRule(),
     createReadScopeRule({ paths }),
-    createWriteScopeRule({ paths, strict: options.strict ?? false }),
+    createWriteScopeRule({ paths, strict: options.strict ?? false, deletes: BUILT_IN_DELETE_POLICY }),
   ])
 }
 

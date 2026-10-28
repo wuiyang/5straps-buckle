@@ -105,7 +105,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',
-      description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. A person is asked unless a delete grant for that folder holds.',
+      description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. Inside the workspace folder a delete runs where writes are granted, unless the owner set deletes to ask; a delete outside it, of a folder at its top, or of many entries in one call asks a person.',
       risk: 'write',
       tags: ['filesystem', 'batch'],
       input: schemas.deleteInput,
@@ -116,7 +116,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_move',
-      description: 'Move or rename a file, link, or folder. A folder to, or a trailing slash, moves into it by name. replace must match what stands at the destination: false (the default) refuses if anything does, true refuses if nothing does and otherwise replaces it, a folder with everything in it. A person is asked unless a delete grant holds.',
+      description: 'Move or rename a file, link, or folder. A folder to, or a trailing slash, moves into it by name. replace must match what stands at the destination: false (the default) refuses if anything does, true refuses if nothing does and otherwise replaces it, a folder with everything in it. What it replaces or takes away is judged as fs_delete judges a delete.',
       risk: 'write',
       tags: ['filesystem'],
       input: schemas.moveInput,

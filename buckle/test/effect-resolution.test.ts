@@ -10,6 +10,7 @@ import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
 import { createReadScopeRule } from '../common/domain/permission/rules/read-scope-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import { BUILT_IN_DELETE_POLICY } from '../common/domain/delete-policy.js'
 import { browserEffects } from '../common/services/packs/browser/effects.js'
 describe('isInside', () => {
   it('accepts the directory itself and its descendants', () => {
@@ -108,7 +109,7 @@ describe('a path leaving a mounted workspace', () => {
   function scopeEngine() {
     return createPermissionEngine([
       createReadScopeRule({ paths: mounted }),
-      createWriteScopeRule({ paths: mounted, strict: false }),
+      createWriteScopeRule({ paths: mounted, strict: false, deletes: BUILT_IN_DELETE_POLICY }),
     ])
   }
 

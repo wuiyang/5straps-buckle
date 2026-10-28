@@ -22,13 +22,13 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(packs = 'fs'): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(packs = 'fs', extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: BuckleRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-fs-verbs-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: packs, BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: packs, BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   runtimes.push(runtime)
   return { workspace, runtime }
@@ -104,8 +104,8 @@ describe('code mode', () => {
     expect(typeErrors(`${declared}\nexport async function script() { await tools.fs_delete({ path: "a.txt" }) }`).join('\n')).toMatch(/path/)
   })
 
-  it('lets a script call fs_delete, which asks a person as a direct call does, and runs once approved', async () => {
-    const { runtime, workspace } = await node('fs,code')
+  it('lets a script call fs_delete, which asks a person as a direct call does where deletes ask, and runs once approved', async () => {
+    const { runtime, workspace } = await node('fs,code', { BUCKLE_DELETE_IN_WORKSPACE: 'ask' })
     writeFileSync(join(workspace, 'old.log'), 'old')
     await runtime.grants.grant({ sessionId: 'chat-1', rule: 'write_scope', subject: runtime.paths().root, scope: 'session' })
     const script = 'const done = await tools.fs_delete({ paths: ["old.log"] }); return done.removed'
