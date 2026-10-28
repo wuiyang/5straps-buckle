@@ -93,11 +93,11 @@ describe('MCP elicitation detection', () => {
     expect(await gatedCall(server, stubContext({}))).toMatchObject({ resultType: 'input_required' })
   })
 
-  it('relays the approval as text when the client declares no elicitation', async () => {
+  it('relays the approval as text when the client declares no elicitation, as no error: the call waits (the MCP asks brief, item 1)', async () => {
     const result = await gatedCall(gatedServer(), stubContext({
       envelope: { [CLIENT_CAPABILITIES_META_KEY]: { roots: {} } },
     }))
-    expect(result).toMatchObject({ isError: true })
+    expect(result).toMatchObject({ isError: false, structuredContent: { outcome: 'approval_required', approvals: [expect.objectContaining({ token: 'token-1' })] } })
     expect(JSON.stringify(result)).toContain('buckle approve token-1 --scope session')
     expect(JSON.stringify(result)).toContain("buckle approvals --workspace 'Fixture workspace' --watch")
   })
@@ -114,7 +114,7 @@ describe('MCP elicitation detection', () => {
     const result = await gatedCall(gatedServer(), stubContext({
       envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: { url: {} } } },
     }))
-    expect(result).toMatchObject({ isError: true })
+    expect(result).toMatchObject({ isError: false, structuredContent: { outcome: 'approval_required' } })
   })
 })
 

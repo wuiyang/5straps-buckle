@@ -9,6 +9,7 @@ import { createAuditedStdioTransport } from './audited-stdio-transport.js'
 import { WorkspaceError, WorkspaceRegistryError, type ManagedWorkspace, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
+import { workspaceWait } from './holds.js'
 import { createMcpServer, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
@@ -39,7 +40,7 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
     actions: { ...runtime.actions, record: entry => loggedIn(workspaces, runtime).record(entry) }, workspaceId: runtime.workspaceId, isKnownTool: name => runtime.registry().has(name),
   })
   const callScope = stdioCallScope(common)
-  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel, beforeCall: stillServed(workspaces, runtime) }), { transport })
+  const stdio = serveStdio(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version, trustedApprovalResponses: true, callScope, isCancel: isExplicitCancel, beforeCall: stillServed(workspaces, runtime), approvalWait: () => workspaceWait(config.approvalTimeoutMs) }), { transport })
   common.owner.onClose('accept', 'mcp stdio', () => stdio.close())
   input.logger.info('5straps Buckle MCP stdio ready', { serverId: config.serverId, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), tools: runtime.registry().capabilities().length })
 }

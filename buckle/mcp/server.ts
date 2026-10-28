@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
-import type { ApprovalRequest, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
+import type { ApprovalRequest, ApprovalWait, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
 import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
@@ -40,6 +40,11 @@ export interface McpServerOptions {
    * life, so it asks the registry here whether the workspace is still the one it was started for.
    */
   beforeCall?: () => Promise<void>
+  /**
+   * The face's own wait for a person, read at each call (the MCP asks brief, item 1): over HTTP the workspace's, at most
+   * MCP_HOLD_MS; over stdio the workspace's.
+   */
+  approvalWait?: () => ApprovalWait | undefined
 }
 
 /**
@@ -86,6 +91,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
+          const wait = elicits ? { mode: 'none' as const } : options.approvalWait?.()
 
           const response = await runtime.invoke({
             request: {
@@ -98,13 +104,13 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
             sessionId: mcpSessionId(context),
             signal: context.mcpReq.signal,
             ...(options.isCancel ? { isCancel: options.isCancel } : {}),
-            ...(elicits ? { approvalWait: { mode: 'none' as const } } : {}),
+            ...(wait ? { approvalWait: wait } : {}),
           })
 
           if (response.outcome === 'approval_required') {
             return elicits
               ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), approves: runtime.judgeApproves(), ...(options.serverId === undefined ? {} : { node: options.serverId }) })
-              : relayApproval({ approvals: response.approvals, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
+              : relayApproval({ response, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
           }
           return toCallToolResult(response)
         } catch (error) {
@@ -120,25 +126,30 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
  * Hosts that never declared elicitation cannot be prompted, so the approval is handed back as
  * text the agent can relay to its user. This is the fallback that makes Buckle work anywhere,
  * which is why it names the node and the workspace: the person may hold several, and the command
- * only answers the workspace it names.
+ * only answers the workspace it names. It is no error (the MCP asks brief, item 1): the call is
+ * waiting, and the same call sent again once it is decided joins its ask. The structured content
+ * is /v1/invoke's own approval_required answer, which Rings reads.
  */
-function relayApproval(input: { approvals: ApprovalRequest[]; workspaceId: string; workspaceName: string; nodeName?: string }) {
-  const lines = input.approvals.map(request => {
+function relayApproval(input: { response: Extract<InvokeResponse, { outcome: 'approval_required' }>; workspaceId: string; workspaceName: string; nodeName?: string }) {
+  const lines = input.response.approvals.map(request => {
     const [first, ...rest] = describeApprovalRequest({ request, workspaceId: input.workspaceId, workspaceName: input.workspaceName, ...(input.nodeName === undefined ? {} : { nodeName: input.nodeName }) })
     return [`- ${first}`, ...rest.map(line => `  ${line}`)].join('\n')
   })
   const review = reviewCommand({ workspaceId: input.workspaceId, workspaceName: input.workspaceName })
+  const { requestId, outcome, approvals } = input.response
   return {
-    isError: true,
+    isError: false,
     content: [{
       type: 'text' as const,
       text: [
         `This call needs approval from the person you are working with. Ask them to read the whole action in \`${review}\``,
-        `or answer it in \`${review} --watch\`; the listed approve command shows the action again and asks them to confirm. Then retry.`,
+        `or answer it in \`${review} --watch\`; the listed approve command shows the action again and asks them to confirm.`,
+        'Once it is decided, send this same call again: it joins this ask, and runs once if it was approved.',
         '',
         ...lines,
       ].join('\n'),
     }],
+    structuredContent: { outcome, requestId, approvals },
   }
 }
 
