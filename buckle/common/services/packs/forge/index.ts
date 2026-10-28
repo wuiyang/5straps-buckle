@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs'
 import { isAbsolute, resolve } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
@@ -34,6 +35,8 @@ const BRANCH_PATTERN = /^[A-Za-z0-9._][A-Za-z0-9._/-]*$/
 const REVISION_PATTERN = /^[A-Za-z0-9._@][A-Za-z0-9._/~^@{}-]*$/
 /** Said where a revert stopped on a conflict: git's own `git revert --abort` put back what the revert wrote, and only that. */
 const REVERT_ABORTED = 'the revert stopped on a conflict and was aborted, so the repository stands as it was'
+/** What a person's own unfinished revert, cherry-pick, or merge leaves in the git directory (review B1 of the Slice D rules review). */
+const UNFINISHED_OPERATION_MARKERS = ['REVERT_HEAD', 'CHERRY_PICK_HEAD', 'MERGE_HEAD', 'sequencer']
 /** What a refusal of a redirected repository tells the caller to do instead (review H1 of the continuation review). */
 const PUSH_REMEDY = 'push to the real repository by its own path (set origin to it) so the permission rules judge it'
 const COMMIT_REMEDY = 'commit in the real repository by its own path so the permission rules judge it'
@@ -291,6 +294,19 @@ export function createForgePack(options: ForgePackOptions): Pack {
     return (await gitOutput({ repository: input.repository, args, context: input.context })).split('\0').filter(Boolean)
   }
 
+  /**
+   * Refused before git_revert runs: a revert, cherry-pick, or merge already stopped here is a person's, and the abort
+   * this tool runs after a conflict of its own (`reset --merge`) would discard their staged or unmerged resolution.
+   */
+  const assertNoUnfinishedOperation = async (input: { repository: string; context: ToolContext }): Promise<void> => {
+    for (const marker of UNFINISHED_OPERATION_MARKERS) {
+      const located = (await gitOutput({ repository: input.repository, args: ['rev-parse', '--git-path', marker], context: input.context })).trim()
+      if (existsSync(resolve(input.repository, located))) {
+        throw new ToolExecutionError(`a revert, cherry-pick, or merge is in progress in this repository (git keeps ${marker}); finish it or abort it first, and git_revert will not touch it`, { code: 'GIT_FAILED' })
+      }
+    }
+  }
+
   const requireClient = (): ForgeClient => {
     if (!forge.client) throw new ToolExecutionError('This node holds no forge credential; BUCKLE_FORGE_GITHUB_TOKEN is unset', { code: 'FORGE_UNCONFIGURED' })
     return forge.client
@@ -338,10 +354,12 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const target = await commitToRevert({ repository, commit, mainline: input.mainline, context })
         const files = await revertedPaths({ repository, ...target, mainline: input.mainline, context })
         assertNoFilters({ repository, paths: files })
+        await assertNoUnfinishedOperation({ repository, context })
         const reverted = await runGit({ repository, args: ['revert', '--no-edit', ...(input.mainline === undefined ? [] : ['--mainline', String(input.mainline)]), target.hash], extra: identity, context })
         if (reverted.exitCode !== 0) {
-          // A revert that stopped on a conflict is aborted by git's own sequencer, which puts back only what it wrote.
-          const stopped = (await runGit({ repository, args: ['rev-parse', '--verify', '--quiet', 'REVERT_HEAD'], context })).exitCode === 0
+          // Only this call's own stopped revert is aborted: none stood before it, and the one git left names the commit it undoes.
+          const left = await runGit({ repository, args: ['rev-parse', '--verify', '--quiet', 'REVERT_HEAD'], context })
+          const stopped = left.exitCode === 0 && left.stdout.trim() === target.hash
           if (stopped) await gitOutput({ repository, args: ['revert', '--abort'], context })
           throw new ToolExecutionError(scrub(`${describeProcessFailure('git', reverted)}${stopped ? `; ${REVERT_ABORTED}` : ''}`), { code: 'GIT_FAILED' })
         }

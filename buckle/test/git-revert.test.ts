@@ -19,7 +19,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 const IDENTITY = ['-c', 'user.name=owner', '-c', 'user.email=owner@example.com']
 
 function git(repository: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
+  return execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
 }
 
 /** A repository with three commits to a.txt and b.txt: first, second (a.txt two), third (b.txt changed). */
@@ -120,6 +120,44 @@ describe('git_revert', () => {
     expect(existsSync(join(repository, '.git', 'REVERT_HEAD'))).toBe(false)
     expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe('three\n')
     expect(readFileSync(join(repository, 'b.txt'), 'utf8')).toBe('unrelated\n')
+  })
+
+  // Review B1 of the Slice D rules review: a revert the owner has stopped on a conflict is theirs, and the tool's own
+  // `git revert --abort` (a `reset --merge`) must never run on it, so the call is refused and everything stays.
+  it.each([
+    ['a staged resolution', true],
+    ['an unmerged, half resolved file', false],
+  ])('refuses while the owner has a revert in progress, keeping %s and the revert state', async (_name, staged) => {
+    const repository = repositoryWithHistory()
+    writeFileSync(join(repository, 'a.txt'), 'three\n')
+    git(repository, ...IDENTITY, 'commit', '-q', '-am', 'fourth')
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    expect(() => git(repository, ...IDENTITY, 'revert', '--no-edit', 'HEAD~2')).toThrow()
+    const revertHead = git(repository, 'rev-parse', 'REVERT_HEAD').trim()
+    writeFileSync(join(repository, 'a.txt'), 'resolved by hand\n')
+    if (staged) git(repository, 'add', 'a.txt')
+    await expect(revert(repository, { commit: 'HEAD' })).rejects.toMatchObject({ message: expect.stringContaining('in progress') })
+    expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe('resolved by hand\n')
+    expect(git(repository, 'rev-parse', 'REVERT_HEAD').trim()).toBe(revertHead)
+    expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
+    expect(git(repository, 'status', '--porcelain', '--', 'a.txt')).toMatch(staged ? /^M {2}a\.txt/ : /^(UU|AA|DU|UD) a\.txt/)
+  })
+
+  it.each([
+    ['a cherry-pick', 'cherry-pick'],
+    ['a merge', 'merge'],
+  ])('refuses while the owner has %s stopped on a conflict, and leaves it as it is', async (_name, kind) => {
+    const repository = repositoryWithHistory()
+    git(repository, 'checkout', '-q', '-b', 'side', 'HEAD~2')
+    writeFileSync(join(repository, 'a.txt'), 'side\n')
+    git(repository, ...IDENTITY, 'commit', '-q', '-am', 'side')
+    git(repository, 'checkout', '-q', 'main')
+    expect(() => git(repository, ...IDENTITY, kind, ...(kind === 'merge' ? ['--no-edit', 'side'] : ['side']))).toThrow()
+    const state = kind === 'merge' ? 'MERGE_HEAD' : 'CHERRY_PICK_HEAD'
+    const before = readFileSync(join(repository, 'a.txt'), 'utf8')
+    await expect(revert(repository, { commit: 'HEAD' })).rejects.toMatchObject({ message: expect.stringContaining('in progress') })
+    expect(existsSync(join(repository, '.git', state))).toBe(true)
+    expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe(before)
   })
 
   it('refuses a commit named like a flag or naming no commit, before anything is reverted', async () => {
