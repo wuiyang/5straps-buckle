@@ -1,12 +1,14 @@
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename as nativeBasename, isAbsolute as nativeIsAbsolute, relative as nativeRelative, sep as nativeSeparator } from 'node:path'
 import { dirname, join, relative, resolve } from 'pathe'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
 import { resolveProgram, rootsOf, type Program, type UntrustedRoots } from '../../domain/executable.js'
-import { isInside } from '../../domain/paths.js'
-import { captureHashes } from './capture-hashes.js'
+import { isInside, isPlainName } from '../../domain/paths.js'
+import { logger } from '../../runtime/log.js'
+import { captureHashes, historyCapturePath } from './capture-hashes.js'
 import { snapshotSchema, type Snapshot } from './snapshot.js'
 
 export const DEFAULT_HISTORY_FILE_BYTES = 32 * 1_048_576
@@ -32,6 +34,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
   let primary: string | undefined = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : undefined
   let program: Program | null | undefined
   const exclusions = [...input.excluded, input.directory]
+  const warnedNames = new Set<string>()
   const safeEnv = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP', 'TMPDIR'].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]))
   const environment = { ...safeEnv, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: '', GIT_ATTR_NOSYSTEM: '1', GIT_LITERAL_PATHSPECS: '1', GIT_AUTHOR_NAME: 'Buckle history', GIT_AUTHOR_EMAIL: 'history@buckle.invalid', GIT_COMMITTER_NAME: 'Buckle history', GIT_COMMITTER_EMAIL: 'history@buckle.invalid' }
   const safety = ['-c', `core.hooksPath=${empty}`, '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.ignoreStat=false', '-c', 'core.trustctime=true', '-c', 'core.untrackedCache=false', '-c', 'commit.gpgSign=false', '-c', 'gc.auto=0', '-c', 'gc.writeCommitGraph=false', '-c', 'core.commitGraph=false', '-c', 'maintenance.auto=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', `core.attributesFile=${config}`, '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
@@ -65,15 +68,19 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     const roots = normalizedRoots(details.roots)
     program = historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
     const scanned = await captureHashes({ roots, excluded: [...exclusions, ...details.excluded ?? []], maxFileBytes: input.maxFileBytes(), hashFiles: !program, platform: input.platform ?? process.platform })
+    for (const [path, entry] of Object.entries(scanned)) if (entry.kind === 'excluded' && !isPlainName(nativeBasename(path), input.platform ?? process.platform) && !warnedNames.has(path)) {
+      const root = roots.find(root => nativeInside(root, path))
+      if (root) { warnedNames.add(path); logger.warn('History leaves out a name Buckle would read as another path', { root, name: gitName(root, path) }) }
+    }
     if (!program) return { snapshot: scanned, trees: [], restorable: false, reason: 'History records hashes only because content capture requires permitted trusted host git' }
     const combined: Snapshot = {}
     const trees: TreeCapture[] = []
     for (const root of roots) {
       const state = await prepare(root)
-      const selected = Object.fromEntries(Object.entries(scanned).filter(([path]) => isInside(root, path)))
+      const selected = Object.fromEntries(Object.entries(scanned).filter(([path]) => nativeInside(root, path)))
       const omitted = Object.entries(selected).filter(([, entry]) => entry.kind === 'excluded' || entry.kind === 'unreadable').map(([path]) => path)
       const excluded = [...exclusions, ...details.excluded ?? [], ...omitted]
-      writeFileSync(join(state.git, 'info', 'exclude'), excluded.filter(path => isInside(state.workTree, path)).map(path => `/${escapeIgnore(relative(state.workTree, path))}`).join('\n') + '\n', { mode: 0o600 })
+      writeFileSync(join(state.git, 'info', 'exclude'), excluded.filter(path => nativeInside(state.workTree, path)).map(path => `/${escapeIgnore(gitName(state.workTree, path))}`).join('\n') + '\n', { mode: 0o600 })
       const ignoredTracked = await git(state, ['ls-files', '-ci', '--exclude-standard', '-z'])
       if (ignoredTracked.length) await git(state, ['update-index', '--force-remove', '-z', '--stdin'], ignoredTracked)
       if (existsSync(root)) await git(state, ['add', '-A', '--', state.selector])
@@ -82,7 +89,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       const parent = details.parents?.find(value => value.root === root)?.commit
       const commit = (await git(state, ['commit-tree', tree, ...parent ? ['-p', parent] : []], `Buckle ${details.id} ${details.phase}\n`)).toString().trim()
       const listed = await loadTree({ ...state, commit, extra: {} })
-      const names = Object.keys(selected).filter(path => path !== state.workTree).map(path => relative(state.workTree, path))
+      const names = Object.keys(selected).filter(path => path !== state.workTree && isPlainName(nativeBasename(path), input.platform ?? process.platform)).map(path => gitName(state.workTree, path))
       const checked = names.length ? (await git(state, ['check-ignore', '--no-index', '--stdin', '-z', '-v', '--non-matching'], Buffer.from(names.join('\0') + '\0'), { GIT_LITERAL_PATHSPECS: '0' }, [0, 1])).toString().split('\0') : []
       const ignored = new Set<string>()
       for (let index = 0; index + 3 < checked.length; index += 4) {
@@ -91,6 +98,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       }
       const extra: Snapshot = {}
       for (const [path, entry] of Object.entries(selected)) {
+        if (entry.kind === 'excluded' && !isPlainName(nativeBasename(path), input.platform ?? process.platform)) { extra[path] = entry; continue }
         const inheritedIgnore = ignoredAncestor(path, state.workTree, ignored)
         if ((path !== root || entry.kind !== 'directory') && (ignored.has(path) || inheritedIgnore)) {
           if (!inheritedIgnore) extra[path] = { kind: 'excluded', mode: entry.mode, reason: 'ignored' }
@@ -114,7 +122,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     const raw = await git(captured, ['ls-tree', '-r', '-t', '-z', captured.commit])
     for (const row of raw.toString().split('\0').filter(Boolean)) {
       const tab = row.indexOf('\t'); const [mode, type, hash] = row.slice(0, tab).split(' '); const name = row.slice(tab + 1)
-      if (!hash || !mode || !type || !name || name.startsWith('/') || name.split('/').some(part => part === '..' || part === '.git')) throw new Error('Invalid path in history tree')
+      if (!hash || !mode || !type || !name || name.startsWith('/') || name.split('/').some(part => !isPlainName(part, input.platform ?? process.platform) || part === '.git')) throw new Error('Invalid path in history tree')
       const path = join(captured.workTree, name)
       if (!isInside(captured.root, path)) continue
       if (type === 'tree') result[path] = { kind: 'directory', mode: 0o755 }
@@ -244,6 +252,8 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
   return { capture, loadTree, changed, restoreContent, removeRefs, reconcile, reparent, collect, pruneLoose, reachableBytes, get available() { return historyGitProgram({ allowed: input.allowed(), roots: [], ...(input.untrusted ? { untrusted: input.untrusted() } : {}) }) !== null }, bytes: () => storeBytes(input.directory) }
 }
 
+function nativeInside(root: string, path: string): boolean { const below = nativeRelative(root, path); return below === '' || below !== '..' && !below.startsWith(`..${nativeSeparator}`) && !nativeIsAbsolute(below) }
+function gitName(root: string, path: string): string { return historyCapturePath({ path: nativeRelative(root, path), platform: process.platform }) }
 function normalizedRoots(roots: string[]): string[] { return [...new Set(roots.map(root => resolve(root)))].filter(root => !roots.some(parent => parent !== root && lstatSync(parent, { throwIfNoEntry: false })?.isDirectory() && isInside(parent, root))) }
 function ignoredAncestor(path: string, root: string, ignored: Set<string>): boolean {
   let parent = dirname(path)

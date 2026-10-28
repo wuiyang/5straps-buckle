@@ -28,6 +28,16 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...actual, ...replaced, default: { ...actual, ...replaced } }
 })
 
+vi.mock('node:worker_threads', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:worker_threads')>()
+  const fault = `const heldFs = require('node:fs'); const streamFile = heldFs.createReadStream; heldFs.createReadStream = function(path, options) { if (String(path).endsWith('held-open')) throw Object.assign(new Error('held file'), { code: 'EBUSY' }); if (String(path).endsWith('locked-range')) return new (require('node:stream').Readable)({ read() { this.destroy(Object.assign(new Error('locked range'), { code: 'EBUSY' })) } }); return streamFile(path, options) };`
+  return { ...actual, Worker: class extends actual.Worker {
+    constructor(filename: ConstructorParameters<typeof actual.Worker>[0], options?: ConstructorParameters<typeof actual.Worker>[1]) {
+      super(typeof filename === 'string' && options?.eval ? fault + filename : filename, options)
+    }
+  } }
+})
+
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 

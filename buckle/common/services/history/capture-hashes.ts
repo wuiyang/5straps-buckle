@@ -71,7 +71,7 @@ async function scanWorkspace(input: HashCaptureInput): Promise<Snapshot> {
     }
     const overCap = stat.size > input.maxFileBytes
     try {
-      const contentHash = input.hashFiles || overCap ? await hash(path) : undefined
+      const contentHash = input.hashFiles || overCap || input.platform === 'win32' ? await hash(path) : undefined
       const after = fs.lstatSync(path)
       if (stat.ino !== after.ino || stat.dev !== after.dev || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) throw new Error('File changed during history capture; retry when the workspace is idle')
       result[path] = { kind: overCap ? 'excluded' : 'file', mode, ...(overCap ? { size: stat.size, reason: 'size' as const } : {}), ...(contentHash ? { hash: contentHash } : {}) }
