@@ -12,7 +12,7 @@ import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerou
 import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
-import { createPathView } from '../common/domain/path-view.js'
+import { createPathView, type PathView } from '../common/domain/path-view.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -29,8 +29,8 @@ function lookup(granted: Partial<Record<PermissionRuleId, string[]>> = {}): Gran
   return { subjectsFor: rule => granted[rule] ?? [] }
 }
 
-function engine(input: { deletes?: DeletePolicy; rules?: Array<{ path: string; write?: 'deny' | 'ask' }> } = {}) {
-  const paths = createPathView({ root: WORKSPACE, mount: null, scratchRoots: [SCRATCH] })
+function engine(input: { deletes?: DeletePolicy; rules?: Array<{ path: string; write?: 'deny' | 'ask' }>; paths?: PathView } = {}) {
+  const paths = input.paths ?? createPathView({ root: WORKSPACE, mount: null, scratchRoots: [SCRATCH] })
   const deletes = input.deletes ?? BUILT_IN_DELETE_POLICY
   return createPermissionEngine([
     createSensitivePathRule({ protectedRoots: [STATE] }),
@@ -43,6 +43,9 @@ function engine(input: { deletes?: DeletePolicy; rules?: Array<{ path: string; w
 const counted = (files: number, folders: number, more = false): TreeCount => ({ counted: true, files, folders, more })
 const removed = (path: string, input: { floor?: boolean; tree?: TreeCount; moved?: true } = {}): ResolvedEffect => ({ kind: 'delete_path', path, directory: path.slice(0, path.lastIndexOf('/')) || '/', floor: input.floor ?? true, ...(input.tree ? { tree: input.tree } : {}), ...(input.moved ? { moved: true as const } : {}) })
 const files = (count: number, folder = `${WORKSPACE}/src`) => Array.from({ length: count }, (_, index) => removed(`${folder}/file-${index}.ts`))
+// A call carries 100 paths at most, so what takes one past the limit is folders removed whole: a folder of `entries` is itself and what it holds.
+const folder = (name: string, entries: number) => removed(`${WORKSPACE}/src/${name}`, { tree: counted(entries - 1, 0) })
+const folders = (count: number, entries: number) => Array.from({ length: count }, (_, index) => folder(`dir-${index}`, entries))
 
 function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<PermissionRuleId, string[]>>, input?: Parameters<typeof engine>[0]) {
   return engine(input).evaluate({ tool: 'fs_delete', effects, grants: lookup(granted) })
@@ -88,15 +91,45 @@ describe('a delete inside the workspace\'s folder under allow', () => {
   })
 })
 
+describe('a delete in a scratch root or a writable mount that lies inside the workspace\'s folder', () => {
+  const granted = { write_scope: [WORKSPACE] }
+  const views: Array<[string, PathView]> = [
+    ['scratch root', createPathView({ root: WORKSPACE, mount: null, scratchRoots: [`${WORKSPACE}/tmp`] })],
+    ['writable mount', createPathView({ root: WORKSPACE, mount: '/workspace', mounts: [{ source: `${WORKSPACE}/tmp`, target: '/tmp-data', access: 'rw' }] })],
+  ]
+
+  it.each(views)('is outside the folder for a %s: it asks at the floor and offers its folder, whatever the write grant says', (_name, paths) => {
+    expect(evaluate([removed(`${WORKSPACE}/tmp/x.txt`)], granted, { paths })).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete:${WORKSPACE}/tmp`, widerSubject: `delete-below:${WORKSPACE}/tmp` }] })
+    expect(evaluate([removed(`${WORKSPACE}/tmp/cache`, { tree: counted(3, 0) })], granted, { paths })).toMatchObject({ kind: 'ask', asks: [{ subject: `delete-tree:${WORKSPACE}/tmp/cache` }] })
+  })
+
+  it.each(views)('leaves the rest of the folder beside a %s under the write gate', (_name, paths) => {
+    expect(evaluate([removed(`${WORKSPACE}/src/x.txt`)], granted, { paths }).kind).toBe('allow')
+  })
+
+  it.each(views)('counts nothing a %s holds toward the mass-delete guard', (_name, paths) => {
+    expect(subjects(evaluate([...folders(2, 50), removed(`${WORKSPACE}/tmp/x.txt`)], granted, { paths }))).toEqual([`delete:${WORKSPACE}/tmp`])
+  })
+})
+
 describe('the mass-delete guard', () => {
   const granted = { write_scope: [WORKSPACE] }
 
-  it('asks once, under delete-batch, for one call that deletes more than 100 entries, and lets 100 through', () => {
-    const outcome = evaluate(files(101), granted)
+  it('asks once, under delete-batch, for one call whose folders and files together pass 100 entries, and lets 100 through', () => {
+    const outcome = evaluate(folders(3, 40), granted)
     expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete-batch:${WORKSPACE}`, offeredScopes: ['once', 'session', 'always'] }] })
-    if (outcome.kind === 'ask') expect(outcome.asks[0]!.reason).toBe('This call deletes 101 entries in the workspace at once, more than 100, so a person decides, though the workspace allows deletes in its folder')
+    if (outcome.kind === 'ask') expect(outcome.asks[0]!.reason).toBe('This call deletes 120 entries in the workspace at once, more than 100, so a person decides, though the workspace allows deletes in its folder')
+    expect(evaluate(folders(2, 50), granted).kind).toBe('allow')
+    expect(evaluate([...folders(2, 50), removed(`${WORKSPACE}/src/one.ts`)], granted).kind).toBe('ask')
     expect(evaluate(files(100), granted).kind).toBe('allow')
-    expect(evaluate(files(101), { write_scope: [WORKSPACE, `delete-batch:${WORKSPACE}`] })).toMatchObject({ kind: 'allow', allowedBy: expect.arrayContaining([`write_scope:delete-batch:${WORKSPACE}`]) })
+    expect(evaluate([...files(100), folder('small', 2)], granted).kind).toBe('ask')
+    expect(evaluate(folders(3, 40), { write_scope: [WORKSPACE, `delete-batch:${WORKSPACE}`] })).toMatchObject({ kind: 'allow', allowedBy: expect.arrayContaining([`write_scope:delete-batch:${WORKSPACE}`]) })
+  })
+
+  it('counts a folder as itself and all it holds, not as one entry', () => {
+    expect(evaluate([folder('a', 60), folder('b', 40)], granted).kind).toBe('allow')
+    expect(evaluate([folder('a', 60), folder('b', 41)], granted).kind).toBe('ask')
+    expect(evaluate([folder('a', 1), folder('b', 1), folder('c', 1)], granted).kind).toBe('allow')
   })
 
   it('counts a folder removed whole with everything it holds, under its own delete-tree subject', () => {
@@ -121,7 +154,7 @@ describe('the mass-delete guard', () => {
 
   it('asks about a large folder by itself and counts the rest of the call apart from it', () => {
     expect(subjects(evaluate([removed(`${WORKSPACE}/src/generated`, { tree: counted(150, 0) }), ...files(99)], granted))).toEqual([`delete-tree:${WORKSPACE}/src/generated`])
-    expect(subjects(evaluate([removed(`${WORKSPACE}/src/generated`, { tree: counted(150, 0) }), ...files(101)], granted)).sort()).toEqual([`delete-batch:${WORKSPACE}`, `delete-tree:${WORKSPACE}/src/generated`])
+    expect(subjects(evaluate([removed(`${WORKSPACE}/src/generated`, { tree: counted(150, 0) }), ...folders(3, 40)], granted)).sort()).toEqual([`delete-batch:${WORKSPACE}`, `delete-tree:${WORKSPACE}/src/generated`])
   })
 
   it('counts no folder moved whole, which lands elsewhere with all it holds', () => {
@@ -130,13 +163,13 @@ describe('the mass-delete guard', () => {
 
   it('is off at a limit of 0', () => {
     const off = { deletes: { inWorkspace: 'allow' as const, massLimit: 0 } }
-    expect(evaluate(files(500), granted, off).kind).toBe('allow')
+    expect(evaluate(folders(6, 100), granted, off).kind).toBe('allow')
     expect(evaluate([removed(`${WORKSPACE}/src`, { tree: counted(5_000, 50) })], granted, off).kind).toBe('allow')
   })
 
   it('is answered by the dangerously-allow switch, as every ask inside the workspace is', () => {
     const allowed = withDangerouslyAllow(engine(), { level: () => 'command', root: () => WORKSPACE })
-    expect(allowed.evaluate({ tool: 'fs_delete', effects: files(101), grants: lookup(granted) })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:command:write_scope:delete-batch:${WORKSPACE}`] })
+    expect(allowed.evaluate({ tool: 'fs_delete', effects: folders(3, 40), grants: lookup(granted) })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:command:write_scope:delete-batch:${WORKSPACE}`] })
   })
 })
 
@@ -147,12 +180,14 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+/** `scratch`: a folder inside the workspace's own that the node names a scratch root. */
+async function node(extra: Record<string, string> = {}, scratch?: string): Promise<{ workspace: string; runtime: BuckleRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-delete-policy-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...extra })
+  if (scratch !== undefined) mkdirSync(join(workspace, scratch))
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...(scratch === undefined ? {} : { BUCKLE_SCRATCH_ROOTS: join(workspace, scratch) }), ...extra })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
   return { workspace, runtime }
@@ -199,7 +234,7 @@ describe('the fs tools under the default delete policy', () => {
     expect(readFileSync(join(workspace, 'final.md'), 'utf8')).toBe('new')
   })
 
-  it('ask at the floor for a folder at the top of the workspace, and for one call past the limit', async () => {
+  it('ask at the floor for a folder at the top of the workspace, and let a call of exactly 100 entries through', async () => {
     const { runtime, workspace } = await node()
     mkdirSync(join(workspace, 'src/nested'), { recursive: true })
     writeFileSync(join(workspace, 'src/nested/a.ts'), 'a')
@@ -212,6 +247,61 @@ describe('the fs tools under the default delete policy', () => {
     expect(await call(runtime, 'fs_delete', { paths: [...paths] })).toMatchObject({ outcome: 'ok', output: { removed: 100 } })
     writeFileSync(join(workspace, 'logs/0.log'), '')
     expect(await call(runtime, 'fs_delete', { paths: ['logs'], recursive: true })).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, 'logs')}` }] })
+  })
+
+  it('move a folder whole without asking where writes are granted, whatever it holds and wherever it stands', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src/lib'), { recursive: true })
+    writeFileSync(join(workspace, 'src/lib/a.ts'), 'a')
+    mkdirSync(join(workspace, 'pkg'))
+    for (let index = 0; index < 101; index++) writeFileSync(join(workspace, `pkg/${index}.ts`), '')
+    await grantWrites(runtime)
+    expect(await call(runtime, 'fs_move', { from: 'src/lib', to: 'src/old-lib' })).toMatchObject({ outcome: 'ok' })
+    expect(await call(runtime, 'fs_move', { from: 'pkg', to: 'package' })).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(workspace, 'src/old-lib/a.ts'), 'utf8')).toBe('a')
+    expect(existsSync(join(workspace, 'package/100.ts'))).toBe(true)
+  })
+
+  it('delete a file with a patch without asking where writes are granted', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src'))
+    writeFileSync(join(workspace, 'src/gone.ts'), 'x\ny\n')
+    await grantWrites(runtime)
+    expect(await call(runtime, 'fs_apply_patch', { patch: '--- a/src/gone.ts\n+++ /dev/null\n@@ -1,2 +0,0 @@\n-x\n-y\n' })).toMatchObject({ outcome: 'ok' })
+    expect(existsSync(join(workspace, 'src/gone.ts'))).toBe(false)
+  })
+
+  it('ask once for several folders whose entries together pass the limit, and run them under a session grant of that ask', async () => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src'))
+    for (const name of ['a', 'b', 'c']) {
+      mkdirSync(join(workspace, `src/${name}`))
+      for (let index = 0; index < 40; index++) writeFileSync(join(workspace, `src/${name}/${index}.ts`), '')
+    }
+    await grantWrites(runtime)
+    const subject = `delete-batch:${runtime.paths().root}`
+    const asked = await call(runtime, 'fs_delete', { paths: ['src/a', 'src/b', 'src/c'], recursive: true }, [], 'folders-1')
+    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', subject }] })
+    expect(existsSync(join(workspace, 'src/a'))).toBe(true)
+    expect(await call(runtime, 'fs_delete', { paths: ['src/a', 'src/b'], recursive: true })).toMatchObject({ outcome: 'ok', output: { removed: 2 } })
+    await runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject, scope: 'session' })
+    expect(await call(runtime, 'fs_delete', { paths: ['src/c'], recursive: true })).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
+    mkdirSync(join(workspace, 'src/d'))
+    mkdirSync(join(workspace, 'src/e'))
+    for (let index = 0; index < 60; index++) writeFileSync(join(workspace, `src/d/${index}.ts`), '')
+    for (let index = 0; index < 60; index++) writeFileSync(join(workspace, `src/e/${index}.ts`), '')
+    expect(await call(runtime, 'fs_delete', { paths: ['src/d', 'src/e'], recursive: true })).toMatchObject({ outcome: 'ok', output: { removed: 2 } })
+  })
+
+  it('ask in a scratch root that lies inside the workspace\'s folder, which is outside the folder for deletes', async () => {
+    const { runtime, workspace } = await node({}, 'cache')
+    writeFileSync(join(workspace, 'cache/x.txt'), 'x')
+    writeFileSync(join(workspace, 'y.txt'), 'y')
+    await grantWrites(runtime)
+    const cache = join(runtime.paths().root, 'cache')
+    expect(await call(runtime, 'fs_delete', { paths: ['cache/x.txt'] })).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete:${cache}`, widerSubject: `delete-below:${cache}` }] })
+    expect(existsSync(join(workspace, 'cache/x.txt'))).toBe(true)
+    expect(await call(runtime, 'fs_delete', { paths: ['y.txt'] })).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
   })
 
   it('ask at the floor everywhere in the folder under files.deleteInWorkspace ask, and let through more under a higher limit', async () => {
