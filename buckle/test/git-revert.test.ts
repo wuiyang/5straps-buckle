@@ -160,6 +160,38 @@ describe('git_revert', () => {
     expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe(before)
   })
 
+  // Review M3 of the Slice D tests review: each guard is pinned on its own, a filter program defined where the config text
+  // does not say it (a worktree config) and a filter attribute with no driver defined anywhere.
+  it('refuses a filter program git resolves from the worktree config, which the revert would run on a restored .gitattributes', async () => {
+    const repository = repositoryWithHistory()
+    const marker = join(repository, 'filter-ran.txt')
+    writeFileSync(join(repository, 'filter.sh'), `#!/bin/sh\ntouch ${marker}\ncat\n`, { mode: 0o755 })
+    writeFileSync(join(repository, '.gitattributes'), 'a.txt filter=pwn\n')
+    git(repository, 'add', '.gitattributes')
+    git(repository, ...IDENTITY, 'commit', '-q', '-m', 'attributes')
+    git(repository, 'rm', '-q', '.gitattributes')
+    git(repository, ...IDENTITY, 'commit', '-q', '-m', 'no attributes')
+    git(repository, 'config', 'extensions.worktreeConfig', 'true')
+    git(repository, 'config', '--worktree', 'filter.pwn.smudge', join(repository, 'filter.sh'))
+    git(repository, 'config', '--worktree', 'filter.pwn.clean', join(repository, 'filter.sh'))
+    expect(readFileSync(join(repository, '.git', 'config'), 'utf8')).not.toMatch(/\[filter/)
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    await expect(revert(repository, { commit: 'HEAD' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('defines the git filter program') })
+    expect(existsSync(marker)).toBe(false)
+    expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
+  })
+
+  it('refuses a committed filter attribute, though no driver is defined anywhere', async () => {
+    const repository = repositoryWithHistory()
+    writeFileSync(join(repository, '.gitattributes'), 'a.txt filter=pwn\n')
+    writeFileSync(join(repository, 'a.txt'), 'four\n')
+    git(repository, 'add', '.')
+    git(repository, ...IDENTITY, 'commit', '-q', '-m', 'attributes and a change')
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    await expect(revert(repository, { commit: 'HEAD' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('gives a committed path a filter attribute') })
+    expect(git(repository, 'rev-parse', 'HEAD').trim()).toBe(head)
+  })
+
   it('refuses a commit named like a flag or naming no commit, before anything is reverted', async () => {
     const repository = repositoryWithHistory()
     await expect(revert(repository, { commit: '--abort' })).rejects.toMatchObject({ code: 'INVALID_TOOL_INPUT', message: expect.stringContaining('Not a usable commit name') })
@@ -175,7 +207,7 @@ describe('git_revert', () => {
     await expect(revert(repository, { commit: 'HEAD~1' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('merge driver') })
     git(repository, 'config', '--unset', 'merge.pwn.driver')
     git(repository, 'config', 'filter.pwn.smudge', join(repository, 'driver.sh'))
-    await expect(revert(repository, { commit: 'HEAD~1' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED' })
+    await expect(revert(repository, { commit: 'HEAD~1' })).rejects.toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('defines the git filter program') })
     git(repository, 'config', '--remove-section', 'filter.pwn')
     mkdirSync(join(repository, '.git', 'hooks'), { recursive: true })
     for (const hook of ['pre-commit', 'commit-msg', 'post-commit']) writeFileSync(join(repository, '.git', 'hooks', hook), `#!/bin/sh\ntouch ${marker}\n`, { mode: 0o755 })
