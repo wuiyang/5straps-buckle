@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
@@ -132,11 +132,9 @@ describe('a write that empties or halves a file the session never read', () => {
     const { runtime, workspace } = await node()
     writeFileSync(join(workspace, 'a.txt'), 'read')
     await call(runtime, 'fs_read', { path: 'a.txt' })
-    const asked = await call(runtime, 'fs_delete', { paths: ['a.txt'] })
-    const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
-    const done = await runtime.invoke({ request: { requestId: 'delete-again', tool: 'fs_delete', args: { paths: ['a.txt'] }, approvalTokens: tokens }, sessionId: 'agent' })
-    expect(done).toMatchObject({ outcome: 'ok' })
+    // Inside the workspace's folder, where writes are granted, a delete runs with no ask (the delete policy's default).
+    expect(await call(runtime, 'fs_delete', { paths: ['a.txt'] })).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
+    expect(existsSync(join(workspace, 'a.txt'))).toBe(false)
     writeFileSync(join(workspace, 'a.txt'), 'x'.repeat(5_000))
     expect(reasons(await call(runtime, 'fs_write', { path: 'a.txt', content: '' }))[0]).toContain('empties a file this session never read')
   })
