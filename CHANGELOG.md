@@ -1,6 +1,87 @@
 # Changelog
 
 
+## v0.1.8
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.7...v0.1.8)
+
+### 🚀 Enhancements
+
+- **policy:** Let the dangerously-allow switch take a command or all level ([4c63764](https://github.com/wuiyang/5straps-buckle/commit/4c63764))
+- **cli:** Read the ends, the token, and the node of buckle cp ([98132f1](https://github.com/wuiyang/5straps-buckle/commit/98132f1))
+- **fs:** Add fs_receive and fs_send, judged tools only a file copy runs ([a5acf43](https://github.com/wuiyang/5straps-buckle/commit/a5acf43))
+- **http:** Add PUT and GET /v1/files, with their workspace twins ([8489376](https://github.com/wuiyang/5straps-buckle/commit/8489376))
+- **cli:** Copy one file to or from a workspace with buckle cp ([31531ee](https://github.com/wuiyang/5straps-buckle/commit/31531ee))
+- **policy:** Add the delete_path effect and the file side of the destructive floor ([1884208](https://github.com/wuiyang/5straps-buckle/commit/1884208))
+- **fs:** Add fs_delete, which removes entries as themselves and always asks a person ([cae8bc1](https://github.com/wuiyang/5straps-buckle/commit/cae8bc1))
+- **fs:** Add fs_move, a safe move or rename with a replace flag ([c549dd3](https://github.com/wuiyang/5straps-buckle/commit/c549dd3))
+- **policy:** Ask at the floor when a write empties or halves an unread file, or rewrites many ([f6ee43d](https://github.com/wuiyang/5straps-buckle/commit/f6ee43d))
+- **policy:** A plain rm with a glob or several targets asks at the destructive floor ([7873ed0](https://github.com/wuiyang/5straps-buckle/commit/7873ed0))
+- **fs:** Search file contents with Buckle's own walker where ripgrep is not installed ([5e7f7f2](https://github.com/wuiyang/5straps-buckle/commit/5e7f7f2))
+- **fs:** Add fs_apply_patch, which applies a unified diff to several files all or nothing ([55adb18](https://github.com/wuiyang/5straps-buckle/commit/55adb18))
+- **policy:** Deny fs_delete, fs_move, and fs_apply_patch where fs_write is denied, and type them for scripts ([d006a8b](https://github.com/wuiyang/5straps-buckle/commit/d006a8b))
+
+### 🩹 Fixes
+
+- **workspaces:** Say what stops a 0.1 node's move when a record is held ([b003a66](https://github.com/wuiyang/5straps-buckle/commit/b003a66))
+- **workspaces:** Move held folders first, word a refused rename by platform ([9885b97](https://github.com/wuiyang/5straps-buckle/commit/9885b97))
+- **workspaces:** Move a registered workspace's held folders first too ([6973966](https://github.com/wuiyang/5straps-buckle/commit/6973966))
+- **cp:** Let the node answer a copy before its body without a reset ([407b4fd](https://github.com/wuiyang/5straps-buckle/commit/407b4fd))
+- **http:** Hold a copy for a person two minutes at most, not four ([7f6dd11](https://github.com/wuiyang/5straps-buckle/commit/7f6dd11))
+- **cp:** Refuse a copy between two workspaces before the node is asked ([4e34e0e](https://github.com/wuiyang/5straps-buckle/commit/4e34e0e))
+- **cp:** A download keeps its target's mode, follows its link, and is settled before the node is asked ([19a5d3b](https://github.com/wuiyang/5straps-buckle/commit/19a5d3b))
+- **cp:** Run each copy in a session of its own, and offer the one-time approval ([318fb76](https://github.com/wuiyang/5straps-buckle/commit/318fb76))
+- **fs:** Fs_receive refuses a folder or a trailing separator wherever it lands ([51f2cb5](https://github.com/wuiyang/5straps-buckle/commit/51f2cb5))
+- **http:** End a file send with its call, though the caller reads nothing ([428b4e3](https://github.com/wuiyang/5straps-buckle/commit/428b4e3))
+- **fs:** Try a rename over a file Windows holds open again, as the state files do ([7220e1f](https://github.com/wuiyang/5straps-buckle/commit/7220e1f))
+- **policy:** A denial of fs_write or fs_read also denies the copy tool, and the manifest drops a limit no copy can use ([9982588](https://github.com/wuiyang/5straps-buckle/commit/9982588))
+- **cp:** A refused chmod does not end a download that has all its bytes ([7eb654d](https://github.com/wuiyang/5straps-buckle/commit/7eb654d))
+- **cp:** Leave SIGHUP alone so nohup buckle cp survives a hangup ([6972045](https://github.com/wuiyang/5straps-buckle/commit/6972045))
+- **fs:** Fs_receive reads a trailing backslash as a folder only on Windows ([7ee17d6](https://github.com/wuiyang/5straps-buckle/commit/7ee17d6))
+- **cp:** A new local file takes the folder's ordinary mode, not 0600 ([d00e101](https://github.com/wuiyang/5straps-buckle/commit/d00e101))
+- **cli:** Say in buckle init that content search runs without rg, only slower ([2376e6a](https://github.com/wuiyang/5straps-buckle/commit/2376e6a))
+- **policy:** A folder moved whole meets the filesystem rules beneath it ([f92fc2a](https://github.com/wuiyang/5straps-buckle/commit/f92fc2a))
+- **policy:** The destructive-write check sizes base64 as decoded, caps fs_patch input, and follows moves ([6fa15c8](https://github.com/wuiyang/5straps-buckle/commit/6fa15c8))
+- **fs:** Fs_apply_patch anchors hunks by their context, bounds their search, reads git's empty-file blocks, and says what it wrote ([87baf77](https://github.com/wuiyang/5straps-buckle/commit/87baf77))
+- **fs:** The manifest names a searcher only where the tool policy lets the search run ([81f05f9](https://github.com/wuiyang/5straps-buckle/commit/81f05f9))
+- **fs:** The built-in search runs patterns in a worker, gives the node turns while it walks, and matches globs by ripgrep's rules ([14951c6](https://github.com/wuiyang/5straps-buckle/commit/14951c6))
+- **fs:** Fs_delete reports a removal the system refuses per path, and refuses a folder it cannot remove by name before removing anything ([aed7863](https://github.com/wuiyang/5straps-buckle/commit/aed7863))
+- **fs:** Fs_move names the right file in its refusals, undoes a failed move across devices fully, and tells case-only names and links apart ([2960956](https://github.com/wuiyang/5straps-buckle/commit/2960956))
+- **history:** A delete or a move is checkpointed from the entry, not from its whole folder ([9cd1737](https://github.com/wuiyang/5straps-buckle/commit/9cd1737))
+- **policy:** The refusal to remove a root compares by case where the volume does, and rm with expanded targets joins the floor ([6ba9eef](https://github.com/wuiyang/5straps-buckle/commit/6ba9eef))
+- **fs:** Fs_delete no longer says a person is always asked, as a delete grant for the folder lets it run ([2b4bda2](https://github.com/wuiyang/5straps-buckle/commit/2b4bda2))
+- **fs:** A **/ segment in a search glob ends only at a slash ([b947b62](https://github.com/wuiyang/5straps-buckle/commit/b947b62))
+- **fs:** Fs_move's replace flag must match what stands at the destination ([be3523b](https://github.com/wuiyang/5straps-buckle/commit/be3523b))
+- **fs:** The built-in search skips a file it cannot read and says why, instead of failing whole ([2198379](https://github.com/wuiyang/5straps-buckle/commit/2198379))
+- **fs:** Fs_patch writes replacement text literally ([3cd64d2](https://github.com/wuiyang/5straps-buckle/commit/3cd64d2))
+- **fs:** The built-in search steps past a whole code point after an empty match ([b8a0918](https://github.com/wuiyang/5straps-buckle/commit/b8a0918))
+- **fs:** Search globs match literal supplementary characters ([5cb1730](https://github.com/wuiyang/5straps-buckle/commit/5cb1730))
+- **fs:** Quoted diff paths keep their Unicode names ([391582e](https://github.com/wuiyang/5straps-buckle/commit/391582e))
+- **forge:** Git_push in a read-only mount runs from a private copy of the git directory ([cbb1fd0](https://github.com/wuiyang/5straps-buckle/commit/cbb1fd0))
+- **forge:** Git_push never pushes submodules, and its read-only copy is cleaned up without masking the push ([72d9cb1](https://github.com/wuiyang/5straps-buckle/commit/72d9cb1))
+
+### 💅 Refactors
+
+- **adapters:** Move replaceFile and its retry out of the state-file store ([be9d37c](https://github.com/wuiyang/5straps-buckle/commit/be9d37c))
+
+### 📖 Documentation
+
+- Give the dangerously-allow switch its command and all levels ([cb1ca64](https://github.com/wuiyang/5straps-buckle/commit/cb1ca64))
+- Say what a bare dangerously-allow on answers ([22a4293](https://github.com/wuiyang/5straps-buckle/commit/22a4293))
+- Say what to do when the move onto workspaces stops partway ([630600b](https://github.com/wuiyang/5straps-buckle/commit/630600b))
+- Name the browser and the codes where the move onto workspaces stops ([57ae718](https://github.com/wuiyang/5straps-buckle/commit/57ae718))
+- Say the held folders move first within each workspace ([cd720bb](https://github.com/wuiyang/5straps-buckle/commit/cd720bb))
+- Say the held-folder stop order holds on a first move ([74e8f3e](https://github.com/wuiyang/5straps-buckle/commit/74e8f3e))
+- Add the buckle cp page, and its routes and tools ([f3407cf](https://github.com/wuiyang/5straps-buckle/commit/f3407cf))
+- Make the buckle cp pages say what the code does ([206494a](https://github.com/wuiyang/5straps-buckle/commit/206494a))
+- List buckle cp, and say what the audit log and tool policy do with it ([b46522b](https://github.com/wuiyang/5straps-buckle/commit/b46522b))
+- Describe the file tools, the file floor, and search without rg ([85fdbbc](https://github.com/wuiyang/5straps-buckle/commit/85fdbbc))
+- Say what the file fixes changed, and restore the sentence and lists the file-tool docs trimmed ([021d3ab](https://github.com/wuiyang/5straps-buckle/commit/021d3ab))
+
+### ✅ Tests
+
+- **cli:** Keep buckle cp's Windows drive fixtures off a user folder ([88ccb27](https://github.com/wuiyang/5straps-buckle/commit/88ccb27))
+
 ## v0.1.7
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.6...v0.1.7)
