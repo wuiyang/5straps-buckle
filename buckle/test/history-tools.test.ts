@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
+import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { createHistoryPack } from '../common/services/packs/history/index.js'
@@ -58,6 +59,10 @@ describe('the history pack', () => {
     const tools = runtime.manifest().tools.filter(tool => tool.pack === 'history').map(tool => [tool.name, tool.risk])
     expect(tools).toEqual([['history_list', 'read'], ['history_restore', 'write']])
     expect(runtime.manifest().packs.find(pack => pack.id === 'history')).toMatchObject({ unavailableReason: null })
+  })
+
+  it('names each tool in a few words for the head line of a question', () => {
+    expect([actionPhrase('history_list'), actionPhrase('history_restore'), actionPhrase('git_revert')]).toEqual(['read the change history', 'restore files from the change history', 'revert a git commit'])
   })
 })
 
