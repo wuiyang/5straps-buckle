@@ -140,6 +140,51 @@ describe('an identical re-send (item 2)', () => {
     expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
   })
 
+  // Review of the MCP asks slice, finding major-1: the owner's reported case. Approving first lets the unclaimed once cover a
+  // new ask, so the test above passes with or without the join; this one sends the call again before any decision.
+  it('joins the abandoned ask when a client that closed its connection sends the call again before any decision, and runs once when approved', async () => {
+    const workspace = await node('60000')
+    const leaving = new AbortController()
+    const held = call(workspace, { ...writeOutside(workspace.root), signal: leaving.signal }).catch((error: unknown) => error)
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    const asked = workspace.runtime.approvalService.pending().map(request => request.token)
+    leaving.abort()
+    await held
+    await vi.waitFor(() => expect(results(workspace.runtime)).toContainEqual(expect.objectContaining({ detail: 'CALLER_LEFT' })))
+
+    // Sent again with a short wait, so the answer comes at once.
+    workspace.config.approvalTimeoutMs = 50
+    const again = await call(workspace, writeOutside(workspace.root))
+    const answer = InvokeResponseSchema.parse(again.structuredContent)
+    expect(answer).toMatchObject({ outcome: 'approval_required' })
+    expect(answer.outcome === 'approval_required' ? answer.approvals.map(approval => approval.token) : []).toEqual(asked)
+    expect(workspace.runtime.approvalService.pending().map(request => request.token)).toEqual(asked)
+
+    await approve(workspace.runtime)
+    const ran = await call(workspace, writeOutside(workspace.root))
+    expect(ran.isError).toBeUndefined()
+    expect(workspace.runtime.approvalService.pending()).toEqual([])
+    expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
+  })
+
+  // Review of the MCP asks slice, finding minor-1: the call a newer one superseded is still remembered, as the newer one is held.
+  it('joins a third identical call to the ask the second, which superseded the first, still holds', async () => {
+    const workspace = await node('60000')
+    const first = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    const asked = workspace.runtime.approvalService.pending().map(request => request.token)
+    const second = call(workspace, writeOutside(workspace.root))
+    expect((await first).content[0]!.text).toContain('REQUEST_SUPERSEDED')
+
+    const third = call(workspace, writeOutside(workspace.root))
+    expect((await second).content[0]!.text).toContain('REQUEST_SUPERSEDED')
+    expect(workspace.runtime.approvalService.pending().map(request => request.token)).toEqual(asked)
+
+    await approve(workspace.runtime)
+    expect((await third).isError).toBeUndefined()
+    expect(results(workspace.runtime).filter(entry => entry.outcome === 'ok')).toHaveLength(1)
+  })
+
   it('replays a run that answered later than the hold cap, as its client may have stopped reading, and never runs it again', async () => {
     const workspace = await node('60000')
     vi.useFakeTimers({ toFake: ['performance'] })
