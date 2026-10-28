@@ -1,8 +1,9 @@
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInitCommand, runSettingsCommand } from '../cli/main.js'
+import { serviceCommand, SERVICE_USAGE } from '../cli/service.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
 
@@ -91,5 +92,21 @@ describe('a help request writes no audit entry', () => {
     vi.stubEnv('BUCKLE_STATE_DIR', state)
     expect((await runSettingsCommand(['show'])).exitCode).toBe(0)
     expect(auditLines(state)).toHaveLength(2)
+  })
+
+  it.each([
+    [['install', '--help']],
+    [['install', '--now', '-h']],
+    [['uninstall', '--help']],
+    [['start', '-h']],
+    [['stop', '--help']],
+    [['restart', '-h']],
+  ])('buckle service %j prints the usage, exits 0, and audits nothing, though the state folder exists', async (rest) => {
+    mkdirSync(state, { mode: 0o700 })
+    const result = await serviceCommand({ argv: rest, environment: { HOME: base, PATH: '/usr/bin:/bin', BUCKLE_STATE_DIR: state }, platform: 'linux', cwd: base, run: vi.fn(), mainScript: join(base, 'main.js'), manager: () => null })
+    expect(result.exitCode).toBe(0)
+    expect(printed.out).toBe(SERVICE_USAGE)
+    expect(printed.err).toBe('')
+    expect(auditLines(state)).toEqual([])
   })
 })

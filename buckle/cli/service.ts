@@ -14,6 +14,7 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 import { ServiceManagerError, type InstalledService, type NodeLocation, type ServiceDefinition, type ServiceManager } from '../common/types/ports/service-manager.js'
+import { asksForHelp } from './help-request.js'
 
 export interface CliResult {
   exitCode: number
@@ -87,6 +88,10 @@ export async function serviceCommand(input: ServiceCommandInput): Promise<CliRes
   if (action === undefined || action === 'help' || action === '--help' || action === '-h') {
     ;(action === undefined ? err : out)(SERVICE_USAGE)
     return { exitCode: action === undefined ? 1 : 0 }
+  }
+  if (asksForHelp(rest)) {
+    out(SERVICE_USAGE)
+    return { exitCode: 0 }
   }
   let location: NodeLocation
   try { location = nodeLocation(input.environment, input.platform) } catch (error) { return fail(err, error instanceof Error ? error.message : String(error)) }

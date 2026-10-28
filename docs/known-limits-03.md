@@ -39,7 +39,7 @@ the sandbox layout, the URL list, the browser, and the forge pack.
 
 - `buckle --help`, `buckle serve --help`, and `buckle mcp --help` print the usage without reading
   any configuration. `--help` or `-h` after `init`, `settings`, `approve`, `approvals`, `check-url`,
-  `grants`, `history`, `plugin`, `policy`, `workspace`, `workspaces`, or `keys` prints that command's
+  `grants`, `history`, `plugin`, `policy`, `service`, `workspace`, `workspaces`, or `keys` prints that command's
   usage and writes no [audit log](audit-log.md) entry. `buckle mcp` takes `--workspace <name>` and `--dir <path>` alone: any other
   argument stops it with "Buckle failed to start", where 0.1 ignored one, so an MCP config left
   with an old argument starts nothing until the argument goes. `buckle serve` ignores an argument
