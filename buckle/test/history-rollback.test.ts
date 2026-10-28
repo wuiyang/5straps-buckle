@@ -94,7 +94,8 @@ describe('a restore to before a checkpoint', () => {
     await expect(history.rollback({ target: { steps: 3 }, by })).rejects.toThrow('Restore conflict')
     expect([read('a.txt'), read('b.txt')]).toEqual(['two', 'three'])
     writeFileSync(join(workspace, 'b.txt'), 'edited again')
-    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toThrow('Restore conflict')
+    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toBeInstanceOf(RestoreRefusedError)
+    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toMatchObject({ code: 'RESTORE_REFUSED', message: expect.stringContaining('Restore conflict') })
     expect(read('b.txt')).toBe('edited again')
   })
 

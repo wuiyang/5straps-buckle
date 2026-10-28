@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, WorkspacePolicySchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
@@ -140,6 +140,35 @@ describe('history_restore', () => {
     const again = await call(runtime, 'undo-1', 'history_restore', { id: oldest.id }, tokens)
     expect(again).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: expect.stringMatching(new RegExp(`^restore:${oldest.id}\\.\\.`)) }] })
     expect(readFileSync(join(workspace, 'c.txt'), 'utf8')).toBe('four')
+  })
+
+  // Review M2 of the Slice D tests review: the invoker hands the pack the plan the person was shown, and the pack's own
+  // check is only as good as that comparison, so a stale judged plan is pinned here through the whole runtime.
+  it('restores nothing where the history under the lock is not the plan the person approved', async () => {
+    const { runtime, workspace } = await node()
+    await threeWrites(runtime)
+    const asked = await call(runtime, 'undo-1', 'history_restore', { steps: 1 })
+    const tokens = await approveAll(runtime, asked)
+    const stale = await runtime.history.plan({ steps: 1 })
+    expect((await call(runtime, 'w-4', 'fs_write', { path: 'c.txt', content: 'four' })).outcome).toBe('ok')
+    const spy = vi.spyOn(runtime.history, 'plan').mockResolvedValue(stale)
+    try {
+      const refused = await call(runtime, 'undo-1', 'history_restore', { steps: 1 }, tokens)
+      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED', message: expect.stringContaining('moved since') } })
+    } finally { spy.mockRestore() }
+    expect([readFileSync(join(workspace, 'a.txt'), 'utf8'), readFileSync(join(workspace, 'c.txt'), 'utf8')]).toEqual(['three', 'four'])
+  })
+
+  // Review m1 of the Slice D tests review: a file changed by hand reaches the agent as a refusal that says so, not as a failed tool.
+  it('answers a file changed by hand since as a refused restore that names the conflict', async () => {
+    const { runtime, workspace } = await node()
+    await threeWrites(runtime)
+    const asked = await call(runtime, 'undo-1', 'history_restore', { steps: 1 })
+    const tokens = await approveAll(runtime, asked)
+    writeFileSync(join(workspace, 'a.txt'), 'edited by hand')
+    const refused = await call(runtime, 'undo-1', 'history_restore', { steps: 1 }, tokens)
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED', message: expect.stringContaining('Restore conflict') } })
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('edited by hand')
   })
 
   it('is refused before anything asks where steps reach past the history, and names neither id and steps nor both', async () => {
