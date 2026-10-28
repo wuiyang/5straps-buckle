@@ -117,8 +117,13 @@ export function readRepositoryConfig(repository: string): string {
  * would read a path nothing judged. The repository is refused instead.
  */
 function assertNoInclude(input: { repository: string; content: string }): void {
-  if (!input.content.split('\n').some(line => INCLUDE_LINE_PATTERN.test(line))) return
+  if (!includesAnotherFile(input.content)) return
   throw new ToolInputError(`${input.repository} has a git config that includes another file, so its origin is not the one this config names; the forge tools refuse it rather than following the include`, { code: 'PERMISSION_DENIED' })
+}
+
+/** Whether a git config's text holds an `[include]` or `[includeIf]` section. */
+export function includesAnotherFile(content: string): boolean {
+  return content.split('\n').some(line => INCLUDE_LINE_PATTERN.test(line))
 }
 
 export function gitDirectory(repository: string): string {

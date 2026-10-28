@@ -79,6 +79,7 @@ pack's git tools.
   link, whose git folder holds a `commondir` or `gitdir` file, or with a link at the top of its git
   folder, directly in `objects`, or under `refs` or `logs`, and a local push checks its destination
   the same way. A link deeper in `objects`, such as one pack file, goes unseen, and `git_push` makes
-  none of these checks on the repository it pushes from, so a commit or push can carry objects from
+  none of these checks on the repository it pushes from, except in a read-only mount
+  ([part nine](known-limits-09.md)), so a commit or push can carry objects from
   a store outside the workspace. `git_commit` judges none of the paths it stages: a named `.env` is
   committed with no credential-file ask.

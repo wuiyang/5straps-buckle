@@ -123,13 +123,13 @@ function bareOrigin(): { origin: string; repository: string } {
   return { origin, repository }
 }
 
-function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string }) {
+function pack(input: { repository: string; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string; git?: ForgePackOptions['git'] }) {
   const token = input.token ?? TOKEN
   const forgeApi = input.apiUrl ?? apiUrl
   const options: ForgePackOptions = {
     paths: input.paths ?? createPathView({ root: input.repository, mount: null }),
     runProcess: input.runner ?? runProcess,
-    git: { path: 'git', argv0: 'git', args: [] },
+    git: input.git ?? { path: 'git', argv0: 'git', args: [] },
     stateDirectory: input.stateDirectory ?? temporaryRoot('state'),
     forge: {
       client: token ? createGitHubForgeClient({ token, apiUrl: forgeApi }) : null,
@@ -144,7 +144,7 @@ function pack(input: { repository: string; token?: string; runner?: typeof runPr
   return createForgePack(options)
 }
 
-async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string }): Promise<JsonValue> {
+async function call(input: { repository: string; tool: string; args: JsonObject; token?: string; runner?: typeof runProcess; approved?: string[]; paths?: PathView; stateDirectory?: string; apiUrl?: string; git?: ForgePackOptions['git'] }): Promise<JsonValue> {
   const built = pack(input)
   const tool = built.tools.find(candidate => candidate.capability.name === input.tool)
   if (!tool) throw new Error(`the forge pack registered no ${input.tool}`)
@@ -503,6 +503,168 @@ describe('git_push', () => {
     const { repository } = bareOrigin()
     appendFileSync(join(repository, '.git', 'config'), '[include]\n\tpath = ../included-config\n')
     expect(() => effectsOf({ repository, tool: 'git_push', args: { branch: 'main' } })).toThrow(/includes another file/)
+  })
+})
+
+// Prepare release 0.1.8 on git 2.56: a push to a URL or a path moves the remote-tracking ref of the one remote whose
+// push URL is that string, origin here, and writes its reflog, in the repository it pushes from. From a mount the owner
+// shares read-only that was a write there (fix brief 6, item 5), so the push runs from a private copy of the git directory.
+describe('git_push from a mount the owner shares read-only runs from a private copy of the git directory', () => {
+  const PUSH_COPY_ENVIRONMENT = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_OBJECT_DIRECTORY']
+  const failedPush: ProcessResult = { exitCode: 1, signal: null, stdout: '', stderr: 'error: failed to push some refs\n', truncated: false, timedOut: false }
+
+  /** A repository with one commit and a local origin, or the one `origin` names, in a mount the view holds read-only at `/docs`. */
+  function readOnlyRepository(input: { init?: (repository: string) => void; origin?: (root: string) => string } = {}) {
+    const root = realpathSync(temporaryRoot('read-only'))
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const origin = input.origin?.(root) ?? join(root, 'origin.git')
+    if (!input.origin) execFileSync('git', ['init', '--bare', '-q', '-b', 'main', origin])
+    const repository = join(root, 'docs')
+    if (input.init) input.init(repository)
+    else execFileSync('git', ['init', '-q', '-b', 'main', repository])
+    git(repository, 'remote', 'add', 'origin', origin)
+    git(repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const paths = createPathView({ root: workspace, mount: '/workspace', mounts: [{ source: repository, target: '/docs', access: 'ro' }] })
+    return { root, origin, repository, paths, stateDirectory: join(root, 'state') }
+  }
+
+  /**
+   * A git that does what git 2.56 does beside a push to a URL or a path, whatever git runs it: once the real git has
+   * pushed, the remote-tracking ref of origin and its reflog are written in the git directory it pushed from.
+   */
+  function trackingGit(): string {
+    const real = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
+    const wrapper = join(temporaryRoot('tracking-git'), 'tracking-git')
+    writeFileSync(wrapper, [
+      '#!/bin/sh',
+      `"${real}" "$@" || exit $?`,
+      '[ "$1" = push ] || exit 0',
+      'for refspec in "$@"; do :; done',
+      'branch=${refspec%%:*}',
+      'branch=${branch#refs/heads/}',
+      'directory=${GIT_DIR:-.git}',
+      `sha=$("${real}" rev-parse "refs/heads/$branch") || exit 1`,
+      'mkdir -p "$directory/refs/remotes/origin" "$directory/logs/refs/remotes/origin"',
+      'printf \'%s\\n\' "$sha" > "$directory/refs/remotes/origin/$branch"',
+      'printf \'%s %s runner <runner@example.com> 1700000000 +0000\\tupdate by push\\n\' 0000000000000000000000000000000000000000 "$sha" >> "$directory/logs/refs/remotes/origin/$branch"',
+      '',
+    ].join('\n'), { mode: 0o755 })
+    return wrapper
+  }
+
+  it('hands the push alone a copy under the state directory, objects read in place, and removes the copy after', async () => {
+    const { origin, repository, paths, stateDirectory } = readOnlyRepository()
+    const calls: ProcessRequest[] = []
+    let copied: string[] = []
+    const runner: typeof runProcess = async (request) => {
+      calls.push(request)
+      const copy = request.args[0] === 'push' ? request.environment.GIT_DIR : undefined
+      if (copy) copied = readdirSync(copy, { recursive: true }).map(String).sort()
+      return await runProcess(request)
+    }
+    const output = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner }) as JsonObject
+    expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+    expect(output.note).toBe('The repository is in a mount the owner shares read-only, so git_push moved no remote-tracking ref in it')
+    const push = calls.find(request => request.args[0] === 'push')!
+    expect(String(push.environment.GIT_DIR).startsWith(`${join(stateDirectory, 'git-push')}/`)).toBe(true)
+    expect(push.environment.GIT_WORK_TREE).toBe(repository)
+    expect(push.environment.GIT_OBJECT_DIRECTORY).toBe(join(repository, '.git', 'objects'))
+    for (const request of calls.filter(request => request !== push)) {
+      for (const name of PUSH_COPY_ENVIRONMENT) expect(request.environment[name]).toBeUndefined()
+    }
+    expect(copied).toEqual(expect.arrayContaining(['HEAD', 'config', 'refs/heads/main']))
+    expect(copied.filter(name => /^(objects|logs|index|hooks|info)(\/|$)/.test(name))).toEqual([])
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+  })
+
+  it.skipIf(process.platform === 'win32')('leaves the repository\'s .git as it was, bytes and times, where git writes a remote-tracking ref beside the push', async () => {
+    const { origin, repository, paths, stateDirectory } = readOnlyRepository()
+    const tracking = { path: trackingGit(), argv0: 'git', args: [] }
+    const before = gitDirectoryState(join(repository, '.git'))
+    const output = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main', setUpstream: true }, paths, stateDirectory, git: tracking }) as JsonObject
+    expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+    expect(gitDirectoryState(join(repository, '.git'))).toEqual(before)
+    expect(output.note).toBe('The repository is in a mount the owner shares read-only, so git_push moved no remote-tracking ref and set no upstream in it')
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+
+    // In the writable workspace the same push leaves origin's ref where the push put it, and says nothing of a mount.
+    const writable = bareOrigin()
+    git(writable.repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
+    const pushed = await call({ repository: writable.repository, tool: 'git_push', args: { branch: 'main' }, git: tracking }) as JsonObject
+    expect(git(writable.repository, 'rev-parse', 'refs/remotes/origin/main').trim()).toBe(pushed.headSha)
+    expect(git(writable.origin, 'rev-parse', 'refs/heads/main').trim()).toBe(pushed.headSha)
+    expect(pushed).not.toHaveProperty('note')
+  })
+
+  it.skipIf(process.platform === 'win32')('pushes over https from the copy, which the https helper reads too, leaving the repository\'s .git as it was', async () => {
+    const projects = temporaryRoot('read-only-https')
+    const judged = join(projects, 'team', 'demo.git')
+    execFileSync('git', ['init', '--bare', '-q', '-b', 'main', judged])
+    const server = await startGitHttp({ projectRoot: projects })
+    try {
+      // Named as localhost, so it is not the scripted forge's host (127.0.0.1), whose token would be sent instead.
+      const display = `${server.url.replace('127.0.0.1', 'localhost')}/team/demo.git`
+      const { repository, paths, stateDirectory } = readOnlyRepository({ origin: () => display })
+      const before = gitDirectoryState(join(repository, '.git'))
+      const output = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, approved: [new URL(display).host], git: { path: trackingGit(), argv0: 'git', args: [] } }) as JsonObject
+      expect(git(judged, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+      expect(gitDirectoryState(join(repository, '.git'))).toEqual(before)
+      expect(output).toMatchObject({ remote: display, note: expect.stringContaining('mount the owner shares read-only') })
+      expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+    } finally { await server.close() }
+  }, 30_000)
+
+  it('copies packed-refs and shallow, and removes the copy when the push fails', async () => {
+    const { repository, paths, stateDirectory } = readOnlyRepository()
+    const head = git(repository, 'rev-parse', 'HEAD').trim()
+    git(repository, 'pack-refs', '--all')
+    writeFileSync(join(repository, '.git', 'shallow'), `${head}\n`)
+    let seen: { packedRefs: string; shallow: string } | null = null
+    const runner: typeof runProcess = async (request) => {
+      if (request.args[0] !== 'push') return await runProcess(request)
+      const copy = request.environment.GIT_DIR
+      if (copy) seen = { packedRefs: readFileSync(join(copy, 'packed-refs'), 'utf8'), shallow: readFileSync(join(copy, 'shallow'), 'utf8') }
+      return failedPush
+    }
+    const failed = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed?.code).toBe('GIT_FAILED')
+    expect(seen).toEqual({ packedRefs: readFileSync(join(repository, '.git', 'packed-refs'), 'utf8'), shallow: `${head}\n` })
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+  })
+
+  it('refuses, naming the repository by its mount, where its .git points at a git directory elsewhere', async () => {
+    const { root, origin, repository, paths, stateDirectory } = readOnlyRepository({ init: repository => execFileSync('git', ['init', '-q', '-b', 'main', `--separate-git-dir=${join(repository, '..', 'elsewhere.git')}`, repository]) })
+    const calls: ProcessRequest[] = []
+    const failed = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner: async (request) => { calls.push(request); return await runProcess(request) } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('The repository at /docs is in a mount the owner shares read-only') })
+    expect(failed?.message).not.toContain(root)
+    expect(calls.filter(request => request.args[0] === 'push')).toEqual([])
+    expect(git(origin, 'for-each-ref').trim()).toBe('')
+  })
+
+  it('refuses, naming the repository by its mount, where the copy cannot be made, and pushes nothing', async () => {
+    const { root, origin, repository, paths, stateDirectory } = readOnlyRepository()
+    mkdirSync(stateDirectory)
+    writeFileSync(join(stateDirectory, 'git-push'), 'not a folder\n')
+    const failed = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('The repository at /docs is in a mount the owner shares read-only') })
+    expect(failed?.message).not.toContain(root)
+    expect(git(origin, 'for-each-ref').trim()).toBe('')
+  })
+
+  // The repository's config is refused where it includes another file (readRepositoryConfig); a relative include in its
+  // config.worktree would be looked for beside the copy, so the push would read config no check before it saw.
+  it('refuses a repository whose config.worktree includes another file, and leaves no copy', async () => {
+    const { origin, repository, paths, stateDirectory } = readOnlyRepository()
+    git(repository, 'config', 'extensions.worktreeConfig', 'true')
+    writeFileSync(join(repository, '.git', 'config.worktree'), '[include]\n\tpath = ../../pushed.cfg\n')
+    const calls: ProcessRequest[] = []
+    const failed = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner: async (request) => { calls.push(request); return await runProcess(request) } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('its config.worktree includes another file') })
+    expect(calls.filter(request => request.args[0] === 'push')).toEqual([])
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+    expect(git(origin, 'for-each-ref').trim()).toBe('')
   })
 })
 
@@ -1049,6 +1211,15 @@ describe('a local push or a commit writes only the repository its permission che
     }
   })
 })
+
+/** Every entry under a git directory: its path, its bytes where it is a file, and its time, so any write shows (as mount-view.test.ts reads it). */
+function gitDirectoryState(directory: string): Array<[string, string, number]> {
+  return ['.', ...readdirSync(directory, { recursive: true }).map(String).sort()].map((name) => {
+    const path = join(directory, name)
+    const stats = statSync(path)
+    return [name, stats.isFile() ? readFileSync(path).toString('base64') : 'directory', stats.mtimeMs]
+  })
+}
 
 /** Every file below `root` with its size, so a write anywhere in it shows up as a difference. */
 function filesUnder(root: string): string[] {

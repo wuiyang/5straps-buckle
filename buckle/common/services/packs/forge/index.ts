@@ -20,6 +20,7 @@ import { describeProcessFailure } from '../process-failure.js'
 import { configuredFilterPrograms, ensureHooksDirectory, gitConfigEnvironment, isolationConfig, ISOLATION_ENVIRONMENT, transportConfig, type GitConfig } from '../git-isolation.js'
 import { assertNoFilters, assertNoFilterPrograms } from './isolation.js'
 import { assertGitAgrees, GIT_DIRECTORY_QUERY, ownGitDirectory } from './own-git-directory.js'
+import { privateGitDirectory } from './private-git-directory.js'
 import { guardedReceivePackCommand, receiveGuard } from './receive-pack-guard.js'
 import { classifyRemote, readOriginUrl, remoteSubject, repositoryOf, type ForgeRemote } from './remote.js'
 
@@ -318,14 +319,24 @@ export function createForgePack(options: ForgePackOptions): Pack {
         const refspec = `refs/heads/${branch}:refs/heads/${branch}`
         // A remote's own stderr is never read as Buckle's refusal: an https push that fails is a failed push.
         const receiving: ReceivingGit = destination.kind === 'local' ? await guardedReceivePack({ repository: destination.path, context }) : { command: 'git-receive-pack', environment: {} }
-        await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: receiving.environment, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
-        const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         // A repository in a mount the owner shares read-only is written nothing, its refs and config included (fix brief
-        // 6, item 5): the push is made, and the result says what was left as it was.
-        if (paths.mountOf(repository)?.access === 'ro') {
+        // 6, item 5): the push is made, and the result says what was left as it was. Git 2.56 writes the remote-tracking
+        // ref of the remote whose push URL is the destination, and its reflog, beside the push, so there the push runs on
+        // a private copy of the git directory, the objects read in place. Git drops GIT_DIR, GIT_WORK_TREE, and
+        // GIT_OBJECT_DIRECTORY from the receive-pack it starts for a local destination (local_repo_env, connect.c), and an
+        // https push's receive-pack runs on the remote, so only the pushing git and the helpers it starts read the copy.
+        const readOnly = paths.mountOf(repository)?.access === 'ro'
+        const source = readOnly ? privateGitDirectory({ repository, stateDirectory: options.stateDirectory, shown: paths.display(repository) }) : null
+        try {
+          await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: { ...receiving.environment, ...source?.environment }, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
+        } finally { source?.remove() }
+        const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
+        if (readOnly) {
           return { branch, remote: destination.display, headSha, note: `The repository is in a mount the owner shares read-only, so git_push moved no remote-tracking ref${input.setUpstream ? ' and set no upstream' : ''} in it` }
         }
-        // A push to a URL moves no remote-tracking ref; origin named this destination at launch, so its ref follows.
+        // Git before 2.56 moves no remote-tracking ref for a push to a URL or a path; git 2.56 moves that of the one remote
+        // whose push URL is that same string, origin's when origin spells the destination as it is pushed to. Origin
+        // named this destination at launch, so its ref follows, whichever git ran.
         await gitOutput({ repository, args: ['update-ref', `refs/remotes/origin/${branch}`, headSha], context })
         if (input.setUpstream) {
           await gitOutput({ repository, args: ['config', `branch.${branch}.remote`, 'origin'], context })
