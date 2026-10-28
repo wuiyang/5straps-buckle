@@ -5,8 +5,9 @@ import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { copyCommand } from '../../cli/copy.js'
+import { FILES_HOLD_MS } from '../../layers/common/server/utils/files.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 
@@ -57,6 +58,21 @@ async function settled(tool: string, count = 1): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 50))
   }
 }
+
+// The MCP asks brief, item 6: whatever the workspace waits, 0 (until decided) or longer than node:http's 300 seconds for
+// a request to arrive whole, a copy's call is held for FILES_HOLD_MS at most, so the route answers approval_required
+// before node:http cuts the request with 408.
+describe('the hold of a copy', () => {
+  it.each([null, 600_000])('is FILES_HOLD_MS at most, on PUT and GET alike, at a workspace wait of %s', async (wait) => {
+    const managed = await (await buckle.common.services.getWorkspaces()).resolve(buckle.runtime.workspaceId)
+    managed.config.approvalTimeoutMs = wait
+    const invoke = vi.spyOn(buckle.runtime, 'invoke').mockImplementation(async call => ({ requestId: call.request.requestId, outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'held', retryable: false } }))
+    await (await put('held.txt', Buffer.from('held'))).text()
+    await (await get('held.txt')).text()
+    expect(invoke.mock.calls.map(([call]) => call.approvalWait)).toEqual([{ mode: 'finite', ms: FILES_HOLD_MS }, { mode: 'finite', ms: FILES_HOLD_MS }])
+    expect(FILES_HOLD_MS).toBeLessThan(300_000)
+  })
+})
 
 describe('PUT /v1/files', () => {
   it('answers approval_required as /v1/invoke does, the body unread, then runs once the ask is approved, joined by its requestId', async () => {
@@ -248,7 +264,7 @@ describe('buckle cp against this node', () => {
     const copying = copyCommand([join(here, 'app.tgz'), `${workspaceName}:`, '--node', node], { BUCKLE_AUTH_TOKEN: TOKEN }, io)
     const token = await Promise.race([waitingToken('fs_receive'), copying.then((result) => { throw new Error(`buckle cp ended before it asked: ${JSON.stringify(result)} ${err}`) })])
     // The ask is registered before the node answers the held PUT with it: approve once the copy has said it is waiting.
-    await until(() => err.includes('Waiting for the approval...'))
+    await until(() => err.includes('Waiting for approval of write_scope '))
     await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'always' }, 'admin')
     expect(await copying).toEqual({ exitCode: 0 })
     expect(err).toContain(`then approve with: buckle approve ${token} --scope once --workspace ${workspaceName}`)

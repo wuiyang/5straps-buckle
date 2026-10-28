@@ -22,7 +22,7 @@ export const COPY_USAGE = `Usage: buckle cp <from> <to> [--node <url>] [--token-
 
 Copies one file between this machine and a workspace on a Buckle node. The bytes go over the node's HTTP face, never
 through an agent, and the node judges each copy as it judges fs_write and fs_read: a copy that needs a person waits
-here until it is approved at the node, or denied.
+here until it is approved at the node, or denied, sent again under the same request; Ctrl-C stops it.
 
   <path> or local:<path>     a file on this machine
   <workspace>:<path>         a file in that workspace, by its name or id; <path> as fs_write takes it there,
@@ -44,7 +44,7 @@ Exits 0 once copied, 1 when the node or the copy refuses, 2 on a command line it
 
 /** How long a connection to the node may take, as buckle client waits (cli/client.ts). */
 const CONNECT_TIMEOUT_MS = 30_000
-/** How often a copy waiting for a person is sent again; the node holds each one for its own wait first. */
+/** The pause before a copy waiting for a person is sent again; the node holds each send for its own wait first. */
 const POLL_MS = 2_000
 /** The mode a download's partial file has while it fills where nothing is replaced: owner only, as the workspace's file may be a secret. */
 const PARTIAL_MODE = 0o600
@@ -187,28 +187,42 @@ async function download(client: NodeClient, from: WorkspaceEnd, to: LocalEnd): P
   return { size: output.size, sha256: output.sha256, end: { kind: 'local', path: target } }
 }
 
-/** What one send came to: the node's answer, or the asks a person has yet to answer. */
-type Attempt = { kind: 'answered'; answer: InvokeResponse } | { kind: 'asked'; approvals: ApprovalRequest[] }
+/**
+ * What one send came to: the node's answer, the asks a person has yet to answer, or a send node:http cut at its 300
+ * seconds for a request to arrive whole (HTTP 408), which a copy held for a person meets on a node that holds it longer.
+ */
+type Attempt = { kind: 'answered'; answer: InvokeResponse } | { kind: 'asked'; approvals: ApprovalRequest[] } | { kind: 'timed_out' }
 
 /**
- * Sends the copy until a person has decided its asks: each approval_required prints the node's instruction once per ask,
- * as an agent is told it, and waits, then sends the same request again under the same requestId, which joins those asks.
- * An ask that expires unanswered ends the wait.
+ * Sends the copy until a person has decided its asks (the MCP asks brief, item 6). An approval_required prints the node's
+ * instruction once per ask, as an agent is told it, and one line naming the asks it waits on, never a token; a 408 prints
+ * one line too. Each is followed, after a short pause, by the same request under the same requestId, which joins the asks
+ * still waiting, so the node's own hold paces the sends. An ask that expired is asked again by the next send, and its
+ * fresh ask shown. It ends once the copy runs or is refused, or at Ctrl-C (guardSignals).
  */
 async function untilDecided(client: NodeClient, workspace: string, send: () => Promise<Attempt>): Promise<InvokeResponse> {
   const shown = new Set<string>()
+  let held = false
   for (;;) {
     const attempt = await send()
     if (attempt.kind === 'answered') return attempt.answer
-    const fresh = attempt.approvals.filter(approval => !shown.has(approval.token))
-    if (fresh.length > 0) {
-      client.stderr.write(`${instruction({ approvals: fresh, workspace, node: client.node })}\nWaiting for the approval...\n`)
+    if (attempt.kind === 'timed_out' && !held) client.stderr.write(`${TIMED_OUT}\n`)
+    if (attempt.kind === 'timed_out') held = true
+    else {
+      const fresh = attempt.approvals.filter(approval => !shown.has(approval.token))
+      if (fresh.length > 0) client.stderr.write(`${instruction({ approvals: fresh, workspace, node: client.node })}\n${waitingLine(attempt.approvals)}\n`)
       for (const approval of fresh) shown.add(approval.token)
     }
-    const expires = Math.min(...attempt.approvals.map(approval => Date.parse(approval.expiresAt)))
-    if (Date.now() >= expires) throw new CopyRefusal('The approval expired before anyone answered it, so nothing was copied')
     await delay(client.pollMs)
   }
+}
+
+const TIMED_OUT = 'The node held the copy past the time it gives a request (HTTP 408); it waits for approval, so it is sent again under the same request'
+
+/** The asks a copy waits on, by rule and subject, in one line that names no token. */
+function waitingLine(approvals: ApprovalRequest[]): string {
+  const asks = approvals.map(approval => `${printable(approval.rule)} ${printable(approval.subject)}`).join('; ')
+  return `Waiting for approval of ${asks}; sending the copy again under the same request until it is decided (Ctrl-C stops)`
 }
 
 /** The node's instruction for each ask, in the words an agent relays (approval-instruction.ts): run at the node. */
@@ -389,6 +403,7 @@ async function readAnswer(client: NodeClient, workspace: string, response: Incom
   const answer = isInvokeResponse(parsed) ? parsed : null
   if (answer?.outcome === 'approval_required') return { kind: 'asked', approvals: answer.approvals }
   if (answer) return { kind: 'answered', answer }
+  if (status === 408) return { kind: 'timed_out' }
   if (status === 404 || status === 405) throw new CopyRefusal(`${OLD_NODE} (${client.node.origin} answered HTTP ${status})`)
   if (status === 401) throw new CopyRefusal(`The node refused the token from ${client.tokenSource} (HTTP 401): it is no agent token of workspace ${printable(workspace)} on ${client.node.origin}`)
   const said = parsed !== null && typeof parsed === 'object' && typeof (parsed as { error?: unknown }).error === 'string' ? (parsed as { error: string }).error : (parsed as { message?: unknown } | null)?.message

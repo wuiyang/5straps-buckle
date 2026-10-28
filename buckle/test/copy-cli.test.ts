@@ -51,10 +51,14 @@ function json(status: number, body: unknown): Answer {
 
 const ok = (seen: Seen) => ({ requestId: String(seen.headers['x-buckle-request-id']), outcome: 'ok', output: { path: seen.query.get('path'), size: seen.body.byteLength, sha256: sha256(seen.body) }, meta: { durationMs: 1, truncated: false } })
 const received: Answer = (seen, response) => json(200, ok(seen))(seen, response)
-const asked = (expiresInMs = 600_000): Answer => (seen, response) => json(200, {
+const asked = (expiresInMs = 600_000, token = '3f6c1a2b-0000-4000-8000-000000000000'): Answer => (seen, response) => json(200, {
   requestId: seen.headers['x-buckle-request-id'], outcome: 'approval_required',
-  approvals: [{ token: '3f6c1a2b-0000-4000-8000-000000000000', rule: 'write_scope', subject: '/srv/site', reason: 'Writing to /workspace is not yet approved', tool: 'fs_receive', offeredScopes: ['once', 'session', 'always'], expiresAt: new Date(Date.now() + expiresInMs).toISOString() }],
+  approvals: [{ token, rule: 'write_scope', subject: '/srv/site', reason: 'Writing to /workspace is not yet approved', tool: 'fs_receive', offeredScopes: ['once', 'session', 'always'], expiresAt: new Date(Date.now() + expiresInMs).toISOString() }],
 })(seen, response)
+/** What node:http answers a request it held past its 300 seconds to arrive whole: 408, and the connection closed. */
+const timedOut: Answer = (_seen, response) => { response.writeHead(408, { connection: 'close' }); response.end() }
+/** The one line a copy waiting for a person prints for its asks, naming each and never its token. */
+const WAITING = 'Waiting for approval of write_scope /srv/site; sending the copy again under the same request until it is decided (Ctrl-C stops)'
 
 function sent(content: Buffer): Answer {
   return (_seen, response) => { response.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(content.byteLength), 'x-buckle-sha256': sha256(content) }); response.end(content) }
@@ -108,7 +112,7 @@ describe('buckle cp into a workspace', () => {
     expect(result.err).toContain('This copy needs a person to approve it at the node, with these commands there:')
     expect(result.err).toContain(`  waiting on node ${node.url}, workspace site\n`)
     expect(result.err).toContain('  then approve with: buckle approve 3f6c1a2b-0000-4000-8000-000000000000 --scope once --workspace site')
-    expect(result.err.match(/Waiting for the approval\.\.\./g)).toHaveLength(1)
+    expect(result.err.split('\n').filter(line => line.startsWith('Waiting for approval'))).toEqual([WAITING])
     expect(node.seen).toHaveLength(3)
     expect(new Set(node.seen.map(seen => seen.headers['x-buckle-request-id'])).size).toBe(1)
     expect(node.seen.every(seen => seen.query.get('path') === '.')).toBe(true)
@@ -134,15 +138,46 @@ describe('buckle cp into a workspace', () => {
     expect(node.seen.map(seen => seen.query.get('path'))).toEqual(['/srv/releases', '/srv/releases', '/srv/releases/app.tgz'])
   })
 
-  it('exits 1 with the node\'s words on a denial, a refusal, and an ask that expired unanswered', async () => {
+  // The MCP asks brief, item 6: a copy the node held past node:http's 300 seconds is answered 408 there, and waits on.
+  it('treats an HTTP 408 as a copy still waiting: one line, the same request again under its requestId, until it runs', async () => {
+    const node = await fakeNode([timedOut, asked(), timedOut, received])
+    const { file, content } = local()
+    const result = await cp([file, 'site:a.tgz', '--node', node.url])
+    expect(result).toMatchObject({ exitCode: 0, out: `Copied ${content.byteLength} bytes to site:a.tgz (sha256 ${sha256(content)})\n` })
+    expect(node.seen).toHaveLength(4)
+    expect(new Set(node.seen.map(seen => seen.headers['x-buckle-request-id'])).size).toBe(1)
+    const lines = result.err.split('\n')
+    expect(lines.filter(line => line.startsWith('The node held the copy'))).toEqual(['The node held the copy past the time it gives a request (HTTP 408); it waits for approval, so it is sent again under the same request'])
+    expect(lines.filter(line => line.startsWith('Waiting for approval'))).toEqual([WAITING])
+    expect(lines.filter(line => line.startsWith('Waiting for approval') || line.startsWith('The node held')).join('\n')).not.toContain('3f6c1a2b')
+  })
+
+  it('treats an HTTP 408 on a download as a wait too, then takes the bytes', async () => {
+    const content = Buffer.from('held, then sent')
+    const node = await fakeNode([timedOut, sent(content)])
+    const { folder } = local()
+    const result = await cp(['site:notes.txt', join(folder, 'notes.txt'), '--node', node.url])
+    expect(result.exitCode).toBe(0)
+    expect(readFileSync(join(folder, 'notes.txt'))).toEqual(content)
+    expect(node.seen[0]!.headers['x-buckle-request-id']).toBe(node.seen[1]!.headers['x-buckle-request-id'])
+  })
+
+  it('waits on past an ask that expired unanswered: the fresh ask the same request makes is shown, and the copy runs once it is approved', async () => {
+    const node = await fakeNode([asked(-1), asked(600_000, '7d1e0f9a-0000-4000-8000-000000000000'), received])
+    const { file } = local()
+    const result = await cp([file, 'site:a.tgz', '--node', node.url])
+    expect(result.exitCode).toBe(0)
+    expect(result.err).toContain('buckle approve 3f6c1a2b-0000-4000-8000-000000000000')
+    expect(result.err).toContain('buckle approve 7d1e0f9a-0000-4000-8000-000000000000')
+    expect(new Set(node.seen.map(seen => seen.headers['x-buckle-request-id'])).size).toBe(1)
+  })
+
+  it('exits 1 with the node\'s words on a denial and a refusal', async () => {
     const { file } = local()
     const denied = await cp([file, 'site:a.tgz', '--node', (await fakeNode([json(422, { requestId: 'x', outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false } })])).url])
     expect(denied).toMatchObject({ exitCode: 1, out: '', err: 'PERMISSION_DENIED: Approval was declined\n' })
     const tooLarge = await cp([file, 'site:a.tgz', '--node', (await fakeNode([json(413, { error: 'The file is too large' })])).url])
     expect(tooLarge).toMatchObject({ exitCode: 1, err: 'The node answered HTTP 413: The file is too large\n' })
-    const expired = await cp([file, 'site:a.tgz', '--node', (await fakeNode([asked(-1)])).url])
-    expect(expired.exitCode).toBe(1)
-    expect(expired.err).toContain('The approval expired before anyone answered it, so nothing was copied')
   })
 
   it.each([404, 405])('says a node answering %i on the files route needs 0.1.8 or later', async (status) => {
@@ -191,7 +226,7 @@ describe('buckle cp out of a workspace', () => {
     const { folder } = local()
     const result = await cp(['site:.env', join(folder, 'copy.env'), '--node', node.url])
     expect(result.exitCode).toBe(0)
-    expect(result.err).toContain('Waiting for the approval...')
+    expect(result.err).toContain(WAITING)
     expect(readFileSync(join(folder, 'copy.env'))).toEqual(content)
     expect(node.seen[0]!.headers['x-buckle-request-id']).toBe(node.seen[1]!.headers['x-buckle-request-id'])
   })
@@ -382,6 +417,22 @@ describe('buckle cp stopped by a signal', () => {
     servers.at(-1)!.closeAllConnections()
     await copying
     expect(host.eventNames()).toEqual([])
+  })
+
+  // The MCP asks brief, item 6: a copy waiting for a person goes on until it is decided, or until the person stops it.
+  it('stops a copy that waits for approval at Ctrl-C, with exit code 130', async () => {
+    const host = signals()
+    const declined = json(422, { requestId: 'x', outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Approval was declined', retryable: false } })
+    let stopped = false
+    const node = await fakeNode([asked(), (seen, response) => (stopped ? declined : asked())(seen, response)])
+    const { file } = local()
+    const copying = cp([file, 'site:a.tgz', '--node', node.url], {}, undefined, { signals: host })
+    await vi.waitFor(() => expect(node.seen.length).toBeGreaterThan(1))
+    host.emit('SIGINT')
+    expect(host.exit).toHaveBeenCalledWith(130)
+    // The process ends at exit; here, where exit is a stand-in, the node's next answer ends the copy.
+    stopped = true
+    expect((await copying).exitCode).toBe(1)
   })
 
   it('installs no SIGHUP listener while a copy runs, as Node would end a nohup copy on the hangup it was set to ignore', async () => {
