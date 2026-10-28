@@ -129,6 +129,20 @@ describe('an abandoned ask', () => {
     expect((await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(MAX_PENDING_PER_WORKSPACE)], holdMs: 30_000 })).evicted).toHaveLength(1)
   })
 
+  it('makes room from its own workspace\'s abandoned asks alone, where two workspaces share one queue file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-shared-'))
+    const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
+    const other = createApprovalRegistry(grants, join(root, 'approvals.json'), 'other', null)
+    const own = createApprovalRegistry(grants, join(root, 'approvals.json'), 'own', null)
+    const older = await other.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
+    await other.holdEnded({ tokens: older.requests.map(request => request.token), abandoned: true })
+    const asked = await own.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
+    await own.holdEnded({ tokens: asked.requests.map(request => request.token), abandoned: true })
+
+    expect((await own.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(MAX_PENDING_PER_SESSION)], holdMs: 30_000 })).evicted).toEqual([asked.requests[0]!.token])
+    expect(other.pending().map(request => request.token)).toEqual(older.requests.map(request => request.token))
+  })
+
   it('still refuses a session full of asks a caller holds or was answered about, as before', async () => {
     const registry = queue()
     await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })

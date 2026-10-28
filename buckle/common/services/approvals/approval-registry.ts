@@ -648,7 +648,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
           return { requests, joined: false, answered: [], ...(lapsesAt === undefined ? {} : { lapsesAt: Date.parse(lapsesAt) }) }
         }
-        const admitted = withRoom({ state, sessionId, actor, admit, evicted })
+        const admitted = withRoom({ state, workspace, sessionId, actor, admit, evicted })
         for (const entry of evicted) if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'cancelled', at: new Date(now).toISOString() })
         return evicted.length === 0 ? admitted : { ...admitted, evicted: evicted.map(entry => entry.request.token) }
       })
@@ -909,13 +909,13 @@ function lapseOfGroup(requests: readonly ApprovalRequest[], state: State): { lap
  * cap is never reached through abandoned asks alone (the MCP asks brief, item 5). Each withdrawn ask is told cancelled, as
  * an ask whose caller left is. A cap full of asks someone holds or re-sent still refuses.
  */
-function withRoom(input: { state: State; sessionId: string; actor: string | undefined; admit: () => AskResult; evicted: PendingEntry[] }): AskResult {
+function withRoom(input: { state: State; workspace: string; sessionId: string; actor: string | undefined; admit: () => AskResult; evicted: PendingEntry[] }): AskResult {
   for (;;) {
     try {
       return input.admit()
     } catch (error) {
       if (!(error instanceof ApprovalLimitError)) throw error
-      const counted = (entry: PendingEntry) => error.room === 'workspace' || (entry.actor === input.actor && (error.room === 'actor' || entry.sessionId === input.sessionId))
+      const counted = (entry: PendingEntry) => entry.workspace === input.workspace && (error.room === 'workspace' || (entry.actor === input.actor && (error.room === 'actor' || entry.sessionId === input.sessionId)))
       const oldest = input.state.pending
         .filter(entry => entry.abandonedAt !== undefined && counted(entry))
         .sort((a, b) => Date.parse(a.abandonedAt!) - Date.parse(b.abandonedAt!))[0]
