@@ -1,23 +1,50 @@
 import { stat } from 'node:fs/promises'
 import { dirname } from 'pathe'
-import type { ResolvedEffect, ToolEffect } from '../../domain/effect.js'
+import type { ResolvedEffect, RestoreTarget, ToolEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import { missingMountReason, mountSourceState } from '../../domain/sandbox-mounts.js'
-import { ToolInputError } from '../../domain/tool.js'
+import { ToolExecutionError, ToolInputError } from '../../domain/tool.js'
+import { RestoreRefusedError, type ChangeHistory } from '../history/journal.js'
 import { realPathOrPlanned, resolveEntry } from './real-path.js'
 
 /**
  * Turns declared effects into the absolute, symlink-resolved form rules judge. Resolution
  * happens before any permission check so a symlink cannot smuggle a path past the scope rules,
- * and a path the agent named under the mount is judged where it really is.
+ * and a path the agent named under the mount is judged where it really is. A restore of the
+ * change history is settled from `history` into the checkpoint it goes back to, with each path
+ * it puts back judged as a write beside it.
  */
-export async function resolveEffects(input: { effects: ToolEffect[]; paths: PathView }): Promise<ResolvedEffect[]> {
+export async function resolveEffects(input: { effects: ToolEffect[]; paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined }): Promise<ResolvedEffect[]> {
   const resolved: ResolvedEffect[] = []
-  for (const effect of input.effects) resolved.push(await resolveOne(effect, input.paths))
+  for (const effect of input.effects) {
+    if (effect.kind === 'restore_checkpoint') resolved.push(...await resolveRestore(effect.target, input))
+    else resolved.push(await resolveOne(effect, input.paths))
+  }
   return resolved
 }
 
-async function resolveOne(effect: ToolEffect, paths: PathView): Promise<ResolvedEffect> {
+/**
+ * A restore as the history stands now: the checkpoint it goes back to, the newest, how many it undoes, and each path it
+ * puts back, the entry itself where it lies now (its folder resolved, its own name not followed), as a write. One the
+ * history refuses (a step past its start, an id it does not hold, a checkpoint waiting for recovery) is refused here,
+ * before anything asks.
+ */
+async function resolveRestore(target: RestoreTarget, input: { paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined }): Promise<ResolvedEffect[]> {
+  if (!input.history) throw new ToolExecutionError('This workspace keeps no change history to restore from', { code: 'HISTORY_UNAVAILABLE' })
+  const plan = await input.history.plan(target).catch((error: unknown) => {
+    if (error instanceof RestoreRefusedError) throw new ToolInputError(error.message, { code: error.code })
+    throw error
+  })
+  const writes = plan.paths.map((path): ResolvedEffect => {
+    const entry = resolveEntry(path, { shares: input.paths.shares })
+    if (entry === null) throw new ToolInputError('A path the restore would put back names no entry in a folder, so nothing is restored', { code: 'RESTORE_REFUSED' })
+    refuseMissingMount(entry.path, input.paths)
+    return { kind: 'write_path', path: entry.path, directory: entry.directory, entry: true, restore: true }
+  })
+  return [{ kind: 'restore_checkpoint', checkpoint: plan.checkpoint, head: plan.head, undoes: plan.undoes }, ...writes]
+}
+
+async function resolveOne(effect: Exclude<ToolEffect, { kind: 'restore_checkpoint' }>, paths: PathView): Promise<ResolvedEffect> {
   if (effect.kind === 'delete_path') {
     const entry = await entryEffect(effect.path, paths)
     return { kind: 'delete_path', ...entry, floor: effect.floor, ...(effect.tree ? { tree: effect.tree } : {}), ...(effect.moved ? { moved: true as const } : {}) }

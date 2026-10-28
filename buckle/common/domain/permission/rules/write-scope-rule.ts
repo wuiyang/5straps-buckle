@@ -51,6 +51,8 @@ export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensit
         return deny('write_scope', effect.path, outsideMountReason({ named: null, displayRoots: paths.displayRoots }))
       }
       if (floor) return null
+      // A path a restore puts back: the restore's own ask at the floor stands for the folder's (destructive-path-rule.ts).
+      if (effect.kind === 'write_path' && effect.restore) return null
 
       if (isInside(paths.root, effect.path) && pathDecision?.(effect.path) === 'allow') return { kind: 'allow' }
       // The floor's own subjects name no folder, so none is ever read as a grant over one.

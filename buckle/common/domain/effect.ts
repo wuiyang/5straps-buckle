@@ -18,6 +18,11 @@ export type ToolEffect =
   | { kind: 'network'; url: string }
   | ExecEffect
   | { kind: 'process_probe' }
+  /** A restore of the change history to before a checkpoint (history_restore), settled from the history before any rule judges it (resolveEffects). */
+  | { kind: 'restore_checkpoint'; target: RestoreTarget }
+
+/** The checkpoint a restore goes back to before: one the history names by id, or the one `steps` back from the current state. */
+export type RestoreTarget = { id: string } | { steps: number }
 
 /**
  * An entry removed (fs_delete, a move's source, the file a replacing move or a patch removes): the entry itself, a link
@@ -50,9 +55,11 @@ export type ResolvedEffect =
   | { kind: 'read_path'; path: string; directory: string }
   /**
    * `entry`: the path names the entry itself (a move's landing), its folder resolved and its own name not followed.
-   * `folder`: a folder lands there whole, so the write rules beneath that path judge it too.
+   * `folder`: a folder lands there whole, so the write rules beneath that path judge it too. `restore`: a path a restore
+   * of the change history puts back, beside its RestoreEffect, whose ask at the floor stands for the folder's write ask:
+   * the write scope refuses it where it refuses a write, and asks nothing of it.
    */
-  | { kind: 'write_path'; path: string; directory: string; entry?: true; folder?: true }
+  | { kind: 'write_path'; path: string; directory: string; entry?: true; folder?: true; restore?: true }
   /** `path`: the entry where it really is, its folder resolved and its own name not followed; `directory`: that folder. */
   | { kind: 'delete_path'; path: string; directory: string; floor: boolean; tree?: TreeCount; moved?: true }
   | { kind: 'network'; url: URL }
@@ -60,6 +67,14 @@ export type ResolvedEffect =
   | { kind: 'process_probe' }
   | SecretFileEffect
   | DestructiveWriteEffect
+  | RestoreEffect
+
+/**
+ * A restore of the change history as settled before the rules judge it (resolveEffects): back to before `checkpoint`,
+ * undoing it and every later one, `undoes` in all, `head` the newest of them then. It asks at the destructive floor every
+ * time (destructive-path-rule.ts), and runs only where the history still stands as it was judged.
+ */
+export interface RestoreEffect { kind: 'restore_checkpoint'; checkpoint: string; head: string; undoes: number }
 
 /**
  * What the destructive-write check found (the fs-verbs brief), added by the invoker and never declared by a tool: a write
@@ -85,7 +100,7 @@ export interface SecretFileEffect { kind: 'secret_file'; path: string; written: 
 export function summarizeEffect(effect: ResolvedEffect): string {
   switch (effect.kind) {
     case 'read_path': return `read ${effect.path}`
-    case 'write_path': return `write ${effect.path}`
+    case 'write_path': return `${effect.restore ? 'restore' : 'write'} ${effect.path}`
     case 'delete_path': return `delete ${effect.path}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''}`
     case 'network': return `network ${redactUrl(effect.url.href)}`
     case 'exec': return `exec ${shownCommand(effect.command, effect.args)}`
@@ -93,7 +108,14 @@ export function summarizeEffect(effect: ResolvedEffect): string {
     case 'secret_file': return `secrets ${effect.names.join(', ')} from ${wordList(effect.written)}`
     case 'unread_shrink': return `${effect.empties ? 'empties' : 'shrinks to under half its size'} ${effect.path}, a file this session never read`
     case 'many_rewrites': return `rewrites ${effect.files} existing files at once`
+    case 'restore_checkpoint': return `restore the workspace to before checkpoint ${effect.checkpoint}, undoing ${undoneWords(effect.undoes)}, to ${effect.head} the newest`
   }
+}
+
+/** What a restore undoes, in words: `it alone`, or `it and the 2 checkpoints after it`. */
+export function undoneWords(undoes: number): string {
+  if (undoes <= 1) return 'it alone'
+  return `it and the ${undoes - 1} ${undoes === 2 ? 'checkpoint' : 'checkpoints'} after it`
 }
 
 /** What a counted folder holds, in words: `3 files and 1 folder`, `more than 10000 entries`, or that it was not counted. */

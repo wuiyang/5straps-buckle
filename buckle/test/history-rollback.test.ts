@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory, RestoreRefusedError } from '../common/services/history/journal.js'
+import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -132,4 +134,28 @@ it('records the request of the agent call whose write a checkpoint holds', async
     expect(written.outcome).toBe('ok')
     expect((await runtime.history.recent(1)).checkpoints[0]).toMatchObject({ tool: 'fs_write', sessionId: 'chat-1', requestId: 'write-42', current: true })
   } finally { await runtime.approvalService.close(); await runtime.history.close() }
+})
+
+describe('a restore as the rules judge it', () => {
+  it('is settled from the history into the checkpoint it goes back to, and each path it puts back as a write', async () => {
+    const { history, write, workspace } = await fixture()
+    await write('a.txt', 'one')
+    await write('b.txt', 'two')
+    const [newest, oldest] = (await history.recent(2)).checkpoints
+    const paths = createPathView({ root: workspace, mount: null })
+    const effects = await resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 2 } }], paths, history })
+    expect(effects).toEqual([
+      { kind: 'restore_checkpoint', checkpoint: oldest!.id, head: newest!.id, undoes: 2 },
+      { kind: 'write_path', path: join(workspace, 'a.txt'), directory: workspace, entry: true, restore: true },
+      { kind: 'write_path', path: join(workspace, 'b.txt'), directory: workspace, entry: true, restore: true },
+    ])
+  })
+
+  it('is refused before any rule judges it where the history cannot go back that far, or is not kept', async () => {
+    const { history, write, workspace } = await fixture()
+    await write('a.txt', 'one')
+    const paths = createPathView({ root: workspace, mount: null })
+    await expect(resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 5 } }], paths, history })).rejects.toMatchObject({ code: 'RESTORE_REFUSED', message: expect.stringContaining('fewer than the 5 steps') })
+    await expect(resolveEffects({ effects: [{ kind: 'restore_checkpoint', target: { steps: 1 } }], paths })).rejects.toMatchObject({ code: 'HISTORY_UNAVAILABLE' })
+  })
 })

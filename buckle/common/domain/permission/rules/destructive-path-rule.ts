@@ -1,6 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
 import { guardedBatch, guardedTree, inWorkspaceFolder, relievedDelete, type DeletePolicy, type DeleteRunView } from '../../delete-policy.js'
-import { treeWords, type ResolvedEffect } from '../../effect.js'
+import { treeWords, undoneWords, type ResolvedEffect } from '../../effect.js'
 import type { PathView } from '../../path-view.js'
 import { homeDirectory, isInside } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
@@ -27,16 +27,26 @@ export const DELETE_BATCH_PREFIX = 'delete-batch:'
 export const OVERWRITE_PREFIX = 'overwrite:'
 /** `rewrite-batch:<workspace folder>`: one call that rewrites more existing files than the check lets through. */
 export const REWRITE_BATCH_PREFIX = 'rewrite-batch:'
-const FLOOR_PREFIXES = [DELETE_PREFIX, DELETE_TREE_PREFIX, DELETE_BELOW_PREFIX, DELETE_BATCH_PREFIX, OVERWRITE_PREFIX, REWRITE_BATCH_PREFIX] as const
+/**
+ * `restore:<checkpoint>`: a restore of the change history to before that checkpoint (history_restore). It names no path,
+ * and a grant of it covers a restore to before that one checkpoint alone.
+ */
+export const RESTORE_PREFIX = 'restore:'
+const PATH_PREFIXES = [DELETE_PREFIX, DELETE_TREE_PREFIX, DELETE_BELOW_PREFIX, DELETE_BATCH_PREFIX, OVERWRITE_PREFIX, REWRITE_BATCH_PREFIX] as const
 
 /** Whether a `write_scope` subject is one of the floor's own, which names no folder a write grant covers. */
 export function isFloorSubject(subject: string): boolean {
-  return FLOOR_PREFIXES.some(prefix => subject.startsWith(prefix))
+  return isRestoreSubject(subject) || PATH_PREFIXES.some(prefix => subject.startsWith(prefix))
 }
 
-/** The real path a floor subject names, for the dangerously-allow switch's bound to the workspace; null for a folder grant's subject. */
+/** Whether a `write_scope` subject is a restore's, which the dangerously-allow switch leaves to a person. */
+export function isRestoreSubject(subject: string): boolean {
+  return subject.startsWith(RESTORE_PREFIX)
+}
+
+/** The real path a floor subject names, for the dangerously-allow switch's bound to the workspace; null for a folder grant's subject or a restore's. */
 export function floorSubjectPath(subject: string): string | null {
-  const prefix = FLOOR_PREFIXES.find(item => subject.startsWith(item))
+  const prefix = PATH_PREFIXES.find(item => subject.startsWith(item))
   return prefix === undefined ? null : subject.slice(prefix.length)
 }
 
@@ -55,6 +65,10 @@ export function floorSubjectPath(subject: string): string | null {
  * honored, for a folder that is the owner's home folder or holds it, or that holds a root the agent may name (its
  * folder, a mount, a scratch root): the agent chooses the target, and such a grant would cover other projects or the
  * whole disk (the delete policy review, R3). `home`: the owner's home folder, the node's own where absent.
+ *
+ * A restore of the change history (RestoreEffect) asks here every time, under `restore:<checkpoint>`, whatever the
+ * folders' write grants say, and offers the same scopes; the paths it puts back are judged beside it as writes, and the
+ * write scope asks nothing of them (write-scope-rule.ts).
  */
 export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string }): PermissionRule {
   const offeredScopes: GrantScope[] = input.strict ? ['once'] : ['once', 'session', 'always']
@@ -81,6 +95,7 @@ interface FloorAsk { subject: string; reason: string; outside?: { path: string; 
 
 function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], run: DeleteRunView | undefined, input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
   const { paths } = input
+  if (effect.kind === 'restore_checkpoint') return { subject: `${RESTORE_PREFIX}${effect.checkpoint}`, reason: `Restoring the workspace to before checkpoint ${effect.checkpoint} undoes ${undoneWords(effect.undoes)}, so a person decides, whatever the folders' write grants say` }
   if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says` }
   if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says` }
   if (effect.kind !== 'delete_path' || !effect.floor) return null

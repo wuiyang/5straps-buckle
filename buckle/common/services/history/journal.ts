@@ -1,3 +1,4 @@
+import type { RestoreTarget } from '../../domain/effect.js'
 import { isInside } from '../../domain/paths.js'
 import { randomUUID } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
@@ -30,7 +31,7 @@ const MAX_REQUEST_ID = 200
 export const RECENT_CHECKPOINTS_MAX = 100
 
 /** A restore to before one checkpoint: one named by id among the newest, or the one `steps` back from the current state. */
-export type RollbackTarget = { id: string } | { steps: number }
+export type RollbackTarget = RestoreTarget
 
 /**
  * What a restore to before a checkpoint undoes, as the history stands: that checkpoint, the newest one (`head`), how many

@@ -3,7 +3,7 @@ import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../../../ty
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
-import { floorSubjectPath } from './destructive-path-rule.js'
+import { floorSubjectPath, isRestoreSubject } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
 
 /** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<level>:<rule>:<subject>`. */
@@ -22,7 +22,8 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
  * 2026-09-29): every ask becomes an allow, sensitive files and file writes included, reported as
  * `dangerously_allow:<level>:<rule>:<subject>` so the invoker audits each use at the level it ran at. At level
  * `command` a secret reference's file is the one ask it leaves to a person (docs/secrets.md); at level `all` it
- * answers that one too (owner ruling of 2026-10-25). It is bound to the workspace at either level:
+ * answers that one too (owner ruling of 2026-10-25). A restore of the change history it leaves to a person at either
+ * level, as every restore asks one (slice D). It is bound to the workspace at either level:
  * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
  * switch never opens the rest of the host. Asks that name no path (commands, hosts, process probes)
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
@@ -52,6 +53,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { level: (
 function covers(input: { ask: Ask; root: string; level: DangerouslyAllowLevel }): boolean {
   const { ask, root, level } = input
   if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && level !== 'all') return false
+  if (ask.rule === 'write_scope' && isRestoreSubject(ask.subject)) return false
   const path = askedPath(ask)
   return path === null || isInside(root, path)
 }

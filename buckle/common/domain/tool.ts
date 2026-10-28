@@ -53,6 +53,11 @@ export interface ToolContext {
   /** Whether a real entry path is one the call's permission check judged as a delete; a remover refuses any other. */
   authorizeDelete?: (target: string) => boolean
   /**
+   * Whether a restore of the change history, as planned under the execution lock, is the one the call's permission check
+   * judged: the same checkpoint, newest checkpoint, and count. A restorer refuses any other, as the history moved since.
+   */
+  authorizeRestore?: (plan: { checkpoint: string; head: string; undoes: number }) => boolean
+  /**
    * Marks a real path as a file this session has seen the content of, read or written, for the destructive-write check
    * (the fs-verbs brief): a later write that empties or halves it asks no person on that account.
    */

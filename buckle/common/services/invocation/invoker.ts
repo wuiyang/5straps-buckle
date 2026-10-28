@@ -240,7 +240,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // before anything is judged; each file the references name is judged where it lands, and its first use asks a
           // person (docs/secrets.md).
           const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
-          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+          effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
           // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
           effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
           // How the command reader reads each reference in a shell call, refused where the rules could not read it as
@@ -1020,6 +1020,7 @@ async function executeWithTimeout(input: {
       authorizeReadTarget: target => judgedReads.has(target),
       authorizeWrite: target => judgedWrites.has(target),
       authorizeDelete: target => judgedDeletes.has(target),
+      authorizeRestore: plan => input.effects.some(effect => effect.kind === 'restore_checkpoint' && effect.checkpoint === plan.checkpoint && effect.head === plan.head && effect.undoes === plan.undoes),
       known: target => input.options.reads?.note(input.sessionId, target),
       relocated: (from, to) => input.options.reads?.relocate(from, to),
       judgeNetwork: url => judgeNetwork({ ...input, url }),

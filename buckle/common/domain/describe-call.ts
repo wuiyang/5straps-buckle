@@ -95,6 +95,8 @@ function describeAction(tool: string, args: JsonObject, facts: Facts, settled: J
     case 'pr_read': return `Read pull request ${fact(String(args.number ?? ''))} of ${path('repo')}`
     case 'git_status': case 'git_diff': case 'git_log': case 'git_branch': return `Read the git ${tool.slice(4)} of ${path('repo')}`
     case 'git_blame': return `Read the git blame of ${path()} in ${path('repo')}`
+    case 'history_list': return `List the newest ${count(integer(args.last) || 10, 'checkpoint')} of the change history`
+    case 'history_restore': return typeof args.steps === 'number' ? `Restore the workspace ${count(integer(args.steps), 'checkpoint')} back` : `Restore the workspace to before checkpoint ${fact(text(args.id) ?? '')}`
     case 'lsp_rename': return `Rename the symbol at ${path()} line ${fact(String(args.line ?? ''))} to ${fact(text(args.newName) ?? '')}`
     default: return `Call ${fact(tool)}${text(args.path) === undefined ? '' : ` on ${path()}`}`
   }
