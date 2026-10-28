@@ -71,13 +71,29 @@ describe('a path that stands on nothing', () => {
     }
   })
 
-  it('answers fs_list and fs_find_names for a file named as the folder with a refusal that names it', async () => {
+  it.each([
+    ['fs_list', { path: 'notes.txt' }, 'nothing was listed'],
+    ['fs_find_names', { path: 'notes.txt', pattern: '*' }, 'nothing was searched'],
+  ] as const)('answers %s for a file named as the folder in the code and words fs_search_content uses, not as a path that is missing', async (tool, args, outcome) => {
     const { runtime, workspace, root } = await node()
-    for (const [tool, args] of [['fs_list', { path: 'notes.txt' }], ['fs_find_names', { path: 'notes.txt', pattern: '*' }]] as const) {
+    const error = errorOf(await call(runtime, tool, args as JsonObject))
+    expect(error).toEqual({ code: 'SEARCH_ROOT_UNREADABLE', message: `notes.txt is a file, not a folder, so ${outcome}`, retryable: false })
+    expectNoHostPath(error?.message ?? '', [workspace, root])
+  })
+
+  it('names the file as the agent sent it where the workspace is mounted, when it is named as the folder', async () => {
+    const { runtime, workspace, root } = await node({ BUCKLE_WORKSPACE_MOUNT: '/workspace' })
+    const error = errorOf(await call(runtime, 'fs_list', { path: '/workspace/notes.txt' }))
+    expect(error).toEqual({ code: 'SEARCH_ROOT_UNREADABLE', message: '/workspace/notes.txt is a file, not a folder, so nothing was listed', retryable: false })
+    expectNoHostPath(error?.message ?? '', [workspace, root])
+  })
+
+  it('keeps a part of the path that is a file, above the folder named, as a path that goes through a file', async () => {
+    const { runtime } = await node()
+    for (const [tool, args] of [['fs_list', { path: 'notes.txt/inner' }], ['fs_find_names', { path: 'notes.txt/inner', pattern: '*' }]] as const) {
       const error = errorOf(await call(runtime, tool, args as JsonObject))
-      expect(error?.code).not.toBe('TOOL_EXECUTION_FAILED')
-      expect(error?.message).toContain('notes.txt')
-      expectNoHostPath(error?.message ?? '', [workspace, root])
+      expect(error).toMatchObject({ code: 'FILE_NOT_FOUND', retryable: false })
+      expect(error?.message).toContain('A part of the path notes.txt/inner is a file')
     }
   })
 

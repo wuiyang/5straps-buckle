@@ -1,7 +1,7 @@
 # Troubleshooting: file calls
 
 The refusals and asks the file tools give, with the message Buckle prints and the fix. A file
-tool names its refusal in the message, and the result carries a code the agent can read. A batch
+tool names its refusal in the message, and the result carries a code. A batch
 of `fs_delete` stops at its first refusal and lists the rest as `notAttempted`. A missing path is
 reported as `missing`, and does not stop the batch. [Refused commands](troubleshooting-02.md)
 covers the shell.
@@ -16,12 +16,13 @@ covers the shell.
 | "The folder ... does not exist, and a move makes no folder", or "... a write makes no folder unless createParents is true" | `PARENT_MISSING` | create the folder first; a write may send `createParents: true` |
 | "... is a folder that holds entries: send recursive: true" | `FOLDER_NOT_EMPTY` | send `recursive: true`, after reading the ask's count |
 | "... holds more than 10000 entries, more than one checkpoint covers" | `FOLDER_TOO_LARGE` | move the folder in parts; for a folder to replace, delete it in parts first |
-| "... is held open by another program" | `ENTRY_HELD` | close the program, then send the call again; on Windows alone, a read-only file also gives this |
+| "... is held open by another program" | `ENTRY_HELD` | close the program, then send the call again; on Windows a read-only file also gives this |
 | "... could not be moved to ... (EPERM)", or "could not be removed (EACCES)" | `PERMISSION_DENIED` | the system refused: check the folder's permissions; a delete lists the paths removed before it |
 | "... could not be removed (EIO)", or "could not be moved to ... (EBUSY)" | `REMOVAL_FAILED` or `MOVE_FAILED` | the error is the system's own; a folder removed whole may be gone in part |
 | "... has a name Buckle would read as another path, so it cannot be removed by name" | `FOLDER_NOT_REMOVABLE` | remove that entry another way first; nothing was removed |
 | "... is a link, and Windows lets only an administrator ... make one" | none | turn on Developer Mode or run with rights to make links, or move the folder without that link |
-| "There is no file or folder at ..." (a move), "There is no file at ..." (a read, a patch), or "There is no folder at ..." (a list, a search) | `FILE_NOT_FOUND` | check the path as you sent it; the same code answers a path that runs through a file |
+| "There is no file or folder at ..." (a move), "There is no file at ..." (a read, a patch), or "There is no folder at ..." (a list, a search) | `FILE_NOT_FOUND` | check the path as sent; a path through a file gets this code too |
+| "... is a file, not a folder, so nothing was listed" (or "searched") | `SEARCH_ROOT_UNREADABLE` | name its folder, or use `fs_read` |
 | "The folder holds Buckle's own state and policy" | `PERMISSION_DENIED` | choose another folder; no tool reaches Buckle's state |
 | "Restore conflict: a changed path no longer matches the checkpoint (src/a.txt)" | `RESTORE_REFUSED` | the file named changed since; put it back or leave it, then restore again. The owner's command names it from the folder; the agent's leaves out a path its read rules keep |
 | "Hunk N of ... does not match the file, so nothing was written" | `PATCH_DOES_NOT_APPLY` | the header names the hunk; rebuild the diff from the file as it stands |
@@ -30,11 +31,11 @@ covers the shell.
 | "Hunk N of ... does not match the file ...: it has fewer context lines at its end than at the other" | `PATCH_DOES_NOT_APPLY` | the hunk stands at an end of the file, and does not: give it the same context on both sides |
 | "Hunk N of ... could not be placed within 5000000 line comparisons" | `PATCH_DOES_NOT_APPLY` | split the patch, or send hunks with a line number near their place |
 | "... Already written: modified a.txt ..." | as the first part says | read those files again and send only what is left; the change history can restore them |
-| "The pattern took more than 5 seconds on one file" | `INVALID_TOOL_INPUT` | search with a simpler pattern; one that repeats a repetition, such as `(a+)+`, can take very long |
+| "The pattern took more than 5 seconds on one file" | `INVALID_TOOL_INPUT` | search with a simpler pattern; a repeated repetition such as `(a+)+` can take very long |
 | "... now lands where its permission check did not see" | `PERMISSION_DENIED` | the path changed between the check and the write; send the call again |
 
 A patch writes nothing when any hunk fails. A delete that refuses a path lists every path in
-order, so the agent can see which ones went. A disk error while a patch is written names the files
+order, so the agent sees which ones went. A disk error while a patch is written names the files
 already written.
 
 ## Asks
@@ -56,5 +57,5 @@ These are asks, not refusals. They wait for a person, as [approvals](approvals.m
 - "Delete of several files", from a shell `rm`: name one literal path in each `rm`, with no glob,
   brace group, variable, or xargs. `rm` of one literal path does not ask here.
 
-A restart forgets what the session has read, so the first such write after a restart asks
+A restart forgets what the session has read, so the first such write after it asks
 again. [Policy: the file floor](policy-04.md) gives the full rules.

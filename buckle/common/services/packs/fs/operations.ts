@@ -14,7 +14,7 @@ import { childPath, comparablePath, ignoresCase, isPlainName } from '../../../do
 import { ToolInputError } from '../../../domain/tool.js'
 import { isMissingPathError, resolveTarget } from '../../invocation/real-path.js'
 import { isIgnoredDirectory } from './ignore.js'
-import { missingRefusal, parentRefusal, refusing } from './missing-path.js'
+import { folderRefusal, missingRefusal, parentRefusal, refusing } from './missing-path.js'
 import { pageLines } from './read-lines.js'
 import type * as schemas from './schemas.js'
 
@@ -205,7 +205,7 @@ export async function findNames(
  */
 async function withDirectoryBeneath(root: string, context: FsContext, sent: { named: string; outcome: string }, walk: (directory: PinnedDirectory, real: string) => Promise<void>): Promise<void> {
   const target = judgedTarget(root, 'read', context)
-  const directory = refusing(() => openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } }), error => missingRefusal(error, { ...sent, wanted: 'folder' }))
+  const directory = refusing(() => openRealDirectory(target, { refusal: { shown: context.paths.display(root), outcome: 'it was not listed' } }), error => folderRefusal(error, { ...sent, target }))
   try { await walk(directory, target) } finally { directory.close() }
 }
 

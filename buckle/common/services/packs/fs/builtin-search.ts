@@ -10,7 +10,7 @@ import { resolveTarget } from '../../invocation/real-path.js'
 import { IGNORE_FILES, isIgnored, parseIgnoreFile, passesGlob, type IgnoreRule } from './ignore-files.js'
 import { createLineMatcher, MatchFailedError, type LineMatcher, type MatchedLine } from './line-matcher.js'
 import type * as schemas from './schemas.js'
-import { FILE_NOT_FOUND } from './transfer.js'
+import { FILE_NOT_FOUND, SEARCH_ROOT_UNREADABLE } from './transfer.js'
 
 /** The most files one search reads, as the ripgrep search lists at most (search.ts). */
 const MAX_FILES = 5_000
@@ -35,7 +35,6 @@ const MAX_TIMEOUTS = 3
 
 /** Why the walk left a file or a folder out, as the result words it. */
 type SkipReason = 'held' | 'vanished' | 'changed' | 'unreadable' | 'too-large' | 'binary' | 'timeout'
-const SEARCH_ROOT_UNREADABLE = 'SEARCH_ROOT_UNREADABLE'
 const INVALID_PATTERN = 'INVALID_PATTERN'
 const SEARCH_TIMED_OUT = 'SEARCH_TIMED_OUT'
 

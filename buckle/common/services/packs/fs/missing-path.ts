@@ -1,6 +1,7 @@
+import { lstatSync } from 'node:fs'
 import { dirname } from 'pathe'
 import { ToolInputError } from '../../../domain/tool.js'
-import { FILE_NOT_FOUND, PARENT_MISSING } from './transfer.js'
+import { FILE_NOT_FOUND, PARENT_MISSING, SEARCH_ROOT_UNREADABLE } from './transfer.js'
 
 /**
  * What an open that ran into a path of nothing says to the agent that sent the path. The system's own words name the
@@ -14,6 +15,16 @@ export function missingRefusal(error: unknown, input: { named: string; wanted: '
   return error
 }
 
+/**
+ * As missingRefusal for a path that must be a folder. Where the path itself is a file (`target`, its real path, stands
+ * as one), the file exists, so the refusal says so in the code a search gives for it; a file higher in the path is still
+ * a path of nothing.
+ */
+export function folderRefusal(error: unknown, input: { named: string; outcome: string; target: string }): unknown {
+  if (errnoOf(error) === 'ENOTDIR' && isFile(input.target)) return new ToolInputError(`${input.named} is a file, not a folder, so ${input.outcome}`, { code: SEARCH_ROOT_UNREADABLE })
+  return missingRefusal(error, { named: input.named, wanted: 'folder', outcome: input.outcome })
+}
+
 /** As missingRefusal for a write that makes no folder: the open of a file it may create fails for its folder alone. */
 export function parentRefusal(error: unknown, named: string): unknown {
   const code = errnoOf(error)
@@ -25,6 +36,10 @@ export function parentRefusal(error: unknown, named: string): unknown {
 /** Runs an open, and throws what `refuse` makes of its error. */
 export function refusing<T>(operation: () => T, refuse: (error: unknown) => unknown): T {
   try { return operation() } catch (error) { throw refuse(error) }
+}
+
+function isFile(path: string): boolean {
+  try { return lstatSync(path).isFile() } catch { return false }
 }
 
 function folderOf(named: string): string {

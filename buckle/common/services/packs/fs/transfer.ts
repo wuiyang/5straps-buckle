@@ -20,6 +20,8 @@ export const TRANSFER_TOO_LARGE = 'TRANSFER_TOO_LARGE'
 export const TARGET_IS_DIRECTORY = 'TARGET_IS_DIRECTORY'
 /** A `to` whose folder does not exist: a copy makes no folder. */
 export const PARENT_MISSING = 'PARENT_MISSING'
+/** A folder to list or search that cannot be opened as one: a file named as the folder, or a folder this node may not open. */
+export const SEARCH_ROOT_UNREADABLE = 'SEARCH_ROOT_UNREADABLE'
 /** The bytes that arrived are not as many as the request declared. */
 export const TRANSFER_LENGTH_MISMATCH = 'TRANSFER_LENGTH_MISMATCH'
 /** The bytes that arrived do not hash to the digest the request named. */
