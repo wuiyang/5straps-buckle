@@ -49,8 +49,8 @@ since all of it lands elsewhere, so it is not counted. A grant of `delete-tree:<
 A delete outside the folder asks at the floor, whatever the folder's write grant says, under
 `delete:<folder>` for an entry or `delete-tree:<path>` for a folder removed whole, as before. The
 ask also offers `delete-below:<folder>`: the folder that holds the target, with its subfolders. A
-grant of it covers every later delete anywhere inside that folder, matched as a write grant
-matches, except inside the workspace's own folder, which its setting decides.
+grant of it covers every later delete of that folder or of anything in it, at any depth, matched
+as a write grant matches, except inside the workspace's own folder, which its setting decides.
 
 | Choice | What it grants |
 |---|---|
