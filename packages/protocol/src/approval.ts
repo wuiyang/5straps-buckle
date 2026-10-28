@@ -39,6 +39,12 @@ export const ApprovalRequestSchema = z.object({
   /** Floor rules omit 'always' so a caller cannot permanently widen them. */
   offeredScopes: z.array(GrantScopeSchema).min(1),
   expiresAt: z.iso.datetime(),
+  /**
+   * A wider subject, under the same rule, that a person may grant for the session or always in place of `subject`: for a
+   * delete outside the workspace's folder, `delete-below:<folder>`, which covers every later delete in that folder and
+   * its subfolders. Optional and additive: a reader that does not know it shows and approves `subject`, as before.
+   */
+  widerSubject: z.string().min(1).optional(),
 })
 export type ApprovalRequest = z.infer<typeof ApprovalRequestSchema>
 
@@ -105,6 +111,11 @@ export const ApprovalDecisionSchema = z.object({
   approved: z.boolean(),
   scope: GrantScopeSchema.default('once'),
   note: JsonValueSchema.optional(),
+  /**
+   * The subject the approval grants: the ask's own where absent, or the ask's `widerSubject` for a session or always
+   * approval. Optional and additive: a decision that names none grants the ask's subject, as before.
+   */
+  subject: z.string().min(1).optional(),
 })
 export type ApprovalDecision = z.infer<typeof ApprovalDecisionSchema>
 
