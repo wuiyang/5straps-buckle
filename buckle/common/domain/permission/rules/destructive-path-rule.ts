@@ -28,10 +28,16 @@ export const OVERWRITE_PREFIX = 'overwrite:'
 /** `rewrite-batch:<workspace folder>`: one call that rewrites more existing files than the check lets through. */
 export const REWRITE_BATCH_PREFIX = 'rewrite-batch:'
 /**
- * `restore:<checkpoint>`: a restore of the change history to before that checkpoint (history_restore). It names no path,
- * and a grant of it covers a restore to before that one checkpoint alone.
+ * `restore:<checkpoint>..<newest>`: a restore of the change history to before that checkpoint while `newest` is the
+ * newest one (history_restore), or `restore:<checkpoint>` where it is the newest itself. It names no path, and names what
+ * the restore undoes exactly, so an approval never covers a restore that undoes more than the person was shown.
  */
 export const RESTORE_PREFIX = 'restore:'
+
+/** The subject a restore asks under (RESTORE_PREFIX). */
+export function restoreSubject(effect: { checkpoint: string; head: string }): string {
+  return `${RESTORE_PREFIX}${effect.checkpoint}${effect.head === effect.checkpoint ? '' : `..${effect.head}`}`
+}
 const PATH_PREFIXES = [DELETE_PREFIX, DELETE_TREE_PREFIX, DELETE_BELOW_PREFIX, DELETE_BATCH_PREFIX, OVERWRITE_PREFIX, REWRITE_BATCH_PREFIX] as const
 
 /** Whether a `write_scope` subject is one of the floor's own, which names no folder a write grant covers. */
@@ -66,9 +72,10 @@ export function floorSubjectPath(subject: string): string | null {
  * folder, a mount, a scratch root): the agent chooses the target, and such a grant would cover other projects or the
  * whole disk (the delete policy review, R3). `home`: the owner's home folder, the node's own where absent.
  *
- * A restore of the change history (RestoreEffect) asks here every time, under `restore:<checkpoint>`, whatever the
- * folders' write grants say, and offers the same scopes; the paths it puts back are judged beside it as writes, and the
- * write scope asks nothing of them (write-scope-rule.ts).
+ * A restore of the change history (RestoreEffect) asks here every time, under a subject naming what it undoes
+ * (restoreSubject), whatever the folders' write grants say. It offers once alone: once it ran, no later restore undoes
+ * the same checkpoints from the same newest one, so a grant for the session or always would never be used. The paths
+ * it puts back are judged beside it as writes, and the write scope asks nothing of them (write-scope-rule.ts).
  */
 export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string }): PermissionRule {
   const offeredScopes: GrantScope[] = input.strict ? ['once'] : ['once', 'session', 'always']
@@ -82,7 +89,7 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
       const held = grants.subjectsFor('write_scope')
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
-      if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, offeredScopes)
+      if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes)
       const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && grantable(subject.slice(DELETE_BELOW_PREFIX.length)) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
       if (below !== undefined) return allowedVia('write_scope', below)
       return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
@@ -91,11 +98,11 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
 }
 
 /** What the floor asks about one effect, and, for a delete outside the workspace's folder, the entry a wider grant may cover. */
-interface FloorAsk { subject: string; reason: string; outside?: { path: string; directory: string } }
+interface FloorAsk { subject: string; reason: string; outside?: { path: string; directory: string }; once?: true }
 
 function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], run: DeleteRunView | undefined, input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
   const { paths } = input
-  if (effect.kind === 'restore_checkpoint') return { subject: `${RESTORE_PREFIX}${effect.checkpoint}`, reason: `Restoring the workspace to before checkpoint ${effect.checkpoint} undoes ${undoneWords(effect.undoes)}, so a person decides, whatever the folders' write grants say` }
+  if (effect.kind === 'restore_checkpoint') return { subject: restoreSubject(effect), reason: `Restoring the workspace to before checkpoint ${effect.checkpoint} undoes ${undoneWords(effect.undoes)}${effect.undoes > 1 ? `, the newest ${effect.head}` : ''}, so a person decides, whatever the folders' write grants say`, once: true }
   if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says` }
   if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says` }
   if (effect.kind !== 'delete_path' || !effect.floor) return null

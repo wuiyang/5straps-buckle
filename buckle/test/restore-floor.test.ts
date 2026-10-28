@@ -14,8 +14,8 @@ import { createWriteScopeRule } from '../common/domain/permission/rules/write-sc
 import { createPathView } from '../common/domain/path-view.js'
 
 // Slice D, rollback as an agent option: a restore of the change history asks a person at the destructive floor every
-// time, under `restore:<checkpoint>`, whatever the folders' write grants say. Each path it puts back is judged beside it
-// as a write is, so it is refused where a write is refused, and it raises no folder ask of its own.
+// time, under `restore:<checkpoint>..<newest>`, whatever the folders' write grants say, offering once alone. Each path it
+// puts back is judged beside it as a write is, so it is refused where a write is refused, and it raises no folder ask.
 
 const WORKSPACE = '/work/project'
 const STATE = '/work/project/.state'
@@ -47,21 +47,22 @@ function evaluate(effects: ResolvedEffect[], granted?: Partial<Record<Permission
 }
 
 describe('a restore of the change history', () => {
-  it('asks at the floor under restore:<checkpoint>, whatever the folders\' write grants say, and raises no folder ask', () => {
+  it('asks at the floor under a subject naming what it undoes, whatever the folders\' write grants say, and raises no folder ask', () => {
     const outcome = evaluate([restore(), restored(`${WORKSPACE}/src/a.ts`), restored(`${WORKSPACE}/docs/b.md`)], { write_scope: [WORKSPACE] })
-    expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `restore:${CHECKPOINT}`, offeredScopes: ['once', 'session', 'always'] }] })
+    expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `restore:${CHECKPOINT}..${HEAD}`, offeredScopes: ['once'] }] })
     if (outcome.kind !== 'ask') return
     expect(outcome.asks).toHaveLength(1)
-    expect(outcome.asks[0]!.reason).toBe(`Restoring the workspace to before checkpoint ${CHECKPOINT} undoes it and the 2 checkpoints after it, so a person decides, whatever the folders' write grants say`)
+    expect(outcome.asks[0]!.reason).toBe(`Restoring the workspace to before checkpoint ${CHECKPOINT} undoes it and the 2 checkpoints after it, the newest ${HEAD}, so a person decides, whatever the folders' write grants say`)
     expect(evaluate([restored(`${WORKSPACE}/src/a.ts`)])).toMatchObject({ kind: 'allow' })
   })
 
-  it('offers once alone in strict mode, and a grant covers that checkpoint alone', () => {
-    expect(evaluate([restore(1)], {}, { strict: true })).toMatchObject({ kind: 'ask', asks: [{ offeredScopes: ['once'] }] })
-    expect(evaluate([restore(1)], { write_scope: [`restore:${CHECKPOINT}`] })).toMatchObject({ kind: 'allow', allowedBy: [`write_scope:restore:${CHECKPOINT}`] })
-    expect(evaluate([{ ...restore(1), checkpoint: HEAD } as ResolvedEffect], { write_scope: [`restore:${CHECKPOINT}`] }).kind).toBe('ask')
-    const outcome = evaluate([restore(1)])
-    expect(outcome.kind === 'ask' ? outcome.asks[0]!.reason : '').toContain('undoes it alone')
+  it('offers once alone in either mode, and an approval covers that restore alone, never one that undoes more', () => {
+    const newest = (): ResolvedEffect => ({ kind: 'restore_checkpoint', checkpoint: HEAD, head: HEAD, undoes: 1 })
+    expect(evaluate([newest()], {}, { strict: true })).toMatchObject({ kind: 'ask', asks: [{ subject: `restore:${HEAD}`, offeredScopes: ['once'] }] })
+    expect(evaluate([newest()], { write_scope: [`restore:${HEAD}`] })).toMatchObject({ kind: 'allow', allowedBy: [`write_scope:restore:${HEAD}`] })
+    expect(evaluate([restore()], { write_scope: [`restore:${CHECKPOINT}`, `restore:${CHECKPOINT}..change-older-head`] }).kind).toBe('ask')
+    const outcome = evaluate([newest()])
+    expect(outcome.kind === 'ask' ? outcome.asks[0]!.reason : '').toBe(`Restoring the workspace to before checkpoint ${HEAD} undoes it alone, so a person decides, whatever the folders' write grants say`)
   })
 
   it('names no folder a write grant covers, and no folder grant is read from its subject', () => {
@@ -85,7 +86,7 @@ describe('a restore of the change history', () => {
   it('is never answered by the dangerously-allow switch at either level, nor rated by the decision AI', () => {
     for (const level of ['command', 'all'] as const) {
       const allowed = withDangerouslyAllow(engine(), { level: () => level, root: () => WORKSPACE })
-      expect(allowed.evaluate({ tool: 'history_restore', effects: [restore(), restored(`${WORKSPACE}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'ask', asks: [{ subject: `restore:${CHECKPOINT}` }] })
+      expect(allowed.evaluate({ tool: 'history_restore', effects: [restore(), restored(`${WORKSPACE}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'ask', asks: [{ subject: `restore:${CHECKPOINT}..${HEAD}` }] })
     }
     const outcome = evaluate([restore()])
     const ask = outcome.kind === 'ask' ? outcome.asks[0]! : null
