@@ -519,6 +519,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       }
       // Its token was answered elsewhere while on screen; the next one is still worth asking.
       if (outcome.status === 'cancelled' && question.signal.aborted && !ask.stop.signal.aborted) continue
+      // Nobody can be asked now: each of the call's asks is still named as pending, not only its first (the MCP asks
+      // brief, item 4), so one approval never leaves the call waiting on an ask the log never named.
+      if (outcome.status === 'unavailable' && (outcome.reason === 'no_consumer' || outcome.reason === 'no_listener')) continue
       return
     }
   }
