@@ -35,16 +35,19 @@ approval is spent, the call asks again.
 
 The answer names the restore's own checkpoint (`checkpoint`), what it went back to before
 (`restores`), how many it undid (`undoes`), and `changes`. The restore is itself a checkpoint,
-so `{ "steps": 1 }` right after it undoes the restore.
+so `{ "steps": 1 }` right after it undoes the restore. The ask lists a file the checkpoints
+made as one the restore removes.
 
 ## What is refused
 
 - Steps past the start of the history, or an id not among the newest 100: refused before
-  anything asks (`RESTORE_REFUSED`).
+  anything asks (`RESTORE_REFUSED`). A checkpoint past its retention is not offered.
 - A file the restore would put back changed outside Buckle since the newest checkpoint, or
   between two of those it undoes: refused, nothing changed. Read the file and decide yourself.
-- A checkpoint still waiting for the owner's recovery: refused until the owner runs
-  `buckle history recover <id>`.
+- A checkpoint an interrupted call left: refused until the owner runs `buckle history recover <id>`.
+  While another call is changing files, the refusal says to try again shortly instead.
+- A restore that would put back anything inside a `.git` directory: refused, since it rewinds the
+  repository. Undo a commit with `git_revert`.
 - A path it would put back in a read-only mount, in Buckle's state, or where the workspace
   policy denies writing: refused as that write would be.
 

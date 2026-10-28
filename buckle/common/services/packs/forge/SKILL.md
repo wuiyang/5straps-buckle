@@ -46,10 +46,14 @@ git's own message, so read it rather than retrying.
 
 `git_revert` makes a new commit that undoes one (`git revert --no-edit`), under the same identity;
 it never resets. A merge commit needs `mainline`, the parent whose side the revert keeps (1 for the
-branch it was merged into). A dirty work tree or index is refused with git's own message. A revert
-that stops on a conflict is aborted, so the repository stands as it was. A repository that defines
-a merge driver or a filter is refused, since a revert would run that program. To undo Buckle's own
-file changes rather than a commit, use `history_restore`.
+branch it was merged into). A staged change, or a local change to a file the revert touches, is git's
+own refusal; other local changes stay as they are, uncommitted. A revert, cherry-pick, or merge
+already in progress is refused and left alone. A revert this call starts that stops on a conflict is
+aborted, so the repository stands as it was. Each file it rewrites is judged as a write: a `.env` or a
+file in a read-only mount refuses the whole revert before git starts. A repository that defines a
+merge driver or a filter is refused, since a revert would run that program. To undo Buckle's own file
+changes rather than a commit, use `history_restore`, which refuses a restore that would rewind a
+`.git` directory.
 
 `git_push` pushes one branch to `origin`. `force: true` is always refused: rewriting a published
 branch is a `shell_exec` decision the destructive-command gate asks about. Only the configured

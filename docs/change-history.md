@@ -66,7 +66,7 @@ not calls: a script's calls are one checkpoint each.
 `history_restore` asks at the destructive floor every time, whatever the folders' write grants
 say, under the `write_scope` subject `restore:<checkpoint>..<newest>`: the checkpoint it goes back
 to before and the newest one then, or `restore:<checkpoint>` when that is the newest. The ask
-names how many checkpoints it undoes and lists each file it puts back. It offers `once` alone:
+names how many checkpoints it undoes and lists each file it puts back, a file the checkpoints made as a removal. It offers `once` alone:
 no later restore undoes the same checkpoints from the same newest one, so a grant for the session
 or always would never be used. If a checkpoint lands before the approval is spent, the call asks
 again rather than undo more than the person saw. The restore checks the history again under its
@@ -80,10 +80,15 @@ the whole restore, and a filesystem `ask` rule asks too.
 ## What is refused
 
 - Steps past the start of the history, or an id that is not among the newest 100, before anything
-  asks (`RESTORE_REFUSED`).
-- A checkpoint still waiting for the owner's recovery.
+  asks (`RESTORE_REFUSED`). A checkpoint past its retention is not offered, though the next change
+  prunes it; a restore never prunes the ones it restores from.
+- A checkpoint an interrupted call left, until the owner recovers it. While another call is
+  changing files, the refusal says to try again.
 - A file it would put back that changed outside Buckle since the newest checkpoint, or between two
-  of the checkpoints it undoes. Read the file, and restore by hand what should be kept.
+  of the checkpoints it undoes.
+- A restore that would put back anything inside a `.git` directory, since that rewinds the
+  repository's commits, branches, and index and can delete a commit a branch still points to.
+  Undo a commit with `git_revert`. The owner's `buckle history restore` is not refused.
 
 ## Limits
 
@@ -105,5 +110,5 @@ history view draws its timeline from. A restore names the checkpoint it went bac
 `git_revert` in the forge pack makes a new commit that undoes one commit, under the node's agent
 identity; it never resets ([host Git and forge](sandbox-and-tools-02.md#host-git-forge-and-language-servers)).
 Like the rest of that pack it needs `packs.hostGit` on and `BUCKLE_FORGE_GITHUB_TOKEN`, and it
-asks as `git_commit` asks. The change history covers its files too: a revert is a write, so it
-is a checkpoint like any other.
+asks as `git_commit` asks, then judges each file it rewrites as a write. Its checkpoint holds the
+repository's own files, so `history_restore` over it is refused as above.

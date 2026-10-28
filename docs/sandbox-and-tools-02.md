@@ -90,6 +90,8 @@ repository hook or configured program runs. The forge pack holds `BUCKLE_FORGE_G
 in git's environment, never in a remote URL, and talks to `BUCKLE_FORGE_GITHUB_API_URL`
 (`https://api.github.com` by default). `git_push` refuses force and pushes only to the origin the
 rules judged; commits carry `BUCKLE_FORGE_GIT_AUTHOR`. `git_revert` commits the undoing of one
-commit and never resets: a merge commit needs `mainline`, a dirty tree is git's own refusal, a
-revert that stops on a conflict is aborted, and a repository defining a merge driver or a filter is
-refused.
+commit and never resets: a merge commit needs `mainline`, a staged change or a local change to a file
+the revert touches is git's own refusal (other local changes stay, uncommitted), and a revert,
+cherry-pick, or merge already in progress is refused and left alone. A revert this call starts that
+stops on a conflict is aborted. Each file it rewrites is judged as a write, so a `.env` or a file in a
+read-only mount refuses it, and a repository defining a merge driver or a filter is refused.

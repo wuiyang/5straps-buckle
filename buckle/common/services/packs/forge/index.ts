@@ -353,7 +353,7 @@ export function createForgePack(options: ForgePackOptions): Pack {
 
     defineTool(PACK_ID, {
       name: 'git_revert',
-      description: 'Commit the undoing of one commit (git revert) under the node\'s agent identity; never a reset. A merge commit needs mainline; a dirty tree or a conflict reverts nothing.',
+      description: 'Commit the undoing of one commit (git revert) under the node\'s agent identity; never a reset. A merge commit needs mainline; a conflict, git\'s refusal over local changes, or a revert, cherry-pick, or merge already in progress reverts nothing.',
       risk: 'write',
       tags: ['git', 'forge'],
       input: revertInput,
