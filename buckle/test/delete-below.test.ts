@@ -86,6 +86,47 @@ describe('a delete-below grant', () => {
   })
 })
 
+// The delete policy review, R3: a wider subject names a folder, and some folders are too wide to offer. An unmounted view,
+// which is the default, reaches any path a read or write approval reached, so the agent's own choice of target must not
+// become a grant over its owner's home folder, a folder that holds the workspace's, or the filesystem's root.
+describe('the wider subject, where the target\'s folder is too wide to grant', () => {
+  const HOME = '/home/me'
+  const unmounted = (input: { home?: string } = {}) => {
+    const paths = createPathView({ root: WORKSPACE, mount: null, scratchRoots: ['/scratch'] })
+    const deletes: DeletePolicy = { inWorkspace: 'allow', massLimit: 100 }
+    return createPermissionEngine([
+      createDestructivePathRule({ paths, strict: false, deletes, home: input.home ?? HOME }),
+      createWriteScopeRule({ paths, strict: false, deletes }),
+    ])
+  }
+  const asked = (path: string, granted: Partial<Record<PermissionRuleId, string[]>> = {}, tree?: TreeCount) => unmounted().evaluate({ tool: 'fs_delete', effects: [removed(path, tree)], grants: lookup(granted) })
+
+  it.each([
+    ['a folder that holds the workspace\'s folder', '/work/notes.txt', '/work'],
+    ['the filesystem\'s root', '/notes.txt', '/'],
+    ['the home folder', `${HOME}/notes.txt`, HOME],
+    ['a folder above the home folder', '/home/notes.txt', '/home'],
+  ])('offers the target alone for %s', (_name, path, folder) => {
+    const outcome = asked(path)
+    expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete:${folder}`, offeredScopes: ['once', 'session', 'always'] }] })
+    expect(outcome.kind === 'ask' ? outcome.asks[0] : null).not.toHaveProperty('widerSubject')
+  })
+
+  it('offers the folder and its subfolders for a folder beside those, below the home folder, or a scratch root itself', () => {
+    expect(asked(`${HOME}/Downloads/a.zip`)).toMatchObject({ kind: 'ask', asks: [{ subject: `delete:${HOME}/Downloads`, widerSubject: `delete-below:${HOME}/Downloads` }] })
+    expect(asked('/work/other/src/a.ts')).toMatchObject({ kind: 'ask', asks: [{ widerSubject: 'delete-below:/work/other/src' }] })
+    expect(asked('/scratch/a.txt')).toMatchObject({ kind: 'ask', asks: [{ widerSubject: 'delete-below:/scratch' }] })
+    expect(asked(`${HOME}/Downloads/old`, {}, counted(2, 0))).toMatchObject({ kind: 'ask', asks: [{ subject: `delete-tree:${HOME}/Downloads/old`, widerSubject: `delete-below:${HOME}/Downloads` }] })
+  })
+
+  it('does not let a held delete-below grant of such a folder cover a delete beside the workspace, or in the home folder', () => {
+    expect(asked('/work/other/src/a.ts', { write_scope: ['delete-below:/work'] }).kind).toBe('ask')
+    expect(asked(`${HOME}/Documents/b.txt`, { write_scope: [`delete-below:${HOME}`] }).kind).toBe('ask')
+    expect(asked('/etc/b.txt', { write_scope: ['delete-below:/'] }).kind).toBe('ask')
+    expect(asked(`${HOME}/Downloads/a.zip`, { write_scope: [`delete-below:${HOME}/Downloads`] }).kind).toBe('allow')
+  })
+})
+
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {

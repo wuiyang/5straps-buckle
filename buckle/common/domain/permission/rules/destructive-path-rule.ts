@@ -2,7 +2,7 @@ import type { GrantScope } from '@5straps/protocol'
 import { guardedBatch, guardedTree, inWorkspaceFolder, relievedDelete, type DeletePolicy } from '../../delete-policy.js'
 import { treeWords, type ResolvedEffect } from '../../effect.js'
 import type { PathView } from '../../path-view.js'
-import { isInside } from '../../paths.js'
+import { homeDirectory, isInside } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask } from '../decision.js'
 
@@ -51,10 +51,15 @@ export function floorSubjectPath(subject: string): string | null {
  * The workspace's delete policy (the owner's ruling of 2026-10-28): under `allow`, a delete inside its own folder is the
  * write scope's alone, except where one call deletes past the mass-delete limit or a folder at the top of the folder,
  * which still asks here. A delete outside it always asks here, and offers its folder and subfolders (`delete-below`) as a
- * wider grant beside the entry alone, for the session or always; strict mode offers neither.
+ * wider grant beside the entry alone, for the session or always; strict mode offers neither. Nor is it offered, or
+ * honored, for a folder that is the owner's home folder or holds it, or that holds a root the agent may name (its
+ * folder, a mount, a scratch root): the agent chooses the target, and such a grant would cover other projects or the
+ * whole disk (the delete policy review, R3). `home`: the owner's home folder, the node's own where absent.
  */
-export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy }): PermissionRule {
+export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string }): PermissionRule {
   const offeredScopes: GrantScope[] = input.strict ? ['once'] : ['once', 'session', 'always']
+  const home = input.home ?? homeDirectory()
+  const grantable = (folder: string) => !isInside(folder, home) && !input.paths.reachableRoots.some(root => isInside(folder, root) && !isInside(root, folder))
   return {
     id: 'write_scope',
     evaluate({ effect, effects, grants }) {
@@ -64,9 +69,9 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
       if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, offeredScopes)
-      const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
+      const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && grantable(subject.slice(DELETE_BELOW_PREFIX.length)) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
       if (below !== undefined) return allowedVia('write_scope', below)
-      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes), ...(input.strict ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
+      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
     },
   }
 }
