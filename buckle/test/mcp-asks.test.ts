@@ -78,7 +78,8 @@ describe('the HTTP MCP face\'s hold (item 1)', () => {
     const workspace = await node(wait)
     const invoke = vi.spyOn(workspace.runtime, 'invoke').mockResolvedValue({ requestId: 'r', outcome: 'ok', output: null, meta: { durationMs: 0, truncated: false } })
     await call(workspace, writeOutside(workspace.root))
-    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ approvalWait: { mode: 'finite', ms: held } }))
+    // The face sends an undecided call again, so an ask it leaves at wait 0 may lapse (review of the MCP asks slice, finding M3).
+    expect(invoke).toHaveBeenCalledWith(expect.objectContaining({ approvalWait: { mode: 'finite', ms: held }, resends: true }))
   })
 
   it('answers an unanswered hold as no error, with the prose and /v1/invoke\'s own approval_required answer', async () => {

@@ -38,14 +38,16 @@ the [first part](known-limits.md) lists the other limits.
   from two such clients count as one call, and their asks share the session's 50. A session per
   client is a follow-up.
 - Buckle cannot tell whether a client read an answer. A run that answered later than 30 seconds
-  is replayed to an identical call within ten minutes, even one from a client that read it; a
-  fresh `5straps/requestId` runs it again. A client whose own timeout is under 30 seconds, and
+  is replayed to an identical call within ten minutes, even one from a client that read it. The
+  answer is marked `Replayed`, and the next identical call, or a fresh `5straps/requestId`, runs
+  it again. A client whose own timeout is under 30 seconds, and
   that sends no shorter `5straps/approvalWait`, can still miss an answer and ask twice.
 - An ask answered `approval_required` that the agent never sends again counts against the
   session's 50 until it lapses or expires; only abandoned asks make room.
-- An ask at `approvalWaitMs` `0` still states no deadline in its `expiresAt`, since a person's
-  device signs that field in its challenge; the lapse is kept beside it. A decision on a lapsed
-  ask is refused as unknown or expired.
+- An ask at `approvalWaitMs` `0` from an MCP call or a copy still states no deadline in its
+  `expiresAt`, since a person's device signs that field in its challenge; the lapse is kept
+  beside it. A decision on a lapsed ask is refused as unknown or expired. `/v1/invoke` asks do
+  not lapse at wait `0`, so a run Rings parked keeps its ask until it is answered.
 - An ask held until answered keeps no lapse when its node process is killed rather than stopped:
   it waits, as before, until it is answered or withdrawn.
 - A copy approved late in its hold has what is left of node:http's 300 seconds for the checkpoint

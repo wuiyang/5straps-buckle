@@ -26,7 +26,7 @@ export default defineOperationHandler({
       return json({ error: parsed.error }, { status: parsed.status })
     }
     const response = await mapAgentFailures(() => runtime.invoke({
-      request: parsed.request, sessionId: parsed.sessionId, signal: event.req.signal, approvalWait: filesWait(config.approvalTimeoutMs),
+      request: parsed.request, sessionId: parsed.sessionId, signal: event.req.signal, approvalWait: filesWait(config.approvalTimeoutMs), resends: true,
       file: { kind: 'receive', body: event.req.body },
     }))
     return json(response, { status: invokeStatus(response, FILES_STATUS) })

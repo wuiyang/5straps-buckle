@@ -150,11 +150,13 @@ describe('an abandoned ask', () => {
   })
 })
 
+// Review of the MCP asks slice, finding M3: only a face that sends a call again (`resends`: the MCP faces and the files
+// route) lapses an ask that states no deadline. /v1/invoke, which Rings parks runs on, keeps such an ask until answered.
 describe('an ask at wait 0', () => {
   it('states no deadline, and lapses ten minutes after its hold ended', async () => {
     const start = Date.now()
     const { runtime } = await node('0')
-    const response = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-1'), approvalWait: { mode: 'finite', ms: 50 } })
+    const response = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-1'), approvalWait: { mode: 'finite', ms: 50 }, resends: true })
     if (response.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${response.outcome}`)
     expect(response.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
 
@@ -168,7 +170,7 @@ describe('an ask at wait 0', () => {
   it('lapses ten minutes after a call that would not wait returned', async () => {
     const start = Date.now()
     const { runtime } = await node('0')
-    const first = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-2'), approvalWait: { mode: 'none' } })
+    const first = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-2'), approvalWait: { mode: 'none' }, resends: true })
     if (first.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${first.outcome}`)
     expect(first.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
 
@@ -182,9 +184,9 @@ describe('an ask at wait 0', () => {
   it('restarts its clock when a re-send joins it', async () => {
     const start = Date.now()
     const { runtime } = await node('0')
-    await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' } })
+    await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' }, resends: true })
     clockAt(start + 9 * MINUTE)
-    const again = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' } })
+    const again = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-3'), approvalWait: { mode: 'none' }, resends: true })
     expect(again).toMatchObject({ outcome: 'approval_required' })
 
     clockAt(start + 15 * MINUTE)
@@ -194,7 +196,21 @@ describe('an ask at wait 0', () => {
     await runtime.history.close()
   })
 
-  it('held until decided, lapses ten minutes after its caller left', async () => {
+  it.each([['a finite hold', { mode: 'finite', ms: 50 }], ['a call that would not wait', { mode: 'none' }]] as const)('keeps living until answered on a face that does not send the call again (/v1/invoke), after %s', async (_, approvalWait) => {
+    const start = Date.now()
+    const { runtime } = await node('0')
+    const response = await runtime.invoke({ sessionId: 'chat-1', request: write('zero-rpc'), approvalWait })
+    if (response.outcome !== 'approval_required') throw new Error(`expected approval_required, got ${response.outcome}`)
+    expect(response.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
+
+    clockAt(start + 3 * 60 * MINUTE)
+    const [token] = runtime.approvalService.pending().map(request => request.token)
+    expect(token).toBe(response.approvals[0]!.token)
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    await runtime.history.close()
+  })
+
+  it('held until decided, still lapses ten minutes after its caller left, on any face', async () => {
     const start = Date.now()
     const { runtime } = await node('0')
     const leaving = new AbortController()
@@ -218,12 +234,38 @@ describe('an ask at wait 0', () => {
     const start = Date.now()
     const registry = queue()
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: null, interaction: fixedInteraction() })
-    const waited = await service.request({ sessionId: 's', requestId: `script-${leftMs}`, tool: 'fs_write', asks: [outside(1)], holdUntil: performance.now() + leftMs })
+    const waited = await service.request({ sessionId: 's', requestId: `script-${leftMs}`, tool: 'fs_write', asks: [outside(1)], holdUntil: performance.now() + leftMs, resends: true })
     expect(waited.settled).toBe(false)
     clockAt(start + 9 * MINUTE)
     expect(registry.pending()).toHaveLength(1)
     clockAt(start + 11 * MINUTE)
     expect(registry.pending()).toEqual([])
     await service.close()
+  })
+
+  it.each([['some wait', 50], ['no wait', -1]] as const)('held until answered within a script\'s deadline, with %s left, lives on where the face does not send the call again', async (_, leftMs) => {
+    const start = Date.now()
+    const registry = queue()
+    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: null, interaction: fixedInteraction() })
+    const waited = await service.request({ sessionId: 's', requestId: `script-rpc-${leftMs}`, tool: 'fs_write', asks: [outside(1)], holdUntil: performance.now() + leftMs })
+    expect(waited.settled).toBe(false)
+    clockAt(start + 3 * 60 * MINUTE)
+    expect(registry.pending()).toHaveLength(1)
+    await service.close()
+  })
+
+  it('takes a call that holds an abandoned ask again out of the abandoned, and out of its lapse, on a face that does not send the call again', async () => {
+    const start = Date.now()
+    const registry = queue()
+    const first = await registry.ask({ tool: 'fs_write', sessionId: 'rpc', requestId: 'r-rpc', asks: [outside(0)] })
+    await registry.holdEnded({ tokens: first.requests.map(request => request.token), abandoned: true })
+    expect(registry.waiting()[0]).toMatchObject({ abandonedAt: expect.any(String), lapsesAt: expect.any(String) })
+
+    const rejoined = await registry.ask({ tool: 'fs_write', sessionId: 'rpc', requestId: 'r-rpc', asks: [outside(0)] })
+    expect(rejoined.joined).toBe(true)
+    expect(registry.waiting()[0]).not.toHaveProperty('abandonedAt')
+    expect(registry.waiting()[0]).not.toHaveProperty('lapsesAt')
+    clockAt(start + 3 * 60 * MINUTE)
+    expect(registry.pending()).toHaveLength(1)
   })
 })

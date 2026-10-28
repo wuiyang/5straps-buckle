@@ -70,6 +70,8 @@ describe('the hold of a copy', () => {
     await (await put('held.txt', Buffer.from('held'))).text()
     await (await get('held.txt')).text()
     expect(invoke.mock.calls.map(([call]) => call.approvalWait)).toEqual([{ mode: 'finite', ms: FILES_HOLD_MS }, { mode: 'finite', ms: FILES_HOLD_MS }])
+    // A copy is sent again until it is decided, so an ask it leaves at wait 0 may lapse (review of the MCP asks slice, finding M3).
+    expect(invoke.mock.calls.map(([call]) => call.resends)).toEqual([true, true])
     expect(FILES_HOLD_MS).toBeLessThan(300_000)
   })
 })

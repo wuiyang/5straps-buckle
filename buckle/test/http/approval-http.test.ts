@@ -1,6 +1,7 @@
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import type { CliRequest } from '@5straps/runtime'
+import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { generateSigningKey, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest } from '@5straps/protocol/signed-request'
 import { keysCommand } from '../../cli/keys.js'
 import { requestIdKey } from '../../common/services/invocation/executions.js'
@@ -62,6 +63,24 @@ describe('the approval service over HTTP', () => {
     expect(asked.map(request => request.action.details?.tool)).toEqual(['fs_write', 'fs_write'])
     // The agent guard names the caller under its credential (plan section C): the node's own token.
     expect(asked[0]!.actor).toBe('agent:node')
+  })
+
+  // Review of the MCP asks slice, finding M3: only the faces that send an undecided call again lapse an ask at wait 0
+  // (the files route's flag is pinned in files.test.ts).
+  it('lapses an ask at wait 0 for an MCP call, which is sent again, and not for /v1/invoke, where Rings parks a run', async () => {
+    const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
+    const lapsing = () => buckle.runtime.approvalService.waiting().map(ask => ({ tool: ask.request.tool, lapses: ask.lapsesAt !== undefined }))
+
+    const rings = await buckle.request('/v1/invoke', { method: 'POST', headers, body: JSON.stringify({ requestId: 'parked-1', tool: 'fs_write', args: { path: 'a.md', content: 'x' }, context: { approvalWait: { mode: 'none' } } }) })
+    const parked = await rings.json() as { outcome: string; approvals: Array<{ expiresAt: string }> }
+    expect(parked.outcome).toBe('approval_required')
+    expect(parked.approvals[0]!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
+    expect(lapsing()).toEqual([{ tool: 'fs_write', lapses: false }])
+
+    const mcp = await buckle.request('/mcp', { method: 'POST', headers: { ...headers, accept: 'application/json, text/event-stream', 'mcp-protocol-version': '2026-07-28', 'mcp-method': 'tools/call', 'mcp-name': 'fs_write' },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'fs_write', arguments: { path: 'b.md', content: 'y' }, _meta: { 'io.modelcontextprotocol/protocolVersion': '2026-07-28', 'io.modelcontextprotocol/clientCapabilities': {}, '5straps/approvalWait': 50 } } }) })
+    expect(await mcp.text()).toContain('This call needs approval')
+    expect(lapsing()).toEqual([{ tool: 'fs_write', lapses: false }, { tool: 'fs_write', lapses: true }])
   })
 
   it('takes the approval wait hint from the invoke request\'s context', async () => {

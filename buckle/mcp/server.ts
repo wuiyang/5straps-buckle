@@ -165,6 +165,8 @@ async function invokeJoined(input: {
     ...(input.isCancel ? { isCancel: input.isCancel } : {}),
     ...(input.wait ? { approvalWait: input.wait } : {}),
     onReplayed: (earlier) => { replay = earlier },
+    // An agent sends an undecided call again, so an ask it leaves may lapse (ApprovalRequestInput.resends).
+    resends: true,
     // A client that names its own requestId joins by it, and nothing is remembered for it.
     ...(hints.requestId === undefined ? { onAsked: () => { asked = true; input.joins.remember(key, requestId) } } : {}),
   })

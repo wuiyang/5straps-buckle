@@ -23,7 +23,7 @@ export default defineOperationHandler({
     }
     const outgoing = outgoingFile()
     const answering = mapAgentFailures(() => runtime.invoke({
-      request: parsed.request, sessionId: parsed.sessionId, signal: event.req.signal, approvalWait: filesWait(config.approvalTimeoutMs),
+      request: parsed.request, sessionId: parsed.sessionId, signal: event.req.signal, approvalWait: filesWait(config.approvalTimeoutMs), resends: true,
       file: outgoing.channel,
     }))
     const first = await Promise.race([answering.then(response => ({ response })), outgoing.ready.then(file => ({ file }))])

@@ -58,6 +58,13 @@ export interface ApprovalAskInput {
    * code-mode slice, finding approvals-replay 685; re-review, finding fixes-hold invoker.ts:712).
    */
   holdUntil?: number
+  /**
+   * Whether the face sends a call again that it left undecided, which then joins its ask (the MCP faces and the files
+   * route). An ask that states no deadline (wait 0) lapses ten minutes after the last hold on it ended only for such a
+   * face; on /v1/invoke, where Rings parks a run on its ask, it lives until answered, as before the MCP asks brief (review
+   * finding M3). A caller that left abandons its ask whatever the face.
+   */
+  resends?: boolean
   /** The call's tool and whole arguments, hashed (requestFingerprint): a re-send joins only with the same one. */
   fingerprint?: string
   /** The whole call as the node's signed challenge shows it (owner decisions D9 and D17): redacted arguments, their directory, the node's description and the judged effects. */
@@ -275,8 +282,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })
       const ownHold = holdFor({ hold: interaction.hold, graceMs: options.graceMs, hint: input.wait })
-      // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it (the MCP asks brief, item 5).
-      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), holdMs: ownHold, ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
+      // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
+      const issued = await options.registry.ask({ tool: input.tool, sessionId: input.sessionId, asks: input.asks, requestId: input.requestId, waitMs: askLifetime(options.graceMs, input.wait), ...(input.resends ? { holdMs: ownHold } : {}), ...(actor === undefined ? {} : { actor }), ...(input.fingerprint === undefined ? {} : { fingerprint: input.fingerprint }), ...(input.call === undefined ? {} : { call: input.call }) })
       const { requests: approvals, answered } = issued
       if (issued.evicted?.length) notices.cancelled(issued.evicted)
       if (issued.lapsesAt !== undefined) scheduleSweepAt(issued.lapsesAt)
@@ -298,7 +305,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await cancelIfCancelled({ key, tokens, signal: input.signal, isCancel: input.isCancel })
       // A hold until answered that ends before it starts still starts its asks' ten minutes (the MCP asks brief, item 5).
       const unheld = async (reason: ApprovalSkipReason) => {
-        if (ownHold === null) await holdEnded({ tokens, abandoned: false })
+        if (input.resends && ownHold === null) await holdEnded({ tokens, abandoned: false })
         return skip({ approvals, answered, reason })
       }
       if (closing.signal.aborted) return unheld('shutdown')
@@ -324,7 +331,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const participant = new AbortController()
       ask.participants.add(participant)
       const result = waitFor({ ask, participant, hold: interaction.hold, holdMs, signal: input.signal })
-        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, held: ownHold, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
+        .then(ending => finish({ ask, participant, ending, hold: interaction.hold, held: ownHold, resends: input.resends === true, signal: input.signal, isCancel: input.isCancel, own: { approvals, answered } }))
       track(result)
       return result
     },
@@ -571,14 +578,14 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return promise
   }
 
-  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; /** The hold the asks were recorded with (ownHold). */ held: number | null; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
+  async function finish(input: { ask: OpenAsk; participant: AbortController; ending: Ending; hold: ApprovalHold; /** The hold the asks were recorded with (ownHold). */ held: number | null; resends: boolean; signal?: AbortSignal; isCancel?: (reason: unknown) => boolean; own: { approvals: ApprovalRequest[]; answered: string[] } }): Promise<ApprovalWaitResult> {
     const { ask, ending, own } = input
     ask.participants.delete(input.participant)
     const last = ask.participants.size === 0
     // The last hold on the asks ended with them unanswered: a caller that left marks them abandoned, and one held until
     // answered starts their ten minutes (the MCP asks brief, item 5). A finite hold set its lapse when it asked.
     const dropped = ending === 'aborted' && !cancels(input.signal, input.isCancel)
-    if (last && ending !== 'settled' && ending !== 'superseded' && (dropped || input.held === null)) await holdEnded({ tokens: stillPending(ask.tokens), abandoned: dropped })
+    if (last && ending !== 'settled' && ending !== 'superseded' && (dropped || (input.resends && input.held === null))) await holdEnded({ tokens: stillPending(ask.tokens), abandoned: dropped })
     if (ending === 'superseded') {
       // The newer caller carries the ask on; this one reports back without running.
       if (last) release({ ask, keepAsking: input.hold === 'grace' })

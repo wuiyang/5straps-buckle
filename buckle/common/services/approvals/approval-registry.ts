@@ -304,7 +304,8 @@ export interface AskInput {
   /**
    * How long the asking caller is held, in ms; null holds it until answered. An ask that states no deadline lapses this
    * long and ten minutes more from now, and a re-send that joins restarts that clock (the MCP asks brief, item 5); one held
-   * until answered lapses only once its hold ends (holdEnded). Absent: no lapse, as before the brief.
+   * until answered lapses only once its hold ends (holdEnded). Absent, from a face that does not send a call again
+   * (ApprovalRequestInput.resends): no lapse, as before the brief.
    */
   holdMs?: number | null
 }
@@ -888,10 +889,10 @@ function lapseAfter(holdMs: number | null | undefined, now: number): string | un
 
 /**
  * A waiting ask a re-send joined: no longer abandoned, and its clock restarted from the re-send's hold (the MCP asks brief,
- * item 5); a re-send that gives no hold leaves it as it was.
+ * item 5). A re-send that gives no hold, from a face that does not send calls again, holds the ask until answered, as a
+ * first call does: its lapse goes with the abandoned mark.
  */
 function renewed(entry: PendingEntry, holdMs: number | null | undefined, now: number): PendingEntry {
-  if (holdMs === undefined) return entry
   const { lapsesAt: _lapsesAt, abandonedAt: _abandonedAt, ...rest } = entry
   const lapsesAt = entry.request.expiresAt === APPROVAL_NO_DEADLINE ? lapseAfter(holdMs, now) : undefined
   return lapsesAt === undefined ? rest : { ...rest, lapsesAt }

@@ -41,10 +41,16 @@ token it came with). It runs under the requestId the first call was given, so it
 - answers with the outcome of a run its client missed, audited `REPLAYED`, without running it
   again; a run cut short as its client left answers that its effects are unknown.
 
+A replayed answer says so: its text begins `Replayed: this call already ran (at <time>) for its
+approval and was not run again`, and its `_meta` carries `5straps/replayed: true`, since the
+client may have read that run already. Send the call once more to run it anew.
+
 A call never runs twice for one decision. Buckle remembers each call that asked, for ten minutes
 from its last use and 256 calls per workspace at most. It forgets the call once a call under it
 answered its outcome within 30 seconds to a client still connected, so a later identical call
-is a call of its own.
+is a call of its own. Its run is kept for the same ten minutes: the answer itself, and once 256
+newer calls or the byte budget push that out, a note that the call ran (4,096 notes per
+workspace at most), which a call sent again is answered with as `REQUEST_ALREADY_EXECUTED`.
 
 ## The `_meta` hints
 
@@ -67,8 +73,9 @@ anything is asked or run.
   `CALLER_LEFT`. Its ask is marked abandoned: it stays answerable for ten minutes, the time a
   call sent again can join it, then lapses. An explicit cancel over stdio withdraws the asks,
   audited `CALLER_CANCELLED`.
-- At `approvalWaitMs` `0` an ask states no deadline, and lapses ten minutes after its hold ended.
-  The same call sent again joins it and starts the ten minutes over.
+- At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
+  minutes after its hold ended. The same call sent again joins it and starts the ten minutes
+  over. An ask on `/v1/invoke`, where Rings parks a run, waits until it is answered.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.
