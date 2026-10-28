@@ -5,7 +5,7 @@ import { createOperationScope, runInScope } from '@5straps/runtime'
 import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
 import { describe, expect, it, vi } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { createExecutionBudget, createExecutions, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
+import { createExecutionBudget, createExecutions, EVICTED_STUB_LIMIT, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { ToolExecutionError } from '../common/domain/tool.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
@@ -275,18 +275,18 @@ describe('the execution store', () => {
     expect(executions.earlier(key('r1'))).toBeUndefined()
   })
 
-  it('keeps the newest calls up to its limit', () => {
+  it('keeps the newest calls up to its limit, and a stub for the one it drops', async () => {
     const executions = createExecutions()
     for (let index = 0; index <= EXECUTION_LIMIT; index += 1) ran(executions, `r${index}`)
-    expect(executions.earlier(key('r0'))).toBeUndefined()
-    expect(executions.earlier(key(`r${EXECUTION_LIMIT}`))).toBeDefined()
+    expect(await replayed(executions, 'r0')).toMatchObject({ outcome: 'error', error: { code: REQUEST_ALREADY_EXECUTED, details: { auditId: 'audit-r0', reason: 'evicted' } } })
+    expect(await replayed(executions, `r${EXECUTION_LIMIT}`)).toEqual(response(`r${EXECUTION_LIMIT}`))
   })
 
   it('keeps the responses within a byte budget per workspace, and one per node shared by every workspace, the oldest going first (review L3 of B18-B19)', async () => {
     const answer = (requestId: string) => response(requestId, 'x'.repeat(100_000))
     const perWorkspace = createExecutions({ workspaceBytes: 250_000 })
     for (const id of ['w1', 'w2', 'w3']) ran(perWorkspace, id, answer(id))
-    expect(perWorkspace.earlier(key('w1'))).toBeUndefined()
+    expect(await replayed(perWorkspace, 'w1')).toMatchObject({ error: { code: REQUEST_ALREADY_EXECUTED, details: { reason: 'evicted' } } })
     expect(await replayed(perWorkspace, 'w3')).toEqual(answer('w3'))
 
     const budget = createExecutionBudget(250_000)
@@ -295,8 +295,8 @@ describe('the execution store', () => {
     ran(nodeStore, 'n1', answer('n1'))
     ran(child, 'c1', answer('c1'))
     ran(child, 'c2', answer('c2'))
-    // The node's oldest went, although it was another workspace's.
-    expect(nodeStore.earlier(key('n1'))).toBeUndefined()
+    // The node's oldest went, although it was another workspace's, and its workspace still says it ran.
+    expect(await replayed(nodeStore, 'n1')).toMatchObject({ error: { code: REQUEST_ALREADY_EXECUTED, details: { reason: 'evicted' } } })
     expect(await replayed(child, 'c1')).toEqual(answer('c1'))
     expect(await replayed(child, 'c2')).toEqual(answer('c2'))
     // A forgotten entry gives its bytes back: another fits without evicting.
@@ -320,6 +320,31 @@ describe('the execution store', () => {
     expect(executions.earlier(key(`more:${SCRIPT_STUB_LIMIT - 1}`))).toBeUndefined()
     now += EXECUTION_TTL_MS
     expect(executions.earlier(key(`more:${SCRIPT_STUB_LIMIT - 2}`))).toBeUndefined()
+  })
+
+  // Review of the MCP asks slice, finding M2: an identical call re-sent after the store dropped its answer ran twice.
+  it('answers a re-send of a call whose kept response was evicted that it ran, for the kept time and in a bound of its own', async () => {
+    let now = 0
+    const executions = createExecutions({ now: () => now })
+    ran(executions, 'first')
+    for (let index = 0; index < EXECUTION_LIMIT; index += 1) ran(executions, `later:${index}`)
+
+    // Not a replay of the answer, which is gone, and not a fresh run either.
+    expect(await replayed(executions, 'first')).toMatchObject({ requestId: 'first', outcome: 'error', error: { code: REQUEST_ALREADY_EXECUTED, retryable: false, details: { auditId: 'audit-first', reason: 'evicted' } } })
+    expect(executions.earlier(key('first', 'another call'))).toEqual({ kind: 'reused' })
+    expect(executions.claim(key('first')).kind).toBe('replay')
+
+    // A newer run of the id supersedes its stub; the stubs are bounded apart from the kept answers and the script stubs.
+    executions.forget(key('first'))
+    expect(executions.earlier(key('first'))).toBeUndefined()
+    ran(executions, 'first', response('first', 'again'))
+    expect(await replayed(executions, 'first')).toEqual(response('first', 'again'))
+    for (let index = 0; index < EVICTED_STUB_LIMIT + EXECUTION_LIMIT; index += 1) ran(executions, `churn:${index}`)
+    expect(executions.earlier(key('later:0'))).toBeUndefined()
+    expect(await replayed(executions, `churn:${EXECUTION_LIMIT - 1}`)).toMatchObject({ error: { details: { reason: 'evicted' } } })
+
+    now += EXECUTION_TTL_MS
+    expect(executions.earlier(key(`churn:${EXECUTION_LIMIT - 1}`))).toBeUndefined()
   })
 
   // Review of the code-mode slice, finding tests executions.ts:195: a code_run that stopped at an ask ran, but asks again.

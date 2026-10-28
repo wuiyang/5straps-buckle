@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { InvokeResponseSchema, type InvokeResponse } from '@5straps/protocol'
@@ -10,6 +10,7 @@ import { fixedInteraction } from './support/interaction.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { MCP_HOLD_MS, mcpWait } from '../mcp/holds.js'
 import { sameCallKey } from '../mcp/resend-join.js'
+import { EXECUTION_LIMIT } from '../common/services/invocation/executions.js'
 
 // The MCP asks brief, items 1 to 3, over the HTTP face's own handler (mcp/http.ts) with a real workspace runtime: the
 // hold is capped, an unanswered hold answers structurally and is no error, an identical re-send joins the call that
@@ -150,6 +151,39 @@ describe('an identical re-send (item 2)', () => {
     const again = await call(workspace, writeOutside(workspace.root))
     expect(again.isError).toBeUndefined()
     expect(results(workspace.runtime).map(entry => entry.detail)).toEqual([undefined, 'REPLAYED'])
+  })
+
+  // Review of the MCP asks slice, finding M2: the replay store drops a run after 256 finished calls, the join still remembers it.
+  it('never runs a call again once the replay store dropped its run: the re-send is told it ran', async () => {
+    const workspace = await node('60000')
+    const note = join(workspace.root, 'outside', 'note.md')
+    const readable = join(workspace.root, 'workspace', 'readable.md')
+    writeFileSync(readable, 'to read')
+    vi.useFakeTimers({ toFake: ['performance'] })
+    const held = call(workspace, writeOutside(workspace.root))
+    await vi.waitFor(() => expect(workspace.runtime.approvalService.pending()).toHaveLength(1))
+    vi.advanceTimersByTime(MCP_HOLD_MS + 1_000)
+    await approve(workspace.runtime, 'session')
+    expect((await held).isError).toBeUndefined()
+
+    // Another session's reads fill the store's 256 slots, so the run's kept answer goes.
+    for (let index = 0; index < EXECUTION_LIMIT + 4; index += 1) {
+      const read = await workspace.runtime.invoke({ request: { requestId: `read-${index}`, tool: 'fs_read', args: { path: readable }, approvalTokens: [] }, sessionId: 'another' })
+      expect(read.outcome).toBe('ok')
+    }
+    writeFileSync(note, 'changed in between')
+
+    const again = await call(workspace, writeOutside(workspace.root))
+    expect(again.isError).toBe(true)
+    expect(again.content[0]!.text).toContain('REQUEST_ALREADY_EXECUTED')
+    expect(readFileSync(note, 'utf8')).toBe('changed in between')
+    // The log reads its last 200 entries: the 260 reads pushed the first run out of it, this answer is the only write in it.
+    expect(results(workspace.runtime).map(entry => entry.detail)).toEqual(['REPLAYED'])
+
+    // Told once, the next identical call is a call of its own: under the session grant it runs.
+    expect((await call(workspace, writeOutside(workspace.root))).isError).toBeUndefined()
+    expect(readFileSync(note, 'utf8')).toBe('from the agent')
+    expect(results(workspace.runtime).map(entry => entry.detail)).toEqual(['REPLAYED', undefined])
   })
 
   it('forgets a call whose outcome its client read in time: the next identical call is a call of its own', async () => {

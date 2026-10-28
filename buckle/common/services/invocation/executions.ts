@@ -17,6 +17,12 @@ export const REQUEST_ALREADY_EXECUTED = 'REQUEST_ALREADY_EXECUTED'
  * other calls' (review of the code-mode slice, finding invoker-audit executions.ts:7).
  */
 export const SCRIPT_STUB_LIMIT = 4_096
+/**
+ * The stubs a workspace keeps for finished calls whose answers the store dropped (the entry limit or a byte budget), in
+ * a bound of their own, for the time the answer would have been kept: a re-send of such a call is told it ran, and
+ * never runs it again (review of the MCP asks slice, finding M2). Past the bound the oldest stub goes first.
+ */
+export const EVICTED_STUB_LIMIT = 4_096
 /** What a call is told when its requestId already names a different call (another tool or other arguments). */
 export const REQUEST_ID_REUSED = 'REQUEST_ID_REUSED'
 
@@ -95,7 +101,11 @@ interface Kept<T> {
 interface Finished extends Kept<InvokeResponse> {
   expiresAt: number
   slot: BudgetSlot
+  auditId: string
 }
+
+/** An answer kept without its body: it only says the call ran. */
+type Stub = Kept<InvokeResponse> & { expiresAt: number }
 
 /** One kept response as the node's budget counts it; `evict` drops it from its workspace's store. */
 export interface BudgetSlot {
@@ -134,10 +144,10 @@ export function createExecutionBudget(limitBytes = NODE_EXECUTION_BYTES): Execut
  * "Reconnection must not execute a request twice"; review M2 of B13-B14). A re-send while the call
  * runs gets its response when it settles; a finished call answers a re-send for EXECUTION_TTL_MS, its
  * response kept whole when small and as a REQUEST_ALREADY_EXECUTED stub otherwise, within a byte
- * budget per workspace and one per node. Only calls whose tool actually ran are kept: a refusal, an
- * approval still required or a superseded call asks again, and so does an error the tool called
- * retryable, so an idempotent retry under the same requestId runs again (review L4 of B18-B19).
- * Kept in memory, so a restart forgets them; the action log keeps every run.
+ * budget per workspace and one per node, and as a stub of its own once either drops it (review of the MCP asks slice,
+ * finding M2). Only calls whose tool actually ran are kept: a refusal, an approval still required or a superseded
+ * call asks again, and so does an error the tool called retryable, so an idempotent retry under the same requestId
+ * runs again (review L4 of B18-B19). Kept in memory, so a restart forgets them; the action log keeps every run.
  */
 export function createExecutions(options: { now?: () => number; budget?: ExecutionBudget; workspaceBytes?: number } = {}): Executions {
   // Read at each call, so a clock stood in for in a test reaches the store (review of the code-mode slice, finding tests 181).
@@ -149,11 +159,14 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
   // A script's calls that ran: stubs that only say so, oldest first, so one script's 256 calls can neither evict the
   // workspace's other re-send answers nor be evicted by them (review of the code-mode slice, finding invoker-audit
   // executions.ts:7).
-  const stubs = new Map<string, Kept<InvokeResponse> & { expiresAt: number }>()
+  const stubs = new Map<string, Stub>()
+  // The answers the store dropped, oldest first, each for the time it would have been kept.
+  const dropped = new Map<string, Stub>()
   let bytes = 0
 
   function forget(id: string): void {
     stubs.delete(id)
+    dropped.delete(id)
     const entry = finished.get(id)
     if (!entry) return
     finished.delete(id)
@@ -161,30 +174,36 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
     budget.remove(entry.slot)
   }
 
+  /** The store drops a kept answer for room: what stays says the call ran, until the answer's time is up. */
+  function drop(id: string): void {
+    const entry = finished.get(id)
+    forget(id)
+    if (!entry) return
+    dropped.set(id, { fingerprint: entry.fingerprint, outcome: alreadyExecuted({ requestId: entry.outcome.requestId, auditId: entry.auditId, reason: 'evicted' }), expiresAt: entry.expiresAt })
+    trim(dropped, EVICTED_STUB_LIMIT)
+  }
+
   function finishedFor(id: string): Kept<InvokeResponse> | undefined {
-    const entry = finished.get(id) ?? stubs.get(id)
+    const entry = finished.get(id) ?? stubs.get(id) ?? dropped.get(id)
     if (entry && entry.expiresAt <= now()) forget(id)
-    return finished.get(id) ?? stubs.get(id)
+    return finished.get(id) ?? stubs.get(id) ?? dropped.get(id)
   }
 
   function keepStub(id: string, entry: Kept<InvokeResponse>): void {
     forget(id)
     stubs.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS })
-    for (const oldest of stubs.keys()) {
-      if (stubs.size <= SCRIPT_STUB_LIMIT) break
-      stubs.delete(oldest)
-    }
+    trim(stubs, SCRIPT_STUB_LIMIT)
   }
 
-  function keep(id: string, entry: Kept<InvokeResponse>, size: number): void {
+  function keep(id: string, entry: Kept<InvokeResponse>, size: number, auditId: string): void {
     forget(id)
-    const slot: BudgetSlot = { bytes: size, evict: () => { if (finished.get(id)?.slot === slot) forget(id) } }
-    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, slot })
+    const slot: BudgetSlot = { bytes: size, evict: () => { if (finished.get(id)?.slot === slot) drop(id) } }
+    finished.set(id, { ...entry, expiresAt: now() + EXECUTION_TTL_MS, slot, auditId })
     bytes += size
     budget.add(slot)
     for (const oldest of finished.keys()) {
       if (finished.size <= EXECUTION_LIMIT && bytes <= workspaceBytes) break
-      forget(oldest)
+      drop(oldest)
     }
   }
 
@@ -219,11 +238,19 @@ export function createExecutions(options: { now?: () => number; budget?: Executi
             if (script) return keepStub(id, { fingerprint: key.fingerprint, outcome: alreadyExecuted({ requestId: response.requestId, auditId, reason: 'script' }) })
             const size = responseBytes(answer)
             const kept = size <= EXECUTION_RESPONSE_BYTES ? answer : alreadyExecuted({ requestId: response.requestId, auditId, reason: 'too_large' })
-            keep(id, { fingerprint: key.fingerprint, outcome: kept }, kept === answer ? size : responseBytes(kept))
+            keep(id, { fingerprint: key.fingerprint, outcome: kept }, kept === answer ? size : responseBytes(kept), auditId)
           },
         },
       }
     },
+  }
+}
+
+/** Drops a store's oldest stubs past `limit`; insertion order is age. */
+function trim(stubs: Map<string, Stub>, limit: number): void {
+  for (const oldest of stubs.keys()) {
+    if (stubs.size <= limit) break
+    stubs.delete(oldest)
   }
 }
 
@@ -248,6 +275,8 @@ function isRetryable(response: InvokeResponse): boolean {
 const ALREADY_EXECUTED_MESSAGE = {
   interrupted: 'This requestId already started running and its caller left before it finished, so its effects are unknown; send a new requestId to run it again',
   too_large: 'This requestId already ran; its result was too large to keep for a re-send; send a new requestId to run it again',
+  // Over MCP the next identical call is already a new one; over RPC a new requestId runs it again.
+  evicted: 'This call already ran for this requestId, and Buckle no longer keeps its result to replay; the audit log shows what it did. Buckle did not run it again: to run it anew, send the call again (a new requestId, over RPC)',
   // A script cannot choose its calls' requestIds, so it is told how to run them again (owner decision D82).
   script: 'This call of the script already ran lately, and Buckle no longer keeps its result to replay; if it was cut short, its effects are unknown. Buckle did not run it again: change the script, even by a comment, to run it from its start',
 } as const
