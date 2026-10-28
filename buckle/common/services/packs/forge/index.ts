@@ -327,8 +327,12 @@ export function createForgePack(options: ForgePackOptions): Pack {
         // https push's receive-pack runs on the remote, so only the pushing git and the helpers it starts read the copy.
         const readOnly = paths.mountOf(repository)?.access === 'ro'
         const source = readOnly ? privateGitDirectory({ repository, stateDirectory: options.stateDirectory, shown: paths.display(repository) }) : null
+        // Never into the submodules, whatever `push.recurseSubmodules` or `submodule.recurse` the repository's config sets:
+        // git would push each to its own remote, which no rule judged, and run its hooks and programs without the config
+        // scope given here, which git strips from the push it starts there (sanitize_repo_env); from a read-only mount it
+        // would also write the submodule's remote-tracking ref in the repository's .git/modules, which the copy does not hold.
         try {
-          await gitOutput({ repository, args: ['push', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: { ...receiving.environment, ...source?.environment }, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
+          await gitOutput({ repository, args: ['push', '--no-recurse-submodules', `--receive-pack=${receiving.command}`, pushTarget(destination), refspec], config: pushConfig({ remote: destination, forge }), extra: { ...receiving.environment, ...source?.environment }, secrets: userinfoForms(destination), ...(receiving.refusedBy ? { refusedBy: receiving.refusedBy } : {}), context })
         } finally { source?.remove() }
         const headSha = (await gitOutput({ repository, args: ['rev-parse', '--verify', `refs/heads/${branch}`], context })).trim()
         if (readOnly) {

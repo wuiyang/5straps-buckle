@@ -58,7 +58,11 @@ function copyGitDirectory(input: { gitDirectory: string; stateDirectory: string;
   } catch {
     throw refusal(notCopied)
   }
-  const remove = () => rmSync(path, { recursive: true, force: true })
+  // A copy that cannot be removed (on Windows a file held open a moment longer) stays under the owner-only state
+  // directory; it must not replace the result or the error of the push it served.
+  const remove = () => {
+    try { rmSync(path, { recursive: true, force: true, maxRetries: 3 }) } catch { /* left in place */ }
+  }
   try {
     const budget = { remaining: MAX_ENTRIES }
     for (const name of COPIED_ENTRIES) copyEntry({ from: join(input.gitDirectory, name), to: join(path, name), budget })
@@ -68,22 +72,26 @@ function copyGitDirectory(input: { gitDirectory: string; stateDirectory: string;
     }
   } catch (error) {
     remove()
-    throw error instanceof ToolInputError ? error : refusal(notCopied)
+    if (error instanceof ToolInputError) throw error
+    throw refusal(error instanceof NotCopied ? error.message : notCopied)
   }
   return { path, remove }
 }
+
+/** Why the walk would not copy what it found, in words for the refusal; no name of the repository's is in it. */
+class NotCopied extends Error {}
 
 /** A regular file or a folder copied whole, an absent one skipped; a link, a pipe, a device, or an odd name throws. */
 function copyEntry(input: { from: string; to: string; budget: { remaining: number } }): void {
   const stats = lstatSync(input.from, { throwIfNoEntry: false })
   if (!stats) return
-  if (--input.budget.remaining < 0) throw new Error('too many entries to copy')
+  if (--input.budget.remaining < 0) throw new NotCopied(`its git folder holds more than ${MAX_ENTRIES} entries`)
   if (stats.isFile()) return copyFileSync(input.from, input.to)
-  if (!stats.isDirectory()) throw new Error('neither a file nor a folder')
+  if (!stats.isDirectory()) throw new NotCopied('its git folder holds a link, a pipe, or a device, which Buckle does not copy')
   mkdirSync(input.to, { mode: 0o700 })
   for (const name of readdirSync(input.from)) {
     // A name pathe would read as another path (a backslash on Linux) would be copied as one, so it is refused.
-    if (!isPlainName(name)) throw new Error('not a plain name')
+    if (!isPlainName(name)) throw new NotCopied('its git folder holds a file or folder with a name Buckle does not copy')
     copyEntry({ from: join(input.from, name), to: join(input.to, name), budget: input.budget })
   }
 }

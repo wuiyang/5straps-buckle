@@ -322,7 +322,7 @@ describe('git_push', () => {
     }) as JsonObject
     const push = calls.find(request => request.args[0] === 'push')
     const encoded = Buffer.from(`x-access-token:${TOKEN}`).toString('base64')
-    expect(push?.args).toEqual(['push', '--receive-pack=git-receive-pack', `${apiUrl}/5straps/demo.git`, 'refs/heads/forge-live-check:refs/heads/forge-live-check'])
+    expect(push?.args).toEqual(['push', '--no-recurse-submodules', '--receive-pack=git-receive-pack', `${apiUrl}/5straps/demo.git`, 'refs/heads/forge-live-check:refs/heads/forge-live-check'])
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.extraheader`]).toBe(`Authorization: Basic ${encoded}`)
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.proxy`]).toBe('')
     expect(gitConfigOf(push?.environment)[`http.${apiUrl}/5straps/demo.git.sslVerify`]).toBe('true')
@@ -506,6 +506,37 @@ describe('git_push', () => {
   })
 })
 
+/** Whether the git on this machine can make a reftable repository (git 2.45 and later). */
+const reftableSupported = (() => {
+  let probe = ''
+  try {
+    probe = mkdtempSync('/tmp/buckle-forge-reftable-probe-')
+    execFileSync('git', ['init', '-q', '--ref-format=reftable', probe], { stdio: 'ignore' })
+    return true
+  } catch { return false } finally { if (probe) rmSync(probe, { recursive: true, force: true }) }
+})()
+
+/** The config keys that make a push go on into the submodules, each to its own remote. */
+const SUBMODULE_RECURSION = [['push.recurseSubmodules', 'on-demand'], ['submodule.recurse', 'true']] as const
+const COMMITTER = ['-c', 'user.name=t', '-c', 'user.email=t@e.com']
+
+/** A submodule of `repository` holding a commit its own remote lacks, which pushing submodules on demand sends to that remote. */
+function withUnpushedSubmodule(repository: string): { remote: string; submodule: string } {
+  const remote = join(temporaryRoot('submodule-remote'), 'sub.git')
+  execFileSync('git', ['init', '-q', '--bare', '-b', 'main', remote])
+  const seed = join(temporaryRoot('submodule-seed'), 'seed')
+  execFileSync('git', ['init', '-q', '-b', 'main', seed])
+  git(seed, ...COMMITTER, 'commit', '-q', '--allow-empty', '-m', 'seed')
+  git(seed, 'push', '-q', remote, 'main')
+  git(repository, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', remote, 'sub')
+  git(repository, ...COMMITTER, 'commit', '-q', '-m', 'add sub')
+  const submodule = join(repository, 'sub')
+  git(submodule, ...COMMITTER, 'commit', '-q', '--allow-empty', '-m', 'ahead of its remote')
+  git(repository, 'add', 'sub')
+  git(repository, ...COMMITTER, 'commit', '-q', '-m', 'bump sub')
+  return { remote, submodule }
+}
+
 // Prepare release 0.1.8 on git 2.56: a push to a URL or a path moves the remote-tracking ref of the one remote whose
 // push URL is that string, origin here, and writes its reflog, in the repository it pushes from. From a mount the owner
 // shares read-only that was a write there (fix brief 6, item 5), so the push runs from a private copy of the git directory.
@@ -557,10 +588,14 @@ describe('git_push from a mount the owner shares read-only runs from a private c
     const { origin, repository, paths, stateDirectory } = readOnlyRepository()
     const calls: ProcessRequest[] = []
     let copied: string[] = []
+    let copyMode = 0
     const runner: typeof runProcess = async (request) => {
       calls.push(request)
       const copy = request.args[0] === 'push' ? request.environment.GIT_DIR : undefined
-      if (copy) copied = readdirSync(copy, { recursive: true }).map(String).sort()
+      if (copy) {
+        copied = readdirSync(copy, { recursive: true }).map(String).sort()
+        copyMode = statSync(copy).mode & 0o777
+      }
       return await runProcess(request)
     }
     const output = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner }) as JsonObject
@@ -575,6 +610,8 @@ describe('git_push from a mount the owner shares read-only runs from a private c
     }
     expect(copied).toEqual(expect.arrayContaining(['HEAD', 'config', 'refs/heads/main']))
     expect(copied.filter(name => /^(objects|logs|index|hooks|info)(\/|$)/.test(name))).toEqual([])
+    // The config can hold a URL with userinfo, so the copy is the owner's alone.
+    if (process.platform !== 'win32') expect(copyMode).toBe(0o700)
     expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
   })
 
@@ -589,12 +626,19 @@ describe('git_push from a mount the owner shares read-only runs from a private c
     expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
 
     // In the writable workspace the same push leaves origin's ref where the push put it, and says nothing of a mount.
+    // It pushes from the repository's own git directory, with no copy made, so git's own write beside the push lands there.
     const writable = bareOrigin()
     git(writable.repository, '-c', 'user.name=t', '-c', 'user.email=t@e.com', 'commit', '-q', '--allow-empty', '-m', 'first')
-    const pushed = await call({ repository: writable.repository, tool: 'git_push', args: { branch: 'main' }, git: tracking }) as JsonObject
+    const writableState = temporaryRoot('writable-state')
+    const calls: ProcessRequest[] = []
+    const pushed = await call({ repository: writable.repository, tool: 'git_push', args: { branch: 'main' }, git: tracking, stateDirectory: writableState, runner: async (request) => { calls.push(request); return await runProcess(request) } }) as JsonObject
     expect(git(writable.repository, 'rev-parse', 'refs/remotes/origin/main').trim()).toBe(pushed.headSha)
     expect(git(writable.origin, 'rev-parse', 'refs/heads/main').trim()).toBe(pushed.headSha)
+    expect(readFileSync(join(writable.repository, '.git', 'logs', 'refs', 'remotes', 'origin', 'main'), 'utf8')).toContain('update by push')
     expect(pushed).not.toHaveProperty('note')
+    const push = calls.find(request => request.args[0] === 'push')!
+    for (const name of PUSH_COPY_ENVIRONMENT) expect(push.environment[name]).toBeUndefined()
+    expect(existsSync(join(writableState, 'git-push'))).toBe(false)
   })
 
   it.skipIf(process.platform === 'win32')('pushes over https from the copy, which the https helper reads too, leaving the repository\'s .git as it was', async () => {
@@ -666,6 +710,113 @@ describe('git_push from a mount the owner shares read-only runs from a private c
     expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
     expect(git(origin, 'for-each-ref').trim()).toBe('')
   })
+
+  /** A repository whose git folder `spoil` has spoiled: refused in the mount's name, with no push run, no copy left, and nothing pushed. */
+  async function refusedForGitFolder(spoil: (gitFolder: string) => void): Promise<string> {
+    const { root, origin, repository, paths, stateDirectory } = readOnlyRepository()
+    spoil(join(repository, '.git'))
+    const calls: ProcessRequest[] = []
+    const failed = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner: async (request) => { calls.push(request); return await runProcess(request) } }).then(() => null, (error: unknown) => error as Error & { code?: string })
+    expect(failed).toMatchObject({ code: 'PERMISSION_DENIED', message: expect.stringContaining('The repository at /docs is in a mount the owner shares read-only') })
+    expect(failed?.message).not.toContain(root)
+    expect(calls.filter(request => request.args[0] === 'push')).toEqual([])
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+    expect(git(origin, 'for-each-ref').trim()).toBe('')
+    return failed!.message
+  }
+
+  // ownGitDirectory reads reftable/ only as an entry of the top level, so inside it the copy's walk is the only guard.
+  it.skipIf(process.platform === 'win32')('refuses a link inside the reftable folder, which the copy would otherwise follow or copy as a link', async () => {
+    const message = await refusedForGitFolder((gitFolder) => {
+      mkdirSync(join(gitFolder, 'reftable'))
+      symlinkSync(join(gitFolder, 'config'), join(gitFolder, 'reftable', 'tables.list'))
+    })
+    expect(message).toContain('holds a link, a pipe, or a device')
+  })
+
+  // ownGitDirectory looks for links alone, so a pipe under refs/ is the walk's to stop, before a copy blocks reading it.
+  it.skipIf(process.platform === 'win32')('refuses a pipe among the refs, which the copy would block on reading', async () => {
+    const message = await refusedForGitFolder((gitFolder) => { execFileSync('mkfifo', [join(gitFolder, 'refs', 'heads', 'pipe')]) })
+    expect(message).toContain('holds a link, a pipe, or a device')
+  }, 15_000)
+
+  // A copy that cannot be removed is left where it is; it must not replace what the push did or how it failed.
+  describe.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('a copy that cannot be removed', () => {
+    /** A push whose runner takes the write permission from the copy's refs/heads, so removing the copy fails. */
+    async function pushLeavingACopy(outcome: 'pushed' | 'failed') {
+      const { origin, repository, paths, stateDirectory } = readOnlyRepository()
+      let locked = ''
+      const runner: typeof runProcess = async (request) => {
+        if (request.args[0] !== 'push') return await runProcess(request)
+        locked = join(String(request.environment.GIT_DIR), 'refs', 'heads')
+        chmodSync(locked, 0o500)
+        return outcome === 'failed' ? failedPush : await runProcess(request)
+      }
+      try {
+        const result = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory, runner }).then(value => value as JsonObject, (error: unknown) => error as Error & { code?: string })
+        expect(readdirSync(join(stateDirectory, 'git-push'))).toHaveLength(1)
+        return { result, origin, repository }
+      } finally { if (locked) chmodSync(locked, 0o700) }
+    }
+
+    it('does not replace the result of a push that was made', async () => {
+      const { result, origin, repository } = await pushLeavingACopy('pushed')
+      expect(result).toMatchObject({ branch: 'main', headSha: git(repository, 'rev-parse', 'HEAD').trim() })
+      expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+    })
+
+    it('does not replace the error of a push that failed', async () => {
+      const { result } = await pushLeavingACopy('failed')
+      expect(result).toMatchObject({ code: 'GIT_FAILED' })
+    })
+  })
+
+  // Git 2.56 and later; the copy must hold the reftable folder, or git finds a repository with no refs in it.
+  it.skipIf(process.platform === 'win32' || !reftableSupported)('pushes a repository that stores its refs in reftable from the copy, leaving its .git as it was', async () => {
+    const { origin, repository, paths, stateDirectory } = readOnlyRepository({ init: repository => execFileSync('git', ['init', '-q', '-b', 'main', '--ref-format=reftable', repository]) })
+    const before = gitDirectoryState(join(repository, '.git'))
+    const output = await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory }) as JsonObject
+    expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+    expect(gitDirectoryState(join(repository, '.git'))).toEqual(before)
+    expect(output.note).toContain('mount the owner shares read-only')
+    expect(readdirSync(join(stateDirectory, 'git-push'))).toEqual([])
+  }, 30_000)
+
+  // A push that recursed into submodules would push each to its own remote, a target no rule judged, and in a mount the
+  // owner shares read-only it would write the submodule's remote-tracking ref in .git/modules, beside the copy.
+  for (const [key, value] of SUBMODULE_RECURSION) {
+    it(`pushes no submodule and leaves the .git of the repository as it was, its submodules' git folders included, where ${key} is ${value}`, async () => {
+      const { origin, repository, paths, stateDirectory } = readOnlyRepository()
+      const { remote } = withUnpushedSubmodule(repository)
+      git(repository, 'config', key, value)
+      const before = gitDirectoryState(join(repository, '.git'))
+      await call({ repository, tool: 'git_push', args: { repo: '/docs', branch: 'main' }, paths, stateDirectory })
+      expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+      expect(git(remote, 'rev-list', '--count', 'main').trim()).toBe('1')
+      expect(gitDirectoryState(join(repository, '.git'))).toEqual(before)
+    })
+  }
+})
+
+// A push that recursed into submodules would also run their programs without the isolation: git strips the config scope
+// from the push it starts there.
+describe('git_push does not push the submodules of the repository, whatever its config says', () => {
+  for (const [key, value] of SUBMODULE_RECURSION) {
+    it.skipIf(process.platform === 'win32')(`pushes the branch alone and runs no program of a submodule, where ${key} is ${value}`, async () => {
+      const { origin, repository } = bareOrigin()
+      git(repository, ...COMMITTER, 'commit', '-q', '--allow-empty', '-m', 'first')
+      const { remote, submodule } = withUnpushedSubmodule(repository)
+      const marker = join(temporaryRoot('submodule-program'), 'ran')
+      const receivePack = join(temporaryRoot('submodule-receive-pack'), 'receive-pack.sh')
+      writeFileSync(receivePack, `#!/bin/sh\ntouch "${marker}"\nexec git-receive-pack "$@"\n`, { mode: 0o755 })
+      git(submodule, 'config', 'remote.origin.receivepack', receivePack)
+      git(repository, 'config', key, value)
+      await call({ repository, tool: 'git_push', args: { branch: 'main' } })
+      expect(git(origin, 'rev-parse', 'refs/heads/main').trim()).toBe(git(repository, 'rev-parse', 'HEAD').trim())
+      expect(git(remote, 'rev-list', '--count', 'main').trim()).toBe('1')
+      expect(existsSync(marker)).toBe(false)
+    })
+  }
 })
 
 // GPT review of c71dee5, git destination binding (P1): the push destination was read again after the approval
