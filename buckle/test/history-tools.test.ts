@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -169,6 +170,32 @@ describe('history_restore', () => {
     const refused = await call(runtime, 'undo-1', 'history_restore', { steps: 1 }, tokens)
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED', message: expect.stringContaining('Restore conflict') } })
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('edited by hand')
+  })
+
+  // Review M1 of the Slice D rules review: the history keeps .git, so a restore over a commit's checkpoint rewound the
+  // repository and deleted the commit objects, and a branch the owner made at that commit lost its commit.
+  it('is refused before anything asks where it would put back files inside a Git directory, and the repository stays whole', async () => {
+    const { runtime, workspace } = await node()
+    const git = (...args: string[]) => execFileSync('git', ['-C', workspace, '-c', 'user.name=owner', '-c', 'user.email=owner@example.com', ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
+    git('init', '-q', '-b', 'main')
+    writeFileSync(join(workspace, 'a.txt'), 'one')
+    git('add', 'a.txt')
+    git('commit', '-q', '-m', 'first')
+    await runtime.history.run({ sessionId: 'agent', stageId: 'commit', tool: 'git_commit', requestId: 'commit-1', roots: [runtime.paths().root] }, async () => {
+      writeFileSync(join(workspace, 'a.txt'), 'two')
+      git('commit', '-q', '-am', 'second')
+    })
+    git('branch', 'keep')
+    const refused = await call(runtime, 'undo-1', 'history_restore', { steps: 1 })
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED', message: expect.stringContaining('inside a Git directory') } })
+    expect(runtime.approvalService.waiting()).toEqual([])
+    expect(git('log', '--format=%s', 'keep')).toBe('second\nfirst\n')
+    expect(() => git('fsck', '--no-progress')).not.toThrow()
+    expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('two')
+    // A restore over a checkpoint that changed files outside .git too is refused whole, and one that names none still asks.
+    expect((await call(runtime, 'w-1', 'fs_write', { path: 'b.txt', content: 'x' })).outcome).toBe('ok')
+    expect(await call(runtime, 'undo-2', 'history_restore', { steps: 2 })).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED' } })
+    expect(await call(runtime, 'undo-3', 'history_restore', { steps: 1 })).toMatchObject({ outcome: 'approval_required' })
   })
 
   it('is refused before anything asks where steps reach past the history, and names neither id and steps nor both', async () => {

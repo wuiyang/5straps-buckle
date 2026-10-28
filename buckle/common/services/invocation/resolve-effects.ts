@@ -23,11 +23,20 @@ export async function resolveEffects(input: { effects: ToolEffect[]; paths: Path
   return resolved
 }
 
+/** Why an agent's restore that would put back a file inside a Git directory is refused, before anything asks. */
+const GIT_DIRECTORY_REFUSAL = 'This restore would put back files inside a Git directory (.git), which rewinds the repository: its commits, branches, and index move back, and a commit that a branch or tag made outside Buckle points to can be deleted. It is refused; undo a commit with git_revert, or ask the owner to run buckle history restore'
+
+/** Whether a path lies in a Git directory: a `.git` segment, whatever its case, as git folds it on the platforms that fold case. */
+function insideGitDirectory(path: string): boolean {
+  return path.split('/').some(segment => segment.toLowerCase() === '.git')
+}
+
 /**
  * A restore as the history stands now: the checkpoint it goes back to, the newest, how many it undoes, and each path it
  * puts back, the entry itself where it lies now (its folder resolved, its own name not followed), as a write. One the
  * history refuses (a step past its start, an id it does not hold, a checkpoint waiting for recovery) is refused here,
- * before anything asks.
+ * before anything asks, and so is one that would put back a file inside a Git directory (review M1 of the Slice D rules
+ * review): the history keeps `.git`, and putting it back is a hard reset, not an undo of files.
  */
 async function resolveRestore(target: RestoreTarget, input: { paths: PathView; history?: Pick<ChangeHistory, 'plan'> | undefined }): Promise<ResolvedEffect[]> {
   if (!input.history) throw new ToolExecutionError('This workspace keeps no change history to restore from', { code: 'HISTORY_UNAVAILABLE' })
@@ -35,6 +44,7 @@ async function resolveRestore(target: RestoreTarget, input: { paths: PathView; h
     if (error instanceof RestoreRefusedError) throw new ToolInputError(error.message, { code: error.code })
     throw error
   })
+  if (plan.paths.some(insideGitDirectory)) throw new ToolInputError(GIT_DIRECTORY_REFUSAL, { code: 'RESTORE_REFUSED' })
   const writes = plan.paths.map((path): ResolvedEffect => {
     const entry = resolveEntry(path, { shares: input.paths.shares })
     if (entry === null) throw new ToolInputError('A path the restore would put back names no entry in a folder, so nothing is restored', { code: 'RESTORE_REFUSED' })
