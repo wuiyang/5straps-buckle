@@ -1,9 +1,8 @@
 # Known limits, part nine
 
-What Buckle, the approval and sandbox runtime on this machine, does when `git_push` pushes from a
-repository in a mount the owner shares read-only, and what its asks over MCP, `buckle cp`, and its
-[delete policy](policy-05.md) still leave out. [Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and
-the [first part](known-limits.md) lists the other limits.
+Limits on read-only `git_push`, change history, MCP asks, `buckle cp`, and deletes.
+[Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and the
+[first part](known-limits.md) lists the other limits.
 
 ## A push from a read-only mount
 
@@ -26,6 +25,21 @@ the [first part](known-limits.md) lists the other limits.
   never replaces the result or the error of the push.
 - The refs are read when the copy is made, just before the push. A commit made in the mount after
   that, and before the push ends, is not pushed, though `headSha` in the answer may name it.
+
+## Change history
+
+- History needs Buckle's host-Git permission and a trusted Git executable. Without them, it
+  records changed paths and hashes only, and restores are refused.
+- Files above `history.maxFileBytes` (32 MiB by default) keep path, size, and hash metadata,
+  not content. The rolling `BUCKLE_HISTORY_MAX_BYTES` budget defaults to 256 MiB. Older turns
+  are removed first; if a checkpoint still cannot fit, its content is omitted and the write
+  continues.
+- Buckle keeps 10 turns by default. A `5straps/stageId` groups calls in a session; without
+  one, 60 seconds of idle time starts a new turn.
+- Buckle honors `.gitignore` and excludes its state directory, protected paths, and the
+  workspace's `.git`. It never writes into the workspace's `.git`.
+- Older SQLite history can be listed and recovered until `buckle history prune --legacy`
+  removes it.
 
 ## Asks over MCP
 
