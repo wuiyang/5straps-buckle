@@ -132,7 +132,8 @@ export function applyEdits(text: string, edits: z.output<typeof schemas.patchInp
     if (!edit.replaceAll && count !== 1) {
       throw new ToolInputError(`Patch text matched ${count} times; set replaceAll or add surrounding context`)
     }
-    content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, edit.newText)
+    // A replacer function, not the string: `$&`, `$$`, and `$1` in newText are written as typed, as on the split/join branch.
+    content = edit.replaceAll ? content.split(edit.oldText).join(edit.newText) : content.replace(edit.oldText, () => edit.newText)
     replacements.push(edit.replaceAll ? count : 1)
   }
   return { content, replacements }
