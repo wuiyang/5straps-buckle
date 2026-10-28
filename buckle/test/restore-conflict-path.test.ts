@@ -125,6 +125,22 @@ describe('history_restore, for an agent', () => {
     expect(runtime.approvalService.waiting()).toEqual([])
   })
 
+  // The plan refuses before anything asks, by its own read of the rules: the same hiding as the tool's own refusal.
+  it.each([
+    ['notes.txt', 'Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes (notes.txt)'],
+    ['.env', 'Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes'],
+  ])('names the file changed by hand between two checkpoints in the plan only where the read rules let the agent see it: %s', async (name, message) => {
+    const { runtime, workspace } = await node()
+    const root = runtime.paths().root
+    const change = (id: string, content: string) => runtime.history.run({ sessionId: 'agent', stageId: id, tool: 'fs_write', requestId: id, roots: [root] }, async () => { writeFileSync(join(workspace, name), content) })
+    await change('env-1', 'TOKEN=one one one one one one')
+    writeFileSync(join(workspace, name), 'TOKEN=edited by hand, a longer line than the one before')
+    await change('env-2', 'TOKEN=two two two two two two two two two two two')
+    const error = errorOf(await call(runtime, 'undo-1', 'history_restore', { steps: 2 }))
+    expect(error).toEqual({ code: 'RESTORE_REFUSED', message, retryable: false })
+    expect(runtime.approvalService.waiting()).toEqual([])
+  })
+
   // The agent has the person's word for the paths a restore puts back, and for none a directory it removes has gained.
   it.each([
     ['notes.txt', 'Restore conflict: a directory contains newer files (new/notes.txt)'],
