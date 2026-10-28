@@ -1,13 +1,13 @@
 import { mkdirSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ApprovalNotice, ApprovalWait } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, type ApprovalNotice, type ApprovalWait } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -101,11 +101,11 @@ describe('the approval webhook of a workspace', () => {
   })
 })
 
-function service(input: { graceMs: number | null; interaction?: Interaction }) {
+function service(input: { graceMs: number | null; interaction?: Interaction; durable?: boolean }) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-notice-service-'))
   const sent: ApprovalNotice[] = []
   const notices = createApprovalNotices(async batch => { sent.push(...batch) })
-  const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, input.graceMs, { onExpired: requests => notices.expired(requests) })
+  const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, input.graceMs, { onExpired: requests => notices.expired(requests), ...(input.durable ? { durableNotices: true } : {}) })
   const approvals = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
   const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
   return { registry, approvals, sent, ask, notices }
@@ -168,5 +168,60 @@ describe('an ask that expires unanswered', () => {
     await registry.sweep()
     await notices.settle()
     expect(sent).toHaveLength(1)
+  })
+
+  // Review of the MCP asks slice, finding minor-3: an ask at wait 0 states no deadline, so only its lapse can report it expired on time.
+  it('is told expired by the sweep at its lapse, when it states no deadline and its face sends the call again', async () => {
+    vi.useFakeTimers()
+    const { ask, sent, notices } = service({ graceMs: null })
+    const [asked] = (await ask({ wait: { mode: 'none' }, resends: true })).approvals
+    expect(asked!.expiresAt).toBe(APPROVAL_NO_DEADLINE)
+    await notices.settle()
+    sent.splice(0)
+
+    await vi.advanceTimersByTimeAsync(9 * 60_000)
+    await notices.settle()
+    expect(sent).toEqual([])
+    await vi.advanceTimersByTimeAsync(2 * 60_000)
+    await notices.settle()
+    expect(sent).toEqual([{ token: asked!.token, event: 'expired', at: expect.any(String) }])
+  })
+
+  it('is never told expired at wait 0 where its face does not send the call again', async () => {
+    vi.useFakeTimers()
+    const { ask, sent, notices, registry } = service({ graceMs: null })
+    const [asked] = (await ask({ wait: { mode: 'none' } })).approvals
+    await notices.settle()
+    sent.splice(0)
+
+    await vi.advanceTimersByTimeAsync(3 * 60 * 60_000)
+    await notices.settle()
+    expect(sent).toEqual([])
+    expect(registry.pending().map(request => request.token)).toEqual([asked!.token])
+  })
+})
+
+// Review of the MCP asks slice, finding minor-2: an abandoned ask withdrawn to make room is an ask that ended, so it is told.
+describe('an abandoned ask withdrawn to make room for a new one', () => {
+  const outside = (index: number) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
+
+  it('is told cancelled', async () => {
+    const { registry, ask, sent, notices } = service({ graceMs: 60_000 })
+    const filled = await registry.ask({ tool: 'fs_write', sessionId: 's', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
+    await registry.holdEnded({ tokens: filled.requests.map(request => request.token), abandoned: true })
+
+    await ask({ wait: { mode: 'none' } })
+    await notices.settle()
+    expect(sent).toEqual([expect.objectContaining({ token: filled.requests[0]!.token, event: 'cancelled' }), expect.objectContaining({ event: 'skipped' })])
+    expect(registry.pending()).toHaveLength(MAX_PENDING_PER_SESSION)
+  })
+
+  it('is queued for delivery cancelled, where the node keeps its notices durable', async () => {
+    const { registry, ask } = service({ graceMs: 60_000, durable: true })
+    const filled = await registry.ask({ tool: 'fs_write', sessionId: 's', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
+    await registry.holdEnded({ tokens: filled.requests.map(request => request.token), abandoned: true })
+
+    await ask({ wait: { mode: 'none' } })
+    expect(registry.pendingDeliveries()).toContainEqual(expect.objectContaining({ notice: expect.objectContaining({ token: filled.requests[0]!.token, event: 'cancelled' }) }))
   })
 })
