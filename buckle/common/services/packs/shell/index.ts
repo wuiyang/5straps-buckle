@@ -183,7 +183,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
       readOnlyPaths: restrictions.readOnlyWorkspacePaths,
       // The invoker's history stage, which a script's call files under its parent request, as its other writes are
       // (recheck of the final review of 0.1.4, finding shell index.ts:151).
-      details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool },
+      details: { sessionId: input.context.sessionId, stageId: input.context.historyStage ?? input.context.stageId ?? input.context.requestId, tool: input.tool, requestId: input.context.requestId },
       ...(input.context.beginRun ? { beforeRun: input.context.beginRun } : {}),
       ...(input.context.untimed ? { untimed: input.context.untimed } : {}),
       signal: input.signal,

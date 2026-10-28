@@ -309,7 +309,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
           // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
           const output = options.history && tracksChanges && !prepared.managesHistory
-            ? await options.history.run({ sessionId, stageId: historyStage(request, via), tool: request.tool, roots: [...new Set(roots)] }, execute, stop)
+            ? await options.history.run({ sessionId, stageId: historyStage(request, via), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)] }, execute, stop)
             : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
           // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
           // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).

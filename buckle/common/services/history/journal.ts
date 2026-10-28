@@ -9,12 +9,40 @@ import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
 import { STATE_BUSY } from '../../adapters/json-file-store.js'
 import { logger } from '../../runtime/log.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
-import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, type Snapshot } from './snapshot.js'
+import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, snapshot, snapshotSchema, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
 
-const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional() })
+/**
+ * `requestId`: the call that made it, where one did (absent on a checkpoint recorded before calls were named).
+ * `restores`: the checkpoint a restore undid, and with `undoes`, how many it undid from that one to the newest, as a
+ * restore to before a checkpoint does (rollback).
+ */
+const checkpointSchema = z.object({ id: z.string(), sessionId: z.string(), stageId: z.string(), tool: z.string(), requestId: z.string().optional(), createdAt: z.string(), status: z.enum(['pending', 'complete', 'interrupted']), roots: z.array(z.string()), excluded: z.array(z.string()).optional(), before: snapshotSchema, after: snapshotSchema.optional(), restores: z.string().optional(), undoes: z.number().int().min(1).optional() })
 type Checkpoint = z.infer<typeof checkpointSchema>
-export interface HistoryInput { sessionId: string; stageId: string; tool: string; roots: string[]; excluded?: string[] }
+export interface HistoryInput { sessionId: string; stageId: string; tool: string; requestId?: string; roots: string[]; excluded?: string[] }
 export type CheckpointSummary = ReturnType<typeof summary>
+/** Who a restore is recorded as made by: an agent's call, where the owner's own restore names the checkpoint's. */
+export type RestoreBy = Omit<HistoryInput, 'roots' | 'excluded'>
+
+/** How much of a caller-chosen requestId a checkpoint keeps, as the audit log keeps it. */
+const MAX_REQUEST_ID = 200
+
+/** The most checkpoints `recent` answers, and the furthest back a restore to before a checkpoint reaches. */
+export const RECENT_CHECKPOINTS_MAX = 100
+
+/** A restore to before one checkpoint: one named by id among the newest, or the one `steps` back from the current state. */
+export type RollbackTarget = { id: string } | { steps: number }
+
+/**
+ * What a restore to before a checkpoint undoes, as the history stands: that checkpoint, the newest one (`head`), how many
+ * from the one to the other, and the paths it puts back. A restore is applied only as planned (rollback's `check`).
+ */
+export interface RollbackPlan { checkpoint: string; head: string; undoes: number; paths: string[] }
+
+/** A restore to before a checkpoint refused before anything changed, for a reason its caller may read. */
+export class RestoreRefusedError extends Error implements ServiceFailure {
+  readonly code = 'RESTORE_REFUSED'
+  readonly status = 409
+}
 
 // A section that waited past its bound for another flow: busy, and the runtime's message names the
 // history directory, so the caller is told the plain reason instead.
@@ -83,6 +111,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function records(connection: DatabaseSync): Checkpoint[] {
     return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid').all().map(row => checkpointSchema.parse(JSON.parse(String(row.data))))
   }
+  /** The newest `count` checkpoints, newest first: one execution saves at a time, so rowid order is the order they were made in. */
+  function newest(connection: DatabaseSync, count: number): Checkpoint[] {
+    return connection.prepare('SELECT data FROM checkpoints ORDER BY rowid DESC LIMIT ?').all(count).map(row => checkpointSchema.parse(JSON.parse(String(row.data))))
+  }
   function checkBudget(connection: DatabaseSync): void {
     const pages = Number(connection.prepare('PRAGMA page_count').get()!.page_count)
     const pageSize = Number(connection.prepare('PRAGMA page_size').get()!.page_size)
@@ -119,11 +151,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const referenced = new Set(records(connection).flatMap(record => [...Object.values(record.before), ...Object.values(record.after ?? {})].flatMap(entry => entry.hash ? [entry.hash] : [])))
     for (const row of connection.prepare('SELECT hash FROM objects').all()) if (!referenced.has(String(row.hash))) connection.prepare('DELETE FROM objects WHERE hash=?').run(String(row.hash))
   }
-  async function begin(details: HistoryInput, restores?: string): Promise<Checkpoint> {
+  async function begin(details: HistoryInput, restores?: string, undoes?: number): Promise<Checkpoint> {
     const record = await section((connection): Checkpoint => {
       if (records(connection).some(item => item.status === 'pending')) throw new Error('An interrupted checkpoint needs owner recovery before further mutations')
       prune(connection)
-      return { ...details, id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), restores }
+      const requestId = details.requestId?.slice(0, MAX_REQUEST_ID)
+      return { ...details, ...(requestId === undefined ? {} : { requestId }), id: `change-${randomUUID()}`, createdAt: new Date().toISOString(), status: 'pending', before: capture(connection, details.roots, details.excluded), restores, ...(undoes === undefined ? {} : { undoes }) }
     })
     await save(record)
     return record
@@ -136,22 +169,82 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   async function findRecord(predicate: (record: Checkpoint) => boolean): Promise<Checkpoint | undefined> {
     return section(connection => records(connection).find(predicate))
   }
-  async function restoreRecord(record: Checkpoint) {
+  /**
+   * Puts the paths `record` changed back as they were before it, recorded as a checkpoint of its own: the owner's restore
+   * names the restored checkpoint's session and stage, an agent's (`by`) its own call. `undoes` and `notRestorable` are a
+   * restore to before a checkpoint's, which undoes several together.
+   */
+  async function restoreRecord(record: Checkpoint, options: { by?: RestoreBy; undoes?: number; notRestorable?: string[] } = {}) {
     if (!record.after) throw new Error('Completed checkpoint not found')
     const after = record.after
     const paths = changedPaths(record.before, after)
     assertExcludedUntouched(paths, record.excluded)
     const current = await section(connection => capture(connection, record.roots, record.excluded))
     assertSnapshotMatches({ current, expected: after, target: record.before, paths, operation: 'Restore' })
-    const restore = await begin({ sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore', roots: record.roots, excluded: record.excluded }, record.id)
+    const by = options.by ?? { sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore' }
+    const restore = await begin({ ...by, roots: record.roots, excluded: record.excluded }, record.id, options.undoes)
     try {
       await section(connection => applySnapshot({ target: record.before, current, paths, content: hash => readObject(connection, hash), roots: record.roots }))
     } finally { await finish(restore) }
     // What the restored checkpoint changed in hard-linked dependencies stays as it is, and the result says so (review L1).
-    return { ...summary(restore), notRestorable: notRestorablePaths(record.before, after) }
+    return { ...summary(restore), notRestorable: options.notRestorable ?? notRestorablePaths(record.before, after) }
+  }
+  /**
+   * The checkpoints a restore to before `target` undoes, oldest first: from that one to the newest, at most
+   * RECENT_CHECKPOINTS_MAX. Refused while the newest waits for recovery, as every change is (begin).
+   */
+  function since(connection: DatabaseSync, target: RollbackTarget): Checkpoint[] {
+    if ('steps' in target && !(Number.isSafeInteger(target.steps) && target.steps >= 1 && target.steps <= RECENT_CHECKPOINTS_MAX)) throw new RestoreRefusedError(`steps counts checkpoints back from the current state, 1 to ${RECENT_CHECKPOINTS_MAX}`)
+    const reach = 'steps' in target ? target.steps : RECENT_CHECKPOINTS_MAX
+    const recent = newest(connection, reach)
+    if (recent[0]?.status === 'pending') throw new RestoreRefusedError('A checkpoint waits for the owner\'s recovery (buckle history recover <id>), so nothing is restored until then')
+    if ('steps' in target) {
+      if (recent.length < target.steps) throw new RestoreRefusedError(`The change history holds ${recent.length} ${recent.length === 1 ? 'checkpoint' : 'checkpoints'}, fewer than the ${target.steps} steps named`)
+      return recent.reverse()
+    }
+    const index = recent.findIndex(record => record.id === target.id)
+    if (index === -1) throw new RestoreRefusedError(`No checkpoint ${target.id} is among the newest ${RECENT_CHECKPOINTS_MAX}; history_list names them`)
+    return recent.slice(0, index + 1).reverse()
   }
   return {
     list: () => section(connection => records(connection).map(summary)),
+    /**
+     * The newest `count` checkpoints, newest first, and whether older ones are kept. `current` marks the newest once it
+     * completed: the workspace stands as it left it, unless something outside Buckle changed it since.
+     */
+    recent: (count: number) => section((connection) => {
+      const found = newest(connection, Math.min(count, RECENT_CHECKPOINTS_MAX) + 1)
+      const shown = found.slice(0, count)
+      return { checkpoints: shown.map((record, index) => ({ ...summary(record), current: index === 0 && record.status !== 'pending' })), more: found.length > shown.length }
+    }),
+    /** What a restore to before `target` would undo now, read without the execution lock: the call that restores plans again under it. */
+    plan: (target: RollbackTarget) => section(connection => planOf(since(connection, target))),
+    /**
+     * Restores the workspace to before `target`: that checkpoint and every later one undone together, through the restore
+     * path, and recorded as a checkpoint of its own made `by` the caller, which a restore of one step undoes. `onLocked` is
+     * told once the execution lock is held; `check` is handed the plan under the lock before anything changes, and a throw
+     * there changes nothing. Refused (RestoreRefusedError), changing nothing, where a path it puts back changed since the
+     * newest checkpoint, or between two of those it undoes.
+     */
+    async rollback(input: { target: RollbackTarget; by: RestoreBy; onLocked?: () => void; check?: (plan: RollbackPlan) => void; signal?: AbortSignal }) {
+      return locked(async () => {
+        input.onLocked?.()
+        const selected = await section(connection => since(connection, input.target))
+        const chain = chained(selected)
+        const plan = planOf(selected, chain)
+        input.check?.(plan)
+        const { before, after } = chain
+        const first = selected[0]!
+        const combined: Checkpoint = { ...first, id: plan.checkpoint, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], before, after }
+        const notRestorable = [...new Set(selected.flatMap(record => notRestorablePaths(record.before, record.after!)))].sort()
+        try {
+          return await restoreRecord(combined, { by: input.by, undoes: plan.undoes, notRestorable })
+        } catch (error) {
+          if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error })
+          throw error
+        }
+      }, input.signal)
+    },
     async run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
       return locked(async () => {
         const record = await begin(details)
@@ -218,9 +311,41 @@ export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
  * restore puts back.
  */
 function summary(record: Checkpoint) {
-  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, createdAt: record.createdAt, status: record.status, restores: record.restores, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, restores: record.restores, undoes: record.undoes, paths: record.after ? changedPaths(record.before, record.after) : [], changes: record.after ? changedPaths(record.before, record.after).map(path => ({ path, kind: !record.before[path] ? 'created' : !record.after![path] ? 'deleted' : 'modified' })) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
 }
 
 function assertExcludedUntouched(paths: string[], excluded: string[] = []): void {
   if (paths.some(path => excluded.some(hidden => isInside(path, hidden) || isInside(hidden, path)))) throw new Error('Changes overlap a protected file or its parent directory')
+}
+
+/** What restoring to before the oldest of `selected` (oldest first) undoes. */
+function planOf(selected: Checkpoint[], chain = chained(selected)): RollbackPlan {
+  const { before, after } = chain
+  return { checkpoint: selected[0]!.id, head: selected.at(-1)!.id, undoes: selected.length, paths: changedPaths(before, after) }
+}
+
+/**
+ * Consecutive checkpoints as one change: each path as it was before the first that changed it, and as the last left it;
+ * every other path as the newest of them saw it, so a parent of a changed path is compared as it stands. A path one
+ * changed that does not stand as the one before it left it was changed outside Buckle between them: refused, since a
+ * restore would discard that change unseen.
+ */
+function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } {
+  const base: Snapshot = {}
+  for (const record of selected) Object.assign(base, record.before, record.after)
+  const first = new Map<string, Entry | undefined>()
+  const last = new Map<string, Entry | undefined>()
+  for (const record of selected) {
+    if (!record.after) throw new RestoreRefusedError('A checkpoint among those it undoes never completed, so nothing is restored')
+    for (const path of changedPaths(record.before, record.after)) {
+      if (last.has(path) && !sameEntry(last.get(path), record.before[path])) throw new RestoreRefusedError('Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes')
+      if (!first.has(path)) first.set(path, record.before[path])
+      last.set(path, record.after[path])
+    }
+  }
+  const before: Snapshot = { ...base }
+  const after: Snapshot = { ...base }
+  for (const [path, entry] of first) { if (entry) before[path] = entry; else delete before[path] }
+  for (const [path, entry] of last) { if (entry) after[path] = entry; else delete after[path] }
+  return { before, after }
 }

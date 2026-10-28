@@ -248,21 +248,24 @@ export function isMissing(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'ENOENT'
 }
 
+/** A restore or promotion refused before anything changed: a path it would change, or a folder above one, is not as the checkpoint left it. */
+export class SnapshotConflictError extends Error {}
+
 export function assertSnapshotMatches(input: { current: Snapshot; expected: Snapshot; target: Snapshot; paths: string[]; operation: 'Restore' | 'Promotion' }): void {
-  if (input.paths.some(path => !sameEntry(input.current[path], input.expected[path]))) throw new Error(`${input.operation} conflict: a changed path no longer matches the checkpoint`)
+  if (input.paths.some(path => !sameEntry(input.current[path], input.expected[path]))) throw new SnapshotConflictError(`${input.operation} conflict: a changed path no longer matches the checkpoint`)
   for (const path of input.paths) {
     for (let parent = parentDirectory(path); parent !== parentDirectory(parent); parent = parentDirectory(parent)) {
-      if (!sameEntry(input.current[parent], input.expected[parent])) throw new Error(`${input.operation} conflict: a parent directory changed since the checkpoint`)
+      if (!sameEntry(input.current[parent], input.expected[parent])) throw new SnapshotConflictError(`${input.operation} conflict: a parent directory changed since the checkpoint`)
     }
   }
   for (const path of input.paths) if (input.expected[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') {
     // Snapshot paths are in pathe's form, so `/` separates them on every platform.
     const below = path.endsWith('/') ? path : `${path}/`
-    if (Object.keys(input.current).some(child => child.startsWith(below) && !Object.hasOwn(input.expected, child))) throw new Error(`${input.operation} conflict: a directory contains newer files`)
+    if (Object.keys(input.current).some(child => child.startsWith(below) && !Object.hasOwn(input.expected, child))) throw new SnapshotConflictError(`${input.operation} conflict: a directory contains newer files`)
     // Removing it would remove a file history never captured and leaves untouched.
     const uncaptured = [...Object.entries(input.current), ...Object.entries(input.expected)].filter(([child, entry]) => isUncaptured(entry) && child.startsWith(below))
-    if (uncaptured.some(([child]) => child.includes('\\') || /[. ]$/.test(child))) throw new Error(`${input.operation} conflict: a directory holds a name Buckle would read as another path, which history does not capture; rename or remove it and restore again`)
-    if (uncaptured.some(([, entry]) => entry.kind === 'unreadable')) throw new Error(`${input.operation} conflict: a directory holds a file another program held open, which history could not read; close that program and restore again`)
-    if (uncaptured.length) throw new Error(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files (a package manager puts them back) and restore again`)
+    if (uncaptured.some(([child]) => child.includes('\\') || /[. ]$/.test(child))) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds a name Buckle would read as another path, which history does not capture; rename or remove it and restore again`)
+    if (uncaptured.some(([, entry]) => entry.kind === 'unreadable')) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds a file another program held open, which history could not read; close that program and restore again`)
+    if (uncaptured.length) throw new SnapshotConflictError(`${input.operation} conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files (a package manager puts them back) and restore again`)
   }
 }
