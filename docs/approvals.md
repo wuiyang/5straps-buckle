@@ -38,7 +38,8 @@ Only the owner's authority records a `session` or `always` grant: every local ro
 
 A path grant covers its directory and everything below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern
-covering the asking host. `buckle grants list` shows grants and remembered denials, and
+covering the asking host, `--below` [a delete](policy-05.md) outside the workspace to its folder
+and subfolders. `buckle grants list` shows grants and remembered denials;
 `buckle grants revoke <id>` removes one.
 
 ## The destructive floor
@@ -59,7 +60,7 @@ arguments' digest, so approving `rm -rf build` does not approve `rm -rf /`. The
 
 ## What the approver sees
 
-Every deciding route shows the ask, naming its workspace, then the whole action:
+Every deciding route shows the ask, then the whole action:
 node, workspace, a summary, rule, subject, reason, working directory, every effect, and every
 argument as JSON. Nothing is cut or paged. Scripts and free text show as written; a plain value under a key naming password,
 secret, or token, and a URL's password and credential query values, read `[redacted]`, with
@@ -71,7 +72,7 @@ ask whose whole call was not recorded can be denied, never approved.
 | Channel | How |
 |---|---|
 | The terminal running `buckle serve` | asks in place when stdin and stderr are terminals: `1`, `2`, `3` pick an offered scope, `n` or Enter denies |
-| A CLI tool command at a terminal | the same question, before the command returns |
+| A CLI tool command at a terminal | the same question, before it returns |
 | `buckle approvals --watch` | a second terminal: `o` once, `s` session, the word `always`, `d` deny, `n` skip; `ds` or `da` deny a sensitive file for the session or always |
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, are pointed to `buckle approvals` |
@@ -92,13 +93,13 @@ decides; [Rings](rings.md#approval-webhook) describes what it sends.
 ## Timeouts
 
 `buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000
-by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. An answer within
-the hold lets it run. Unanswered, the call returns `approval_required`; the agent sends the same
+by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. Answered within
+the hold, it runs; unanswered, it returns `approval_required`; the agent sends the same
 call again once decided ([over MCP](approvals-03.md)). An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
-command waits only while its terminal question is open. `buckle workspace set approvalWaitMs
-60000` changes a workspace's wait from its next call.
+command waits only while its question is open. `buckle workspace set approvalWaitMs
+60000` changes it from the next call.
 
 ## Dangerously allow
 

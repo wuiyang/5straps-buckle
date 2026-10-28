@@ -40,6 +40,8 @@ node's applies again:
 | `approval.quickJudgeModel` | Jev's model name | `jev-latest` |
 | `secrets.enabled` | `on` or `off`: whether Buckle reads [secret references](secrets.md) in shell words, browser fill text, and `web_fetch` headers | on |
 | `secrets.files` | files whose secret references need no ask, comma separated, such as `.env.local` | none |
+| `files.deleteInWorkspace` | `allow` or `ask`: whether a delete inside the folder runs where its writes are granted, or asks a person ([deletes](policy-05.md)) | `allow` |
+| `files.massDeleteLimit` | entries one call may delete inside the folder before a person is asked anyway, `0` to `10000`, `0` for no limit | `100` |
 
 The browser's mode is one setting: a workspace that sets its own `browser.cdp` or
 `browser.profile` takes both from itself, never the node's other one, and under an attached Chrome

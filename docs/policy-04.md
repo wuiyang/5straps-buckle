@@ -3,16 +3,21 @@
 The file floor is the set of file calls that a person decides, whatever a folder's write grant
 says. It works like the [command floor](approvals.md#the-destructive-floor). It covers the file
 tools `fs_delete`, `fs_move`, and `fs_apply_patch`, and the writes that the other write tools
-make ([the fs pack](sandbox-and-tools.md#packs)). [Policy](policy.md) lists the rules a
-call meets, and [known limits, part eight](known-limits-08.md) lists what the floor does not cover.
+make ([the fs pack](sandbox-and-tools.md#packs)). Inside the workspace's own folder, a delete
+follows the workspace's [delete policy](policy-05.md), which by default lets it run where writes
+are granted. [Policy](policy.md) lists the rules a call meets, and [known limits, part
+eight](known-limits-08.md) lists what the floor does not cover.
 
 ## What asks
 
-- `fs_delete` asks, unless a person granted deletes in that folder (see the scopes below). A path
+- `fs_delete` asks outside the workspace's folder, and inside it under `files.deleteInWorkspace
+  ask` or past the [mass-delete guard](policy-05.md#the-mass-delete-guard), unless a person
+  granted deletes in that folder (see the scopes below). A path
   missing inside the workspace asks nothing. A batch asks once for each folder it names, and a
   folder removed whole asks on its own. The reason reads "Deleting ... asks a person, whatever
   the folder's write grant says".
-- `fs_move` asks at the floor when `replace` is true, or when `from` is a folder. `replace: true`
+- `fs_move` asks at the floor when `replace` is true, or when `from` is a folder, where a delete
+  there would ask. `replace: true`
   means something stands at the landing, and the move replaces it. A file or link replaced gets its
   own ask, and its reason names it. A folder replaced is removed whole, so it asks as a recursive
   delete does: under `delete-tree:` for that path, naming how many files and folders it holds,
@@ -49,6 +54,9 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 - A grant on `delete:<folder>` covers the entries directly in that folder, matched exactly. It
   never covers a folder beneath it.
 - A folder removed whole asks under `delete-tree:<path>`, and its grant covers that one removal.
+- A delete outside the workspace's folder also offers `delete-below:<folder>`, every delete in
+  that folder and its subfolders, and the guard asks under `delete-batch:<folder>`
+  ([deletes](policy-05.md)).
 - The other subjects are `overwrite:<file>`, for the destructive-write check on one file, and
   `rewrite-batch:<folder>`, for a batch. A folder's write grant never matches any of these.
 - `buckle grants list` shows the grants, and `buckle grants revoke <id>` removes one.

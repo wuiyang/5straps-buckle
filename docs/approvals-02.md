@@ -45,7 +45,8 @@ workspace's `[<name>]`.
 
 The choices number the scopes the rule offers, and no others: the destructive floor offers no
 `always`, so it shows no `(3)`, and a sensitive file adds `(ds)` and `(da)`, which deny it for
-the session or always. A key counts once the keyboard has rested half a second. The key you type
+the session or always. A delete outside the workspace's folder adds `(4)` and `(5)`, which approve
+its folder and subfolders for the session or always ([deletes](policy-05.md)). A key counts once the keyboard has rested half a second. The key you type
 stays on the row; Enter, or anything not on offer, denies, and the row then ends with `[deny]`.
 
 A question that ends with no answer says why on its row:

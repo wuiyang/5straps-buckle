@@ -1,8 +1,8 @@
 # Known limits, part nine
 
 What Buckle, the approval and sandbox runtime on this machine, does when `git_push` pushes from a
-repository in a mount the owner shares read-only, and what its asks over MCP and `buckle cp` still
-leave out. [Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and
+repository in a mount the owner shares read-only, and what its asks over MCP, `buckle cp`, and its
+[delete policy](policy-05.md) still leave out. [Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and
 the [first part](known-limits.md) lists the other limits.
 
 ## A push from a read-only mount
@@ -54,3 +54,16 @@ the [first part](known-limits.md) lists the other limits.
   and the upload. A run cut there may answer its re-send that its effects are unknown
   (`REQUEST_ALREADY_EXECUTED`), and `buckle cp` then stops; run it again. A node that resets the
   connection instead of answering 408 stops `buckle cp` as an unreachable node does.
+
+## Deletes
+
+- The mass-delete guard counts one call. An agent, or a script, that deletes 100 entries in each of
+  many calls is never asked by it; each call meets the write gate alone. A folder moved whole is not
+  counted, as nothing of it is removed.
+- The wider subject, `delete-below:<folder>`, is not part of the challenge a device key signs, so a
+  person's device cannot grant it yet, and Rings at protocol 0.1.7 offers the ask's own subject
+  alone. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
+- MCP elicitation answers `once`, `session`, or `always` for the ask's own subject, and offers no
+  wider choice.
+- The shell is outside the policy: `rm`, `find -delete`, and the other commands at the command floor
+  ask inside the workspace's folder as they did, whatever `files.deleteInWorkspace` says.

@@ -24,7 +24,8 @@ files, checking every hunk before it writes any. `fs_delete` removes files, and 
 refused: without it, anything standing there is refused (`TARGET_EXISTS`); with it, nothing standing
 there is refused (`NOTHING_TO_REPLACE`), and otherwise the file, link, or folder there is replaced,
 a folder with everything in it. Each change is checkpointed, so [`buckle history restore`](sandbox-and-tools-02.md#change-history) brings it back.
-The [file floor](policy-04.md) asks before some of these calls. Without `rg`, `fs_search_content`
+The [file floor](policy-04.md) asks before some of these calls; inside the workspace's folder a
+delete runs where writes are granted, unless its [delete policy](policy-05.md) asks. Without `rg`, `fs_search_content`
 runs more slowly ([known limits](known-limits-08.md#search-without-rg)), and its result also holds
 `skipped`: the files and folders it left out, each with a reason (`held`, `vanished`, `changed`,
 `unreadable`, `too-large`, `binary`, or `timeout`), at most 100, with `skippedMore` counting the

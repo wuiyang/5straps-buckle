@@ -2,8 +2,8 @@
 
 What Buckle, the approval and sandbox runtime on this machine, does not yet cover in its file
 tools: delete, move, patch, the destructive-write check, and search without `rg`. [Part
-seven](known-limits-07.md) covers the decision AI, and [the file floor](policy-04.md) says what
-asks.
+seven](known-limits-07.md) covers the decision AI, and [the file floor](policy-04.md) and
+[deletes](policy-05.md) say what asks.
 
 ## What the file tools leave alone
 
