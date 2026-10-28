@@ -261,12 +261,17 @@ function headerName(raw: string): string | null {
   return named === '/dev/null' ? null : named
 }
 
-/** A name git quoted (`"a/caf\303\251.txt"`): C escapes and octal bytes read back to the UTF-8 name, up to the closing quote. */
+/**
+ * A name git quoted (`"a/caf\303\251.txt"`): C escapes and octal bytes read back to the UTF-8 name, up to the closing quote.
+ * The literal text between escapes and the escaped bytes are joined as bytes and decoded once, and each literal is taken as
+ * a whole code point, so a character past the basic plane is encoded whole, never as its two halves.
+ */
 function unquote(raw: string): string {
   const bytes: number[] = []
   const escapes: Readonly<Record<string, number>> = { n: 10, t: 9, r: 13, a: 7, b: 8, f: 12, v: 11, '"': 34, '\\': 92 }
   for (let index = 1; index < raw.length; index++) {
-    const character = raw[index]!
+    const character = String.fromCodePoint(raw.codePointAt(index)!)
+    index += character.length - 1
     if (character === '"') break
     if (character !== '\\') { bytes.push(...Buffer.from(character, 'utf8')); continue }
     const next = raw[++index] ?? ''

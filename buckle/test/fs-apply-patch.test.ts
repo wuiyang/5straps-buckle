@@ -1,9 +1,11 @@
+import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
+import { findExecutable } from '../common/domain/executable.js'
 import { applyHunks, MAX_PLACEMENT_COMPARISONS, parseUnifiedDiff } from '../common/services/packs/fs/unified-diff.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -278,5 +280,69 @@ describe('fs_apply_patch on a node', () => {
     const response = await call(runtime, 'fs_apply_patch', { patch: '--- a/big.txt\n+++ b/big.txt\n@@ -2 +2,2 @@\n last\n+one more line\n' })
     expect(errorOf(response)?.message).toContain('more than the 10485760 a file may hold, so nothing was written')
     expect(readFileSync(join(workspace, 'big.txt'), 'utf8').endsWith('\nlast\n')).toBe(true)
+  })
+})
+
+describe('a name git quoted', () => {
+  // Git quotes a name with a tab, a quote, or a backslash, and with core.quotePath (the default) one with any byte past
+  // ASCII too, writing those bytes as octal. The name is read back from the bytes of its literal text and its octal
+  // escapes together, decoded once, so a character past the basic plane keeps both its units.
+  const git = findExecutable('git')
+
+  it.each([
+    ['an emoji and a tab', '--- /dev/null\n+++ "b/📄\\t.txt"\n@@ -0,0 +1 @@\n+new\n', '📄\t.txt'],
+    ['an emoji beside a quote and a backslash', '--- /dev/null\n+++ "b/dir/😀 \\"q\\"\\\\.txt"\n@@ -0,0 +1 @@\n+new\n', 'dir/😀 "q"\\.txt'],
+    ['an emoji in octal bytes', '--- /dev/null\n+++ "b/\\360\\237\\223\\204\\t.txt"\n@@ -0,0 +1 @@\n+new\n', '📄\t.txt'],
+    ['octal bytes beside literal text', '--- /dev/null\n+++ "b/caf\\303\\251 📄 \\360\\237\\230\\200\\t.txt"\n@@ -0,0 +1 @@\n+new\n', 'café 📄 😀\t.txt'],
+    ['two emoji in a row', '--- /dev/null\n+++ "b/😀📄\\t.txt"\n@@ -0,0 +1 @@\n+new\n', '😀📄\t.txt'],
+    ['a name on both sides of a change', '--- "a/📄\\t.txt"\n+++ "b/📄\\t.txt"\n@@ -1 +1 @@\n-x\n+y\n', '📄\t.txt'],
+    ['a plain name', '--- /dev/null\n+++ b/plain/name.txt\n@@ -0,0 +1 @@\n+new\n', 'plain/name.txt'],
+    ['an empty file in a diff --git block', 'diff --git "a/📄\\t.txt" "b/📄\\t.txt"\nnew file mode 100644\nindex 0000000..e69de29\n', '📄\t.txt'],
+    ['an empty file in octal', 'diff --git "a/\\360\\237\\223\\204\\t.txt" "b/\\360\\237\\223\\204\\t.txt"\nnew file mode 100644\nindex 0000000..e69de29\n', '📄\t.txt'],
+  ])('reads %s back to the name', (_label, patch, name) => {
+    expect(parseUnifiedDiff(patch).map(change => change.path)).toEqual([name])
+  })
+
+  // No backslash in these: Buckle refuses a path that holds one, so a name with one is read here and not created.
+  const names = ['📄\t.txt', 'dir/😀 "q".txt', 'café\t📄.txt', 'plain/name.txt']
+  const diffOf = (root: string, name: string, quotePath: boolean) => {
+    const made = spawnSync(git!, ['-c', `core.quotePath=${quotePath}`, '-c', 'color.ui=never', 'diff', '--no-index', '--', '/dev/null', name], { cwd: root, encoding: 'utf8', env: { PATH: process.env.PATH ?? '', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } })
+    expect(made.status).toBe(1)
+    return made.stdout
+  }
+
+  describe.skipIf(git === null)('as git writes it', () => {
+    it.each(names.flatMap(name => [true, false].map(quotePath => [name, quotePath] as const)))('creates %j exactly from a diff written with core.quotePath=%s', async (name, quotePath) => {
+      const source = mkdtempSync(join(tmpdir(), 'buckle-apply-patch-source-'))
+      roots.push(source)
+      mkdirSync(dirname(join(source, name)), { recursive: true })
+      writeFileSync(join(source, name), 'new\n')
+      const patch = diffOf(source, name, quotePath)
+      expect(parseUnifiedDiff(patch).map(change => change.path)).toEqual([name])
+      const { runtime, workspace } = await node()
+      expect(await call(runtime, 'fs_apply_patch', { patch })).toMatchObject({ outcome: 'ok', output: { files: [{ path: name, change: 'created' }] } })
+      expect(readFileSync(join(workspace, name), 'utf8')).toBe('new\n')
+    })
+
+    it.each([true, false])('creates an empty file by its exact name from a diff written with core.quotePath=%s', async (quotePath) => {
+      const source = mkdtempSync(join(tmpdir(), 'buckle-apply-patch-source-'))
+      roots.push(source)
+      writeFileSync(join(source, '📄\t.txt'), '')
+      const patch = diffOf(source, '📄\t.txt', quotePath)
+      expect(patch).toContain('new file mode')
+      expect(patch).not.toContain('+++')
+      const { runtime, workspace } = await node()
+      expect(await call(runtime, 'fs_apply_patch', { patch })).toMatchObject({ outcome: 'ok', output: { files: [{ path: '📄\t.txt', change: 'created', size: 0 }] } })
+      expect(readFileSync(join(workspace, '📄\t.txt'), 'utf8')).toBe('')
+    })
+
+    it('modifies a file that stands under its exact name', async () => {
+      const { runtime, workspace } = await node()
+      writeFileSync(join(workspace, '📄\t.txt'), 'old\n')
+      const patch = '--- "a/📄\\t.txt"\n+++ "b/📄\\t.txt"\n@@ -1 +1 @@\n-old\n+changed\n'
+      await call(runtime, 'fs_read', { path: '📄\t.txt' })
+      expect(await call(runtime, 'fs_apply_patch', { patch })).toMatchObject({ outcome: 'ok', output: { files: [{ path: '📄\t.txt', change: 'modified' }] } })
+      expect(readFileSync(join(workspace, '📄\t.txt'), 'utf8')).toBe('changed\n')
+    })
   })
 })
