@@ -12,6 +12,7 @@ import { editEnvironmentVariable, type EnvironmentEdit, updateEnvironmentFile } 
 import { movedOntoWorkspaces } from '../common/services/workspaces/migration.js'
 import { restartRoute, restartSteps, restartSubject, type RestartRoute } from '../common/services/node-service/installed.js'
 import { homeDirectory, isInside } from '../common/domain/paths.js'
+import { asksForHelp } from './help-request.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting, ROOT_SETTING, type NodeSetting } from './node-settings.js'
 
 export interface CliResult {
@@ -62,6 +63,11 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
   const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
   const restart = await restartRoute(stateDirectoryOf(merged), input.environment, process.platform, input.home ?? homeDirectory())
+  // Asking for the usage runs nothing, so it is no entry in the log.
+  if (asksForHelp(input.argv)) {
+    process.stdout.write(usageText(restart))
+    return { exitCode: 0 }
+  }
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
     workspaceId: NODE_SCOPE, tool: 'cli_settings', sessionId: 'local-owner',

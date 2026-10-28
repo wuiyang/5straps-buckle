@@ -9,7 +9,7 @@ export interface CliResult {
   exitCode: number
 }
 
-const USAGE = 'Usage: buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune'
+export const USAGE = 'Usage: buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune'
 /** How many files `list --last` names for one checkpoint before it counts the rest. */
 const SHOWN_FILES = 10
 

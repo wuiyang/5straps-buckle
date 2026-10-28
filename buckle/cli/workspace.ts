@@ -32,7 +32,7 @@ export interface NamePrompt {
   close(): void
 }
 
-const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
+export const USAGE = `Usage: buckle workspace <verb>. A verb that takes no name acts on the workspace --workspace <name> names, or
 the one whose folder holds --dir <path>, or else the current directory. <name> is a workspace's name, or its id.
 
   buckle workspace init [--dir <path>] [--name <name>] [--volume <local>:<sandbox>[:ro]]... [--yes]

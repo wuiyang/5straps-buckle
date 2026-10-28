@@ -19,7 +19,7 @@ export interface CliResult {
   detail?: string
 }
 
-const USAGE = `Usage: buckle policy <action> [--workspace <name> | --dir <path>]
+export const USAGE = `Usage: buckle policy <action> [--workspace <name> | --dir <path>]
 Acts on the workspace named, or else on the one whose folder holds the current directory.
 
   buckle policy show [--json]                 The workspace's policy, and its mount table

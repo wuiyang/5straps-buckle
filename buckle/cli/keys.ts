@@ -12,7 +12,7 @@ export interface CliResult {
   detail?: string
 }
 
-const USAGE = `Usage:
+export const USAGE = `Usage:
   buckle keys enroll <public-key> --purpose setup|approval --workspace <name>|node [--label <text>]
                                                      Trust a person's client key for signed setup changes
                                                      or approval decisions, on one workspace or the whole

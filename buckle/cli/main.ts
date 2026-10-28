@@ -23,15 +23,16 @@ import { withOperationScope } from '@5straps/runtime'
 import { logger } from '../common/runtime/log.js'
 import { setupCli } from './setup.js'
 import { buildToolArgs, commandToToolName, parseArgsOptions, toolNameToCommand } from './arguments.js'
-import { policyCommand, repairStoredPolicy } from './policy.js'
+import { policyCommand, repairStoredPolicy, USAGE as POLICY_USAGE } from './policy.js'
 import { takeTarget, TargetError, type CommandTarget } from './target.js'
-import { keysCommand } from './keys.js'
+import { keysCommand, USAGE as KEYS_USAGE } from './keys.js'
 import { StoredPolicyError } from '../common/domain/policy.js'
 import { isStateBusy } from '../common/services/state-busy.js'
 import { watchApprovals } from './approvals-watch.js'
-import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable } from './check-url.js'
-import { workspaceRegistryCommand } from './workspace.js'
-import { historyCommand } from './history.js'
+import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable, USAGE as CHECK_URL_USAGE } from './check-url.js'
+import { workspaceRegistryCommand, USAGE as WORKSPACE_USAGE } from './workspace.js'
+import { historyCommand, USAGE as HISTORY_USAGE } from './history.js'
+import { asksForHelp } from './help-request.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
 import { serviceCommand } from './service.js'
@@ -55,6 +56,8 @@ export interface CliResult {
  * workspace defaults, which the node reads from its file alone, read from the shell (a bad one there is no refusal).
  */
 export function runInitCommand(argv: string[]): Promise<CliResult> {
+  // Asking for the usage sets nothing up, so it reads no configuration and leaves no entry in the log.
+  if (asksForHelp(argv)) return runInit(argv)
   return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig(process.env, process.platform, { file: null, caller: process.env, defaultsFromFileAlone: true }))), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
 }
 
@@ -74,9 +77,12 @@ export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?
 
 /** Help and the version, which need no configuration; null for every other command. */
 export function answerWithoutConfiguration(argv: string[]): CliResult | null {
-  const [command] = argv
+  const [command, ...rest] = argv
   if (!command || command === 'help' || command === '--help' || command === '-h') return printUsage()
   if (command === '--version' || command === '-v') return printVersion()
+  // A help request on an owner's command is answered here, before any workspace is found or any entry is written to the log.
+  const usage = COMMAND_USAGE.get(command)
+  if (usage !== undefined && (asksForHelp(rest) || (rest[0] === 'help' && HELP_WORD_COMMANDS.includes(command)))) return printCommandUsage(usage)
   return null
 }
 
@@ -288,6 +294,11 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
 
 function printVersion(): CliResult {
   process.stdout.write(`${BUCKLE_VERSION}\n`)
+  return { exitCode: 0 }
+}
+
+function printCommandUsage(usage: string): CliResult {
+  process.stdout.write(usage.endsWith('\n') ? usage : `${usage}\n`)
   return { exitCode: 0 }
 }
 
@@ -646,6 +657,18 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
  */
 const APPROVE_USAGE = "Usage: buckle approve <token> [--scope once|session|always] [--host '*.example.com' | --below] [--deny] [--workspace <name> | --all]"
 
+const GRANTS_USAGE = 'Usage: buckle grants | grants revoke <id>\nLists the standing grants, or revokes one by its id.'
+const PLUGIN_USAGE = 'Usage: buckle plugin | plugin add <id> <module-specifier> | plugin remove <id>\nLists the plugins, adds one, or removes one.'
+const WORKSPACES_USAGE = 'Usage: buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune'
+
+/** The usage each audited owner command prints for a help request. */
+const COMMAND_USAGE: ReadonlyMap<string, string> = new Map([
+  ['approve', APPROVE_USAGE], ['approvals', APPROVALS_USAGE], ['check-url', CHECK_URL_USAGE], ['grants', GRANTS_USAGE], ['workspaces', WORKSPACES_USAGE],
+  ['history', HISTORY_USAGE], ['plugin', PLUGIN_USAGE], ['policy', POLICY_USAGE], ['workspace', WORKSPACE_USAGE], ['keys', KEYS_USAGE],
+])
+/** The commands whose own first word `help` also asks for the usage. */
+const HELP_WORD_COMMANDS: readonly string[] = Object.freeze(['policy', 'workspace'])
+
 function approveArguments(argv: string[]) {
   return parseArgs({ args: argv, options: { scope: { type: 'string' }, deny: { type: 'boolean' }, host: { type: 'string' }, below: { type: 'boolean' } }, allowPositionals: true })
 }
@@ -846,5 +869,5 @@ async function shellWorkspacesCommand(runtime: BuckleRuntime, argv: string[]): P
   if (command === 'inspect' && id) return print(await runtime.shellWorkspaces.inspect(id))
   if (command === 'publish' && id) return print(await runtime.shellWorkspaces.publish(id))
   if (command === 'discard' && id) return print(await runtime.shellWorkspaces.discard(id))
-  return fail('Usage: buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune')
+  return fail(WORKSPACES_USAGE)
 }
