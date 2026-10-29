@@ -75,7 +75,7 @@ function prepareInstallation() {
   mkdirSync(state, { mode: 0o700 })
   // The node's own file, as 0.1 wrote it: a node takes its folder, its agent token, and every workspace's defaults from the
   // file alone (D85, Q3), so the packs, the shell, and the approval wait are set here and not in the environment.
-  writeFileSync(join(state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_AUTH_TOKEN=${agentToken}\nBUCKLE_PACKS=fs,code\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_APPROVAL_TIMEOUT_MS=1\n`, { mode: 0o600 })
+  writeFileSync(join(state, 'buckle.env'), `BUCKLE_WORKSPACE_ROOT=${workspace}\nBUCKLE_AUTH_TOKEN=${agentToken}\nBUCKLE_PACKS=fs,code\nBUCKLE_ALLOW_HOST_GIT=true\nBUCKLE_ALLOW_SHELL=false\nBUCKLE_APPROVAL_TIMEOUT_MS=1\n`, { mode: 0o600 })
   writeFileSync(join(root, 'npmrc'), '')
   for (const name of ['protocol', 'runtime', 'buckle']) {
     run('pnpm', ['--filter', `@5straps/${name}`, 'pack', '--pack-destination', packageDirectory], { cwd: repository })
