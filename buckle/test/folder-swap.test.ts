@@ -133,7 +133,7 @@ describe('the workspace\'s own folder swapped for a link', () => {
     expect(captured.objects.length).toBeGreaterThan(0)
     expect(captured.objects.join('\n')).not.toMatch(/PRIVATE/)
     // A runtime opened before the swap answers each later call with the same refusal, reads included.
-    expect(await invoke('read-1', 'fs_read', { path: '/workspace/notes.txt' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: swapped } })
+    expect(await invoke('read-1', 'fs_read', { path: '/workspace/notes.txt' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(swapped + '. Ask the owner to inspect buckle policy show --workspace ') } })
     await runtime.closeSessions()
     await runtime.history.close()
     runtime.closeWatchers()
@@ -147,7 +147,7 @@ describe('the workspace\'s own folder swapped for a link', () => {
     const runtime = await createRuntime({ config, interaction: fixedInteraction({ hold: 'prompt', requestCli: async (request) => { asked.push(request.id); swap(); return { status: 'answered', requestId: request.id, answer: { choice: 'once' } } } }) })
     const written = await runtime.invoke({ sessionId: 'chat-1', request: { requestId: 'write-1', tool: 'fs_write', args: { path: '/workspace/planted.txt', content: 'x' }, approvalTokens: [] } })
     expect(asked).toHaveLength(1)
-    expect(written).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: swapped } })
+    expect(written).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(swapped + '. Ask the owner to inspect buckle policy show --workspace ') } })
     expect(existsSync(join(ssh, 'planted.txt'))).toBe(false)
     expect(history(root).roots).toEqual([])
     await runtime.closeSessions()

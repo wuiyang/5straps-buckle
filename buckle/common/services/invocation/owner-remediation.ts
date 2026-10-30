@@ -1,5 +1,6 @@
 import { ToolNameSchema, type InvokeResponse, type PackDescriptor, type PermissionRuleId, type WorkspacePolicy } from '@5straps/protocol'
 import { builtinToolPack } from '../../domain/action-phrase.js'
+import { READ_LIMITS } from '../../domain/command-forms.js'
 import { toolPolicyBlockers } from '../../domain/tool-policy.js'
 import { workspaceArgument } from '../../domain/approval-instruction.js'
 import type { BuckleConfig } from '../../runtime/config.js'
@@ -60,6 +61,7 @@ function ownerAction(input: { tool: string; workspace: string; message: string; 
   if (input.rule === 'network_egress' && input.message.includes('approved list')) return `Approval cannot override this URL list. Ask the owner to review the destination and allow only the required host or URL prefix with buckle policy allow-url <host-or-url-prefix> ${target}; a node URL list must permit it too.`
   if (input.rule === 'command_policy') {
     if (input.message.includes('cannot administer')) return `Only the owner can administer Buckle from their own terminal. A tool approval or allow rule cannot enable this action.`
+    if (input.message.startsWith(`${READ_LIMITS.interpreter}: `)) return `Ask the owner to review buckle policy show ${target}. If they approve the named interpreter, use the scoped command buckle policy allow-interpreter <name> ${target} for each name above. Matching command denies still win, and all other approval rules still apply. A command allow alone cannot resolve this interpreter refusal.`
     return `Ask the owner to inspect buckle policy show ${target} and adjust only the matching command rule, using buckle policy allow-command '<exact-command-pattern>' ${target} where needed. A matching deny still wins and must be reviewed separately; an approval cannot override it.`
   }
   if (input.rule === 'read_scope' || input.rule === 'write_scope') return `An approval cannot cross this workspace boundary. Ask the owner to inspect buckle workspace mount list ${target} and explicitly share only the required location with buckle workspace mount add <local>:<sandbox> ${target}, using --read-only for reads. Existing read-only mounts need an owner configuration change for writes.`

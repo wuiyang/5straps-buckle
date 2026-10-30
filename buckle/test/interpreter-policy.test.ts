@@ -65,6 +65,20 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
     expect(await call(config, 'node', ['script.js'])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   })
 
+  it('gives scoped interpreter guidance while keeping command denies authoritative', async () => {
+    const config = node({ BUCKLE_COMMAND_DENY: 'terraform destroy *' })
+    const response = await call(config, 'node', ['script.js'])
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+    if (response.outcome !== 'error') throw new Error('Expected an interpreter refusal')
+    expect(response.error.message).toContain(`buckle policy allow-interpreter <name> --workspace ${config.workspaceId}`)
+    expect(response.error.message).toContain('Matching command denies still win')
+    expect(response.error.message).not.toContain("allow-command '<exact-command-pattern>'")
+
+    await cli(config, ['policy', 'allow-interpreter', 'node'])
+    await cli(config, ['policy', 'deny-command', 'node *'])
+    expect(await call(config, 'node', ['script.js'])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Refused by the workspace command policy: node *') } })
+  })
+
   it('asks at the floor about an unknown interpreter with no deny glob, and runs it as an ordinary command once allowed', async () => {
     const config = node()
     expect(await call(config, 'python3', ['-m', 'venv', '.venv'])).toMatchObject({ outcome: 'approval_required' })
@@ -94,7 +108,7 @@ describe('buckle policy allow-interpreter and remove-interpreter', () => {
     const config = node()
     for (const runner of ['npx', 'pnpx', 'bunx']) {
       expect((await cli(config, ['policy', 'allow-command', `${runner} *`])).exitCode).toBe(0)
-      expect(await call(config, runner, ['prettier', '--check', '.'])).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command', reason: `${unknown(runner)}; asked rather than guessed at` }] })
+      expect(await call(config, runner, ['prettier', '--check', '.'])).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command', severity: 'warn', reason: `[warn] ${unknown(runner)}; asked rather than guessed at` }] })
       expect((await cli(config, ['policy', 'allow-interpreter', runner])).exitCode).toBe(0)
       expect(await call(config, runner, ['prettier', '--check', '.'])).toMatchObject({ outcome: 'ok' })
     }
@@ -178,7 +192,7 @@ describe('a workspace\'s own interpreter allowance', () => {
     } finally { prepare.mockRestore() }
   }
 
-  const refused = { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: `${unknown('node')}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked` } }
+  const refused = { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(`${unknown('node')}, so the workspace command policy's deny list cannot meet all of it; refused rather than asked`) } }
 
   it('reads node script.js as an ordinary command when the workspace allows node, whatever the node\'s environment names', async () => {
     expect(await nodeScript(await registered({ BUCKLE_COMMAND_DENY: 'terraform destroy *' }, { interpreters: ['node'] }))).toMatchObject({ outcome: 'ok' })

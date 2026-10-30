@@ -669,7 +669,7 @@ describe('a shell command on Buckle\'s own launchd agent', () => {
     const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell' }) })
     try {
       const refused = await runtime.invoke({ request: { requestId: 'agent-bootout', tool: 'shell_exec', args: { command: 'launchctl', args: ['bootout', 'gui/501/com.5straps.buckle'] }, approvalTokens: [] }, sessionId: 'launchd' })
-      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it' } })
+      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it. Only the owner can administer Buckle from their own terminal. A tool approval or allow rule cannot enable this action.' } })
       expect(runtime.actions.read(20).filter(entry => entry.event === 'result')).toContainEqual(expect.objectContaining({ requestId: 'agent-bootout', outcome: 'denied' }))
       expect(existsSync(join(root, 'ran'))).toBe(false)
     } finally {

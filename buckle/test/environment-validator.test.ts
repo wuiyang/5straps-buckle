@@ -77,7 +77,7 @@ describe('the environment validator on a node whose PATH starts in a workspace',
   it('is refused in every workspace where it lies in the default workspace, and runs nowhere', async () => {
     const answers = await validateOnNode(({ workspace, log }) => script(join(workspace, 'node_modules', '.bin', 'varlock'), `#!/bin/sh\necho VALIDATOR-IN-DEFAULT >> '${log}'\nexit 0\n`))
     for (const { response, ran } of answers) {
-      expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'The validator BUCKLE_ENV_VALIDATOR_COMMAND names is found in or through a workspace of this node, where an agent can write, so Buckle does not run it' } })
+      expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('The validator BUCKLE_ENV_VALIDATOR_COMMAND names is found in or through a workspace of this node, where an agent can write, so Buckle does not run it. Ask the owner to inspect buckle policy show --workspace ') } })
       expect(ran).toEqual([])
     }
   })

@@ -146,7 +146,7 @@ describe('a shell command on Buckle\'s own unit', () => {
     const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'shell' }) })
     try {
       const refused = await runtime.invoke({ request: { requestId: 'unit-stop', tool: 'shell_exec', args: { command: 'systemctl', args: ['--user', 'stop', 'buckle.service'] }, approvalTokens: [] }, sessionId: 'unit' })
-      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it' } })
+      expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it. Only the owner can administer Buckle from their own terminal. A tool approval or allow rule cannot enable this action.' } })
       const audited = runtime.actions.read(20).filter(entry => entry.event === 'result')
       expect(audited, JSON.stringify(audited)).toContainEqual(expect.objectContaining({ requestId: 'unit-stop', outcome: 'denied' }))
       expect(existsSync(join(root, 'ran'))).toBe(false)
