@@ -88,7 +88,9 @@ function checkedWalk(realPath: string, root: string, parts: string[], create: bo
   for (const part of parts) {
     current = childPath(current, part)
     try {
-      if (lstatSync(current).isSymbolicLink()) throw new LinkAppearedError(refusal.shown, refusal.outcome)
+      const info = lstatSync(current)
+      if (info.isSymbolicLink()) throw new LinkAppearedError(refusal.shown, refusal.outcome)
+      if (!info.isDirectory()) throw Object.assign(new Error('Not a directory'), { code: 'ENOTDIR' })
     } catch (error) {
       if (!create || errorCode(error) !== 'ENOENT') throw error
       mkdirSync(current)
