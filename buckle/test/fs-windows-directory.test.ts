@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join } from 'pathe'
 import type { JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { LinkAppearedError, openRealDirectory } from '../common/adapters/beneath.js'
@@ -27,7 +27,7 @@ describe('unpinned directory walk', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-windows-link-'))
     roots.push(root)
     mkdirSync(join(root, 'folder'))
-    symlinkSync(join(root, 'folder'), join(root, 'link'), 'dir')
+    symlinkSync(join(root, 'folder'), join(root, 'link'), process.platform === 'win32' ? 'junction' : 'dir')
     expect(() => openRealDirectory(join(root, 'link'))).toThrow(LinkAppearedError)
   })
 
