@@ -57,10 +57,10 @@ export function inWorkspaceFolder(path: string, paths: PathView): boolean {
 
 /**
  * A delete at the destructive floor the workspace hands to the ordinary write gate: inside its own folder, where its
- * setting allows deletes. Both rules read this one answer, so a delete is never judged by neither of them.
+ * setting allows deletes. A whole-folder move always stays at the floor. Both rules read this one answer.
  */
 export function relievedDelete(effect: ResolvedEffect, paths: PathView, policy: DeletePolicy): boolean {
-  return effect.kind === 'delete_path' && effect.floor && policy.inWorkspace === 'allow' && inWorkspaceFolder(effect.path, paths)
+  return effect.kind === 'delete_path' && effect.floor && !effect.moved && policy.inWorkspace === 'allow' && inWorkspaceFolder(effect.path, paths)
 }
 
 /**

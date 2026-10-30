@@ -86,6 +86,7 @@ function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions
     rule: request.rule,
     subject: request.subject,
     reason: request.reason,
+    ...(request.severity === undefined ? {} : { severity: request.severity }),
     expiresAt: request.expiresAt,
     offeredScopes: request.offeredScopes,
     workspaceId,

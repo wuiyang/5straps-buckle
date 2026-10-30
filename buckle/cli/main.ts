@@ -547,6 +547,7 @@ function printWaiting(input: { runtime: BuckleRuntime; waiting: PendingAsk[]; no
     process.stdout.write(`${request.token}  ${printable(request.tool)}\n`)
     process.stdout.write(`    ${request.rule}: ${printable(request.subject)}\n`)
     process.stdout.write(`    ${printable(request.reason)}\n`)
+    if (request.severity !== undefined) process.stdout.write(`    severity: ${request.severity}\n`)
     process.stdout.write(`    scopes: ${request.offeredScopes.join(' | ')}\n`)
     process.stdout.write(`    ${describeExpiry(request.expiresAt)}\n`)
     const shown = shownCall(call)

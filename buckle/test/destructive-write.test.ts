@@ -46,7 +46,7 @@ describe('a write that empties or halves a file the session never read', () => {
     writeFileSync(join(workspace, 'notes.md'), 'a long note the agent never looked at')
     const response = await call(runtime, 'fs_write', { path: 'notes.md', content: '' })
     expect(response).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', subject: `overwrite:${join(runtime.paths().root, 'notes.md')}`, offeredScopes: ['once', 'session', 'always'] }] })
-    expect(reasons(response)[0]).toBe(`Writing ${join(runtime.paths().root, 'notes.md')} empties a file this session never read, so a person decides, whatever the folder's write grant says`)
+    expect(reasons(response)[0]).toBe(`[danger] Writing ${join(runtime.paths().root, 'notes.md')} empties a file this session never read, so a person decides, whatever the folder's write grant says`)
     expect(runtime.approvalService.waiting()[0]?.call?.effects).toEqual([`write ${join(runtime.paths().root, 'notes.md')}`, `empties ${join(runtime.paths().root, 'notes.md')}, a file this session never read`])
     expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('a long note the agent never looked at')
   })
@@ -54,7 +54,7 @@ describe('a write that empties or halves a file the session never read', () => {
   it('asks when it leaves under half the bytes, and lets half or more through', async () => {
     const { runtime, workspace } = await node()
     writeFileSync(join(workspace, 'a.md'), '0123456789')
-    expect(reasons(await call(runtime, 'fs_write', { path: 'a.md', content: '0123' }))).toEqual([`Writing ${join(runtime.paths().root, 'a.md')} shrinks a file this session never read to under half its size, so a person decides, whatever the folder's write grant says`])
+    expect(reasons(await call(runtime, 'fs_write', { path: 'a.md', content: '0123' }))).toEqual([`[danger] Writing ${join(runtime.paths().root, 'a.md')} shrinks a file this session never read to under half its size, so a person decides, whatever the folder's write grant says`])
     expect(await call(runtime, 'fs_write', { path: 'a.md', content: '01234' })).toMatchObject({ outcome: 'ok' })
     expect(SHRINK_RATIO).toBe(0.5)
   })
@@ -162,7 +162,7 @@ describe('a batch that rewrites many existing files', () => {
   it('asks for more than ten, naming how many', async () => {
     const { runtime, response } = await batchOf(BATCH_REWRITE_LIMIT + 1)
     expect(response).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `rewrite-batch:${runtime.paths().root}` }] })
-    expect(reasons(response)).toEqual(['This call rewrites 11 existing files at once, so a person decides, whatever the folder\'s write grant says'])
+    expect(reasons(response)).toEqual(['[danger] This call rewrites 11 existing files at once, so a person decides, whatever the folder\'s write grant says'])
     expect(summarizeEffect({ kind: 'many_rewrites', files: 11 })).toBe('rewrites 11 existing files at once')
   })
 

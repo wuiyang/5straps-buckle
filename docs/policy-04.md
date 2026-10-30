@@ -16,15 +16,15 @@ eight](known-limits-08.md) lists what the floor does not cover.
   missing inside the workspace asks nothing. A batch asks once for each folder it names, and a
   folder removed whole asks on its own. The reason reads "Deleting ... asks a person, whatever
   the folder's write grant says".
-- `fs_move` asks at the floor when `replace` is true, or when `from` is a folder, where a delete
-  there would ask. `replace: true`
-  means something stands at the landing, and the move replaces it. A file or link replaced gets its
-  own ask, and its reason names it. A folder replaced is removed whole, so it asks as a recursive
-  delete does: under `delete-tree:` for that path, naming how many files and folders it holds,
-  with the same 10,000-entry bound (`FOLDER_TOO_LARGE`). It is checkpointed like a recursive
-  delete, and the move lands only after the ask. Otherwise the move asks as a write to `to`'s
-  folder does: the first write into a directory asks, and a grant is remembered. Its removal of
-  `from` is judged as a write to `from`'s folder.
+- `fs_move` always asks at the floor with `warn` severity when `from` is a folder, whatever the
+  delete policy or ordinary write grants say. Its reason names the folder and everything in it.
+  `replace: true` means something stands at the landing, and the move replaces it. That removal
+  follows the delete policy. A replaced folder is removed whole, so its ask uses `delete-tree:`
+  for that path, naming how many files and folders it holds, with the same 10,000-entry bound
+  (`FOLDER_TOO_LARGE`). It is checkpointed like a recursive delete. When asked, the move lands
+  only after approval. Moving a file without replacement follows the write gate at both folders: the first
+  write asks, and a grant is remembered. Moving a file from outside into the workspace also
+  [asks as a delete](policy-05.md#outside-the-workspaces-folder).
 - A write that empties an existing file, or leaves it under half its size, asks when the session
   has not seen that file lately. The writing tools are `fs_write`, `fs_write_batch`, `fs_patch`,
   `fs_apply_patch`, and `fs_receive` over an existing file. The reason reads "Writing ... empties
@@ -36,6 +36,11 @@ eight](known-limits-08.md) lists what the floor does not cover.
   (`*`, `?`, or `[`), quoted or not, a brace group of choices or a range, a variable, a command
   substitution, or find's `{}`; when it has two or more targets; and when xargs feeds it. `rm file`
   with one literal path does not ask here. `rm -r` and `rm -f` still ask at the command floor.
+
+Approval JSON has optional `severity`: `warn` for whole-folder moves and single-delete asks;
+`danger` for recursive or bulk deletion, destructive overwrites, bulk rewrites, and restores.
+The terminal shows it. Signed reasons begin `[warn]` or `[danger]`, so older clients see the
+label without changing their strict challenge format.
 
 ## What the session has seen
 

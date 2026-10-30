@@ -30,11 +30,16 @@ export const GrantSubjectSchema = z.object({
 })
 export type GrantSubject = z.infer<typeof GrantSubjectSchema>
 
+export const ApprovalSeveritySchema = z.enum(['warn', 'danger'])
+export type ApprovalSeverity = z.infer<typeof ApprovalSeveritySchema>
+
 export const ApprovalRequestSchema = z.object({
   token: z.string().min(1),
   rule: PermissionRuleIdSchema,
   subject: z.string().min(1),
   reason: z.string().min(1),
+  /** Optional side-effect label; older clients still see it in the reason. */
+  severity: ApprovalSeveritySchema.optional(),
   tool: z.string().min(1),
   /** Floor rules omit 'always' so a caller cannot permanently widen them. */
   offeredScopes: z.array(GrantScopeSchema).min(1),

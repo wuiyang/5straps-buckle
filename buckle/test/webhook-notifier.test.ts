@@ -47,6 +47,11 @@ describe('what the approval webhook carries', () => {
     expect(approvals[0]?.approveCommand).toBe('buckle approve tok-1 --scope session --workspace default')
   })
 
+  it.each(['warn', 'danger'] as const)('carries %s severity with the approval sent to Rings', async (severity) => {
+    await createWebhookNotifier({ url, serverId: 'test-node', workspaceId: 'default' })([{ ...request, severity }])
+    expect((received.at(-1)?.body.approvals as Array<Record<string, unknown>>)[0]).toMatchObject({ severity })
+  })
+
   it('names the workspace a child runtime is waiting in, and the command that answers it there', async () => {
     await createWebhookNotifier({ url, serverId: 'linux-dev', workspaceId: 'photos', token: 'report-secret' })([request])
     const last = received.at(-1)

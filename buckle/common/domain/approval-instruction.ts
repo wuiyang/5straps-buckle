@@ -1,4 +1,4 @@
-import type { ApprovalRequest, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
+import type { ApprovalRequest, ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 
 /**
@@ -210,6 +210,7 @@ export interface ShownCall {
 /** One waiting ask as an approver shows it: the request, and the whole call it recorded when there is one. */
 export interface ShownAsk {
   tool: string
+  severity?: ApprovalSeverity
   rule: PermissionRuleId
   subject: string
   /** What a person may grant for the session or always in place of `subject`: a delete's folder and its subfolders. */
@@ -273,6 +274,7 @@ function askHead(ask: ShownAsk, expiry: (expiresAt: string) => string = describe
   return [
     `${printable(ask.tool)} needs approval${ask.workspaceId === undefined ? '' : ` in workspace ${workspaceLabel(ask.workspaceId, ask.workspaceName)}`}`,
     `  ${printable(ask.reason)}`,
+    ...(ask.severity === undefined ? [] : [`  severity: ${ask.severity}`]),
     `  subject: ${printable(ask.subject)}`,
     ...(ask.widerSubject === undefined ? [] : [`  or:      ${printable(ask.widerSubject)} (every delete in that folder and its subfolders, for the session or always)`]),
     `  ${expiry(ask.expiresAt)}`,

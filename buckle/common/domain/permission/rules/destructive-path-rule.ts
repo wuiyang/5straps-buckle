@@ -1,4 +1,4 @@
-import type { GrantScope } from '@5straps/protocol'
+import type { ApprovalSeverity, GrantScope } from '@5straps/protocol'
 import { guardedBatch, guardedTree, inWorkspaceFolder, relievedDelete, type DeletePolicy, type DeleteRunView } from '../../delete-policy.js'
 import { treeWords, undoneWords, type ResolvedEffect } from '../../effect.js'
 import type { PathView } from '../../path-view.js'
@@ -66,7 +66,8 @@ export function floorSubjectPath(subject: string): string | null {
  *
  * The workspace's delete policy (the owner's ruling of 2026-10-28): under `allow`, a delete inside its own folder is the
  * write scope's alone, except where one call deletes past the mass-delete limit or a folder at the top of the folder,
- * which still asks here. A delete outside it always asks here, and offers its folder and subfolders (`delete-below`) as a
+ * which still asks here. Whole-folder moves always ask here with warn severity; recursive and bulk destructive asks carry danger.
+ * A delete outside it always asks here, and offers its folder and subfolders (`delete-below`) as a
  * wider grant beside the entry alone, for the session or always; strict mode offers neither. Nor is it offered, or
  * honored, for a folder that is the owner's home folder or holds it, or that holds a root the agent may name (its
  * folder, a mount, a scratch root): the agent chooses the target, and such a grant would cover other projects or the
@@ -89,27 +90,28 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
       const held = grants.subjectsFor('write_scope')
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
-      if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes)
+      if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes, undefined, floor.severity)
       const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && grantable(subject.slice(DELETE_BELOW_PREFIX.length)) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
       if (below !== undefined) return allowedVia('write_scope', below)
-      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
+      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes, undefined, floor.severity), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
     },
   }
 }
 
 /** What the floor asks about one effect, and, for a delete outside the workspace's folder, the entry a wider grant may cover. */
-interface FloorAsk { subject: string; reason: string; outside?: { path: string; directory: string }; once?: true }
+interface FloorAsk { subject: string; reason: string; severity: ApprovalSeverity; outside?: { path: string; directory: string }; once?: true }
 
 function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], run: DeleteRunView | undefined, input: { paths: PathView; deletes: DeletePolicy }): FloorAsk | null {
   const { paths } = input
-  if (effect.kind === 'restore_checkpoint') return { subject: restoreSubject(effect), reason: `Restoring the workspace to before checkpoint ${effect.checkpoint} undoes ${undoneWords(effect.undoes)}${effect.undoes > 1 ? `, the newest ${effect.head}` : ''}, so a person decides, whatever the folders' write grants say`, once: true }
-  if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says` }
-  if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says` }
+  if (effect.kind === 'restore_checkpoint') return { subject: restoreSubject(effect), reason: `Restoring the workspace to before checkpoint ${effect.checkpoint} undoes ${undoneWords(effect.undoes)}${effect.undoes > 1 ? `, the newest ${effect.head}` : ''}, so a person decides, whatever the folders' write grants say`, severity: 'danger', once: true }
+  if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says`, severity: 'danger' }
+  if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says`, severity: 'danger' }
   if (effect.kind !== 'delete_path' || !effect.floor) return null
-  if (relievedDelete(effect, paths, input.deletes)) return massDeleteAsk(effect, effects, run, input)
   const outside = inWorkspaceFolder(effect.path, paths) ? {} : { outside: { path: effect.path, directory: effect.directory } }
-  if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) asks a person, whatever the folder's write grant says`, ...outside }
-  return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} asks a person, whatever the folder's write grant says`, ...outside }
+  if (effect.moved) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Moving the folder ${paths.toVirtual(effect.path)}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''} changes every path beneath it, so a person decides, whatever the folder's write grant says`, severity: 'warn', ...outside }
+  if (relievedDelete(effect, paths, input.deletes)) return massDeleteAsk(effect, effects, run, input)
+  if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) asks a person, whatever the folder's write grant says`, severity: 'danger', ...outside }
+  return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} asks a person, whatever the folder's write grant says`, severity: 'warn', ...outside }
 }
 
 /**
@@ -127,12 +129,12 @@ function massDeleteAsk(effect: Extract<ResolvedEffect, { kind: 'delete_path' }>,
     const folder = paths.toVirtual(effect.path)
     const held = effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''
     const why = tree === 'large' ? ` removes more than ${deletes.massLimit} entries at once, so a person decides` : tree === 'top' ? ', at the top of the workspace, asks a person' : ', at the top of the workspace and emptied by this script, asks a person'
-    return { subject, reason: `Deleting the folder ${folder}${held}${why}, though the workspace allows deletes in its folder` }
+    return { subject, reason: `Deleting the folder ${folder}${held}${why}, though the workspace allows deletes in its folder`, severity: 'danger' }
   }
   const batch = guardedBatch(effects, paths, deletes, run)
   if (batch === null) return null
   const reason = (run?.removed ?? 0) > 0
     ? `This script has deleted ${batch} entries in the workspace so far, more than ${deletes.massLimit}, so a person decides, though the workspace allows deletes in its folder`
     : `This call deletes ${batch} entries in the workspace at once, more than ${deletes.massLimit}, so a person decides, though the workspace allows deletes in its folder`
-  return { subject: `${DELETE_BATCH_PREFIX}${paths.root}`, reason }
+  return { subject: `${DELETE_BATCH_PREFIX}${paths.root}`, reason, severity: 'danger' }
 }

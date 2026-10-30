@@ -39,6 +39,22 @@ describe('an ask under write_scope with a prefixed subject', () => {
     expect(InvokeResponseSchema.parse(response)).toMatchObject({ approvals: [{ widerSubject: `delete-below:${FOLDER}` }] })
   })
 
+  it.each(['warn', 'danger'])('carries optional %s severity and remains readable by a 0.1.7 client', (severity) => {
+    const request = ask(`delete-tree:${FOLDER}`, { severity, reason: `[${severity}] Major file change needs approval` })
+    expect(ApprovalRequestSchema.parse(request)).toMatchObject({ severity })
+    expect(REQUEST_0_1_7.parse(request)).toMatchObject({ reason: `[${severity}] Major file change needs approval` })
+    expect(REQUEST_0_1_7.parse(request)).not.toHaveProperty('severity')
+    const response = { requestId: 'r1', outcome: 'approval_required', approvals: [request] }
+    expect(InvokeResponseSchema.parse(response)).toMatchObject({ approvals: [{ severity }] })
+    expect(APPROVAL_REQUIRED_0_1_7.safeParse(response).success).toBe(true)
+  })
+
+  it('accepts older asks without severity, rejects unknown labels, and keeps strict challenges unchanged', () => {
+    expect(ApprovalRequestSchema.parse(ask(`delete:${FOLDER}`))).not.toHaveProperty('severity')
+    expect(ApprovalRequestSchema.safeParse(ask(`delete:${FOLDER}`, { severity: 'safe' })).success).toBe(false)
+    expect(ApprovalChallengeSchema.shape).not.toHaveProperty('severity')
+  })
+
   it('is absent from an ask that offers none, and is never empty', () => {
     expect(ApprovalRequestSchema.parse(ask(`delete:${FOLDER}`)).widerSubject).toBeUndefined()
     expect(ApprovalRequestSchema.safeParse(ask(`delete:${FOLDER}`, { widerSubject: '' })).success).toBe(false)

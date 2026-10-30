@@ -755,6 +755,7 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
       summary: `${approval.tool} needs approval`,
       details: {
         tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
+        ...(approval.severity === undefined ? {} : { severity: approval.severity }),
         scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
         ...(approval.widerSubject === undefined ? {} : { wider: approval.widerSubject }),
         ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),

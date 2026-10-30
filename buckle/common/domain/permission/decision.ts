@@ -1,11 +1,11 @@
-import type { GrantScope, PermissionRuleId } from '@5straps/protocol'
+import type { ApprovalSeverity, GrantScope, PermissionRuleId } from '@5straps/protocol'
 import type { DeleteRunView } from '../delete-policy.js'
 import type { ResolvedEffect } from '../effect.js'
 
 export type PermissionDecision =
   | { kind: 'allow'; via?: GrantReference }
   /** `widerSubject`: what a person may grant for the session or always in place of `subject` (a delete's folder and subfolders). */
-  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string }
+  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string; severity?: ApprovalSeverity }
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
 
 /**
@@ -53,8 +53,9 @@ export function ask(
   reason: string,
   offeredScopes: GrantScope[] = ['once', 'session', 'always'],
   cause?: AskCause,
+  severity?: ApprovalSeverity,
 ): PermissionDecision {
-  return { kind: 'ask', rule, subject, reason, offeredScopes, ...(cause === undefined ? {} : { cause }) }
+  return { kind: 'ask', rule, subject, reason, offeredScopes, ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }) }
 }
 
 export function deny(rule: PermissionRuleId, subject: string, reason: string): PermissionDecision {

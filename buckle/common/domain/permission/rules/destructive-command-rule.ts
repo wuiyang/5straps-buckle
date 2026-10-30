@@ -86,7 +86,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const subject = subjectOf(effect)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
-      return ask('destructive_command', subject, reason, ['once', 'session'], cause)
+      return ask('destructive_command', subject, reason, ['once', 'session'], cause, floor !== null || listed !== null ? 'danger' : 'warn')
     },
   }
 }

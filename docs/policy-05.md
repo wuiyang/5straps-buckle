@@ -12,10 +12,12 @@ its subfolders. [The file floor](policy-04.md) covers the rest of what the file 
 `files.deleteInWorkspace` decides, per workspace:
 
 - `allow`, the default: a delete is judged as a write to its folder. That covers `fs_delete`,
-  what `fs_move` takes away with `replace` or when it moves a folder, and a file `fs_apply_patch`
-  deletes. The folder's write grant covers it, the first write into a folder asks as it always
-  did, and the file floor asks nothing.
+  what `fs_move` replaces, and a file `fs_apply_patch` deletes. The folder's write grant covers it,
+  the first write into a folder asks as it always did, and the file floor asks nothing.
 - `ask`: every delete asks at the file floor, as before this policy.
+
+Moving a whole folder always asks at the file floor with `warn` severity. An ordinary write
+grant and a mass-delete limit of `0` do not answer that ask. The move stays supported.
 
 ```bash
 buckle workspace set files.deleteInWorkspace ask
@@ -39,8 +41,8 @@ Under `allow`, one call still asks at the floor when it would remove:
 
 The reason says which: "removes more than 100 entries at once", "at the top of the workspace", or
 "This call deletes 140 entries in the workspace at once". A folder moved whole removes nothing,
-since all of it lands elsewhere, so it is not counted. In a script ([code mode](code-mode.md)) the
-calls count together, so a loop of single deletes asks once it passes the limit, with "This script
+since all of it lands elsewhere, so it is not counted; its move asks separately. In a script
+([code mode](code-mode.md)) the calls count together, so a loop of single deletes asks once it passes the limit, with "This script
 has deleted N entries in the workspace so far"; a folder at the top that the script took entries
 out of asks when it is removed, though it holds nothing by then. A grant of `delete-tree:<folder>` or
 `delete-batch:<workspace folder>`, for the session or always, lets that removal through again.

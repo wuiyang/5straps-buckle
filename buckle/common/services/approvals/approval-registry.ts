@@ -642,7 +642,8 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           assertRoomFor({ state, workspace, sessionId, actor, asked: asks.length })
           // Every field a person or a relay reads is redacted (owner decision D17), a reason as the free text it is
           // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
-          const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.reason, 'text'), tool, offeredScopes: item.offeredScopes, expiresAt, ...(item.widerSubject === undefined ? {} : { widerSubject: item.widerSubject }) }))
+          // Keep the label in the signed reason so strict older challenges need no new field.
+          const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.severity === undefined ? item.reason : `[${item.severity}] ${item.reason}`, 'text'), ...(item.severity === undefined ? {} : { severity: item.severity }), tool, offeredScopes: item.offeredScopes, expiresAt, ...(item.widerSubject === undefined ? {} : { widerSubject: item.widerSubject }) }))
           const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
           assertDeliveryRoom(state, entries, notifies)
           // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
@@ -969,9 +970,9 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
 }
 
-/** Every waiting ask is asked again, and every ask the call makes is one of the group's: tool, rule, subject and offered scopes. */
+/** Every waiting ask is asked again with the same tool, rule, subject, scopes and severity. */
 function sameGroup(input: { waiting: ApprovalRequest[]; answered: ApprovalRequest[]; call: { tool: string; asks: Ask[] } }): boolean {
-  const key = (item: { rule: string; subject: string; offeredScopes: readonly string[] }) => JSON.stringify([item.rule, item.subject, [...item.offeredScopes].sort()])
+  const key = (item: { rule: string; subject: string; offeredScopes: readonly string[]; severity?: ApprovalRequest['severity'] }) => JSON.stringify([item.rule, item.subject, [...item.offeredScopes].sort(), item.severity ?? null])
   const asked = new Set(input.call.asks.map(key))
   const group = new Set([...input.waiting, ...input.answered].map(key))
   const sameTool = [...input.waiting, ...input.answered].every(request => request.tool === input.call.tool)

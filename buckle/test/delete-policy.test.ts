@@ -157,8 +157,8 @@ describe('the mass-delete guard', () => {
     expect(subjects(evaluate([removed(`${WORKSPACE}/src/generated`, { tree: counted(150, 0) }), ...folders(3, 40)], granted)).sort()).toEqual([`delete-batch:${WORKSPACE}`, `delete-tree:${WORKSPACE}/src/generated`])
   })
 
-  it('counts no folder moved whole, which lands elsewhere with all it holds', () => {
-    expect(evaluate([removed(`${WORKSPACE}/src`, { tree: counted(500, 20), moved: true })], granted).kind).toBe('allow')
+  it('asks about a folder moved whole without counting it as a mass deletion', () => {
+    expect(evaluate([removed(`${WORKSPACE}/src`, { tree: counted(500, 20), moved: true })], granted)).toMatchObject({ kind: 'ask', asks: [{ subject: `delete-tree:${WORKSPACE}/src`, severity: 'warn' }] })
   })
 
   it('is off at a limit of 0', () => {
@@ -311,15 +311,24 @@ describe('the fs tools under the default delete policy', () => {
     expect(await call(runtime, 'fs_delete', { paths: ['logs'], recursive: true })).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, 'logs')}` }] })
   })
 
-  it('move a folder whole without asking where writes are granted, whatever it holds and wherever it stands', async () => {
+  it('warn and ask before moving a folder whole where writes are granted, then move it once approved', async () => {
     const { runtime, workspace } = await node()
     mkdirSync(join(workspace, 'src/lib'), { recursive: true })
     writeFileSync(join(workspace, 'src/lib/a.ts'), 'a')
     mkdirSync(join(workspace, 'pkg'))
     for (let index = 0; index < 101; index++) writeFileSync(join(workspace, `pkg/${index}.ts`), '')
     await grantWrites(runtime)
-    expect(await call(runtime, 'fs_move', { from: 'src/lib', to: 'src/old-lib' })).toMatchObject({ outcome: 'ok' })
-    expect(await call(runtime, 'fs_move', { from: 'pkg', to: 'package' })).toMatchObject({ outcome: 'ok' })
+    for (const [from, to] of [['src/lib', 'src/old-lib'], ['pkg', 'package']] as const) {
+      const args = { from, to }
+      const asked = await call(runtime, 'fs_move', args)
+      expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, from)}`, severity: 'warn', reason: expect.stringContaining('[warn] Moving the folder') }] })
+      expect(existsSync(join(workspace, from))).toBe(true)
+      expect(existsSync(join(workspace, to))).toBe(false)
+      if (asked.outcome !== 'approval_required') throw new Error('Expected the folder move to ask before changing anything')
+      const tokens = asked.approvals.map(approval => approval.token)
+      for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+      expect(await call(runtime, 'fs_move', args, tokens)).toMatchObject({ outcome: 'ok' })
+    }
     expect(readFileSync(join(workspace, 'src/old-lib/a.ts'), 'utf8')).toBe('a')
     expect(existsSync(join(workspace, 'package/100.ts'))).toBe(true)
   })
