@@ -105,7 +105,7 @@ describe('PUT /v1/files', () => {
     await buckle.runtime.approvals.resolve({ token, approved: false, scope: 'once' }, 'admin')
     const again = await put('denied.txt', content, { requestId })
     expect(again.status).toBe(422)
-    expect(await again.json()).toMatchObject({ requestId, outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Approval was declined' } })
+    expect(await again.json()).toMatchObject({ requestId, outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Approval was declined') } })
     expect(entries(workspace)).toEqual([])
   })
 

@@ -41,7 +41,7 @@ describe('buckle policy deny-tool and allow-tool', () => {
 
     const { response, listed } = await invoke(config, 'fs_read', { path: 'notes.txt' })
 
-    expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Disabled by workspace tool policy' } })
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
     expect(listed).not.toContain('fs_read')
     expect(listed).toContain('fs_write')
   })

@@ -62,9 +62,9 @@ describe('a settings change in a process that does not hold the workbenches, whi
   it('applies a deny written meanwhile to the next buckle mcp call', async () => {
     await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_read'] } } }))
 
-    expect(await read(mcp)).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await read(mcp)).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
     expect(mcp.policy.effective().tools?.deny).toContain('fs_read')
-    expect(await read(serve)).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await read(serve)).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
   })
 
   it('takes a pack switched off out of that process\'s tools', async () => {
@@ -79,7 +79,7 @@ describe('a settings change in a process that does not hold the workbenches, whi
   it('lets the owner\'s policy write through over a closed workbench, which serve then takes up', async () => {
     await mcp.policy.apply({ ...emptyWorkspacePolicy(), tools: { deny: ['fs_read'] } })
 
-    expect(await read(serve)).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await read(serve)).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
   })
 
   it('refuses the owner\'s policy write as a conflict while serve holds an open workbench', async () => {

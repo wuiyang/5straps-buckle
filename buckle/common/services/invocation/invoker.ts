@@ -4,7 +4,7 @@ import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { basename, isAbsolute } from 'pathe'
 import { HistoryRecoveryNeededError, type ChangeHistory } from '../history/journal.js'
-import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject } from '@5straps/protocol'
+import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject, WorkspacePolicy } from '@5straps/protocol'
 import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from '../../domain/delete-policy.js'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -23,6 +23,8 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { destructiveWrites } from './destructive-writes.js'
+import { logCallFeedback, safeErrorDetails } from './call-feedback.js'
+import { withOwnerRemediation } from './owner-remediation.js'
 import { resolveEffects, resolveHostRead, resolveHostWrite } from './resolve-effects.js'
 import type { SessionReads } from './session-reads.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
@@ -91,6 +93,8 @@ export interface InvokerOptions {
   defaultTimeoutMs: number
   maxTimeoutMs: number
   toolDenial?(tool: string): string | null
+  unavailableTool?(tool: string): string | null
+  toolPolicy?: Pick<WorkspacePolicy, 'tools'>
   /**
    * The runtime's shutdown (B19): cancels a running tool and refuses calls that arrive later, but is
    * never the caller leaving, so an approval wait it ends leaves the asks pending (review L6 of B18-B19).
@@ -186,6 +190,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
     async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun }) {
       const startedAt = performance.now()
+      let feedback: InvokeResponse | undefined
+      let replayed = false
+      let failureCode: string | undefined
       const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(sessionId, request.context?.stageId) : undefined
       try {
         const auditId = randomUUID()
@@ -202,7 +209,6 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // What the decision AI said of the call's command asks, for its audit entry (D91), and the onces the thorough stage
         // gave on request that this call may spend, with the subjects whose bound code changed since (fix brief 9, B31).
         const judgment: Judgment = { judged: [], codes: [], stale: new Set() }
-        let replayed = false
         let ran = false
         // The caller leaving or the runtime shutting down: either stops a running tool.
         const stop = anySignal(signal, options.shutdown)
@@ -235,6 +241,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
               return response
             }
             options.checkFolder?.()
+            const unavailable = options.unavailableTool?.(request.tool)
+            if (unavailable) throw new ToolExecutionError(unavailable, { code: 'TOOL_NOT_FOUND' })
             const tool = toolFor(options.registry, request.tool, file)
             const prepared = tool.prepare(request.args)
             audited = prepared.audited
@@ -344,7 +352,6 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // failed (the MCP asks brief, item 5). A script's call cut by its script's end keeps that reason.
             if (!ran && !via && signal?.aborted && error === signal.reason && !options.shutdown?.aborted) {
               const cancelled = isCancel?.(signal.reason) === true
-              logger.info(cancelled ? 'A call ended before it ran: its caller cancelled it' : 'A call ended before it ran: its caller left', { tool: request.tool.slice(0, MAX_LOGGED_ID) })
               return failed(request, cancelled ? CALLER_CANCELLED : CALLER_LEFT)
             }
             // A required audit entry that cannot be written stops the call, as the attempt's does. Once its
@@ -357,7 +364,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             }
             // A tool killed by the shutdown answers as the shutdown, not with what its process left (review L8 of B20-B22).
             const cause = options.shutdown?.aborted ? options.shutdown.reason : error
-            const shaped = shapeError(cause, request.tool)
+            const shaped = shapeError(cause)
             // Busy state after the tool ran is not a retry: the call happened (review L4 of B23-B25).
             return { requestId: request.requestId, outcome: 'error', error: ran && shaped.code === 'STATE_BUSY' ? ranUnrecorded('STATE_BUSY') : shaped }
           }
@@ -368,7 +375,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
           // (review L4 of B23-B25; nitro/coordination.md: reconnection must not execute a request twice).
           if (held.claim?.kind === 'owner') held.claim.execution.settle({ response: answered ?? (ran ? failed(request, ranUnrecorded(AUDIT_UNAVAILABLE)) : auditFailed(request)), auditId, callerLeft: signal?.aborted === true, ...(via ? { script: true } : {}) })
         }
-        const response = answered
+        const response = withOwnerRemediation({ response: answered, tool: request.tool, workspaceId: options.workspaceId, ...(gate.denial ? { rule: gate.denial.rule } : {}), ...(options.toolPolicy ? { policy: options.toolPolicy } : {}) })
+        feedback = response
 
         const entry = buildEntry({
           request,
@@ -386,12 +394,19 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // A call that ran answers with what it did even when its result cannot be written: refusing it
         // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
         // attempt is already in the log, and recovery marks it interrupted.
-        if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, tool: entry.tool, outcome: entry.outcome, error }) })
+        if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, outcome: entry.outcome, ...safeErrorDetails(error) }) })
         else await options.actions.record(result)
         if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
         reportEntry({ options, entry: result, denial: gate.denial })
         return response
-      } finally { if (activityTurn) options.history?.finishCall(sessionId, request.context?.stageId, activityTurn) }
+      } catch (error) {
+        feedback = undefined
+        failureCode = error instanceof AuditUnavailableError ? AUDIT_UNAVAILABLE : isStateBusy(error) ? 'STATE_BUSY' : 'TOOL_EXECUTION_FAILED'
+        throw error
+      } finally {
+        logCallFeedback({ tool: request.tool, knownTool: options.registry.has(request.tool), ...(feedback ? { response: feedback } : {}), ...(failureCode ? { code: failureCode } : {}), durationMs: performance.now() - startedAt, nested: via !== undefined, replayed })
+        if (activityTurn) options.history?.finishCall(sessionId, request.context?.stageId, activityTurn)
+      }
     },
   }
   return invoker
@@ -1135,9 +1150,9 @@ function sessionIdTooLong(request: InvokeRequest): InvokeResponse {
   return { requestId: request.requestId, outcome: 'error', error: { code: 'SESSION_ID_TOO_LONG', message: `The session id is longer than ${MAX_SESSION_ID} characters; send a shorter one`, retryable: false } }
 }
 
-function shapeError(error: unknown, tool: string): { code: string; message: string; retryable: boolean } {
+function shapeError(error: unknown): { code: string; message: string; retryable: boolean } {
   // A tool's own wait for the write lock answers as the invoker's wait would: a busy lock as busy state, to retry.
-  if (error instanceof LockWaitError) return shapeError(error.cause, tool)
+  if (error instanceof LockWaitError) return shapeError(error.cause)
   if (error instanceof HistoryRecoveryNeededError) return { code: error.code, message: error.message, retryable: false }
   if (error instanceof InvocationsClosedError) return { code: 'BUCKLE_SHUTTING_DOWN', message: 'Buckle shut down during this call and cancelled it; if it had started, its effects are unknown', retryable: false }
   if (error instanceof ScriptEndedError) return { code: error.code, message: error.message, retryable: false }
@@ -1148,13 +1163,10 @@ function shapeError(error: unknown, tool: string): { code: string; message: stri
   if (error instanceof ApprovalLimitError) return { code: 'APPROVAL_LIMIT', message: error.message, retryable: true }
   if (error instanceof ActionTooLargeError) return { code: error.code, message: error.message, retryable: false }
   if (isStateBusy(error)) {
-    logger.warn('Tool invocation found Buckle state busy', { tool, message: error.message })
+    logger.warn('Tool invocation found Buckle state busy', safeErrorDetails(error))
     return { code: 'STATE_BUSY', message: STATE_BUSY_MESSAGE, retryable: true }
   }
-  logger.error('Tool invocation failed', {
-    tool,
-    message: error instanceof Error ? error.message : 'Unknown error',
-  })
+  logger.error('Tool invocation failed', safeErrorDetails(error))
   return { code: 'TOOL_EXECUTION_FAILED', message: 'Tool invocation failed', retryable: false }
 }
 

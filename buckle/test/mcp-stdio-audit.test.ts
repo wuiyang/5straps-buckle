@@ -8,6 +8,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createStdioWire } from '../mcp/stdio-wire.js'
 import { createAuditedStdioTransport } from '../mcp/audited-stdio-transport.js'
 import { createMcpServer } from '../mcp/server.js'
+import { configureRootLogger, flushLogs } from '../common/runtime/log.js'
 import type { ActionLog, ActionLogEntry } from '../common/types/ports/action-log.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
@@ -57,6 +58,22 @@ describe('stdio audit before MCP SDK validation', () => {
     expect(entries[2]?.auditId).toBe(entries[3]?.auditId)
     expect(entries[0]?.auditId).not.toBe(entries[2]?.auditId)
     for (const secret of ['private-request-id-fixture', 'private-arg-fixture', 'private-unknown-tool-fixture']) expect(JSON.stringify(entries)).not.toContain(secret)
+  })
+
+  it('logs one truthful summary for a valid tool call that fails', async () => {
+    const fixture = await sdkFixture()
+    await flushLogs()
+    configureRootLogger({}, { format: 'json' })
+    let stderr = ''
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { stderr += String(chunk); return true })
+    try {
+      await fixture.call(1, 'tools/call', { name: 'fs_read', arguments: { path: 'private-missing-file.txt' } })
+      await flushLogs()
+      const calls = stderr.split('\n').filter(Boolean).map(line => JSON.parse(line) as { message: string; fields?: Record<string, unknown> }).filter(event => event.message === 'Tool call completed')
+      expect(calls.map(event => [event.fields?.tool, event.fields?.outcome, event.fields?.code])).toEqual([['fs_read', 'error', 'FILE_NOT_FOUND']])
+      expect(stderr).not.toContain('private-missing-file.txt')
+      expect(fixture.invoke).toHaveBeenCalledOnce()
+    } finally { spy.mockRestore(); configureRootLogger({}) }
   })
 
   it('keeps correlated transport and semantic audit records for a valid call without output contents', async () => {

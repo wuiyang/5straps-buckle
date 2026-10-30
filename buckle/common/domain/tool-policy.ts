@@ -13,6 +13,12 @@ const SIBLINGS: Readonly<Record<string, string>> = { fs_receive: 'fs_write', fs_
  * names also a denial of the tool it writes or reads as. An allowlist still has to name each of them to allow it.
  */
 export function isToolAllowed(policy: Pick<WorkspacePolicy, 'tools'>, tool: string): boolean {
-  const sibling = SIBLINGS[tool]
-  return isWorkspaceToolAllowed(policy, tool) && (sibling === undefined || !(policy.tools?.deny.includes(sibling) ?? false))
+  return toolPolicyBlockers(policy, tool).length === 0
+}
+
+export function toolPolicyBlockers(policy: Pick<WorkspacePolicy, 'tools'>, tool: string): string[] {
+  const sibling = Object.hasOwn(SIBLINGS, tool) ? SIBLINGS[tool] : undefined
+  const direct = isWorkspaceToolAllowed(policy, tool) ? [] : [tool]
+  const inherited = sibling !== undefined && policy.tools?.deny.includes(sibling) ? [sibling] : []
+  return [...direct, ...inherited]
 }

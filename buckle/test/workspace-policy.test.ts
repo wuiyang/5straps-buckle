@@ -72,7 +72,7 @@ describe('a registered workspace\'s policy over the node\'s lists', () => {
     const runtime = await workspace(policy({ allow: ['curl *', 'pnpm *'] }), { BUCKLE_COMMAND_DENY: 'curl' })
     const refused = await effect(runtime, command('curl', ['https://example.com']))
     expect(refused.execute).not.toHaveBeenCalled()
-    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Refused by the workspace command policy: curl' } })
+    expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Refused by the workspace command policy: curl') } })
     expect((await effect(runtime, command('pnpm'))).execute).toHaveBeenCalledOnce()
     await runtime.policy.clear()
     await runtime.policy.setDangerouslyAllow(true)

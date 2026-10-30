@@ -101,3 +101,10 @@ that stands up to someone with access to the machine.
 
 With `BUCKLE_REPORT_URL` and `BUCKLE_REPORT_TOKEN` set, Buckle also posts each tool call's
 result entry to that URL in batches, as [Rings](rings.md) describes. The local file is written either way.
+
+## Terminal feedback
+
+Each invocation also logs its tool, action, outcome, duration, and nested or replayed status through
+the shared logger. These summaries omit arguments, paths, content, approval tokens, and raw error
+text. CLI and MCP stdout remain machine output; summaries use stderr, or the service log in
+background mode. Shell exit codes and failed code scripts show failed execution.

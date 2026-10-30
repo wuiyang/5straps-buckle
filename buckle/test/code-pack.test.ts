@@ -287,7 +287,7 @@ describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspac
     const { runtime, child } = await nodeWithChild({ ...emptyWorkspacePolicy(), tools: { deny: ['code_run'] } })
     expect(runtime.manifest().tools.some(tool => tool.name === 'code_run')).toBe(true)
     expect(child.manifest().tools.some(tool => tool.name === 'code_run')).toBe(false)
-    expect(await run(child, 'return 1')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'Disabled by workspace tool policy' } })
+    expect(await run(child, 'return 1')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
     await runtime.history.close()
   }, 30_000)
 })

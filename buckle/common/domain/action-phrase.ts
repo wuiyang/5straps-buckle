@@ -5,46 +5,46 @@ import { printable } from './approval-instruction.js'
  * display slice, C4): `action pending approval: run command`. Never the agent's text (owner decision D9), and never in
  * the call's description, which sits inside the signed challenge; the whole action follows below it (D17).
  */
-const PHRASES: Readonly<Record<string, string>> = {
-  shell_exec: 'run command',
-  script_run: 'run a script',
-  code_run: 'run code',
-  code_api: 'read the code API',
-  browser_command: 'use the agent browser',
-  web_fetch: 'fetch a URL',
-  web_search: 'search the web',
-  fs_read: 'read a file',
-  fs_read_batch: 'read files',
-  fs_write: 'write a file',
-  fs_write_batch: 'write files',
-  fs_patch: 'patch a file',
-  fs_delete: 'delete files',
-  fs_move: 'move a file',
-  fs_apply_patch: 'apply a patch',
-  fs_list: 'list a folder',
-  fs_find_names: 'find files by name',
-  fs_search_content: 'search file contents',
-  fs_receive: 'receive a copied file',
-  fs_send: 'send a copied file',
-  history_list: 'read the change history',
-  history_restore: 'restore files from the change history',
-  git_status: 'read the git status',
-  git_diff: 'read a git diff',
-  git_log: 'read the git log',
-  git_branch: 'read the git branches',
-  git_blame: 'read a git blame',
-  git_commit: 'make a git commit',
-  git_revert: 'revert a git commit',
-  git_push: 'push to a git remote',
-  pr_open: 'open a pull request',
-  pr_read: 'read a pull request',
-  lsp_discover: 'find language servers',
-  lsp_definition: 'find a definition',
-  lsp_references: 'find references',
-  lsp_hover: 'read a symbol\'s details',
-  lsp_diagnostics: 'read diagnostics',
-  lsp_rename: 'rename a symbol',
-  env_validate: 'check the environment',
+const ACTIONS: Readonly<Record<string, { pack: string; phrase: string }>> = {
+  shell_exec: { pack: 'shell', phrase: 'run command' },
+  script_run: { pack: 'shell', phrase: 'run a script' },
+  code_run: { pack: 'code', phrase: 'run code' },
+  code_api: { pack: 'code', phrase: 'read the code API' },
+  browser_command: { pack: 'browser', phrase: 'use the agent browser' },
+  web_fetch: { pack: 'web', phrase: 'fetch a URL' },
+  web_search: { pack: 'web', phrase: 'search the web' },
+  fs_read: { pack: 'fs', phrase: 'read a file' },
+  fs_read_batch: { pack: 'fs', phrase: 'read files' },
+  fs_write: { pack: 'fs', phrase: 'write a file' },
+  fs_write_batch: { pack: 'fs', phrase: 'write files' },
+  fs_patch: { pack: 'fs', phrase: 'patch a file' },
+  fs_delete: { pack: 'fs', phrase: 'delete files' },
+  fs_move: { pack: 'fs', phrase: 'move a file' },
+  fs_apply_patch: { pack: 'fs', phrase: 'apply a patch' },
+  fs_list: { pack: 'fs', phrase: 'list a folder' },
+  fs_find_names: { pack: 'fs', phrase: 'find files by name' },
+  fs_search_content: { pack: 'fs', phrase: 'search file contents' },
+  fs_receive: { pack: 'fs', phrase: 'receive a copied file' },
+  fs_send: { pack: 'fs', phrase: 'send a copied file' },
+  history_list: { pack: 'history', phrase: 'read the change history' },
+  history_restore: { pack: 'history', phrase: 'restore files from the change history' },
+  git_status: { pack: 'git', phrase: 'read the git status' },
+  git_diff: { pack: 'git', phrase: 'read a git diff' },
+  git_log: { pack: 'git', phrase: 'read the git log' },
+  git_branch: { pack: 'git', phrase: 'read the git branches' },
+  git_blame: { pack: 'git', phrase: 'read a git blame' },
+  git_commit: { pack: 'forge', phrase: 'make a git commit' },
+  git_revert: { pack: 'forge', phrase: 'revert a git commit' },
+  git_push: { pack: 'forge', phrase: 'push to a git remote' },
+  pr_open: { pack: 'forge', phrase: 'open a pull request' },
+  pr_read: { pack: 'forge', phrase: 'read a pull request' },
+  lsp_discover: { pack: 'dev', phrase: 'find language servers' },
+  lsp_definition: { pack: 'dev', phrase: 'find a definition' },
+  lsp_references: { pack: 'dev', phrase: 'find references' },
+  lsp_hover: { pack: 'dev', phrase: 'read a symbol\'s details' },
+  lsp_diagnostics: { pack: 'dev', phrase: 'read diagnostics' },
+  lsp_rename: { pack: 'dev', phrase: 'rename a symbol' },
+  env_validate: { pack: 'environment', phrase: 'check the environment' },
 }
 
 /**
@@ -52,8 +52,13 @@ const PHRASES: Readonly<Record<string, string>> = {
  * `[approval]` and words with the phrase above.
  */
 export const APPROVAL_PENDING = 'Approval pending'
+export const TOOL_CALL_COMPLETED = 'Tool call completed'
 
 /** The words for a tool, or its own name, escaped, for a tool the list does not know. */
 export function actionPhrase(tool: string): string {
-  return Object.hasOwn(PHRASES, tool) ? PHRASES[tool]! : printable(tool)
+  return Object.hasOwn(ACTIONS, tool) ? ACTIONS[tool]!.phrase : printable(tool)
+}
+
+export function builtinToolPack(tool: string): string | null {
+  return Object.hasOwn(ACTIONS, tool) ? ACTIONS[tool]!.pack : null
 }

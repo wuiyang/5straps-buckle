@@ -62,7 +62,7 @@ describe('a write to workspace.json from another process', () => {
     expect(await read()).toMatchObject({ outcome: 'ok' })
     await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_read'] } } }))
 
-    expect(await read()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await read()).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
   })
 
   // Phase 2 item 6: the browser pack reads the workspace's browser settings, which swap in at the next call as a policy
@@ -144,7 +144,7 @@ describe('a write to workspace.json from another process', () => {
 
     rmSync(settingsPath(join(base, 'state'), site))
     await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_read'] } } }))
-    expect(await read()).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await read()).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
   })
 
   it('refuses every call once the workspace is switched offline, as a stdio server holding it learns', async () => {
@@ -320,7 +320,7 @@ describe('a policy list or a variable changed while work is active', () => {
     const { held, call } = await holdingWrite()
     await owner.updateSettings(site, settings => ({ ...settings, policy: { ...settings.policy, tools: { deny: ['fs_list'] } } }))
 
-    expect(await call('fs_list', { path: '.' })).toMatchObject({ outcome: 'error', error: { message: 'Disabled by workspace tool policy' } })
+    expect(await call('fs_list', { path: '.' })).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Disabled by workspace tool policy. Ask the owner to review buckle policy show ') } })
     expect(await call('fs_read', { path: 'note.md' })).toMatchObject({ outcome: 'ok' })
     expect(await held).toMatchObject({ outcome: 'approval_required' })
   })

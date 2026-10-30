@@ -104,3 +104,13 @@ restore entries identify the checkpoint the workspace returned to and the checkp
 and `BUCKLE_FORGE_GITHUB_TOKEN`, asks as `git_commit` does, and judges each changed file as a
 write. It is separate from restoring workspace file changes. See [host Git and
 forge](sandbox-and-tools-02.md#host-git-forge-and-language-servers).
+
+## When history records hashes only
+
+`history.engine: hashes` and `restorable: false` mean content capture lacks permitted, trusted host
+Git. The owner enables `packs.hostGit` with `buckle workspace set packs.hostGit on --workspace
+<workspace>` and ensures Git is installed on the node PATH outside folders writable by agents.
+Permission does not install Git. Check `buckle manifest --workspace <workspace>` after the change.
+Existing checkpoints containing only hashes cannot gain restorable content. New Git checkpoints
+can be restored. If history tools are absent, add `history` to `packs.enabled` while retaining
+the existing pack list, and enable `packs.history`.

@@ -1,5 +1,5 @@
 import { LOG_LEVELS, type LogEvent, type LogLevel, type NormalizedError } from '@5straps/runtime'
-import { actionPhrase, APPROVAL_PENDING } from '../domain/action-phrase.js'
+import { actionPhrase, APPROVAL_PENDING, TOOL_CALL_COMPLETED } from '../domain/action-phrase.js'
 import { printable } from '../domain/approval-instruction.js'
 import { localDate, localTime } from '../domain/local-time.js'
 
@@ -144,6 +144,7 @@ function shownEvent(event: LogEvent, options: RenderOptions): Shown | null {
   if (event.message === 'request completed') return requestCompleted(event, fields, options)
   if (event.message === 'request finished') return requestFinished(event, fields, options)
   if (event.message === APPROVAL_PENDING) return approvalPending(event, fields, options)
+  if (event.message === TOOL_CALL_COMPLETED) return toolCallCompleted(event, fields)
   return { tag: event.level, text: printable(event.message), fields }
 }
 
@@ -179,6 +180,15 @@ function approvalPending(event: LogEvent, fields: Record<string, unknown>, optio
   const mark = typeof workspace === 'string' ? `[${printable(workspace)}] ` : ''
   const offered = Array.isArray(scopes) ? scopes.map(String).join(', ') : ''
   return { tag: 'approval', text: `${mark}action pending approval: ${actionPhrase(tool)} (${printable(rule)}: ${printable(offered)}); see it with ${printable(review)}`, fields: options.verbose ? rest : {} }
+}
+
+function toolCallCompleted(event: LogEvent, fields: Record<string, unknown>): Shown {
+  const { tool, outcome, durationMs, code, nested, replayed, executionStatus, exitCode } = fields
+  if (typeof tool !== 'string' || typeof outcome !== 'string' || typeof durationMs !== 'number') return { tag: event.level, text: printable(event.message), fields }
+  const detail = typeof code === 'string' ? `, ${printable(code)}` : ''
+  const ended = executionStatus === 'failed' ? 'failed' : printable(outcome)
+  const exit = typeof exitCode === 'number' && Number.isSafeInteger(exitCode) ? `, exit ${exitCode}` : ''
+  return { tag: 'tool', text: `${printable(tool)}: ${actionPhrase(tool)}, ${ended} (${durationMs}ms)${detail}${exit}${nested === true ? ', nested' : ''}${replayed === true ? ', replayed' : ''}`, fields: {} }
 }
 
 function onRows(key: string, value: unknown): boolean {

@@ -130,7 +130,7 @@ describe('a workspace\'s tools over its mounts', () => {
 
   it('refuse a write into the read-only mount, and checkpoint a write into the writable one', async () => {
     const { root, manager, runtime, call } = await mountedWorkspace()
-    expect(await call('fs_write', { path: '/docs/guide.md', content: 'changed' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: '/docs/guide.md is in a mount the owner shares read-only, which is a boundary rather than a question: it is refused, not asked' } })
+    expect(await call('fs_write', { path: '/docs/guide.md', content: 'changed' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('/docs/guide.md is in a mount the owner shares read-only, which is a boundary rather than a question: it is refused, not asked') } })
     expect(readFileSync(join(root, 'docs', 'guide.md'), 'utf8')).toBe('read only')
     expect(await call('fs_write', { path: '/data/b.txt', content: 'written' })).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', reason: 'Writing to /data is not yet approved' }] })
     // The owner approves writes in the mount for good, as an approval of the ask records it.

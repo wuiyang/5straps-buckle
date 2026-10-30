@@ -89,6 +89,8 @@ import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
 import { activeWorkDirectory, createActiveWorkMark } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
+import { logCallFeedback } from '../invocation/call-feedback.js'
+import { unavailableToolReason } from '../invocation/owner-remediation.js'
 import { listedSecretFile } from '../secrets/secret-file.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
@@ -101,6 +103,8 @@ interface InForce {
   deletes: DeletePolicy
   paths: PathView
   toolDenial(tool: string): string | null
+  unavailableTool(tool: string): string | null
+  toolPolicy: Pick<WorkspacePolicy, 'tools'>
   /** The decision AI as the call found the settings (D91). */
   judge: JudgeGate
   /** The secret reference settings as the call found them (docs/secrets.md). */
@@ -556,12 +560,17 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     async invoke(call) {
+      const started = performance.now()
       try {
         if (input.serving && !input.serving()) throw new WorkspaceError('Workspace is offline', 409)
         await pickUp()
       } catch (error) {
         // Refused before the invoker, so it records nothing: the refusal is audited here, as a call refused inside it is.
-        if (error instanceof WorkspaceError) await recordRefusedCall({ actions, workspaceId, call, code: error.code })
+        try {
+          if (error instanceof WorkspaceError) await recordRefusedCall({ actions, workspaceId, call, code: error.code })
+        } finally {
+          logCallFeedback({ tool: call.request.tool, knownTool: registry.has(call.request.tool), code: error instanceof WorkspaceError ? error.code : 'TOOL_EXECUTION_FAILED', durationMs: performance.now() - started })
+        }
         throw error
       }
       return invokeNow(call, inForce())
@@ -691,7 +700,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */
   function inForce(): InForce {
     const policy = compiled.policy
-    return { registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
+    const packView = packs.map(packDescriptor)
+    const features = { enabledPacks: config.enabledPacks, enableShell: config.enableShell, allowCode: config.allowCode, allowHistory: config.allowHistory, allowHostGit: config.allowHostGit, allowHostLsp: config.allowHostLsp }
+    return { toolPolicy: policy, unavailableTool: tool => unavailableToolReason({ tool, workspaceId, packs: packView, config: features }), registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
   }
 
   /**
@@ -743,6 +754,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         defaultTimeoutMs: config.defaultTimeoutMs,
         maxTimeoutMs: config.maxTimeoutMs,
         toolDenial: settled.toolDenial,
+        unavailableTool: settled.unavailableTool,
+        toolPolicy: settled.toolPolicy,
         judge: settled.judge,
         secrets: settled.secrets,
         filledSecrets,
