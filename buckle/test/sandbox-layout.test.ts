@@ -222,7 +222,7 @@ describe.runIf(runsNativeTerminal)('a workbench terminal\'s layout', () => {
     for (const path of [folder, data, bin]) mkdirSync(path)
     const scratchRoot = input.scratchRoot?.(root)
     const seen = join(root, 'seen.args')
-    writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nprintf '%s\\n' "$@" > '${seen}'\n`)
+    writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nset -e\nprintf '%s\\n' "$@" > '${seen}.tmp'\nmv '${seen}.tmp' '${seen}'\n`)
     chmodSync(join(bin, 'bwrap'), 0o755)
     vi.stubEnv('PATH', `${bin}:/usr/bin:/bin`)
     const manager = await workspacesOf(loadConfig({ BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...(scratchRoot ? { BUCKLE_SCRATCH_ROOTS: scratchRoot } : {}), ...input.environment }))
