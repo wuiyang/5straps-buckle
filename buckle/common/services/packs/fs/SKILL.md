@@ -58,7 +58,8 @@ path is reported, not an error. Never empty a file with `fs_write` to get rid of
 it, anything standing there is refused (`TARGET_EXISTS`); with it, nothing standing there is
 refused (`NOTHING_TO_REPLACE`). A folder there is replaced whole, which asks a person and names
 how many entries it holds. `fs_move` makes no folder. Moving a whole folder always asks with
-`warn` severity, even where writes are granted; approve it before retrying. What it replaces is
+`warn` severity under `move-tree:<path>`, even where writes are granted; approve it before retrying.
+That exact grant covers moves alone and offers no wider deletion grant. What it replaces is
 judged as a delete. Recursive and bulk destructive asks carry `danger` severity. Relay both labels
 and the whole approval request to the user.
 

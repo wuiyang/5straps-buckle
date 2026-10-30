@@ -120,10 +120,52 @@ describe('fs_move is safe by default', () => {
     writeFileSync(join(workspace, 'src/lib/a.ts'), 'a')
     expect(errorOf(await call(runtime, { from: 'src', to: 'src/lib' }))?.message).toContain('a folder is not moved into itself')
     const asked = await call(runtime, { from: 'src', to: 'app' })
-    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, 'src')}` }] })
+    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `move-tree:${join(runtime.paths().root, 'src')}` }] })
     if (asked.outcome === 'approval_required') expect(asked.approvals[0]!.reason).toContain('(1 file and 1 folder)')
     expect(await approved(runtime, { from: 'src', to: 'app' })).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'app/lib/a.ts'), 'utf8')).toBe('a')
+  })
+
+  it.each(['session', 'always'] as const)('a %s approval for moving a folder cannot approve deleting that folder later', async (scope) => {
+    const { runtime, workspace } = await node()
+    mkdirSync(join(workspace, 'src'))
+    writeFileSync(join(workspace, 'src/kept.ts'), 'kept')
+    const args = { from: 'src', to: 'moved' }
+    const asked = await call(runtime, args)
+    expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `move-tree:${join(runtime.paths().root, 'src')}`, severity: 'warn' }] })
+    if (asked.outcome !== 'approval_required') throw new Error('Expected the folder move to ask')
+    const tokens = asked.approvals.map(approval => approval.token)
+    for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await call(runtime, args, { tokens })).toMatchObject({ outcome: 'ok' })
+    mkdirSync(join(workspace, 'src'))
+    writeFileSync(join(workspace, 'src/recreated.ts'), 'kept')
+    const deleted = await runtime.invoke({ sessionId: 'agent', approvalWait: { mode: 'none' }, request: { requestId: `delete-after-move-${scope}`, tool: 'fs_delete', args: { paths: ['src'], recursive: true }, approvalTokens: [] } })
+    expect(deleted).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, 'src')}`, severity: 'danger' }] })
+    expect(readFileSync(join(workspace, 'src/recreated.ts'), 'utf8')).toBe('kept')
+  })
+
+  it('an outside folder move offers no wider deletion grant and refuses a decision naming one', async () => {
+    const { runtime, workspace, root } = await node()
+    const outside = join(root, 'outside')
+    mkdirSync(join(outside, 'src'), { recursive: true })
+    writeFileSync(join(outside, 'src/kept.ts'), 'kept')
+    await runtime.grants.grant({ sessionId: 'agent', rule: 'read_scope', subject: outside, scope: 'session' })
+    const args = { from: '../outside/src', to: 'received' }
+    const asked = await call(runtime, args)
+    const approval = asked.outcome === 'approval_required' ? asked.approvals.find(item => item.subject === `move-tree:${join(outside, 'src')}`) : undefined
+    expect(approval).toMatchObject({ severity: 'warn' })
+    expect(approval).not.toHaveProperty('widerSubject')
+    if (!approval) throw new Error('Expected an exact approval for the outside move')
+    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session', subject: `delete-below:${outside}` }, authority: 'admin' })).toMatchObject({ ok: false })
+    expect(runtime.grants.list().some(grant => grant.subject === `delete-below:${outside}`)).toBe(false)
+    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await call(runtime, args, { tokens: [approval.token] })).toMatchObject({ outcome: 'ok' })
+    expect(readFileSync(join(workspace, 'received/kept.ts'), 'utf8')).toBe('kept')
+    mkdirSync(join(outside, 'src'))
+    writeFileSync(join(outside, 'src/recreated.ts'), 'kept')
+    const deleted = await runtime.invoke({ sessionId: 'agent', approvalWait: { mode: 'none' }, request: { requestId: 'delete-after-outside-move', tool: 'fs_delete', args: { paths: ['../outside/src'], recursive: true }, approvalTokens: [] } })
+    expect(deleted).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(outside, 'src')}`, severity: 'danger' }] })
+    expect(readFileSync(join(outside, 'src/recreated.ts'), 'utf8')).toBe('kept')
   })
 
   it('moves a link as itself, its target untouched', async () => {
@@ -262,7 +304,7 @@ describe('fs_move replaces a folder when replace is true and a folder stands at 
     const args = { from: 'src', to: 'app', replace: true }
     const root = runtime.paths().root
     const subjects = asks(await call(runtime, args)).map(ask => ask.subject)
-    expect(subjects).toEqual(expect.arrayContaining([`delete-tree:${join(root, 'src')}`, `delete-tree:${join(root, 'app/src')}`]))
+    expect(subjects).toEqual(expect.arrayContaining([`move-tree:${join(root, 'src')}`, `delete-tree:${join(root, 'app/src')}`]))
     expect(await approved(runtime, args)).toMatchObject({ outcome: 'ok', output: { replaced: true } })
     expect(readFileSync(join(workspace, 'app/src/lib/new.ts'), 'utf8')).toBe('new')
     expect(existsSync(join(workspace, 'app/src/old.ts'))).toBe(false)

@@ -37,7 +37,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 describe('file side effect severity', () => {
   it.each([100, 0])('warns and asks before a whole-folder move with a mass-delete limit of %s', (limit) => {
     expect(engine(limit).evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({
-      kind: 'ask', asks: [{ rule: 'write_scope', subject: `delete-tree:${ROOT}/src/lib`, severity: 'warn', offeredScopes: ['once', 'session', 'always'], reason: expect.stringContaining('Moving the folder') }],
+      kind: 'ask', asks: [{ rule: 'write_scope', subject: `move-tree:${ROOT}/src/lib`, severity: 'warn', offeredScopes: ['once', 'session', 'always'], reason: expect.stringContaining('Moving the folder') }],
     })
   })
 
@@ -58,11 +58,29 @@ describe('file side effect severity', () => {
   })
 
   it('keeps explicit floor grants and the dangerously-allow switch effective for moves', () => {
-    const held = { subjectsFor: () => [ROOT, `delete-tree:${ROOT}/src/lib`] }
+    const held = { subjectsFor: () => [ROOT, `move-tree:${ROOT}/src/lib`] }
     expect(engine().evaluate({ tool: 'fs_move', effects: [moved], grants: held }).kind).toBe('allow')
     for (const level of ['command', 'all'] as const) {
       const allowed = withDangerouslyAllow(engine(), { level: () => level, root: () => ROOT })
-      expect(allowed.evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:${level}:write_scope:delete-tree:${ROOT}/src/lib`] })
+      expect(allowed.evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:${level}:write_scope:move-tree:${ROOT}/src/lib`] })
+    }
+  })
+
+  it('keeps warned move grants and dangerous recursive-delete grants separate in both directions', () => {
+    const moveGrant = { subjectsFor: () => [ROOT, `move-tree:${ROOT}/src/lib`] }
+    expect(engine().evaluate({ tool: 'fs_delete', effects: [removed(`${ROOT}/src/lib`, 101)], grants: moveGrant })).toMatchObject({ kind: 'ask', asks: [{ subject: `delete-tree:${ROOT}/src/lib`, severity: 'danger' }] })
+    const deleteGrant = { subjectsFor: () => [ROOT, `delete-tree:${ROOT}/src/lib`] }
+    expect(engine().evaluate({ tool: 'fs_move', effects: [moved], grants: deleteGrant })).toMatchObject({ kind: 'ask', asks: [{ subject: `move-tree:${ROOT}/src/lib`, severity: 'warn' }] })
+  })
+
+  it('offers only the exact move subject outside the workspace and ignores broad delete grants', () => {
+    const outside: ResolvedEffect = { ...moved, path: '/srv/data/lib', directory: '/srv/data' }
+    const broadDeletes = { subjectsFor: () => ['delete-below:/srv/data'] }
+    for (const held of [grants, broadDeletes]) {
+      const outcome = engine().evaluate({ tool: 'fs_move', effects: [outside], grants: held })
+      expect(outcome).toMatchObject({ kind: 'ask', asks: [{ subject: 'move-tree:/srv/data/lib', severity: 'warn', offeredScopes: ['once', 'session', 'always'] }] })
+      if (outcome.kind !== 'ask') throw new Error('Expected an exact approval for the outside folder move')
+      expect(outcome.asks[0]).not.toHaveProperty('widerSubject')
     }
   })
 
@@ -82,7 +100,7 @@ describe('approval severity delivery', () => {
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
     try {
       const call = { arguments: { from: 'src/lib', to: 'src/old-lib' }, cwd: '/workspace', description: 'Move a folder', effects: ['read /workspace/src/lib', 'write /workspace/src/old-lib'], complete: true as const }
-      const issued = await registry.ask({ tool: 'fs_move', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: `delete-tree:${ROOT}/src/lib`, reason: 'Moving the folder needs approval', offeredScopes: ['once', 'session', 'always'], severity }], call })
+      const issued = await registry.ask({ tool: 'fs_move', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: `move-tree:${ROOT}/src/lib`, reason: 'Moving the folder needs approval', offeredScopes: ['once', 'session', 'always'], severity }], call })
       const request = issued.requests[0]!
       expect(request).toMatchObject({ severity, reason: `[${severity}] Moving the folder needs approval` })
       const reopened = createApprovalRegistry(grantStore, filePath, root)
@@ -114,7 +132,7 @@ describe('approval risk changes while a request waits', () => {
     roots.push(root)
     const grantStore = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
     const registry = createApprovalRegistry(grantStore, join(root, 'approvals.json'), root)
-    const item = { kind: 'ask' as const, rule: 'write_scope' as const, subject: `delete-tree:${ROOT}/src/lib`, reason: 'A folder changes', offeredScopes: ['once' as const] }
+    const item = { kind: 'ask' as const, rule: 'write_scope' as const, subject: `move-tree:${ROOT}/src/lib`, reason: 'A folder changes', offeredScopes: ['once' as const] }
     const call = { arguments: { from: 'src/lib', to: 'src/old-lib' }, cwd: '/workspace', description: 'Move a folder', effects: ['write /workspace/src/old-lib'], complete: true as const }
     const base = { tool: 'fs_move', sessionId: 's', requestId: 'same-action', call }
     const asks = [{ ...item, ...(before === undefined ? {} : { severity: before }) }]

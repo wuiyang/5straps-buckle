@@ -158,7 +158,7 @@ describe('the mass-delete guard', () => {
   })
 
   it('asks about a folder moved whole without counting it as a mass deletion', () => {
-    expect(evaluate([removed(`${WORKSPACE}/src`, { tree: counted(500, 20), moved: true })], granted)).toMatchObject({ kind: 'ask', asks: [{ subject: `delete-tree:${WORKSPACE}/src`, severity: 'warn' }] })
+    expect(evaluate([removed(`${WORKSPACE}/src`, { tree: counted(500, 20), moved: true })], granted)).toMatchObject({ kind: 'ask', asks: [{ subject: `move-tree:${WORKSPACE}/src`, severity: 'warn' }] })
   })
 
   it('is off at a limit of 0', () => {
@@ -321,7 +321,7 @@ describe('the fs tools under the default delete policy', () => {
     for (const [from, to] of [['src/lib', 'src/old-lib'], ['pkg', 'package']] as const) {
       const args = { from, to }
       const asked = await call(runtime, 'fs_move', args)
-      expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete-tree:${join(runtime.paths().root, from)}`, severity: 'warn', reason: expect.stringContaining('[warn] Moving the folder') }] })
+      expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `move-tree:${join(runtime.paths().root, from)}`, severity: 'warn', reason: expect.stringContaining('[warn] Moving the folder') }] })
       expect(existsSync(join(workspace, from))).toBe(true)
       expect(existsSync(join(workspace, to))).toBe(false)
       if (asked.outcome !== 'approval_required') throw new Error('Expected the folder move to ask before changing anything')

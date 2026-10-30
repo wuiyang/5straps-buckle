@@ -15,6 +15,8 @@ import { allowedVia, ask } from '../decision.js'
  */
 export const DELETE_PREFIX = 'delete:'
 export const DELETE_TREE_PREFIX = 'delete-tree:'
+/** A folder moved whole; this exact grant never permits deletion. */
+export const MOVE_TREE_PREFIX = 'move-tree:'
 /**
  * `delete-below:<folder>`: every delete outside the workspace's own folder in that folder and its subfolders, matched as a
  * write grant matches (isInside), which a person may grant for the session or always in place of the subject a delete
@@ -38,7 +40,7 @@ export const RESTORE_PREFIX = 'restore:'
 export function restoreSubject(effect: { checkpoint: string; head: string }): string {
   return `${RESTORE_PREFIX}${effect.checkpoint}${effect.head === effect.checkpoint ? '' : `..${effect.head}`}`
 }
-const PATH_PREFIXES = [DELETE_PREFIX, DELETE_TREE_PREFIX, DELETE_BELOW_PREFIX, DELETE_BATCH_PREFIX, OVERWRITE_PREFIX, REWRITE_BATCH_PREFIX] as const
+const PATH_PREFIXES = [DELETE_PREFIX, DELETE_TREE_PREFIX, MOVE_TREE_PREFIX, DELETE_BELOW_PREFIX, DELETE_BATCH_PREFIX, OVERWRITE_PREFIX, REWRITE_BATCH_PREFIX] as const
 
 /** Whether a `write_scope` subject is one of the floor's own, which names no folder a write grant covers. */
 export function isFloorSubject(subject: string): boolean {
@@ -107,9 +109,9 @@ function floorAsk(effect: ResolvedEffect, effects: readonly ResolvedEffect[], ru
   if (effect.kind === 'unread_shrink') return { subject: `${OVERWRITE_PREFIX}${effect.path}`, reason: `Writing ${paths.toVirtual(effect.path)} ${effect.empties ? 'empties a file this session never read' : 'shrinks a file this session never read to under half its size'}, so a person decides, whatever the folder's write grant says`, severity: 'danger' }
   if (effect.kind === 'many_rewrites') return { subject: `${REWRITE_BATCH_PREFIX}${paths.root}`, reason: `This call rewrites ${effect.files} existing files at once, so a person decides, whatever the folder's write grant says`, severity: 'danger' }
   if (effect.kind !== 'delete_path' || !effect.floor) return null
-  const outside = inWorkspaceFolder(effect.path, paths) ? {} : { outside: { path: effect.path, directory: effect.directory } }
-  if (effect.moved) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Moving the folder ${paths.toVirtual(effect.path)}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''} changes every path beneath it, so a person decides, whatever the folder's write grant says`, severity: 'warn', ...outside }
+  if (effect.moved) return { subject: `${MOVE_TREE_PREFIX}${effect.path}`, reason: `Moving the folder ${paths.toVirtual(effect.path)}${effect.tree ? ` and everything in it (${treeWords(effect.tree)})` : ''} changes every path beneath it, so a person decides, whatever the folder's write grant says`, severity: 'warn' }
   if (relievedDelete(effect, paths, input.deletes)) return massDeleteAsk(effect, effects, run, input)
+  const outside = inWorkspaceFolder(effect.path, paths) ? {} : { outside: { path: effect.path, directory: effect.directory } }
   if (effect.tree) return { subject: `${DELETE_TREE_PREFIX}${effect.path}`, reason: `Deleting the folder ${paths.toVirtual(effect.path)} and everything in it (${treeWords(effect.tree)}) asks a person, whatever the folder's write grant says`, severity: 'danger', ...outside }
   return { subject: `${DELETE_PREFIX}${effect.directory}`, reason: `Deleting ${paths.toVirtual(effect.path)} asks a person, whatever the folder's write grant says`, severity: 'warn', ...outside }
 }

@@ -140,9 +140,9 @@ describe('a folder moved whole meets the workspace rules beneath it', () => {
   })
 
   it('denies a source that holds a file the rules deny reading, and asks where one asks', () => {
-    expect(evaluate([movedFolder(`${WORKSPACE}/config`)], { write_scope: [`delete-tree:${WORKSPACE}/config`] }, { rules })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy', subject: `read:${WORKSPACE}/config` } })
+    expect(evaluate([movedFolder(`${WORKSPACE}/config`)], { write_scope: [`move-tree:${WORKSPACE}/config`] }, { rules })).toMatchObject({ kind: 'deny', denial: { rule: 'filesystem_policy', subject: `read:${WORKSPACE}/config` } })
     const asked = evaluate([movedFolder(`${WORKSPACE}/notes`)], {}, { rules })
-    expect(asked.kind === 'ask' ? asked.asks.map(item => `${item.rule}:${item.subject}`).sort() : []).toEqual([`filesystem_policy:read:${WORKSPACE}/notes`, `write_scope:delete-tree:${WORKSPACE}/notes`])
+    expect(asked.kind === 'ask' ? asked.asks.map(item => `${item.rule}:${item.subject}`).sort() : []).toEqual([`filesystem_policy:read:${WORKSPACE}/notes`, `write_scope:move-tree:${WORKSPACE}/notes`])
   })
 
   it('leaves a folder removed, not moved, to the write rules alone: deleting a file reads nothing', () => {

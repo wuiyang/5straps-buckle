@@ -17,7 +17,8 @@ its subfolders. [The file floor](policy-04.md) covers the rest of what the file 
 - `ask`: every delete asks at the file floor, as before this policy.
 
 Moving a whole folder always asks at the file floor with `warn` severity. An ordinary write
-grant and a mass-delete limit of `0` do not answer that ask. The move stays supported.
+grant and a mass-delete limit of `0` do not answer that ask. Its exact `move-tree:<path>` grant
+never authorizes deletion and offers no wider `delete-below:` choice, including outside the workspace.
 
 ```bash
 buckle workspace set files.deleteInWorkspace ask

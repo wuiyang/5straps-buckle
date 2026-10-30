@@ -58,7 +58,8 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
   offers `once` alone. The command floor offers `once` and `session` only.
 - A grant on `delete:<folder>` covers the entries directly in that folder, matched exactly. It
   never covers a folder beneath it.
-- A folder removed whole asks under `delete-tree:<path>`, and its grant covers that one removal.
+- A folder removed whole asks under `delete-tree:<path>`. A whole-folder move uses `move-tree:<path>`.
+  These grants match exactly and never cover the other action. Moves offer no wider deletion grant.
 - A delete outside the workspace's folder also offers `delete-below:<folder>`, every delete in
   that folder and its subfolders, and the guard asks under `delete-batch:<folder>`
   ([deletes](policy-05.md)).

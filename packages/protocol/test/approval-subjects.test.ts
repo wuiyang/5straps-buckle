@@ -22,7 +22,7 @@ const ask = (subject: string, extra: Record<string, unknown> = {}) => ({
   token: 't1', rule: 'write_scope', subject, reason: 'Deleting /srv/data/build/a.txt asks a person, whatever the folder\'s write grant says',
   tool: 'fs_delete', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-10-28T12:00:00.000Z', ...extra,
 })
-const SUBJECTS = [`delete:${FOLDER}`, `delete-tree:${FOLDER}`, `delete-below:${FOLDER}`, `delete-batch:${FOLDER}`, `overwrite:${FOLDER}/a.txt`, `rewrite-batch:${FOLDER}`]
+const SUBJECTS = [`delete:${FOLDER}`, `delete-tree:${FOLDER}`, `move-tree:${FOLDER}`, `delete-below:${FOLDER}`, `delete-batch:${FOLDER}`, `overwrite:${FOLDER}/a.txt`, `rewrite-batch:${FOLDER}`]
 
 describe('an ask under write_scope with a prefixed subject', () => {
   it.each(SUBJECTS)('parses as %s for a 0.1.7 reader and for this one, its subject unchanged', (subject) => {
