@@ -13,7 +13,7 @@ import type { UntrustedRoots } from '../../domain/executable.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
-import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, type CapturedState, type TreeCapture } from './git-store.js'
+import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError, type CapturedState, type TreeCapture } from './git-store.js'
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
 import { captureHashes, HistoryCaptureSafetyError } from './capture-hashes.js'
@@ -121,7 +121,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     let captured: CapturedState
     let baselineAvailable = true
     try { captured = await store.capture({ roots: details.roots, excluded: details.excluded, id, phase: 'before', parents: latestTrees() }) }
-    catch (error) { if (error instanceof HistoryCaptureSafetyError) throw error; baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: 'History could not capture the before state; this write continues without restorable content or a complete changed-path list' }; logger.warn(`Checkpoint ${id}: ${captured.reason}`) }
+    catch (error) { if (error instanceof HistoryCaptureSafetyError) throw error; baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: 'History could not capture the before state; this write continues without restorable content or a complete changed-path list' }; logger.warn(`Checkpoint ${id}: ${captured.reason}`, { phase: 'before', ...(error instanceof HistoryGitError ? error.details : {}) }) }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable, before: captured.snapshot, beforeTrees: captured.trees, restorable: captured.restorable, ...(captured.reason ? { reason: captured.reason } : {}), ...restore }
     await saveRecord(record)
     return record
@@ -138,12 +138,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       compact(record)
       await saveRecord(record)
       await pruneRetained(record)
-    } catch {
+    } catch (error) {
       record.status = 'interrupted'; record.restorable = false
       record.reason = 'History capture did not finish; this checkpoint is not restorable. Later writes can continue'
       compact(record)
       await saveRecord(record)
-      logger.warn(`Checkpoint ${record.id}: ${record.reason}`)
+      logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', ...(error instanceof HistoryGitError ? error.details : {}) })
     }
   }
   async function pruneRetained(current?: Checkpoint): Promise<void> {
