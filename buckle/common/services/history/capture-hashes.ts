@@ -26,10 +26,31 @@ async function scanWorkspace(input: HashCaptureInput): Promise<Snapshot> {
   let count = 0
   let limitation: Error | undefined
   const inside = (root: string, path: string) => { const below = paths.relative(root, path); return below === '' || below !== '..' && !below.startsWith(`..${paths.sep}`) && !paths.isAbsolute(below) }
-  async function hash(path: string): Promise<string> {
-    const value = crypto.createHash('sha256')
-    for await (const chunk of fs.createReadStream(path)) value.update(chunk)
-    return value.digest('hex')
+  const readBuffer = Buffer.allocUnsafe(64 * 1024)
+  function readContent(path: string, expected: import('node:fs').Stats, digest: boolean): string | undefined {
+    const descriptor = fs.openSync(path, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK | (fs.constants.O_NOFOLLOW ?? 0))
+    try {
+      const opened = fs.fstatSync(descriptor)
+      assertStableFile(expected, opened)
+      assertStableFile(opened, fs.lstatSync(path))
+      const value = digest ? crypto.createHash('sha256') : undefined
+      let size = 0
+      while (true) {
+        const bytes = fs.readSync(descriptor, readBuffer, 0, readBuffer.length, null)
+        if (!bytes) break
+        size += bytes
+        if (size > opened.size) throw new Error('File changed during history capture; retry when the workspace is idle')
+        value?.update(readBuffer.subarray(0, bytes))
+      }
+      if (size !== opened.size) throw new Error('File changed during history capture; retry when the workspace is idle')
+      assertStableFile(opened, fs.fstatSync(descriptor))
+      assertStableFile(opened, fs.lstatSync(path))
+      return value?.digest('hex')
+    } finally { fs.closeSync(descriptor) }
+  }
+  function assertStableFile(expected: import('node:fs').Stats, current: import('node:fs').Stats): void {
+    if (!current.isFile() || current.ino !== expected.ino || current.dev !== expected.dev || current.size !== expected.size || current.mtimeMs !== expected.mtimeMs) throw new Error('File changed during history capture; retry when the workspace is idle')
+    if (current.nlink > 1) throw unsafe('History cannot safely restore hard-linked files')
   }
   function unsafe(message: string): Error { return Object.assign(new Error(message), { code: 'HISTORY_UNSAFE_CAPTURE' }) }
   function inspect(path: string): import('node:fs').Stats | undefined {
@@ -71,9 +92,10 @@ async function scanWorkspace(input: HashCaptureInput): Promise<Snapshot> {
     }
     const overCap = stat.size > input.maxFileBytes
     try {
-      const contentHash = input.hashFiles || overCap || input.platform === 'win32' ? await hash(path) : undefined
-      const after = fs.lstatSync(path)
-      if (stat.ino !== after.ino || stat.dev !== after.dev || stat.size !== after.size || stat.mtimeMs !== after.mtimeMs) throw new Error('File changed during history capture; retry when the workspace is idle')
+      const digest = input.hashFiles || overCap
+      const readsContent = digest || input.platform === 'win32'
+      const contentHash = readsContent ? readContent(path, stat, digest) : undefined
+      if (!readsContent) assertStableFile(stat, fs.lstatSync(path))
       result[path] = { kind: overCap ? 'excluded' : 'file', mode, ...(overCap ? { size: stat.size, reason: 'size' as const } : {}), ...(contentHash ? { hash: contentHash } : {}) }
     } catch (error) {
       if (input.platform === 'win32' && error instanceof Error && 'code' in error && error.code === 'EBUSY') result[path] = { kind: 'unreadable', mode }
