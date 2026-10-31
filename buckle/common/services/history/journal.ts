@@ -372,7 +372,13 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }
     return content
   }
-
+  /** The current state of each path a restore would change, read from the disk without storing anything: its plan's check. */
+  async function assertCurrentMatches(chain: { before: Snapshot; after: Snapshot }): Promise<void> {
+    const paths = changedPaths(chain.before, chain.after)
+    const read = await captureScope({ scope: restoreScope(paths, chain), ...scopeLimits() })
+    try { assertSnapshotMatches({ current: withRemovedChildren({ current: read, expected: chain.after, target: chain.before, paths }), expected: chain.after, target: chain.before, paths, operation: 'Restore' }) }
+    catch (error) { if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error, ...(error.path === undefined ? {} : { path: error.path }) }); throw error }
+  }
   async function hydrate(record: Checkpoint): Promise<Checkpoint> {
     if (!record.beforeTrees?.length) return record
     record.before = Object.assign({}, ...await Promise.all(record.beforeTrees.map(store.loadTree)))
@@ -398,6 +404,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
           if (unavailable) throw new RestoreRefusedError(unavailable.reason ?? 'Content restoration requires permitted trusted host git')
           const chain = chained(selected)
           assertShadowReachable({ ...selected[0]!, ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []) }, changedPaths(chain.before, chain.after))
+          await assertCurrentMatches(chain)
           return planOf(selected, chain)
         }, { immediate: true })
       }

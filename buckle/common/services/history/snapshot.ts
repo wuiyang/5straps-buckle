@@ -111,23 +111,36 @@ function isUncaptured(entry: Entry | undefined): boolean {
   return entry?.kind === 'excluded' || entry?.kind === 'unreadable'
 }
 
+/**
+ * Whether a side recorded `path` without content: the entry itself, or a folder above it in that snapshot (A1 of the
+ * 2026-11-01 review). A file below a folder an ignore rule covered is missing from that side, which is not "absent":
+ * history never knew it, so no restore writes or removes it.
+ */
+function uncapturedIn(snapshot: Snapshot, path: string): boolean {
+  if (isUncaptured(snapshot[path])) return true
+  for (let parent = parentDirectory(path); parent !== path; path = parent, parent = parentDirectory(parent)) if (isUncaptured(snapshot[parent])) return true
+  return false
+}
+
 /** The paths whose entry differs, never one recorded without content on either side: history leaves those as it finds them. */
 export function changedPaths(before: Snapshot, after: Snapshot): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .filter(path => !isUncaptured(before[path]) && !isUncaptured(after[path]) && !sameEntry(before[path], after[path])).sort()
+    .filter(path => !uncapturedIn(before, path) && !uncapturedIn(after, path) && !sameEntry(before[path], after[path])).sort()
 }
 
 /**
- * The paths whose entry differs where either side was recorded without content (an excluded or unreadable entry): a
- * change no restore puts back. Listed as not restorable.
+ * The paths whose entry differs where either side was recorded without content (an excluded or unreadable entry, or one
+ * below such a folder): a change no restore puts back. Listed as not restorable.
  */
 export function notRestorablePaths(before: Snapshot, after: Snapshot): string[] {
   return [...new Set([...Object.keys(before), ...Object.keys(after)])]
-    .filter(path => (isUncaptured(before[path]) || isUncaptured(after[path])) && !sameEntry(before[path], after[path])).sort()
+    .filter(path => (uncapturedIn(before, path) || uncapturedIn(after, path)) && !sameEntry(before[path], after[path])).sort()
 }
 
+/** Field by field, so an entry read from the disk now equals the one a checkpoint recorded whatever order its keys were written in. */
 export function sameEntry(left: Entry | undefined, right: Entry | undefined): boolean {
-  return JSON.stringify(left) === JSON.stringify(right)
+  if (left === undefined || right === undefined) return left === right
+  return left.kind === right.kind && left.mode === right.mode && left.hash === right.hash && left.target === right.target && left.size === right.size && left.reason === right.reason
 }
 
 /**
