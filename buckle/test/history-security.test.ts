@@ -99,13 +99,15 @@ it('retains an interrupted checkpoint after a restore fails following its first 
   } finally { await node.history.close() }
 })
 
-it.skipIf(process.platform === 'win32')('still refuses an unsafe hard link after encountering a recoverable capture limitation', async () => {
+// Slice F2, item 6: the hard link never refuses the call; the checkpoint says why it cannot restore.
+it.skipIf(process.platform === 'win32')('runs a write beside a hard link after a recoverable capture limitation, naming the link as the cause', async () => {
   const node = await fixture()
   writeFileSync(join(node.root, 'outside'), 'shared')
   execFileSync('mkfifo', [join(node.workspace, 'a-pipe')])
   linkSync(join(node.root, 'outside'), join(node.workspace, 'z-linked.js'))
   try {
-    await expect(node.history.run(node.details, async () => { writeFileSync(join(node.workspace, 'note'), 'must not run') })).rejects.toMatchObject({ name: 'Error', message: 'History cannot safely restore hard-linked files' })
-    expect(existsSync(join(node.workspace, 'note'))).toBe(false)
+    await expect(node.history.run(node.details, async () => { writeFileSync(join(node.workspace, 'note'), 'runs') })).resolves.toBeUndefined()
+    expect(existsSync(join(node.workspace, 'note'))).toBe(true)
+    expect((await node.history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('hard-linked') })
   } finally { await node.history.close() }
 })

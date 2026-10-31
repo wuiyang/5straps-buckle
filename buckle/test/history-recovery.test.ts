@@ -2,7 +2,7 @@ import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync }
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it } from 'vitest'
-import { openChangeHistory } from '../common/services/history/journal.js'
+import { openChangeHistory, STOPPED_REASON } from '../common/services/history/journal.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -21,7 +21,7 @@ it('marks a failed finish interrupted and permits the next write', async () => {
   } finally { await history.close() }
 })
 
-it('names a crashed checkpoint with its recovery code and command without waiting', async () => {
+it('marks a crashed checkpoint interrupted at the next write, without waiting on the owner', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-history-recovery-')); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const directory = join(root, 'history')
@@ -35,13 +35,14 @@ it('names a crashed checkpoint with its recovery code and command without waitin
     state.checkpoints[0].status = 'pending'
     writeFileSync(file, JSON.stringify(state))
     const start = performance.now()
-    await expect(history.run(details, async () => undefined)).rejects.toMatchObject({ code: 'HISTORY_RECOVERY_NEEDED', checkpoint: id, message: expect.stringContaining(`buckle history recover ${id}`) })
+    await expect(history.run(details, async () => undefined)).resolves.toBeUndefined()
     expect(performance.now() - start).toBeLessThan(1000)
+    expect((await history.list()).find(record => record.id === id)).toMatchObject({ status: 'interrupted', restorable: false, reason: STOPPED_REASON })
   } finally { await history.close() }
 })
 
 
-it('hydrates a real pending Git checkpoint after restart and restores its original bytes', async () => {
+it('settles a pending shadow-git checkpoint a restart left as interrupted, and the next write runs', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-history-git-recovery-')); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const file = join(workspace, 'file'); writeFileSync(file, 'original\r\n')
@@ -62,10 +63,8 @@ it('hydrates a real pending Git checkpoint after restart and restores its origin
   writeFileSync(journal, JSON.stringify(state))
   const reopened = await openChangeHistory(options)
   try {
-    await expect(reopened.run(details, async () => {})).rejects.toMatchObject({ code: 'HISTORY_RECOVERY_NEEDED', checkpoint: id })
-    await expect(reopened.recover(id)).resolves.toMatchObject({ id, status: 'interrupted', restorable: true, paths: [file] })
-    await reopened.restore(id)
-    expect(readFileSync(file, 'utf8')).toBe('original\r\n')
+    await expect(reopened.recover(id)).resolves.toMatchObject({ id, status: 'interrupted', restorable: false, reason: STOPPED_REASON })
     await expect(reopened.run(details, async () => { writeFileSync(file, 'next write') })).resolves.toBeUndefined()
+    expect(readFileSync(file, 'utf8')).toBe('next write')
   } finally { await reopened.close() }
 })

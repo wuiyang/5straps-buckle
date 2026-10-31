@@ -130,16 +130,15 @@ describe('Git-backed file history', () => {
     expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('new')
   })
 
-  it('recovers an OS-interrupted mutation before allowing more changes', async () => {
+  it('marks an OS-interrupted mutation interrupted and allows more changes at once', async () => {
     const { root, workspace, history, details, options } = await fixture()
     const script = join(root, 'crash.mts')
     writeFileSync(script, `import { openChangeHistory } from ${JSON.stringify(new URL('../common/services/history/journal.ts', import.meta.url).pathname)}; import { writeFileSync } from 'node:fs'; const history = await openChangeHistory(${JSON.stringify(options)}); await history.run(${JSON.stringify(details)}, async () => { writeFileSync(${JSON.stringify(join(workspace, 'partial'))}, 'partial'); process.exit(9) });`)
     expect(() => execFileSync(process.execPath, ['--import', 'tsx', script], { stdio: 'pipe' })).toThrow()
     expect((await history.list())[0]!.status).toBe('pending')
-    await expect(history.run(details, async () => undefined)).rejects.toThrow('owner recovery')
-    await history.recover((await history.list())[0]!.id)
-    await history.restore((await history.list())[0]!.id)
-    expect(existsSync(join(workspace, 'partial'))).toBe(false)
+    await expect(history.run(details, async () => undefined)).resolves.toBeUndefined()
+    expect((await history.list())[0]).toMatchObject({ status: 'interrupted', restorable: false, reason: expect.stringMatching(/stopped before this call finished/) })
+    expect(existsSync(join(workspace, 'partial'))).toBe(true)
   }, SPAWN_TEST_TIMEOUT_MS)
 })
 
@@ -265,11 +264,13 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
     expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('x')
   })
 
-  it('still refuses a hard link outside node_modules, and a snapshot that is not history\'s', async () => {
+  // Slice F2, item 6: a hard link outside node_modules never refuses the call; the checkpoint names why it cannot restore.
+  it('runs a write beside a hard link outside node_modules, and still refuses a snapshot that is not history\'s', async () => {
     const { workspace, history, details, store } = await linkedWorkspace()
     linkSync(join(store, 'index.js'), join(workspace, 'linked-elsewhere.js'))
-    await expect(history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'x') })).rejects.toThrow('History cannot safely restore hard-linked files')
-    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
+    await expect(history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'x') })).resolves.toBeUndefined()
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(true)
+    expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('hard-linked') })
     rmSync(join(workspace, 'linked-elsewhere.js'))
     expect(() => snapshot({ roots: [workspace], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot safely restore hard-linked files')
   })

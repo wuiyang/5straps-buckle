@@ -73,7 +73,7 @@ for (const phase of ['before', 'after'] as const) it(`preserves the ${phase} fal
   try {
     await history.run({ sessionId: 's', tool: 'test', roots: [workspace] }, async () => { executed = true; writeFileSync(join(workspace, 'file'), 'private-content') })
     expect(executed).toBe(true)
-    expect(warned.mock.calls).toContainEqual([expect.stringContaining(phase === 'before' ? 'before state' : 'capture did not finish'), { phase, operation: 'ls-files', failure: 'exit', elapsedMs: expect.any(Number), exitCode: 42 }])
+    expect(warned.mock.calls).toContainEqual([expect.stringContaining(phase === 'before' ? 'before state (git ls-files exited with 42)' : 'capture did not finish (git ls-files exited with 42)'), { phase, cause: { error: 'HistoryGitError', operation: 'ls-files', failure: 'exit', exitCode: 42 } }])
     const [checkpoint] = await history.list()
     expect(checkpoint).toMatchObject({ status: phase === 'before' ? 'complete' : 'interrupted', restorable: false })
     expect(JSON.stringify(warned.mock.calls)).not.toMatch(/private-stderr|private-content/)
@@ -103,7 +103,7 @@ it('escalates a timed-out Git child and keeps the mutation lock until close conf
     await running; await second; await history.close()
   }
   expect(executed).toBe(true); expect(secondEntered).toBe(true)
-  expect(warned.mock.calls).toContainEqual([expect.stringContaining('before state'), { phase: 'before', operation: 'init', failure: 'timeout', elapsedMs: expect.any(Number), exitCode: 0 }])
+  expect(warned.mock.calls).toContainEqual([expect.stringContaining('before state (git init timed out)'), { phase: 'before', cause: { error: 'HistoryGitError', operation: 'init', failure: 'timeout', exitCode: 0 } }])
 })
 
 

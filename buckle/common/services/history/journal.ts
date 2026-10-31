@@ -42,15 +42,12 @@ export class RestoreRefusedError extends Error implements ServiceFailure {
   constructor(message: string, options?: ErrorOptions & { path?: string }) { super(message, options); this.path = options?.path }
 }
 export function withConflictPath(refusal: { message: string }, shown: string | undefined): string { return shown === undefined ? refusal.message : `${refusal.message} (${shown})` }
-export class HistoryRecoveryNeededError extends Error implements ServiceFailure {
-  readonly code = 'HISTORY_RECOVERY_NEEDED'
-  readonly status = 409
-  constructor(readonly checkpoint: string) { super(`Checkpoint ${checkpoint} needs owner recovery; run buckle history recover ${checkpoint}`) }
-}
 export interface ChangeHistoryOptions {
   directory: string; excluded: string[]; maxBytes: number; retentionDays?: number; label?: string; lockDeadlineMs?: number; now?: () => number; platform?: NodeJS.Platform
-  untrusted?: () => UntrustedRoots; allowHostGit?: boolean; keepTurns?: number; turnIdleMs?: number; maxFileBytes?: number; onRecoveryNeeded?: (id: string) => Promise<void>
+  untrusted?: () => UntrustedRoots; allowHostGit?: boolean; keepTurns?: number; turnIdleMs?: number; maxFileBytes?: number
 }
+/** The reason a checkpoint a stopped call left pending is given once the next call takes the lock (Slice F2, item 6). */
+export const STOPPED_REASON = 'Buckle stopped before this call finished, so history could not record what it changed; this checkpoint is not restorable'
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0) })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
@@ -66,7 +63,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let closed = false
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
-  const offered = new Set<string>()
   const activity = await openHistoryActivity(input.directory)
   let reconcile = true
 
@@ -118,16 +114,25 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
     const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
-    return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, operation)
+    return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, async () => { await settleStopped(); return operation() })
   }
-  function offer(error: unknown): void {
-    if (!(error instanceof HistoryRecoveryNeededError) || offered.has(error.checkpoint) || !input.onRecoveryNeeded) return
-    offered.add(error.checkpoint)
-    void input.onRecoveryNeeded(error.checkpoint).catch(() => logger.warn('Inline history recovery could not finish')).finally(() => offered.delete(error.checkpoint))
-  }
-  function pending(): void {
-    const record = records().find(record => record.status === 'pending')
-    if (record) { const error = new HistoryRecoveryNeededError(record.id); logger.warn(error.message, { code: error.code }); throw error }
+  /**
+   * Marks each checkpoint left pending interrupted, with its reason (Slice F2, item 6): one seen while this process holds
+   * the execution lock belongs to a call that stopped, as no live call can hold it, so nothing waits on the owner and no
+   * call is ever refused for it (A3).
+   */
+  async function settleStopped(): Promise<void> {
+    const stopped = records().filter(record => record.status === 'pending')
+    if (!stopped.length) return
+    const state = read()
+    for (const record of stopped) {
+      const settled = { ...record, status: 'interrupted' as const, restorable: false, reason: STOPPED_REASON }
+      const index = state.checkpoints.findIndex(item => item.id === record.id)
+      if (index === -1) state.checkpoints.push(settled)
+      else state.checkpoints[index] = settled
+      logger.warn(`Checkpoint ${record.id}: ${STOPPED_REASON}`)
+    }
+    await save(state)
   }
   function observeCall(sessionId: string, stageId?: string): string {
     const existing = records()
@@ -145,27 +150,25 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function finishCall(sessionId: string, stageId: string | undefined, turn: string): void { activity.finish(sessionId, stageId, turn, now()) }
   async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
     if (details.scope) return beginScoped({ ...details, scope: details.scope }, restore)
-    pending()
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
     const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
     const id = `change-${randomUUID()}`
     let captured: CapturedState
     let baselineAvailable = true
     try { captured = await store.capture({ roots: details.roots, excluded: details.excluded, id, phase: 'before' }) }
-    catch (error) { if (error instanceof HistoryCaptureSafetyError) throw error; baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: 'History could not capture the before state; this write continues without restorable content or a complete changed-path list' }; logger.warn(`Checkpoint ${id}: ${captured.reason}`, { phase: 'before', ...(error instanceof HistoryGitError ? error.details : {}) }) }
+    catch (error) { baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: `History could not capture the before state (${causeText(error)}); this write continues without restorable content or a complete changed-path list` }; logger.warn(`Checkpoint ${id}: ${captured.reason}`, { phase: 'before', cause: causeOf(error) }) }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable, before: captured.snapshot, beforeTrees: captured.trees, restorable: captured.restorable, ...(captured.reason ? { reason: captured.reason } : {}), ...restore }
     await saveRecord(record)
     return record
   }
   async function beginScoped(details: HistoryInput & { scope: ScopePath[] }, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
-    pending()
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
     const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
     const id = `change-${randomUUID()}`
     let before: Snapshot = {}
     let reason: string | undefined
     try { before = await captureScope({ scope: details.scope, store: objects, ...scopeLimits() }) }
-    catch (error) { reason = 'History could not record the files before this call; it ran without restorable content'; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
+    catch (error) { reason = `History could not record the files before this call (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', ...restore }
     await saveRecord(record)
     return record
@@ -180,7 +183,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     } catch (error) {
       record.after ??= record.before
       record.status = 'interrupted'; record.restorable = false
-      record.reason = 'History could not record the files after this call; this checkpoint is not restorable. Later writes can continue'
+      record.reason = `History could not record the files after this call (${causeText(error)}); this checkpoint is not restorable. Later writes can continue`
       logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
     }
     compact(record)
@@ -203,10 +206,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     } catch (error) {
       refreshTrees({ record, state: read() })
       record.status = 'interrupted'; record.restorable = false
-      record.reason = 'History capture did not finish; this checkpoint is not restorable. Later writes can continue'
+      record.reason = `History capture did not finish (${causeText(error)}); this checkpoint is not restorable. Later writes can continue`
       compact(record)
       await saveRecord(record)
-      logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', ...(error instanceof HistoryGitError ? error.details : {}) })
+      logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
     }
   }
   function refreshTrees(input: { record: Checkpoint; state: State }): void {
@@ -312,7 +315,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   function since(target: RollbackTarget): Checkpoint[] {
     const recent = records().toReversed().slice(0, 'turns' in target ? undefined : RECENT_CHECKPOINTS_MAX)
-    if (recent[0]?.status === 'pending') throw new HistoryRecoveryNeededError(recent[0].id)
     if ('turns' in target) {
       if (!Number.isSafeInteger(target.turns) || target.turns < 1 || target.turns > RECENT_CHECKPOINTS_MAX) throw new RestoreRefusedError('turns counts user turns back from the current state, 1 to 100')
       const turns = [...new Set(recent.map(record => record.turnId ?? record.id))]
@@ -395,11 +397,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try { assertSnapshotMatches({ current: withRemovedChildren({ current: read, expected: chain.after, target: chain.before, paths }), expected: chain.after, target: chain.before, paths, operation: 'Restore' }) }
     catch (error) { if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error, ...(error.path === undefined ? {} : { path: error.path }) }); throw error }
   }
-  async function hydrate(record: Checkpoint): Promise<Checkpoint> {
-    if (!record.beforeTrees?.length) return record
-    record.before = Object.assign({}, ...await Promise.all(record.beforeTrees.map(store.loadTree)))
-    return record
-  }
   return {
     list: async () => records().map(summary),
     observeCall,
@@ -424,7 +421,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
           return planOf(selected, chain)
         }, { immediate: true })
       }
-      catch (error) { if (error instanceof HistoryBusyError) throw new RestoreRefusedError('Another call is changing the files now; try again once it finishes'); offer(error); throw error }
+      catch (error) { if (error instanceof HistoryBusyError) throw new RestoreRefusedError('Another call is changing the files now; try again once it finishes'); throw error }
     },
     async rollback(input: { target: RollbackTarget; by: RestoreBy; onLocked?: () => void; check?: (plan: RollbackPlan) => void; signal?: AbortSignal }) {
       return locked(async () => {
@@ -435,9 +432,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         return restoreRecord({ ...first, id: plan.checkpoint, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []), restorable: selected.every(record => record.restorable !== false) }, input.by, plan.undoes)
       }, { owner: true, ...(input.signal ? { signal: input.signal } : {}) })
     },
-    async run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-      try { return await locked(async () => { const record = await begin(details); try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) } }, signal ? { signal } : {}) }
-      catch (error) { offer(error); throw error }
+    run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+      return locked(async () => { const record = await begin(details); try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) } }, signal ? { signal } : {})
     },
     exclusive<T>(execute: () => Promise<T>, signal?: AbortSignal): Promise<T> { return locked(execute, signal ? { signal } : {}) },
     async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer, onCheckpoint?: () => void) {
@@ -453,14 +449,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         return summary(record)
       })
     },
+    /** A checkpoint a stopped call left, as the lock settled it (settleStopped): the owner's command names its state. */
     async recover(id: string, options: { force?: boolean } = {}) {
       return locked(async () => {
         const found = records().find(record => record.id === id)
-        if (!found || found.status !== 'pending') throw new Error('Pending checkpoint not found')
-        const record = await hydrate(found)
-        if (record.legacy) { record.status = 'interrupted'; record.reason = 'Legacy interrupted checkpoint acknowledged; new writes use the git history'; await saveRecord(record) }
-        else { await finish(record); record.status = 'interrupted'; await saveRecord(record) }
-        return summary(record)
+        if (!found || found.status === 'complete') throw new Error('Interrupted checkpoint not found')
+        return summary(found)
       }, { owner: true, ...options })
     },
     async restore(id: string, options: { force?: boolean } = {}) {
@@ -493,10 +487,33 @@ function identity(path: string): string | undefined {
   return stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined
 }
 function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
-/** What a log line may say of a failure: its kind and system code, never its message, which can name the owner's paths. */
-function causeOf(error: unknown): Record<string, string> {
-  const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined
+/**
+ * What the owner's log may say of a capture that failed (D2): its kind, its system code, and for a git step which one and
+ * how it failed, never its message, which can name the owner's paths.
+ */
+function causeOf(error: unknown): Record<string, string | number> {
+  if (error instanceof HistoryGitError) {
+    const { operation, failure, exitCode, errno } = error.details
+    return { error: 'HistoryGitError', operation, failure, ...(exitCode === undefined ? {} : { exitCode }), ...(errno ? { code: errno } : {}) }
+  }
+  const code = systemCode(error)
   return { error: error instanceof Error ? error.constructor.name : 'Unknown', ...(code ? { code } : {}) }
+}
+/** The same cause in the words a checkpoint's reason gives the agent and the owner (D2): no path and no message. */
+function causeText(error: unknown): string {
+  if (error instanceof HistoryGitError) {
+    const { operation, failure, exitCode } = error.details
+    const how = failure === 'exit' ? `exited with ${exitCode ?? 'a signal'}` : failure === 'timeout' ? 'timed out' : failure === 'start' ? 'could not start' : 'wrote more output than history reads'
+    return `git ${operation} ${how}`
+  }
+  const code = systemCode(error)
+  if (code) return `the file system answered ${code}`
+  if (error instanceof HistoryContentError) return 'its content store is damaged'
+  if (error instanceof HistoryCaptureSafetyError) return error.message
+  return error instanceof Error && error.constructor !== Error ? error.constructor.name : 'an unexpected error'
+}
+function systemCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined
 }
 /** Whether content is the git blob `hash` names, as SHA-1 or SHA-256 git names it by its length. */
 function matchesObject(hash: string, content: Buffer): boolean {

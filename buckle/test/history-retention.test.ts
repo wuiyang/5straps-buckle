@@ -216,7 +216,9 @@ for (const failAfterSave of [false, true]) it(`preserves migrated pending recove
   saveState(test, state)
   if (failAfterSave) { fault.mode = 'after-save'; fault.id = target.id; fault.commit = target.beforeTrees![0]!.commit }
   const history = await reopen(test)
-  await expect(history.recover(target.id)).resolves.toMatchObject({ id: target.id, status: 'interrupted', restorable: !failAfterSave })
+  // The lock settles the pending record as interrupted (Slice F2, item 6); its before tree stays, kept by the migration.
+  await expect(history.recover(target.id)).resolves.toMatchObject({ id: target.id, status: 'interrupted', restorable: false })
+  await history.prune().catch(() => undefined)
   expect(fault.raised).toBe(failAfterSave)
   const saved = test.state()
   const recovered = saved.checkpoints.find(record => record.id === target.id)!
@@ -231,12 +233,10 @@ for (const failAfterSave of [false, true]) it(`preserves migrated pending recove
   collect(durable)
   const store = createGitStore({ directory: test.directory, excluded: [], maxFileBytes: () => 1_048_576, allowed: () => true })
   const record = durable.checkpoints.find(row => row.id === target.id)!
-  const content = await store.restoreContent({ trees: record.beforeTrees!, target: record.before, paths: [test.file] })
+  const content = await store.restoreContent({ trees: record.beforeTrees!, target: await store.loadTree(record.beforeTrees![0]!), paths: [test.file] })
   expect([...content.values()].map(value => value.toString())).toContain('owner baseline\r\n')
-  if (!failAfterSave) {
-    await restarted.restore(target.id)
-    expect(readFileSync(test.file, 'utf8')).toBe('owner baseline\r\n')
-  }
+  // Interrupted, it records no after state, so no restore runs through it.
+  await expect(restarted.restore(target.id)).rejects.toMatchObject({ code: 'RESTORE_REFUSED' })
 })
 
 it('normalizes degraded after-only captures without inventing a before parent', async () => {

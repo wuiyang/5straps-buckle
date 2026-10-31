@@ -143,20 +143,20 @@ describe('a restore to before a checkpoint', () => {
     expect((await history.plan({ steps: 1 })).undoes).toBe(1)
   })
 
-  it('is refused naming the checkpoint an interrupted call left, until the owner recovers it, and then restores through it', async () => {
+  it('is refused past the checkpoint an interrupted call left, which it marks interrupted without an owner recovery', async () => {
     const { history, directory, write, read, by } = await fixture()
     await write('a.txt', 'one')
     await write('b.txt', 'two')
     const newest = (await history.recent(1)).checkpoints[0]!
     interrupt(directory, newest.id)
-    await expect(history.plan({ steps: 1 })).rejects.toThrow(`buckle history recover ${newest.id}`)
-    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toThrow(`buckle history recover ${newest.id}`)
-    expect((await history.recent(1)).checkpoints[0]).toMatchObject({ id: newest.id, status: 'pending', current: false })
-    expect(read('b.txt')).toBe('two')
-    await history.recover(newest.id)
+    const refusal: unknown = await history.plan({ steps: 1 }).catch(error => error)
+    expect(refusal).toMatchObject({ code: 'RESTORE_REFUSED', message: expect.stringMatching(/stopped before this call finished/) })
+    expect(String((refusal as Error).message)).not.toContain('recover')
+    await expect(history.rollback({ target: { steps: 1 }, by })).rejects.toMatchObject({ code: 'RESTORE_REFUSED' })
     expect((await history.recent(1)).checkpoints[0]).toMatchObject({ id: newest.id, status: 'interrupted', current: true })
-    await history.rollback({ target: { steps: 1 }, by })
-    expect([read('a.txt'), read('b.txt')]).toEqual(['one', null])
+    expect([read('a.txt'), read('b.txt')]).toEqual(['one', 'two'])
+    await write('c.txt', 'three')
+    expect(read('c.txt')).toBe('three')
   })
 
   // Review M2 of the Slice D rules review: a checkpoint past its retention is pruned as the next change begins, and a
