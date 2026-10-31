@@ -24,6 +24,8 @@ export const HarnessManifestSchema = z.object({
   /** Prose telling a model when to prefer this node over its siblings. */
   usage: z.string().default(''),
   version: z.string().min(1),
+  /** The version with the commit the node was built from (`0.1.8+670f1dc2`, `.dirty` past uncommitted changes); the plain version for a release build. Absent from older nodes. */
+  build: z.string().min(1).optional(),
   platform: z.object({
     os: z.string(),
     arch: z.string(),

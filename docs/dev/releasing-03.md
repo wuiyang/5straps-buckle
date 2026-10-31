@@ -27,6 +27,13 @@ build. `THIRD_PARTY_NOTICES.md` covers the code bundled into `.output`.
 Buckle reads its version from its own `package.json` at run time
 (`buckle/common/runtime/version.ts`), so `buckle --version` matches what is published.
 
+The build also writes `dist/build-info.json` from git: the short commit id, whether the tree
+had uncommitted changes, and the build time (`buckle/scripts/build-info.mjs`). `buckle
+--version`, the `5straps Buckle listening` log line, and the manifest's `build` field then
+show `0.1.8+670f1dc2`, or `0.1.8+670f1dc2.dirty`. A clean build of the release tag writes
+no stamp, so a package published from the tag shows the plain version. A release needs no
+code edit for it.
+
 ## Check the tarballs
 
 The Stage Buckle workflow's `pack` job checks its own tarballs. To look at them on a machine:

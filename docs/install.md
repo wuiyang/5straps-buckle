@@ -68,7 +68,7 @@ To build from a clone, follow [Building and testing](dev/building-and-testing.md
 
 ```bash
 buckle --help       # the command list; reads no configuration
-buckle --version    # the version npm installed
+buckle --version    # the version npm installed; a build from a clone adds its commit
 buckle tools        # each tool this machine offers, with its risk level
 buckle manifest     # packs, the sandbox mode, and why any pack is withheld
 ```

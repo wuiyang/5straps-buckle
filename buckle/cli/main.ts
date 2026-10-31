@@ -39,7 +39,7 @@ import { serviceCommand } from './service.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { builtMainPath } from '../common/runtime/package-root.js'
-import { BUCKLE_VERSION } from '../common/runtime/version.js'
+import { BUCKLE_BUILD } from '../common/runtime/version.js'
 import { terminalConfirm, type Confirm } from './terminal-consumer.js'
 
 export interface CliResult {
@@ -293,7 +293,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
 }
 
 function printVersion(): CliResult {
-  process.stdout.write(`${BUCKLE_VERSION}\n`)
+  process.stdout.write(`${BUCKLE_BUILD}\n`)
   return { exitCode: 0 }
 }
 
@@ -303,7 +303,7 @@ function printCommandUsage(usage: string): CliResult {
 }
 
 function printUsage(): CliResult {
-  process.stdout.write(`buckle ${BUCKLE_VERSION}, the 5straps execution node
+  process.stdout.write(`buckle ${BUCKLE_BUILD}, the 5straps execution node
 
   buckle init                        Set this machine's node up once, and serve the current folder as a
                                      workspace; prints its agent token once

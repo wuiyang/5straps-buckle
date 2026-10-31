@@ -82,7 +82,7 @@ import { createInvoker, InvocationsClosedError, recordRefusedCall, type InvokeIn
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
-import { BUCKLE_VERSION } from '../../runtime/version.js'
+import { BUCKLE_BUILD, BUCKLE_VERSION } from '../../runtime/version.js'
 import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
@@ -1030,6 +1030,7 @@ function buildManifest(input: {
     description: input.config.description,
     usage: input.config.usage,
     version: BUCKLE_VERSION,
+    build: BUCKLE_BUILD,
     platform: { os: platform(), arch: arch(), hostname: hostname() },
     sandbox: {
       mode: input.sandbox.sandbox.mode,

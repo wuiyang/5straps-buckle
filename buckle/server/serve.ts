@@ -4,6 +4,7 @@ import type { NodeConfig } from '../common/runtime/config.js'
 import type { ConsoleWriter } from '../common/runtime/console.js'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import type { WorkspaceDescriptor, WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { BUCKLE_BUILD } from '../common/runtime/version.js'
 import { judgeSetupNotice } from '../common/services/judge/judge-setup.js'
 import { consoleRoster, describeOnline, watchOnline } from './roster.js'
 import { createHttpServer, type BuckleServer } from './setup-server.js'
@@ -54,6 +55,7 @@ function judgedWorkspaces(workspaces: WorkspaceManager): Array<{ name: string; s
 function logListening(input: { logger: Logger; config: NodeConfig; workspaces: WorkspaceDescriptor[]; address: AddressInfo }): void {
   const { config } = input
   input.logger.info('5straps Buckle listening', {
+    version: BUCKLE_BUILD,
     host: input.address.address,
     port: input.address.port,
     serverId: config.serverId,

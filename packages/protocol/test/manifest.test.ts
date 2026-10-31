@@ -25,3 +25,14 @@ describe('the manifest\'s searcher', () => {
     expect(HarnessManifestSchema.safeParse({ ...OLDER_NODE, limits: { ...OLDER_NODE.limits, searcher: 'grep' } }).success).toBe(false)
   })
 })
+
+// Slice F2, item 0: the manifest names the build beside the version in `build`, additive and optional as `searcher` is.
+describe('the manifest\'s build', () => {
+  it('is absent from an older node\'s manifest, which still validates', () => {
+    expect(HarnessManifestSchema.parse(OLDER_NODE).build).toBeUndefined()
+  })
+
+  it('names the commit beside the version', () => {
+    expect(HarnessManifestSchema.parse({ ...OLDER_NODE, version: '0.1.8', build: '0.1.8+670f1dc2.dirty' }).build).toBe('0.1.8+670f1dc2.dirty')
+  })
+})
