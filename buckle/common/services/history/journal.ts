@@ -3,7 +3,7 @@ import { SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside, parentDirectory } from '../../domain/paths.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
@@ -70,20 +70,36 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const activity = await openHistoryActivity(input.directory)
   let reconcile = true
 
+  // The journal as last validated, keyed by its file's identity on disk: a call reads it several times, and another
+  // process replaces it by rename, which changes the key (B12). Each read still hands out its own copy.
+  let journal: { key: string; text: string } | undefined
+  let legacy: { key: string; records: Checkpoint[] } | undefined
   function read(): State {
     if (closed) throw new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed')
-    if (!existsSync(file)) return { version: 2, checkpoints: [], lastGcAt: 0 }
-    return stateSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+    const key = identity(file)
+    if (key === undefined) return { version: 2, checkpoints: [], lastGcAt: 0 }
+    if (journal?.key === key) return JSON.parse(journal.text) as State
+    const state = stateSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+    if (identity(file) === key) journal = { key, text: JSON.stringify(state) }
+    return state
+  }
+  function legacyRecords(): Checkpoint[] {
+    const key = ['', '-wal'].map(suffix => identity(join(input.directory, `history.sqlite${suffix}`)) ?? '-').join('|')
+    if (legacy?.key !== key) legacy = { key, records: key === '-|-' ? [] : readLegacyHistory(input.directory) }
+    return legacy.records.map(record => structuredClone(record))
   }
   function records(): Checkpoint[] {
     const current = read().checkpoints
     const ids = new Set(current.map(record => record.id))
-    return [...readLegacyHistory(input.directory).filter(record => !ids.has(record.id)), ...current]
+    return [...legacyRecords().filter(record => !ids.has(record.id)), ...current]
   }
   async function save(state: State): Promise<void> {
     const temporary = `${file}.${randomUUID()}.tmp`
-    try { writeFileSync(temporary, JSON.stringify(state), { mode: 0o600 }); await replaceFile(temporary, file) }
+    const text = JSON.stringify(state)
+    try { writeFileSync(temporary, text, { mode: 0o600 }); await replaceFile(temporary, file) }
     finally { rmSync(temporary, { force: true }) }
+    const key = identity(file)
+    journal = key === undefined ? undefined : { key, text }
   }
   async function saveRecord(record: Checkpoint): Promise<void> {
     const state = read()
@@ -471,6 +487,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
 
+/** A file's identity as the journal's cache keys it: replaced, grown, or touched, it reads as another file. */
+function identity(path: string): string | undefined {
+  const stat = statSync(path, { throwIfNoEntry: false, bigint: true })
+  return stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined
+}
 function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
 /** What a log line may say of a failure: its kind and system code, never its message, which can name the owner's paths. */
 function causeOf(error: unknown): Record<string, string> {
