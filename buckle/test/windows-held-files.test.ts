@@ -30,7 +30,28 @@ vi.mock('node:fs', async (importOriginal) => {
 
 vi.mock('node:worker_threads', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:worker_threads')>()
-  const fault = `const heldFs = require('node:fs'); const streamFile = heldFs.createReadStream; heldFs.createReadStream = function(path, options) { if (String(path).endsWith('held-open')) throw Object.assign(new Error('held file'), { code: 'EBUSY' }); if (String(path).endsWith('locked-range')) return new (require('node:stream').Readable)({ read() { this.destroy(Object.assign(new Error('locked range'), { code: 'EBUSY' })) } }); return streamFile(path, options) };`
+  const fault = `
+    const heldFs = require('node:fs');
+    const heldDescriptors = new Set();
+    const heldOpen = heldFs.openSync;
+    const heldRead = heldFs.readSync;
+    const heldClose = heldFs.closeSync;
+    const heldBusy = () => Object.assign(new Error('held file'), { code: 'EBUSY' });
+    heldFs.openSync = function(path, ...options) {
+      if (String(path).endsWith('held-open')) throw heldBusy();
+      const descriptor = heldOpen(path, ...options);
+      if (String(path).endsWith('locked-range')) heldDescriptors.add(descriptor);
+      return descriptor;
+    };
+    heldFs.readSync = function(descriptor, ...options) {
+      if (heldDescriptors.has(descriptor)) throw heldBusy();
+      return heldRead(descriptor, ...options);
+    };
+    heldFs.closeSync = function(descriptor) {
+      heldDescriptors.delete(descriptor);
+      return heldClose(descriptor);
+    };
+  `
   return { ...actual, Worker: class extends actual.Worker {
     constructor(filename: ConstructorParameters<typeof actual.Worker>[0], options?: ConstructorParameters<typeof actual.Worker>[1]) {
       super(typeof filename === 'string' && options?.eval ? fault + filename : filename, options)
@@ -73,20 +94,20 @@ describe('a capture on Windows, imitated, beside a file another program holds op
     expect(notRestorablePaths(before, after)).toEqual(['/ws/a', '/ws/b'])
   })
 
-  it('records a write beside the held file, and refuses a restore that would remove the directory holding it', async () => {
+  it.each(['held-open', 'locked-range'])('records a write beside %s, and refuses a restore that would remove the directory holding it', async (name) => {
     const { root, workspace: ws } = workspace()
-    writeFileSync(join(ws, 'held-open'), 'held')
+    writeFileSync(join(ws, name), 'held')
     const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30, platform: 'win32' })
     try {
       const details = { sessionId: 'held', stageId: 'stage', tool: 'fs_write', roots: [ws] }
       await history.run(details, async () => { writeFileSync(join(ws, 'notes.md'), 'notes') })
-      await history.run(details, async () => { mkdirSync(join(ws, 'out')); writeFileSync(join(ws, 'out', 'held-open'), 'log') })
+      await history.run(details, async () => { mkdirSync(join(ws, 'out')); writeFileSync(join(ws, 'out', name), 'log') })
       const [first, second] = await history.list()
       expect(first!.paths).toEqual([join(ws, 'notes.md')])
       expect(second!.paths).toEqual([join(ws, 'out')])
-      expect(second!.notRestorable).toEqual([join(ws, 'out', 'held-open')])
+      expect(second!.notRestorable).toEqual([join(ws, 'out', name)])
       await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a file another program held open, which history could not read')
-      expect(readFileSync(join(ws, 'out', 'held-open'), 'utf8')).toBe('log')
+      expect(readFileSync(join(ws, 'out', name), 'utf8')).toBe('log')
     } finally { await history.close() }
   })
 })
