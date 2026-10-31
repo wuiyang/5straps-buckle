@@ -13,7 +13,7 @@ import type { UntrustedRoots } from '../../domain/executable.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
-import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError, type CapturedState, type TreeCapture } from './git-store.js'
+import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError, type CapturedState } from './git-store.js'
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
 import { captureHashes, HistoryCaptureSafetyError } from './capture-hashes.js'
@@ -84,6 +84,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     else state.checkpoints[index] = saved
     await save(state)
   }
+  async function repairRefs(state: State): Promise<void> {
+    reconcile = true
+    await store.reconcile(state.checkpoints)
+    reconcile = false
+  }
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
     const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
@@ -112,7 +117,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   function completeCall(sessionId: string, turn: string): void { activity.complete(sessionId, turn, now()) }
   function finishCall(sessionId: string, stageId: string | undefined, turn: string): void { activity.finish(sessionId, stageId, turn, now()) }
-  function latestTrees(): TreeCapture[] { return records().findLast(record => record.afterTrees?.length)?.afterTrees ?? [] }
   async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
     pending()
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
@@ -120,7 +124,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const id = `change-${randomUUID()}`
     let captured: CapturedState
     let baselineAvailable = true
-    try { captured = await store.capture({ roots: details.roots, excluded: details.excluded, id, phase: 'before', parents: latestTrees() }) }
+    try { captured = await store.capture({ roots: details.roots, excluded: details.excluded, id, phase: 'before' }) }
     catch (error) { if (error instanceof HistoryCaptureSafetyError) throw error; baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: 'History could not capture the before state; this write continues without restorable content or a complete changed-path list' }; logger.warn(`Checkpoint ${id}: ${captured.reason}`, { phase: 'before', ...(error instanceof HistoryGitError ? error.details : {}) }) }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable, before: captured.snapshot, beforeTrees: captured.trees, restorable: captured.restorable, ...(captured.reason ? { reason: captured.reason } : {}), ...restore }
     await saveRecord(record)
@@ -139,12 +143,18 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       await saveRecord(record)
       await pruneRetained(record)
     } catch (error) {
+      refreshTrees({ record, state: read() })
       record.status = 'interrupted'; record.restorable = false
       record.reason = 'History capture did not finish; this checkpoint is not restorable. Later writes can continue'
       compact(record)
       await saveRecord(record)
       logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', ...(error instanceof HistoryGitError ? error.details : {}) })
     }
+  }
+  function refreshTrees(input: { record: Checkpoint; state: State }): void {
+    const persisted = input.state.checkpoints.find(saved => saved.id === input.record.id)
+    if (persisted?.beforeTrees) input.record.beforeTrees = persisted.beforeTrees
+    if (persisted?.afterTrees) input.record.afterTrees = persisted.afterTrees
   }
   async function pruneRetained(current?: Checkpoint): Promise<void> {
     const state = read()
@@ -162,24 +172,26 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       }
     }
     if (store.available) {
-      for (const record of dropped) await store.removeRefs(record.id, [...record.beforeTrees ?? [], ...record.afterTrees ?? []])
-      const removed = reconcile ? await store.reconcile(state.checkpoints) : false
-      if (dropped.length || removed) await store.reparent(state.checkpoints)
-      reconcile = false
+      if (await store.isolate(state.checkpoints)) reconcile = true
     } else reconcile = true
+    if (dropped.length > 0) reconcile = true
+    // Publish staged commit IDs and dropped records before changing or deleting their canonical refs.
+    await save(state)
+    if (current) refreshTrees({ record: current, state })
+    if (store.available && reconcile) await repairRefs(state)
     if (store.available && store.bytes() > input.maxBytes) await store.pruneLoose()
     if (store.bytes() > input.maxBytes && current) {
       const retained = state.checkpoints.find(record => record.id === current.id)
       if (retained) {
         retained.restorable = false; current.restorable = false
         retained.reason = current.reason = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
-        if (store.available) await store.removeRefs(current.id, [...current.beforeTrees ?? [], ...current.afterTrees ?? []])
         retained.beforeTrees = []; retained.afterTrees = []; current.beforeTrees = []; current.afterTrees = []
-        if (store.available) await store.pruneLoose()
+        reconcile = true
+        await save(state)
+        if (store.available) { await repairRefs(state); await store.pruneLoose() }
         logger.warn(`Checkpoint ${current.id}: ${current.reason}`)
       }
     }
-    await save(state)
     scheduleCollection()
   }
   function scheduleCollection(): void {
@@ -191,6 +203,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         const state = read()
         if (now() - state.lastGcAt < GC_INTERVAL_MS) return
         const trees = state.checkpoints.flatMap(record => [...record.beforeTrees ?? [], ...record.afterTrees ?? []])
+        await repairRefs(state)
         await store.collect(trees)
         state.lastGcAt = now(); await save(state)
       }, { immediate: true }).catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History garbage collection did not finish') }).finally(() => { gc = undefined })
