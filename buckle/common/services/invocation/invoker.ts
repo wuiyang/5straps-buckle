@@ -4,6 +4,7 @@ import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, lstatSync, realpathSync } from 'node:fs'
 import { basename, isAbsolute } from 'pathe'
 import { HistoryRecoveryNeededError, type ChangeHistory } from '../history/journal.js'
+import { missingParents, type ScopePath } from '../history/scoped-capture.js'
 import type { ApprovalWait, DeniedRunReport, InvokeRequest, InvokeResponse, JsonObject, JsonValue, PermissionRuleId, GrantSubject, WorkspacePolicy } from '@5straps/protocol'
 import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from '../../domain/delete-policy.js'
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
@@ -315,11 +316,14 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
             const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
             const roots = [...options.historyRoots?.() ?? [], ...writes.map(checkpointRoot)]
-            const tracksChanges = writes.length > 0 || effects.some(effect => effect.kind === 'exec') && request.tool !== 'browser_command'
+            const runsProgram = effects.some(effect => effect.kind === 'exec')
+            const tracksChanges = writes.length > 0 || runsProgram && request.tool !== 'browser_command'
+            // A file tool names every path it changes: its checkpoint records those alone (Slice F2, item 1).
+            const scope = prepared.scopedHistory && !runsProgram ? historyScope(writes) : undefined
             // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
             // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
             const output = options.history && tracksChanges && !prepared.managesHistory
-              ? await options.history.run({ sessionId, stageId: historyStage(request, via), turnStageId: request.context?.stageId ?? null, ...(via ? { parentRequestId: via.parentRequestId } : {}), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)] }, execute, stop)
+              ? await options.history.run({ sessionId, stageId: historyStage(request, via), turnStageId: request.context?.stageId ?? null, ...(via ? { parentRequestId: via.parentRequestId } : {}), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)], ...(scope ? { scope } : {}) }, execute, stop)
               : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
             // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
             // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
@@ -956,6 +960,20 @@ function checkpointRoot(effect: Extract<ResolvedEffect, { kind: 'write_path' | '
   let path = entry ? effect.directory : effect.path
   while (!existsSync(path) && parentDirectory(path) !== path) path = parentDirectory(path)
   return nativePath(realpathSync(path))
+}
+
+/**
+ * The paths a file tool's checkpoint records (Slice F2, item 1): each path its write and delete effects name, a deleted,
+ * moved, or landed folder with everything in it, and each missing folder above a written path, which the write may make.
+ */
+function historyScope(writes: Array<Extract<ResolvedEffect, { kind: 'write_path' | 'delete_path' }>>): ScopePath[] {
+  const scope = new Map<string, ScopePath>()
+  for (const effect of writes) {
+    const tree = effect.kind === 'delete_path' || effect.folder === true || scope.get(effect.path)?.tree === true
+    scope.set(effect.path, { path: effect.path, ...(tree ? { tree: true } : {}) })
+    for (const parent of missingParents(effect.path)) if (!scope.has(parent)) scope.set(parent, { path: parent })
+  }
+  return [...scope.values()]
 }
 
 async function executeWithTimeout(input: {

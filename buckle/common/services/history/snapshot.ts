@@ -15,7 +15,7 @@ import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePa
  * key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
  * program held open without read sharing (EBUSY), so its content could not be read.
  */
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size']).optional(), hash: z.string().optional(), target: z.string().optional() })
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit']).optional(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>

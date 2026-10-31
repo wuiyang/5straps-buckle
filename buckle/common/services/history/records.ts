@@ -8,5 +8,10 @@ export const checkpointSchema = z.object({
   before: snapshotSchema, after: snapshotSchema.optional(), beforeTrees: z.array(treeCaptureSchema).optional(), afterTrees: z.array(treeCaptureSchema).optional(),
   restores: z.string().optional(), undoes: z.number().int().min(1).optional(), turnId: z.string().optional(), turnStageId: z.string().nullable().optional(),
   restorable: z.boolean().optional(), legacy: z.boolean().optional(), changed: z.array(z.string()).optional(),
+  /**
+   * `blobs`: a checkpoint of the paths its call names (Slice F2, item 1), its file content in the history's object store
+   * (object-store.ts) and `scope` the paths it records; absent, the shadow-git checkpoint `beforeTrees` and `afterTrees` hold.
+   */
+  content: z.literal('blobs').optional(), scope: z.array(z.object({ path: z.string(), tree: z.boolean().optional() })).optional(),
 })
 export type Checkpoint = z.infer<typeof checkpointSchema>

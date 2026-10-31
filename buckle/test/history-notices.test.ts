@@ -19,10 +19,10 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function workspace(hostGit: boolean) {
+async function workspace(hostGit: boolean, environment: NodeJS.ProcessEnv = {}) {
   const root = mkdtempSync(join(tmpdir(), 'history-notice-')); roots.push(root)
   const path = join(root, 'workspace'); mkdirSync(path)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: path, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: String(hostGit), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: path, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: String(hostGit), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1', ...environment })
   const runtime = await createRuntime({ config }); runtimes.push(runtime)
   return { path, config, runtime }
 }
@@ -36,9 +36,19 @@ async function mcpWrite(node: Awaited<ReturnType<typeof workspace>>) {
   return json.result as { content: Array<{ text: string }>; _meta?: Record<string, unknown> }
 }
 
-it.each([['host git disabled', false], ['file cap exceeded', true]] as const)('MCP warns after a real write when %s', async (_label, hostGit) => {
+// A file tool's checkpoint keeps its content in history's own object store (Slice F2, items 1 and 4), so host git off
+// leaves an fs_write restorable, with nothing to warn of; a file over the content cap still warns.
+it('MCP adds no history warning after a real write without host git', async () => {
+  const node = await workspace(false)
+  const result = await mcpWrite(node)
+  expect(readFileSync(join(node.path, 'note.txt'), 'utf8')).toBe('hello')
+  expect(result.content[1]).toBeUndefined()
+  expect(result._meta?.['5straps/history']).toBeUndefined()
+})
+
+it.each([['host git disabled', false], ['host git allowed', true]] as const)('MCP warns after a real write over the file cap with %s', async (_label, hostGit) => {
   const node = await workspace(hostGit)
-  if (hostGit) node.runtime.history.configure({ maxFileBytes: 1 })
+  node.runtime.history.configure({ maxFileBytes: 1 })
   const result = await mcpWrite(node)
   expect(readFileSync(join(node.path, 'note.txt'), 'utf8')).toBe('hello')
   expect(JSON.parse(result.content[0]!.text)).toBeTruthy()
@@ -46,12 +56,14 @@ it.each([['host git disabled', false], ['file cap exceeded', true]] as const)('M
   expect(result._meta?.['5straps/history']).toMatchObject({ checkpoint: expect.stringMatching(/^change-/) })
 })
 
-it('CLI keeps tool JSON on stdout and warns on stderr after a real write without host git', async () => {
-  const node = await workspace(false)
+it('CLI keeps tool JSON on stdout and warns on stderr after a real write over the file cap without host git', async () => {
+  const node = await workspace(false, { BUCKLE_ADMIN_TOKEN: 'history-notices-admin-credential' })
   await node.runtime.grants.grant({ sessionId: 'cli', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'session' })
   let out = ''; let err = ''
   vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { out += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
+  expect((await runCli({ argv: ['workspace', 'set', 'history.maxFileBytes', '1'], config: node.config, confirm: null })).exitCode).toBe(0)
+  out = ''; err = ''
   const result = await runCli({ argv: ['call', 'fs_write', '--json', JSON.stringify({ path: 'cli.txt', content: 'hello' })], config: node.config, confirm: null })
   expect(result.exitCode).toBe(0)
   expect(JSON.parse(out)).toBeTruthy()

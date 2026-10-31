@@ -62,6 +62,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_write',
+      scopedHistory: true,
       description: 'Write one file, replacing its contents.',
       risk: 'write',
       tags: ['filesystem'],
@@ -72,6 +73,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_write_batch',
+      scopedHistory: true,
       description: 'Write up to 100 files in one call.',
       risk: 'write',
       tags: ['filesystem', 'batch'],
@@ -82,6 +84,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_patch',
+      scopedHistory: true,
       description: 'Apply exact text replacements to a file. Every edit must match or nothing is written.',
       risk: 'write',
       tags: ['filesystem'],
@@ -92,6 +95,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_apply_patch',
+      scopedHistory: true,
       description: 'Apply a unified diff to one or more files. Every hunk must match exactly or nothing is written.',
       risk: 'write',
       tags: ['filesystem', 'batch'],
@@ -105,6 +109,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_delete',
+      scopedHistory: true,
       description: 'Delete files, links, or folders. A link is removed, not followed; a folder holding entries needs recursive. Inside the workspace folder a delete runs where writes are granted, unless the owner set deletes to ask; a delete outside it, of a folder at its top, or of many entries in one call or one script asks a person.',
       risk: 'write',
       tags: ['filesystem', 'batch'],
@@ -116,6 +121,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     }),
     defineTool(PACK_ID, {
       name: 'fs_move',
+      scopedHistory: true,
       description: 'Move or rename a file, link, or folder. A folder to, or a trailing slash, moves into it by name. replace must match what stands at the destination: false (the default) refuses if anything does, true refuses if nothing does and otherwise replaces it, a folder with everything in it. Moving a whole folder warns and asks for approval even where writes are granted. What it replaces is judged as fs_delete judges a delete.',
       risk: 'write',
       tags: ['filesystem'],
@@ -148,6 +154,7 @@ export function createFsPack(options: FsPackOptions): Pack {
     // run by the files route alone with the bytes beside the call, so none passes through a model.
     defineTool(PACK_ID, {
       name: 'fs_receive',
+      scopedHistory: true,
       description: 'Receive one file buckle cp sends, from the body of PUT /v1/files.',
       risk: 'write',
       tags: ['filesystem', 'transfer'],

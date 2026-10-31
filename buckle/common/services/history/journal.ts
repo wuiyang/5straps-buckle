@@ -1,8 +1,8 @@
 import { RuntimeError } from '@5straps/runtime'
 import { SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
-import { isInside } from '../../domain/paths.js'
-import { randomUUID } from 'node:crypto'
+import { isInside, parentDirectory } from '../../domain/paths.js'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'pathe'
 import { z } from 'zod'
@@ -19,11 +19,18 @@ import { checkpointSchema, type Checkpoint } from './records.js'
 import { captureHashes, HistoryCaptureSafetyError } from './capture-hashes.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS, retainedTurns } from './turn-retention.js'
 import { openHistoryActivity } from './activity.js'
+import { blobId, HistoryContentError, openObjectStore } from './object-store.js'
+import { captureScope, missingParents, unknownChildren, type ScopePath } from './scoped-capture.js'
 export { HistoryBusyError } from './execution-lock.js'
 
-export interface HistoryInput { sessionId: string; stageId?: string | undefined; turnStageId?: string | null; tool: string; requestId?: string; parentRequestId?: string; roots: string[]; excluded?: string[] }
+/**
+ * `scope`: the paths the call changes, where its tool names every one (a file tool, Slice F2 item 1). The checkpoint then
+ * records those paths alone, content in the object store, with no walk of `roots` and no git; absent, `roots` are captured
+ * whole through shadow git.
+ */
+export interface HistoryInput { sessionId: string; stageId?: string | undefined; turnStageId?: string | null; tool: string; requestId?: string; parentRequestId?: string; roots: string[]; excluded?: string[]; scope?: ScopePath[] }
 export type CheckpointSummary = ReturnType<typeof summary>
-export type RestoreBy = Omit<HistoryInput, 'roots' | 'excluded'>
+export type RestoreBy = Omit<HistoryInput, 'roots' | 'excluded' | 'scope'>
 export const RECENT_CHECKPOINTS_MAX = 100
 export type RollbackTarget = RestoreTarget
 export interface RollbackPlan { checkpoint: string; head: string; undoes: number; changes: Array<{ path: string; kind: ChangeKind }> }
@@ -53,6 +60,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const file = join(input.directory, 'checkpoints.json')
   const now = input.now ?? Date.now
   const settings = { keepTurns: input.keepTurns ?? DEFAULT_HISTORY_KEEP_TURNS, turnIdleMs: input.turnIdleMs ?? DEFAULT_HISTORY_TURN_IDLE_MS, maxFileBytes: input.maxFileBytes ?? DEFAULT_HISTORY_FILE_BYTES, allowHostGit: input.allowHostGit !== false }
+  const objects = openObjectStore(input.directory)
+  const scopeLimits = () => ({ maxFileBytes: settings.maxFileBytes, maxTreeBytes: input.maxBytes, excluded: [...input.excluded, input.directory], ...(input.platform ? { platform: input.platform } : {}) })
   const store = createGitStore({ directory: input.directory, excluded: input.excluded, maxFileBytes: () => settings.maxFileBytes, allowed: () => settings.allowHostGit, ...(input.untrusted ? { untrusted: input.untrusted } : {}), ...(input.platform ? { platform: input.platform } : {}) })
   let closed = false
   let gc: Promise<void> | undefined
@@ -78,7 +87,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   async function saveRecord(record: Checkpoint): Promise<void> {
     const state = read()
-    const saved = record.status === 'pending' ? { ...record, before: {}, after: undefined } : record
+    // A shadow-git checkpoint's before state is in its trees; a scoped one's is the record itself, which recovery reads.
+    const saved = record.status === 'pending' && record.content !== 'blobs' ? { ...record, before: {}, after: undefined } : record
     const index = state.checkpoints.findIndex(item => item.id === record.id)
     if (index === -1) state.checkpoints.push(saved)
     else state.checkpoints[index] = saved
@@ -118,6 +128,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function completeCall(sessionId: string, turn: string): void { activity.complete(sessionId, turn, now()) }
   function finishCall(sessionId: string, stageId: string | undefined, turn: string): void { activity.finish(sessionId, stageId, turn, now()) }
   async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
+    if (details.scope) return beginScoped({ ...details, scope: details.scope }, restore)
     pending()
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
     const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
@@ -130,7 +141,38 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     await saveRecord(record)
     return record
   }
+  async function beginScoped(details: HistoryInput & { scope: ScopePath[] }, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
+    pending()
+    const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
+    const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
+    const id = `change-${randomUUID()}`
+    let before: Snapshot = {}
+    let reason: string | undefined
+    try { before = await captureScope({ scope: details.scope, store: objects, ...scopeLimits() }) }
+    catch (error) { reason = 'History could not record the files before this call; it ran without restorable content'; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
+    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', ...restore }
+    await saveRecord(record)
+    return record
+  }
+  async function finishScoped(record: Checkpoint): Promise<void> {
+    try {
+      const after = await captureScope({ scope: record.scope ?? [], store: objects, ...scopeLimits() })
+      if (!record.baselineAvailable) record.before = after
+      record.after = after
+      record.changed = changedPaths(record.before, after)
+      record.status = 'complete'
+    } catch (error) {
+      record.after ??= record.before
+      record.status = 'interrupted'; record.restorable = false
+      record.reason = 'History could not record the files after this call; this checkpoint is not restorable. Later writes can continue'
+      logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
+    }
+    compact(record)
+    await saveRecord(record)
+    try { await pruneRetained(record) } catch (error) { logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) }) }
+  }
   async function finish(record: Checkpoint): Promise<void> {
+    if (record.content === 'blobs') return finishScoped(record)
     try {
       const captured = await store.capture({ roots: record.roots, excluded: record.excluded, id: record.id, phase: 'after', parents: record.beforeTrees })
       record.after = captured.snapshot
@@ -161,6 +203,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const keep = retainedTurns({ records: state.checkpoints, keep: settings.keepTurns })
     const dropped = state.checkpoints.filter(record => record.status !== 'pending' && !keep.has(record.turnId ?? record.id))
     state.checkpoints = state.checkpoints.filter(record => !dropped.includes(record))
+    // A scoped checkpoint that drops none of shadow git's own keeps git out of its call: no process, no walk (item 1).
+    if (current?.content === 'blobs' && !dropped.some(hasTrees)) return pruneBlobs({ state, dropped, current })
     if (store.available && store.bytes() > input.maxBytes && current) {
       const turns = [...new Set(state.checkpoints.map(record => record.turnId ?? record.id))]
       for (const turn of turns) {
@@ -192,7 +236,47 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         logger.warn(`Checkpoint ${current.id}: ${current.reason}`)
       }
     }
+    if (dropped.some(record => record.content === 'blobs')) sweepBlobs(state)
     scheduleCollection()
+  }
+  /**
+   * Drops whole oldest turns while the object store is over the rolling cap, never the current one, then removes the
+   * blobs no retained checkpoint names. Over the cap with the current turn alone, the current checkpoint keeps its paths
+   * but no restorable content. Retained checkpoints are never rewritten and the workspace is never read again.
+   */
+  async function pruneBlobs(prune: { state: State; dropped: Checkpoint[]; current: Checkpoint }): Promise<void> {
+    const { state, current } = prune
+    let changed = prune.dropped.length > 0
+    if (changed) sweepBlobs(state)
+    if (objects.bytes() > input.maxBytes) {
+      for (const turn of [...new Set(state.checkpoints.map(record => record.turnId ?? record.id))]) {
+        if (turn === current.turnId || objects.bytes() <= input.maxBytes) continue
+        const remove = state.checkpoints.filter(record => (record.turnId ?? record.id) === turn && record.status !== 'pending')
+        if (remove.some(hasTrees)) continue
+        state.checkpoints = state.checkpoints.filter(record => !remove.includes(record)); changed = true
+        sweepBlobs(state)
+      }
+      const retained = state.checkpoints.find(record => record.id === current.id)
+      if (objects.bytes() > input.maxBytes && retained && retained.restorable !== false) {
+        retained.restorable = current.restorable = false
+        retained.reason = current.reason = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
+        changed = true
+        logger.warn(`Checkpoint ${current.id}: ${current.reason}`)
+      }
+    }
+    if (!changed) return
+    await save(state)
+    sweepBlobs(state)
+  }
+  /** Removes each blob no retained, restorable checkpoint names (a pending one's included). */
+  function sweepBlobs(state: State): void {
+    const named = new Set<string>()
+    for (const record of state.checkpoints) {
+      if (record.content !== 'blobs' || record.status !== 'pending' && record.restorable === false) continue
+      for (const entry of [...Object.values(record.before), ...Object.values(record.after ?? {})]) if (entry.kind === 'file' && entry.hash) named.add(entry.hash)
+    }
+    for (const id of objects.list()) if (!named.has(id)) objects.remove(id)
+    objects.recount()
   }
   function scheduleCollection(): void {
     if (!store.available || gc || gcTimer || now() - read().lastGcAt < GC_INTERVAL_MS) return
@@ -230,33 +314,65 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (index === -1) throw new RestoreRefusedError(`No checkpoint ${target.id} is among the newest ${RECENT_CHECKPOINTS_MAX}; history_list names them`)
     return recent.slice(0, index + 1).reverse()
   }
+  /**
+   * Puts `record`'s paths back as they were before it (item 2): only the paths it changed, each read from the disk now
+   * and required to stand as the newest checkpoint left it, or the restore is refused naming that path. No ignore rule
+   * decides what is written or removed. The restore is a scoped checkpoint of its own, so it can be undone.
+   */
   async function restoreRecord(record: Checkpoint, by?: RestoreBy, undoes?: number) {
     if (!record.after) throw new RestoreRefusedError('Completed checkpoint not found')
-    if (!store.available) throw new RestoreRefusedError('Content restoration requires permitted trusted host git')
     if (record.restorable === false) throw new RestoreRefusedError(record.reason ?? 'Content restoration requires permitted trusted host git')
     const paths = changedPaths(record.before, record.after)
     assertExcludedUntouched(paths, [...input.excluded, ...record.excluded ?? []])
-    const restore = await begin({ ...(by ?? { sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore' }), roots: record.roots, excluded: record.excluded }, { restores: record.id, undoes })
+    assertShadowReachable(record, paths)
+    const restore = await beginScoped({ ...(by ?? { sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore' }), roots: record.roots, ...(record.excluded ? { excluded: record.excluded } : {}), scope: restoreScope(paths, record) }, { restores: record.id, undoes })
     let applying = false
     try {
-      assertSnapshotMatches({ current: restore.before, expected: record.after, target: record.before, paths, operation: 'Restore' })
-      const content = await store.restoreContent({ trees: record.beforeTrees ?? [], target: record.before, paths })
+      if (!restore.baselineAvailable) throw new RestoreRefusedError('History could not read the files this restore would change, so nothing was restored')
+      const current = withRemovedChildren({ current: restore.before, expected: record.after, target: record.before, paths })
+      assertSnapshotMatches({ current, expected: record.after, target: record.before, paths, operation: 'Restore' })
+      const content = await restoredContent(record, paths)
       applying = true
-      applySnapshot({ target: record.before, current: restore.before, paths, roots: record.roots, content: hash => { const value = content.get(hash); if (!value) throw new Error('History content is missing'); return value } })
+      applySnapshot({ target: record.before, current, paths, roots: record.roots, content: hash => { const value = content.get(hash); if (!value) throw new Error('History content is missing'); return value } })
     } catch (error) {
       if (applying) {
-        await finish(restore); restore.status = 'interrupted'; restore.reason = 'Restore stopped after some paths may have changed; history_list shows this interrupted checkpoint'; await saveRecord(restore)
+        await finish(restore); restore.status = 'interrupted'; restore.restorable = false; restore.reason = 'Restore stopped after some paths may have changed; history_list shows this interrupted checkpoint'; await saveRecord(restore)
         logger.warn(`Checkpoint ${restore.id}: ${restore.reason}`)
         throw new RestoreRefusedError(restore.reason, { cause: error })
       }
       const state = read(); state.checkpoints = state.checkpoints.filter(item => item.id !== restore.id); await save(state)
-      await store.removeRefs(restore.id, restore.beforeTrees ?? [])
+      sweepBlobs(state)
       if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error, ...(error.path === undefined ? {} : { path: error.path }) })
       throw error
     }
     await finish(restore)
     return { ...summary(restore), notRestorable: notRestorablePaths(record.before, record.after) }
   }
+  /** A checkpoint made before the object store keeps its content in shadow git, which a restore of it needs (item 7). */
+  function assertShadowReachable(record: Checkpoint, paths: string[]): void {
+    const needed = paths.find(path => { const entry = record.before[path]; return entry?.kind === 'file' && entry.hash !== undefined && !objects.has(entry.hash) })
+    if (needed === undefined) return
+    if (!record.beforeTrees?.length) throw new RestoreRefusedError('History content for a path this restore puts back is missing, so nothing was restored', { path: needed })
+    if (!store.available) throw new RestoreRefusedError('Content restoration requires permitted trusted host git')
+  }
+  /** Each file a restore writes, read back and checked against the id its checkpoint recorded: from the object store, else shadow git. */
+  async function restoredContent(record: Checkpoint, paths: string[]): Promise<Map<string, Buffer>> {
+    const content = new Map<string, Buffer>()
+    const shadow: string[] = []
+    for (const path of paths) {
+      const hash = record.before[path]?.kind === 'file' ? record.before[path]!.hash : undefined
+      if (hash === undefined || content.has(hash)) continue
+      if (!objects.has(hash)) { shadow.push(path); continue }
+      try { content.set(hash, await objects.read(hash)) }
+      catch (error) { if (error instanceof HistoryContentError) throw new RestoreRefusedError('History content for a path this restore puts back is missing or damaged, so nothing was restored', { cause: error, path }); throw error }
+    }
+    if (shadow.length) for (const [hash, value] of await store.restoreContent({ trees: record.beforeTrees ?? [], target: record.before, paths: shadow })) {
+      if (!matchesObject(hash, value)) throw new RestoreRefusedError('History content no longer matches its checkpoint, so nothing was restored')
+      content.set(hash, value)
+    }
+    return content
+  }
+
   async function hydrate(record: Checkpoint): Promise<Checkpoint> {
     if (!record.beforeTrees?.length) return record
     record.before = Object.assign({}, ...await Promise.all(record.beforeTrees.map(store.loadTree)))
@@ -275,7 +391,16 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       return { checkpoints: shown.map((record, index) => ({ ...summary(record), current: index === 0 && record.status !== 'pending' })), more: found.length > shown.length }
     },
     async plan(target: RollbackTarget): Promise<RollbackPlan> {
-      try { return await locked(async () => { const selected = since(target); const unavailable = selected.find(record => record.restorable === false); if (unavailable) throw new RestoreRefusedError(unavailable.reason ?? 'Content restoration requires permitted trusted host git'); return planOf(selected) }, { immediate: true }) }
+      try {
+        return await locked(async () => {
+          const selected = since(target)
+          const unavailable = selected.find(record => record.restorable === false)
+          if (unavailable) throw new RestoreRefusedError(unavailable.reason ?? 'Content restoration requires permitted trusted host git')
+          const chain = chained(selected)
+          assertShadowReachable({ ...selected[0]!, ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []) }, changedPaths(chain.before, chain.after))
+          return planOf(selected, chain)
+        }, { immediate: true })
+      }
       catch (error) { if (error instanceof HistoryBusyError) throw new RestoreRefusedError('Another call is changing the files now; try again once it finishes'); offer(error); throw error }
     },
     async rollback(input: { target: RollbackTarget; by: RestoreBy; onLocked?: () => void; check?: (plan: RollbackPlan) => void; signal?: AbortSignal }) {
@@ -339,6 +464,36 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
 
+function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
+/** What a log line may say of a failure: its kind and system code, never its message, which can name the owner's paths. */
+function causeOf(error: unknown): Record<string, string> {
+  const code = error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined
+  return { error: error instanceof Error ? error.constructor.name : 'Unknown', ...(code ? { code } : {}) }
+}
+/** Whether content is the git blob `hash` names, as SHA-1 or SHA-256 git names it by its length. */
+function matchesObject(hash: string, content: Buffer): boolean {
+  if (hash.length === 40) return blobId(content) === hash
+  return createHash('sha256').update(`blob ${content.length}\0`).update(content).digest('hex') === hash
+}
+/**
+ * What a restore reads before it changes `paths`: each path, each folder above one that the checkpoint recorded (its
+ * parent check), and each missing folder above a path it puts back, which writing that path makes.
+ */
+function restoreScope(paths: string[], recorded: { before: Snapshot; after?: Snapshot | undefined }): ScopePath[] {
+  const scope = new Map<string, ScopePath>()
+  for (const path of paths) {
+    scope.set(path, { path })
+    for (let parent = parentDirectory(path); parent !== parentDirectory(parent); parent = parentDirectory(parent)) if (recorded.after?.[parent] !== undefined) scope.set(parent, { path: parent })
+    if (recorded.before[path] !== undefined) for (const parent of missingParents(path)) scope.set(parent, { path: parent })
+  }
+  return [...scope.values()]
+}
+/** The current state with what stands on disk inside each folder a restore removes: an entry no checkpoint names there is a conflict. */
+function withRemovedChildren(input: { current: Snapshot; expected: Snapshot; target: Snapshot; paths: string[] }): Snapshot {
+  const current = { ...input.current }
+  for (const path of input.paths) if (input.current[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') Object.assign(current, unknownChildren(path, current))
+  return current
+}
 function summary(record: Checkpoint) {
   return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, turnId: record.turnId ?? record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, reason: record.reason, restores: record.restores, undoes: record.undoes, restorable: record.restorable !== false, legacy: record.legacy, paths: record.after ? changedPaths(record.before, record.after) : [], changed: record.changed ?? [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
 }

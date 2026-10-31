@@ -183,6 +183,11 @@ export interface ToolDefinition<TInput, TJudged = undefined> {
    */
   managesHistory?: boolean
   /**
+   * Changes only the paths its write and delete effects name (the fs pack's file tools), so its checkpoint records those
+   * paths alone, before and after the call, with no walk of the workspace and no git (Slice F2, item 1).
+   */
+  scopedHistory?: boolean
+  /**
    * Runs under the workspace's history write lock even where it declares no write, so no other call writes
    * while it runs: git_push, whose launch checks read the repository config git then reads (review H3).
    */
@@ -258,6 +263,7 @@ export interface RegisteredTool {
 
 export interface PreparedCall {
   managesHistory?: boolean
+  scopedHistory?: boolean
   exclusive?: boolean
   reachesTools?: boolean
   timeoutMs?: number
@@ -368,6 +374,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
       const judged = (definition.judge ? definition.judge(input) : undefined) as TJudged
       return {
         managesHistory: definition.managesHistory,
+        ...(definition.scopedHistory ? { scopedHistory: true } : {}),
         exclusive: definition.exclusive,
         ...(definition.reachesTools ? { reachesTools: true } : {}),
         ...(definition.timeoutMs ? { timeoutMs: definition.timeoutMs(input) } : {}),

@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,6 +8,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { mountSourceState, validateSandboxMounts } from '../common/domain/sandbox-mounts.js'
 import { loadConfig, sandboxBinds } from '../common/runtime/config.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
+import { openObjectStore } from '../common/services/history/object-store.js'
 import { checkpointRoots } from '../common/services/workspaces/workspace-runtime.js'
 import { withOwnerMounts } from '../common/services/workspaces/workspace-settings.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
@@ -168,9 +168,13 @@ describe('a mount whose source is gone', () => {
     const [key] = readdirSync(history).filter(name => !name.startsWith('.'))
     const records = (JSON.parse(readFileSync(join(history, key!, 'checkpoints.json'), 'utf8')) as { checkpoints: Array<{ roots: string[] }> }).checkpoints
     const roots = records.map(record => record.roots)
-    const copied = execFileSync('git', ['--git-dir', join(history, key!, 'git'), 'cat-file', '--batch-all-objects', '--batch']).toString()
+    // A file tool's checkpoint keeps its content in history's object store, never in shadow git (Slice F2, items 1 and 4).
+    const store = openObjectStore(join(history, key!))
+    const copied = (await Promise.all(store.list().map(id => store.read(id)))).map(String).join('\n')
     expect(roots).toEqual([[join(root, 'site')]])
+    expect(store.list().length).toBeGreaterThan(0)
     expect(copied).not.toContain('owner secret')
+    expect(existsSync(join(history, key!, 'git'))).toBe(false)
     await manager.close()
   })
 
