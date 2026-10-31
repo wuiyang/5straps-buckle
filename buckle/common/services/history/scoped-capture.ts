@@ -21,6 +21,8 @@ export interface ScopeCapture {
   scope: readonly ScopePath[]
   /** Where content is kept; absent, each file is hashed only, as a restore checks the current state. */
   store?: Pick<ObjectStore, 'put'>
+  /** With no store, how a file is hashed: its git blob id unless given (a promotion compares SHA-256 snapshots). */
+  digest?: (content: Buffer) => string
   maxFileBytes: number
   /** The bytes one folder's tree may hold before it is recorded without content (reason `limit`). */
   maxTreeBytes: number
@@ -126,7 +128,7 @@ async function entryOf(input: { path: string; stat: Stats; input: ScopeCapture; 
   const content = await readStable(path, stat, input.platform) ?? await readStable(path, inspect(path) ?? stat, input.platform)
   if (content === undefined) return undefined
   if (content === null) return { kind: 'unreadable', mode }
-  const hash = input.input.store ? await input.input.store.put(content) : blobId(content)
+  const hash = input.input.store ? await input.input.store.put(content) : (input.input.digest ?? blobId)(content)
   return { kind: 'file', mode, hash }
 }
 
@@ -155,7 +157,7 @@ function inspect(path: string): Stats | null | undefined {
 }
 
 /** A mode as history records it: the permission bits, read on Windows as its read-only flag gives them (git's 644 and 755). */
-function modeOf(stat: Stats): number {
+export function modeOf(stat: Stats): number {
   const mode = stat.mode & 0o777
   if (process.platform !== 'win32' || stat.isSymbolicLink()) return mode
   if (stat.isDirectory()) return mode & 0o200 ? 0o755 : 0o555

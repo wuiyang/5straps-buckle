@@ -13,5 +13,7 @@ export const checkpointSchema = z.object({
    * (object-store.ts) and `scope` the paths it records; absent, the shadow-git checkpoint `beforeTrees` and `afterTrees` hold.
    */
   content: z.literal('blobs').optional(), scope: z.array(z.object({ path: z.string(), tree: z.boolean().optional() })).optional(),
+  /** A command's checkpoint: how many entries its workspace's ignore rules cover changed, none of them stored (Slice F2, item 3). */
+  ignored: z.number().int().nonnegative().optional(),
 })
 export type Checkpoint = z.infer<typeof checkpointSchema>

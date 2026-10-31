@@ -60,7 +60,8 @@ describe('Git-backed file history', () => {
 
   it('refuses to remove newly added descendants of an agent-created directory', async () => {
     const { workspace, history, details } = await fixture()
-    await history.run(details, async () => { mkdirSync(join(workspace, 'new')) })
+    // Git keeps files, never an empty folder, so the folder a command makes is recorded with the file it holds.
+    await history.run(details, async () => { mkdirSync(join(workspace, 'new')); writeFileSync(join(workspace, 'new', 'agent-file'), 'agent') })
     writeFileSync(join(workspace, 'new', 'owner-file'), 'owner')
     await expect(history.restore((await history.list())[0]!.id)).rejects.toThrow('Restore conflict')
     expect(existsSync(join(workspace, 'new', 'owner-file'))).toBe(true)
@@ -159,11 +160,12 @@ it('deduplicates compressible output without an interrupted checkpoint or a wall
   expect(existsSync(join(workspace, 'large-output'))).toBe(false)
 })
 
+// A file tool's checkpoint records a folder's own mode; git, behind a command's, keeps 755 for every folder.
 it('restores read-only directory modes after restoring their children', async () => {
   const { workspace, history, details } = await fixture()
   const directory = join(workspace, 'readonly'); mkdirSync(directory)
   writeFileSync(join(directory, 'file'), 'original'); chmodSync(directory, 0o500)
-  await history.run(details, async () => { chmodSync(directory, 0o700); rmSync(directory, { recursive: true }) })
+  await history.run({ ...details, scope: [{ path: directory, tree: true }] }, async () => { chmodSync(directory, 0o700); rmSync(directory, { recursive: true }) })
   await history.restore((await history.list())[0]!.id)
   expect(readFileSync(join(directory, 'file'), 'utf8')).toBe('original')
   expect(statSync(directory).mode & 0o777).toBe(0o500)
@@ -204,7 +206,9 @@ function openDescriptors(directory: string): string[] {
 }
 
 // GPT review of c71dee5 (history snapshots, P2): every history root is snapshotted before a tracked write, and a
-// hard-linked file anywhere refused the snapshot, so a pnpm node_modules blocked an unrelated fs_write.
+// hard-linked file anywhere refused the snapshot, so a pnpm node_modules blocked an unrelated fs_write. Since Slice F2,
+// item 3, git reads a hard-linked file as any other: its content is recorded, and a restore writes a new file in its
+// place, so it never writes through the link to the store's copy (A2).
 describe('history beside a pnpm-style hard-linked node_modules', () => {
   /** A workspace whose node_modules holds a file hard-linked from a store outside it, as pnpm lays it out. */
   async function linkedWorkspace() {
@@ -241,17 +245,18 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
     expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
   })
 
-  it('leaves a hard-linked dependency out of the change set when a call removes it, and restores the rest', async () => {
-    const { workspace, history, details, linked } = await linkedWorkspace()
+  it('records a hard-linked dependency a call removes, and restores it as a file of its own', async () => {
+    const { workspace, history, details, linked, store } = await linkedWorkspace()
     await history.run(details, async () => { rmSync(linked); writeFileSync(join(workspace, 'notes.md'), 'x') })
     const [checkpoint] = await history.list()
-    expect(checkpoint!.paths).toEqual([join(workspace, 'notes.md')])
+    expect(checkpoint!.paths).toEqual([linked, join(workspace, 'notes.md')].sort())
     await history.restore(checkpoint!.id)
     expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
-    expect(existsSync(linked)).toBe(false)
+    expect(readFileSync(linked, 'utf8')).toBe('module.exports = 1\n')
+    expect(statSync(join(store, 'index.js')).nlink).toBe(1)
   })
 
-  it('refuses, before changing anything, a restore that would remove a directory holding a hard-linked dependency', async () => {
+  it('removes, on restore, a hard-linked dependency a call added, and leaves the store\'s copy', async () => {
     const { workspace, history, details, store } = await linkedWorkspace()
     const added = join(workspace, 'node_modules', '.pnpm', 'is-odd@3.0.1', 'node_modules', 'is-odd')
     await history.run(details, async () => {
@@ -259,9 +264,10 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
       linkSync(join(store, 'index.js'), join(added, 'index.js'))
       writeFileSync(join(workspace, 'notes.md'), 'x')
     })
-    await expect(history.restore((await history.list())[0]!.id)).rejects.toThrow('Restore conflict: a directory holds hard-linked dependency files history does not capture; remove only those hard-linked files')
-    expect(readFileSync(join(added, 'index.js'), 'utf8')).toBe('module.exports = 1\n')
-    expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('x')
+    await history.restore((await history.list())[0]!.id)
+    expect(existsSync(join(workspace, 'node_modules', '.pnpm', 'is-odd@3.0.1'))).toBe(false)
+    expect(readFileSync(join(store, 'index.js'), 'utf8')).toBe('module.exports = 1\n')
+    expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
   })
 
   // Slice F2, item 6: a hard link outside node_modules never refuses the call; the checkpoint names why it cannot restore.
@@ -270,13 +276,14 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
     linkSync(join(store, 'index.js'), join(workspace, 'linked-elsewhere.js'))
     await expect(history.run(details, async () => { writeFileSync(join(workspace, 'notes.md'), 'x') })).resolves.toBeUndefined()
     expect(existsSync(join(workspace, 'notes.md'))).toBe(true)
-    expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('hard-linked') })
+    expect((await history.list()).at(-1)).toMatchObject({ restorable: true, paths: [join(workspace, 'notes.md')] })
     rmSync(join(workspace, 'linked-elsewhere.js'))
     expect(() => snapshot({ roots: [workspace], excluded: [], maxBytes: 1_000_000, save: () => {} })).toThrow('History cannot safely restore hard-linked files')
   })
 
-  // Review L1: a restore left the dependency changes it could not make out without a word.
-  it('lists the dependency changes a checkpoint made as not restorable, in the checkpoint and in the restore result', async () => {
+  // Review L1: a restore left the dependency changes it could not make out without a word. A file that only gains a
+  // link keeps its content, so git sees no change in it.
+  it('lists and restores the dependency changes a checkpoint made', async () => {
     const { workspace, history, details, linked, store } = await linkedWorkspace()
     const plain = join(workspace, 'node_modules', 'plain', 'index.js')
     mkdirSync(join(plain, '..'), { recursive: true })
@@ -288,11 +295,11 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
       writeFileSync(join(workspace, 'notes.md'), 'x')
     })
     const [checkpoint] = await history.list()
-    expect(checkpoint).toMatchObject({ paths: [join(workspace, 'notes.md')], notRestorable: [plain, linked].sort() })
+    expect(checkpoint).toMatchObject({ paths: [linked, join(workspace, 'notes.md')].sort(), notRestorable: [] })
     const restored = await history.restore(checkpoint!.id)
-    expect(restored.notRestorable).toEqual([plain, linked].sort())
+    expect(restored.notRestorable).toEqual([])
     expect(existsSync(join(workspace, 'notes.md'))).toBe(false)
-    expect(existsSync(linked)).toBe(false)
+    expect(readFileSync(linked, 'utf8')).toBe('module.exports = 1\n')
   })
 
   // Review L3: the exemption matched a node_modules component anywhere in the path, the root's own included.

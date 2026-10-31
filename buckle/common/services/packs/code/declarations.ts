@@ -18,7 +18,7 @@ const RETURNS: Readonly<Record<string, string>> = {
   fs_list: '{ path, entries: Array<{ path (inside the listed path), name, type: "file" | "directory" | "symlink", size, modifiedAt }>, truncated }',
   fs_find_names: '{ path, matches: string[], truncated }',
   fs_search_content: '{ matches: Array<{ path, line, text, ranges }>, truncated, excludedFiles, skipped?: Array<{ path, reason }>, skippedMore?: number }',
-  history_list: '{ checkpoints: Array<{ id, createdAt, tool, sessionId, requestId?, turnId?, restorable?, reason?, changed?, notRestorable?, current, changes: Array<{ path, kind }>, unlisted? }>, more, turns? }',
+  history_list: '{ checkpoints: Array<{ id, createdAt, tool, sessionId, requestId?, turnId?, restorable?, reason?, changed?, notRestorable?, ignored?: { count, reason }, current, changes: Array<{ path, kind }>, unlisted? }>, more, turns? }',
   history_restore: '{ checkpoint, restores, undoes, changes: Array<{ path, kind }>, unlisted?, notRestorable? }',
   web_fetch: '{ url, status, headers, body: string, truncated }',
   web_search: '{ query, results: Array<{ title, url, description }> }',

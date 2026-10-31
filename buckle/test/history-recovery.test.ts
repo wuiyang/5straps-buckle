@@ -1,8 +1,9 @@
-import { linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it } from 'vitest'
 import { openChangeHistory, STOPPED_REASON } from '../common/services/history/journal.js'
+import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -14,9 +15,11 @@ it('marks a failed finish interrupted and permits the next write', async () => {
   const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30 })
   const details = { sessionId: 's', stageId: 'stage', tool: 'test', roots: [workspace] }
   try {
-    await expect(history.run(details, async () => { linkSync(file, join(workspace, 'second-link')); return 'written' })).resolves.toBe('written')
-    expect((await history.list())[0]).toMatchObject({ status: 'interrupted', reason: expect.any(String) })
-    rmSync(join(workspace, 'second-link'))
+    // A shadow index git cannot lock stops the after capture; the call has run all the same.
+    const shadows = () => readdirSync(join(root, 'history', 'commands')).filter(name => /^[0-9a-f]{24}$/.test(name)).map(name => join(root, 'history', 'commands', name))
+    await expect(history.run(details, async () => { writeFileSync(file, 'during'); for (const shadow of shadows()) chmodSync(shadow, 0o500); return 'written' })).resolves.toBe('written')
+    for (const shadow of shadows()) chmodSync(shadow, 0o700)
+    expect((await history.list())[0]).toMatchObject({ status: 'interrupted', restorable: false, reason: expect.stringContaining('git add') })
     await expect(history.run(details, async () => { writeFileSync(file, 'next') })).resolves.toBeUndefined()
   } finally { await history.close() }
 })
@@ -48,13 +51,9 @@ it('settles a pending shadow-git checkpoint a restart left as interrupted, and t
   const file = join(workspace, 'file'); writeFileSync(file, 'original\r\n')
   const directory = join(root, 'history')
   const options = { directory, excluded: [], maxBytes: 1_000_000 }
-  const history = await openChangeHistory(options)
   const details = { sessionId: 's', stageId: 'stage', tool: 'test', roots: [workspace] }
-  let id: string
-  try {
-    await history.run(details, async () => { writeFileSync(file, 'changed before crash') })
-    id = (await history.list())[0]!.id
-  } finally { await history.close() }
+  const record = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'stage', execute: () => writeFileSync(file, 'changed before crash') })
+  const id = record.id
   const journal = join(directory, 'checkpoints.json')
   const state = JSON.parse(readFileSync(journal, 'utf8'))
   expect(state.checkpoints[0].beforeTrees.length).toBeGreaterThan(0)
@@ -68,3 +67,4 @@ it('settles a pending shadow-git checkpoint a restart left as interrupted, and t
     expect(readFileSync(file, 'utf8')).toBe('next write')
   } finally { await reopened.close() }
 })
+

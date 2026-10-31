@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { lstatSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
-import { constants as zlib, deflate, inflate } from 'node:zlib'
+import { constants as zlib, deflate, inflate, inflateSync } from 'node:zlib'
 import { join } from 'pathe'
 import { replaceFile } from '../../adapters/replace-file.js'
 
@@ -78,6 +78,16 @@ export function openObjectStore(directory: string) {
     return content
   }
 
+  /** The size of the content `id` names, read from its header alone; undefined where the store does not hold it. */
+  function size(id: string): number | undefined {
+    let packed: Buffer
+    try { packed = readFileSync(pathOf(id)) } catch { return undefined }
+    let raw: Buffer
+    try { raw = inflateSync(packed.subarray(0, 512), { finishFlush: zlib.Z_SYNC_FLUSH }) } catch { return undefined }
+    const header = raw.subarray(0, Math.max(0, raw.indexOf(0))).toString('latin1').match(/^[a-z]+ (0|[1-9][0-9]*)$/)?.[1]
+    return header === undefined ? undefined : Number(header)
+  }
+
   function forget(path: string): void {
     const size = sizeAt(path)
     rmSync(path, { force: true })
@@ -98,6 +108,11 @@ export function openObjectStore(directory: string) {
     put,
     read,
     has: (id: string): boolean => sizeAt(pathOf(id)) !== undefined,
+    size,
+    /** The bytes `id` takes on disk; undefined where the store does not hold it. */
+    stored: (id: string): number | undefined => sizeAt(pathOf(id)),
+    /** The folder git writes its loose objects to beside these, so both share one (Slice F2, item 3). */
+    root,
     remove: (id: string): void => forget(pathOf(id)),
     list,
     /** The bytes the blobs take on disk, counted once and kept as this store writes and removes them. */

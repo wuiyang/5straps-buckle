@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -14,6 +13,7 @@ import { createShellPack } from '../common/services/packs/shell/index.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
+import { historyObjects } from './support/history-objects.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'buckle-sensitive-')) })
@@ -104,8 +104,9 @@ it('declares shell file effects, checks approval and overlays read-only without 
   await call.execute({ ...context, authorizeRead: async path => path === secret })
   expect(readFileSync(secret, 'utf8')).toBe('SYNTHETIC=private')
   expect((await history.list())[0]!.paths).toEqual([join(workspace, 'result.txt')])
-  const stored = execFileSync('git', ['--git-dir', join(state, 'history/git'), 'cat-file', '--batch-all-objects', '--batch'])
-  expect(stored.includes(Buffer.from('SCHEMA=true'))).toBe(true)
+  // The promotion records the paths it changes alone (Slice F2, item 3): what the command wrote, never the credential.
+  const stored = Buffer.concat(historyObjects(join(state, 'history')))
+  expect(stored.includes(Buffer.from('done'))).toBe(true)
   expect(stored.includes(Buffer.from('SYNTHETIC=private'))).toBe(false)
   expect(pack.tools[1]!.prepare({ runtime: 'node', script: 'void 0', sensitiveFiles: ['/workspace/.env.local'] }).effects).toContainEqual({ kind: 'read_path', path: '/workspace/.env.local' })
 })

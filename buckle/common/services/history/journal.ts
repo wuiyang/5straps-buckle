@@ -3,7 +3,7 @@ import { SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside, parentDirectory } from '../../domain/paths.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
@@ -13,10 +13,11 @@ import type { UntrustedRoots } from '../../domain/executable.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
-import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError, type CapturedState } from './git-store.js'
+import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError } from './git-store.js'
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
-import { captureHashes, HistoryCaptureSafetyError } from './capture-hashes.js'
+import { HistoryCaptureSafetyError } from './capture-hashes.js'
+import { createCommandCapture, FolderReplacedError, HostGitNeededError, type CommandBaseline } from './command-capture.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS, retainedTurns } from './turn-retention.js'
 import { openHistoryActivity } from './activity.js'
 import { blobId, HistoryContentError, openObjectStore } from './object-store.js'
@@ -25,8 +26,9 @@ export { HistoryBusyError } from './execution-lock.js'
 
 /**
  * `scope`: the paths the call changes, where its tool names every one (a file tool, Slice F2 item 1). The checkpoint then
- * records those paths alone, content in the object store, with no walk of `roots` and no git; absent, `roots` are captured
- * whole through shadow git.
+ * records those paths alone, content in the object store, with no walk of `roots` and no git. Absent, the call is a
+ * command (item 3): each folder among `roots` is captured through git's own index and the workspace's ignore rules, and
+ * any other root as a scoped path.
  */
 export interface HistoryInput { sessionId: string; stageId?: string | undefined; turnStageId?: string | null; tool: string; requestId?: string; parentRequestId?: string; roots: string[]; excluded?: string[]; scope?: ScopePath[] }
 export type CheckpointSummary = ReturnType<typeof summary>
@@ -48,6 +50,9 @@ export interface ChangeHistoryOptions {
 }
 /** The reason a checkpoint a stopped call left pending is given once the next call takes the lock (Slice F2, item 6). */
 export const STOPPED_REASON = 'Buckle stopped before this call finished, so history could not record what it changed; this checkpoint is not restorable'
+/** A command's checkpoint where host git is not permitted: the command runs, and nothing it changes is listed (item 3). */
+export const HOST_GIT_REASON = 'Not restorable: host git needed. History reads what a command changes through permitted trusted host git, so this call ran without a checkpoint of its changes'
+const PARTIAL_REASON = 'Git could not read some files this command may have changed; history does not list their changes'
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0) })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
@@ -60,6 +65,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const objects = openObjectStore(input.directory)
   const scopeLimits = () => ({ maxFileBytes: settings.maxFileBytes, maxTreeBytes: input.maxBytes, excluded: [...input.excluded, input.directory], ...(input.platform ? { platform: input.platform } : {}) })
   const store = createGitStore({ directory: input.directory, excluded: input.excluded, maxFileBytes: () => settings.maxFileBytes, allowed: () => settings.allowHostGit, ...(input.untrusted ? { untrusted: input.untrusted } : {}), ...(input.platform ? { platform: input.platform } : {}) })
+  const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...input.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
+  /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
+  const baselines = new Map<string, CommandBaseline[]>()
   let closed = false
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
@@ -153,11 +161,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
     const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
     const id = `change-${randomUUID()}`
-    let captured: CapturedState
-    let baselineAvailable = true
-    try { captured = await store.capture({ roots: details.roots, excluded: details.excluded, id, phase: 'before' }) }
-    catch (error) { baselineAvailable = false; captured = { snapshot: {}, trees: [], restorable: false, reason: `History could not capture the before state (${causeText(error)}); this write continues without restorable content or a complete changed-path list` }; logger.warn(`Checkpoint ${id}: ${captured.reason}`, { phase: 'before', cause: causeOf(error) }) }
-    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable, before: captured.snapshot, beforeTrees: captured.trees, restorable: captured.restorable, ...(captured.reason ? { reason: captured.reason } : {}), ...restore }
+    const { folders, others } = commandRoots(details.roots)
+    let before: Snapshot = {}
+    let reason: string | undefined
+    try { before = await captureScope({ scope: others, store: objects, ...scopeLimits() }) }
+    catch (error) { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
+    if (reason === undefined && folders.length) {
+      try { baselines.set(id, await commands.baseline(folders)) }
+      catch (error) {
+        if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
+        else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
+      }
+    }
+    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
     await saveRecord(record)
     return record
   }
@@ -174,10 +190,18 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     return record
   }
   async function finishScoped(record: Checkpoint): Promise<void> {
+    const baseline = baselines.get(record.id)
+    baselines.delete(record.id)
     try {
       const after = await captureScope({ scope: record.scope ?? [], store: objects, ...scopeLimits() })
       if (!record.baselineAvailable) record.before = after
       record.after = after
+      if (baseline) {
+        const found = await commands.changes(baseline, priorEntry(record.id))
+        Object.assign(record.before, found.before); Object.assign(after, found.after)
+        if (found.ignored) record.ignored = found.ignored
+        if (found.partial) { record.reason ??= PARTIAL_REASON; logger.warn(`Checkpoint ${record.id}: ${PARTIAL_REASON}`, { phase: 'after' }) }
+      }
       record.changed = changedPaths(record.before, after)
       record.status = 'complete'
     } catch (error) {
@@ -190,27 +214,15 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     await saveRecord(record)
     try { await pruneRetained(record) } catch (error) { logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) }) }
   }
-  async function finish(record: Checkpoint): Promise<void> {
-    if (record.content === 'blobs') return finishScoped(record)
-    try {
-      const captured = await store.capture({ roots: record.roots, excluded: record.excluded, id: record.id, phase: 'after', parents: record.beforeTrees })
-      record.after = captured.snapshot
-      if (!record.baselineAvailable) record.before = captured.snapshot
-      record.afterTrees = captured.trees
-      record.restorable = record.restorable !== false && captured.restorable
-      record.changed = record.baselineAvailable && captured.restorable ? await store.changed(record.beforeTrees ?? [], record.afterTrees) : changedPaths(record.before, record.after)
-      record.status = 'complete'
-      compact(record)
-      await saveRecord(record)
-      await pruneRetained(record)
-    } catch (error) {
-      refreshTrees({ record, state: read() })
-      record.status = 'interrupted'; record.restorable = false
-      record.reason = `History capture did not finish (${causeText(error)}); this checkpoint is not restorable. Later writes can continue`
-      compact(record)
-      await saveRecord(record)
-      logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
-    }
+  /** Every checkpoint this journal begins records content in the object store (Slice F2, items 1 and 3). */
+  function finish(record: Checkpoint): Promise<void> { return finishScoped(record) }
+  /**
+   * The entry the newest earlier checkpoint left at a path: a command's before side takes its mode from there, as git
+   * keeps only 644 and 755, so a checkpoint chain reads one state the same from both sides.
+   */
+  function priorEntry(current: string): (path: string) => Entry | undefined {
+    const earlier = read().checkpoints.filter(record => record.id !== current && record.status === 'complete').reverse()
+    return path => earlier.find(record => record.after?.[path] !== undefined)?.after?.[path]
   }
   function refreshTrees(input: { record: Checkpoint; state: State }): void {
     const persisted = input.state.checkpoints.find(saved => saved.id === input.record.id)
@@ -436,14 +448,20 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       return locked(async () => { const record = await begin(details); try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) } }, signal ? { signal } : {})
     },
     exclusive<T>(execute: () => Promise<T>, signal?: AbortSignal): Promise<T> { return locked(execute, signal ? { signal } : {}) },
+    /**
+     * Puts a copy's changes into the folder (the isolated shell, a workbench): it names every path it changes, so its
+     * checkpoint records those alone, as a file tool's does, with no walk and no git (Slice F2, item 3).
+     */
     async promote(details: HistoryInput, expected: Snapshot, target: Snapshot, content: (hash: string) => Buffer, onCheckpoint?: () => void) {
       return locked(async () => {
         const paths = changedPaths(expected, target)
         if (!paths.length) return null
         assertExcludedUntouched(paths, details.excluded)
-        const current = await captureHashes({ roots: details.roots, excluded: [...input.excluded, ...details.excluded ?? [], input.directory], maxFileBytes: settings.maxFileBytes, hashFiles: true, platform: input.platform ?? process.platform })
+        const scope = promotionScope({ paths, expected, target, roots: details.roots })
+        const limits = scopeLimits()
+        const current = await captureScope({ scope, digest: sha256, ...limits, excluded: [...limits.excluded, ...details.excluded ?? []] })
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
-        const record = await begin(details)
+        const record = await beginScoped({ ...details, scope })
         try { onCheckpoint?.(); applySnapshot({ target, current, paths, content, roots: details.roots }) }
         finally { await finish(record); completeCall(record.sessionId, record.turnId!) }
         return summary(record)
@@ -510,6 +528,7 @@ function causeText(error: unknown): string {
   if (code) return `the file system answered ${code}`
   if (error instanceof HistoryContentError) return 'its content store is damaged'
   if (error instanceof HistoryCaptureSafetyError) return error.message
+  if (error instanceof FolderReplacedError) return 'a folder it records was replaced by a link or another folder'
   return error instanceof Error && error.constructor !== Error ? error.constructor.name : 'an unexpected error'
 }
 function systemCode(error: unknown): string | undefined {
@@ -539,8 +558,33 @@ function withRemovedChildren(input: { current: Snapshot; expected: Snapshot; tar
   for (const path of input.paths) if (input.current[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory') Object.assign(current, unknownChildren(path, current))
   return current
 }
+/**
+ * A command's roots (item 3): each folder, captured through git, and each other root, a file or a path not made yet,
+ * recorded as a scoped path. A root inside a folder among them is that folder's own.
+ */
+function commandRoots(roots: string[]): { folders: string[]; others: ScopePath[] } {
+  const unique = [...new Set(roots)]
+  const folders = unique.filter(root => lstatSync(root, { throwIfNoEntry: false })?.isDirectory())
+  const outer = folders.filter(root => !folders.some(other => other !== root && isInside(other, root)))
+  const others = unique.filter(root => !folders.includes(root) && !outer.some(folder => isInside(folder, root))).map(path => ({ path }))
+  return { folders: outer, others }
+}
+/** What a promotion reads before it changes `paths`: each path, a folder it removes with all it holds, and each folder above one inside its roots. */
+function promotionScope(input: { paths: string[]; expected: Snapshot; target: Snapshot; roots: string[] }): ScopePath[] {
+  const scope = new Map<string, ScopePath>()
+  for (const path of input.paths) {
+    const removed = input.expected[path]?.kind === 'directory' && input.target[path]?.kind !== 'directory'
+    scope.set(path, { path, ...(removed ? { tree: true } : {}) })
+    for (let parent = parentDirectory(path); parent !== parentDirectory(parent); parent = parentDirectory(parent)) {
+      if (!input.roots.some(root => isInside(root, parent))) break
+      if (!scope.has(parent)) scope.set(parent, { path: parent })
+    }
+  }
+  return [...scope.values()]
+}
+function sha256(content: Buffer): string { return createHash('sha256').update(content).digest('hex') }
 function summary(record: Checkpoint) {
-  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, turnId: record.turnId ?? record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, reason: record.reason, restores: record.restores, undoes: record.undoes, restorable: record.restorable !== false, legacy: record.legacy, paths: record.after ? changedPaths(record.before, record.after) : [], changed: record.changed ?? [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
+  return { id: record.id, sessionId: record.sessionId, stageId: record.stageId, turnId: record.turnId ?? record.stageId, tool: record.tool, requestId: record.requestId, createdAt: record.createdAt, status: record.status, reason: record.reason, restores: record.restores, undoes: record.undoes, restorable: record.restorable !== false, legacy: record.legacy, ...(record.ignored ? { ignored: { count: record.ignored, reason: 'ignored' as const } } : {}), paths: record.after ? changedPaths(record.before, record.after) : [], changed: record.changed ?? [], changes: record.after ? changesOf(record.before, record.after) : [], notRestorable: record.after ? notRestorablePaths(record.before, record.after) : [] }
 }
 function compact(record: Checkpoint): void {
   if (!record.after) { record.before = {}; return }

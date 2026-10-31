@@ -13,9 +13,10 @@ import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePa
  * store there), or, in history, an entry whose name holds a backslash on Linux or macOS, which pathe would read as
  * another path, or ends in a dot or a space on Windows, which a program there reads as another name (isPlainName); its
  * key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
- * program held open without read sharing (EBUSY), so its content could not be read.
+ * program held open without read sharing (EBUSY), so its content could not be read. A command's checkpoint records a
+ * nested repository git keeps as one commit id, reason `nested`: its files are that repository's own.
  */
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit']).optional(), hash: z.string().optional(), target: z.string().optional() })
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit', 'nested']).optional(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>

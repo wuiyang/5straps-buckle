@@ -329,7 +329,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
             if (options.shutdown?.aborted) throw options.shutdown.reason
             const checkpoint = options.history && (tracksChanges || prepared.managesHistory || prepared.reachesTools) ? options.history.notice(sessionId, request.requestId) : null
-            const historyNotice = checkpoint && (!checkpoint.restorable || checkpoint.notRestorable.length) ? { checkpoint: checkpoint.id, restorable: checkpoint.restorable, reason: checkpoint.reason ?? 'This checkpoint includes files history cannot restore; history_list names them', notRestorableCount: checkpoint.notRestorable.length } : undefined
+            const historyNotice = checkpoint && (!checkpoint.restorable || checkpoint.notRestorable.length || checkpoint.reason) ? { checkpoint: checkpoint.id, restorable: checkpoint.restorable, reason: checkpoint.reason ?? 'This checkpoint includes files history cannot restore; history_list names them', notRestorableCount: checkpoint.notRestorable.length } : undefined
             return {
               requestId: request.requestId,
               outcome: 'ok',

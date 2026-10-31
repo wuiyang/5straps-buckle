@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it, vi } from 'vitest'
 import { createGitStore } from '../common/services/history/git-store.js'
-import { openChangeHistory } from '../common/services/history/journal.js'
+import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
 import { logger } from '../common/runtime/log.js'
+import { historyObjects } from './support/history-objects.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -18,13 +19,15 @@ async function fixture(extra: Record<string, unknown> = {}) {
   const details = { sessionId: 's', stageId: 'one', tool: 'test', roots: [workspace] }
   return { root, workspace, directory, history, details }
 }
+function storedObjects(directory: string): string[] { return historyObjects(directory).map(content => content.toString('latin1')) }
 function treeDigest(directory: string): string {
   const hash = createHash('sha256')
   function visit(path: string): void { for (const entry of readdirSync(path, { withFileTypes: true }).sort((a,b) => a.name.localeCompare(b.name))) { const child = join(path, entry.name); hash.update(entry.name); if (entry.isDirectory()) visit(child); else hash.update(readFileSync(child)) } }
   visit(directory)
   return hash.digest('hex')
 }
-it('uses shadow refs and owner alternates without modifying owner git bytes', async () => {
+// Slice F2, items 3 and 4: a command's checkpoint borrows nothing from the owner's repository (A5) and changes none of it.
+it('records a command in an owner repository without borrowing its objects or modifying its git bytes', async () => {
   const { workspace, directory, history, details } = await fixture()
   execFileSync('git', ['init', '-q', workspace])
   writeFileSync(join(workspace, 'file'), 'original\r\n')
@@ -34,8 +37,8 @@ it('uses shadow refs and owner alternates without modifying owner git bytes', as
   try {
     await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'changed') })
     const [checkpoint] = await history.list()
-    expect(existsSync(join(directory, 'git', 'objects', 'info', 'alternates'))).toBe(true)
-    expect(execFileSync('git', ['--git-dir', join(directory, 'git'), 'rev-parse', `refs/buckle/checkpoints/${checkpoint!.id}`], { encoding:'utf8' }).trim()).toMatch(/^[a-f0-9]{40}$/)
+    expect(execFileSync('find', [directory, '-name', 'alternates'], { encoding: 'utf8' })).toBe('')
+    expect(checkpoint).toMatchObject({ restorable: true, paths: [join(workspace, 'file')] })
     await history.restore(checkpoint!.id)
     expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('original\r\n')
     expect(treeDigest(join(workspace, '.git'))).toBe(digest)
@@ -50,7 +53,8 @@ it('honours ignore rules and excludes state while recording over-cap hashes with
     await history.run(details, async () => { writeFileSync(join(workspace, 'large'), Buffer.alloc(65, 2)); writeFileSync(join(workspace, 'file'), 'okay') })
     const [checkpoint] = await history.list()
     expect(checkpoint!.notRestorable).toContain(join(workspace, 'large'))
-    expect(execFileSync('git', ['--git-dir', join(directory, 'git'), 'ls-tree', '-r', `refs/buckle/checkpoints/${checkpoint!.id}`], {encoding:'utf8'})).not.toMatch(/ignored|large/)
+    expect(checkpoint!.paths).toEqual([join(workspace, 'file')])
+    expect(storedObjects(directory).some(content => content.includes('private'))).toBe(false)
     await history.restore(checkpoint!.id)
     expect(readFileSync(join(workspace, 'large')).length).toBe(65)
   } finally { await history.close() }
@@ -71,12 +75,12 @@ it('groups explicit stages by session and implicit calls by idle gap, and drops 
     expect(listed.some(item => item.id === first[0]!.id)).toBe(false)
   } finally { await history.close() }
 })
-it('records changes without content when host git is disabled and refuses restore with a reason', async () => {
+it('runs a command when host git is disabled, records it as not restorable, and refuses restore with that reason', async () => {
   const { workspace, directory, history, details } = await fixture({ allowHostGit: false })
   try {
     await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'a') })
     const [checkpoint] = await history.list()
-    expect(checkpoint).toMatchObject({ restorable: false, paths: [join(workspace, 'file')] })
+    expect(checkpoint).toMatchObject({ restorable: false, reason: HOST_GIT_REASON, paths: [] })
     expect(existsSync(join(directory, 'git'))).toBe(false)
     await expect(history.restore(checkpoint!.id)).rejects.toThrow('host git')
   } finally { await history.close() }
@@ -89,10 +93,7 @@ it('drops content rather than blocking when a single checkpoint cannot fit the r
     await expect(history.run(details, async () => { writeFileSync(join(workspace, 'random.bin'), randomBytes(300_000)); return 'done' })).resolves.toBe('done')
     const [checkpoint] = await history.list()
     expect(checkpoint).toMatchObject({ restorable: false, reason: expect.stringContaining('rolling size cap') })
-    let objectBytes = 0
-    function visit(path: string): void { for (const entry of readdirSync(path, { withFileTypes: true })) { const at = join(path, entry.name); if (entry.isDirectory()) visit(at); else objectBytes += readFileSync(at).length } }
-    visit(join(directory, 'git', 'objects'))
-    expect(objectBytes).toBeLessThan(100_000)
+    expect(existsSync(join(directory, 'git'))).toBe(false)
   } finally { await history.close() }
 })
 
@@ -115,14 +116,13 @@ it('reads and recovers a legacy SQLite store without modifying its bytes, then p
 })
 
 it('removes stale index entries when a tracked file becomes over-cap and never restores either transition', async () => {
-  const { workspace, directory, history, details } = await fixture({ maxFileBytes: 32 })
+  const { workspace, history, details } = await fixture({ maxFileBytes: 32 })
   const file = join(workspace, 'size.txt'); writeFileSync(file, 'small')
   try {
     await history.run(details, async () => { writeFileSync(file, 'changed') })
     await history.run({ ...details, stageId: 'big' }, async () => { writeFileSync(file, Buffer.alloc(40, 3)) })
     const big = (await history.list()).at(-1)!
     expect(big.notRestorable).toContain(file)
-    expect(execFileSync('git', ['--git-dir', join(directory, 'git'), 'ls-tree', '-r', `refs/buckle/checkpoints/${big.id}`], { encoding:'utf8' })).not.toContain('size.txt')
     await history.restore(big.id)
     expect(readFileSync(file).length).toBe(40)
     await history.run({ ...details, stageId: 'small-again' }, async () => { writeFileSync(file, 'small again') })
@@ -131,16 +131,15 @@ it('removes stale index entries when a tracked file becomes over-cap and never r
   } finally { await history.close() }
 })
 
-it('detaches dropped ancestry while preserving owner edits in the retained before commit', async () => {
-  const { workspace, directory, history, details } = await fixture({ keepTurns: 1 })
+it('drops the oldest turn while keeping the owner edit the next command\'s before state holds', async () => {
+  const { workspace, history, details } = await fixture({ keepTurns: 1 })
   const file = join(workspace, 'file'); writeFileSync(file, 'original')
   try {
     await history.run(details, async () => { writeFileSync(file, 'first') })
     const old = (await history.list())[0]!
-    const oldCommit = execFileSync('git', ['--git-dir', join(directory, 'git'), 'rev-parse', `refs/buckle/checkpoints/${old.id}`], { encoding:'utf8' }).trim()
     writeFileSync(file, 'owner edit between calls')
     await history.run({ ...details, stageId: 'new-turn' }, async () => { writeFileSync(file, 'second') })
-    expect(execFileSync('git', ['--git-dir', join(directory, 'git'), 'rev-list', '--all'], { encoding:'utf8' })).not.toContain(oldCommit)
+    expect((await history.list()).map(item => item.id)).not.toContain(old.id)
     await history.restore((await history.list())[0]!.id)
     expect(readFileSync(file, 'utf8')).toBe('owner edit between calls')
   } finally { await history.close() }
@@ -221,14 +220,15 @@ it('plans every checkpoint in a retained turn even when the turn has more than o
   } finally { await history.close() }
 })
 
-it.skipIf(process.platform === 'win32')('continues safe writes when an unrelated unsupported entry prevents capture', async () => {
+// Slice F2, item 3: git leaves a FIFO out, so it never stops a capture (A7).
+it.skipIf(process.platform === 'win32')('records and restores writes beside an unrelated FIFO', async () => {
   const { workspace, history, details } = await fixture()
   execFileSync('mkfifo', [join(workspace, 'unrelated-pipe')])
   try {
     await expect(history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'first'); return 'done' })).resolves.toBe('done')
     await expect(history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'second') })).resolves.toBeUndefined()
     expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('second')
-    expect((await history.list()).at(-1)).toMatchObject({ status: 'interrupted', restorable: false, reason: expect.any(String) })
+    expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true, paths: [join(workspace, 'file')] })
   } finally { await history.close() }
 })
 
@@ -239,26 +239,22 @@ it('preserves hash and size warnings for oversized files across several restores
     for (const [index, size] of [41, 42].entries()) await history.run({ ...details, stageId: `cap-${index}` }, async () => { writeFileSync(file, Buffer.alloc(size, index + 2)); writeFileSync(join(workspace, 'note'), String(index)) })
     expect((await history.list()).map(item => item.notRestorable)).toEqual([[file], [file]])
     const state = JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8'))
-    expect(state.checkpoints[0].afterTrees[0].extra[file]).toMatchObject({ reason: 'size', size: 41, hash: expect.any(String) })
+    expect(state.checkpoints[0].after[file]).toMatchObject({ kind: 'excluded', reason: 'size', size: 41 })
     const restored = await history.rollback({ target: { turns: 2 }, by: { sessionId: 's', stageId: 'undo', tool: 'restore' } })
     expect(restored.notRestorable).toContain(file)
     expect(readFileSync(file).length).toBe(42)
   } finally { await history.close() }
 })
 
-it('persists one boundary marker for an ignored subtree instead of all ignored descendants', async () => {
+it('records and stores nothing of an ignored subtree', async () => {
   const { workspace, directory, history, details } = await fixture()
   writeFileSync(join(workspace, '.gitignore'), 'ignored/\n')
   mkdirSync(join(workspace, 'ignored'))
   for (let index = 0; index < 1000; index++) writeFileSync(join(workspace, 'ignored', `file-${index}`), 'private')
   try {
     for (let index = 0; index < 2; index++) await history.run(details, async () => { writeFileSync(join(workspace, 'note'), String(index)) })
-    const state = JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8'))
-    for (const checkpoint of state.checkpoints) for (const tree of [...checkpoint.beforeTrees, ...checkpoint.afterTrees]) {
-      expect(tree.extra[join(workspace, 'ignored')]).toMatchObject({ kind: 'excluded', reason: 'ignored' })
-      expect(Object.keys(tree.extra).length).toBeLessThan(5)
-      expect(Object.keys(tree.extra).some(path => path.includes('file-'))).toBe(false)
-    }
+    expect(readFileSync(join(directory, 'checkpoints.json'), 'utf8')).not.toContain('file-')
+    expect(storedObjects(directory).some(content => content.includes('private'))).toBe(false)
   } finally { await history.close() }
 })
 

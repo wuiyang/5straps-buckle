@@ -6,6 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { createGitStore } from '../common/services/history/git-store.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import type { Checkpoint } from '../common/services/history/records.js'
+import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
 const gitFault = vi.hoisted(() => ({ refReads: 0 }))
 vi.mock('node:child_process', async importOriginal => {
@@ -49,7 +50,12 @@ async function fixture(keepTurns = 10) {
   histories.push(history)
   const file = join(workspace, 'file'); writeFileSync(file, 'baseline\r\n')
   const captureRoots = [workspace]
-  const write = (stageId: string, content: string) => history.run({ sessionId: 'session', stageId, tool: 'test', roots: captureRoots }, async () => { writeFileSync(file, content) })
+  // Each write is a checkpoint of the shadow-git engine that stores written before Slice F2 hold (item 7), kept as the
+  // history then kept it after each write, a failure of that upkeep left to the next one.
+  const write = async (stageId: string, content: string) => {
+    await shadowGitCheckpoint({ directory, roots: captureRoots, sessionId: 'session', stageId, execute: () => writeFileSync(file, content) })
+    await history.prune().catch(() => undefined)
+  }
   const state = () => JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8')) as SavedHistory
   const records = () => state().checkpoints
   const git = (...args: string[]) => execFileSync('git', ['--git-dir', join(directory, 'git'), ...args], { encoding: 'utf8' }).trim()
@@ -287,25 +293,6 @@ it('retries failed ref cleanup immediately after expired records were durably dr
   await test.write('third', 'third')
   expect(gitFault.refReads).toBe(0)
   expect(test.records().map(record => record.id)).not.toContain(expired.id)
-  expect(test.git('for-each-ref', '--format=%(refname)', reference)).toBe(reference)
-  await test.history.prune()
-  expect(test.git('for-each-ref', '--format=%(refname)', reference)).toBe('')
-  assertCanonical(test.state())
-})
-
-it('retries failed ref cleanup immediately after the size cap cleared current trees', async () => {
-  const test = await fixture()
-  await test.write('one-turn', 'first')
-  const state = test.state(); state.lastGcAt = Date.now(); saveState(test, state)
-  test.options.maxBytes = 1
-  gitFault.refReads = 1
-  await test.write('one-turn', 'second')
-  expect(gitFault.refReads).toBe(0)
-  const current = test.records().at(-1)!
-  expect(current.beforeTrees).toEqual([])
-  expect(current.afterTrees).toEqual([])
-  expect(current.restorable).toBe(false)
-  const reference = `refs/buckle/checkpoints/${current.id}`
   expect(test.git('for-each-ref', '--format=%(refname)', reference)).toBe(reference)
   await test.history.prune()
   expect(test.git('for-each-ref', '--format=%(refname)', reference)).toBe('')

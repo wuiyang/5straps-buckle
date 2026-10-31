@@ -45,7 +45,7 @@ describe('the refusal a conflict gives, at the journal', () => {
 
   it('names the file a directory it would remove has gained', async () => {
     const { workspace, history } = await journal()
-    await history.run({ sessionId: 'chat-1', stageId: 'req-1', tool: 'fs_write', requestId: 'req-1', roots: [workspace] }, async () => { mkdirSync(join(workspace, 'new')) })
+    await history.run({ sessionId: 'chat-1', stageId: 'req-1', tool: 'fs_write', requestId: 'req-1', roots: [workspace], scope: [{ path: join(workspace, 'new') }] }, async () => { mkdirSync(join(workspace, 'new')) })
     writeFileSync(join(workspace, 'new', 'owner-file'), 'owner')
     await expect(history.restore((await history.list())[0]!.id)).rejects.toMatchObject({ path: join(workspace, 'new', 'owner-file'), message: 'Restore conflict: a directory contains newer files' })
   })
@@ -147,7 +147,7 @@ describe('history_restore, for an agent', () => {
     ['.env', 'Restore conflict: a directory contains newer files'],
   ])('names a file a directory it would remove has gained only where the read rules let the agent see it: %s', async (name, message) => {
     const { runtime, workspace } = await node()
-    await runtime.history.run({ sessionId: 'agent', stageId: 'dir-1', tool: 'fs_write', requestId: 'dir-1', roots: [runtime.paths().root] }, async () => { mkdirSync(join(workspace, 'new')) })
+    await runtime.history.run({ sessionId: 'agent', stageId: 'dir-1', tool: 'fs_write', requestId: 'dir-1', roots: [runtime.paths().root], scope: [{ path: join(runtime.paths().root, 'new') }] }, async () => { mkdirSync(join(workspace, 'new')) })
     const tokens = await approveAll(runtime, await call(runtime, 'undo-1', 'history_restore', { steps: 1 }))
     writeFileSync(join(workspace, 'new', name), 'TOKEN=added by hand')
     const error = errorOf(await call(runtime, 'undo-1', 'history_restore', { steps: 1 }, tokens))

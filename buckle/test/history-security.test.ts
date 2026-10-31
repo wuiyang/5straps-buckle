@@ -48,15 +48,17 @@ it('refuses git in another workspace and records hashes without executing it', a
   } finally { await node.history.close() }
 })
 
-it('stops using git when host git is disabled on an open history', async () => {
+// Slice F2, item 4: a restore reads history's own object store, so it needs no git; a command needs git to be recorded.
+it('stops using git when host git is disabled on an open history, and still restores', async () => {
   const node = await fixture()
   const file = join(node.workspace, 'file'); writeFileSync(file, 'before')
   try {
     await node.history.run(node.details, async () => { writeFileSync(file, 'first') })
     const first = (await node.history.list())[0]!
     node.history.configure({ allowHostGit: false })
-    await expect(node.history.restore(first.id)).rejects.toThrow(/host git/i)
-    expect(readFileSync(file, 'utf8')).toBe('first')
+    process.env.PATH = join(node.root, 'no-programs')
+    await node.history.restore(first.id)
+    expect(readFileSync(file, 'utf8')).toBe('before')
     await node.history.run(node.details, async () => { writeFileSync(file, 'second') })
     expect((await node.history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('host git') })
     expect(readFileSync(file, 'utf8')).toBe('second')
@@ -99,8 +101,8 @@ it('retains an interrupted checkpoint after a restore fails following its first 
   } finally { await node.history.close() }
 })
 
-// Slice F2, item 6: the hard link never refuses the call; the checkpoint says why it cannot restore.
-it.skipIf(process.platform === 'win32')('runs a write beside a hard link after a recoverable capture limitation, naming the link as the cause', async () => {
+// Slice F2, items 3 and 6: the hard link and the FIFO never refuse the call; git records the write.
+it.skipIf(process.platform === 'win32')('records a write beside a hard link and a FIFO', async () => {
   const node = await fixture()
   writeFileSync(join(node.root, 'outside'), 'shared')
   execFileSync('mkfifo', [join(node.workspace, 'a-pipe')])
@@ -108,6 +110,6 @@ it.skipIf(process.platform === 'win32')('runs a write beside a hard link after a
   try {
     await expect(node.history.run(node.details, async () => { writeFileSync(join(node.workspace, 'note'), 'runs') })).resolves.toBeUndefined()
     expect(existsSync(join(node.workspace, 'note'))).toBe(true)
-    expect((await node.history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('hard-linked') })
+    expect((await node.history.list()).at(-1)).toMatchObject({ restorable: true, paths: [join(node.workspace, 'note')] })
   } finally { await node.history.close() }
 })

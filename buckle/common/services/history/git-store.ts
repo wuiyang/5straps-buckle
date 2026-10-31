@@ -19,11 +19,12 @@ export type TreeCapture = z.infer<typeof treeCaptureSchema>
 export interface CapturedState { snapshot: Snapshot; trees: TreeCapture[]; restorable: boolean; reason?: string }
 const HASH = /^[a-f0-9]{40,64}$/
 const CHECKPOINT_ID = /^change-[a-zA-Z0-9-]+$/
-const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**/* -text -filter -ident -working-tree-encoding\n'
+/** Git reads every file as raw bytes: no line ending, filter, ident, or encoding change, so a blob id is the file's own. */
+export const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**/* -text -filter -ident -working-tree-encoding\n'
 
 const SETUP_MARKER = 'buckle-setup-complete'
 const GIT_OPERATIONS = ['init', 'ls-files', 'update-index', 'add', 'read-tree', 'write-tree', 'commit-tree', 'ls-tree', 'check-ignore', 'cat-file', 'update-ref', 'diff-tree', 'checkout-index', 'for-each-ref', 'rev-parse', 'verify-pack', 'rev-list', 'gc'] as const
-type GitOperation = typeof GIT_OPERATIONS[number] | 'unknown'
+export type GitOperation = typeof GIT_OPERATIONS[number] | 'unknown'
 type GitFailure = 'start' | 'timeout' | 'output-limit' | 'exit'
 interface GitFailureDetails { operation: GitOperation; failure: GitFailure; elapsedMs: number; exitCode?: number; errno?: string }
 interface CaptureTiming { captureHashesMs: number; resolveMs: number; gitSubprocessMs: number; commandCount: number }
@@ -45,19 +46,29 @@ export function historyGitProgram(input: { allowed: boolean; roots: string[]; un
   return found.path === null ? null : found
 }
 
-export function createGitStore(input: { directory: string; excluded: string[]; maxFileBytes: () => number; allowed: () => boolean; untrusted?: () => UntrustedRoots; platform?: NodeJS.Platform }) {
-  const owned = join(input.directory, 'git-private')
+/**
+ * How every history git child runs, from `owned`, a folder only Buckle writes: no system or global config, no hooks,
+ * fsmonitor, filters, prompts, or lazy fetch, no automatic gc or maintenance, and the workspace's own config never read.
+ * `empty` is the empty template and hooks folder, `config` the empty file git reads as its global config.
+ */
+export function isolatedGit(owned: string): { environment: Record<string, string>; safety: string[]; empty: string } {
   mkdirSync(owned, { recursive: true, mode: 0o700 })
   const empty = join(owned, 'empty'); mkdirSync(empty, { recursive: true, mode: 0o700 })
   const config = join(owned, 'config'); writeFileSync(config, '', { mode: 0o600 })
+  const safeEnv = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP', 'TMPDIR'].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]))
+  const environment = { ...safeEnv, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: '', GIT_ATTR_NOSYSTEM: '1', GIT_LITERAL_PATHSPECS: '1', GIT_AUTHOR_NAME: 'Buckle history', GIT_AUTHOR_EMAIL: 'history@buckle.invalid', GIT_COMMITTER_NAME: 'Buckle history', GIT_COMMITTER_EMAIL: 'history@buckle.invalid' }
+  const safety = ['-c', `core.hooksPath=${empty}`, '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.ignoreStat=false', '-c', 'core.trustctime=true', '-c', 'core.untrackedCache=false', '-c', 'commit.gpgSign=false', '-c', 'gc.auto=0', '-c', 'gc.writeCommitGraph=false', '-c', 'core.commitGraph=false', '-c', 'maintenance.auto=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', `core.attributesFile=${config}`, '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
+  return { environment, safety, empty }
+}
+
+export function createGitStore(input: { directory: string; excluded: string[]; maxFileBytes: () => number; allowed: () => boolean; untrusted?: () => UntrustedRoots; platform?: NodeJS.Platform }) {
+  const owned = join(input.directory, 'git-private')
+  const { environment, safety, empty } = isolatedGit(owned)
   const primaryFile = join(owned, 'primary-root')
   let primary: string | undefined = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : undefined
   const exclusions = [...input.excluded, input.directory]
   const warnedNames = new Set<string>()
   const commitShapes = new Map<string, CommitShape>()
-  const safeEnv = Object.fromEntries(['PATH', 'SystemRoot', 'WINDIR', 'TMP', 'TEMP', 'TMPDIR'].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]!]]))
-  const environment = { ...safeEnv, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config, GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1', GIT_PAGER: '', GIT_ATTR_NOSYSTEM: '1', GIT_LITERAL_PATHSPECS: '1', GIT_AUTHOR_NAME: 'Buckle history', GIT_AUTHOR_EMAIL: 'history@buckle.invalid', GIT_COMMITTER_NAME: 'Buckle history', GIT_COMMITTER_EMAIL: 'history@buckle.invalid' }
-  const safety = ['-c', `core.hooksPath=${empty}`, '-c', 'core.fsmonitor=false', '-c', 'core.autocrlf=false', '-c', 'core.safecrlf=false', '-c', 'core.ignoreStat=false', '-c', 'core.trustctime=true', '-c', 'core.untrackedCache=false', '-c', 'commit.gpgSign=false', '-c', 'gc.auto=0', '-c', 'gc.writeCommitGraph=false', '-c', 'core.commitGraph=false', '-c', 'maintenance.auto=false', '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-c', `core.attributesFile=${config}`, '-c', 'core.fileMode=true', '-c', 'core.symlinks=true']
 
   const git = gitCommand()
   function trustedProgram(roots: string[], timing?: CaptureTiming): Program | null {
@@ -394,9 +405,15 @@ function ignoredAncestor(path: string, root: string, ignored: Set<string>): bool
   }
   return false
 }
-function escapeIgnore(path: string): string { return path.replace(/[\\*?\[\] !#]/g, '\\$&') }
+export function escapeIgnore(path: string): string { return path.replace(/[\\*?\[\] !#]/g, '\\$&') }
 function assertHash(hash: string): void { if (!HASH.test(hash)) throw new Error('Invalid history object') }
 function ownerObjects(workTree: string): string | undefined {
+  const directory = ownerGitDirectory(workTree)
+  const objects = directory === undefined ? undefined : join(directory, 'objects')
+  return objects !== undefined && lstatSync(objects, { throwIfNoEntry: false })?.isDirectory() ? objects : undefined
+}
+/** The git folder of the repository `workTree` lies in, its common one for a linked worktree; undefined outside one. */
+export function ownerGitDirectory(workTree: string): string | undefined {
   let root = workTree
   while (true) {
     const marker = join(root, '.git'); const stat = lstatSync(marker, { throwIfNoEntry: false })
@@ -410,8 +427,7 @@ function ownerObjects(workTree: string): string | undefined {
       }
       const common = join(directory, 'commondir')
       if (existsSync(common)) { const pointer = readGitMetadata(common); if (!pointer || /[\0\r\n]./.test(pointer.trim())) return undefined; directory = resolve(directory, pointer.trim()) }
-      const objects = join(directory, 'objects')
-      return lstatSync(objects, { throwIfNoEntry: false })?.isDirectory() ? objects : undefined
+      return directory
     }
     if (dirname(root) === root) return undefined
     root = dirname(root)
@@ -448,11 +464,11 @@ export function storeBytes(directory: string): number {
   }
   return bytes
 }
-function regularFile(path: string, size?: number): boolean {
+export function regularFile(path: string, size?: number): boolean {
   const stat = lstatSync(path, { throwIfNoEntry: false })
   return stat?.isFile() === true && stat.nlink === 1 && (size === undefined || stat.size === size)
 }
-function gitOperation(args: string[]): GitOperation {
+export function gitOperation(args: string[]): GitOperation {
   let index = 0
   while (args[index] === '-c') index += 2
   return GIT_OPERATIONS.find(operation => operation === args[index]) ?? 'unknown'
@@ -460,7 +476,11 @@ function gitOperation(args: string[]): GitOperation {
 function safeErrno(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' && Object.hasOwn(systemConstants.errno, error.code) ? error.code : undefined
 }
-function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[] }): Promise<Buffer> {
+/**
+ * Runs one git child and answers its stdout. `timeoutMs` (10 s unless given) stops it; a timer never releases the
+ * caller while the child can still write.
+ */
+export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number }): Promise<Buffer> {
   const started = performance.now()
   const details = (failure: GitFailure, code?: number | null, errno?: string): GitFailureDetails => ({ operation: input.operation, failure, elapsedMs: Math.round(performance.now() - started), ...(code !== null && code !== undefined && Number.isSafeInteger(code) && code >= 0 ? { exitCode: code } : {}), ...(errno ? { errno } : {}) })
   return new Promise((resolve, reject) => {
@@ -477,7 +497,7 @@ function runProgram(input: { program: Program; operation: GitOperation; args: st
       signal('SIGTERM')
       force = setTimeout(() => { logger.warn('History waits for Git exit before continuing', { ...details(reason, undefined, errno) }); signal('SIGKILL') }, 1_000)
     }
-    const timeout = setTimeout(() => stop('timeout'), 10_000)
+    const timeout = setTimeout(() => stop('timeout'), input.timeoutMs ?? 10_000)
     child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 64 * 1_048_576) stop('output-limit'); else output.push(chunk) })
     child.stderr!.resume()
     child.on('error', error => { failure ??= 'start'; errno ??= safeErrno(error) })

@@ -141,6 +141,8 @@ async function shownCheckpoint(checkpoint: CheckpointSummary & { current: boolea
     ...(changed.unlisted > 0 ? { changedUnlisted: changed.unlisted } : {}),
     notRestorable: notRestorable.paths,
     ...(notRestorable.unlisted > 0 ? { notRestorableUnlisted: notRestorable.unlisted } : {}),
+    // A command's changes under ignored paths: never stored or restored, so only counted (Slice F2, item 3).
+    ...(checkpoint.ignored ? { ignored: checkpoint.ignored } : {}),
     status: checkpoint.status,
     current: checkpoint.current,
     ...(checkpoint.restores === undefined ? {} : { restores: checkpoint.restores }),

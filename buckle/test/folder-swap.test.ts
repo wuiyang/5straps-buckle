@@ -1,4 +1,3 @@
-import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,6 +10,7 @@ import { checkpointRoots, createRuntime } from '../common/services/workspaces/wo
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { historyObjects } from './support/history-objects.js'
 
 // Fix brief 6, item 2 (finding 2 of recheck 4): the workspace's own folder is checked at each use, as a mount's source
 // is. Swapped for a link since it was registered (by another workspace's agent with write access to its parent, say),
@@ -108,10 +108,7 @@ describe('the workspace\'s own folder swapped for a link', () => {
       const data = JSON.parse(readFileSync(join(state, name), 'utf8')) as { checkpoints: Array<{ roots: string[] }> }
       found.roots.push(...data.checkpoints.map(record => record.roots))
     }
-    for (const name of files.filter(entry => entry.endsWith('/git/HEAD'))) {
-      const git = join(state, name.slice(0, -'/HEAD'.length))
-      found.objects.push(execFileSync('git', ['--git-dir', git, 'cat-file', '--batch-all-objects', '--batch']).toString())
-    }
+    for (const name of files.filter(entry => entry.endsWith('checkpoints.json'))) found.objects.push(...historyObjects(join(state, name, '..')).map(content => content.toString()))
     return found
   }
 
