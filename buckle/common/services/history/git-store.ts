@@ -298,6 +298,7 @@ function nativeInside(root: string, path: string): boolean { const below = nativ
 function gitName(root: string, path: string): string { return historyCapturePath({ path: nativeRelative(root, path), platform: process.platform }) }
 function normalizedRoots(roots: string[]): string[] { return [...new Set(roots.map(root => resolve(root)))].filter(root => !roots.some(parent => parent !== root && lstatSync(parent, { throwIfNoEntry: false })?.isDirectory() && isInside(parent, root))) }
 function ignoredAncestor(path: string, root: string, ignored: Set<string>): boolean {
+  if (ignored.size === 0) return false
   let parent = dirname(path)
   while (isInside(root, parent)) {
     if (ignored.has(parent)) return true
