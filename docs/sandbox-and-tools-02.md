@@ -12,6 +12,7 @@ the workspace sets `browser.headed` on. By default each session gets a fresh bro
 owner can choose a profile folder that keeps logins, or their own Chrome, as
 [Using your own browser](browser-login.md) describes. No agent call can. The first call in a mode
 launches the browser and may outlast a client's wait; the same call again reuses it.
+[Browser sessions](browser-login-02.md) says which browser a call reaches and what ends one.
 
 The owner installs `agent-browser` outside any workspace (Buckle refuses one inside):
 `npm i -g agent-browser`, then `agent-browser install`. Buckle

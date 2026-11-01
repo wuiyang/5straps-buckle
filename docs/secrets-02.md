@@ -17,13 +17,16 @@ only while the call runs, or for a code mode script, until the script answers.
 
 ## After a browser fill
 
-The page still holds a value after a fill, so every later browser call in the workspace is masked
-by it too, in any Buckle process and after a restart. Buckle records the file, the NAME, and a
-digest of the value, never the value, beside the workspace's browser sessions. Each call reads the
-file again and is refused if the file is gone or changed since the fill; put it back, or end the
-workspace's browsers with `close`, which runs even then. The hold ends when Buckle closes the
-workspace's last browser. An attached Chrome only disconnects at `close` and keeps its pages, so
-its hold stays.
+The page still holds a value after a fill, so every later call on that browser is masked by it too,
+in any Buckle process and after a restart. Buckle records the file, the NAME, and a digest of the
+value, never the value, with the browser it went into. A fresh browser's calls are masked by what
+that browser holds; a profile folder's or an attached Chrome's, by what every caller's browser there
+holds. Each call reads the file again and is refused if the file is gone or changed since the fill,
+naming each browser that holds the value and the `close` that ends it. Put the file back, or end the
+browser with `close`, which runs even then. The hold ends with its browser: at its `close`, its idle
+timeout, or the end of its Buckle process, at that process's shutdown or at the next start after a
+crash. An attached Chrome only disconnects at `close` and keeps its pages, so its hold stays until
+the owner runs `buckle browser close` ([Browser sessions](browser-login-02.md)).
 
 ## In a code mode script
 

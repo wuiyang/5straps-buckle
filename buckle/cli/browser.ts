@@ -29,7 +29,8 @@ export async function browserCloseCommand(runtime: BuckleRuntime, argv: readonly
   return { exitCode: 0, detail: `closed ${counts.closed} of ${counts.browsers} browsers, dropped ${counts.held} held secret values` }
 }
 
-function describeCounts(counts: BrowserCloseCounts, workspace: string): string {
+/** What buckle browser close prints, which docs/browser-login-02.md quotes. */
+export function describeCounts(counts: BrowserCloseCounts, workspace: string): string {
   const values = `${counts.held} held secret ${counts.held === 1 ? 'value' : 'values'}`
   if (counts.browsers === 0) return counts.held === 0 ? `No browser of workspace ${workspace} was recorded open, so nothing was closed.` : `No browser of workspace ${workspace} was recorded open; dropped ${values}.`
   const failed = counts.browsers - counts.closed

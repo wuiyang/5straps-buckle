@@ -67,6 +67,13 @@ pack's git tools.
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
   setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
   as [Rings](rings.md), the 5straps control plane for agents, reads that field.
+- On Windows, Buckle passes `--no-startup-window`, so a launch opens one window, not Chrome's own New
+  Tab window beside the page, and starts `agent-browser` with no console window of its own.
+  `agent-browser` before 0.37.1 still shows a headless browser's windows on the desktop, and can leave
+  a browser open when its daemon ends; Buckle names that version in its log at start, and
+  `npm i -g agent-browser@latest` fixes both. Two calls that start one session at the same moment can
+  still start two browsers, as `agent-browser` does not lock its daemon's start (its issue 2074);
+  `buckle browser close` ends both.
 - A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
   file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
   target, so a per-file ACL on the old one is not kept.

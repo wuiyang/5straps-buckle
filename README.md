@@ -160,7 +160,7 @@ For users:
   and [scripts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/code-mode.md).
 - [Copying files](https://github.com/wuiyang/5straps-buckle/blob/main/docs/copy.md) ([checks](https://github.com/wuiyang/5straps-buckle/blob/main/docs/copy-02.md)): `buckle cp`, its token, approvals, and limits.
 - [Secrets](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md): secret references in commands, browser fills, and fetch headers; values never shown.
-- [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md): profile folders, your own Chrome, and
+- [Using your own browser](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login.md) ([sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)): profile folders, your own Chrome, and
   Chromium arguments.
 - [The audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md): what `actions.jsonl` records and trims.
 - [Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md): the optional pairing and its settings.

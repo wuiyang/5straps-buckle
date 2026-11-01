@@ -12,10 +12,11 @@ Install agent-browser, the browser Buckle drives, outside any workspace
 
 ## Logging in without a setting
 
-With `browser.headed` on, the browser opens a visible window, and a person logs in there
+With `browser.headed` on, the browser opens a visible window, and a person logs in
 by hand. The agent never sees the credentials, only the pages after.
 That session lives until `close`, its idle timeout (`browser.idleTimeoutMs`, 5 minutes unless
-set, 1 minute to 1 day), or a change to the approved hosts, which relaunches the browser.
+set, 1 minute to 1 day), a change to the approved hosts, which relaunches the browser, or Buckle's
+shutdown (see [Browser sessions](browser-login-02.md)).
 
 ## The settings
 
@@ -41,7 +42,7 @@ For example:
 BUCKLE_BROWSER_ARGS=--disable-blink-features=AutomationControlled
 ```
 
-`agent-browser` splits the value at commas, so one argument cannot itself hold a comma. Buckle
+`agent-browser` splits the value at commas, so one argument cannot hold a comma. Buckle
 refuses to start, naming the setting, when the value holds:
 
 - an argument that is not a switch, such as a page, a path, or what follows a comma inside a switch;
@@ -111,15 +112,15 @@ Still judged in every mode:
 
 No longer judged in those modes: where a page goes after it loads, and what it requests. Every
 login kept in that profile folder or browser is within the agent's reach, so it should hold only
-those the agent's work needs.
+those the work needs.
 
 A profile folder or an attached Chrome belongs to one workspace at a time: the one naming it as
 its own setting, else the first online workspace offering the browser that takes the node's.
 Another naming it as its own is refused, and a browser call elsewhere is refused, naming the holder. Every agent session of
 that workspace, in every Buckle process, shares its one browser, tabs and logins included;
-`close` from any session, or the idle timeout, ends it for all. Buckle tells its processes apart
-by process id alone, so after a node settings change restart each (`buckle service restart` for
-the service).
+`close` from any session, the idle timeout, or the shutdown of the process that used it last ends
+it for all. After a node settings change, restart each (`buckle service restart` for the
+service).
 
 ## Checking the mode
 
