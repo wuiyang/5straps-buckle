@@ -80,10 +80,10 @@ describe('a browser fill', () => {
     expect(JSON.stringify([filled, snapshot, runtime.actions.read(10)])).not.toContain(TOKEN)
   })
 
-  it('masks a snapshot that began before a fill beside it and answered after', async () => {
+  it('masks a snapshot that began before a fill beside it, in the same browser, and answered after', async () => {
     const { bin, runtime } = await node()
     writeFileSync(join(bin, 'slow'), '')
-    const snapshot = browser(runtime, { command: 'snapshot', args: [] }, 'chat-2')
+    const snapshot = browser(runtime, { command: 'snapshot', args: [] })
     await new Promise(resolve => setTimeout(resolve, 300))
     expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })
     const late = await snapshot
@@ -141,6 +141,15 @@ describe('the hold a fill leaves on the workspace\'s browsers', () => {
     // Close shows no page, so it runs; it ends the workspace's last browser, and the hold with it.
     expect(await browser(runtime, { command: 'close', args: [] })).toMatchObject({ outcome: 'ok' })
     expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok', output: { result: { data: { page: '' } } } })
+  })
+
+  // Slice F4, item 5: the hold is the browser's that was filled, not the workspace's.
+  it('refuses no call of another browser once the filled value changed in its file', async () => {
+    const { workspace, runtime } = await node()
+    expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}-rotated\n`)
+    expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'error' })
+    expect(await browser(runtime, { command: 'snapshot', args: [] }, 'chat-2')).toMatchObject({ outcome: 'ok' })
   })
 
   it('keeps the hold while another browser of the workspace runs', async () => {

@@ -7,7 +7,7 @@ import { hostEnvironment, type HostEnvironment } from '../../../domain/environme
 import { ownRoots, type Program, type ProgramRefusal, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool, ToolExecutionError, ToolInputError, type FilledSecret, type FilledSecrets, type ToolContext } from '../../../domain/tool.js'
+import { defineTool, ToolExecutionError, ToolInputError, type FilledSecrets, type ToolContext } from '../../../domain/tool.js'
 import type { ProcessRunner } from '../../../types/ports/process-runner.js'
 import { logger } from '../../../runtime/log.js'
 import { loadPackSkill } from '../pack-skill.js'
@@ -16,8 +16,8 @@ import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedF
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { claimCaller, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
-import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, writerOf } from './sessions.js'
+import { claimCaller, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
+import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
 
 const PACK_ID = 'browser'
 
@@ -37,28 +37,6 @@ const RELAUNCH_NOTICE = 'The browser was relaunched because the allowed domains 
 
 /** What a close answers where its caller has no browser recorded: it ran nothing, so agent-browser launched nothing to close. */
 const NO_BROWSER_NOTICE = 'No browser was open for this session, so nothing was closed.'
-
-/** How many filled values a workspace's browsers are masked by at most. */
-const MAX_FILLED = 256
-
-/** The record with a call's filled values in it, one entry a file and NAME, refused past MAX_FILLED. */
-function withFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
-  const entries = new Map(held.map(entry => [`${entry.real}\u0000${entry.name}`, entry]))
-  for (const entry of added) {
-    const key = `${entry.real}\u0000${entry.name}`
-    if (!entries.has(key) && entries.size >= MAX_FILLED) throw new ToolInputError(`A workspace's browsers are masked by at most ${MAX_FILLED} filled secret values; end them with the close command to fill more`, { code: 'PERMISSION_DENIED' })
-    entries.set(key, { real: entry.real, written: entry.written, name: entry.name, digest: entry.digest })
-  }
-  return [...entries.values()]
-}
-
-/**
- * Whether closing a browser ends the page it shows, and with the workspace's last one the hold its fills left: a fresh
- * or profile browser Buckle launched closes, while an attached Chrome only disconnects and keeps its pages.
- */
-function endsHold(mode: BrowserMode | null): boolean {
-  return mode?.kind !== 'attached'
-}
 
 const commandInput = z.object({
   command: z.string().regex(/^[a-z][a-z0-9-]*$/).max(100),
@@ -159,14 +137,21 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const scrub = settingScrubber(mode ?? FRESH_BROWSER)
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed, idleTimeoutMs })
+  // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
+  // started under this pack's settings, so no process ever reaches a session started in another mode.
+  const callScope = (running: BrowserMode, context: ToolContext, alias: string | undefined): CallScope => ({
+    kind: running.kind,
+    caller: { caller: context.sessionId, stage: context.stageId ?? 'default', alias: alias ?? 'default' },
+    fingerprint,
+    own: running.kind === 'profile' ? profileSession(running.directory) : null,
+    flag,
+  })
   const lifecycle: Lifecycle = {
     store: sessions,
     me: writerOf(instance),
     idleTimeoutMs,
     longestCallMs: options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS,
     close: (session, signal) => closeSession(options, session, signal),
-    // A browser that would not close may still show a filled page, so the hold stays while any is recorded.
-    forgotten: (state) => { if (endsHold(mode) && Object.keys(state.browsers).length === 0) delete state.filled },
   }
   // Slice F4, item 4: what a process that stopped without its close step left is ended at once, before any call here.
   const started = options.agentBrowser.path === null ? Promise.resolve() : endStranded(lifecycle).catch((error: unknown) => { logger.warn('The browser sessions a stopped Buckle process left could not be ended; the next start tries again', { error }) })
@@ -184,10 +169,18 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     const holder = running.kind === 'fresh' ? null : options.heldBy?.() ?? null
     if (holder !== null) throw new ToolExecutionError(heldRefusal(running, holder), { code: 'BROWSER_COMMAND_FAILED' })
   }
-  // The values the workspace's browsers hold from secret references, as its browser packs record them in sessions.json,
-  // read again at each browser call (runWithSecrets), so a process beside the one that filled, or one started after it
-  // stopped, masks the page too; once what a stopped process left is ended, as its hold ends with it.
-  const filled: FilledSecrets = { list: async () => { await started; return sessions.read().filled ?? [] } }
+  // The values a call's browser holds from secret references, as the browser packs record them in sessions.json, read
+  // again at each browser call (runWithSecrets), so a process beside the one that filled, or one started after it
+  // stopped, masks the page too; once what a stopped process left is ended, as its hold ends with it (Slice F4, item 5).
+  const filled: FilledSecrets = {
+    list: async ({ context, args }) => {
+      await started
+      if (mode === null) return []
+      const state = sessions.read()
+      upgradeSessions(state)
+      return heldFor(lifecycle, state, callScope(mode, context, typeof args.session === 'string' ? args.session : undefined))
+    },
+  }
   return {
     id: PACK_ID,
     version: '1.0.0',
@@ -201,7 +194,11 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       opened.clear()
       try { await closeWritten(lifecycle) } finally { releaseInstance(instance) }
     },
-    retire: () => retireSessions(lifecycle, opened),
+    retire: async () => {
+      const names = [...opened]
+      opened.clear()
+      await retireSessions(lifecycle, names)
+    },
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
@@ -229,15 +226,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
           await started
-          // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
-          // started under this pack's settings, so no process ever reaches a session started in another mode.
-          const scope: CallScope = {
-            kind: running.kind,
-            caller: { caller: context.sessionId, stage: context.stageId ?? 'default', alias: input.session ?? 'default' },
-            fingerprint,
-            own: running.kind === 'profile' ? profileSession(running.directory) : null,
-            flag,
-          }
+          const scope = callScope(running, context, input.session)
           if (input.command === 'close') return await closeCaller({ options, lifecycle, opened, scope, context, scrub })
 
           // Resolve file arguments against the authorized workspace, not the daemon state directory.
@@ -253,12 +242,9 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
-            const { session, relaunchedFrom, sibling } = await takeSession(lifecycle, {
-              scope,
-              // Recorded under the same lock as the session, before the browser is handed a value, so a close in another
-              // process never ends a hold this call is about to need.
-              record: (state) => { if (context.secretFills && context.secretFills.length > 0) state.filled = withFilled(state.filled ?? [], context.secretFills) },
-            })
+            // Each value the call fills is held by its session under the same lock, before the browser is handed it, so a
+            // close in another process never ends a hold this call is about to need.
+            const { session, relaunchedFrom, sibling } = await takeSession(lifecycle, { scope, fills: context.secretFills ?? [] })
             if (sibling) logSiblingSettings(options.sessionDirectory, options.serviceInstalled?.() === true)
             // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
             // retire of the pack a change replaces, and by the node's shutdown.
@@ -437,18 +423,6 @@ function browserEnvironment(options: BrowserPackOptions): NodeJS.ProcessEnv {
   return (options.environment ?? hostEnvironment(() => ownRoots(options.paths)))()
 }
 
-/**
- * A pack replaced by one built from other settings closes each browser it started, as the close command would, in
- * parallel under one bound (review L10 of B18-B19), and keeps the records (fix brief 2, R2): the successor finds each
- * session's key and the list it last ran under, and at the session's next call closes it and starts a browser under a
- * new name and the new list, saying it was relaunched. One that will not close is closed again then.
- */
-async function retireSessions(lifecycle: Lifecycle, opened: Set<string>): Promise<void> {
-  const closing = [...opened]
-  opened.clear()
-  const closed = await closeEach(lifecycle, closing)
-  if ([...closed.values()].includes(false)) logger.warn('A browser session did not close when its settings changed; the next call of its session closes it again')
-}
 
 /**
  * Sends a bare close to one session's daemon, as the close command does: it closes a browser agent-browser launched and

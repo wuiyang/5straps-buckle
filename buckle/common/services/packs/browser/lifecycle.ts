@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonFileStore } from '../../../adapters/json-file-store.js'
+import { ToolInputError, type FilledSecret } from '../../../domain/tool.js'
 import { logger } from '../../../runtime/log.js'
 import type { BrowserModeName } from './mode.js'
-import { isWriter, keyOf, liveSibling, recordsWhere, sessionKey, stranded, upgradeSessions, type Caller, type Sessions, type Writer } from './sessions.js'
+import { isWriter, keyOf, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Sessions, type Writer } from './sessions.js'
 
 /** Who a call is for, and what its browser is started with, which a session it takes must have been started under. */
 export interface CallScope {
@@ -25,9 +26,10 @@ export interface Lifecycle {
   longestCallMs: number
   /** Sends one bare close, as shutdown does: whether it closed. */
   close(session: string, signal: AbortSignal): Promise<boolean>
-  /** Run under the lock after sessions are forgotten, so the hold their fills left can end with them. */
-  forgotten(state: Sessions): void
 }
+
+/** How many filled values one browser is masked by at most. */
+const MAX_FILLED = 256
 
 /** How long the closes before a call, or at shutdown, wait for the daemons, all of them together. */
 export const CLOSE_TIMEOUT_MS = 5_000
@@ -44,23 +46,22 @@ export interface TakenSession {
 interface Claims { names: string[]; relaunchedFrom?: string | null; sibling: boolean }
 
 /**
- * The session a call runs on (Slice F4, items 3 and 4): its caller's, stage's, and alias's, started under this pack's
+ * The session a call runs on (Slice F4, items 3 to 5): its caller's, stage's, and alias's, started under this pack's
  * settings. First, under the lock, every session left with no one to end it (stranded) is claimed, and so is a session
  * of the key started under other settings, or a fresh one last run under another list: each is closed, and a new one
  * named under the same key, so no record is left under the old settings; a live sibling's is left to it. Each value the
- * call fills is recorded under the same lock as the session, before the browser is handed it.
+ * call fills is held by the session it takes, under the same lock, before the browser is handed it.
  */
-export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScope; record: (state: Sessions) => void }): Promise<TakenSession> {
+export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScope; fills: readonly FilledSecret[] }): Promise<TakenSession> {
   const { store } = lifecycle
   const first = await store.update((state): { taken: TakenSession } | { claims: Claims } => {
     upgradeSessions(state)
-    input.record(state)
     const claims = claimsFor(lifecycle, state, input.scope)
     if (claims.names.length > 0) {
       for (const name of claims.names) state.browsers[name]!.closing = true
       return { claims }
     }
-    const taken = take(lifecycle, state, input.scope)
+    const taken = take(lifecycle, state, input.scope, input.fills)
     return { taken: { ...taken, sibling: taken.sibling || claims.sibling } }
   })
   if ('taken' in first) return first.taken
@@ -69,8 +70,8 @@ export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScop
   if ([...closed.values()].includes(false)) logger.warn('A browser session Buckle ended before a call did not close; the next start ends it')
   return store.update((state) => {
     upgradeSessions(state)
-    forget(lifecycle, state, closed)
-    const taken = take(lifecycle, state, input.scope)
+    forget(state, closed)
+    const taken = take(lifecycle, state, input.scope, input.fills)
     return { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
   })
 }
@@ -106,29 +107,61 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
 }
 
 /**
- * Takes the call's session and records it as this process's, used now. On a profile folder it is the folder's one
- * session, whose name never changes, so one marked closing is taken up again; one a live sibling wrote under other
- * settings is reused as it is, as closing it would relaunch Chrome at each call either process makes. Elsewhere it is
- * the key's session from these settings, or a new one.
+ * Takes the call's session and records it as this process's, used now, holding what the call fills. On a profile
+ * folder it is the folder's one session, whose name never changes, so one marked closing is taken up again with its
+ * hold, as a browser that did not close may still show it; one a live sibling wrote under other settings is reused as
+ * it is, as closing it would relaunch Chrome at each call either process makes. Elsewhere it is the key's session from
+ * these settings, or a new one. An attached Chrome's fills are its own hold, which no session ends.
  */
-function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope): { session: string; sibling: boolean } {
+function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: readonly FilledSecret[]): { session: string; sibling: boolean } {
   const now = Date.now()
   const fields = { ...scope.caller, mode: scope.fingerprint, writer: lifecycle.me, usedAt: now, idleTimeoutMs: lifecycle.idleTimeoutMs }
+  if (scope.kind === 'attached' && fills.length > 0) state.attached = withFilled(state.attached ?? [], fills)
+  const held = (record: BrowserRecord | undefined) => {
+    const kept = withFilled(record?.held ?? [], scope.kind === 'attached' ? [] : fills)
+    return kept.length > 0 ? { held: kept } : {}
+  }
   if (scope.own !== null) {
     const record = state.browsers[scope.own]
     if (record !== undefined && !record.closing && record.mode !== scope.fingerprint && liveSibling(record, lifecycle.me)) {
       record.usedAt = now
+      Object.assign(record, held(record))
       return { session: scope.own, sibling: true }
     }
-    state.browsers[scope.own] = { kind: 'profile', ...fields }
+    state.browsers[scope.own] = { kind: 'profile', ...fields, ...held(record) }
     return { session: scope.own, sibling: false }
   }
   const key = sessionKey(scope.kind, scope.caller)
   const session = recordsWhere(state, record => !record.closing && keyOf(record) === key && record.mode === scope.fingerprint)[0] ?? `buckle-${randomUUID()}`
   // A daemon starts under this list at this call's first command, whether the call then succeeds, fails, or times out,
   // so the list is recorded before it runs: a later change then relaunches it.
-  state.browsers[session] = { kind: scope.kind, ...fields, ...(scope.kind === 'fresh' ? { allowedDomains: scope.flag } : {}) }
+  state.browsers[session] = { kind: scope.kind, ...fields, ...(scope.kind === 'fresh' ? { allowedDomains: scope.flag } : {}), ...held(state.browsers[session]) }
   return { session, sibling: false }
+}
+
+/** A hold with a call's fills in it, refused past MAX_FILLED values. */
+function withFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
+  const merged = mergeFilled(held, added)
+  if (merged.length > MAX_FILLED && merged.length > held.length) throw new ToolInputError(`A browser is masked by at most ${MAX_FILLED} filled secret values; end it with the close command to fill more`, { code: 'PERMISSION_DENIED' })
+  return merged
+}
+
+/**
+ * The values a browser call is masked by (Slice F4, item 5): on a fresh browser, what its own session holds, the one
+ * the call will run on; on a profile folder or an attached Chrome, the shared values, what every caller's browser
+ * there holds: the profile folder's sessions, one a close failed for included, and the attached Chrome's hold. A
+ * session about to be ended before the call runs is left out, as the call never reaches it.
+ */
+export function heldFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): FilledSecret[] {
+  const now = Date.now()
+  const ending = (record: BrowserRecord) => !record.closing && stranded(record, lifecycle.me, now, lifecycle.longestCallMs)
+  if (scope.kind === 'fresh') {
+    const key = sessionKey(scope.kind, scope.caller)
+    const own = Object.values(state.browsers).find(record => !record.closing && !ending(record) && keyOf(record) === key && record.mode === scope.fingerprint && (record.allowedDomains === undefined || record.allowedDomains === scope.flag))
+    return [...own?.held ?? []]
+  }
+  const shared = Object.values(state.browsers).filter(record => record.kind === 'profile' && !ending(record)).flatMap(record => record.held ?? [])
+  return mergeFilled(state.attached ?? [], shared)
 }
 
 /**
@@ -174,6 +207,22 @@ export async function endStranded(lifecycle: Lifecycle): Promise<void> {
 }
 
 /**
+ * When the settings change (fix brief 2, R2): each browser the replaced pack started closes, and its record stays for
+ * the successor, which at the session's next call closes it again and starts a browser under a new name, saying it was
+ * relaunched where the list changed. A browser that closed holds nothing any more.
+ */
+export async function retireSessions(lifecycle: Lifecycle, names: readonly string[]): Promise<void> {
+  const closed = await closeEach(lifecycle, names)
+  if ([...closed.values()].includes(false)) logger.warn('A browser session did not close when its settings changed; the next call of its session closes it again')
+  const done = [...closed].flatMap(([name, ok]) => (ok ? [name] : []))
+  if (done.length === 0) return
+  await lifecycle.store.update((state) => {
+    upgradeSessions(state)
+    for (const name of done) delete state.browsers[name]?.held
+  })
+}
+
+/**
  * At shutdown (Slice F4, item 4): closes every session this process wrote, whichever pack started it and in whichever
  * mode, a profile folder's too, and forgets each that closed; one that did not stays marked closing, for the next start.
  */
@@ -195,16 +244,15 @@ export async function settleClaims(lifecycle: Lifecycle, closed: ReadonlyMap<str
   if (closed.size === 0) return
   await lifecycle.store.update((state) => {
     upgradeSessions(state)
-    forget(lifecycle, state, closed)
+    forget(state, closed)
   })
 }
 
-/** Forgets each closed session still marked closing, then lets the hold its fills left end with it. */
-function forget(lifecycle: Lifecycle, state: Sessions, closed: ReadonlyMap<string, boolean>): void {
+/** Forgets each closed session still marked closing, and the hold its fills left with it. */
+function forget(state: Sessions, closed: ReadonlyMap<string, boolean>): void {
   for (const [name, done] of closed) {
     if (done && state.browsers[name]?.closing === true) delete state.browsers[name]
   }
-  lifecycle.forgotten(state)
 }
 
 /** Closes each session in parallel under one bound, so a few stuck daemons cannot hold up the rest. */

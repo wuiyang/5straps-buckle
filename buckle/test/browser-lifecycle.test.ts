@@ -319,3 +319,72 @@ describe('no browser outlives its session (F4 item 4)', () => {
     expect(stored()).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
   })
 })
+
+const FILL = { secretFills: [{ real: '/workspace/.env.local', written: '.env.local', name: 'LOGIN_PASSWORD', digest: 'd'.repeat(64) }] }
+
+/** The values a call of this context is masked by, by NAME. */
+async function heldFor(pack: ReturnType<ReturnType<typeof node>['open']>, overrides: Partial<ToolContext> = {}, args: Record<string, unknown> = { command: 'snapshot', args: [] }): Promise<string[]> {
+  return (await pack.filled!.list({ context: context(overrides), args: args as never })).map(entry => entry.name)
+}
+
+describe('the hold a fill leaves, per browser (F4 item 5)', () => {
+  it('masks a fresh browser\'s calls by its own fills alone, never another caller\'s, stage\'s, or alias\'s', async () => {
+    const { open } = node()
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    expect(await heldFor(pack)).toEqual(['LOGIN_PASSWORD'])
+    expect(await heldFor(pack, { sessionId: 'other-agent' })).toEqual([])
+    expect(await heldFor(pack, { stageId: 'turn-2' })).toEqual([])
+    expect(await heldFor(pack, {}, { command: 'snapshot', args: [], session: 'checkout' })).toEqual([])
+  })
+
+  // Each ends the default caller's browser alone; the other caller's keeps its hold.
+  const mine = (record: Record<string, unknown>) => record.caller === 'mcp'
+  it.each<[string, (pack: ReturnType<ReturnType<typeof node>['open']>, tools: ReturnType<typeof node>) => Promise<unknown>]>([
+    ['its close', pack => call(pack, { command: 'close' })],
+    ['its idle timeout', async (pack, { sessionDirectory }) => { rewrite(sessionDirectory, (record) => { if (mine(record)) record.usedAt = 0 }); await call(pack, { command: 'snapshot' }, { sessionId: 'other-agent' }) }],
+    ['the start after its process stopped', async (_, { sessionDirectory }) => { rewrite(sessionDirectory, (record) => { record.writer = mine(record) ? { pid: stoppedPid(), instance: 'stopped' } : { pid: process.ppid, instance: 'live-sibling' } }) }],
+    ['its process\'s shutdown', async (pack, { sessionDirectory }) => { rewrite(sessionDirectory, (record) => { if (!mine(record)) record.writer = { pid: process.ppid, instance: 'live-sibling' } }); await pack.close!() }],
+  ])('drops a fresh browser\'s hold with the browser, at %s, and leaves another browser\'s', async (_, end) => {
+    const tools = node()
+    const pack = tools.open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'other-agent', ...FILL })
+    await end(pack, tools)
+    const after = tools.open()
+    await vi.waitFor(async () => expect(await heldFor(after)).toEqual([]))
+    expect(await heldFor(after, { sessionId: 'other-agent' })).toEqual(['LOGIN_PASSWORD'])
+  })
+
+  it('masks every call on a profile folder by the shared browser\'s fills, and drops them when that browser ends', async () => {
+    const { open } = node({ mode: { kind: 'profile', directory: '/owner/profile' } })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    expect(await heldFor(pack, { sessionId: 'other-agent', stageId: 'turn-2' })).toEqual(['LOGIN_PASSWORD'])
+    await call(pack, { command: 'close' }, { sessionId: 'other-agent' })
+    expect(await heldFor(pack)).toEqual([])
+  })
+
+  it('keeps an attached Chrome\'s hold through close, shutdown, and a restart, as it keeps its pages', async () => {
+    const { open, sessionDirectory } = node({ mode: { kind: 'attached', endpoint: '9222' } })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    expect(await heldFor(pack, { sessionId: 'other-agent' })).toEqual(['LOGIN_PASSWORD'])
+    await call(pack, { command: 'close' })
+    await pack.close?.()
+    const restarted = open()
+    expect(await heldFor(restarted)).toEqual(['LOGIN_PASSWORD'])
+    expect(JSON.parse(readFileSync(join(sessionDirectory, 'sessions.json'), 'utf8')).browsers).toEqual({})
+  })
+
+  it('spreads an earlier Buckle\'s workspace-wide hold over the browsers it recorded, which end with them', async () => {
+    const { browser, open, sessionDirectory } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    const session = sessionOf(browser.calls[0]!)
+    const key = JSON.stringify(['fresh', 'old-fingerprint', 'mcp', 'default', 'default'])
+    writeFileSync(join(sessionDirectory, 'sessions.json'), JSON.stringify({ sessions: { [key]: session }, modes: { [key]: 'old-fingerprint' }, writers: { [key]: process.pid }, filled: FILL.secretFills }))
+    const restarted = open()
+    expect(await heldFor(restarted)).toEqual([])
+    expect(browser.alive()).toEqual([])
+  })
+})

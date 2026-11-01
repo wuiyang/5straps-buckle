@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
+import type { FilledSecret } from '../../../domain/tool.js'
 import { DEFAULT_IDLE_TIMEOUT_MS, type BrowserModeName } from './mode.js'
 
 const FilledSchema = z.object({ real: z.string(), written: z.string(), name: z.string(), digest: z.string() })
@@ -29,6 +30,11 @@ const BrowserRecordSchema = z.object({
   /** The idle timeout its daemon started with: a session unused for longer, and the longest call, has ended. */
   idleTimeoutMs: z.number().int().positive(),
   closing: z.literal(true).optional(),
+  /**
+   * Each value a fill or type handed this browser from a secret reference (docs/secrets.md), by file, NAME, and sha256,
+   * never the value, so every Buckle process masks the page by it, after a restart too; it ends with the browser.
+   */
+  held: z.array(FilledSchema).optional(),
 })
 
 export type BrowserRecord = z.infer<typeof BrowserRecordSchema>
@@ -37,13 +43,13 @@ export type Writer = z.infer<typeof WriterSchema>
 export const SessionsSchema = z.object({
   browsers: z.record(z.string(), BrowserRecordSchema).default({}),
   /**
-   * Each value a fill or type handed a browser of the workspace from a secret reference (docs/secrets.md), by file, NAME,
-   * and sha256, never the value, so every Buckle process on the workspace masks the page by it, after a restart too;
-   * absent while none is held.
+   * What the owner's attached Chrome was filled with, held as `held` is: it only disconnects at a close or a shutdown and
+   * keeps its pages, so its hold stays until the owner's buckle browser close.
    */
-  filled: z.array(FilledSchema).optional(),
+  attached: z.array(FilledSchema).optional(),
   // The store of Buckle 0.1.9 and before, keyed by caller and settings: taken up once (upgradeSessions) and kept empty,
-  // so an earlier Buckle still reads the file.
+  // so an earlier Buckle still reads the file. Its hold was the workspace's, whichever browser was filled.
+  filled: z.array(FilledSchema).optional(),
   sessions: z.record(z.string(), z.string()).default({}),
   allowedDomains: z.record(z.string(), z.string().nullable()).default({}),
   modes: z.record(z.string(), z.string()).default({}),
@@ -146,10 +152,16 @@ const KINDS = new Set<string>(['fresh', 'profile', 'attached'])
 
 /**
  * Takes up the store an earlier Buckle wrote, keyed by caller and settings, as records by session name, and empties
- * it. Its writer is a pid alone, so the instance is unknown; it was last used at an unknown time, 0.
+ * it. Its writer is a pid alone, so the instance is unknown; it was last used at an unknown time, 0. Its hold was the
+ * workspace's: each browser it recorded holds it all, and so does an attached Chrome, or, where none is recorded, the
+ * attached hold, as only an attached Chrome kept a hold with no browser recorded.
  */
 export function upgradeSessions(state: Sessions): void {
-  for (const [key, session] of Object.entries(state.sessions)) {
+  const filled = state.filled ?? []
+  const legacy = Object.entries(state.sessions)
+  if (filled.length > 0 && (legacy.length === 0 || legacy.some(([key]) => key.startsWith('["attached"')))) state.attached = mergeFilled(state.attached ?? [], filled)
+  delete state.filled
+  for (const [key, session] of legacy) {
     if (state.browsers[session] !== undefined) continue
     let parts: unknown[]
     try { parts = JSON.parse(key) as unknown[] } catch { parts = [] }
@@ -165,12 +177,24 @@ export function upgradeSessions(state: Sessions): void {
       writer: { pid: state.writers[key] ?? 0, instance: '' },
       usedAt: 0,
       idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
+      ...(filled.length > 0 && kind !== 'attached' ? { held: filled } : {}),
     }
   }
   state.sessions = {}
   state.allowedDomains = {}
   state.modes = {}
   state.writers = {}
+}
+
+/** A hold with more values in it, one entry a file and NAME, the latest digest kept. */
+export function mergeFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
+  const entries = new Map(held.map(entry => [filledKey(entry), entry]))
+  for (const entry of added) entries.set(filledKey(entry), { real: entry.real, written: entry.written, name: entry.name, digest: entry.digest })
+  return [...entries.values()]
+}
+
+export function filledKey(entry: FilledSecret): string {
+  return `${entry.real}\u0000${entry.name}`
 }
 
 /** The session names a record set holds that match `test`. */
