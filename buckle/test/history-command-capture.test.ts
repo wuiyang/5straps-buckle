@@ -96,7 +96,8 @@ function fixture(options: { allowHostGit?: boolean; maxFileBytes?: number; exclu
   writeFileSync(join(workspace, 'src', 'a.txt'), 'a1')
   writeFileSync(join(workspace, 'src', 'b.txt'), 'b1')
   const directory = join(root, 'history')
-  const settings = { directory, excluded: [], maxBytes: 64 * 1_048_576, ...options }
+  // Each sweep here removes what was written before it began; the margin for an object written just before is U1's test (history-sweep).
+  const settings = { directory, excluded: [], maxBytes: 64 * 1_048_576, sweepFreshMs: 0, ...options }
   return { root, workspace, directory, settings, details: { sessionId: 's', stageId: 'stage', tool: 'shell_exec', roots: [workspace] } }
 }
 function read(path: string): string | null { return existsSync(path) ? readFileSync(path, 'utf8') : null }

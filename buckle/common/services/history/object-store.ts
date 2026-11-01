@@ -130,6 +130,8 @@ export function openObjectStore(directory: string) {
     size,
     /** The bytes `id` takes on disk; undefined where the store does not hold it. */
     stored: (id: string): number | undefined => sizeAt(pathOf(id)),
+    /** When `id`'s file was last written, git freshening it included, from one stat of its path; undefined where it is gone. */
+    modified: (id: string): number | undefined => lstatSync(pathOf(id), { throwIfNoEntry: false })?.mtimeMs,
     /** The folder git writes its loose objects to beside these, so both share one (Slice F2, item 3). */
     root,
     remove: (id: string): void => forget(pathOf(id)),

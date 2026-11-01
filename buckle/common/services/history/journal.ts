@@ -52,6 +52,8 @@ export interface ChangeHistoryOptions {
   captureBudgetMs?: number
   /** How long a first record that a command's budget cut short may take in the background (W2); BASELINE_BUDGET_MS unless given. */
   baselineBudgetMs?: number
+  /** How long before a background sweep's plan began an object written then is still kept (U1); SWEEP_FRESH_MS unless given. */
+  sweepFreshMs?: number
 }
 /** The reason a checkpoint a stopped call left pending is given once the next call takes the lock (Slice F2, item 6). */
 export const STOPPED_REASON = 'Buckle stopped before this call finished, so history could not record what it changed; this checkpoint is not restorable'
@@ -89,6 +91,11 @@ const GC_INTERVAL_MS = 3_600_000
  */
 const SWEEP_SLICE_MS = 25
 const SWEEP_GAP_MS = 50
+/**
+ * How long before its plan began a background sweep still keeps an object written then (U1): an object's time on disk
+ * may be coarse, or the clock may step, and git freshens an object it would write again.
+ */
+const SWEEP_FRESH_MS = 10_000
 /** A journal write's temporary beside the journal, which a stopped write leaves. */
 const JOURNAL_TEMPORARY = /^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/
 /** How soon a copy of the owner objects the shadow-git store borrows is tried again after one fails (R1.4). */
@@ -393,7 +400,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * Each slice takes the lock only if it is free, its time counted from that ask, so the lock's own upkeep counts too. It
    * checks, with a stat of the journal and of each path the plan named for the indexes and markers, that all stand as the
    * plan read them, and that no command here is between its phases and no record of its own runs; it tidies what records
-   * left; and it removes temporaries, then objects, until its time ends. A state changed since asks for a sweep read afresh.
+   * left; and it removes temporaries, then objects, until its time ends, never one written since its plan began (U1). A
+   * state changed since asks for a sweep read afresh.
    */
   async function sweepInSlices(): Promise<void> {
     const plan = await sweepPlan()
@@ -412,7 +420,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         while (plan.temporaries.length && performance.now() < until) {
           try { rmSync(plan.temporaries.pop()!, { force: true }) } catch (error) { refused ??= error }
         }
-        const removed = removeObjects(plan.ids, next, until)
+        const removed = removeObjects(plan.ids, next, until, plan.keepFrom)
         next = removed.next; refused ??= removed.refused
         return true
       }, { immediate: true })
@@ -422,13 +430,16 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
   }
   /**
-   * What a background sweep removes, all read without the lock (V3). First the journal's identity and the paths of every
-   * index and marker with theirs, so a slice tells any change made after; then, where no command here is between its
-   * phases and no live record writes, what checkpoints and indexes name, the stored objects nothing names, and the
-   * temporaries of the store and the journal. undefined where nothing may go now, or a journal or an index does not read,
-   * so nothing is swept on a guess.
+   * What a background sweep removes, all read without the lock (V3). First the time it begins, before anything is read:
+   * no slice removes an object written or freshened since, less SWEEP_FRESH_MS, as a root and its record made while the
+   * plan reads escape every check (U1). Then the journal's identity and the paths of every index and marker with theirs,
+   * so a slice tells any change made after; then, where no command here is between its phases and no live record writes,
+   * what checkpoints and indexes name, the stored objects nothing names, and the temporaries of the store and the journal.
+   * undefined where nothing may go now, or a journal or an index does not read, so nothing is swept on a guess.
    */
-  async function sweepPlan(): Promise<{ journal: string | undefined; paths: string[]; indexes: string; ids: string[]; temporaries: string[] } | undefined> {
+  async function sweepPlan(): Promise<{ keepFrom: number; journal: string | undefined; paths: string[]; indexes: string; ids: string[]; temporaries: string[] } | undefined> {
+    // The wall clock, as a file's time on disk is, never the injected one.
+    const keepFrom = Date.now() - (input.sweepFreshMs ?? SWEEP_FRESH_MS)
     const journalKey = identity(file)
     const paths = commands.indexPaths()
     const indexes = commands.indexState(paths)
@@ -441,7 +452,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const named = namedObjects(state.checkpoints)
     const listed = await objects.listing()
     const journals = (await readdir(input.directory)).filter(name => JOURNAL_TEMPORARY.test(name)).map(name => join(input.directory, name))
-    return { journal: journalKey, paths, indexes, ids: listed.ids.filter(id => !named.has(id) && !indexed.has(id)), temporaries: [...listed.temporaries, ...journals] }
+    return { keepFrom, journal: journalKey, paths, indexes, ids: listed.ids.filter(id => !named.has(id) && !indexed.has(id)), temporaries: [...listed.temporaries, ...journals] }
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -601,14 +612,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   /**
    * Removes `ids` from `from` on, until `until` passes: a removal the system refuses, as Windows does while another handle
-   * holds a file, leaves that object for the next sweep (W1). Answers where it stopped, and the first refusal.
+   * holds a file, leaves that object for the next sweep (W1). With `keepFrom`, an object whose file was written at that
+   * time or later, by the stat of its path just before, stays for a later sweep, as does one that stat fails on (U1).
+   * Answers where it stopped, and the first refusal.
    */
-  function removeObjects(ids: string[], from: number, until: number): { next: number; refused: unknown } {
+  function removeObjects(ids: string[], from: number, until: number, keepFrom?: number): { next: number; refused: unknown } {
     let next = from
     let refused: unknown
     while (next < ids.length && performance.now() < until) {
       const id = ids[next++]!
-      try { objects.remove(id); sizes.delete(id) } catch (error) { refused ??= error }
+      try {
+        if (keepFrom !== undefined && (objects.modified(id) ?? -Infinity) >= keepFrom) continue
+        objects.remove(id); sizes.delete(id)
+      } catch (error) { refused ??= error }
     }
     return { next, refused }
   }
