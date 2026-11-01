@@ -97,6 +97,12 @@ const JournalSchema = z.object({
    * it live again only with the same fingerprint (recheck 4 of the final review of 0.1.4, finding code index.ts:444).
    */
   unanswered: z.array(UnansweredEntrySchema).optional(),
+  /**
+   * Each value the run's calls resolved from a secret reference, by its file, NAME, and sha256, never the value: a
+   * resumed run reads them again before it starts, so its later calls are masked by them as this run's were (Codex
+   * review of the code mode secret fix, finding S1).
+   */
+  secrets: z.array(z.object({ real: z.string(), written: z.string(), name: z.string(), digest: z.string().regex(/^[0-9a-f]{64}$/) })).optional(),
   expiresAt: z.number(),
 })
 

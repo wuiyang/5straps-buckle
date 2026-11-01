@@ -7,6 +7,7 @@ import { ToolInputError, type FilledSecret, type PreparedCall, type ToolContext 
 import { createMasker, holdMasker, type SecretValue } from './mask.js'
 import type { SecretPlace, SecretPlan } from './places.js'
 import { readSecretValues } from './secret-file.js'
+import type { ScriptSecrets } from './script-secrets.js'
 import { positionalIndexes } from '../packs/browser/effects.js'
 import { readShellReferences, readsAsReferenced, referenceKey, replaceReferences, secretKey, substituted, type ArgumentPlace, type ProgramCall, type ShellTier } from './shell-reading.js'
 
@@ -62,11 +63,14 @@ export function checkSecrets(input: { tool: string; args: JsonObject; plan: Secr
  * arguments rebuilt with the values in them and the tool prepared from them, and a shell call read again to be sure it
  * reads as it did with the references, by the command reader and by the rules. Everything the tool answers, and every
  * error it throws, is masked; a browser call is also masked by every value its workspace's browsers were filled with.
- * The values are held only while the tool runs, then dropped.
+ * The values are held only while the tool runs, then dropped; a code_run script's call hands them to its script first,
+ * which masks every later call it makes by them (ScriptSecrets).
  */
 export async function runWithSecrets(input: {
   checked: CheckedSecrets | null
   filled?: FilledSecrets
+  /** For a call a code_run script made: the script's values, which this call's are added to before its tool runs. */
+  script?: ScriptSecrets
   tool: string
   args: JsonObject
   prepare: (args: JsonObject) => PreparedCall
@@ -104,6 +108,7 @@ export async function runWithSecrets(input: {
     // The browser pack records each value it is handed with the session that runs it, before the browser runs.
     const fills: FilledSecret[] = fillPlaces.flatMap(place => place.references).map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) }))
     const headers = checked.plan.places.filter(place => place.kind === 'header').map(place => String(place.at[1]))
+    input.script?.add([...checked.plan.files].flatMap(([written, names]) => names.map(name => ({ real: checked.files.get(written)!, written, name, value: values.get(secretKey(written, name))! }))))
     return answered(await prepared.execute({ ...input.context, ...headers.length > 0 ? { secretHeaders: headers } : {}, ...fills.length > 0 ? { secretFills: fills } : {} }))
   } catch (error) {
     const masked = maskError(error, masker.text)
@@ -160,7 +165,7 @@ function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoo
   return values
 }
 
-function digestOf(value: string): string {
+export function digestOf(value: string): string {
   return createHash('sha256').update(value).digest('hex')
 }
 

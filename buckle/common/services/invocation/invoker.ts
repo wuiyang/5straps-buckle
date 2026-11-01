@@ -36,6 +36,7 @@ import { childPath, nativePath, parentDirectory } from '../../domain/paths.js'
 import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
 import { secretFileEffects } from '../secrets/secret-file.js'
 import { checkSecrets, runWithSecrets, type FilledSecrets } from '../secrets/call-secrets.js'
+import { createScriptSecrets, type ScriptSecrets } from '../secrets/script-secrets.js'
 
 /** Why a call's signal fired when its runtime shut down (B19): not the caller leaving. */
 export class InvocationsClosedError extends Error {
@@ -131,6 +132,12 @@ export interface InvokeInput {
   /** Set only by the invoker on a call a script made: told when the tool begins to run (NestedCall.onExecute). */
   onExecute?: () => void
   /**
+   * Set only by the invoker on a call a script made: the values the script's calls resolved from references, which this
+   * call's are added to and which mask its answer before the script, its record, or the audit sees it (Codex review of
+   * the code mode secret fix, finding S1).
+   */
+  scriptSecrets?: ScriptSecrets
+  /**
    * Set only by the invoker on a call a script made: what the script's calls removed inside the workspace's folder, which
    * the mass-delete guard adds to the call, and which the call adds to once it is cleared (delete-policy.ts DeleteRun).
    */
@@ -189,9 +196,14 @@ interface GateOutcome {
 
 export function createInvoker(options: InvokerOptions): Invoker {
   const invoker: Invoker = {
-    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun }) {
+    async invoke({ request, sessionId, signal, isCancel, approvalWait, via, holdUntil, onExecute, onAsked, onReplayed, resends, file, deleteRun, scriptSecrets }) {
       const startedAt = performance.now()
       let feedback: InvokeResponse | undefined
+      // For a tool that reaches tools: the values its script's calls resolve, which mask each of them and its own answer.
+      let ownSecrets: ScriptSecrets | undefined
+      // A script's call, and the script's own answer, masked before anything keeps or hands it on: its re-send's answer,
+      // the script, its record, the audit log, and the log line.
+      const scriptMasked = (response: InvokeResponse): InvokeResponse => (scriptSecrets ?? ownSecrets)?.json(response) ?? response
       let replayed = false
       let failureCode: string | undefined
       const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(sessionId, request.context?.stageId) : undefined
@@ -227,7 +239,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         }
 
         let answered: InvokeResponse | undefined
-        try { answered = await (async (): Promise<InvokeResponse> => {
+        try { answered = scriptMasked(await (async (): Promise<InvokeResponse> => {
           try {
             stop?.throwIfAborted()
             if (sessionId.length > MAX_SESSION_ID) return sessionIdTooLong(request)
@@ -260,7 +272,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // Every browser call goes through it where the workspace keeps filled values, read as it runs and once it answers.
             const masksBrowser = request.tool === 'browser_command' && tool.capability.pack === 'browser' && options.filledSecrets !== undefined
             const run = checked || masksBrowser
-              ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+              ? (context: ToolContext) => runWithSecrets({ checked, ...(options.filledSecrets ? { filled: options.filledSecrets } : {}), ...(scriptSecrets ? { script: scriptSecrets } : {}), tool: request.tool, args: request.args, prepare: args => tool.prepare(args), execute: prepared.execute, permissions: options.permissions, context, protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
               : prepared.execute
 
             // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
@@ -300,7 +312,8 @@ export function createInvoker(options: InvokerOptions): Invoker {
               if (!prepared.managesHistory) beginRun()
               // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
               const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
-              const nesting = prepared.reachesTools ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends } : undefined
+              if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+              const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets } : undefined
               try {
                 const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
                 markStarted()
@@ -372,7 +385,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // Busy state after the tool ran is not a retry: the call happened (review L4 of B23-B25).
             return { requestId: request.requestId, outcome: 'error', error: ran && shaped.code === 'STATE_BUSY' ? ranUnrecorded('STATE_BUSY') : shaped }
           }
-        })() } finally {
+        })()) } finally {
           // Settled whatever happened, before the result is recorded, so a re-send never waits on a call
           // that stopped (review L1 of B20-B22). An audit failure before the tool ran answers as a
           // retryable 503 would; once it ran, never retryable, so the same requestId never runs it again
@@ -410,6 +423,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
       } finally {
         logCallFeedback({ tool: request.tool, knownTool: options.registry.has(request.tool), ...(feedback ? { response: feedback } : {}), ...(failureCode ? { code: failureCode } : {}), durationMs: performance.now() - startedAt, nested: via !== undefined, replayed })
         if (activityTurn) options.history?.finishCall(sessionId, request.context?.stageId, activityTurn)
+        ownSecrets?.drop()
       }
     },
   }
@@ -1089,6 +1103,8 @@ interface Nesting {
   approvalWait?: ApprovalWait
   /** Whether the outer call's face sends a call again that it left undecided, which every nested call keeps. */
   resends?: boolean
+  /** The values the script's calls resolve, handed to each of them (InvokeInput.scriptSecrets). */
+  secrets: ScriptSecrets
 }
 
 /**
@@ -1102,7 +1118,7 @@ interface Nesting {
  * the outer call, so a re-sent script names its calls as before: Buckle's own re-send dedupe never runs one twice,
  * and a call that asked joins its ask.
  */
-function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedParent' | 'forgetNested' | 'withdrawNested' | 'callerCancelled'> {
+function nestedContext(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; nesting: Nesting; signal: AbortSignal; timeoutMs: number }): Pick<ToolContext, 'invokeNested' | 'nestedKey' | 'nestedParent' | 'forgetNested' | 'withdrawNested' | 'callerCancelled' | 'nestedSecrets'> {
   const { request, nesting } = input
   const nestedKey = nestedCallKey(nesting.key)
   const nestedParent = request.requestId.slice(0, MAX_LOGGED_ID)
@@ -1134,8 +1150,10 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
       holdUntil: waitEnds,
       ...(call.onExecute ? { onExecute: call.onExecute } : {}),
       deleteRun,
+      scriptSecrets: nesting.secrets,
       via: { tool: request.tool, parentRequestId: parentOf(call) },
     }),
+    nestedSecrets: { records: () => nesting.secrets.records(), restore: records => nesting.secrets.restore(records) },
     forgetNested: (ids) => {
       for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })
     },

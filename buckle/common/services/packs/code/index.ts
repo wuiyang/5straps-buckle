@@ -271,6 +271,9 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
     await withdraw(error.asks, 'whose record could not be read')
     throw replayDiverged()
   }
+  // The values the run before resolved mask this one's calls too, read again before any call is replayed or made: a
+  // value that no longer reads as it did refuses the send, and the record stays for the send once the file is back.
+  if (journal?.secrets) context.nestedSecrets?.restore(journal.secrets)
   // The run's own tools, each with its input schema, so describeTool answers a replay as it answered the first run,
   // whatever the tool policy says since (recheck 2 of the final review of 0.1.4, finding code index.ts:363).
   const tools: RunTool[] = journal?.tools ?? input.reachable().map(tool => ({ name: tool.name, jsName: vm.identifier(tool.name), description: tool.description, inputSchema: tool.inputSchema }))
@@ -533,10 +536,11 @@ async function runScript(input: { script: string; context: ToolContext; vm: Scri
   // finding code index.ts:497).
   const write = (named: readonly string[], entries: JournalEntry[], kept?: Journal) => {
     const vm = kept ? kept.vm : vmName ?? journal?.vm
+    const secrets = context.nestedSecrets?.records() ?? []
     return journals.write({
       key, startedAt, seed, ...(vm === undefined ? {} : { vm }), script: input.script,
       ...(named.length > 0 ? { asks: [...named] } : {}), ...(parent === undefined ? {} : { parentRequestId: parent }), tools, entries, globals,
-      unanswered: unansweredBeside(entries),
+      unanswered: unansweredBeside(entries), ...(secrets.length > 0 ? { secrets } : {}),
     }, kept ? { expiresAt: kept.expiresAt } : {})
   }
   const keepWhole = async (named: readonly string[]): Promise<boolean> => !record.overflowed && await write(named, record.whole())

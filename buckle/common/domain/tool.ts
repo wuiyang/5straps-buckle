@@ -123,6 +123,12 @@ export interface ToolContext {
    * (re-review of the code-mode slice, finding new-surface index.ts:338).
    */
   callerCancelled?: () => boolean
+  /**
+   * Beside `invokeNested`: the values the script's calls resolved from references, which mask every later call it makes,
+   * as its replay record keeps them, by file, NAME, and sha256, never the value; and their restore from that record
+   * before a resumed script starts, which refuses where one no longer reads as it did (ScriptSecrets).
+   */
+  nestedSecrets?: { records(): FilledSecret[]; restore(records: readonly FilledSecret[]): void }
   /** Handed by the files route alone, to the tool whose `transfer` names its kind: the bytes of one `buckle cp`. */
   file?: FileChannel
 }
