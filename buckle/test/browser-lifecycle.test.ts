@@ -621,6 +621,119 @@ describe('a close while a call runs on the browser (Codex review L3)', () => {
   })
 })
 
+/** Whether a gated command reached the stand-in yet. */
+function reaching(gate: { arrived: Promise<void> }): () => boolean {
+  let reached = false
+  void gate.arrived.then(() => { reached = true })
+  return () => reached
+}
+
+// Codex recheck M1 and L3: a close sent outside the sessions lock raced a call taking its browser. The retire of a
+// replaced pack looked at the store unlocked, then closed a session a call had taken meanwhile; and a call took up a
+// profile folder's browser a close was still ending, which that close then forgot with its hold. Either way the call's
+// command started the browser again and filled it with no record or hold left.
+describe('a close a call races (Codex recheck M1, L3)', () => {
+  const PROFILE: BrowserMode = { kind: 'profile', directory: '/owner/profile' }
+
+  it('lets no call take a browser the retire of a replaced pack is closing, so the hold the call\'s fill leaves survives', async () => {
+    const { browser, open, stored } = node()
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    const close = gated(browser, 'close')
+    const retiring = pack.retire!()
+    await close.arrived
+    // The caller's fill arrives after the retire chose its browser, before the close reaches it.
+    const fill = gated(browser, 'fill')
+    const reached = reaching(fill)
+    const filling = call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await settle()
+    const waited = !reached()
+    close.open()
+    await retiring
+    fill.open()
+    await filling
+    const filled = sessionOf(browser.calls.find(request => request.args[0] === 'fill')!)
+    expect(browser.alive()).toEqual([filled])
+    expect(await heldFor(pack)).toEqual(['LOGIN_PASSWORD'])
+    expect(stored().browsers).toMatchObject({ [filled]: { held: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] } })
+    expect(waited).toBe(true)
+  })
+
+  it('lets no call take up a profile folder\'s browser while a close of it runs, so that close forgets no hold the call leaves', async () => {
+    const { browser, open, stored } = node({ mode: PROFILE })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const session = sessionOf(browser.calls[0]!)
+    const close = gated(browser, 'close')
+    const closing = call(pack, { command: 'close' })
+    await close.arrived
+    // Another caller's fill arrives while the close is on its way to the browser, and the owner's close comes meanwhile.
+    const fill = gated(browser, 'fill')
+    const reached = reaching(fill)
+    const filling = call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'other-agent', ...FILL })
+    await settle()
+    const waited = !reached()
+    await pack.closeBrowsers!()
+    close.open()
+    await closing
+    fill.open()
+    await filling
+    expect(browser.alive()).toEqual([session])
+    expect(await heldFor(pack, { sessionId: 'third-agent' })).toEqual(['LOGIN_PASSWORD'])
+    expect(stored().browsers).toMatchObject({ [session]: { held: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] } })
+    expect(waited).toBe(true)
+  })
+
+  it('sends a profile folder\'s failed close again before a call takes its browser, and refuses the call while it still fails', async () => {
+    const { browser, open, stored } = node({ mode: PROFILE, workspaceName: () => 'site' })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const session = sessionOf(browser.calls[0]!)
+    const run = browser.run
+    browser.run = async request => request.args[0] === 'close' ? { ...result({ success: false }), exitCode: 1 } : run(request)
+    await pack.closeBrowsers!()
+    await expect(call(pack, { command: 'snapshot' }, { sessionId: 'other-agent' })).rejects.toThrow('The profile folder\'s browser did not close when a close was sent to it, so no call runs on it while its page may still show what it held; call again to send the close again, or end it with the owner\'s buckle browser close --workspace site')
+    expect(stored().browsers).toMatchObject({ [session]: { closing: true, held: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] } })
+    browser.run = run
+    await call(pack, { command: 'snapshot' }, { sessionId: 'other-agent' })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['fill', 'close', 'snapshot'])
+    expect(await heldFor(pack)).toEqual([])
+  })
+
+  it('answers an agent\'s close of a browser another close is ending, and sends no second close', async () => {
+    const { browser, open, stored } = node({ mode: PROFILE })
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    const close = gated(browser, 'close')
+    const closing = call(pack, { command: 'close' })
+    await close.arrived
+    expect(await call(pack, { command: 'close' }, { sessionId: 'other-agent' })).toMatchObject({ result: { success: true, data: { closed: false } }, notice: 'A close sent before this one is ending this browser.' })
+    close.open()
+    await closing
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'close'])
+    expect(stored().browsers).toEqual({})
+  })
+
+  it('keeps a browser the retire could not close marked closing with its hold, so no call takes it, and the next start ends it', async () => {
+    const { browser, open, stored } = node()
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const session = sessionOf(browser.calls[0]!)
+    const run = browser.run
+    browser.run = async request => request.args[0] === 'close' ? { ...result({ success: false }), exitCode: 1 } : run(request)
+    await pack.retire!()
+    expect(stored().browsers).toMatchObject({ [session]: { closing: true, held: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] } })
+    expect((stored().browsers as Record<string, Record<string, unknown>>)[session]).not.toHaveProperty('closer')
+    browser.run = run
+    await call(pack, { command: 'snapshot' })
+    const relaunched = sessionOf(browser.calls.at(-1)!)
+    expect(relaunched).not.toBe(session)
+    open()
+    await vi.waitFor(() => expect(Object.keys(stored().browsers as object)).toEqual([relaunched]))
+    expect(browser.alive()).toEqual([relaunched])
+  })
+})
+
 // agent-browser #2074: two invocations that start one session at once each spawn a daemon, and so a browser.
 describe('the first command of a session (Codex review L3)', () => {
   it('runs alone, so two calls at once never start two daemons, and the second runs once it is done', async () => {

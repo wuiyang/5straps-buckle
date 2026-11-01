@@ -11,12 +11,19 @@ const FilledSchema = z.object({ real: z.string(), written: z.string(), name: z.s
 const WriterSchema = z.object({ pid: z.number().int(), instance: z.string() })
 
 /**
+ * A close on its way to a session (Codex recheck M1, L3), from when it marks the session closing, under the sessions lock,
+ * until it records how the close went, or `until` passes. No call takes the session meanwhile, and only this close
+ * forgets it, by its `id`, so a close never forgets a session another close marked or a call took since.
+ */
+const CloserSchema = z.object({ id: z.string(), writer: WriterSchema, until: z.number() })
+
+/**
  * A call running on a session (Codex review L3), from when it takes the session until its command ends, or `until`
  * passes: no close ends a session while one is live, as the call's command would start its browser again with no record
  * or hold left. A close that comes meanwhile marks the session closing, and the last call to end ends it. `starting`
  * marks the call that starts the session's daemon, which the session's other calls wait for (agent-browser #2074).
  */
-const LeaseSchema = z.object({ id: z.string(), writer: WriterSchema, until: z.number(), starting: z.literal(true).optional() })
+const LeaseSchema = CloserSchema.extend({ starting: z.literal(true).optional() })
 
 /**
  * One browser session Buckle started, by its agent-browser session name: the caller, stage, and alias it serves (one
@@ -38,6 +45,8 @@ const BrowserRecordSchema = z.object({
   /** The idle timeout its daemon started with: a session unused for longer, and the longest call, has ended. */
   idleTimeoutMs: z.number().int().positive(),
   closing: z.literal(true).optional(),
+  /** The close on its way to it now (CloserSchema); absent once it closed, or failed and left the session closing. */
+  closer: CloserSchema.optional(),
   /**
    * Each value a fill or type handed this browser from a secret reference (docs/secrets.md), by file, NAME, and sha256,
    * never the value, so every Buckle process masks the page by it, after a restart too; it ends with the browser.
@@ -50,6 +59,7 @@ const BrowserRecordSchema = z.object({
 export type BrowserRecord = z.infer<typeof BrowserRecordSchema>
 export type Writer = z.infer<typeof WriterSchema>
 export type Lease = z.infer<typeof LeaseSchema>
+export type Closer = z.infer<typeof CloserSchema>
 
 export const SessionsSchema = z.object({
   browsers: z.record(z.string(), BrowserRecordSchema).default({}),
@@ -165,6 +175,11 @@ export function liveLeases(record: BrowserRecord, now: number): Lease[] {
 /** Whether a call runs on a session now, so no close may end it (Codex review L3). */
 export function busy(record: BrowserRecord, now: number): boolean {
   return liveLeases(record, now).length > 0
+}
+
+/** Whether a close is on its way to a session now, whose process runs, and whose bound has not passed (Codex recheck M1, L3). */
+export function closerLive(record: BrowserRecord, now: number): boolean {
+  return record.closer !== undefined && now <= record.closer.until && !writerGone(record.closer.writer)
 }
 
 /** Whether another Buckle process, or runtime, still running wrote the record: its session is that one's to keep. */

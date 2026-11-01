@@ -5,7 +5,7 @@ import { ToolExecutionError, ToolInputError, type FilledSecret, type HeldSecret 
 import { logger } from '../../../runtime/log.js'
 import type { BrowserModeName } from './mode.js'
 import type { BrowserCloseCounts } from '../../../domain/pack.js'
-import { busy, filledKey, isWriter, keyOf, liveLeases, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Lease, type Sessions, type Writer } from './sessions.js'
+import { busy, closerLive, filledKey, isWriter, keyOf, liveLeases, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Closer, type Lease, type Sessions, type Writer } from './sessions.js'
 
 /** Who a call is for, and what its browser is started with, which a session it takes must have been started under. */
 export interface CallScope {
@@ -54,6 +54,22 @@ const START_POLL_MS = 25
 /** Fixed text: a close came while a call ran on the profile folder's one browser, which the last call to end ends. */
 const PROFILE_CLOSING = 'The profile folder\'s browser is being closed: a close came while a call still runs on it, and it ends when that call does; call again then'
 
+/** Why a call on a profile folder is refused where its browser's close failed, and failed again when the call sent it. */
+function profileNotClosed(lifecycle: Lifecycle): string {
+  return `The profile folder's browser did not close when a close was sent to it, so no call runs on it while its page may still show what it held; call again to send the close again, or end it with the owner's ${ownerCommand(lifecycle)}`
+}
+
+/** A close this process sends now, with how long it may take: no call takes the session it marks meanwhile. */
+function closerFor(lifecycle: Lifecycle, timeoutMs: number, now: number): Closer {
+  return { id: randomUUID(), writer: lifecycle.me, until: now + timeoutMs + LEASE_MARGIN_MS }
+}
+
+/** Marks a session closing, under the sessions lock, by the close on its way to it, which alone forgets it (forget). */
+function markClosing(record: BrowserRecord, closer: Closer): void {
+  record.closing = true
+  record.closer = closer
+}
+
 /** The session a call runs on, and why it changed: the list a relaunched one last ran with, or a sibling's settings. */
 export interface TakenSession {
   session: string
@@ -86,7 +102,8 @@ const WAIT = Symbol('wait')
  * run under another list: each is closed, and a new one named under the same key, so no record is left under the old
  * settings; a live sibling's is left to it, and so is one a call runs on. Each value the call fills is held by the
  * session it takes, under the same lock, before the browser is handed it. A session whose daemon another call is
- * starting is waited for, so two calls never start two daemons for one session (agent-browser #2074).
+ * starting is waited for, so two calls never start two daemons for one session (agent-browser #2074), and so is a close
+ * on its way to a session the call would take (Codex recheck M1, L3).
  */
 export async function takeSession(lifecycle: Lifecycle, input: TakeInput): Promise<TakenSession> {
   for (;;) {
@@ -99,12 +116,13 @@ export async function takeSession(lifecycle: Lifecycle, input: TakeInput): Promi
 
 async function takeOnce(lifecycle: Lifecycle, input: TakeInput): Promise<TakenSession | typeof WAIT> {
   const { store } = lifecycle
-  const first = await store.update((state): Taking<TakenSession | typeof WAIT> | { claims: Claims } => {
+  const first = await store.update((state): Taking<TakenSession | typeof WAIT> | { claims: Claims; closer: string } => {
     upgradeSessions(state)
     const claims = claimsFor(lifecycle, state, input.scope)
     if (claims.names.length > 0) {
-      for (const name of claims.names) state.browsers[name]!.closing = true
-      return { claims }
+      const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, Date.now())
+      for (const name of claims.names) markClosing(state.browsers[name]!, closer)
+      return { claims, closer: closer.id }
     }
     return taking(() => {
       const taken = take(lifecycle, state, input)
@@ -112,12 +130,12 @@ async function takeOnce(lifecycle: Lifecycle, input: TakeInput): Promise<TakenSe
     })
   })
   if (!('claims' in first)) return taken(first)
-  const { claims } = first
+  const { claims, closer } = first
   const closed = await closeEach(lifecycle, claims.names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session Buckle ended before a call did not close; the next start ends it')
   return taken(await store.update((state) => {
     upgradeSessions(state)
-    forget(state, closed)
+    forget(state, closed, closer)
     return taking(() => {
       const taken = take(lifecycle, state, input)
       return taken === WAIT ? WAIT : { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
@@ -145,7 +163,9 @@ function taken<T>(result: Taking<T>): T {
 /**
  * The sessions to close before a call runs: every stranded one, whatever its key; and of the call's key, one started
  * under other settings that no live sibling holds, and a fresh one last run under another list, as a daemon keeps the
- * list it was launched with (fix brief 4, finding 9). None a call runs on: its next call after closes it.
+ * list it was launched with (fix brief 4, finding 9). None a call runs on: its next call after closes it. And the
+ * profile folder's one session where a close failed: no call takes a session marked closing, and a call on the folder
+ * can name no other, so its close is sent again first (Codex recheck L3).
  */
 function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Claims {
   const key = sessionKey(scope.kind, scope.caller)
@@ -154,7 +174,10 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
   let relaunchedFrom: string | null | undefined
   let sibling = false
   for (const [name, record] of Object.entries(state.browsers)) {
-    if (record.closing) continue
+    if (record.closing) {
+      if (name === scope.own && !busy(record, now) && !closerLive(record, now)) names.push(name)
+      continue
+    }
     const running = busy(record, now)
     if (stranded(record, lifecycle.me, now, lifecycle.longestCallMs)) {
       if (!running) names.push(name)
@@ -175,13 +198,15 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
 
 /**
  * Takes the call's session and records it as this process's, used now, holding what the call fills, with the call's
- * lease on it. On a profile folder it is the folder's one session, whose name never changes, so one marked closing is
- * taken up again with its hold, as a browser that did not close may still show it, unless a call still runs on it: the
- * close waits for that call, and a call taking it up would start the browser again, so it is refused (Codex review L3).
- * One a live sibling wrote under other settings, or one a call runs on, is reused as it is, as closing it would relaunch
- * Chrome at each call either process makes, or under the running call. Elsewhere it is the key's session from these
- * settings and list, or a new one. An attached Chrome's fills are its own hold, which no session ends. Where another
- * call is starting the session's daemon, nothing is taken: WAIT.
+ * lease on it. No call takes a session marked closing (Codex recheck M1, L3), as the close, once it ended the browser,
+ * forgets the session and its hold, and the call's command would start that browser again with neither left. On a
+ * profile folder it is the folder's one session, whose name never changes: a close on its way to it is waited for; one a
+ * call still runs on, which that call's end sends, refuses the call (Codex review L3); and so does one that failed, and
+ * failed again when claimsFor sent it. One a live sibling wrote under other settings, or one a call runs on, is reused as
+ * it is, as closing it would relaunch Chrome at each call either process makes, or under the running call. Elsewhere it
+ * is the key's session from these settings and list, or a new one, once no close is on its way to a session of the key.
+ * An attached Chrome's fills are its own hold, which no session ends. Where another call is starting the session's
+ * daemon, or a close is on its way, nothing is taken: WAIT.
  */
 function take(lifecycle: Lifecycle, state: Sessions, input: TakeInput): { session: string; sibling: boolean; lease: string } | typeof WAIT {
   const { scope, fills } = input
@@ -198,10 +223,13 @@ function take(lifecycle: Lifecycle, state: Sessions, input: TakeInput): { sessio
   }
   if (scope.own !== null) {
     const record = state.browsers[scope.own]
-    if (record?.closing && busy(record, now)) throw new ToolExecutionError(PROFILE_CLOSING, { code: 'BROWSER_COMMAND_FAILED' })
+    if (record?.closing) {
+      if (closerLive(record, now)) return WAIT
+      throw new ToolExecutionError(busy(record, now) ? PROFILE_CLOSING : profileNotClosed(lifecycle), { code: 'BROWSER_COMMAND_FAILED' })
+    }
     if (record !== undefined && starting(record, now)) return WAIT
-    const cold = record === undefined || record.closing === true || idle(record, now)
-    if (record !== undefined && !record.closing && record.mode !== scope.fingerprint && (liveSibling(record, lifecycle.me) || busy(record, now))) {
+    const cold = record === undefined || idle(record, now)
+    if (record !== undefined && record.mode !== scope.fingerprint && (liveSibling(record, lifecycle.me) || busy(record, now))) {
       const kept = held(record)
       const { leases, id } = lease(record, cold)
       Object.assign(record, kept, { usedAt: now, leases })
@@ -213,6 +241,9 @@ function take(lifecycle: Lifecycle, state: Sessions, input: TakeInput): { sessio
     return { session: scope.own, sibling: false, lease: id }
   }
   const key = sessionKey(scope.kind, scope.caller)
+  // A close on its way to a session of the key is waited for rather than passed over for a new name, so the key keeps
+  // one browser, and a session a retire closed and left is still found, and replaced with the relaunch told.
+  if (Object.values(state.browsers).some(record => keyOf(record) === key && closerLive(record, now))) return WAIT
   const found = recordsWhere(state, record => !record.closing && keyOf(record) === key && record.mode === scope.fingerprint && (scope.kind !== 'fresh' || record.allowedDomains === undefined || record.allowedDomains === scope.flag))[0]
   const record = found === undefined ? undefined : state.browsers[found]
   if (record !== undefined && starting(record, now)) return WAIT
@@ -243,24 +274,29 @@ function idle(record: BrowserRecord, now: number): boolean {
 /**
  * Ends a call's lease (Codex review L3), with the session used now, and answers what the session held as it ended, which
  * the call's own late masking reads. Where a close came while it ran, and no other call runs on the session, the close
- * is this call's to send: it does, and the session is forgotten with its hold once it closed.
+ * is this call's to send: it marks the session as its own close's, sends it, and the session is forgotten with its hold
+ * once it closed.
  */
 export async function releaseSession(lifecycle: Lifecycle, session: string, lease: string): Promise<FilledSecret[]> {
   const ended = await lifecycle.store.update((state) => {
     upgradeSessions(state)
     const record = state.browsers[session]
-    if (record === undefined) return { held: [], close: false }
+    if (record === undefined) return { held: [], closer: null }
     const now = Date.now()
     const leases = liveLeases(record, now).filter(item => item.id !== lease)
     if (leases.length > 0) record.leases = leases
     else delete record.leases
     record.usedAt = now
-    return { held: [...record.held ?? []], close: record.closing === true && leases.length === 0 }
+    const held = [...record.held ?? []]
+    if (record.closing !== true || leases.length > 0 || closerLive(record, now)) return { held, closer: null }
+    const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, now)
+    markClosing(record, closer)
+    return { held, closer: closer.id }
   })
-  if (ended.close) {
+  if (ended.closer !== null) {
     const closed = await closeEach(lifecycle, [session])
     if ([...closed.values()].includes(false)) logger.warn('A browser session a close came for while a call ran did not close; the next start ends it')
-    await settleClaims(lifecycle, closed)
+    await settleClaims(lifecycle, closed, ended.closer)
   }
   return ended.held
 }
@@ -332,20 +368,25 @@ function describeHolder(record: BrowserRecord): string {
  * An agent's close: every session of its key, except one a live sibling holds under other settings, which the caller
  * closes under its own timeout; and every stranded session, as before any call. Its own are empty where the key records
  * none, so nothing of the caller's runs. One a call runs on is marked closing and left to the last call on it to end
- * (Codex review L3): `waiting` counts them.
+ * (Codex review L3): `waiting` counts them. One another close is on its way to is left to that close (Codex recheck L3),
+ * which `closing` says. The rest are marked as `closer`'s, the close the caller sends, under its own timeout.
  */
-export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promise<{ own: string[]; waiting: number; stranded: string[] }> {
+export async function claimCaller(lifecycle: Lifecycle, scope: CallScope, timeoutMs: number): Promise<{ own: string[]; waiting: number; closing: boolean; stranded: string[]; closer: string }> {
   return lifecycle.store.update((state) => {
     upgradeSessions(state)
     const key = sessionKey(scope.kind, scope.caller)
     const now = Date.now()
+    const closer = closerFor(lifecycle, Math.max(timeoutMs, CLOSE_TIMEOUT_MS), now)
+    const caller = (record: BrowserRecord, name: string) => (scope.own !== null ? name === scope.own : keyOf(record) === key)
     const own = scope.own !== null
-      ? (state.browsers[scope.own] === undefined ? [] : [scope.own])
+      ? (state.browsers[scope.own] === undefined || closerLive(state.browsers[scope.own]!, now) ? [] : [scope.own])
       : recordsWhere(state, record => !record.closing && keyOf(record) === key && !(record.mode !== scope.fingerprint && liveSibling(record, lifecycle.me)))
     const left = recordsWhere(state, (record, name) => !record.closing && !own.includes(name) && !busy(record, now) && stranded(record, lifecycle.me, now, lifecycle.longestCallMs))
-    for (const name of [...own, ...left]) state.browsers[name]!.closing = true
     const closable = own.filter(name => !busy(state.browsers[name]!, now))
-    return { own: closable, waiting: own.length - closable.length, stranded: left }
+    for (const name of own) state.browsers[name]!.closing = true
+    for (const name of [...closable, ...left]) markClosing(state.browsers[name]!, closer)
+    const closing = recordsWhere(state, (record, name) => caller(record, name) && closerLive(record, now) && record.closer!.id !== closer.id).length > 0
+    return { own: closable, waiting: own.length - closable.length, closing, stranded: left, closer: closer.id }
   })
 }
 
@@ -356,59 +397,85 @@ export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promi
  * time, so each is ended.
  */
 export async function endStranded(lifecycle: Lifecycle): Promise<void> {
-  const now = Date.now()
-  // One a call runs on is that call's to end, once a close marked it (Codex review L3).
-  const left = (state: Sessions) => recordsWhere(state, record => !busy(record, now) && (record.closing === true || stranded(record, lifecycle.me, now, lifecycle.longestCallMs)))
+  // One a call runs on is that call's to end, once a close marked it (Codex review L3), and one a close is on its way to
+  // is that close's (Codex recheck L3).
+  const left = (state: Sessions, now: number) => recordsWhere(state, record => !busy(record, now) && !closerLive(record, now) && (record.closing === true || stranded(record, lifecycle.me, now, lifecycle.longestCallMs)))
   const seen = lifecycle.store.read()
   upgradeSessions(seen)
-  if (left(seen).length === 0) return
-  const names = await lifecycle.store.update((state) => {
+  if (left(seen, Date.now()).length === 0) return
+  const { names, closer } = await lifecycle.store.update((state) => {
     upgradeSessions(state)
-    const names = left(state)
-    for (const name of names) state.browsers[name]!.closing = true
-    return names
+    const now = Date.now()
+    const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, now)
+    const names = left(state, now)
+    for (const name of names) markClosing(state.browsers[name]!, closer)
+    return { names, closer: closer.id }
   })
   const closed = await closeEach(lifecycle, names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session a stopped Buckle process left did not close; the next start ends it')
-  await settleClaims(lifecycle, closed)
+  await settleClaims(lifecycle, closed, closer)
 }
 
 /**
  * When the settings change (fix brief 2, R2): each browser the replaced pack started closes, and its record stays for
  * the successor, which at the session's next call closes it again and starts a browser under a new name, saying it was
- * relaunched where the list changed. A browser that closed holds nothing any more.
+ * relaunched where the list changed. A browser that closed holds nothing any more. Each is marked closing under the
+ * sessions lock before its close is sent, so no call takes it meanwhile (Codex recheck M1), and its record is changed
+ * after only where it is still marked by this close. One that did not close stays marked closing with its hold, for the
+ * next start.
  */
 export async function retireSessions(lifecycle: Lifecycle, names: readonly string[]): Promise<void> {
-  // One a call runs on, a sibling's on the same key, is left to it (Codex review L3); its next call replaces it.
-  const seen = lifecycle.store.read()
-  const now = Date.now()
-  const closed = await closeEach(lifecycle, names.filter(name => seen.browsers[name] === undefined || !busy(seen.browsers[name], now)))
-  if ([...closed.values()].includes(false)) logger.warn('A browser session did not close when its settings changed; the next call of its session closes it again')
-  const done = [...closed].flatMap(([name, ok]) => (ok ? [name] : []))
-  if (done.length === 0) return
+  if (names.length === 0) return
+  const { ending, closer } = await lifecycle.store.update((state) => {
+    upgradeSessions(state)
+    const now = Date.now()
+    const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, now)
+    // One a call runs on, a sibling's on the same key, is left to it (Codex review L3); its next call replaces it. One
+    // already closing, or forgotten, is another close's.
+    const ending = names.filter((name) => {
+      const record = state.browsers[name]
+      return record !== undefined && !record.closing && !busy(record, now)
+    })
+    for (const name of ending) markClosing(state.browsers[name]!, closer)
+    return { ending, closer: closer.id }
+  })
+  const closed = await closeEach(lifecycle, ending)
+  if ([...closed.values()].includes(false)) logger.warn('A browser session did not close when its settings changed; the next start ends it')
+  if (closed.size === 0) return
   await lifecycle.store.update((state) => {
     upgradeSessions(state)
-    for (const name of done) delete state.browsers[name]?.held
+    for (const [name, done] of closed) {
+      const record = state.browsers[name]
+      if (record?.closer?.id !== closer) continue
+      delete record.closer
+      if (!done) continue
+      delete record.closing
+      delete record.held
+    }
   })
 }
 
 /**
  * At shutdown (Slice F4, item 4): closes every session this process wrote, whichever pack started it and in whichever
  * mode, a profile folder's too, and forgets each that closed; one that did not stays marked closing, for the next start.
- * One a call runs on, a sibling's on a profile folder, is marked closing and left to the last call on it (Codex review L3).
+ * One a call runs on, a sibling's on a profile folder, is marked closing and left to the last call on it (Codex review L3),
+ * and one a close is on its way to is left to that close (Codex recheck L3).
  */
 export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
   if (recordsWhere(lifecycle.store.read(), record => isWriter(record, lifecycle.me)).length === 0) return
-  const names = await lifecycle.store.update((state) => {
+  const { names, closer } = await lifecycle.store.update((state) => {
     upgradeSessions(state)
     const now = Date.now()
-    const names = recordsWhere(state, record => isWriter(record, lifecycle.me))
-    for (const name of names) state.browsers[name]!.closing = true
-    return names.filter(name => !busy(state.browsers[name]!, now))
+    const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, now)
+    const mine = recordsWhere(state, record => isWriter(record, lifecycle.me) && !closerLive(record, now))
+    for (const name of mine) state.browsers[name]!.closing = true
+    const names = mine.filter(name => !busy(state.browsers[name]!, now))
+    for (const name of names) markClosing(state.browsers[name]!, closer)
+    return { names, closer: closer.id }
   })
   const closed = await closeEach(lifecycle, names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session did not close at shutdown; the next start ends it')
-  await settleClaims(lifecycle, closed)
+  await settleClaims(lifecycle, closed, closer)
 }
 
 /**
@@ -417,7 +484,9 @@ export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
  * bound. Each that closed is forgotten with its hold. One that did not stays marked closing with its hold (Codex review
  * L1), as a profile folder's keeps its name and a call would reach its page again: the next start, or this command, ends
  * it. One a call runs on is marked closing with its hold, and the last call on it ends it (Codex review L3), as a close
- * now would leave the call's command to start it again. An attached Chrome keeps its pages through a close, so its hold is forgotten only once the Chrome the workspace
+ * now would leave the call's command to start it again. One a close sent outside this lock is on its way to stays that
+ * close's to end and forget (Codex recheck L3), and is counted as one that did not close: it keeps its hold meanwhile.
+ * An attached Chrome keeps its pages through a close, so its hold is forgotten only once the Chrome the workspace
  * attaches to is found closed (Codex review L2), and with it an earlier Buckle's, which named no Chrome; another Chrome's
  * stays, as nothing here can check it, until the workspace attaches to it again and this command finds it closed.
  */
@@ -427,10 +496,14 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
     const names = Object.keys(state.browsers)
     const before = heldValues(state)
     const now = Date.now()
-    for (const name of names) state.browsers[name]!.closing = true
-    const running = names.filter(name => busy(state.browsers[name]!, now))
-    const closed = await closeEach(lifecycle, names.filter(name => !running.includes(name)))
-    forget(state, closed)
+    const closer = closerFor(lifecycle, CLOSE_TIMEOUT_MS, now)
+    const ours = names.filter(name => !closerLive(state.browsers[name]!, now))
+    const running = ours.filter(name => busy(state.browsers[name]!, now))
+    const ending = ours.filter(name => !running.includes(name))
+    for (const name of running) state.browsers[name]!.closing = true
+    for (const name of ending) markClosing(state.browsers[name]!, closer)
+    const closed = await closeEach(lifecycle, ending)
+    forget(state, closed, closer.id)
     const chrome = state.chromes !== undefined || state.attached !== undefined ? await lifecycle.chromeClosed?.() ?? null : null
     if (chrome !== null) {
       delete state.chromes?.[chrome]
@@ -449,19 +522,26 @@ function heldValues(state: Sessions): Set<string> {
   return new Set([...state.attached ?? [], ...Object.values(state.chromes ?? {}).flat(), ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(entry => `${filledKey(entry)}\u0000${entry.digest}`))
 }
 
-/** Records how each claimed close went: a closed session is forgotten, one that did not close stays marked closing. */
-export async function settleClaims(lifecycle: Lifecycle, closed: ReadonlyMap<string, boolean>): Promise<void> {
+/** Records, under the sessions lock, how each close `closer` sent went (forget). */
+export async function settleClaims(lifecycle: Lifecycle, closed: ReadonlyMap<string, boolean>, closer: string): Promise<void> {
   if (closed.size === 0) return
   await lifecycle.store.update((state) => {
     upgradeSessions(state)
-    forget(state, closed)
+    forget(state, closed, closer)
   })
 }
 
-/** Forgets each closed session still marked closing, and the hold its fills left with it. */
-function forget(state: Sessions, closed: ReadonlyMap<string, boolean>): void {
+/**
+ * Records how each close `closer` sent went, for a session still marked by it (Codex recheck M1, L3), never one another
+ * close marked or a call took since: one that closed is forgotten with the hold its fills left, and one that did not
+ * stays marked closing with its hold, for the next start, with no close on its way.
+ */
+function forget(state: Sessions, closed: ReadonlyMap<string, boolean>, closer: string): void {
   for (const [name, done] of closed) {
-    if (done && state.browsers[name]?.closing === true) delete state.browsers[name]
+    const record = state.browsers[name]
+    if (record?.closer?.id !== closer) continue
+    if (done) delete state.browsers[name]
+    else delete record.closer
   }
 }
 

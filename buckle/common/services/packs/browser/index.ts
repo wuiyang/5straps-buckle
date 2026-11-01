@@ -48,6 +48,9 @@ const NO_BROWSER_NOTICE = 'No browser was open for this session, so nothing was 
 /** What a close answers where a call still runs on the browser, which closes once the last call on it ends (Codex review L3). */
 const CLOSES_AFTER_NOTICE = 'A call still runs on this browser, so it closes when that call ends.'
 
+/** What a close answers where another close is on its way to the browser, which ends it (Codex recheck L3). */
+const CLOSING_NOTICE = 'A close sent before this one is ending this browser.'
+
 const commandInput = z.object({
   command: z.string().regex(/^[a-z][a-z0-9-]*$/).max(100),
   args: z.array(z.string().max(100_000)).max(200).default([]),
@@ -334,16 +337,17 @@ function assertRunnable(input: { command: string; args: string[] }): void {
 /**
  * An agent's close: its caller's recorded browsers alone, each with a bare close (closeArguments) under the call's own
  * timeout, so agent-browser never launches a browser to close one; where none is recorded nothing of the caller's runs.
- * A live sibling's session under other settings is that process's to close. Every stranded session ends beside them, as
- * before any call. One whose close fails stays marked closing, for the next start.
+ * A live sibling's session under other settings is that process's to close, and one another close is on its way to is
+ * that close's. Every stranded session ends beside them, as before any call. One whose close fails stays marked closing,
+ * for the next start.
  */
 async function closeCaller(input: { options: BrowserPackOptions; lifecycle: Lifecycle; opened: Set<string>; scope: CallScope; context: ToolContext; scrub: (text: string, failed: boolean) => string }): Promise<JsonValue> {
   const { options } = input
-  const { own, waiting, stranded } = await claimCaller(input.lifecycle, input.scope)
+  const { own, waiting, closing, stranded, closer } = await claimCaller(input.lifecycle, input.scope, input.context.timeoutMs)
   const ending = closeEach(input.lifecycle, stranded)
   if (own.length === 0) {
-    await settleClaims(input.lifecycle, await ending)
-    return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: waiting > 0 ? CLOSES_AFTER_NOTICE : NO_BROWSER_NOTICE }
+    await settleClaims(input.lifecycle, await ending, closer)
+    return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: waiting > 0 ? CLOSES_AFTER_NOTICE : closing ? CLOSING_NOTICE : NO_BROWSER_NOTICE }
   }
   const program = browserProgram(options)
   const results = await Promise.all(own.map(async (session) => {
@@ -353,7 +357,7 @@ async function closeCaller(input: { options: BrowserPackOptions; lifecycle: Life
     return { session, failed, result: { ...ran, stdout: input.scrub(ran.stdout, failed), stderr: input.scrub(ran.stderr, failed) } }
   }))
   for (const { session, failed } of results) if (!failed) input.opened.delete(session)
-  await settleClaims(input.lifecycle, new Map([...await ending, ...results.map(({ session, failed }) => [session, !failed] as const)]))
+  await settleClaims(input.lifecycle, new Map([...await ending, ...results.map(({ session, failed }) => [session, !failed] as const)]), closer)
   const failure = results.find(item => item.failed)
   if (failure) throw new ToolExecutionError(describeProcessFailure('agent-browser', failure.result), { code: 'BROWSER_COMMAND_FAILED' })
   const { result } = results[0]!
