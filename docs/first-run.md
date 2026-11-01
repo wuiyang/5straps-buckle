@@ -33,7 +33,7 @@ setting to the node's default, else the one shown:
 | Name for this node, first run or `--force` | the folder's path with each `/` replaced by `-` | `BUCKLE_SERVER_NAME` |
 | Packs to offer | every built-in pack, and plugins | `packs.enabled` |
 | Shell tools on? | on | `packs.shell` |
-| Host Git and forge tools on? | off | `packs.hostGit` |
+| Host Git and forge tools on, which command checkpoints need? | off | `packs.hostGit` |
 | Approved hosts and URLs | none | the workspace's approved list |
 | Approved hosts for workspaces without a list, first run or `--force` | none, or the file's list under `--force` | `BUCKLE_ALLOWED_HOSTS` |
 

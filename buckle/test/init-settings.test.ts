@@ -81,6 +81,9 @@ describe('buckle init asks for the workspace\'s settings after its folder', () =
       expect.stringContaining('[none]'),
     ])
     expect(prompt.said).toContainEqual('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off.')
+    // M5 (D1): the question says what host Git does for change history, so turning it off is a choice made knowingly.
+    expect(prompt.said).toContainEqual('Change history needs host Git to restore what a command changes; a file tool\'s changes restore without it.')
+    expect(prompt.asked[6]).toBe('Host Git and forge tools on, which command checkpoints need? [y/N]: ')
     for (const id of ['fs', 'web', 'git', 'forge', 'dev', 'browser', 'shell', 'environment']) expect(prompt.said.join('\n')).toContain(`  ${id} `)
 
     const env = parseEnv(result.written)

@@ -406,7 +406,9 @@ async function askWorkspaceChoices(prompt: InitPrompt): Promise<WorkspaceChoices
   const packs = await askValid(prompt, 'Packs to offer, comma separated; naming them turns plugins off [all]: ', packList)
   const shell = await askYesNo(prompt, 'Shell tools on? [Y/n]: ')
   prompt.say('Host Git and forge tools read the repository outside the sandbox\'s per-file checks, so they start off.')
-  const hostGit = await askYesNo(prompt, 'Host Git and forge tools on? [y/N]: ')
+  // D1, M5: a command's checkpoint is read through host Git, so the question says what turning it off costs.
+  prompt.say('Change history needs host Git to restore what a command changes; a file tool\'s changes restore without it.')
+  const hostGit = await askYesNo(prompt, 'Host Git and forge tools on, which command checkpoints need? [y/N]: ')
   const networkAllow = await askValid(prompt, 'Approved hosts and URLs, the only ones fetches and pages may reach, e.g. localhost:3000,*.example.com [none]: ', urlList)
   return { ...(packs === null ? {} : { packs: packs.split(',') }), ...(shell === undefined ? {} : { shell }), ...(hostGit === undefined ? {} : { hostGit }), ...(networkAllow === null ? {} : { networkAllow: networkAllow.split(',') }) }
 }
