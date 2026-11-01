@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'pathe'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { readIndex } from '../common/services/history/command-capture.js'
 import { blobId, openObjectStore } from '../common/services/history/object-store.js'
@@ -196,6 +196,41 @@ describe('a command in a folder that is a git repository', () => {
       await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'f1.txt'), 'rewritten\n') })
       expect([...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').every(([, id]) => made.store.has(id))).toBe(true)
       expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+    } finally { await history.close() }
+  })
+
+  // Q3 (reversible default): a folder recorded before it referred to a repository, as by Buckle 0.1.9, is seeded at a
+  // node's first capture of it, so the copies of its committed files go at the next sweep.
+  it('seeds a folder recorded before it referred to its repository at a node\'s first capture, and sweeps the copies', async () => {
+    const made = repoFixture()
+    const gitFolder = join(made.root, 'git-folder')
+    rmSync(gitFolder, { recursive: true, force: true }); execFileSync('mv', [join(made.top, '.git'), gitFolder])
+    let history = await openChangeHistory(made.settings)
+    try { await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'first\n') }) } finally { await history.close() }
+    const unchanged = [...committedIds({ ...made, git: args => repoGit(made.root, made.top, ['--git-dir', gitFolder, '--work-tree', made.top, ...args]) })].filter(([name]) => name !== 'src/changed.txt').map(([, id]) => id)
+    expect(unchanged.every(id => made.store.has(id))).toBe(true)
+    execFileSync('mv', [gitFolder, join(made.top, '.git')])
+    history = await openChangeHistory(made.settings)
+    try {
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f8.txt'), 'rewritten\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(true)
+      await vi.waitFor(() => expect(unchanged.filter(id => id !== blobId(Buffer.from('committed 8\n')) && made.store.has(id))).toEqual([]))
+      await history.restore((await history.list()).at(-1)!.id)
+      expect(read(join(made.workspace, 'src', 'f8.txt'))).toBe('committed 8\n')
+    } finally { await history.close() }
+  })
+
+  it('keeps no copy of a committed file a command rewrote with the same content, as an install does, and still restores it later', async () => {
+    const made = repoFixture()
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { for (let index = 0; index < 30; index++) writeFileSync(join(made.workspace, 'src', `f${index}.txt`), `committed ${index}\n`) })
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: true, changes: [] })
+      const unchanged = [...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').map(([, id]) => id)
+      await vi.waitFor(() => expect(unchanged.filter(id => made.store.has(id))).toEqual([]))
+      await history.run({ ...made.details, stageId: 'next' }, async () => { rmSync(join(made.workspace, 'src', 'f11.txt')) })
+      await history.restore((await history.list()).at(-1)!.id)
+      expect(read(join(made.workspace, 'src', 'f11.txt'))).toBe('committed 11\n')
     } finally { await history.close() }
   })
 

@@ -18,6 +18,8 @@ export interface RepositoryLocation { top: string; index: string; objects: strin
 export interface SourceRecord { objects: string; stamp: string }
 
 const SOURCE_RECORD = 'source'
+/** Beside it, each blob id the seed found the repository holding, 20 bytes each: what the sweep need not keep a copy of. */
+const SOURCE_IDS = 'source-ids'
 const STAGE_MASK = 0x3000
 const ASSUME_VALID = 0x8000
 const EXTENDED = 0x4000
@@ -213,5 +215,23 @@ export function readSource(git: string): SourceRecord | 'invalid' | undefined {
   } catch { /* invalid below */ }
   return 'invalid'
 }
-export function writeSource(git: string, record: SourceRecord): void { writeFileSync(join(git, SOURCE_RECORD), JSON.stringify(record), { mode: 0o600 }) }
-export function removeSource(git: string): void { rmSync(join(git, SOURCE_RECORD), { force: true }) }
+export function writeSource(git: string, record: SourceRecord, ids?: string[]): void {
+  if (ids) writeFileSync(join(git, SOURCE_IDS), Buffer.from(ids.join(''), 'hex'), { mode: 0o600 })
+  writeFileSync(join(git, SOURCE_RECORD), JSON.stringify(record), { mode: 0o600 })
+}
+/** The record and its ids, the ids last, so ids never stand without the record that says they still read. */
+export function removeSource(git: string): void { rmSync(join(git, SOURCE_RECORD), { force: true }); rmSync(join(git, SOURCE_IDS), { force: true }) }
+/**
+ * The blob ids a root's seed found its repository holding, where its record stands: the sweep keeps no copy of one an
+ * index names, as a command that changes its file copies it from the repository. Empty where none stand; undefined
+ * where they do not read, so the sweep keeps all an index names.
+ */
+export function readSourceIds(git: string): Set<string> | undefined {
+  if (!lstatSync(join(git, SOURCE_RECORD), { throwIfNoEntry: false })) return new Set()
+  let data: Buffer
+  try { data = readFileSync(join(git, SOURCE_IDS)) } catch (error) { return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? new Set() : undefined }
+  if (data.length % 20) return undefined
+  const ids = new Set<string>()
+  for (let at = 0; at < data.length; at += 20) ids.add(data.toString('hex', at, at + 20))
+  return ids
+}

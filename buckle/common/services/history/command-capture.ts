@@ -9,7 +9,7 @@ import { logger } from '../../runtime/log.js'
 import { blobId, type ObjectStore } from './object-store.js'
 import { modeOf } from './scoped-capture.js'
 import type { Entry, Snapshot } from './snapshot.js'
-import { alternateValue, entrySize, namesBlob, LOCATE_ARGS, parseBatch, parseBatchCheck, parseIndex, parseLocation, prefixWithin, readRepositoryIndex, readSource, removeSource, seedCandidates, sourceStamp, writeIndex, writeSource, type SourceRecord } from './workspace-repo.js'
+import { alternateValue, entrySize, namesBlob, LOCATE_ARGS, parseBatch, parseBatchCheck, parseIndex, parseLocation, prefixWithin, readRepositoryIndex, readSource, readSourceIds, removeSource, seedCandidates, sourceStamp, writeIndex, writeSource, type SourceRecord } from './workspace-repo.js'
 
 /**
  * When a phase's capture must end, and the cancellation of its call, which stops the before phase (X14): git's children
@@ -229,7 +229,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     const entries = candidates.filter(entry => { const size = sizes.get(entry.id); return size !== undefined && size % 2 ** 32 === entrySize(entry) })
     if (!entries.length) return undefined
     const record = { objects, stamp }
-    writeSource(state.git, record)
+    writeSource(state.git, record, [...new Set(entries.map(entry => entry.id))])
     const temporary = join(state.git, `index.seed-${randomUUID()}`)
     try { writeFileSync(temporary, writeIndex(entries), { mode: 0o600, flag: 'wx' }); await replaceFile(temporary, join(state.git, 'index')) }
     catch (error) { removeSource(state.git); throw error }
@@ -509,8 +509,10 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   /**
    * The objects each shadow index names, its side index included (W2): each blob, the content the next command's before
    * state reuses, one over the cap too, which git reads again only once its file changes (V4); and each tree its cache-tree
-   * names, which git takes as written while it is there (W1). undefined where an index cannot be read, so nothing is swept
-   * on a guess.
+   * names, which git takes as written while it is there (W1). A blob the root's repository was found holding as its
+   * index was seeded is not kept for it: a command that changes its file copies it from there, and a capture that finds
+   * it gone builds the index again (Slice F3, items 5 and 7). undefined where an index or those ids cannot be read, so
+   * nothing is swept on a guess.
    */
   function indexed(): Set<string> | undefined {
     const ids = new Set<string>()
@@ -518,12 +520,14 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     try { folders = readdirNames(folder) } catch { return undefined }
     for (const name of folders) {
       if (!/^[0-9a-f]{24}$/.test(name)) continue
+      const held = readSourceIds(join(folder, name))
+      if (!held) return undefined
       for (const file of ['index', WARM_INDEX]) {
         let index: Buffer
         try { index = readFileSync(join(folder, name, file)) } catch (error) { if (isMissing(error)) continue; return undefined }
         const read = readIndex(index)
         if (!read) return undefined
-        for (const entry of read.entries) ids.add(entry.id)
+        for (const entry of read.entries) if (!held.has(entry.id)) ids.add(entry.id)
         for (const tree of read.trees) ids.add(tree)
       }
     }
