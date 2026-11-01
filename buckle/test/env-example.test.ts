@@ -15,7 +15,7 @@ const SOURCES = ['main.ts', 'cli', 'common', 'server', 'mcp', 'layers']
 // Read from the environment, but set by Buckle itself for the git hook it runs (receive-pack-guard.ts).
 const SET_BY_BUCKLE = ['BUCKLE_RECEIVE_REPOSITORY', 'BUCKLE_RECEIVE_GIT_DIRECTORY', 'BUCKLE_RECEIVE_REMEDY', 'BUCKLE_RECEIVE_NONCE']
 // BUCKLE_ names in the sources that are not variables: a version constant, a pattern, and an error code.
-const NOT_VARIABLES = ['BUCKLE_VERSION', 'BUCKLE_ASSIGNMENT', 'BUCKLE_SHUTTING_DOWN']
+const NOT_VARIABLES = ['BUCKLE_VERSION', 'BUCKLE_BUILD', 'BUCKLE_ASSIGNMENT', 'BUCKLE_SHUTTING_DOWN']
 
 const NAME = /\b(BUCKLE_[A-Z0-9_]+)\b/g
 // process.env.X, environment.X (a ProcessEnv parameter), and variables.X (a parsed environment file).
