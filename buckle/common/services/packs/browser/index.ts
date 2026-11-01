@@ -139,6 +139,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const scrub = settingScrubber(mode ?? FRESH_BROWSER)
   const idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS
   const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed, idleTimeoutMs })
+  // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
+  const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
   // started under this pack's settings, so no process ever reaches a session started in another mode.
   const callScope = (running: BrowserMode, context: ToolContext, alias: string | undefined): CallScope => ({
@@ -158,14 +160,12 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   }
   // Slice F4, item 4: what a process that stopped without its close step left is ended at once, before any call here.
   const started = options.agentBrowser.path === null ? Promise.resolve() : endStranded(lifecycle).catch((error: unknown) => { logger.warn('The browser sessions a stopped Buckle process left could not be ended; the next start tries again', { error }) })
-  // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
-  const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : browserUnavailable(options.agentBrowserCommand, options.agentBrowser)
   if (unavailableReason === null && mode) logContainmentOff(mode)
   if (unavailableReason === null) warnOldWindowsBrowser(options)
-  // The browser daemons this pack started and has not closed, which outlive single calls and end at its shutdown. The
-  // one browser on a profile folder is never among them: other Buckle processes share it, so only the close command
-  // and its idle timeout end it.
+  // The browser daemons this pack started and has not closed, which the retire of a pack a settings change replaces
+  // closes. The one browser on a profile folder is never among them: a successor on the same folder reuses it. Shutdown
+  // closes every session this process wrote, whichever pack started it (closeWritten).
   const opened = new Set<string>()
   // Q10: a profile folder or an attached Chrome serves one workspace at a time; read at each use, so a change is seen at once.
   const assertHeld = (running: BrowserMode): void => {
