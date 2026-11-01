@@ -1,4 +1,4 @@
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it, vi } from 'vitest'
@@ -18,9 +18,19 @@ vi.mock('../common/adapters/replace-file.js', async importOriginal => {
   } }
 })
 
+const moveFault = vi.hoisted(() => ({ enabled: false }))
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  const renameSync: typeof actual.renameSync = (from, to) => {
+    if (moveFault.enabled && String(to).includes('checkpoints.json.damaged')) throw Object.assign(new Error('fixture move failed'), { code: 'EPERM' })
+    return actual.renameSync(from, to)
+  }
+  return { ...actual, renameSync, default: { ...actual, renameSync } }
+})
+
 const roots: string[] = []
 afterEach(() => {
-  journalFault.enabled = false
+  journalFault.enabled = false; moveFault.enabled = false
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { chmodSync(root, 0o700); rmSync(root, { recursive: true, force: true }) }
 })
@@ -107,5 +117,53 @@ it('runs a call whose checkpoint history cannot save, and names the cause in its
     journalFault.enabled = false
     await expect(history.run({ sessionId: 's', stageId: 'stage', tool: 'test', requestId: 'r-3', roots: [workspace], scope: [{ path: file }] }, async () => { writeFileSync(file, 'three') })).resolves.toBeUndefined()
     expect(history.notice('s', 'r-3')).toMatchObject({ restorable: true, status: 'complete' })
+  } finally { await history.close() }
+})
+
+// M1 and X7 of the Codex review of 670f1dc2..01d3b0c9: a journal that does not read or validate never walls a call. It is
+// moved aside to a dated file beside it, kept for the owner, history starts a fresh one and runs the call, the owner's log
+// names the cause, and the call's notice tells the agent.
+const damage = {
+  'malformed JSON': (file: string) => writeFileSync(file, '{"version": 2, "checkpoints": ['),
+  'an invalid schema': (file: string) => writeFileSync(file, JSON.stringify({ version: 3, checkpoints: 'none' })),
+  'an unreadable file': (file: string) => chmodSync(file, 0o000),
+}
+for (const [kind, spoil] of Object.entries(damage)) it.skipIf(kind === 'an unreadable file' && (process.platform === 'win32' || process.getuid?.() === 0))(`runs a call over a journal with ${kind}, keeping it aside for the owner`, async () => {
+  const { workspace, directory, options } = fixture()
+  const file = join(workspace, 'note.txt')
+  const details = { sessionId: 's', stageId: 'stage', tool: 'test', roots: [workspace], scope: [{ path: file }] }
+  const first = await openChangeHistory(options)
+  try { await first.run({ ...details, requestId: 'r-1' }, async () => { writeFileSync(file, 'one') }) } finally { await first.close() }
+  const journal = join(directory, 'checkpoints.json')
+  spoil(journal)
+  const damaged = readdirSync(directory).includes('checkpoints.json') ? statSync(journal).size : -1
+  const reopened = await openChangeHistory(options)
+  const warn = vi.spyOn(logger, 'warn')
+  try {
+    await expect(reopened.run({ ...details, requestId: 'r-2' }, async () => { writeFileSync(file, 'two'); return 'ran' })).resolves.toBe('ran')
+    expect(readFileSync(file, 'utf8')).toBe('two')
+    const kept = readdirSync(directory).filter(name => /^checkpoints\.json\.damaged-\d{4}-\d{2}-\d{2}T/.test(name))
+    expect(kept).toHaveLength(1)
+    expect(statSync(join(directory, kept[0]!)).size).toBe(damaged)
+    expect((await reopened.list()).map(record => record.requestId)).toEqual(['r-2'])
+    expect(reopened.notice('s', 'r-2')).toMatchObject({ restorable: true, status: 'complete', reason: expect.stringMatching(/journal/) })
+    expect(warn.mock.calls.some(([message, fields]) => /journal/.test(String(message)) && typeof fields === 'object' && fields !== null && 'cause' in fields)).toBe(true)
+    await expect(reopened.run({ ...details, requestId: 'r-3' }, async () => { writeFileSync(file, 'three') })).resolves.toBeUndefined()
+    expect(reopened.notice('s', 'r-3')).toMatchObject({ restorable: true, reason: undefined })
+  } finally { await reopened.close() }
+})
+
+it('runs a call over a damaged journal it cannot move aside, and never writes over that journal', async () => {
+  const { workspace, directory, options } = fixture()
+  const file = join(workspace, 'note.txt')
+  const journal = join(directory, 'checkpoints.json')
+  const history = await openChangeHistory(options)
+  try {
+    writeFileSync(journal, '{"damaged":')
+    moveFault.enabled = true
+    await expect(history.run({ sessionId: 's', stageId: 'stage', tool: 'test', requestId: 'r-1', roots: [workspace], scope: [{ path: file }] }, async () => { writeFileSync(file, 'one'); return 'ran' })).resolves.toBe('ran')
+    expect(readFileSync(file, 'utf8')).toBe('one')
+    expect(readFileSync(journal, 'utf8')).toBe('{"damaged":')
+    expect(history.notice('s', 'r-1')).toMatchObject({ restorable: false, reason: expect.stringContaining('EPERM') })
   } finally { await history.close() }
 })

@@ -55,6 +55,8 @@ export const STOPPED_REASON = 'Buckle stopped before this call finished, so hist
 export const HOST_GIT_REASON = 'Not restorable: host git needed. History reads what a command changes through permitted trusted host git, so this call ran without a checkpoint of its changes'
 const PARTIAL_REASON = 'Git could not read some files this command may have changed; history does not list their changes'
 const CAP_REASON = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
+/** Told to the call whose checkpoint is the first in a fresh journal, once a damaged one was moved aside (M1). */
+export const JOURNAL_RESET_REASON = 'History found its journal damaged, kept it beside the new one for the owner, and started a fresh journal; checkpoints before this call are no longer listed'
 /** A checkpoint the shadow-git engine of 670f1dc2 wrote keeps its content in that store, which only git reads (Slice F2, item 7). */
 export const OLD_ENGINE_REASON = 'This checkpoint is from the earlier shadow-git history, whose content only permitted trusted host git can read; this node has none, so it cannot be restored'
 /** Those stores, in a workspace's history folder: shadow git (670f1dc2) and the SQLite history before it. */
@@ -87,6 +89,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const activity = await openHistoryActivity(input.directory)
   /** Whether this process has copied in the owner objects the shadow-git store borrows (X12): tried once, then hourly. */
   let materialized = false
+  /** Whether this process holds the execution lock now: only a holder moves a damaged journal aside (M1). */
+  let holding = false
+  /** Set as a damaged journal is moved aside, until the next checkpoint begun carries it to its call's notice (M1). */
+  let journalReset = false
   /** Set once no old store is left on disk: nothing writes one any more, so none comes back (item 7). */
   let oldStoresGone = false
   /** The background deletions of expired old stores, which close waits for (M2). */
@@ -102,9 +108,34 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const key = identity(file)
     if (key === undefined) return { version: 2, checkpoints: [], lastGcAt: 0 }
     if (journal?.key === key) return JSON.parse(journal.text) as State
-    const state = stateSchema.parse(JSON.parse(readFileSync(file, 'utf8')))
+    let state: State
+    try { state = stateSchema.parse(JSON.parse(readFileSync(file, 'utf8'))) }
+    catch (error) { return damaged(key, error) }
     if (identity(file) === key) journal = { key, text: JSON.stringify(state) }
     return state
+  }
+  /**
+   * A journal that does not read or validate never walls a call (M1, X7). Under the lock it is moved aside to a dated file
+   * beside it, kept for the owner, and history starts a fresh one; the owner's log names the cause, and the next
+   * checkpoint's notice tells the agent. Read without the lock, as the owner's list reads it, it lists nothing and stays.
+   * One that cannot be moved is never written over: the call runs without a checkpoint (run).
+   */
+  function damaged(key: string, error: unknown): State {
+    const fresh: State = { version: 2, checkpoints: [], lastGcAt: 0 }
+    if (!holding) { logger.warn('History could not read its journal, so it lists no checkpoints; the next call moves the journal aside', { cause: causeOf(error) }); return fresh }
+    const kept = `checkpoints.json.damaged-${new Date(now()).toISOString().replace(/[:.]/g, '-')}`
+    // A name the same instant took (a damaged journal moved aside twice in one millisecond) gets a suffix.
+    const target = lstatSync(join(input.directory, kept), { throwIfNoEntry: false }) ? `${kept}-${randomUUID().slice(0, 8)}` : kept
+    if (identity(file) === key) renameSync(file, join(input.directory, target))
+    journal = undefined; journalReset = true
+    logger.warn(`History could not read its journal, moved it aside to ${target} for the owner, and started a fresh one; the call runs`, { cause: causeOf(error) })
+    return fresh
+  }
+  /** A fresh journal's first checkpoint carries the reason, which raises its call's notice (M1). */
+  function resetNote(): { reason: string } | Record<string, never> {
+    if (!journalReset) return {}
+    journalReset = false
+    return { reason: JOURNAL_RESET_REASON }
   }
   function legacyRecords(): Checkpoint[] {
     const key = ['', '-wal'].map(suffix => identity(join(input.directory, `history.sqlite${suffix}`)) ?? '-').join('|')
@@ -137,8 +168,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
     const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
     return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, async () => {
-      try { await settleStopped() } catch (error) { logger.warn('History could not mark the checkpoints a stopped call left; the call runs', { cause: causeOf(error) }) }
-      return operation()
+      holding = true
+      try {
+        try { await settleStopped() } catch (error) { logger.warn('History could not mark the checkpoints a stopped call left; the call runs', { cause: causeOf(error) }) }
+        return await operation()
+      } finally { holding = false }
     })
   }
   /**
@@ -190,7 +224,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
       }
     }
-    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
+    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...resetNote(), ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
     await savePending(record)
     return record
   }
@@ -202,7 +236,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     let reason: string | undefined
     try { before = await captureScope({ scope: details.scope, store: objects, ...scopeLimits() }) }
     catch (error) { reason = `History could not record the files before this call (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
-    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', ...restore }
+    const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...resetNote(), ...(reason ? { reason } : {}), content: 'blobs', ...restore }
     await savePending(record)
     return record
   }
@@ -242,12 +276,17 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     catch (error) { logger.warn(`Checkpoint ${record.id}: history could not save it as the call began; the call runs`, { cause: causeOf(error) }) }
   }
   /** A finished checkpoint the journal could not take: the call's notice names why, and the owner's log the cause (D2). */
-  function unsavedRecord(record: Checkpoint, error: unknown): void {
+  function unsavedRecord(record: Checkpoint, error: unknown, step = 'save'): void {
     record.restorable = false
-    record.reason = `History could not save this call's checkpoint (${causeText(error)}); the call ran without one`
+    record.reason = `History could not ${step} this call's checkpoint (${causeText(error)}); the call ran without one`
     unsaved.set(record.id, record)
     while (unsaved.size > RECENT_CHECKPOINTS_MAX) unsaved.delete(unsaved.keys().next().value!)
     logger.warn(`Checkpoint ${record.id}: history could not save it; the call ran without one`, { cause: causeOf(error) })
+  }
+  /** A call whose checkpoint could not begin: it runs, and its notice names the cause, as for one the journal could not save. */
+  function unbegun(details: HistoryInput, error: unknown): void {
+    const record: Checkpoint = { sessionId: details.sessionId, stageId: details.stageId ?? details.sessionId, tool: details.tool, roots: details.roots, ...(details.requestId ? { requestId: details.requestId.slice(0, 200) } : {}), ...(details.parentRequestId ? { parentRequestId: details.parentRequestId } : {}), id: `change-${randomUUID()}`, createdAt: new Date(now()).toISOString(), status: 'interrupted', baselineAvailable: false, before: {}, after: {}, content: 'blobs' }
+    unsavedRecord(record, error, 'begin')
   }
   /** Every checkpoint this journal begins records content in the object store (Slice F2, items 1 and 3). */
   function finish(record: Checkpoint): Promise<void> { return finishScoped(record) }
@@ -540,7 +579,13 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       }, { owner: true, ...(input.signal ? { signal: input.signal } : {}) })
     },
     run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-      return locked(async () => { const record = await begin(details); try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) } }, signal ? { signal } : {})
+      return locked(async () => {
+        // No history reason ever refuses a call (item 6): one whose checkpoint cannot begin runs without one, and its notice says why.
+        let record: Checkpoint
+        try { record = await begin(details) }
+        catch (error) { unbegun(details, error); return execute() }
+        try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) }
+      }, signal ? { signal } : {})
     },
     exclusive<T>(execute: () => Promise<T>, signal?: AbortSignal): Promise<T> { return locked(execute, signal ? { signal } : {}) },
     /**
