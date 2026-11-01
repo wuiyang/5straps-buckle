@@ -21,7 +21,7 @@ repository, and history without host Git. Buckle never writes to the workspace's
   as a build or an install. Buckle asks Git what changed, through a private index under the node's
   state: before and after the command it adds the workspace's folders and writes a tree, and the
   difference names the changed paths. In a Git repository with a commit, that index starts from
-  the repository's own, so a committed file nobody changed is neither read nor copied ([part
+  the repository's own, so a committed file nobody changed is read once and never copied ([part
   two](change-history-02.md#a-workspace-in-a-git-repository)). The workspace's own ignore rules,
   every `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under
   ignored paths are counted, never stored, and never touched by a restore. A protected path is

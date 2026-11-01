@@ -38,8 +38,8 @@ history, MCP asks, `buckle cp`, and deletes.
 - A command's changes under ignored paths are counted, not stored. The count misses a change
   deep inside an ignored folder that already existed. A `.gitignore` above the workspace folder,
   such as a monorepo root's, is not read.
-- A folder's first command hashes each file Git tracks there that differs from its repository's
-  index, if any; later ones hash only what changed. That copy counts nothing toward
+- A folder's first command hashes each file Git tracks there, storing only what its repository
+  has not committed; later ones hash only what changed. That copy counts nothing toward
   `BUCKLE_HISTORY_MAX_BYTES`. A first hash past 30 seconds leaves its command unrestorable;
   Buckle finishes it in the background, and commands started meanwhile are unrestorable too.
 - A file over `history.maxFileBytes` is compared by size, mode, and mtime. Git still reads such a

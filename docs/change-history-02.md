@@ -52,11 +52,13 @@ restore entries identify the checkpoint the workspace returned to and the checkp
 ## A workspace in a Git repository
 
 When a command's folder lies in a Git repository with a commit, Buckle starts the folder's
-private index from the repository's own index the first time it records the folder. Each entry
-keeps the repository's record of the file's size and times, so Git reads only the files that
-changed since, and a committed file nobody changed is neither read nor copied. Buckle reads the
-repository with host Git under its isolated settings, with no hooks, filters, or file monitor. It
-never writes there, and its sweep never deletes anything there.
+private index from the repository's own index the first time it records the folder. Git reads
+each committed file there once to confirm it holds the committed content, storing nothing. A file
+that does not match, such as one whose line ends Git converts or that a filter changes, is stored
+the usual way. Later commands read only the files that changed, and a committed file nobody
+changed is never copied. Buckle reads the repository with host Git under its isolated settings,
+with no hooks, filters, or file monitor. It never writes there, and its sweep never deletes
+anything there.
 
 When a command changes or deletes such a file, Buckle copies the content the file had from the
 repository into the history before the checkpoint is saved. A restore reads the history alone,
@@ -66,15 +68,14 @@ So a command that deletes `.git`, or prunes its objects, while it changes commit
 those files not restorable.
 
 Content only the repository holds counts nothing toward the rolling cap. A committed file over
-`history.maxFileBytes` is never copied, and a change to one is recorded over the cap. A committed
-file whose stored content differs from the file, such as one whose line ends Git converts, is read
-from the file instead. A repository with SHA-256 objects, or a split or sparse index, is recorded
-the usual way.
+`history.maxFileBytes` is never copied, and a change to one is recorded over the cap. A repository
+with SHA-256 objects, or a split or sparse index, is recorded the usual way.
 
-If the repository moves, is deleted, or loses objects to a rewrite and a collection, the next
-command finds that, builds the folder's index again from its files, and stays restorable. A folder
-an earlier build recorded starts from its repository at a node's first command there, and the
-copies it held go at the next sweep.
+Before each command, Buckle checks that the repository still holds the committed content the
+folder's index refers to. If the repository moves, is deleted, loses objects, or its index turns
+split or sparse, that command builds the folder's index again from its files, and stays
+restorable. A folder an earlier build recorded starts from its repository at a node's first
+command there, and the copies it held go at the next sweep.
 
 ## Git history
 
