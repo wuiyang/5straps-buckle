@@ -58,13 +58,11 @@ pack's git tools.
 ## The browser
 
 - A profile folder or an attached Chrome serves one workspace at a time, judged at each
-  `browser_command` by the folder it really is and the Chrome's host and port. Two names of one
-  machine, such as a DNS name and its address, count as two Chromes: Buckle does not resolve them.
-  A browser another workspace started on it before the change keeps running until its `close` or
-  its idle timeout; meanwhile a profile folder's browser here does not start.
-- `buckle browser close` drops an attached Chrome's hold only once its host and port refuse a
-  connection, so a remote browser service whose port stays open keeps its hold; put the file back to
-  keep calls running.
+  `browser_command` by the folder it really is and the Chrome's host and port. A browser another
+  workspace started on it before the change keeps running until its `close` or its idle timeout;
+  meanwhile a profile folder's browser here does not start.
+- [Part ten](known-limits-10.md) lists what an attached Chrome's host and port leave: which names
+  count as one Chrome, and what a refused connection proves.
 - The holder of the node's profile folder or Chrome is chosen by the packs and tool policy in force,
   not by whether the pack runs. A workspace whose browser pack is withheld for its own reason, such as
   a refused setting, still holds it until the setting changes or the pack is switched off.

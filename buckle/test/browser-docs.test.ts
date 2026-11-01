@@ -55,7 +55,16 @@ describe('the browser sessions page', () => {
     expect(masking).toContain('finds that Chrome closed')
     const limits = page('docs/known-limits-04.md')
     expect(limits).not.toContain('can still start two browsers')
-    expect(limits).toContain('a remote browser service whose port stays open keeps its hold')
+    expect(limits).toContain('[Part ten](known-limits-10.md) lists what an attached Chrome\'s host and port leave')
+    expect(page('docs/known-limits-10.md')).toContain('a remote browser service whose port stays open keeps its hold')
+  })
+
+  // Codex recheck L2 and L6, ruled known limits of an attached Chrome.
+  it('names what an attached Chrome\'s host and port leave among the known limits', () => {
+    const limits = page('docs/known-limits-10.md')
+    expect(limits).toContain('a value filled through one name is not masked in a call through the other')
+    expect(limits).toContain('A refused connection does not prove Chrome closed, as a proxy or forwarded port in front of it can stop while Chrome keeps its pages')
+    expect(limits).toContain('](known-limits-04.md#the-browser)')
   })
 
   it('names what Windows still shows among the known limits', () => {
