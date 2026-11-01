@@ -108,6 +108,15 @@ describe('buckle browser close', () => {
     expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
   })
 
+  // Codex review L3: a browser a call still runs on is left to that call, which closes it when it ends.
+  it('says a browser a call still runs on closes when that call ends, and exits 1', async () => {
+    const runtime = { closeBrowsers: async () => ({ browsers: 2, closed: 1, held: 0, kept: 1, busy: 1 }), workspaceName: () => 'site' } as unknown as BuckleRuntime
+    let out = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
+    expect((await browserCloseCommand(runtime, ['close'])).exitCode).toBe(1)
+    expect(out).toBe('Closed 1 of 2 browsers of workspace site, and dropped 0 held secret values. 1 held secret value stays. 1 was running a call: it closes when the last call on it ends, and holds what it held until then.\n')
+  })
+
   it('acts on the workspace holding the current directory, and says so where nothing was open', async () => {
     const { config, running, calls, workspace } = await node()
     expect(await owner({ config, argv: ['browser', 'close'], cwd: workspace })).toMatchObject({ exitCode: 0, out: `No browser of workspace ${running.workspaceName()} was recorded open, so nothing was closed.\n` })
