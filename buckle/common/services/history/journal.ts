@@ -53,6 +53,7 @@ export const STOPPED_REASON = 'Buckle stopped before this call finished, so hist
 /** A command's checkpoint where host git is not permitted: the command runs, and nothing it changes is listed (item 3). */
 export const HOST_GIT_REASON = 'Not restorable: host git needed. History reads what a command changes through permitted trusted host git, so this call ran without a checkpoint of its changes'
 const PARTIAL_REASON = 'Git could not read some files this command may have changed; history does not list their changes'
+const CAP_REASON = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0) })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
@@ -68,6 +69,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...input.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
   const baselines = new Map<string, CommandBaseline[]>()
+  /** Each stored object's bytes on disk, as its id names one content for good: read once, then kept. */
+  const sizes = new Map<string, number>()
   let closed = false
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
@@ -211,8 +214,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
     }
     compact(record)
-    await saveRecord(record)
-    try { await pruneRetained(record) } catch (error) { logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) }) }
+    // One journal write: the finished checkpoint, with the turns retention drops beside it (item 5).
+    try { await pruneRetained(record) }
+    catch (error) {
+      logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) })
+      if (read().checkpoints.find(saved => saved.id === record.id)?.status === 'pending') await saveRecord(record)
+    }
   }
   /** Every checkpoint this journal begins records content in the object store (Slice F2, items 1 and 3). */
   function finish(record: Checkpoint): Promise<void> { return finishScoped(record) }
@@ -224,90 +231,73 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const earlier = read().checkpoints.filter(record => record.id !== current && record.status === 'complete').reverse()
     return path => earlier.find(record => record.after?.[path] !== undefined)?.after?.[path]
   }
-  function refreshTrees(input: { record: Checkpoint; state: State }): void {
-    const persisted = input.state.checkpoints.find(saved => saved.id === input.record.id)
-    if (persisted?.beforeTrees) input.record.beforeTrees = persisted.beforeTrees
-    if (persisted?.afterTrees) input.record.afterTrees = persisted.afterTrees
-  }
+  /**
+   * Retention (Slice F2, item 5), with `current` the checkpoint a call just finished, saved here in the same write. Keeps
+   * the newest turns; over the rolling cap, which counts the content retained checkpoints name and never the copy git
+   * keeps for the next command, it drops whole oldest turns, never the current one. A current checkpoint that does not
+   * fit is saved with its paths and no content. Then it deletes the objects nothing names. A retained checkpoint is
+   * never rewritten, and the workspace is never read (B2, A9).
+   */
   async function pruneRetained(current?: Checkpoint): Promise<void> {
     const state = read()
+    if (current) {
+      const index = state.checkpoints.findIndex(record => record.id === current.id)
+      if (index === -1) state.checkpoints.push(current)
+      else state.checkpoints[index] = current
+    }
     const keep = retainedTurns({ records: state.checkpoints, keep: settings.keepTurns })
-    const dropped = state.checkpoints.filter(record => record.status !== 'pending' && !keep.has(record.turnId ?? record.id))
+    const dropped = state.checkpoints.filter(record => record.status !== 'pending' && record !== current && !keep.has(turnOf(record)))
     state.checkpoints = state.checkpoints.filter(record => !dropped.includes(record))
-    // A scoped checkpoint that drops none of shadow git's own keeps git out of its call: no process, no walk (item 1).
-    if (current?.content === 'blobs' && !dropped.some(hasTrees)) return pruneBlobs({ state, dropped, current })
-    if (store.available && store.bytes() > input.maxBytes && current) {
-      const turns = [...new Set(state.checkpoints.map(record => record.turnId ?? record.id))]
-      for (const turn of turns) {
-        if (turn === current.turnId) continue
-        const reachable = await store.reachableBytes(state.checkpoints.flatMap(record => [...record.beforeTrees ?? [], ...record.afterTrees ?? []]))
-        if (reachable <= input.maxBytes) break
-        const remove = state.checkpoints.filter(record => record.turnId === turn && record.status !== 'pending')
-        dropped.push(...remove); state.checkpoints = state.checkpoints.filter(record => !remove.includes(record))
-      }
+    let capped = false
+    if (current && current.restorable !== false && heldBytes([current]) > input.maxBytes) capped = true
+    else for (const turn of [...new Set(state.checkpoints.map(turnOf))]) {
+      if (heldBytes(state.checkpoints) <= input.maxBytes) break
+      if (turn === (current && turnOf(current))) continue
+      const remove = state.checkpoints.filter(record => turnOf(record) === turn && record.status !== 'pending')
+      dropped.push(...remove); state.checkpoints = state.checkpoints.filter(record => !remove.includes(record))
     }
-    if (store.available) {
-      if (await store.isolate(state.checkpoints)) reconcile = true
-    } else reconcile = true
-    if (dropped.length > 0) reconcile = true
-    // Publish staged commit IDs and dropped records before changing or deleting their canonical refs.
-    await save(state)
-    if (current) refreshTrees({ record: current, state })
-    if (store.available && reconcile) await repairRefs(state)
-    if (store.available && store.bytes() > input.maxBytes) await store.pruneLoose()
-    if (store.bytes() > input.maxBytes && current) {
-      const retained = state.checkpoints.find(record => record.id === current.id)
-      if (retained) {
-        retained.restorable = false; current.restorable = false
-        retained.reason = current.reason = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
-        retained.beforeTrees = []; retained.afterTrees = []; current.beforeTrees = []; current.afterTrees = []
-        reconcile = true
-        await save(state)
-        if (store.available) { await repairRefs(state); await store.pruneLoose() }
-        logger.warn(`Checkpoint ${current.id}: ${current.reason}`)
-      }
+    if (current && current.restorable !== false && (capped || heldBytes(state.checkpoints) > input.maxBytes)) {
+      current.restorable = false; current.reason = CAP_REASON; capped = true
+      logger.warn(`Checkpoint ${current.id}: ${CAP_REASON}`)
     }
-    if (dropped.some(record => record.content === 'blobs')) sweepBlobs(state)
+    // A checkpoint the shadow-git engine wrote keeps its content there, pinned by its refs, until its turn drops (item 7):
+    // its commits are moved to the graph that engine settled on, published, and only then are refs changed.
+    const shadow = store.available && (state.checkpoints.some(hasTrees) || dropped.some(hasTrees))
+    if (shadow && await store.isolate(state.checkpoints)) reconcile = true
+    if (dropped.some(hasTrees)) reconcile = true
+    if (current || dropped.length || shadow && reconcile) await save(state)
+    if (shadow && reconcile) await repairRefs(state)
+    if (dropped.length || capped) sweepBlobs(state)
     scheduleCollection()
   }
-  /**
-   * Drops whole oldest turns while the object store is over the rolling cap, never the current one, then removes the
-   * blobs no retained checkpoint names. Over the cap with the current turn alone, the current checkpoint keeps its paths
-   * but no restorable content. Retained checkpoints are never rewritten and the workspace is never read again.
-   */
-  async function pruneBlobs(prune: { state: State; dropped: Checkpoint[]; current: Checkpoint }): Promise<void> {
-    const { state, current } = prune
-    let changed = prune.dropped.length > 0
-    if (changed) sweepBlobs(state)
-    if (objects.bytes() > input.maxBytes) {
-      for (const turn of [...new Set(state.checkpoints.map(record => record.turnId ?? record.id))]) {
-        if (turn === current.turnId || objects.bytes() <= input.maxBytes) continue
-        const remove = state.checkpoints.filter(record => (record.turnId ?? record.id) === turn && record.status !== 'pending')
-        if (remove.some(hasTrees)) continue
-        state.checkpoints = state.checkpoints.filter(record => !remove.includes(record)); changed = true
-        sweepBlobs(state)
-      }
-      const retained = state.checkpoints.find(record => record.id === current.id)
-      if (objects.bytes() > input.maxBytes && retained && retained.restorable !== false) {
-        retained.restorable = current.restorable = false
-        retained.reason = current.reason = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
-        changed = true
-        logger.warn(`Checkpoint ${current.id}: ${current.reason}`)
-      }
+  /** The bytes on disk of the content the restorable checkpoints among `records` name, each object once. */
+  function heldBytes(records: Checkpoint[]): number {
+    let bytes = 0
+    for (const id of namedObjects(records)) {
+      let size = sizes.get(id)
+      if (size === undefined) { size = objects.stored(id) ?? 0; sizes.set(id, size) }
+      bytes += size
     }
-    if (!changed) return
-    await save(state)
-    sweepBlobs(state)
+    return bytes
   }
-  /** Removes each blob no retained, restorable checkpoint names (a pending one's included). */
-  function sweepBlobs(state: State): void {
+  /** The objects a restore of a retained checkpoint reads: each file's content where its checkpoint is restorable. */
+  function namedObjects(records: Checkpoint[]): Set<string> {
     const named = new Set<string>()
-    for (const record of state.checkpoints) {
+    for (const record of records) {
       if (record.content !== 'blobs' || record.status !== 'pending' && record.restorable === false) continue
       for (const entry of [...Object.values(record.before), ...Object.values(record.after ?? {})]) if (entry.kind === 'file' && entry.hash) named.add(entry.hash)
     }
-    for (const id of objects.list()) if (!named.has(id)) objects.remove(id)
-    objects.recount()
+    return named
+  }
+  /**
+   * Removes each object no restorable checkpoint names and no shadow index reuses for the next command's before state:
+   * a dropped turn's content, an over-cap file's, and the trees git wrote. An index history cannot read removes nothing.
+   */
+  function sweepBlobs(state: State): void {
+    const indexed = commands.indexed()
+    if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
+    const named = namedObjects(state.checkpoints)
+    for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) { objects.remove(id); sizes.delete(id) }
   }
   function scheduleCollection(): void {
     if (!store.available || gc || gcTimer || now() - read().lastGcAt < GC_INTERVAL_MS) return
@@ -318,10 +308,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         const state = read()
         if (now() - state.lastGcAt < GC_INTERVAL_MS) return
         const trees = state.checkpoints.flatMap(record => [...record.beforeTrees ?? [], ...record.afterTrees ?? []])
-        await repairRefs(state)
-        await store.collect(trees)
-        state.lastGcAt = now(); await save(state)
-      }, { immediate: true }).catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History garbage collection did not finish') }).finally(() => { gc = undefined })
+        // An attempt counts whether or not it finishes, so a failing collection waits its interval, not the next write (A9).
+        try { await repairRefs(state); await store.collect(trees) }
+        finally { const saved = read(); saved.lastGcAt = now(); await save(saved) }
+      }, { immediate: true }).catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History garbage collection did not finish; it tries again in an hour', { cause: causeOf(error) }) }).finally(() => { gc = undefined })
     }, 0)
     gcTimer.unref()
   }
@@ -505,6 +495,7 @@ function identity(path: string): string | undefined {
   return stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined
 }
 function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
+function turnOf(record: Checkpoint): string { return record.turnId ?? record.id }
 /**
  * What the owner's log may say of a capture that failed (D2): its kind, its system code, and for a git step which one and
  * how it failed, never its message, which can name the owner's paths.

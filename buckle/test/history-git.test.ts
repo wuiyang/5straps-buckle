@@ -268,7 +268,6 @@ it('collects a packed-only shadow repository after every content reference has b
     git('gc', '--quiet', '--prune=now')
     expect(readdirSync(join(directory, 'git', 'objects', 'pack')).some(name => name.endsWith('.pack'))).toBe(true)
     await store.removeRefs('change-packed', captured.trees)
-    await store.pruneLoose()
     await store.collect([])
     expect(readdirSync(join(directory, 'git', 'objects', 'pack')).filter(name => name.endsWith('.pack'))).toEqual([])
   } finally { await history.close() }

@@ -35,16 +35,17 @@ describe('the history object store', () => {
     expect(execFileSync('git', ['cat-file', 'blob', id], { cwd: repo, env: { PATH: process.env.PATH ?? '', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: join(root, 'none') } })).toEqual(content)
   })
 
-  it('stores one copy of the same content, and counts its bytes', async () => {
+  it('stores one copy of the same content, and names its bytes on disk and its size', async () => {
     const store = openObjectStore(join(scratch(), 'history'))
     const first = await store.put(Buffer.from('same'))
-    const bytes = store.bytes()
+    const bytes = store.stored(first)
     expect(await store.put(Buffer.from('same'))).toBe(first)
-    expect(store.bytes()).toBe(bytes)
+    expect(store.stored(first)).toBe(bytes)
+    expect(store.size(first)).toBe(4)
     expect(store.list()).toEqual([first])
     const second = await store.put(Buffer.from('other'))
     expect(store.list().sort()).toEqual([first, second].sort())
-    expect(store.bytes()).toBeGreaterThan(bytes)
+    expect(store.stored(second)).toBeGreaterThan(0)
     store.remove(first)
     expect(store.has(first)).toBe(false)
     expect(store.list()).toEqual([second])

@@ -115,10 +115,11 @@ describe('Git-backed file history', () => {
   it('allows a mutation when its checkpoint cannot fit the rolling budget', async () => {
     const { workspace, history, details } = await fixture(8)
     writeFileSync(join(workspace, 'large'), 'larger than eight bytes')
-    const execute = vi.fn(async () => undefined)
+    // The cap counts what the checkpoint holds, never the workspace as it stands (Slice F2, item 5).
+    const execute = vi.fn(async () => { writeFileSync(join(workspace, 'large'), 'changed, and larger than eight bytes') })
     await expect(history.run(details, execute)).resolves.toBeUndefined()
     expect(execute).toHaveBeenCalledOnce()
-    expect((await history.list())[0]).toMatchObject({ restorable: false })
+    expect((await history.list())[0]).toMatchObject({ restorable: false, reason: expect.stringContaining('rolling size cap') })
   })
 
   it('keeps retained turns beyond the former thirty-day cutoff', async () => {

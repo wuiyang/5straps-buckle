@@ -30,7 +30,6 @@ export type ObjectStore = ReturnType<typeof openObjectStore>
  */
 export function openObjectStore(directory: string) {
   const root = join(directory, BLOBS)
-  let counted: number | undefined
 
   function pathOf(id: string): string {
     if (!OBJECT_ID.test(id)) throw new Error('Invalid history object id')
@@ -39,11 +38,6 @@ export function openObjectStore(directory: string) {
   function sizeAt(path: string): number | undefined {
     const stat = lstatSync(path, { throwIfNoEntry: false })
     return stat?.isFile() ? stat.size : undefined
-  }
-  function scan(): number {
-    let bytes = 0
-    for (const id of list()) bytes += sizeAt(pathOf(id)) ?? 0
-    return bytes
   }
 
   async function put(content: Buffer): Promise<string> {
@@ -58,7 +52,6 @@ export function openObjectStore(directory: string) {
       writeFileSync(temporary, packed, { mode: 0o600, flag: 'wx' })
       await replaceFile(temporary, path)
     } finally { rmSync(temporary, { force: true }) }
-    if (counted !== undefined) counted += packed.length
     return id
   }
 
@@ -88,11 +81,7 @@ export function openObjectStore(directory: string) {
     return header === undefined ? undefined : Number(header)
   }
 
-  function forget(path: string): void {
-    const size = sizeAt(path)
-    rmSync(path, { force: true })
-    if (counted !== undefined && size !== undefined) counted -= size
-  }
+  function forget(path: string): void { rmSync(path, { force: true }) }
 
   function list(): string[] {
     const ids: string[] = []
@@ -115,9 +104,5 @@ export function openObjectStore(directory: string) {
     root,
     remove: (id: string): void => forget(pathOf(id)),
     list,
-    /** The bytes the blobs take on disk, counted once and kept as this store writes and removes them. */
-    bytes: (): number => (counted ??= scan()),
-    /** Counts the blobs again, after another process may have written or removed some. */
-    recount: (): number => (counted = scan()),
   }
 }

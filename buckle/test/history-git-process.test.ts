@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { createGitStore } from '../common/services/history/git-store.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { logger } from '../common/runtime/log.js'
+import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
 vi.mock('node:child_process', async importOriginal => {
   const actual = await importOriginal<typeof import('node:child_process')>()
@@ -121,4 +122,28 @@ it('retries setup if writing safety attributes fails after git init completes', 
   expect(retried.restorable).toBe(true)
   expect(existsSync(join(directory, 'git', 'info', 'attributes'))).toBe(true)
   expect(existsSync(join(directory, 'git', 'buckle-setup-complete'))).toBe(true)
+})
+
+// Slice F2, item 5 (A9): a collection that fails saves its attempt, so the next write does not start it again at once.
+it('waits its interval after a shadow-git collection that fails, never starting it again after the next write', async () => {
+  const { workspace, directory } = fixture()
+  const file = join(workspace, 'file')
+  await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old') })
+  const history = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000 })
+  let collections = 0
+  vi.mocked(spawn).mockImplementation((...args: Parameters<typeof spawn>) => {
+    if (!args[1]?.includes('gc')) return actualProcess.spawn(...args)
+    collections++
+    return childFixture(child => child.emit('close', 1)).launch()
+  })
+  vi.spyOn(logger, 'warn').mockImplementation(() => {})
+  const write = (content: string) => history.run({ sessionId: 's', stageId: 'new', tool: 'fs_write', roots: [file], scope: [{ path: file }] }, async () => { writeFileSync(file, content) })
+  try {
+    await write('first')
+    await vi.waitFor(() => expect(JSON.parse(actualFs.readFileSync(join(directory, 'checkpoints.json'), 'utf8')).lastGcAt).toBeGreaterThan(0))
+    expect(collections).toBe(1)
+    await write('second')
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(collections).toBe(1)
+  } finally { await history.close() }
 })

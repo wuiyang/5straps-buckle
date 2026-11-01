@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { constants as systemConstants } from 'node:os'
 import { performance } from 'node:perf_hooks'
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, mkdirSync, readFileSync, readdirSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { basename as nativeBasename, isAbsolute as nativeIsAbsolute, relative as nativeRelative, sep as nativeSeparator } from 'node:path'
 import { dirname, join, relative, resolve } from 'pathe'
 import { z } from 'zod'
@@ -337,48 +337,6 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     const directories = [join(input.directory, 'git'), ...existsSync(roots) ? readdirSync(roots, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(roots, entry.name, 'git')) : []]
     return directories.filter(directory => lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() && existsSync(join(directory, 'HEAD')))
   }
-  function objectFiles(): string[] {
-    const found: string[] = []
-    function visit(directory: string): void {
-      if (!existsSync(directory)) return
-      for (const entry of readdirSync(directory, { withFileTypes: true })) {
-        const path = join(directory, entry.name)
-        if (entry.isDirectory()) visit(path)
-        else if (entry.isFile() && /\/objects\/[a-f0-9]{2}\/[a-f0-9]{38,62}$/.test(path)) found.push(path)
-      }
-    }
-    visit(input.directory)
-    return found
-  }
-  async function reachableBytes(trees: TreeCapture[]): Promise<number> {
-    let bytes = 0
-    const groups = new Map<string, TreeCapture[]>()
-    for (const tree of trees) groups.set(tree.git, [...groups.get(tree.git) ?? [], tree])
-    for (const group of groups.values()) {
-      const first = group[0]!
-      const packed = new Map<string, number>()
-      const packDirectory = join(first.git, 'objects', 'pack')
-      if (existsSync(packDirectory)) for (const name of readdirSync(packDirectory).filter(name => name.endsWith('.idx'))) {
-        const output = await git(first, ['verify-pack', '-v', join(packDirectory, name)])
-        for (const line of output.toString().split('\n')) { const fields = line.split(/ +/); if (fields[0] && HASH.test(fields[0]) && fields[3]) packed.set(fields[0], Number(fields[3])) }
-      }
-      const output = await git(first, ['rev-list', '--objects', '--no-object-names', '--no-walk', ...new Set(group.map(tree => tree.commit))])
-      for (const oid of output.toString().trim().split('\n').filter(Boolean)) { assertHash(oid); const loose = lstatSync(join(first.git, 'objects', oid.slice(0, 2), oid.slice(2)), { throwIfNoEntry: false }); bytes += loose?.size ?? packed.get(oid) ?? 0 }
-    }
-    return bytes
-  }
-  async function pruneLoose(): Promise<void> {
-    const files = objectFiles()
-    if (files.length > 20_000) return
-    const groups = new Map<string, string[]>()
-    for (const file of files) { const directory = file.slice(0, file.lastIndexOf('/objects/')); groups.set(directory, [...groups.get(directory) ?? [], file]) }
-    for (const [directory, objects] of groups) {
-      const output = await git({ git: directory, workTree: owned }, ['rev-list', '--all', '--objects', '--no-object-names'])
-      const reachable = new Set(output.toString().trim().split('\n'))
-      for (const file of objects) { const parts = file.split('/'); const oid = parts.at(-2)! + parts.at(-1)!; if (!reachable.has(oid)) rmSync(file, { force: true }) }
-      rmSync(join(directory, 'index'), { force: true })
-    }
-  }
   async function collect(trees: TreeCapture[]): Promise<void> {
     const directories = new Map(trees.map(tree => [tree.git, tree]))
     for (const directory of gitDirectories()) if (!directories.has(directory)) directories.set(directory, { git: directory, workTree: owned, root: owned, selector: '.', commit: '', extra: {} })
@@ -388,7 +346,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       await git(tree, ['-c', 'gc.reflogExpire=now', '-c', 'gc.reflogExpireUnreachable=now', 'gc', '--quiet', '--prune=now'])
     }
   }
-  return { capture, loadTree: (captured: TreeCapture) => loadTree(captured), changed, restoreContent, removeRefs, reconcile, isolate, collect, pruneLoose, reachableBytes, get available() { return trustedProgram([]) !== null }, bytes: () => storeBytes(input.directory) }
+  return { capture, loadTree: (captured: TreeCapture) => loadTree(captured), changed, restoreContent, removeRefs, reconcile, isolate, collect, get available() { return trustedProgram([]) !== null } }
 }
 
 function shapeKey(directory: string, commit: string): string { return `${directory}\0${commit}` }
@@ -453,16 +411,6 @@ export function readGitMetadata(path: string): string | undefined {
     return content.toString('utf8', 0, bytes)
   } catch { return undefined }
   finally { if (descriptor !== undefined) closeSync(descriptor) }
-}
-export function storeBytes(directory: string): number {
-  let bytes = 0
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name === 'history.sqlite' || entry.name.startsWith('execution.')) continue
-    const path = join(directory, entry.name)
-    if (entry.isDirectory()) bytes += storeBytes(path)
-    else if (entry.isFile()) bytes += statSync(path).size
-  }
-  return bytes
 }
 export function regularFile(path: string, size?: number): boolean {
   const stat = lstatSync(path, { throwIfNoEntry: false })
