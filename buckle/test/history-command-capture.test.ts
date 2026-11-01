@@ -623,6 +623,36 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
     } finally { await history.close() }
   })
 
+  // Slice F3: a folder in a repository seeds its index before git add, so a git add its budget cuts short leaves that
+  // seed; the background record starts from it, and the folder still refers to the repository once it is placed.
+  it.skipIf(process.platform === 'win32')('is finished in the background from a repository\'s seed, which the folder keeps referring to', async () => {
+    const { root, workspace, directory, settings, details } = fixture()
+    const config = join(root, 'gitconfig'); writeFileSync(config, '')
+    const git = (args: string[]) => execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgSign=false', ...args], { cwd: workspace, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config } })
+    const old = new Date(Date.now() - 86_400_000)
+    for (const name of ['a.txt', 'b.txt']) utimesSync(join(workspace, 'src', name), old, old)
+    git(['init', '--quiet']); git(['add', '-A']); git(['commit', '--quiet', '-m', 'base'])
+    const store = openObjectStore(directory)
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      gitAdd.slow = 2
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
+      await vi.waitFor(() => expect(gitAdd.indexes.filter(index => index.endsWith('index.warm')).length).toBeGreaterThan(0), { timeout: 20_000, interval: 100 })
+      await vi.waitFor(() => expect(existsSync(shadowIndex(directory, workspace).replace(/index$/, 'warming'))).toBe(false), { timeout: 20_000, interval: 100 })
+      // The record started from the seed: git never hashed the unchanged committed file.
+      expect(store.has(blobId(Buffer.from('b1')))).toBe(false)
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'b.txt'), 'b2') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, changes: [{ path: join(workspace, 'src', 'b.txt'), kind: 'modified' }] })
+      expect(existsSync(shadowIndex(directory, workspace).replace(/index$/, 'source'))).toBe(true)
+      await history.restore(checkpoint.id)
+      expect(read(join(workspace, 'src', 'b.txt'))).toBe('b1')
+      // b.txt's committed content was copied as the command changed it.
+      expect(store.has(blobId(Buffer.from('b1')))).toBe(true)
+    } finally { await history.close() }
+  })
+
   it.skipIf(process.platform === 'win32')('runs a command that starts while it is taken at once, saying why it is not restorable', async () => {
     const { workspace, settings, details } = fixture()
     const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })

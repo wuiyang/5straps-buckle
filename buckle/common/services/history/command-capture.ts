@@ -1,14 +1,15 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, type Stats } from 'node:fs'
+import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, writeFileSync, type Stats } from 'node:fs'
 import { join, relative } from 'pathe'
 import { replaceFile } from '../../adapters/replace-file.js'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
 import { childPath, isInside, isPlainName } from '../../domain/paths.js'
-import { escapeIgnore, gitOperation, historyGitProgram, isolatedGit, ownerGitDirectory, RAW_ATTRIBUTES, regularFile, runProgram } from './git-store.js'
+import { escapeIgnore, gitOperation, HistoryGitError, historyGitProgram, isolatedGit, ownerGitDirectory, RAW_ATTRIBUTES, regularFile, runProgram } from './git-store.js'
 import { logger } from '../../runtime/log.js'
-import type { ObjectStore } from './object-store.js'
+import { blobId, type ObjectStore } from './object-store.js'
 import { modeOf } from './scoped-capture.js'
 import type { Entry, Snapshot } from './snapshot.js'
+import { alternateValue, entrySize, namesBlob, LOCATE_ARGS, parseBatch, parseBatchCheck, parseIndex, parseLocation, prefixWithin, readRepositoryIndex, readSource, removeSource, seedCandidates, sourceStamp, writeIndex, writeSource, type SourceRecord } from './workspace-repo.js'
 
 /**
  * When a phase's capture must end, and the cancellation of its call, which stops the before phase (X14): git's children
@@ -19,6 +20,10 @@ export interface CaptureBudget { deadline: number; signal?: AbortSignal }
 const STEP_TIMEOUT_MS = 10_000
 const SETUP_MARKER = 'buckle-setup-complete'
 const ZERO = /^0+$/
+/** The modes of a file or a link, whose content a command's before side reads from its blob. */
+const BLOB_MODE = /^(100644|100755|120000)$/
+/** How many bytes of content one `git cat-file --batch` copies from a folder's repository at most, past one object: within runProgram's output limit. */
+const COPY_BATCH_BYTES = 32 * 1_048_576
 
 /** How much of git's stderr a listing keeps to read the folders it could not open; past it, every folder it listed is unknown. */
 const LISTING_ERRORS_BYTES = 1_048_576
@@ -32,9 +37,10 @@ const UNOPENED = /^warning: could not open directory '(.*)': [^']*$/
  * recheck): `unstored`, the files git listed and could not store; `untrackedFolders`, the folders it listed holding
  * nothing it stored (an empty one, or a nested repository); `unknown`, the folders it could not open, below which nothing
  * is known; and `stale`, the tracked files the index still holds an older state of, git having failed to read them (X5,
- * X10 of the Codex review of 670f1dc2..01d3b0c9).
+ * X10 of the Codex review of 670f1dc2..01d3b0c9). `source`, before a command, is the objects folder of the repository the
+ * shadow index refers to for content it never copied (Slice F3).
  */
-export interface CommandBaseline { root: string; identity: string; git: string; tree: string; ignored: Map<string, string>; partial: boolean; unstored: Set<string>; untrackedFolders: Set<string>; unknown: Set<string>; stale: Set<string> }
+export interface CommandBaseline { root: string; identity: string; git: string; tree: string; ignored: Map<string, string>; partial: boolean; unstored: Set<string>; untrackedFolders: Set<string>; unknown: Set<string>; stale: Set<string>; source?: string }
 
 /** What a command changed, read from two baselines: each changed path's entries, and how many ignored entries changed. */
 export interface CommandChanges { before: Snapshot; after: Snapshot; ignored: number; partial: boolean }
@@ -59,9 +65,13 @@ const WARM_MARKER = 'warming'
  * files whose stat changed, and `write-tree` names that state; `diff-tree` lists what changed between the two. Buckle
  * never walks or reads the workspace itself. Git writes loose objects only (`gc.auto=0`, never a pack) into the history's
  * object store folder, which the in-process reader of item 4 reads, so a restore needs no git. An ignored path is never
- * stored, and only the count of ignored entries that changed is kept.
+ * stored, and only the count of ignored entries that changed is kept. Where the folder lies in a git repository with a
+ * commit (Slice F3), the shadow index starts from that repository's index, so an unchanged committed file is never
+ * hashed or copied; its content is copied into the store only as a command changes it, and a restore reads the store
+ * alone. Nothing is written to the repository: only a step that reads objects (`cat-file`) sees its objects folder, as
+ * an alternate, so git add and write-tree write every object they make into the store.
  */
-export function createCommandCapture(input: { directory: string; objects: Pick<ObjectStore, 'root' | 'read' | 'size'>; excluded: () => string[]; allowed: () => boolean; untrusted?: () => UntrustedRoots; maxFileBytes: () => number }) {
+export function createCommandCapture(input: { directory: string; objects: Pick<ObjectStore, 'root' | 'read' | 'size' | 'has' | 'put'>; excluded: () => string[]; allowed: () => boolean; untrusted?: () => UntrustedRoots; maxFileBytes: () => number }) {
   const folder = join(input.directory, 'commands')
   const warned = new Set<string>()
   const { environment, safety, empty } = isolatedGit(join(folder, 'private'))
@@ -84,13 +94,14 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
   function gitDirectory(root: string): string { return join(folder, createHash('sha256').update(root).digest('hex').slice(0, 24)) }
 
-  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean; errors?: (chunk: Buffer) => void; index?: string } = {}): Promise<Buffer> {
+  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean; errors?: (chunk: Buffer) => void; index?: string; alternate?: string } = {}): Promise<Buffer> {
     // `magic`: pathspec magic is read, for the literal excludes of the protected paths; every other call takes paths as given.
     // Each step takes STEP_TIMEOUT_MS at most, git add (`whole`) all that is left of the budget, which it bounds too.
     // `errors`: git's stderr, which it writes in the C locale, so its warnings read the same on every system.
+    // `alternate`: a folder's repository objects, read beside the history's own by a step that only reads (Slice F3).
     const left = options.budget ? Math.max(1, options.budget.deadline - Date.now()) : undefined
     const timeoutMs = left === undefined ? undefined : options.whole ? left : Math.min(STEP_TIMEOUT_MS, left)
-    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: options.index ?? join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
+    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: options.index ?? join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.alternate === undefined ? {} : { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateValue(options.alternate) }), ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
   }
 
   /**
@@ -154,12 +165,135 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
+   * The repository a root's shadow index refers to, settled before a command (Slice F3): the objects folder named, or
+   * undefined where the index refers to none. A record whose repository stands as it did is kept. One that moved, went,
+   * or no longer holds an object the index names (item 7) goes with the index, which the work tree then builds again with
+   * every tree written again (W1); so does a record with no index or one that does not read. Then a root with no index,
+   * or with one this process has not written that refers to no repository, is seeded where it lies in one.
+   */
+  async function settleSource(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<string | undefined> {
+    const index = join(state.git, 'index')
+    let indexed = inspect(index) !== undefined
+    let record = readSource(state.git)
+    if (record !== undefined && (record === 'invalid' || !indexed || !await sourceHolds(found, state, record, budget).catch(unlessStopped(false)))) {
+      reset(state); record = undefined; indexed = false
+      logger.info('History\'s record of a command folder\'s repository no longer holds; it builds the record again from the folder')
+    }
+    if (record !== undefined) return record.objects
+    if (indexed && rewritten.has(state.root)) return undefined
+    return (await seed(found, state, budget).catch(unlessStopped(undefined)))?.objects
+  }
+
+  /**
+   * Whether the repository `record` names still holds what the shadow index refers to: found from the root with no git,
+   * at the same objects folder; and, where that folder or its packs changed since (a collection, a fetch), every blob the
+   * index names still read, from the history's own store or the repository (item 7).
+   */
+  async function sourceHolds(found: Program, state: { root: string; git: string }, record: SourceRecord, budget: CaptureBudget): Promise<boolean> {
+    const owner = ownerGitDirectory(state.root)
+    if (owner === undefined || realPath(join(owner, 'objects')) !== record.objects) return false
+    const stamp = sourceStamp(record.objects)
+    if (stamp === record.stamp) return true
+    let shadow: ReturnType<typeof parseIndex>
+    try { shadow = parseIndex(readFileSync(join(state.git, 'index'))) } catch { return false }
+    if (!shadow) return false
+    const ids = [...new Set(shadow.entries.filter(namesBlob).map(entry => entry.id))]
+    const sizes = await sizesOf(found, state, ids, record.objects, budget)
+    if (ids.some(id => !sizes.has(id))) return false
+    writeSource(state.git, { objects: record.objects, stamp })
+    return true
+  }
+
+  /**
+   * Seeds a root's shadow index from the index of the repository it lies in (Slice F3, items 1 and 2): where that
+   * repository has a commit, SHA-1 objects, and an index git can read with nothing beyond its entries, each entry below
+   * the root (seedCandidates) whose blob the repository holds at the size the file had, so no blob git converted as it
+   * stored it (line ends, a filter) stands for the file. Its stat data is the repository's, so git add hashes only the
+   * files that differ. The record is written first, so an index that refers to a repository is never left without it.
+   * Read with host git under the isolated config; nothing is written to the repository. undefined where nothing is seeded:
+   * the root then takes today's path, as for any failure of these steps but its budget's (settleSource).
+   */
+  async function seed(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<SourceRecord | undefined> {
+    if (ownerGitDirectory(state.root) === undefined) return undefined
+    const located = parseLocation((await locate(found, state.root, budget)).toString())
+    const objects = located && realPath(located.objects)
+    const prefix = located && prefixWithin(located.top, state.root)
+    if (!located || objects === undefined || prefix === undefined) return undefined
+    const stamp = sourceStamp(objects)
+    const read = readRepositoryIndex(located.index)
+    const parsed = read && parseIndex(read.index)
+    if (!read || !parsed?.plain) return undefined
+    const candidates = seedCandidates({ entries: parsed.entries, mtimeSeconds: read.mtimeSeconds, prefix, protect: state.protect })
+    if (!candidates.length) return undefined
+    const sizes = await sizesOf(found, state, [...new Set(candidates.map(entry => entry.id))], objects, budget)
+    const entries = candidates.filter(entry => { const size = sizes.get(entry.id); return size !== undefined && size % 2 ** 32 === entrySize(entry) })
+    if (!entries.length) return undefined
+    const record = { objects, stamp }
+    writeSource(state.git, record)
+    const temporary = join(state.git, `index.seed-${randomUUID()}`)
+    try { writeFileSync(temporary, writeIndex(entries), { mode: 0o600, flag: 'wx' }); await replaceFile(temporary, join(state.git, 'index')) }
+    catch (error) { removeSource(state.git); throw error }
+    finally { rmSync(temporary, { force: true }) }
+    rewritten.delete(state.root)
+    logger.debug('History seeded a command folder\'s record from its repository\'s index', { entries: entries.length, left: candidates.length - entries.length })
+    return record
+  }
+
+  /** Drops a root's shadow index and the record of the repository it refers to: its next capture builds it again (item 7). */
+  function reset(state: { root: string; git: string }): void {
+    rmSync(join(state.git, 'index'), { force: true }); removeSource(state.git); rewritten.delete(state.root)
+  }
+
+  /** The repository `root` lies in, found by git from the root, under the isolated config: one rev-parse. */
+  function locate(found: Program, root: string, budget: CaptureBudget): Promise<Buffer> {
+    const timeoutMs = Math.min(STEP_TIMEOUT_MS, Math.max(1, budget.deadline - Date.now()))
+    return runProgram({ program: found, operation: 'rev-parse', args: [...safety, ...LOCATE_ARGS], cwd: root, environment, timeoutMs, ...(budget.signal ? { signal: budget.signal } : {}) })
+  }
+
+  /** Each of `ids`'s size where it names a blob in the history's store or the repository's `objects`: one batch check. */
+  async function sizesOf(found: Program, state: { root: string; git: string }, ids: string[], objects: string, budget: CaptureBudget): Promise<Map<string, number>> {
+    if (!ids.length) return new Map()
+    return parseBatchCheck(await git(found, state, ['cat-file', '--batch-check'], { data: `${ids.join('\n')}\n`, alternate: objects, budget }))
+  }
+
+  /**
+   * Copies into the history's store, before the checkpoint is saved, the content each changed file or link had before a
+   * command where the shadow index referred to the repository for it (Slice F3, item 3): within the content cap only, as
+   * a file over it is recorded over the cap, as before. Answers the size of each, and those gone: missing from the
+   * repository, or not read at all, which never refuses or delays the call. One missing drops the record, so the next
+   * capture builds it again from the work tree (item 7).
+   */
+  async function borrowed(found: Program, left: CommandBaseline, changes: RawChange[], budget: CaptureBudget): Promise<{ sizes: Map<string, number>; gone: Set<string> }> {
+    const wanted = left.source === undefined ? [] : [...new Set(changes.filter(change => BLOB_MODE.test(change.oldMode) && !input.objects.has(change.oldId)).map(change => change.oldId))]
+    if (!wanted.length || left.source === undefined) return { sizes: new Map(), gone: new Set() }
+    try {
+      const sizes = await sizesOf(found, left, wanted, left.source, budget)
+      const gone = new Set(wanted.filter(id => !sizes.has(id)))
+      for (const chunk of byBytes(wanted.filter(id => sizes.get(id)! <= input.maxFileBytes()), sizes)) {
+        const contents = parseBatch(await git(found, left, ['cat-file', '--batch'], { data: `${chunk.join('\n')}\n`, alternate: left.source, budget }))
+        for (const id of chunk) {
+          const content = contents?.get(id)
+          if (content === undefined || blobId(content) !== id) gone.add(id)
+          else await input.objects.put(content)
+        }
+      }
+      if (gone.size) { reset(left); logger.warn('History found content its folder\'s repository no longer holds, so those paths are not restorable; the next command builds its record from the folder', { count: gone.size }) }
+      return { sizes, gone }
+    } catch (error) {
+      logger.warn('History could not copy what a command changed from its folder\'s repository, so those paths are not restorable', { cause: gitCause(error) })
+      return { sizes: new Map(), gone: new Set(wanted) }
+    }
+  }
+
+  /**
    * Each directory root's state now: the index brought up to date (refresh), then, together, its tree, the tracked files
    * whose index state git could not refresh, and what git saw on disk but did not store: its folders, its files, and the
    * folders it warned it could not open (X5, X10, R1.3). A root whose first record is still being taken in the background
-   * is never read: the command runs without restorable content, at once (W2). `progress` names the root git reads.
+   * is never read: the command runs without restorable content, at once (W2). `progress` names the root git reads. Before
+   * a command, the repository its shadow index refers to is settled first (Slice F3).
    */
-  async function baseline(roots: string[], budget: CaptureBudget, progress: { root?: string } = {}): Promise<CommandBaseline[]> {
+  function baseline(roots: string[], budget: CaptureBudget, progress: { root?: string } = {}): Promise<CommandBaseline[]> { return capture(roots, budget, progress, 'before') }
+  async function capture(roots: string[], budget: CaptureBudget, progress: { root?: string }, phase: 'before' | 'after'): Promise<CommandBaseline[]> {
     const found = program(roots)
     if (!found) throw new HostGitNeededError('Host git is not permitted')
     if (roots.some(root => warming.has(root))) throw new BaselineWarmingError('History is taking a first record of a folder in the background')
@@ -174,6 +308,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       // root runs, as a background record writes its side index's own (A4, B6); a side index no live record is building
       // is a stopped one's (W2).
       rmSync(join(state.git, 'index.lock'), { force: true }); tidy(root)
+      const source = phase === 'before' ? await settleSource(found, state, budget) : undefined
       const excludes = state.protect.map(name => `:(exclude,literal)${name}`)
       const refreshed = await refresh(found, state, budget)
       const warnings = { chunks: [] as Buffer[], bytes: 0 }
@@ -189,7 +324,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (folderIdentity(root) !== identity) { rmSync(join(state.git, 'index'), { force: true }); throw new FolderReplacedError('A folder history records was replaced while git read it') }
       const seen = unstoredState([folders, files], { text: Buffer.concat(warnings.chunks).toString(), complete: warnings.bytes <= LISTING_ERRORS_BYTES })
       // A folder git could not open hides what changed in it: the checkpoint says so (PARTIAL_REASON).
-      result.push({ root, identity, git: state.git, tree, ignored: ignoredState(root, refreshed.ignored), partial: refreshed.partial || seen.unknown.size > 0, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)) })
+      result.push({ root, identity, git: state.git, tree, ignored: ignoredState(root, refreshed.ignored), partial: refreshed.partial || seen.unknown.size > 0, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)), ...source === undefined ? {} : { source } })
     }
     return result
   }
@@ -295,7 +430,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    */
   async function changes(before: CommandBaseline[], prior: (path: string) => Entry | undefined, budget: CaptureBudget, progress: { root?: string } = {}): Promise<CommandChanges> {
     if (before.some(item => folderIdentity(item.root) !== item.identity)) throw new FolderReplacedError('A folder history records was replaced during the command')
-    const after = await baseline(before.map(item => item.root), budget, progress)
+    const after = await capture(before.map(item => item.root), budget, progress, 'after')
     const found = program(before.map(item => item.root))!
     const result: CommandChanges = { before: {}, after: {}, ignored: 0, partial: after.some(item => item.partial) }
     for (const [index, left] of before.entries()) {
@@ -304,7 +439,9 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (left.tree === right.tree) continue
       // A tree that cannot be read: the next capture of this root writes every tree again (W1).
       const raw = await git(found, left, ['diff-tree', '-r', '-t', '-z', '--raw', '--no-renames', '--no-abbrev', '--no-commit-id', left.tree, right.tree], { budget }).catch((error: unknown) => { rewritten.delete(left.root); throw error })
-      for (const change of parseRaw(raw)) {
+      const listed = parseRaw(raw)
+      const copied = await borrowed(found, left, listed, budget)
+      for (const change of listed) {
         if (change.status === 'M' && change.oldMode === '040000' && change.newMode === '040000') continue
         const parts = change.name.split('/')
         const path = childPath(left.root, change.name)
@@ -322,7 +459,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
         const was = ZERO.test(change.oldMode) && ignoredIn(left.ignored, change.name) ? ignoredEntry(path)
           : below(left.unknown, change.name) ? { kind: 'unreadable' as const, mode: 0 }
           : ZERO.test(change.oldMode) ? notStored(left, change.name, now)
-          : left.stale.has(change.name) ? { kind: 'unreadable' as const, mode: change.oldMode === '100755' ? 0o755 : 0o644 } : await sideBefore(change.oldMode, change.oldId, prior(path))
+          : left.stale.has(change.name) ? { kind: 'unreadable' as const, mode: change.oldMode === '100755' ? 0o755 : 0o644 } : await sideBefore(change.oldMode, change.oldId, prior(path), copied)
         if (was) result.before[path] = was
         if (now) result.after[path] = now
         // A folder the command made holds the ignored entries made in it, so a restore that would remove it says so.
@@ -335,16 +472,18 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return result
   }
 
-  async function sideBefore(mode: string, id: string, prior: Entry | undefined): Promise<Entry | undefined> {
+  /** `copied`: what was copied from the repository the shadow index referred to, and what was gone from it (Slice F3). */
+  async function sideBefore(mode: string, id: string, prior: Entry | undefined, copied: { sizes: Map<string, number>; gone: Set<string> }): Promise<Entry | undefined> {
     if (ZERO.test(mode)) return undefined
     if (mode === '160000') return { kind: 'excluded', mode: 0, reason: 'nested', hash: id }
     if (mode === '040000') return { kind: 'directory', mode: prior?.kind === 'directory' ? prior.mode : 0o755 }
+    if (copied.gone.has(id)) return { kind: 'unreadable', mode: mode === '120000' ? 0o777 : mode === '100755' ? 0o755 : 0o644, reason: 'source-gone' }
     if (mode === '120000') {
       try { const target = (await input.objects.read(id)).toString(); return { kind: 'symlink', mode: prior?.kind === 'symlink' && prior.target === target ? prior.mode : 0o777, target } }
       catch { return { kind: 'unreadable', mode: 0o777 } }
     }
     const fallback = mode === '100755' ? 0o755 : 0o644
-    const size = input.objects.size(id)
+    const size = input.objects.size(id) ?? copied.sizes.get(id)
     if (size === undefined) return { kind: 'unreadable', mode: fallback }
     if (size > input.maxFileBytes()) return { kind: 'excluded', mode: fallback, size, reason: 'size' }
     return { kind: 'file', mode: prior?.kind === 'file' && prior.hash === id ? prior.mode : fallback, hash: id }
@@ -624,6 +763,35 @@ function processStart(pid: number): string | undefined {
   return start !== undefined && /^[0-9]+$/.test(start) ? start : undefined
 }
 function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
+/** `ids` in runs of at most COPY_BATCH_BYTES of content by `sizes`, one object at least in each. */
+function byBytes(ids: string[], sizes: Map<string, number>): string[][] {
+  const runs: string[][] = []
+  let bytes = Infinity
+  for (const id of ids) {
+    const size = sizes.get(id) ?? 0
+    if (bytes + size > COPY_BATCH_BYTES) { runs.push([]); bytes = 0 }
+    runs.at(-1)!.push(id); bytes += size
+  }
+  return runs
+}
+/** What the owner's log may say of a step that failed: for git which step and how, else a system code, never a message. */
+function gitCause(error: unknown): Record<string, string | number> {
+  if (error instanceof HistoryGitError) return { operation: error.details.operation, failure: error.details.failure, ...error.details.exitCode === undefined ? {} : { exitCode: error.details.exitCode } }
+  return { error: error instanceof Error ? error.constructor.name : 'Unknown', ...systemCode(error) ? { code: systemCode(error)! } : {} }
+}
+/** A path as the system names it, links resolved and, on Windows, in its own case, so two spellings of one folder compare equal. */
+function realPath(path: string): string | undefined { try { return realpathSync.native(path) } catch { return undefined } }
+/**
+ * A step of Slice F3 that failed answers `fallback`, so the root takes today's path, unless its budget or its call's
+ * cancellation stopped it: that stops the phase, as for any git step, and W2 finishes the record in the background.
+ */
+function unlessStopped<T>(fallback: T): (error: unknown) => T {
+  return error => {
+    if (error instanceof HistoryGitError && (error.details.failure === 'timeout' || error.details.failure === 'aborted')) throw error
+    logger.debug('History refers to no repository for a command folder: a step that reads it failed', { cause: gitCause(error) })
+    return fallback
+  }
+}
 /** A system error's code alone, as the owner's log may name it (D2). */
 function systemCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined
