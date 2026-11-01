@@ -3,7 +3,8 @@ import { SqliteErrorCode } from '@5straps/runtime/sqlite'
 import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside, parentDirectory } from '../../domain/paths.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { lstatSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
@@ -56,11 +57,11 @@ const PARTIAL_REASON = 'Git could not read some files this command may have chan
 const CAP_REASON = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
 /** A checkpoint the shadow-git engine of 670f1dc2 wrote keeps its content in that store, which only git reads (Slice F2, item 7). */
 export const OLD_ENGINE_REASON = 'This checkpoint is from the earlier shadow-git history, whose content only permitted trusted host git can read; this node has none, so it cannot be restored'
-/** How many turns of new checkpoints the stores written before the object store outlive (item 7). */
-export const OLD_STORE_TURNS = 10
 /** Those stores, in a workspace's history folder: shadow git (670f1dc2) and the SQLite history before it. */
 const OLD_STORES = ['git', 'roots', 'git-private', ...['', '-wal', '-shm', '-journal'].map(suffix => `history.sqlite${suffix}`)]
-/** `oldStoreTurns`: the turns of new checkpoints recorded while an old store is left, up to OLD_STORE_TURNS. */
+/** The folder, beside them, that expired old stores are renamed into, under the lock, before their deletion off the call path (M2). */
+const EXPIRED_PREFIX = 'expired-'
+/** `oldStoreTurns`: the turns of new checkpoints recorded while an old store is left, up to `keepTurns`. */
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0), oldStoreTurns: z.array(z.string()).optional() })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
@@ -87,6 +88,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let reconcile = true
   /** Set once no old store is left on disk: nothing writes one any more, so none comes back (item 7). */
   let oldStoresGone = false
+  /** The background deletions of expired old stores, which close waits for (M2). */
+  const deletions = new Set<Promise<void>>()
+  deleteExpired()
 
   // The journal as last validated, keyed by its file's identity on disk: a call reads it several times, and another
   // process replaces it by rename, which changes the key (B12). Each read still hands out its own copy.
@@ -295,6 +299,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (shadow && await store.isolate(state.checkpoints)) reconcile = true
     if (dropped.some(hasTrees)) reconcile = true
     if (current || dropped.length || shadow && reconcile) await save(state)
+    // Only once the journal no longer lists their checkpoints do the old stores go (X8).
+    if (expired) discardOldStores()
     if (shadow && reconcile) await repairRefs(state)
     if (dropped.length || capped) sweepBlobs(state)
     scheduleCollection(state)
@@ -306,22 +312,42 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     return !oldStoresGone
   }
   /**
-   * The old stores outlive OLD_STORE_TURNS turns of new checkpoints (item 7), counted in `state` as `current` finishes,
-   * whatever retention keeps. Then their checkpoints leave the journal and their folders are deleted, with no git. A
-   * deletion that fails keeps the count, so the next write tries again. Answers whether the old checkpoints left.
+   * The old stores outlive as many turns of new checkpoints as history keeps (item 7, M3), counted in `state` as `current`
+   * finishes. Then their checkpoints leave the journal and their folders are deleted, with no git. A deletion that fails
+   * keeps the count, so the next write tries again. Answers whether the old checkpoints left.
    */
   function expireOldStores(state: State, current: Checkpoint): boolean {
     if (!oldStoresLeft(state)) { delete state.oldStoreTurns; return false }
     const turns = [...new Set([...state.oldStoreTurns ?? [], turnOf(current)])]
     state.oldStoreTurns = turns
-    if (turns.length < OLD_STORE_TURNS) return false
+    if (turns.length < settings.keepTurns) return false
+    // The count stays in the journal until the stores are gone, so a write after a crash or a failed move goes on to them.
     state.checkpoints = state.checkpoints.filter(record => !isOldRecord(record))
-    try {
-      for (const name of OLD_STORES) rmSync(join(input.directory, name), { recursive: true, force: true })
-      delete state.oldStoreTurns; oldStoresGone = true
-      logger.info(`History deleted the stores of its earlier engines after ${OLD_STORE_TURNS} turns of new checkpoints`)
-    } catch (error) { logger.warn('History could not delete the stores of its earlier engines; it tries again after the next write', { cause: causeOf(error) }) }
     return true
+  }
+  /**
+   * Once the journal no longer lists their checkpoints (X8): the old stores renamed into one folder beside them, under
+   * the lock, and that folder deleted in the background, so the call never waits on a recursive delete (M2). A move that
+   * fails leaves the rest, and the next write tries again.
+   */
+  function discardOldStores(): void {
+    const aside = join(input.directory, `${EXPIRED_PREFIX}${randomUUID()}`)
+    try {
+      mkdirSync(aside, { mode: 0o700 })
+      for (const name of OLD_STORES) if (lstatSync(join(input.directory, name), { throwIfNoEntry: false })) renameSync(join(input.directory, name), join(aside, name))
+      oldStoresGone = true
+      logger.info('History moved the stores of its earlier engines aside to delete them, as their checkpoints left the journal')
+    } catch (error) { logger.warn('History could not move the stores of its earlier engines aside; it tries again after the next write', { cause: causeOf(error) }) }
+    deleteExpired()
+  }
+  /** Deletes, off the call path, each folder of expired old stores, one a stopped node left included. */
+  function deleteExpired(): void {
+    let names: string[]
+    try { names = readdirSync(input.directory).filter(name => name.startsWith(EXPIRED_PREFIX)) } catch { return }
+    for (const name of names) {
+      const deletion = rm(join(input.directory, name), { recursive: true, force: true }).catch((error: unknown) => { logger.warn('History could not delete the stores of its earlier engines; it tries again when it next opens', { cause: causeOf(error) }) })
+      deletions.add(deletion); void deletion.finally(() => deletions.delete(deletion))
+    }
   }
   /** The bytes on disk of the content the restorable checkpoints among `records` name, each object once. */
   function heldBytes(records: Checkpoint[]): number {
@@ -549,7 +575,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }, { owner: true, ...options }),
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
-    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); await gc; await activity.close(); closed = true },
+    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); await gc; await Promise.all(deletions); await activity.close(); closed = true },
   }
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>

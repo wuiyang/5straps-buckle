@@ -1,9 +1,27 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
+
+// The journal's publication can be made to fail, and the background deletion of the expired stores held (X8, M2).
+const faults = vi.hoisted(() => ({ journal: false, hold: undefined as Promise<void> | undefined, held: [] as string[] }))
+vi.mock('../common/adapters/replace-file.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
+  return { ...actual, replaceFile: async (...args: Parameters<typeof actual.replaceFile>) => {
+    if (faults.journal && args[1].endsWith('checkpoints.json')) throw Object.assign(new Error('fixture journal write failed'), { code: 'ENOSPC' })
+    return actual.replaceFile(...args)
+  } }
+})
+vi.mock('node:fs/promises', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>()
+  const rm: typeof actual.rm = async (path, options) => {
+    if (faults.hold) { faults.held.push(String(path)); await faults.hold }
+    return actual.rm(path, options)
+  }
+  return { ...actual, rm, default: { ...actual, rm } }
+})
 
 // Slice F2, item 7: the stores written before the object store (the shadow git of 670f1dc2, and the SQLite history
 // before it) stay listable; a restore of a shadow-git checkpoint reads that store through permitted host git, and
@@ -13,6 +31,7 @@ const OLD_STORES = ['git', 'roots', 'git-private', 'history.sqlite']
 const roots: string[] = []
 const histories: Array<Awaited<ReturnType<typeof openChangeHistory>>> = []
 afterEach(async () => {
+  faults.journal = false; faults.hold = undefined; faults.held = []
   for (const history of histories.splice(0)) await history.close()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -69,28 +88,65 @@ it('refuses a shadow-git checkpoint\'s restore without permitted host git, namin
   expect(readFileSync(file, 'utf8')).toBe('made by the old engine')
 })
 
-for (const allowHostGit of [true, false]) it(`deletes the old stores once ten new turns follow them, host git ${allowHostGit ? 'on' : 'off'}, and lists their checkpoints until then`, async () => {
+// M3 (coordinator): the old stores outlive as many new turns as history.keepTurns keeps, not a fixed ten.
+for (const allowHostGit of [true, false]) it(`deletes the old stores once keepTurns new turns follow them, host git ${allowHostGit ? 'on' : 'off'}, and lists their checkpoints until then`, async () => {
   const { workspace, directory, file } = fixture()
   const old = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old engine') })
   const sqlite = await legacyStore(directory, workspace)
-  // Retention keeps more turns than ten here, so the old stores go by their own rule, not by retention.
-  const history = await open(directory, { allowHostGit, keepTurns: 20 })
-  for (let turn = 1; turn <= 9; turn++) { await write(history, file, `new-${turn}`, `turn ${turn}`); await write(history, file, `new-${turn}`, `turn ${turn} again`) }
+  const history = await open(directory, { allowHostGit, keepTurns: 12 })
+  for (let turn = 1; turn <= 11; turn++) { await write(history, file, `new-${turn}`, `turn ${turn}`); await write(history, file, `new-${turn}`, `turn ${turn} again`) }
   for (const name of ['git', 'git-private', 'history.sqlite']) expect(existsSync(join(directory, name))).toBe(true)
   expect((await history.list()).map(record => record.id)).toEqual(expect.arrayContaining([old.id, sqlite]))
-  await write(history, file, 'new-10', 'turn 10')
+  await write(history, file, 'new-12', 'turn 12')
   for (const name of OLD_STORES) expect(existsSync(join(directory, name))).toBe(false)
   const listed = await history.list()
   expect(listed.map(record => record.id)).not.toContain(old.id)
   expect(listed.map(record => record.id)).not.toContain(sqlite)
-  expect(listed).toHaveLength(19)
+  expect(listed).toHaveLength(23)
   expect(listed.every(record => record.restorable)).toBe(true)
   await history.restore(listed.at(-1)!.id)
-  expect(readFileSync(file, 'utf8')).toBe('turn 9 again')
+  expect(readFileSync(file, 'utf8')).toBe('turn 11 again')
   // The count of new turns goes with the stores, and a later write recreates none of them.
+  await write(history, file, 'new-13', 'turn 13')
   expect(JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8'))).not.toHaveProperty('oldStoreTurns')
-  await write(history, file, 'new-11', 'turn 11')
   for (const name of OLD_STORES) expect(existsSync(join(directory, name))).toBe(false)
+})
+
+// X8 of the Codex review of 670f1dc2..01d3b0c9: the journal publishes the old checkpoints' removal before their stores go,
+// so a journal that cannot save keeps both, and the next write expires them.
+it('keeps the old stores while the journal cannot publish their checkpoints\' removal, and expires them on the next write', async () => {
+  const { workspace, directory, file } = fixture()
+  const old = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old engine') })
+  const history = await open(directory, { allowHostGit: true, keepTurns: 2 })
+  await write(history, file, 'new-1', 'turn 1')
+  faults.journal = true
+  await write(history, file, 'new-2', 'turn 2')
+  faults.journal = false
+  expect(JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8')).checkpoints.map((record: { id: string }) => record.id)).toContain(old.id)
+  expect(existsSync(join(directory, 'git'))).toBe(true)
+  await write(history, file, 'new-3', 'turn 3')
+  expect(existsSync(join(directory, 'git'))).toBe(false)
+  expect((await history.list()).map(record => record.id)).not.toContain(old.id)
+})
+
+// M2 (coordinator): the write that expires the old stores renames them aside under the lock; their deletion runs after,
+// off the call path, so the call never waits on a recursive delete.
+it('renames the old stores aside as their checkpoints expire and deletes them in the background', async () => {
+  const { workspace, directory, file } = fixture()
+  await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old engine') })
+  await legacyStore(directory, workspace)
+  const history = await open(directory, { allowHostGit: false, keepTurns: 2 })
+  await write(history, file, 'new-1', 'turn 1')
+  let release!: () => void
+  faults.hold = new Promise(resolve => { release = resolve })
+  await write(history, file, 'new-2', 'turn 2')
+  for (const name of OLD_STORES) expect(existsSync(join(directory, name))).toBe(false)
+  const aside = readdirSync(directory).filter(name => name.startsWith('expired-'))
+  expect(aside).toHaveLength(1)
+  expect(readdirSync(join(directory, aside[0]!)).sort()).toEqual(['git', 'git-private', 'history.sqlite'])
+  expect(faults.held).toEqual([join(directory, aside[0]!)])
+  release()
+  await vi.waitFor(() => expect(readdirSync(directory).filter(name => name.startsWith('expired-'))).toEqual([]))
 })
 
 it('makes none of the old stores\' folders in a new history, for a file tool or a command', async () => {
