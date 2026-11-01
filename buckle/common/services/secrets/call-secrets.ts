@@ -3,7 +3,7 @@ import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { ExecEffect, ResolvedEffect } from '../../domain/effect.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import { MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
-import { ToolInputError, type FilledSecret, type PreparedCall, type ToolContext } from '../../domain/tool.js'
+import { ToolInputError, type FilledSecret, type FilledSecrets, type PreparedCall, type ToolContext } from '../../domain/tool.js'
 import { createMasker, holdMasker, type SecretValue } from './mask.js'
 import type { SecretPlace, SecretPlan } from './places.js'
 import { readSecretValues } from './secret-file.js'
@@ -27,14 +27,7 @@ interface ShellCall {
   tiers: ReadonlyMap<number, ShellTier>
 }
 
-/**
- * The values a workspace's browsers were handed by a fill or type, by file and NAME, as the browser pack records them
- * with its sessions (secretFills), so a later snapshot, `get value`, or `eval` that shows the page is masked too, in any
- * Buckle process on the workspace and after a restart: each browser call reads them again.
- */
-export interface FilledSecrets {
-  list(): readonly FilledSecret[]
-}
+export type { FilledSecrets }
 
 /**
  * The gate's check of a call's references (docs/secrets.md), before anyone is asked: for shell_exec and script_run's
@@ -89,16 +82,17 @@ export async function runWithSecrets(input: {
   // Close shows no page, so it runs though a value the browser holds no longer reads, and ends the hold that refused
   // every other call; it is masked by every value that still reads.
   const closing = browser !== null && input.args.command === 'close'
-  const masker = createMasker([...read.values(), ...browser ? readFilledValues(browser.list(), input, closing) : []])
+  const held = async () => browser ? readFilledValues(await browser.list({ context: input.context, args: input.args }), input, closing) : []
+  const masker = createMasker([...read.values(), ...await held()])
   const release = holdMasker(masker)
-  const answered = (output: JsonValue): JsonValue => {
+  const answered = async (output: JsonValue): Promise<JsonValue> => {
     const masked = masker.json(output)
     if (!browser) return masked
-    const late = createMasker(readFilledValues(browser.list(), input, closing))
+    const late = createMasker(await held())
     try { return late.json(masked) } finally { late.drop() }
   }
   try {
-    if (!checked) return answered(await input.execute(input.context))
+    if (!checked) return await answered(await input.execute(input.context))
     for (const place of checked.plan.places) for (const reference of place.references) checkValue(place, reference, values.get(referenceKey(reference))!, checked.shell?.tiers)
     const args = substitutedArguments(input.args, checked.plan.places, reference => values.get(referenceKey(reference))!)
     const prepared = input.prepare(args)
@@ -109,11 +103,11 @@ export async function runWithSecrets(input: {
     const fills: FilledSecret[] = fillPlaces.flatMap(place => place.references).map(reference => ({ real: checked.files.get(reference.path)!, written: reference.path, name: reference.name, digest: digestOf(values.get(referenceKey(reference))!) }))
     const headers = checked.plan.places.filter(place => place.kind === 'header').map(place => String(place.at[1]))
     input.script?.add([...checked.plan.files].flatMap(([written, names]) => names.map(name => ({ real: checked.files.get(written)!, written, name, value: values.get(secretKey(written, name))! }))))
-    return answered(await prepared.execute({ ...input.context, ...headers.length > 0 ? { secretHeaders: headers } : {}, ...fills.length > 0 ? { secretFills: fills } : {} }))
+    return await answered(await prepared.execute({ ...input.context, ...headers.length > 0 ? { secretHeaders: headers } : {}, ...fills.length > 0 ? { secretFills: fills } : {} }))
   } catch (error) {
     const masked = maskError(error, masker.text)
     if (!browser) throw masked
-    const late = createMasker(readFilledValues(browser.list(), input, closing))
+    const late = createMasker(await held())
     try { throw maskError(masked, late.text) } finally { late.drop() }
   } finally {
     release()

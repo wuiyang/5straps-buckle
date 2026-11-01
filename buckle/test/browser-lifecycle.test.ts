@@ -1,7 +1,8 @@
+import { spawnSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createPathView } from '../common/domain/path-view.js'
 import type { ToolContext } from '../common/domain/tool.js'
 import { createBrowserPack, type BrowserPackOptions } from '../common/services/packs/browser/index.js'
@@ -202,3 +203,119 @@ function writtenBy(sessionDirectory: string, pid: number): void {
   for (const record of Object.values(state.browsers ?? {})) record.writer = { pid, instance: 'another-process' }
   writeFileSync(file, JSON.stringify(state))
 }
+
+/** A pid no process holds: one that ran and ended. */
+function stoppedPid(): number {
+  return spawnSync(process.execPath, ['-e', '']).pid!
+}
+
+/** Rewrites the records the store holds, as another process, a stop, or the clock would have left them. */
+function rewrite(sessionDirectory: string, change: (record: Record<string, unknown>, name: string) => void): void {
+  const file = join(sessionDirectory, 'sessions.json')
+  const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, Record<string, unknown>> }
+  for (const [name, record] of Object.entries(state.browsers)) change(record, name)
+  writeFileSync(file, JSON.stringify(state))
+}
+
+describe('no browser outlives its session (F4 item 4)', () => {
+  it('ends at pack start every browser a stopped process left: a bare close, then its record goes', async () => {
+    const { browser, open, stored, sessionDirectory } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    await call(open(), { command: 'snapshot' }, { stageId: 'turn-2' })
+    const left = browser.alive()
+    rewrite(sessionDirectory, record => { record.writer = { pid: stoppedPid(), instance: 'stopped' } })
+    const restarted = open()
+    await vi.waitFor(() => expect(browser.alive()).toEqual([]))
+    expect(browser.calls.slice(2).map(request => [request.args[0], sessionOf(request)]).sort()).toEqual(left.map(name => ['close', name]).sort())
+    for (const request of browser.calls.slice(2)) for (const flag of LAUNCH_FLAGS) expect(request.args).not.toContain(flag)
+    await vi.waitFor(() => expect(stored().browsers).toEqual({}))
+    // The caller's next call starts a browser of its own, under a new name.
+    expect(await launchesOf(browser, () => call(restarted, { command: 'snapshot' }))).toBe(1)
+    expect(left).not.toContain(browser.alive()[0])
+  })
+
+  it('ends one a process of this pid wrote under an instance that no longer runs, as a pid can come back', async () => {
+    const { browser, open, sessionDirectory } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    rewrite(sessionDirectory, record => { record.writer = { pid: process.pid, instance: 'an-earlier-process' } })
+    open()
+    await vi.waitFor(() => expect(browser.alive()).toEqual([]))
+  })
+
+  it('leaves a live sibling\'s browser at start', async () => {
+    const { browser, open, sessionDirectory } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    writtenBy(sessionDirectory, process.ppid)
+    const pack = open()
+    await call(pack, { command: 'snapshot' }, { sessionId: 'other-agent' })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'snapshot'])
+    expect(browser.alive()).toHaveLength(2)
+  })
+
+  it('ends, before the next call, a browser whose last use is past its idle timeout, and launches nothing to close it', async () => {
+    const { browser, open, stored, sessionDirectory } = node({ idleTimeoutMs: 60_000, maxTimeoutMs: 60_000 })
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] }, { sessionId: 'idle-agent' })
+    const idle = sessionOf(browser.calls[0]!)
+    rewrite(sessionDirectory, (record) => { record.usedAt = Date.now() - 121_000 })
+    browser.idleOut()
+    expect(await launchesOf(browser, () => call(pack, { command: 'snapshot' }))).toBe(1)
+    expect(browser.calls.map(request => [request.args[0], sessionOf(request) === idle])).toEqual([['open', true], ['close', true], ['snapshot', false]])
+    expect(Object.keys(stored().browsers as object)).toEqual([sessionOf(browser.calls[2]!)])
+  })
+
+  it('keeps one still within its idle timeout and the longest call', async () => {
+    const { browser, open, sessionDirectory } = node({ idleTimeoutMs: 60_000, maxTimeoutMs: 60_000 })
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] }, { sessionId: 'busy-agent' })
+    rewrite(sessionDirectory, (record) => { record.usedAt = Date.now() - 110_000 })
+    await call(pack, { command: 'snapshot' })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'snapshot'])
+  })
+
+  it('closes at shutdown every browser this process wrote, a profile folder\'s included, and leaves a sibling\'s', async () => {
+    const profile = node({ mode: { kind: 'profile', directory: '/owner/profile' } })
+    const pack = profile.open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    await pack.close?.()
+    expect(profile.browser.calls.map(request => request.args[0])).toEqual(['open', 'close'])
+    expect(profile.browser.alive()).toEqual([])
+    expect(profile.stored().browsers).toEqual({})
+
+    const fresh = node()
+    const first = fresh.open()
+    await call(first, { command: 'open', args: ['https://app.example.test/'] })
+    writtenBy(fresh.sessionDirectory, process.ppid)
+    const second = fresh.open()
+    await call(second, { command: 'open', args: ['https://app.example.test/'] }, { sessionId: 'second-agent' })
+    await second.close?.()
+    expect(fresh.browser.alive()).toEqual([sessionOf(fresh.browser.calls[0]!)])
+  })
+
+  it('marks a browser whose close failed as closing, and the next start ends it', async () => {
+    const { browser, open, stored } = node()
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    const session = sessionOf(browser.calls[0]!)
+    const run = browser.run
+    browser.run = async request => request.args[0] === 'close' ? { ...result({ success: false }), exitCode: 1 } : run(request)
+    await pack.close?.()
+    expect((stored().browsers as Record<string, { closing?: boolean }>)[session]).toMatchObject({ closing: true })
+    browser.run = run
+    open()
+    await vi.waitFor(() => expect(stored().browsers).toEqual({}))
+    expect(browser.alive()).toEqual([])
+  })
+
+  it('ends the browsers an earlier Buckle recorded, at the first start after the upgrade', async () => {
+    const { browser, open, sessionDirectory, stored } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    const session = sessionOf(browser.calls[0]!)
+    const fingerprint = (stored().browsers as Record<string, { mode: string }>)[session]!.mode
+    const key = JSON.stringify(['fresh', fingerprint, 'mcp', 'default', 'default'])
+    writeFileSync(join(sessionDirectory, 'sessions.json'), JSON.stringify({ sessions: { [key]: session }, allowedDomains: { [key]: 'app.example.test' }, modes: { [key]: fingerprint }, writers: { [key]: process.pid } }))
+    open()
+    await vi.waitFor(() => expect(browser.alive()).toEqual([]))
+    expect(stored()).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+  })
+})

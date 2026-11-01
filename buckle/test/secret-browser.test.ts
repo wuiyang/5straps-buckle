@@ -1,10 +1,12 @@
-import { chmodSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
 // The secret-references slice, parts 5 and 6 (docs/secrets.md), through the browser pack: the value a fill enters is
 // handed to agent-browser as its text, and every later browser call that shows the page is masked by it, one that ran
@@ -34,7 +36,7 @@ afterEach(async () => {
 })
 
 /** A node with the stand-in agent-browser; `open` starts another Buckle process on the same workspace and state. */
-async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: () => Promise<BuckleRuntime> }> {
+async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: () => Promise<BuckleRuntime>; stop: () => void }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-browser-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -52,7 +54,14 @@ async function node(environment: Record<string, string> = {}): Promise<{ bin: st
     runtimes.push(opened)
     return opened
   }
-  return { bin, workspace, runtime: await open(), open }
+  // As a process that stopped without its close step leaves its records: written by a pid that no longer runs.
+  const stop = () => {
+    const file = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, { writer: unknown }> }
+    for (const record of Object.values(state.browsers)) record.writer = { pid: spawnSync(process.execPath, ['-e', '']).pid, instance: 'stopped' }
+    writeFileSync(file, JSON.stringify(state))
+  }
+  return { bin, workspace, runtime: await open(), open, stop }
 }
 
 let sequence = 0
@@ -87,28 +96,28 @@ describe('a filled page another Buckle process reaches', () => {
   const PROFILE = { BUCKLE_BROWSER_PROFILE: '<root>/profile' }
   const page = (response: InvokeResponse) => (response as { output?: { result?: { data?: { page?: string } } } }).output?.result?.data?.page
 
-  it('is masked in a process beside the one that filled it, and in one started after it stopped', async () => {
+  it('is masked in a process beside the one that filled it, which shares the profile folder\'s browser', async () => {
     const { runtime, open } = await node(PROFILE)
     expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })
     const beside = await open()
     const seen = [await browser(beside, { command: 'snapshot', args: [] })]
-    // The profile folder's browser outlives the process: closing it is the close command's alone.
+    // The process that filled it stops; the one beside it still shows the page.
     await runtime.closeSessions()
-    await beside.closeSessions()
-    const restarted = await open()
-    seen.push(await browser(restarted, { command: 'snapshot', args: [] }))
+    seen.push(await browser(beside, { command: 'snapshot', args: [] }))
     expect(seen.map(page)).toEqual([LABEL, LABEL])
     expect(JSON.stringify(seen)).not.toContain(TOKEN)
   })
 
-  it('is masked in a process that reaches the fresh browser a stopped one left running', async () => {
-    const { runtime, open } = await node()
+  // Slice F4, item 4: the owner's restart kept the hold, as the stopped process's browser and record stayed.
+  it.each([['a fresh browser', {}], ['a profile folder', PROFILE]])('in %s a stopped process left running ends at the next start, and the hold with it', async (_, settings) => {
+    const { workspace, runtime, open, stop } = await node(settings)
     expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] }, 'mcp')).toMatchObject({ outcome: 'ok' })
     // The first process stops without closing its browser, as a crash leaves it, and the next one names the same session.
+    stop()
     const next = await open()
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}-rotated\n`)
     const snapshot = await browser(next, { command: 'snapshot', args: [] }, 'mcp')
-    expect(page(snapshot)).toBe(LABEL)
-    expect(JSON.stringify(snapshot)).not.toContain(TOKEN)
+    expect(snapshot).toMatchObject({ outcome: 'ok', output: { result: { data: { page: '' } } } })
   })
 
   it('stays masked in an attached Chrome after close, which only disconnects, and after a restart', async () => {

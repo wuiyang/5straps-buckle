@@ -1,5 +1,5 @@
 import type { PackDescriptor } from '@5straps/protocol'
-import type { RegisteredTool } from './tool.js'
+import type { FilledSecrets, RegisteredTool } from './tool.js'
 import type { LoadedSkill } from './skill.js'
 
 export interface Pack {
@@ -19,6 +19,8 @@ export interface Pack {
   retire?(): void | Promise<void>
   /** The fs pack's alone: what runs fs_search_content here, ripgrep or Buckle's own walker, named in the manifest's limits. */
   searcher?: 'rg' | 'builtin'
+  /** The browser pack's alone: the values its browsers hold from secret references, which each browser call is masked by. */
+  filled?: FilledSecrets
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

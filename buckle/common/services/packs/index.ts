@@ -68,6 +68,8 @@ export interface BuiltinPackOptions {
   browserSettingNames?: BrowserSettingNames | undefined
   /** Which other workspace holds the profile folder or the attached Chrome, read at each browser call (Q10). */
   browserHeldBy?: () => string | null
+  /** The runtime that writes the browser's sessions, beside the process's pid (Slice F4, item 4); the process's own when absent. */
+  browserInstance?: string
   /** Whether a service runs this node, for the browser's restart hint. */
   serviceInstalled?: () => boolean
   allowHostGit?: boolean
@@ -186,6 +188,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.browserHeldBy ? { heldBy: options.browserHeldBy } : {}),
       ...(options.serviceInstalled ? { serviceInstalled: options.serviceInstalled } : {}),
       ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}),
+      ...(options.browserInstance ? { instance: options.browserInstance } : {}),
     }),
   ]
 

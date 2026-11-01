@@ -15,6 +15,16 @@ export interface FilledSecret {
   digest: string
 }
 
+/**
+ * The values a browser call is masked by, which its browser pack reads again at each call from what its browsers were
+ * filled with (docs/secrets.md), so a later snapshot, `get value`, or `eval` that shows the page is masked too, in any
+ * Buckle process on the workspace and after a restart. The call is its context and its arguments, which choose its
+ * browser. Answered once what a stopped process left is ended (Slice F4, item 4).
+ */
+export interface FilledSecrets {
+  list(call: { context: ToolContext; args: JsonObject }): Promise<readonly FilledSecret[]>
+}
+
 export interface ToolContext {
   requestId: string
   sessionId: string

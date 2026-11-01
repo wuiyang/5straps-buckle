@@ -306,7 +306,7 @@ describe('a browser fill', () => {
     const real = join(workspace, '.env.local')
     // What the browser pack records of each call's secretFills, as its sessions.json holds them.
     const held: FilledSecret[] = []
-    const filled = { list: () => held }
+    const filled = { list: async () => held }
     const seen: JsonObject[] = []
     const browserCall = (args: JsonObject, page: (args: JsonObject) => JsonValue) => {
       const planned = planSecrets({ tool: 'browser_command', pack: 'browser', args, enabled: true })
@@ -324,7 +324,7 @@ describe('a browser fill', () => {
     const filledPage = await browserCall({ command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] }, passed => ({ filled: (passed.args as string[])[1]! }))
     expect((seen[0]!.args as string[])[1]).toBe(TOKEN)
     expect(filledPage).toEqual({ filled: LABEL })
-    expect(filled.list()).toMatchObject([{ written: '.env.local', name: 'API_TOKEN' }])
+    expect(await filled.list()).toMatchObject([{ written: '.env.local', name: 'API_TOKEN' }])
     const snapshot = await browserCall({ command: 'snapshot', args: [] }, () => ({ result: `textbox "Token": ${TOKEN}`, eval: Buffer.from(TOKEN).toString('base64') }))
     expect(snapshot).toEqual({ result: `textbox "Token": ${LABEL}`, eval: LABEL })
   })

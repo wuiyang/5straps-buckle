@@ -407,10 +407,6 @@ describe('a pack replaced by one built from other settings', () => {
     expect(calls[1]!.args).toEqual(closeArgs(directory, session))
     expect(stored().sessions).toEqual([session])
     expect(stored().allowedDomains).toEqual(['example.com'])
-    // Nothing of the replaced pack is left to close: its close sends nothing and forgets nothing.
-    await replaced.close?.()
-    expect(calls).toHaveLength(2)
-    expect(stored().sessions).toEqual([session])
 
     const successor = build(['example.com', 'docs.example.com'])
     const answer = await successor.tools[0]!.prepare({ command: 'snapshot' }).execute(context) as { notice?: string }
@@ -427,18 +423,29 @@ describe('a pack replaced by one built from other settings', () => {
   })
 })
 
-// Every Buckle process on the node shares the one browser on a profile folder, so no process's exit may close it.
+// Every Buckle process on the node shares the one browser on a profile folder: the process that used it last closes it
+// at its shutdown, as no browser outlives its session (Slice F4, item 4), and one that did not leaves it running.
 describe('shutdown with a profile folder', () => {
-  it('sends nothing for the shared browser, which the close command and its idle timeout end', async () => {
+  it('closes the shared browser where this process used it last, and leaves it where a live sibling did', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-shutdown-'))
     const calls: ProcessRequest[] = []
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode: { kind: 'profile', directory: '/owner/profile' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
-    await pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    const build = (instance?: string) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], browser: { mode: { kind: 'profile', directory: '/owner/profile' } }, runProcess: async (request) => { calls.push(request); return stubResult() }, ...(instance ? { instance } : {}) })
+    const open = (pack: ReturnType<typeof build>) => pack.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute({ requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
+    const pack = build()
+    await open(pack)
+    const shared = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
     await pack.close?.()
-    expect(calls).toHaveLength(1)
-    expect(calls[0]!.args[0]).toBe('open')
-    // The store still names the shared session, so the next process finds it running.
-    expect(Object.keys(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')).browsers)).toEqual([calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]])
+    expect(calls.map(request => request.args)).toEqual([expect.arrayContaining(['open']), closeArgs(directory, shared)])
+
+    const first = build('first-runtime')
+    const second = build('second-runtime')
+    await open(first)
+    await open(second)
+    await first.close?.()
+    expect(calls).toHaveLength(4)
+    expect(Object.keys(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')).browsers)).toEqual([shared])
+    await second.close?.()
+    expect(calls.at(-1)!.args).toEqual(closeArgs(directory, shared))
     rmSync(directory, { recursive: true, force: true })
   })
 })

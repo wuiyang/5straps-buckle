@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
-import type { BrowserModeName } from './mode.js'
+import { DEFAULT_IDLE_TIMEOUT_MS, type BrowserModeName } from './mode.js'
 
 const FilledSchema = z.object({ real: z.string(), written: z.string(), name: z.string(), digest: z.string() })
 
@@ -26,6 +26,8 @@ const BrowserRecordSchema = z.object({
   writer: WriterSchema,
   /** When a call last took it, in milliseconds since the epoch. */
   usedAt: z.number(),
+  /** The idle timeout its daemon started with: a session unused for longer, and the longest call, has ended. */
+  idleTimeoutMs: z.number().int().positive(),
   closing: z.literal(true).optional(),
 })
 
@@ -84,12 +86,41 @@ export function keyOf(record: BrowserRecord): string {
 /** This Buckle process; a runtime passes its own instance, so two runtimes on one workspace in one process are told apart. */
 export const PROCESS_INSTANCE = randomUUID()
 
+/** The instances that run in this process: a runtime holds its own from its pack's start until its shutdown. */
+const liveInstances = new Set<string>([PROCESS_INSTANCE])
+
+export function holdInstance(instance: string): void {
+  liveInstances.add(instance)
+}
+
+export function releaseInstance(instance: string): void {
+  if (instance !== PROCESS_INSTANCE) liveInstances.delete(instance)
+}
+
 export function writerOf(instance: string): Writer {
   return { pid: process.pid, instance }
 }
 
 export function isWriter(record: BrowserRecord, me: Writer): boolean {
   return record.writer.pid === me.pid && record.writer.instance === me.instance
+}
+
+/** Whether the writer no longer runs: its process ended, or, on this pid, the instance is not one this process holds. */
+export function writerGone(writer: Writer): boolean {
+  return writer.pid === process.pid ? !liveInstances.has(writer.instance) : !processAlive(writer.pid)
+}
+
+/**
+ * Whether a session has ended by its idle timeout: unused for longer than that and the longest call, as its last use is
+ * when a call took it, and a call may run that long before the daemon's idle time starts.
+ */
+export function expired(record: BrowserRecord, now: number, longestCallMs: number): boolean {
+  return now - record.usedAt > record.idleTimeoutMs + longestCallMs
+}
+
+/** Whether a session is left with no one to end it: its writer stopped, or it outlived its idle timeout. */
+export function stranded(record: BrowserRecord, me: Writer, now: number, longestCallMs: number): boolean {
+  return (!isWriter(record, me) && writerGone(record.writer)) || expired(record, now, longestCallMs)
 }
 
 /**
@@ -106,9 +137,9 @@ export function processAlive(pid: number): boolean {
   }
 }
 
-/** Whether another live Buckle process wrote the record: its session is that process's to keep. */
+/** Whether another Buckle process, or runtime, still running wrote the record: its session is that one's to keep. */
 export function liveSibling(record: BrowserRecord, me: Writer): boolean {
-  return record.writer.pid !== me.pid && processAlive(record.writer.pid)
+  return !isWriter(record, me) && !writerGone(record.writer)
 }
 
 const KINDS = new Set<string>(['fresh', 'profile', 'attached'])
@@ -133,6 +164,7 @@ export function upgradeSessions(state: Sessions): void {
       ...(key in state.allowedDomains ? { allowedDomains: state.allowedDomains[key] ?? null } : {}),
       writer: { pid: state.writers[key] ?? 0, instance: '' },
       usedAt: 0,
+      idleTimeoutMs: DEFAULT_IDLE_TIMEOUT_MS,
     }
   }
   state.sessions = {}

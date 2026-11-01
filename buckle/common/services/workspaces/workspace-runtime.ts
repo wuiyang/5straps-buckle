@@ -11,6 +11,7 @@ import { collectShellHiddenPaths } from '../shell/shell-filesystem.js'
 import { createFilesystemPolicyRule, filesystemPathDecision, projectFilesystemSandbox, resolveFilesystemPermission } from '../../domain/filesystem-policy.js'
 import { createShellWorkspaceRecovery } from '../shell/isolated-shell.js'
 import { dirname, join } from 'pathe'
+import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync, watch, type FSWatcher } from 'node:fs'
 import { openChangeHistory, type ChangeHistory } from '../history/journal.js'
 import { mkdirSync } from 'node:fs'
@@ -29,7 +30,7 @@ import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/appr
 import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
 import type { DeletePolicy } from '../../domain/delete-policy.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
-import { ToolInputError } from '../../domain/tool.js'
+import { ToolInputError, type FilledSecrets } from '../../domain/tool.js'
 import { isToolAllowed } from '../../domain/tool-policy.js'
 import { createPermissionEngine, type PermissionEngine } from '../../domain/permission/engine.js'
 import { createCommandPolicyRule } from '../../domain/permission/rules/command-policy-rule.js'
@@ -64,7 +65,6 @@ import { resolveEffects } from '../invocation/resolve-effects.js'
 import type { PendingAsk } from '../approvals/approval-registry.js'
 import { createBuiltinPacks, unmetPackPrerequisite } from '../packs/index.js'
 import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allowed-domains.js'
-import { browserFilledSecrets } from '../packs/browser/index.js'
 import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
@@ -108,6 +108,8 @@ interface InForce {
   judge: JudgeGate
   /** The secret reference settings as the call found them (docs/secrets.md). */
   secrets: SecretSettings
+  /** What the browser pack the call runs on holds from secret references, which a browser call is masked by. */
+  filledSecrets: FilledSecrets | undefined
 }
 
 /** A waiting ask the decision AI rated at its owner's request, or why it rated nothing. */
@@ -397,7 +399,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
   const browserHeldBy = input.browserHeldBy
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy })
+  // Which runtime writes the browser's sessions, beside the pid, so a session a runtime left is told from a live one's.
+  const browserInstance = randomUUID()
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -406,9 +410,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
   const activity = createActiveWorkMark({ directory: activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), workspaceId })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
-  // The values this workspace's browsers were filled with, by file and NAME, as its browser packs record them beside
-  // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/secrets.md).
-  const filledSecrets = browserFilledSecrets(browserStateDirectory)
   const executions = createExecutions({ budget: executionBudget })
   // What each session read or wrote lately, in memory alone, for the destructive-write check: a restart forgets it.
   const sessionReads = createSessionReads()
@@ -669,7 +670,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowLevel })
-    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy }) : null
+    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
@@ -696,7 +697,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const policy = compiled.policy
     const packView = packs.map(packDescriptor)
     const features = { enabledPacks: config.enabledPacks, enableShell: config.enableShell, allowCode: config.allowCode, allowHistory: config.allowHistory, allowHostGit: config.allowHostGit, allowHostLsp: config.allowHostLsp }
-    return { toolPolicy: policy, unavailableTool: tool => unavailableToolReason({ tool, workspaceId, packs: packView, config: features }), registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true } }
+    // The values this workspace's browsers were filled with, by file and NAME, as its browser packs record them beside
+    // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/secrets.md).
+    const filledSecrets = packs.find(pack => pack.id === BROWSER_PACK)?.filled
+    return { toolPolicy: policy, unavailableTool: tool => unavailableToolReason({ tool, workspaceId, packs: packView, config: features }), registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true }, filledSecrets }
   }
 
   /**
@@ -752,7 +756,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         toolPolicy: settled.toolPolicy,
         judge: settled.judge,
         secrets: settled.secrets,
-        filledSecrets,
+        ...(settled.filledSecrets ? { filledSecrets: settled.filledSecrets } : {}),
         protectedRoots: protectedStateRoots(config),
         reads: sessionReads,
         shutdown: stopping.signal,
@@ -840,6 +844,7 @@ async function buildPacks(input: {
   untrusted: () => UntrustedRoots
   reachableTools: () => ToolCapability[]
   browserHeldBy?: (() => string | null) | undefined
+  browserInstance: string
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -867,6 +872,7 @@ async function buildPacks(input: {
     browserIdleTimeoutMs: input.config.browserIdleTimeoutMs,
     browserSettingNames: input.config.browserSettingNames,
     ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
+    browserInstance: input.browserInstance,
     serviceInstalled: () => serviceInstalled(input.config.nodeStateDirectory ?? input.config.stateDirectory),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
