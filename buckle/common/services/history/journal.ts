@@ -4,7 +4,7 @@ import type { ChangeKind, RestoreTarget } from '../../domain/effect.js'
 import { isInside, parentDirectory } from '../../domain/paths.js'
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { rm } from 'node:fs/promises'
+import { readdir, rm } from 'node:fs/promises'
 import { join } from 'pathe'
 import { z } from 'zod'
 import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
@@ -89,6 +89,8 @@ const GC_INTERVAL_MS = 3_600_000
  */
 const SWEEP_SLICE_MS = 25
 const SWEEP_GAP_MS = 50
+/** A journal write's temporary beside the journal, which a stopped write leaves. */
+const JOURNAL_TEMPORARY = /^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/
 /** How soon a copy of the owner objects the shadow-git store borrows is tried again after one fails (R1.4). */
 const MATERIALIZE_RETRY_MS = 60_000
 
@@ -386,43 +388,60 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     sweepTimer.unref()
   }
   /**
-   * The background sweep (V3): a call that comes while it runs waits for the lock one slice at most, however large the store.
-   * One short hold removes what background records and journal writes left and reads what checkpoints name; what the shadow
-   * indexes name is read without the lock, with the state of the journal and the indexes it came from; the store is listed
-   * without it. Then each slice takes the lock, checks that state is unchanged and nothing is between its phases, and
-   * removes for SWEEP_SLICE_MS. A state changed since asks for a sweep read afresh.
+   * The background sweep (V3): no hold it takes runs past SWEEP_SLICE_MS by more than one removal, however large the store,
+   * so a call that comes waits that long at most. What to keep and what to remove is read without the lock (sweepPlan).
+   * Each slice takes the lock only if it is free, its time counted from that ask, so the lock's own upkeep counts too. It
+   * checks, with a stat of the journal and of each path the plan named for the indexes and markers, that all stand as the
+   * plan read them, and that no command here is between its phases and no record of its own runs; it tidies what records
+   * left; and it removes temporaries, then objects, until its time ends. A state changed since asks for a sweep read afresh.
    */
   async function sweepInSlices(): Promise<void> {
-    const start = await locked(async () => {
-      if (!sweepable()) return undefined
-      commands.tidyLeftovers(); removeJournalTemporaries()
-      const named = namedObjects(read().checkpoints)
-      return { named, journal: identity(file) }
-    }, { immediate: true })
-    if (!start) return
-    const indexes = commands.indexState()
-    const indexed = commands.indexed()
-    if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
-    if (commands.indexState() !== indexes) { sweepAgain = true; return }
-    const listed = await objects.listing()
-    const ids = listed.ids.filter(id => !start.named.has(id) && !indexed.has(id))
-    let temporaries = listed.temporaries
+    const plan = await sweepPlan()
+    if (!plan) return
     let next = 0
     let refused: unknown
-    while (!closing.signal.aborted && (next < ids.length || temporaries.length)) {
+    const left = () => plan.temporaries.length > 0 || next < plan.ids.length
+    // One slice at least, which tries again what records left that the system would not remove (V1).
+    for (let first = true; !closing.signal.aborted && (first || left()); first = false) {
+      const until = performance.now() + SWEEP_SLICE_MS
       const unchanged = await locked(async () => {
-        if (!sweepable() || identity(file) !== start.journal || commands.indexState() !== indexes) return false
+        if (baselines.size || commands.recording() || identity(file) !== plan.journal || commands.indexState(plan.paths) !== plan.indexes) return false
+        // What tidy removes, under the lock this slice holds, only takes from what an index names: the state it leaves is the one to check next.
+        if (commands.tidyLeftovers(until)) plan.indexes = commands.indexState(plan.paths)
         // No write is in flight under the lock while no background record runs, so each temporary is a stopped one's (X6).
-        for (const path of temporaries) try { rmSync(path, { force: true }) } catch (error) { refused ??= error }
-        temporaries = []
-        const removed = removeObjects(ids, next, performance.now() + SWEEP_SLICE_MS)
+        while (plan.temporaries.length && performance.now() < until) {
+          try { rmSync(plan.temporaries.pop()!, { force: true }) } catch (error) { refused ??= error }
+        }
+        const removed = removeObjects(plan.ids, next, until)
         next = removed.next; refused ??= removed.refused
         return true
       }, { immediate: true })
       if (!unchanged) { sweepAgain = true; break }
-      if (next < ids.length) await new Promise(resolve => setTimeout(resolve, SWEEP_GAP_MS))
+      if (left()) await new Promise(resolve => setTimeout(resolve, SWEEP_GAP_MS))
     }
     if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
+  }
+  /**
+   * What a background sweep removes, all read without the lock (V3). First the journal's identity and the paths of every
+   * index and marker with theirs, so a slice tells any change made after; then, where no command here is between its
+   * phases and no live record writes, what checkpoints and indexes name, the stored objects nothing names, and the
+   * temporaries of the store and the journal. undefined where nothing may go now, or a journal or an index does not read,
+   * so nothing is swept on a guess.
+   */
+  async function sweepPlan(): Promise<{ journal: string | undefined; paths: string[]; indexes: string; ids: string[]; temporaries: string[] } | undefined> {
+    const journalKey = identity(file)
+    const paths = commands.indexPaths()
+    const indexes = commands.indexState(paths)
+    if (!sweepable()) return undefined
+    const state = read()
+    // A journal read validates into its cache; one that did not is left whole for the call that moves it aside (M1).
+    if (journalKey !== undefined && journal?.key !== journalKey) return undefined
+    const indexed = commands.indexed()
+    if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return undefined }
+    const named = namedObjects(state.checkpoints)
+    const listed = await objects.listing()
+    const journals = (await readdir(input.directory)).filter(name => JOURNAL_TEMPORARY.test(name)).map(name => join(input.directory, name))
+    return { journal: journalKey, paths, indexes, ids: listed.ids.filter(id => !named.has(id) && !indexed.has(id)), temporaries: [...listed.temporaries, ...journals] }
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -578,7 +597,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function sweepable(): boolean { return !baselines.size && !commands.warming() }
   /** The temporaries a stopped journal write left; only the lock's holder sweeps, so none is in flight. */
   function removeJournalTemporaries(): void {
-    for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
+    for (const name of readdirSync(input.directory)) if (JOURNAL_TEMPORARY.test(name)) rmSync(join(input.directory, name), { force: true })
   }
   /**
    * Removes `ids` from `from` on, until `until` passes: a removal the system refuses, as Windows does while another handle

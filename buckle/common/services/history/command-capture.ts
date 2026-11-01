@@ -272,8 +272,18 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     if (!leftovers.has(root)) logger.warn('History could not remove what a background record left; it tries again before the next sweep', { code: systemCode(refused) ?? 'unknown' })
     leftovers.add(root)
   }
-  /** What background records left that the system refused to remove, tried again where none runs (V1). */
-  function tidyLeftovers(): void { for (const root of leftovers) if (!warming.has(root)) tidy(root) }
+  /**
+   * What background records left that the system refused to remove, tried again where none runs (V1), one root at a time
+   * until `until` passes (V3). Answers whether it tried any.
+   */
+  function tidyLeftovers(until = Infinity): boolean {
+    let tried = false
+    for (const root of leftovers) {
+      if (performance.now() >= until) break
+      if (!warming.has(root)) { tidy(root); tried = true }
+    }
+    return tried
+  }
 
   /** Stops every first record this process takes in the background; each removes what it made as it ends. */
   function stopWarming(): void { for (const stop of warming.values()) stop.abort(new Error('History stopped its background record')) }
@@ -402,13 +412,18 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
-   * The identity on disk of every shadow index and side index, which changes as any is written, made, or removed: the state
-   * a sweep in slices read what to keep from, checked again under the lock before each slice (V3).
+   * The paths whose identity on disk changes as any shadow index, side index, or marker is written, made, or removed: the
+   * folder that holds each root's, which a new root changes, and each root's three files. Listed without the lock (V3).
    */
-  function indexState(): string {
+  function indexPaths(): string[] {
     const names = readdirNames(folder).filter(name => /^[0-9a-f]{24}$/.test(name)).sort()
-    return names.map(name => [name, ...['index', WARM_INDEX].map(file => fileIdentity(join(folder, name, file)) ?? '-')].join(',')).join('|')
+    return [folder, ...names.flatMap(name => ['index', WARM_INDEX, WARM_MARKER].map(file => join(folder, name, file)))]
   }
+  /**
+   * Those paths' identity on disk, from a stat of each and nothing else: the state a sweep in slices read what to keep
+   * from, checked again under the lock before each slice, with no listing and no read there (V3).
+   */
+  function indexState(paths: string[]): string { return paths.map(pathIdentity).join('|') }
 
   /** Whether a first record is being taken in the background, by this instance or by a live other one (W2, V2). */
   function warmingAny(): boolean {
@@ -418,7 +433,12 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return names.some(name => /^[0-9a-f]{24}$/.test(name) && liveMarker(join(folder, name)))
   }
 
-  return { baseline, changes, indexed, indexState, warm, stopWarming, tidyLeftovers, warming: warmingAny, available: (roots: string[]) => program(roots) !== null }
+  return {
+    baseline, changes, indexed, indexPaths, indexState, warm, stopWarming, tidyLeftovers, warming: warmingAny,
+    /** Whether this instance takes a first record in the background now, from its own state alone, with no read (V3). */
+    recording: () => warming.size > 0,
+    available: (roots: string[]) => program(roots) !== null,
+  }
 }
 
 /**
@@ -611,8 +631,14 @@ function systemCode(error: unknown): string | undefined {
 /** A file's identity on disk, so a swap can tell the index it copied from one written since. */
 function fileIdentity(path: string): string | undefined {
   const stat = inspect(path)
-  return stat?.isFile() ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` : undefined
+  return stat?.isFile() ? statIdentity(stat) : undefined
 }
+/** A path's identity on disk, a folder's too, `-` for none: one stat (V3). */
+function pathIdentity(path: string): string {
+  const stat = inspect(path)
+  return stat ? statIdentity(stat) : '-'
+}
+function statIdentity(stat: Stats): string { return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` }
 
 function isExit(error: unknown, code: number): boolean {
   return error instanceof Error && 'details' in error && typeof error.details === 'object' && error.details !== null && 'exitCode' in error.details && error.details.exitCode === code
