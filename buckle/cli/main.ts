@@ -32,6 +32,7 @@ import { watchApprovals } from './approvals-watch.js'
 import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable, USAGE as CHECK_URL_USAGE } from './check-url.js'
 import { workspaceRegistryCommand, USAGE as WORKSPACE_USAGE } from './workspace.js'
 import { historyCommand, USAGE as HISTORY_USAGE } from './history.js'
+import { browserCloseCommand, isBrowserClose, USAGE as BROWSER_CLOSE_USAGE } from './browser.js'
 import { asksForHelp } from './help-request.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
@@ -83,6 +84,8 @@ export function answerWithoutConfiguration(argv: string[]): CliResult | null {
   // A help request on an owner's command is answered here, before any workspace is found or any entry is written to the log.
   const usage = COMMAND_USAGE.get(command)
   if (usage !== undefined && (asksForHelp(rest) || (rest[0] === 'help' && HELP_WORD_COMMANDS.includes(command)))) return printCommandUsage(usage)
+  // `buckle browser` runs the browser's tools; only its `close` is the owner's own command.
+  if (isBrowserClose(command, rest) && asksForHelp(rest)) return printCommandUsage(BROWSER_CLOSE_USAGE)
   return null
 }
 
@@ -188,7 +191,8 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
   let runtime: BuckleRuntime
   try {
     const id = workspaces.target({ ...input.target, cwd: input.cwd })
-    runtime = (await workspaces.resolve(id, { setup: command === 'policy' })).runtime
+    // A workspace taken offline may still have browsers its agents left, which buckle browser close ends.
+    runtime = (await workspaces.resolve(id, { setup: command === 'policy' || isBrowserClose(command, input.rest) })).runtime
   } catch (error) {
     // A node whose state cannot be read reports no verdict; a workspace that was not named, or is not served, is a refusal like any other (fix brief 4, finding 31).
     if (command === 'check-url' && !(error instanceof WorkspaceError)) return checkUrlUnreadable(error)
@@ -259,10 +263,11 @@ async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: Works
   const { runtime, workspaces, command } = input
   const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, confirm: input.confirm }
   try {
-    if (!AUDITED_COMMANDS.includes(command)) return await dispatchRuntimeCommand(context)
+    const browserClose = isBrowserClose(command, input.rest)
+    if (!AUDITED_COMMANDS.includes(command) && !browserClose) return await dispatchRuntimeCommand(context)
     // A check that answers denied or asks has still succeeded; only bad input failed.
     const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
-    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
+    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: browserClose ? 'cli_browser_close' : `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
       operation: () => dispatchRuntimeCommand(context),
     })
   } finally {
@@ -276,6 +281,7 @@ interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager;
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
+  if (isBrowserClose(command, rest)) return reportWorkspaceErrors(() => browserCloseCommand(runtime, rest))
   if (!OWNER_COMMANDS.includes(command)) return command === 'call' ? callByName(runtime, rest) : callByCommand(runtime, command, rest)
   if (command === 'tools') return printTools(runtime)
   if (command === 'manifest') return print(runtime.manifest())
@@ -347,6 +353,8 @@ function printUsage(): CliResult {
   buckle workspaces list | inspect <id> | publish <id> | discard <id> | prune
   buckle history list [--last <n>] | restore <id> | restore-stage <stage> <session> | recover <id> | prune
                                    The change history; --last shows n checkpoints back from the current one
+  buckle browser close [--workspace <name>]   End every browser the workspace's agents left open, and the
+                                   secret values their pages hold
   buckle log [--limit N] [--json]    Show what this node actually did
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | ...

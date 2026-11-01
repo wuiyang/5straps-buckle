@@ -3,7 +3,8 @@ import type { JsonFileStore } from '../../../adapters/json-file-store.js'
 import { ToolInputError, type FilledSecret } from '../../../domain/tool.js'
 import { logger } from '../../../runtime/log.js'
 import type { BrowserModeName } from './mode.js'
-import { isWriter, keyOf, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Sessions, type Writer } from './sessions.js'
+import type { BrowserCloseCounts } from '../../../domain/pack.js'
+import { filledKey, isWriter, keyOf, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Sessions, type Writer } from './sessions.js'
 
 /** Who a call is for, and what its browser is started with, which a session it takes must have been started under. */
 export interface CallScope {
@@ -237,6 +238,23 @@ export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
   const closed = await closeEach(lifecycle, names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session did not close at shutdown; the next start ends it')
   await settleClaims(lifecycle, closed)
+}
+
+/**
+ * The owner's buckle browser close (Slice F4, item 6): under the sessions lock, held all through, so no call starts a
+ * browser meanwhile, every recorded session is closed, a live sibling's too, with a bare close in parallel under one
+ * bound; then every record and every hold is forgotten, an attached Chrome's included, whether its close went or not.
+ */
+export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts> {
+  return lifecycle.store.update(async (state) => {
+    upgradeSessions(state)
+    const names = Object.keys(state.browsers)
+    const held = new Set([...state.attached ?? [], ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(filledKey)).size
+    const closed = await closeEach(lifecycle, names)
+    state.browsers = {}
+    delete state.attached
+    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held }
+  })
 }
 
 /** Records how each claimed close went: a closed session is forgotten, one that did not close stays marked closing. */

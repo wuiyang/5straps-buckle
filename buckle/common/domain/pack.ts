@@ -21,6 +21,18 @@ export interface Pack {
   searcher?: 'rg' | 'builtin'
   /** The browser pack's alone: the values its browsers hold from secret references, which each browser call is masked by. */
   filled?: FilledSecrets
+  /**
+   * The browser pack's alone, for the owner's buckle browser close (Slice F4, item 6): closes every browser the
+   * workspace recorded, in any Buckle process, and forgets every record and every hold.
+   */
+  closeBrowsers?(): Promise<BrowserCloseCounts>
+}
+
+/** What buckle browser close ended: the browsers recorded, how many of them closed, and the held values dropped. */
+export interface BrowserCloseCounts {
+  browsers: number
+  closed: number
+  held: number
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

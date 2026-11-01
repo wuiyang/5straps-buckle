@@ -388,3 +388,62 @@ describe('the hold a fill leaves, per browser (F4 item 5)', () => {
     expect(browser.alive()).toEqual([])
   })
 })
+
+describe('the owner\'s buckle browser close (F4 item 6)', () => {
+  it('closes every recorded browser of the workspace, a live sibling\'s and one a close failed for included, and forgets every record and hold', async () => {
+    const { browser, open, sessionDirectory, stored } = node()
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'second-agent', ...FILL })
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] }, { sessionId: 'sibling-agent' })
+    rewrite(sessionDirectory, (record) => {
+      if (record.caller === 'sibling-agent') record.writer = { pid: process.ppid, instance: 'live-sibling' }
+      if (record.caller === 'mcp') record.closing = true
+    })
+    const file = join(sessionDirectory, 'sessions.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), attached: [{ ...FILL.secretFills[0], name: 'CHROME_PASSWORD' }] }))
+    const before = browser.alive()
+    const counts = await pack.closeBrowsers!()
+    expect(counts).toEqual({ browsers: 3, closed: 3, held: 2 })
+    expect(browser.calls.slice(3).map(request => sessionOf(request)).sort()).toEqual([...before].sort())
+    for (const request of browser.calls.slice(3)) expect(request.args).toEqual(['close', '--json', '--config', join(sessionDirectory, 'fresh-config.json'), '--session', sessionOf(request)])
+    expect(browser.alive()).toEqual([])
+    expect(stored()).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    expect(await heldFor(pack, { sessionId: 'second-agent' })).toEqual([])
+  })
+
+  it('closes them in parallel under one bound, holding the sessions lock, so no call starts a browser meanwhile', async () => {
+    const { browser, open } = node()
+    const pack = open()
+    for (const agent of ['a', 'b', 'c']) await call(pack, { command: 'open', args: ['https://app.example.test/'] }, { sessionId: agent })
+    const run = browser.run
+    let inFlight = 0
+    let most = 0
+    browser.run = async (request) => {
+      if (request.args[0] !== 'close') return run(request)
+      inFlight++
+      most = Math.max(most, inFlight)
+      await new Promise(resolve => setTimeout(resolve, 150))
+      inFlight--
+      return run(request)
+    }
+    const closing = pack.closeBrowsers!()
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const later = call(pack, { command: 'snapshot' }, { sessionId: 'a' })
+    expect(await closing).toEqual({ browsers: 3, closed: 3, held: 0 })
+    await later
+    expect(most).toBe(3)
+    expect(browser.calls.at(-1)!.args[0]).toBe('snapshot')
+    expect(browser.alive()).toEqual([sessionOf(browser.calls.at(-1)!)])
+  })
+
+  it('forgets a browser whose close failed too, and counts it', async () => {
+    const { browser, open, stored } = node()
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    const run = browser.run
+    browser.run = async request => request.args[0] === 'close' ? { ...result({ success: false }), exitCode: 1 } : run(request)
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 1, closed: 0, held: 0 })
+    expect(stored().browsers).toEqual({})
+  })
+})

@@ -16,7 +16,7 @@ import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedF
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
-import { claimCaller, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
+import { claimCaller, closeAll, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
 import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
 
 const PACK_ID = 'browser'
@@ -198,6 +198,11 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       const names = [...opened]
       opened.clear()
       await retireSessions(lifecycle, names)
+    },
+    closeBrowsers: async () => {
+      await started
+      opened.clear()
+      return closeAll(lifecycle)
     },
     tools: [
       defineTool(PACK_ID, {
@@ -429,6 +434,7 @@ function browserEnvironment(options: BrowserPackOptions): NodeJS.ProcessEnv {
  * only disconnects from an attached one. Whether it closed; one that did not stays marked closing, for the next start.
  */
 async function closeSession(options: BrowserPackOptions, session: string, signal: AbortSignal): Promise<boolean> {
+  if (options.agentBrowser.path === null) return false
   const program = browserProgram(options)
   const result = await options.runProcess({
     command: program.path,

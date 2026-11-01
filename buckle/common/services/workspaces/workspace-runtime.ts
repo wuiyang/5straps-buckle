@@ -27,7 +27,7 @@ import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, g
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
 import { createMemoryNonceClaims, openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
-import { availableSkills, availableTools, packDescriptor, type Pack } from '../../domain/pack.js'
+import { availableSkills, availableTools, packDescriptor, type BrowserCloseCounts, type Pack } from '../../domain/pack.js'
 import type { DeletePolicy } from '../../domain/delete-policy.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
 import { ToolInputError, type FilledSecrets } from '../../domain/tool.js'
@@ -242,6 +242,11 @@ export interface BuckleRuntime {
   cancelInvocations(): Promise<void>
   /** Shutdown's language servers and browser sessions step: each pack closes what it opened. */
   closeSessions(): Promise<void>
+  /**
+   * The owner's buckle browser close (Slice F4, item 6): every browser the workspace recorded, in any Buckle process,
+   * closed, and every record and hold forgotten. Refused where the workspace's packs leave the browser out.
+   */
+  closeBrowsers(): Promise<BrowserCloseCounts>
   reload(): Promise<void>
   /** Shutdown's watcher step: closes the settings-folder watcher (Q2). Idempotent. */
   closeWatchers(): void
@@ -577,6 +582,12 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     closeSessions: () => closePacks([...packs, ...retiring.splice(0)]),
+
+    async closeBrowsers() {
+      const browser = packs.find(pack => pack.id === BROWSER_PACK)?.closeBrowsers
+      if (!browser) throw new WorkspaceError(`The browser pack is off in workspace ${config.serverName}, as its packs.enabled leaves it out, so none of its browsers runs`, 409)
+      return browser()
+    },
 
     /** The owner's own write (a policy, a plugin): every pack rebuilt from workspace.json as it stands, with no wait. */
     async reload() {
