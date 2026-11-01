@@ -30,13 +30,16 @@ async function node() {
   const failClose = join(root, 'fail-close')
   writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs')\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nif (process.argv[2] === 'close' && fs.existsSync(${JSON.stringify(failClose)})) process.exit(1)\nprocess.stdout.write('{"success":true,"data":{}}')\n`)
   chmodSync(binary, 0o755)
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
+  const environment = { BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary }
+  const config = configFromEnvironment(environment)
+  // The same node with other settings in force, as the owner's change to them leaves it.
+  const configWith = (changed: Record<string, string>) => configFromEnvironment({ ...environment, ...changed })
   // The running node: its runtime stays open, its browsers recorded.
   const running = await createRuntime({ config })
   runtimes.push(running)
   const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
   const sessions = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
-  return { config, running, calls, sessions, workspace, failClose }
+  return { config, configWith, running, calls, sessions, workspace, failClose }
 }
 
 async function owner(input: { config: ReturnType<typeof configFromEnvironment>; argv: string[]; cwd?: string }) {
@@ -92,6 +95,17 @@ describe('buckle browser close', () => {
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
     expect((await browserCloseCommand(runtime, ['close'])).exitCode).toBe(1)
     expect(out).toBe('No browser of workspace site was recorded open; dropped 0 held secret values. 1 held secret value stays. An attached Chrome keeps its pages through a close, so what it was filled with stays held until this command, run while the workspace attaches to that Chrome, finds it closed: close every window of it, then run this command again.\n')
+  })
+
+  // Codex review L7: a workspace whose packs.enabled leaves the browser out now still has the browsers it recorded.
+  it('ends the browsers a workspace recorded once its packs.enabled leaves the browser pack out', async () => {
+    const { configWith, running, calls, sessions } = await node()
+    expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'open', tool: 'browser_command', args: { command: 'open', args: ['https://example.test/'] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
+    const opened = sessionOf(calls()[0]!)
+    const name = running.workspaceName()
+    expect(await owner({ config: configWith({ BUCKLE_PACKS: 'fs' }), argv: ['browser', 'close', '--workspace', name] })).toMatchObject({ exitCode: 0, out: `Closed 1 of 1 browser of workspace ${name}, and dropped 0 held secret values.\n` })
+    expect(calls().slice(1).map(call => [call[0], sessionOf(call)])).toEqual([['close', opened]])
+    expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
   })
 
   it('acts on the workspace holding the current directory, and says so where nothing was open', async () => {

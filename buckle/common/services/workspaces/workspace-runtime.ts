@@ -407,7 +407,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Which runtime writes the browser's sessions, beside the pid, so a session a runtime left is told from a live one's.
   const browserInstance = randomUUID()
   const workspaceName = () => config.serverName
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName })
+  const initial = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName })
+  let packs = initial.packs
+  // The browser pack packs.enabled leaves out, kept for the owner's buckle browser close and this runtime's shutdown
+  // alone, as the browsers the workspace recorded outlive the setting that turned the pack off (Codex review L7).
+  let offBrowser = initial.offBrowser
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -582,12 +586,12 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       await Promise.allSettled([...inFlight])
     },
 
-    closeSessions: () => closePacks([...packs, ...retiring.splice(0)]),
+    closeSessions: () => closePacks([...packs, ...retiring.splice(0), ...(offBrowser ? [offBrowser] : [])]),
 
     async closeBrowsers() {
-      const browser = packs.find(pack => pack.id === BROWSER_PACK)?.closeBrowsers
-      if (!browser) throw new WorkspaceError(`The browser pack is off in workspace ${config.serverName}, as its packs.enabled leaves it out, so none of its browsers runs`, 409)
-      return browser()
+      const browser = packs.find(pack => pack.id === BROWSER_PACK) ?? offBrowser
+      if (!browser?.closeBrowsers) throw new WorkspaceError(`Workspace ${config.serverName} has no browser pack, so it recorded no browsers`, 409)
+      return browser.closeBrowsers()
     },
 
     /** The owner's own write (a policy, a plugin): every pack rebuilt from workspace.json as it stands, with no wait. */
@@ -683,7 +687,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowLevel })
     const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName }) : null
-    const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
+    const next = built ? carryPacks({ built: built.packs, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
     if (policyMoved) await judgeCache.clear().catch((error: unknown) => { logger.warn('The decision AI\'s kept verdicts could not be cleared after a policy change', { workspaceId, error }) })
@@ -698,6 +702,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     permissions = nextPermissions
     if (next) {
       packs = next.packs
+      offBrowser = built?.offBrowser
       registry = createToolRegistry(availableTools(packs))
       await retire(next.replaced)
     }
@@ -859,7 +864,7 @@ async function buildPacks(input: {
   browserInstance: string
   /** The workspace's name as the runtime holds it, which a rename changes in place. */
   workspaceName: () => string
-}): Promise<Pack[]> {
+}): Promise<{ packs: Pack[]; offBrowser?: Pack }> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
     paths: input.paths,
@@ -911,10 +916,11 @@ async function buildPacks(input: {
       const named = unknown.map(id => { const reason = unmetPackPrerequisite(id, input.config); return reason ? `${id} (${reason})` : id })
       throw new Error(`The workspace's packs.enabled names packs this node cannot build: ${named.join(', ')}`)
     }
-    return builtin.filter(pack => selected.includes(pack.id))
+    const offBrowser = selected.includes(BROWSER_PACK) ? undefined : builtin.find(pack => pack.id === BROWSER_PACK)
+    return { packs: builtin.filter(pack => selected.includes(pack.id)), ...(offBrowser ? { offBrowser } : {}) }
   }
   const filesystemRestricted = Boolean(input.compiled.policy.filesystem?.rules.length)
-  return [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())]
+  return { packs: [...builtin, ...(filesystemRestricted ? [] : await input.plugins.load())] }
 }
 
 /** The compiled policy as workbenches record it, so a change to it stops their terminals and nothing else does. */
