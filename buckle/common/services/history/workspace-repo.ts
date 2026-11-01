@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative, resolve } from 'pathe'
+import { dirname, isAbsolute, join, relative } from 'pathe'
 import { openNoFollow } from '../../adapters/beneath.js'
 
 /**
  * Slice F3 (owner question X6): a command's folder that lies in a git repository with a commit refers to that
- * repository's objects instead of copying them. These are the pure parts: the repository's index read, the seed written
- * from it, git's object listings read, and the record that names the repository a shadow index refers to.
+ * repository's objects instead of copying them. These are the pure parts: whether a repository may be referred to, its
+ * index read, the seed written from it, git's object listings read, and the record that names the repository a shadow
+ * index refers to.
  */
 
 /** One index entry as read: its 40 bytes of stat data (ctime to size), blob id, flags, extended flags, and name. */
@@ -37,10 +38,11 @@ const BLOB_MODES = new Set([0o100644, 0o100755, 0o120000])
  */
 const SEEDED_MODES = new Set([0o100644, 0o100755])
 /**
- * The largest repository index read, some 600,000 entries (G1 of the Codex review): reading and parsing it hold the
- * process, so a folder in a larger repository takes today's path.
+ * The largest repository index read, some 150,000 entries (G1 of the Codex review): reading and parsing it hold the
+ * process, so a folder in a larger repository takes today's path. At 16 MiB, the worst a crafted one within every cap
+ * holds it is some 0.2 s and 110 MiB of heap on a desktop (F3 fix 3).
  */
-const INDEX_BYTES_MAX = 64 * 1_048_576
+const INDEX_BYTES_MAX = 16 * 1_048_576
 /**
  * What a version 4 index may name, as its names reuse the end of the one before (G1 of the Codex recheck), so a short
  * input could name far more bytes than it holds: each name git's 4,096 bytes at most, and the names in all, and their
@@ -49,9 +51,8 @@ const INDEX_BYTES_MAX = 64 * 1_048_576
 const NAME_BYTES_MAX = 4_096
 const NAMES_BYTES_MAX = INDEX_BYTES_MAX
 const INDEX_ENTRIES_MAX = INDEX_BYTES_MAX / 64
-/** The largest alternates file read, and how deep alternates of alternates are followed: git reads five levels. */
-const ALTERNATES_BYTES_MAX = 65_536
-const ALTERNATES_DEPTH_MAX = 5
+/** The names of the folders git keeps loose objects in, below an objects folder: `00` to `ff`. */
+const FAN_OUT = Array.from({ length: 256 }, (_, at) => at.toString(16).padStart(2, '0'))
 
 /** The arguments of the one `git rev-parse` that locates a folder's repository; its answer reads with `parseLocation`. */
 export const LOCATE_ARGS = ['rev-parse', '--path-format=absolute', '--show-object-format', '--show-toplevel', '--git-path', 'index', '--git-path', 'objects', 'HEAD^{commit}']
@@ -100,23 +101,21 @@ function readPlainFile(path: string, max: number): Buffer | undefined {
 }
 
 /**
- * The object folders git reads for `objects`, as it follows alternates: the folder, then each its `info/alternates`
- * names, a relative one from the folder that names it, and theirs. undefined where one such file is not a regular one
- * of ALTERNATES_BYTES_MAX at most (readPlainFile), names a folder by a quoted path, or lies ALTERNATES_DEPTH_MAX deep:
- * nothing is then proven to stand there (G3 of the Codex recheck).
+ * Whether a repository's objects folder, `objects`, directly in its git folder, may be referred to (K1, K2 of the Codex
+ * recheck 2): the git folder, the objects folder, its pack folder, and each fan-out folder that stands are real folders,
+ * never a link or a junction, which Node's lstat reads as a link; and no `info/alternates` or `info/http-alternates`
+ * stands, of any kind, so git reads that folder alone. Git follows a link there, and a stat of one never changes as what
+ * it names loses an object; alternates name further folders without bound. One stat of each fixed name, never a listing
+ * or a read, so its work is bounded and nothing waits. Checked at the seed, before each command, and at a sweep's plan
+ * and each of its slices.
  */
-export function objectFolders(objects: string): string[] | undefined {
-  const folders: string[] = []
-  const follow = (folder: string, depth: number): boolean => {
-    if (folders.includes(folder)) return true
-    folders.push(folder)
-    const path = join(folder, 'info', 'alternates')
-    try { if (!lstatSync(path, { throwIfNoEntry: false })) return true } catch { return false }
-    const text = depth < ALTERNATES_DEPTH_MAX ? readPlainFile(path, ALTERNATES_BYTES_MAX)?.toString('utf8') : undefined
-    if (text === undefined) return false
-    return text.split('\n').every(line => !line || line.startsWith('#') || (!line.startsWith('"') && follow(resolve(folder, line), depth + 1)))
-  }
-  return follow(objects, 0) ? folders : undefined
+export function referable(objects: string): boolean {
+  const real = (path: string) => lstatSync(path, { throwIfNoEntry: false })?.isDirectory() === true
+  try {
+    if (![dirname(objects), objects, join(objects, 'pack')].every(real)) return false
+    if (['alternates', 'http-alternates'].some(name => lstatSync(join(objects, 'info', name), { throwIfNoEntry: false }) !== undefined)) return false
+    return FAN_OUT.every(name => { const stat = lstatSync(join(objects, name), { throwIfNoEntry: false }); return stat === undefined || stat.isDirectory() })
+  } catch { return false }
 }
 
 /**

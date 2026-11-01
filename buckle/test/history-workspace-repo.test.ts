@@ -1,9 +1,9 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
-import { objectFolders, parseBatch, parseBatchCheck, parseExistence, parseIndex, parseLocation, readRepositoryIndex, refreshedAs, seedCandidates, unverified, writeIndex } from '../common/services/history/workspace-repo.js'
+import { parseBatch, parseBatchCheck, parseExistence, parseIndex, parseLocation, readRepositoryIndex, referable, refreshedAs, seedCandidates, unverified, writeIndex } from '../common/services/history/workspace-repo.js'
 
 // Slice F3: the pure parts of a seed from a folder's repository, against what git itself writes and reads.
 
@@ -70,19 +70,19 @@ describe('a repository\'s index read in-process', () => {
   })
 
   // G1 of the Codex recheck of F3: a version 4 name reuses the end of the one before it, so a short index can name far
-  // more bytes than it holds. Past git's 4,096 bytes for one name, or 64 MiB for all, it reads as no index to seed from.
+  // more bytes than it holds. Past git's 4,096 bytes for one name, or 16 MiB for all, it reads as no index to seed from.
   it('reads a version 4 index whose names reuse one past git\'s limit, or name more than the input cap in all, as none to seed from', () => {
     expect(parseIndex(prefixReuse({ first: 4_097, count: 2 }))).toBeUndefined()
     expect(parseIndex(prefixReuse({ first: 4_000, count: 2, more: 97 }))).toBeUndefined()
-    expect(parseIndex(prefixReuse({ first: 4_096, count: 16_385 }))).toBeUndefined()
+    expect(parseIndex(prefixReuse({ first: 4_096, count: 4_097 }))).toBeUndefined()
     // Within both: every entry read, its name expanded in full.
-    const within = parseIndex(prefixReuse({ first: 4_096, count: 16_384 }))!
-    expect([within.plain, within.entries.length, within.entries.at(-1)!.name.length]).toEqual([true, 16_384, 4_096])
+    const within = parseIndex(prefixReuse({ first: 4_096, count: 4_096 }))!
+    expect([within.plain, within.entries.length, within.entries.at(-1)!.name.length]).toEqual([true, 4_096, 4_096])
     expect(parseIndex(prefixReuse({ first: 4_000, count: 2, more: 96 }))!.entries.map(entry => entry.name.length)).toEqual([4_000, 4_096])
   })
 
   it('reads a version 4 index that says it holds more entries than the input cap can as none to seed from, before reading one', () => {
-    const index = prefixReuse({ first: 8, count: 2 }); index.writeUInt32BE(1_048_577, 8)
+    const index = prefixReuse({ first: 8, count: 2 }); index.writeUInt32BE(262_145, 8)
     expect(parseIndex(index)).toBeUndefined()
   })
 
@@ -118,30 +118,46 @@ describe('a side index with no stat data, refreshed by git', () => {
   })
 })
 
-// G3 of the Codex recheck of F3: where git looks for a repository's objects, which a sweep stats before it removes a copy.
-describe('a repository\'s object folders, as git follows its alternates', () => {
-  it('follows alternates relative to the folder that names them, and absolute ones, each once, skipping comments', () => {
+// K1 and K2 of the Codex recheck 2 of F3: git follows a link or a junction in an objects folder, and alternates name
+// folders without bound, so only a repository whose objects stand in real folders of its own is referred to.
+describe('a repository whose objects may be referred to', () => {
+  /** A git folder as git init leaves it, with one fan-out folder that holds an object. */
+  function gitFolder() {
     const root = mkdtempSync(join(tmpdir(), 'buckle-workspace-repo-')); roots.push(root)
-    const [own, shared, deeper] = ['own', 'shared', 'deeper'].map(name => join(root, name, 'objects')) as [string, string, string]
-    for (const folder of [own, shared, deeper]) mkdirSync(join(folder, 'info'), { recursive: true })
-    writeFileSync(join(own, 'info', 'alternates'), `# a comment\n../../shared/objects\n\n${deeper}\n`)
-    writeFileSync(join(shared, 'info', 'alternates'), `${own}\n../../deeper/objects\n`)
-    expect(objectFolders(own)).toEqual([own, shared, deeper])
-    expect(objectFolders(deeper)).toEqual([deeper])
+    const objects = join(root, 'repo', '.git', 'objects')
+    for (const name of ['info', 'pack', 'ab']) mkdirSync(join(objects, name), { recursive: true })
+    writeFileSync(join(objects, 'ab', 'c'.repeat(38)), 'object')
+    return { root, objects }
+  }
+  /** `path` moved aside and a link to it in its place: a junction on Windows, which Node reads as a link too. */
+  function linkAside(root: string, path: string): void { const aside = join(root, `aside-${readdirSync(root).length}`); renameSync(path, aside); symlinkSync(aside, path, 'junction') }
+
+  it('refers to one whose git folder, objects folder, pack folder, and each fan-out folder are real folders, with no alternates', () => {
+    expect(referable(gitFolder().objects)).toBe(true)
   })
 
-  it('reads no folders where an alternates file names one by a quoted path, goes past git\'s depth, or is a pipe, and never waits for one', () => {
-    const root = mkdtempSync(join(tmpdir(), 'buckle-workspace-repo-')); roots.push(root)
-    const chain = Array.from({ length: 7 }, (_, at) => join(root, `level${at}`, 'objects'))
-    for (const [at, folder] of chain.entries()) { mkdirSync(join(folder, 'info'), { recursive: true }); if (at < 6) writeFileSync(join(folder, 'info', 'alternates'), `${chain[at + 1]}\n`) }
-    expect(objectFolders(chain[1]!)).toEqual(chain.slice(1))
-    expect(objectFolders(chain[0]!)).toBeUndefined()
-    writeFileSync(join(chain[6]!, 'info', 'alternates'), '"quoted\\tname"\n')
-    expect(objectFolders(chain[6]!)).toBeUndefined()
-    if (process.platform === 'win32') return
-    rmSync(join(chain[6]!, 'info', 'alternates')); execFileSync('mkfifo', [join(chain[6]!, 'info', 'alternates')])
+  for (const [label, at] of [['its git folder', '..'], ['its objects folder', '.'], ['its pack folder', 'pack'], ['one fan-out folder', 'ab']] as const) it(`refers to none where ${label} is a link or a junction`, () => {
+    const { root, objects } = gitFolder()
+    linkAside(root, join(objects, at))
+    expect(referable(objects)).toBe(false)
+  })
+
+  it('refers to none with no pack folder, a fan-out name that is not a folder, or an alternates file of either kind, whatever it holds', () => {
+    const cases: Array<(objects: string) => void> = [
+      objects => rmSync(join(objects, 'pack'), { recursive: true }),
+      objects => writeFileSync(join(objects, 'cd'), ''),
+      objects => writeFileSync(join(objects, 'info', 'alternates'), ''),
+      objects => writeFileSync(join(objects, 'info', 'http-alternates'), 'http://example.invalid/objects\n'),
+      objects => symlinkSync(join(objects, 'gone'), join(objects, 'info', 'alternates')),
+    ]
+    for (const change of cases) { const { objects } = gitFolder(); change(objects); expect(referable(objects)).toBe(false) }
+  })
+
+  it.skipIf(process.platform === 'win32')('refers to none where an alternates file is a pipe, and never opens it', () => {
+    const { objects } = gitFolder()
+    execFileSync('mkfifo', [join(objects, 'info', 'alternates')])
     const started = performance.now()
-    expect(objectFolders(chain[6]!)).toBeUndefined()
+    expect(referable(objects)).toBe(false)
     expect(performance.now() - started).toBeLessThan(1000)
   })
 })

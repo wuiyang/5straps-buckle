@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, relative } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -67,6 +67,12 @@ function rewriteWithout(made: ReturnType<typeof repoFixture>, names: string[]): 
   made.git(['checkout', '--quiet', '--orphan', 'rewritten']); made.git(['rm', '--quiet', '--cached', ...names]); made.git(['commit', '--quiet', '-m', 'rewritten'])
   for (const branch of made.git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']).split('\n').filter(name => name && name !== 'rewritten')) made.git(['branch', '--quiet', '-D', branch])
   made.git(['reflog', 'expire', '--expire=now', '--all']); made.git(['gc', '--quiet', '--prune=now'])
+}
+/** `path` moved to `aside` and a link to it left in its place: a junction on Windows, which git follows as it does a link. */
+function linkAside(path: string, aside: string): void { renameSync(path, aside); symlinkSync(aside, path, 'junction') }
+/** Whether every committed file but the one changed since is in the history's own store: the folder took the usual path. */
+function allCopied(made: ReturnType<typeof repoFixture>): boolean {
+  return [...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').every(([, id]) => made.store.has(id))
 }
 /** Each committed file's blob id, as the repository's index names it. */
 function committedIds(made: ReturnType<typeof repoFixture>): Map<string, string> {
@@ -455,6 +461,136 @@ describe('a command after its folder\'s repository is lost', () => {
       expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'f6.txt'), kind: 'modified' }] })
       await history.restore(checkpoint.id)
       expect(read(join(made.workspace, 'src', 'f6.txt'))).toBe('committed 6\n')
+    } finally { await history.close() }
+  })
+})
+
+// K1 and K2 of the Codex recheck 2 of F3: git follows a link or a junction in a repository's objects folder, and a stat
+// of one never changes as what it names loses an object; alternates name further folders without bound. So a folder's
+// record refers only to a repository whose git folder, objects folder, pack folder, and each fan-out folder are real
+// folders, with no alternates file of either kind: checked at the seed, before each command, and at a sweep's plan and
+// each of its slices, which keep every copy the folder's index names while it does not hold.
+describe('a command in a folder whose repository keeps its objects through a link or another repository', () => {
+  for (const [label, linked] of [['its objects folder', () => ''], ['one fan-out folder', () => blobId(Buffer.from('committed 3\n')).slice(0, 2)]] as const) {
+    it(`never refers to a repository where ${label} is a link or a junction: every committed file is copied the usual way`, async () => {
+      const made = repoFixture()
+      linkAside(join(made.top, '.git', 'objects', linked()), join(made.root, 'aside'))
+      const history = await openChangeHistory(made.settings)
+      try {
+        await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'f3.txt'), 'rewritten\n') })
+        expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+        expect(allCopied(made)).toBe(true)
+        const checkpoint = (await history.list()).at(-1)!
+        expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [] })
+        await history.restore(checkpoint.id)
+        expect(read(join(made.workspace, 'src', 'f3.txt'))).toBe('committed 3\n')
+      } finally { await history.close() }
+    })
+  }
+
+  for (const name of ['alternates', 'http-alternates']) {
+    it(`never refers to a repository with an ${name} file, and builds the record again once one appears`, async () => {
+      const made = repoFixture()
+      const shared = join(made.root, 'shared', 'objects'); mkdirSync(shared, { recursive: true })
+      const file = join(made.top, '.git', 'objects', 'info', name)
+      writeFileSync(file, `${name === 'alternates' ? shared : 'http://example.invalid/objects'}\n`)
+      let history = await openChangeHistory(made.settings)
+      try {
+        await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'first\n') })
+        expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+        expect(allCopied(made)).toBe(true)
+      } finally { await history.close() }
+      // A folder whose record refers to the repository: the file appears, and the next command takes the usual path.
+      const other = repoFixture()
+      history = await openChangeHistory(other.settings)
+      try {
+        await history.run(other.details, async () => { writeFileSync(join(other.workspace, 'src', 'new.txt'), 'first\n') })
+        expect(existsSync(join(other.shadow, 'source'))).toBe(true)
+        writeFileSync(join(other.top, '.git', 'objects', 'info', name), `${name === 'alternates' ? shared : 'http://example.invalid/objects'}\n`)
+        await history.run({ ...other.details, stageId: 'next' }, async () => { writeFileSync(join(other.workspace, 'src', 'f2.txt'), 'rewritten\n') })
+        expect(existsSync(join(other.shadow, 'source'))).toBe(false)
+        expect(allCopied(other)).toBe(true)
+        const checkpoint = (await history.list()).at(-1)!
+        expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [] })
+        await history.restore(checkpoint.id)
+        expect(read(join(other.workspace, 'src', 'f2.txt'))).toBe('committed 2\n')
+      } finally { await history.close() }
+    })
+  }
+
+  it('keeps a copy the folder\'s index names once a fan-out folder turns into a link whose target then loses it, and takes the usual path at the next command', async () => {
+    const lost = 'lost later\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/lost.txt': lost } })
+    const lostId = blobId(Buffer.from(lost))
+    const aside = join(made.root, 'aside')
+    const history = await openChangeHistory(made.settings)
+    try {
+      let ran = false
+      race.after = () => { ran = true; rmSync(join(aside, lostId.slice(2))) }
+      let planted = ''
+      // Written again as it was: a copy the index names that nothing else does. A copy nothing names marks the sweep's slice.
+      await history.run(made.details, async () => {
+        writeFileSync(join(made.workspace, 'src', 'lost.txt'), lost)
+        linkAside(join(made.top, '.git', 'objects', lostId.slice(0, 2)), aside)
+        planted = await made.store.put(Buffer.from('nothing names this\n'))
+      })
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect(ran).toBe(true)
+      expect(made.store.has(lostId)).toBe(true)
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'lost.txt'), 'rewritten\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [] })
+      await history.restore(checkpoint.id)
+      expect(read(join(made.workspace, 'src', 'lost.txt'))).toBe(lost)
+    } finally { await history.close() }
+  })
+
+  // The plan's own check: a repository that holds a copy only through an alternates file as the plan reads it, and
+  // that drops the file before a slice, stands again as it did at the plan, though it no longer holds the copy.
+  it('keeps a copy its repository holds only through an alternates file as the sweep plans, though that file goes before a slice', async () => {
+    const moved = 'moved away\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/moved.txt': moved } })
+    const movedId = blobId(Buffer.from(moved))
+    const shared = join(made.root, 'shared', 'objects')
+    const alternates = join(made.top, '.git', 'objects', 'info', 'alternates')
+    const history = await openChangeHistory(made.settings)
+    try {
+      let ran = false
+      race.after = () => { ran = true; rmSync(alternates) }
+      let planted = ''
+      await history.run(made.details, async () => {
+        writeFileSync(join(made.workspace, 'src', 'moved.txt'), moved)
+        mkdirSync(join(shared, movedId.slice(0, 2)), { recursive: true })
+        renameSync(join(made.top, '.git', 'objects', movedId.slice(0, 2), movedId.slice(2)), join(shared, movedId.slice(0, 2), movedId.slice(2)))
+        writeFileSync(alternates, `${shared}\n`)
+        planted = await made.store.put(Buffer.from('nothing names this\n'))
+      })
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect(ran).toBe(true)
+      expect(made.store.has(movedId)).toBe(true)
+    } finally { await history.close() }
+  })
+
+  it('keeps every copy the folder\'s index names once its repository stops meeting the rule between the sweep\'s plan and a slice', async () => {
+    const kept = 'held on\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/kept.txt': kept } })
+    const keptId = blobId(Buffer.from(kept))
+    const objects = join(made.top, '.git', 'objects')
+    // A fan-out folder of another object: the copy's own stays a real folder, holding it.
+    const other = readdirSync(objects).find(name => /^[0-9a-f]{2}$/.test(name) && name !== keptId.slice(0, 2))!
+    const history = await openChangeHistory(made.settings)
+    try {
+      let ran = false
+      race.after = () => { ran = true; linkAside(join(objects, other), join(made.root, 'aside')) }
+      let planted = ''
+      await history.run(made.details, async () => {
+        writeFileSync(join(made.workspace, 'src', 'kept.txt'), kept)
+        planted = await made.store.put(Buffer.from('nothing names this\n'))
+      })
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect(ran).toBe(true)
+      expect(made.store.has(keptId)).toBe(true)
     } finally { await history.close() }
   })
 })
