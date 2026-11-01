@@ -280,10 +280,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
         else if (error instanceof BaselineWarmingError) reason = WARMING_REASON
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
-        // What git read through a folder swapped while it read goes at once, nothing naming it (X9), a background record
-        // stopped first; what a git child stopped part way wrote goes in the sweep after the call (X6 of the Codex recheck),
-        // and a record its budget or cancellation cut short is finished in the background (W2).
-        if (error instanceof FolderReplacedError) { await stopWarming(); sweepBlobs(read()) }
+        // What git read through a folder swapped while it read goes, nothing naming it (X9): at once, or, while a background
+        // record runs, which writes what no index names yet, in the sweep that follows the call once every one, stopped
+        // here, has ended; the call never waits for one (V2). What a git child stopped part way wrote goes in the sweep
+        // after the call (X6 of the Codex recheck), and a record its budget or cancellation cut short is finished in the
+        // background (W2).
+        if (error instanceof FolderReplacedError) { commands.stopWarming(); cutShort.add(id); sweepBlobs(read()) }
         else if (!(error instanceof HostGitNeededError || error instanceof BaselineWarmingError)) {
           cutShort.add(id)
           if (stoppedEarly(error) && progress.root) unfinished.set(id, progress.root)
@@ -361,8 +363,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       .finally(() => { warmJobs.delete(job); scheduleSweep() })
     warmJobs.add(job)
   }
-  /** Stops each first record taken in the background and waits until none runs, as before a sweep that must run at once. */
-  async function stopWarming(): Promise<void> { commands.stopWarming(); await Promise.all(warmJobs) }
   /** The sweep after a command, under the lock once its call has left it, so the call never waits on it (X6). */
   function scheduleSweep(): void {
     if (sweeping) { sweepAgain = true; return }
@@ -756,7 +756,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     /** `engine` and `restorable` describe a command's checkpoints; a file tool's restore with no git at all (M4). */
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, fileToolsRestorable: true, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
-    async close(): Promise<void> { if (closed) return; closing.abort(new Error('History is closing')); await stopWarming(); if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
+    async close(): Promise<void> { if (closed) return; closing.abort(new Error('History is closing')); commands.stopWarming(); await Promise.all(warmJobs); if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
   }
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>

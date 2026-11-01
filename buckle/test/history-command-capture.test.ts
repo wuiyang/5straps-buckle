@@ -20,15 +20,20 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 // A hook run once as git add starts, before the child reads the folder: a folder swapped while git reads it (X9).
 // `slow`: git add first sleeps that many seconds, in a shell that ends at once when stopped (X14).
 // `cold`: every git add into an index not made yet first sleeps that many seconds, as a first hash of a cold folder does (W2).
-const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, started: undefined as (() => void) | undefined }))
+// `held`: such a git add into a background record's side index ignores the stop, and its sleep keeps git's output open, so
+// it ends only once the sleep does, as a child slow to stop (V2). `indexes`: the index each git add writes.
+const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, held: false, indexes: [] as string[], started: undefined as (() => void) | undefined }))
 vi.mock('../common/services/history/git-store.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
   const { existsSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
+    const index = String(input.environment.GIT_INDEX_FILE)
+    if (input.operation === 'add') gitAdd.indexes.push(index)
     if (input.operation === 'add' && gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
-    const cold = input.operation === 'add' && gitAdd.cold && !existsSync(String(input.environment.GIT_INDEX_FILE)) ? gitAdd.cold : 0
+    const cold = input.operation === 'add' && gitAdd.cold && !existsSync(index) ? gitAdd.cold : 0
     if (input.operation !== 'add' || !gitAdd.slow && !cold) return actual.runProgram(input)
-    const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', `trap 'exit 143' TERM; sleep ${gitAdd.slow || cold} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`, input.program.path, ...input.program.args] }
+    const script = gitAdd.held && cold && index.endsWith('index.warm') ? `trap '' TERM; sleep ${cold}; exec "$0" "$@"` : `trap 'exit 143' TERM; sleep ${gitAdd.slow || cold} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`
+    const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', script, input.program.path, ...input.program.args] }
     if (gitAdd.slow) { gitAdd.slow = 0; queueMicrotask(() => gitAdd.started?.()) }
     return actual.runProgram({ ...input, program })
   } }
@@ -65,7 +70,7 @@ const roots: string[] = []
 afterEach(() => {
   folderReads.on = false; folderReads.paths = []
   objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []; objectFaults.files = undefined; objectFaults.refused = []
-  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.started = undefined
+  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.held = false; gitAdd.indexes = []; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
@@ -617,6 +622,27 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
       await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a3'); writeFileSync(join(workspace, 'big.bin'), Buffer.alloc(200, 7)) })
       expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true, notRestorable: [join(workspace, 'big.bin')] })
       await vi.waitFor(() => expect(historyObjects(directory).some(content => content.length > 200)).toBe(false))
+    } finally { await history.close() }
+  })
+
+  // V2 of the Codex review of the W fixes: a folder swapped for a link while git reads it stops every background record, as
+  // the sweep that removes what git read through the link waits for them; its command never waits for one to end.
+  it.skipIf(process.platform === 'win32')('is stopped by a command whose own folder is replaced as git reads it, which runs without waiting for it to end', async () => {
+    const { root, workspace, directory, settings, details } = fixture()
+    const other = join(root, 'other'); mkdirSync(other); writeFileSync(join(other, 'c.txt'), 'c1')
+    const elsewhere = join(root, 'elsewhere'); mkdirSync(elsewhere); writeFileSync(join(elsewhere, 'key'), 'PRIVATE KEY')
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      await history.run({ ...details, roots: [other] }, async () => 'first there')
+      gitAdd.cold = 5; gitAdd.held = true
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      await vi.waitFor(() => expect(gitAdd.indexes.some(index => index.endsWith('index.warm'))).toBe(true), { timeout: 10_000, interval: 50 })
+      gitAdd.hook = () => { renameSync(other, join(root, 'moved')); symlinkSync(elsewhere, other) }
+      const started = Date.now()
+      await expect(history.run({ ...details, stageId: 'next', roots: [other] }, async () => 'ran')).resolves.toBe('ran')
+      expect(Date.now() - started).toBeLessThan(2_000)
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('replaced by a link') })
+      await vi.waitFor(() => expect(historyObjects(directory).some(content => content.includes('PRIVATE'))).toBe(false), { timeout: 10_000, interval: 100 })
     } finally { await history.close() }
   })
 
