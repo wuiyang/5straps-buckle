@@ -71,6 +71,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const baselines = new Map<string, CommandBaseline[]>()
   /** Each stored object's bytes on disk, as its id names one content for good: read once, then kept. */
   const sizes = new Map<string, number>()
+  /** The newest checkpoints the journal could not take, for their calls' notices. */
+  const unsaved = new Map<string, Checkpoint>()
   let closed = false
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
@@ -125,7 +127,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
     const deadlineMs = options.immediate ? 0 : options.owner ? Math.min(input.lockDeadlineMs ?? OWNER_LOCK_WAIT_MS, OWNER_LOCK_WAIT_MS) : input.lockDeadlineMs ?? 300_000
-    return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, async () => { await settleStopped(); return operation() })
+    return withHistoryLock({ directory: input.directory, label: input.label ?? 'workspace mutation', deadlineMs, ...(options.signal ? { signal: options.signal } : {}), ...(options.force ? { force: true } : {}) }, async () => {
+      try { await settleStopped() } catch (error) { logger.warn('History could not mark the checkpoints a stopped call left; the call runs', { cause: causeOf(error) }) }
+      return operation()
+    })
   }
   /**
    * Marks each checkpoint left pending interrupted, with its reason (Slice F2, item 6): one seen while this process holds
@@ -177,7 +182,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       }
     }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
-    await saveRecord(record)
+    await savePending(record)
     return record
   }
   async function beginScoped(details: HistoryInput & { scope: ScopePath[] }, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
@@ -189,7 +194,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try { before = await captureScope({ scope: details.scope, store: objects, ...scopeLimits() }) }
     catch (error) { reason = `History could not record the files before this call (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...(reason ? { reason } : {}), content: 'blobs', ...restore }
-    await saveRecord(record)
+    await savePending(record)
     return record
   }
   async function finishScoped(record: Checkpoint): Promise<void> {
@@ -218,8 +223,22 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try { await pruneRetained(record) }
     catch (error) {
       logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) })
-      if (read().checkpoints.find(saved => saved.id === record.id)?.status === 'pending') await saveRecord(record)
+      try { if (read().checkpoints.find(saved => saved.id === record.id)?.status !== record.status) await saveRecord(record) }
+      catch (failure) { unsavedRecord(record, failure) }
     }
+  }
+  /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
+  async function savePending(record: Checkpoint): Promise<void> {
+    try { await saveRecord(record) }
+    catch (error) { logger.warn(`Checkpoint ${record.id}: history could not save it as the call began; the call runs`, { cause: causeOf(error) }) }
+  }
+  /** A finished checkpoint the journal could not take: the call's notice names why, and the owner's log the cause (D2). */
+  function unsavedRecord(record: Checkpoint, error: unknown): void {
+    record.restorable = false
+    record.reason = `History could not save this call's checkpoint (${causeText(error)}); the call ran without one`
+    unsaved.set(record.id, record)
+    while (unsaved.size > RECENT_CHECKPOINTS_MAX) unsaved.delete(unsaved.keys().next().value!)
+    logger.warn(`Checkpoint ${record.id}: history could not save it; the call ran without one`, { cause: causeOf(error) })
   }
   /** Every checkpoint this journal begins records content in the object store (Slice F2, items 1 and 3). */
   function finish(record: Checkpoint): Promise<void> { return finishScoped(record) }
@@ -405,7 +424,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     startCall,
     completeCall,
     finishCall,
-    notice: (sessionId: string, requestId: string) => { const found = records().findLast(record => record.sessionId === sessionId && (record.requestId === requestId || record.parentRequestId === requestId)); return found ? summary(found) : null },
+    notice: (sessionId: string, requestId: string) => {
+      const matches = (record: Checkpoint) => record.sessionId === sessionId && (record.requestId === requestId || record.parentRequestId === requestId)
+      const found = [...unsaved.values()].findLast(matches) ?? records().findLast(matches)
+      return found ? summary(found) : null
+    },
     recent: async (count: number) => {
       const found = records().toReversed().slice(0, Math.min(count, RECENT_CHECKPOINTS_MAX) + 1)
       const shown = found.slice(0, count)

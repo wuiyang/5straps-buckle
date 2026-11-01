@@ -9,8 +9,18 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 // interrupted, with its reason, by the next call to take the lock, and a capture that fails lets its call run and names
 // its cause to the agent (the checkpoint's reason) and to the owner's log.
 
+const journalFault = vi.hoisted(() => ({ enabled: false }))
+vi.mock('../common/adapters/replace-file.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
+  return { ...actual, replaceFile: async (...args: Parameters<typeof actual.replaceFile>) => {
+    if (journalFault.enabled && args[1].endsWith('checkpoints.json')) throw Object.assign(new Error('fixture journal write failed'), { code: 'ENOSPC' })
+    return actual.replaceFile(...args)
+  } }
+})
+
 const roots: string[] = []
 afterEach(() => {
+  journalFault.enabled = false
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { chmodSync(root, 0o700); rmSync(root, { recursive: true, force: true }) }
 })
@@ -80,4 +90,22 @@ it('runs a write whose files history cannot store, naming the cause to the agent
     const logged = warn.mock.calls.find(([message]) => typeof message === 'string' && message.includes(checkpoint.id))
     expect(logged?.[1]).toMatchObject({ cause: { code: 'EACCES' } })
   } finally { chmodSync(join(directory, 'blobs'), 0o700); await history.close() }
+})
+
+it('runs a call whose checkpoint history cannot save, and names the cause in its notice and the owner log', async () => {
+  const { workspace, options } = fixture()
+  const file = join(workspace, 'note.txt')
+  const history = await openChangeHistory(options)
+  const warn = vi.spyOn(logger, 'warn')
+  try {
+    await history.run({ sessionId: 's', stageId: 'stage', tool: 'test', requestId: 'r-1', roots: [workspace], scope: [{ path: file }] }, async () => { writeFileSync(file, 'one') })
+    journalFault.enabled = true
+    await expect(history.run({ sessionId: 's', stageId: 'stage', tool: 'test', requestId: 'r-2', roots: [workspace], scope: [{ path: file }] }, async () => { writeFileSync(file, 'two'); return 'ran' })).resolves.toBe('ran')
+    expect(readFileSync(file, 'utf8')).toBe('two')
+    expect(history.notice('s', 'r-2')).toMatchObject({ restorable: false, reason: expect.stringContaining('ENOSPC') })
+    expect(warn.mock.calls.some(([message, fields]) => String(message).includes('could not save') && JSON.stringify(fields).includes('ENOSPC'))).toBe(true)
+    journalFault.enabled = false
+    await expect(history.run({ sessionId: 's', stageId: 'stage', tool: 'test', requestId: 'r-3', roots: [workspace], scope: [{ path: file }] }, async () => { writeFileSync(file, 'three') })).resolves.toBeUndefined()
+    expect(history.notice('s', 'r-3')).toMatchObject({ restorable: true, status: 'complete' })
+  } finally { await history.close() }
 })
