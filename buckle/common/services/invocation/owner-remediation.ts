@@ -4,6 +4,7 @@ import { READ_LIMITS } from '../../domain/command-forms.js'
 import { toolPolicyBlockers } from '../../domain/tool-policy.js'
 import { workspaceArgument } from '../../domain/approval-instruction.js'
 import type { BuckleConfig } from '../../runtime/config.js'
+import { OLD_ENGINE_REASON } from '../history/journal.js'
 
 type FeatureConfig = Pick<BuckleConfig, 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp'>
 
@@ -38,7 +39,10 @@ export function withOwnerRemediation(input: { response: InvokeResponse; tool: st
   if (response.outcome !== 'error') return response
   if (response.error.code === 'RESTORE_REFUSED' && response.error.message.includes('permitted trusted host git')) {
     const workspace = workspaceArgument(input.workspaceId)
-    const guidance = `Ask the owner to enable future content capture with buckle workspace set packs.hostGit on --workspace ${workspace}, ensure a trusted Git installation is on the node PATH outside folders writable by agents, then check buckle manifest --workspace ${workspace} for history engine git and restorable true. Enabling permission does not install Git. Existing hash-only checkpoints cannot become restorable; only new checkpoints captured with Git can be restored.`
+    // An earlier shadow-git checkpoint keeps its content, so permitting git makes it restorable (Slice F2, item 7).
+    const earlier = response.error.message.includes(OLD_ENGINE_REASON)
+    const outcome = earlier ? 'This earlier checkpoint can be restored once host Git is permitted, until its store is deleted after 10 turns of new checkpoints.' : 'Existing hash-only checkpoints cannot become restorable; only new checkpoints captured with Git can be restored.'
+    const guidance = `Ask the owner to ${earlier ? 'permit host Git' : 'enable future content capture'} with buckle workspace set packs.hostGit on --workspace ${workspace}, ensure a trusted Git installation is on the node PATH outside folders writable by agents, then check buckle manifest --workspace ${workspace} for history engine git and restorable true. Enabling permission does not install Git. ${outcome}`
     return { ...response, error: { ...response.error, message: `${response.error.message}. ${guidance}` } }
   }
   if (response.error.code !== 'PERMISSION_DENIED') return response

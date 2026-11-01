@@ -11,6 +11,8 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
+import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
+import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
 const opened: BuckleRuntime[] = []
 afterEach(async () => {
@@ -250,6 +252,20 @@ describe('permission errors tell the AI how the owner can act', () => {
     expect(refusal).toContain('buckle manifest --workspace ' + runtime.workspaceId)
     expect(refusal).toContain('Existing hash-only checkpoints cannot become restorable')
     expect(refusal).not.toMatch(/git init|sandbox.*none|dangerously-allow/i)
+  })
+
+  // Slice F2, item 7: an earlier shadow-git checkpoint keeps its content, so permitting host Git does make it restorable.
+  it('says an earlier shadow-git checkpoint restores once host git is permitted, never that it cannot become restorable', async () => {
+    const { runtime, root, config } = await fixture()
+    await shadowGitCheckpoint({ directory: join(config.stateDirectory, 'history', workspaceStateKey(config.cwd)), roots: [root], sessionId: 'history-fixture', stageId: 'old', execute: () => writeFileSync(join(root, 'history-file.txt'), 'changed') })
+    const response = await invoke(runtime, 'history_restore', { steps: 1 })
+    expect(response).toMatchObject({ outcome: 'error', error: { code: 'RESTORE_REFUSED' } })
+    const refusal = message(response)
+    expect(refusal).toContain('earlier shadow-git history')
+    expect(refusal).toContain('buckle workspace set packs.hostGit on --workspace ' + runtime.workspaceId)
+    expect(refusal).toContain('trusted Git installation')
+    expect(refusal).toContain('can be restored once host Git is permitted')
+    expect(refusal).not.toContain('cannot become restorable')
   })
 
   it('names a scoped allow-url change without copying URL credentials', async () => {
