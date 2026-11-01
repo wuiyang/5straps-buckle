@@ -40,7 +40,8 @@ history, MCP asks, `buckle cp`, and deletes.
   such as a monorepo root's, is not read.
 - The first command in a folder hashes every file Git tracks there once; later ones hash only
   what changed. That copy does not count toward `BUCKLE_HISTORY_MAX_BYTES`. A first hash past 30
-  seconds leaves its command unrestorable, and the next starts over.
+  seconds leaves its command unrestorable; Buckle finishes it in the background, and commands
+  that start meanwhile are unrestorable too.
 - A file over `history.maxFileBytes` is compared by size, mode, and mtime. Git still reads such a
   file in a command's folder each time it changes.
 - A command interrupted while it runs leaves a checkpoint that is never restorable.

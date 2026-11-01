@@ -30,7 +30,9 @@ Git. Buckle never writes to the workspace's own `.git`.
   a restore, listed as not restorable, as it may have stood there before. A workspace with no
   `.gitignore` tracks everything, within the caps. A nested repository is left out, reason
   `nested`. Each phase has 30 seconds; past that, or once the call is cancelled
-  before the command starts, the command runs without restorable content. This needs permitted,
+  before the command starts, the command runs without restorable content, and Buckle finishes
+  that folder's record in the background, within 10 minutes. A command that starts there
+  meanwhile runs at once, also without restorable content. This needs permitted,
   trusted host Git; without it, the command runs and its checkpoint reads "Not restorable: host
   git needed".
 
@@ -50,7 +52,8 @@ size, reason `size`, and cannot be restored. The node setting `BUCKLE_HISTORY_MA
 content kept checkpoints hold at 268435456 bytes (256 MiB) by default, each object counted once;
 the copy a command's private index keeps does not count. Over the cap, Buckle drops whole oldest
 turns, never the current one, and deletes the objects nothing names; so does a sweep after each
-command, which removes a file over the cap and what a stopped write left. A checkpoint that alone
+command, which removes a file over the cap and what a stopped write left. It keeps every object
+a command's private index names, its folder trees included. A checkpoint that alone
 exceeds the cap keeps its paths without content. Retention never rewrites a kept checkpoint and
 never reads the workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery
 copies, not these turns.
