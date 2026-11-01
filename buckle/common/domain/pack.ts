@@ -28,11 +28,16 @@ export interface Pack {
   closeBrowsers?(): Promise<BrowserCloseCounts>
 }
 
-/** What buckle browser close ended: the browsers recorded, how many of them closed, and the held values dropped. */
+/**
+ * What buckle browser close ended: the browsers recorded, how many of them closed, and the held values dropped; and, where
+ * it could not end everything, the values still held by a browser that did not close (Codex review L1).
+ */
 export interface BrowserCloseCounts {
   browsers: number
   closed: number
   held: number
+  /** Values still held, by a browser that did not close; absent where none is. */
+  kept?: number
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

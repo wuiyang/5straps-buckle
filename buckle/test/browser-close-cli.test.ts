@@ -25,7 +25,9 @@ async function node() {
   mkdirSync(workspace)
   const log = join(root, 'calls.jsonl')
   const binary = join(root, 'agent-browser')
-  writeFileSync(binary, `#!/usr/bin/env node\nrequire('node:fs').appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nprocess.stdout.write('{"success":true,"data":{}}')\n`)
+  // A close fails while root/fail-close exists, as a daemon that does not answer leaves it.
+  const failClose = join(root, 'fail-close')
+  writeFileSync(binary, `#!/usr/bin/env node\nconst fs = require('node:fs')\nfs.appendFileSync(${JSON.stringify(log)}, JSON.stringify(process.argv.slice(2)) + '\\n')\nif (process.argv[2] === 'close' && fs.existsSync(${JSON.stringify(failClose)})) process.exit(1)\nprocess.stdout.write('{"success":true,"data":{}}')\n`)
   chmodSync(binary, 0o755)
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_AGENT_BROWSER_COMMAND: binary })
   // The running node: its runtime stays open, its browsers recorded.
@@ -33,7 +35,7 @@ async function node() {
   runtimes.push(running)
   const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
   const sessions = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
-  return { config, running, calls, sessions, workspace }
+  return { config, running, calls, sessions, workspace, failClose }
 }
 
 async function owner(input: { config: ReturnType<typeof configFromEnvironment>; argv: string[]; cwd?: string }) {
@@ -65,6 +67,21 @@ describe('buckle browser close', () => {
     // The node's next call starts a browser of its own, as its record is gone.
     expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'after', tool: 'browser_command', args: { command: 'snapshot', args: [] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
     expect(opened).not.toContain(sessionOf(calls().at(-1)!))
+  })
+
+  // Codex review L1: a browser that did not close stays recorded, and the command says it did not finish.
+  it('keeps a browser whose close failed, says so, and exits 1, and the next run ends it', async () => {
+    const { config, running, sessions, failClose } = await node()
+    expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'open', tool: 'browser_command', args: { command: 'open', args: ['https://example.test/'] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
+    writeFileSync(failClose, '')
+    const name = running.workspaceName()
+    const failed = await owner({ config, argv: ['browser', 'close', '--workspace', name] })
+    expect(failed).toMatchObject({ exitCode: 1, out: `Closed 0 of 1 browser of workspace ${name}, and dropped 0 held secret values. 1 did not close: it stays recorded with what it holds, and the next start or this command tries again.\n` })
+    expect(Object.values(JSON.parse(readFileSync(sessions, 'utf8')).browsers)).toEqual([expect.objectContaining({ closing: true })])
+    // The next command's own start ends it first, as it ends any close that failed.
+    rmSync(failClose)
+    expect(await owner({ config, argv: ['browser', 'close', '--workspace', name] })).toMatchObject({ exitCode: 0, out: `No browser of workspace ${name} was recorded open, so nothing was closed.\n` })
+    expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
   })
 
   it('acts on the workspace holding the current directory, and says so where nothing was open', async () => {

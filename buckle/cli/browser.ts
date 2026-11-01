@@ -26,7 +26,9 @@ export async function browserCloseCommand(runtime: BuckleRuntime, argv: readonly
   }
   const counts = await runtime.closeBrowsers()
   process.stdout.write(`${describeCounts(counts, runtime.workspaceName())}\n`)
-  return { exitCode: 0, detail: `closed ${counts.closed} of ${counts.browsers} browsers, dropped ${counts.held} held secret values` }
+  // A browser left open, with what it holds, is a command that did not finish (Codex review L1).
+  const finished = counts.closed === counts.browsers
+  return { exitCode: finished ? 0 : 1, detail: `closed ${counts.closed} of ${counts.browsers} browsers, dropped ${counts.held} held secret values${counts.kept ? `, kept ${counts.kept}` : ''}` }
 }
 
 /** What buckle browser close prints, which docs/browser-login-02.md quotes. */
@@ -34,6 +36,7 @@ export function describeCounts(counts: BrowserCloseCounts, workspace: string): s
   const values = `${counts.held} held secret ${counts.held === 1 ? 'value' : 'values'}`
   if (counts.browsers === 0) return counts.held === 0 ? `No browser of workspace ${workspace} was recorded open, so nothing was closed.` : `No browser of workspace ${workspace} was recorded open; dropped ${values}.`
   const failed = counts.browsers - counts.closed
-  const left = failed === 0 ? '' : ` ${failed} did not close; agent-browser's idle timeout ends ${failed === 1 ? 'it' : 'them'}.`
-  return `Closed ${counts.closed} of ${counts.browsers} ${counts.browsers === 1 ? 'browser' : 'browsers'} of workspace ${workspace}, and dropped ${values}.${left}`
+  const kept = counts.kept ? ` ${counts.kept} held secret ${counts.kept === 1 ? 'value stays' : 'values stay'}.` : ''
+  const left = failed === 0 ? '' : ` ${failed} did not close: ${failed === 1 ? 'it stays' : 'they stay'} recorded with what ${failed === 1 ? 'it holds' : 'they hold'}, and the next start or this command tries again.`
+  return `Closed ${counts.closed} of ${counts.browsers} ${counts.browsers === 1 ? 'browser' : 'browsers'} of workspace ${workspace}, and dropped ${values}.${kept}${left}`
 }

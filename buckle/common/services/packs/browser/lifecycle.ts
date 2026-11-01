@@ -272,18 +272,28 @@ export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
 /**
  * The owner's buckle browser close (Slice F4, item 6): under the sessions lock, held all through, so no call starts a
  * browser meanwhile, every recorded session is closed, a live sibling's too, with a bare close in parallel under one
- * bound; then every record and every hold is forgotten, an attached Chrome's included, whether its close went or not.
+ * bound. Each that closed is forgotten with its hold. One that did not stays marked closing with its hold (Codex review
+ * L1), as a profile folder's keeps its name and a call would reach its page again: the next start, or this command, ends
+ * it. An attached Chrome's hold is forgotten too.
  */
 export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts> {
   return lifecycle.store.update(async (state) => {
     upgradeSessions(state)
     const names = Object.keys(state.browsers)
-    const held = new Set([...state.attached ?? [], ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(filledKey)).size
+    const before = heldValues(state)
+    for (const name of names) state.browsers[name]!.closing = true
     const closed = await closeEach(lifecycle, names)
-    state.browsers = {}
+    forget(state, closed)
     delete state.attached
-    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held }
+    const after = heldValues(state)
+    const kept = after.size
+    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}) }
   })
+}
+
+/** Every value the workspace's browsers hold, each once, by file, NAME, and digest. */
+function heldValues(state: Sessions): Set<string> {
+  return new Set([...state.attached ?? [], ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(entry => `${filledKey(entry)}\u0000${entry.digest}`))
 }
 
 /** Records how each claimed close went: a closed session is forgotten, one that did not close stays marked closing. */

@@ -437,13 +437,20 @@ describe('the owner\'s buckle browser close (F4 item 6)', () => {
     expect(browser.alive()).toEqual([sessionOf(browser.calls.at(-1)!)])
   })
 
-  it('forgets a browser whose close failed too, and counts it', async () => {
-    const { browser, open, stored } = node()
+  // Codex review L1: a profile folder's browser keeps its name, so one that did not close, forgotten, was reached again
+  // with no hold, and its page showed the value.
+  it('keeps a browser whose close failed, marked closing with its hold, so the next call is masked, and a later run ends it', async () => {
+    const { browser, open, stored } = node({ mode: { kind: 'profile', directory: '/owner/profile' } })
     const pack = open()
-    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const session = sessionOf(browser.calls[0]!)
     const run = browser.run
     browser.run = async request => request.args[0] === 'close' ? { ...result({ success: false }), exitCode: 1 } : run(request)
-    expect(await pack.closeBrowsers!()).toEqual({ browsers: 1, closed: 0, held: 0 })
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 1, closed: 0, held: 0, kept: 1 })
+    expect((stored().browsers as Record<string, unknown>)[session]).toMatchObject({ closing: true, held: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] })
+    expect(await heldFor(pack, { sessionId: 'other-agent' })).toEqual(['LOGIN_PASSWORD'])
+    browser.run = run
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 1, closed: 1, held: 1 })
     expect(stored().browsers).toEqual({})
   })
 })
