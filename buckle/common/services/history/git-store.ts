@@ -63,7 +63,9 @@ export function isolatedGit(owned: string): { environment: Record<string, string
 
 export function createGitStore(input: { directory: string; excluded: string[]; maxFileBytes: () => number; allowed: () => boolean; untrusted?: () => UntrustedRoots; platform?: NodeJS.Platform }) {
   const owned = join(input.directory, 'git-private')
-  const { environment, safety, empty } = isolatedGit(owned)
+  // Made at the first git child, never at open: a history that holds no shadow-git checkpoint keeps none of its folders (Slice F2, item 7).
+  let isolation: ReturnType<typeof isolatedGit> | undefined
+  const isolated = () => isolation ??= isolatedGit(owned)
   const primaryFile = join(owned, 'primary-root')
   let primary: string | undefined = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : undefined
   const exclusions = [...input.excluded, input.directory]
@@ -82,11 +84,13 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       if (!program) throw new Error('Content capture requires trusted host git')
       const started = performance.now()
       if (timing) timing.commandCount++
+      const { environment, safety } = isolated()
       try { return await runProgram({ program, operation: gitOperation(args), args: [...safety, ...args], cwd: owned, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.workTree, GIT_INDEX_FILE: join(state.git, 'index'), ...extra }, data, acceptedCodes }) }
       finally { if (timing) timing.gitSubprocessMs += performance.now() - started }
     }
   }
   function gitDirectory(root: string): string {
+    isolated()
     primary = existsSync(primaryFile) ? readFileSync(primaryFile, 'utf8') : root
     if (!existsSync(primaryFile)) writeFileSync(primaryFile, primary, { mode: 0o600 })
     return root === primary ? join(input.directory, 'git') : join(input.directory, 'roots', createHash('sha256').update(root).digest('hex').slice(0, 24), 'git')
@@ -101,7 +105,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     if (!regularFile(marker) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES)) || readGitMetadata(attributes) !== RAW_ATTRIBUTES) {
       rmSync(marker, { force: true })
       mkdirSync(state.git, { recursive: true, mode: 0o700 }); setMode(state.git, 0o700); requireOwnerOnly(state.git, 'directory')
-      await command(state, ['init', '--quiet', `--template=${empty}`, state.git])
+      await command(state, ['init', '--quiet', `--template=${isolated().empty}`, state.git])
       mkdirSync(join(state.git, 'info'), { recursive: true, mode: 0o700 }); mkdirSync(join(state.git, 'objects', 'info'), { recursive: true, mode: 0o700 })
       rmSync(attributes, { force: true })
       writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600, flag: 'wx' })
@@ -213,7 +217,7 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     for (const tree of input.trees) {
       const paths = input.paths.filter(path => isInside(tree.root, path) && input.target[path]?.kind === 'file')
       if (!paths.length) continue
-      const temporary = join(owned, `restore-${randomUUID()}`); mkdirSync(temporary, { mode: 0o700 })
+      isolated(); const temporary = join(owned, `restore-${randomUUID()}`); mkdirSync(temporary, { mode: 0o700 })
       const index = join(temporary, 'index')
       try {
         await git(tree, ['read-tree', tree.commit], undefined, { GIT_INDEX_FILE: index })

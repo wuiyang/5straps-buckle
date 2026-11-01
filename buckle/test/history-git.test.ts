@@ -283,7 +283,8 @@ it('retries interrupted private initialization after HEAD exists without safety 
   writeFileSync(join(workspace, 'file'), 'original\r\n')
   const ownerDigest = treeDigest(join(workspace, '.git'))
   const privateGit = join(directory, 'git')
-  mkdirSync(privateGit)
+  // The store makes its folders at its first git child, never at open (Slice F2, item 7): the crashed setup makes its own.
+  mkdirSync(privateGit, { recursive: true }); mkdirSync(join(directory, 'git-private', 'empty'), { recursive: true })
   execFileSync('git', ['init', '--quiet', `--template=${join(directory, 'git-private', 'empty')}`, privateGit], { env: { ...process.env, GIT_DIR: privateGit, GIT_WORK_TREE: workspace } })
   expect(existsSync(join(privateGit, 'HEAD'))).toBe(true)
   expect(existsSync(join(privateGit, 'info', 'attributes'))).toBe(false)

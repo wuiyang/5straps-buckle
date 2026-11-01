@@ -54,7 +54,14 @@ export const STOPPED_REASON = 'Buckle stopped before this call finished, so hist
 export const HOST_GIT_REASON = 'Not restorable: host git needed. History reads what a command changes through permitted trusted host git, so this call ran without a checkpoint of its changes'
 const PARTIAL_REASON = 'Git could not read some files this command may have changed; history does not list their changes'
 const CAP_REASON = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
-const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0) })
+/** A checkpoint the shadow-git engine of 670f1dc2 wrote keeps its content in that store, which only git reads (Slice F2, item 7). */
+export const OLD_ENGINE_REASON = 'This checkpoint is from the earlier shadow-git history, whose content only permitted trusted host git can read; this node has none, so it cannot be restored'
+/** How many turns of new checkpoints the stores written before the object store outlive (item 7). */
+export const OLD_STORE_TURNS = 10
+/** Those stores, in a workspace's history folder: shadow git (670f1dc2) and the SQLite history before it. */
+const OLD_STORES = ['git', 'roots', 'git-private', ...['', '-wal', '-shm', '-journal'].map(suffix => `history.sqlite${suffix}`)]
+/** `oldStoreTurns`: the turns of new checkpoints recorded while an old store is left, up to OLD_STORE_TURNS. */
+const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0), oldStoreTurns: z.array(z.string()).optional() })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
 
@@ -78,6 +85,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let gcTimer: ReturnType<typeof setTimeout> | undefined
   const activity = await openHistoryActivity(input.directory)
   let reconcile = true
+  /** Set once no old store is left on disk: nothing writes one any more, so none comes back (item 7). */
+  let oldStoresGone = false
 
   // The journal as last validated, keyed by its file's identity on disk: a call reads it several times, and another
   // process replaces it by rename, which changes the key (B12). Each read still hands out its own copy.
@@ -267,6 +276,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const keep = retainedTurns({ records: state.checkpoints, keep: settings.keepTurns })
     const dropped = state.checkpoints.filter(record => record.status !== 'pending' && record !== current && !keep.has(turnOf(record)))
     state.checkpoints = state.checkpoints.filter(record => !dropped.includes(record))
+    const expired = current !== undefined && expireOldStores(state, current)
     let capped = false
     if (current && current.restorable !== false && heldBytes([current]) > input.maxBytes) capped = true
     else for (const turn of [...new Set(state.checkpoints.map(turnOf))]) {
@@ -281,13 +291,37 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }
     // A checkpoint the shadow-git engine wrote keeps its content there, pinned by its refs, until its turn drops (item 7):
     // its commits are moved to the graph that engine settled on, published, and only then are refs changed.
-    const shadow = store.available && (state.checkpoints.some(hasTrees) || dropped.some(hasTrees))
+    const shadow = !expired && store.available && (state.checkpoints.some(hasTrees) || dropped.some(hasTrees))
     if (shadow && await store.isolate(state.checkpoints)) reconcile = true
     if (dropped.some(hasTrees)) reconcile = true
     if (current || dropped.length || shadow && reconcile) await save(state)
     if (shadow && reconcile) await repairRefs(state)
     if (dropped.length || capped) sweepBlobs(state)
-    scheduleCollection()
+    scheduleCollection(state)
+  }
+  /** Whether a store written before the object store is left: a checkpoint of one in the journal, or its files (item 7). */
+  function oldStoresLeft(state: State): boolean {
+    if (state.checkpoints.some(isOldRecord)) return true
+    if (!oldStoresGone) oldStoresGone = !OLD_STORES.some(name => lstatSync(join(input.directory, name), { throwIfNoEntry: false }))
+    return !oldStoresGone
+  }
+  /**
+   * The old stores outlive OLD_STORE_TURNS turns of new checkpoints (item 7), counted in `state` as `current` finishes,
+   * whatever retention keeps. Then their checkpoints leave the journal and their folders are deleted, with no git. A
+   * deletion that fails keeps the count, so the next write tries again. Answers whether the old checkpoints left.
+   */
+  function expireOldStores(state: State, current: Checkpoint): boolean {
+    if (!oldStoresLeft(state)) { delete state.oldStoreTurns; return false }
+    const turns = [...new Set([...state.oldStoreTurns ?? [], turnOf(current)])]
+    state.oldStoreTurns = turns
+    if (turns.length < OLD_STORE_TURNS) return false
+    state.checkpoints = state.checkpoints.filter(record => !isOldRecord(record))
+    try {
+      for (const name of OLD_STORES) rmSync(join(input.directory, name), { recursive: true, force: true })
+      delete state.oldStoreTurns; oldStoresGone = true
+      logger.info(`History deleted the stores of its earlier engines after ${OLD_STORE_TURNS} turns of new checkpoints`)
+    } catch (error) { logger.warn('History could not delete the stores of its earlier engines; it tries again after the next write', { cause: causeOf(error) }) }
+    return true
   }
   /** The bytes on disk of the content the restorable checkpoints among `records` name, each object once. */
   function heldBytes(records: Checkpoint[]): number {
@@ -318,8 +352,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const named = namedObjects(state.checkpoints)
     for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) { objects.remove(id); sizes.delete(id) }
   }
-  function scheduleCollection(): void {
-    if (!store.available || gc || gcTimer || now() - read().lastGcAt < GC_INTERVAL_MS) return
+  /** The shadow-git store's hourly collection, while one is left: the object store needs none (item 7). */
+  function scheduleCollection(state: State): void {
+    if (gc || gcTimer || now() - state.lastGcAt < GC_INTERVAL_MS || !oldStoresLeft(state) || !store.available) return
     gcTimer = setTimeout(() => {
       gcTimer = undefined
       if (closed) return
@@ -387,12 +422,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     await finish(restore)
     return { ...summary(restore), notRestorable: notRestorablePaths(record.before, record.after) }
   }
-  /** A checkpoint made before the object store keeps its content in shadow git, which a restore of it needs (item 7). */
+  /**
+   * A checkpoint made before the object store keeps its content in shadow git (item 7): a restore of one goes through
+   * that store, so it needs permitted host git, even where none of its content is put back, and says so before any ask.
+   */
   function assertShadowReachable(record: Checkpoint, paths: string[]): void {
+    if (record.beforeTrees?.length && !store.available) throw new RestoreRefusedError(OLD_ENGINE_REASON)
     const needed = paths.find(path => { const entry = record.before[path]; return entry?.kind === 'file' && entry.hash !== undefined && !objects.has(entry.hash) })
-    if (needed === undefined) return
-    if (!record.beforeTrees?.length) throw new RestoreRefusedError('History content for a path this restore puts back is missing, so nothing was restored', { path: needed })
-    if (!store.available) throw new RestoreRefusedError('Content restoration requires permitted trusted host git')
+    if (needed !== undefined && !record.beforeTrees?.length) throw new RestoreRefusedError('History content for a path this restore puts back is missing, so nothing was restored', { path: needed })
+  }
+  /** A checkpoint as the owner and the agent list it: a shadow-git one reads as not restorable where host git is not permitted now. */
+  function listedAs(): (record: Checkpoint) => Checkpoint {
+    const available = store.available
+    return record => available || !record.beforeTrees?.length || record.restorable === false ? record : { ...record, restorable: false, reason: OLD_ENGINE_REASON }
   }
   /** Each file a restore writes, read back and checked against the id its checkpoint recorded: from the object store, else shadow git. */
   async function restoredContent(record: Checkpoint, paths: string[]): Promise<Map<string, Buffer>> {
@@ -419,7 +461,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     catch (error) { if (error instanceof SnapshotConflictError) throw new RestoreRefusedError(error.message, { cause: error, ...(error.path === undefined ? {} : { path: error.path }) }); throw error }
   }
   return {
-    list: async () => records().map(summary),
+    list: async () => { const view = listedAs(); return records().map(record => summary(view(record))) },
     observeCall,
     startCall,
     completeCall,
@@ -432,7 +474,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     recent: async (count: number) => {
       const found = records().toReversed().slice(0, Math.min(count, RECENT_CHECKPOINTS_MAX) + 1)
       const shown = found.slice(0, count)
-      return { checkpoints: shown.map((record, index) => ({ ...summary(record), current: index === 0 && record.status !== 'pending' })), more: found.length > shown.length }
+      const view = listedAs()
+      return { checkpoints: shown.map((record, index) => ({ ...summary(view(record)), current: index === 0 && record.status !== 'pending' })), more: found.length > shown.length }
     },
     async plan(target: RollbackTarget): Promise<RollbackPlan> {
       try {
@@ -518,6 +561,8 @@ function identity(path: string): string | undefined {
   return stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined
 }
 function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
+/** A checkpoint an engine before the object store wrote (670f1dc2's shadow git, or SQLite): every new one is `blobs`. */
+function isOldRecord(record: Checkpoint): boolean { return record.content !== 'blobs' }
 function turnOf(record: Checkpoint): string { return record.turnId ?? record.id }
 /**
  * What the owner's log may say of a capture that failed (D2): its kind, its system code, and for a git step which one and
