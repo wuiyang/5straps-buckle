@@ -354,11 +354,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   /**
    * A root's first record, finished off every call path (W2): git builds it in a side index under its own budget, with no
-   * lock, and it takes the shadow index's place under the lock; the sweep waits for it, then runs.
+   * lock, and it takes the shadow index's place under the lock; the sweep waits for it, then runs. Started only as a
+   * command's call ends, under the lock, where its marker is made (V1).
    */
   function warmInBackground(root: string): void {
     if (closed) return
-    const exclusive = (step: () => Promise<void>, signal: AbortSignal) => locked(step, { signal })
+    const exclusive = (step: () => Promise<void>, options: { signal?: AbortSignal; immediate?: boolean }) => locked(step, options)
     const job = commands.warm(root, { deadline: Date.now() + (input.baselineBudgetMs ?? BASELINE_BUDGET_MS), signal: closing.signal }, exclusive)
       .then(placed => { if (placed) logger.info('History finished the first record of a command folder in the background; its commands are restorable again') })
       .catch((error: unknown) => { if (!closing.signal.aborted) logger.warn('History could not finish the first record of a command folder in the background; the next command that runs out of time tries again', { cause: causeOf(error) }) })

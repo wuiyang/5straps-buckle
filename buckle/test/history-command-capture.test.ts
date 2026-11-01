@@ -1,6 +1,6 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -21,21 +21,24 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 // `slow`: git add first sleeps that many seconds, in a shell that ends at once when stopped (X14).
 // `cold`: every git add into an index not made yet first sleeps that many seconds, as a first hash of a cold folder does (W2).
 // `held`: such a git add into a background record's side index ignores the stop, and its sleep keeps git's output open, so
-// it ends only once the sleep does, as a child slow to stop (V2). `indexes`: the index each git add writes.
-const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, held: false, indexes: [] as string[], started: undefined as (() => void) | undefined }))
+// it ends only once the sleep does, as a child slow to stop (V2). `indexes`: the index each git add writes; `ended`: the
+// index of each git add that has ended, done or stopped.
+const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, held: false, indexes: [] as string[], ended: [] as string[], started: undefined as (() => void) | undefined }))
 vi.mock('../common/services/history/git-store.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
   const { existsSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
     const index = String(input.environment.GIT_INDEX_FILE)
-    if (input.operation === 'add') gitAdd.indexes.push(index)
-    if (input.operation === 'add' && gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
-    const cold = input.operation === 'add' && gitAdd.cold && !existsSync(index) ? gitAdd.cold : 0
-    if (input.operation !== 'add' || !gitAdd.slow && !cold) return actual.runProgram(input)
+    if (input.operation !== 'add') return actual.runProgram(input)
+    gitAdd.indexes.push(index)
+    if (gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
+    const cold = gitAdd.cold && !existsSync(index) ? gitAdd.cold : 0
+    const ended = (result: Promise<Buffer>) => { const end = () => { gitAdd.ended.push(index) }; void result.then(end, end); return result }
+    if (!gitAdd.slow && !cold) return ended(actual.runProgram(input))
     const script = gitAdd.held && cold && index.endsWith('index.warm') ? `trap '' TERM; sleep ${cold}; exec "$0" "$@"` : `trap 'exit 143' TERM; sleep ${gitAdd.slow || cold} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`
     const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', script, input.program.path, ...input.program.args] }
     if (gitAdd.slow) { gitAdd.slow = 0; queueMicrotask(() => gitAdd.started?.()) }
-    return actual.runProgram({ ...input, program })
+    return ended(actual.runProgram({ ...input, program }))
   } }
 })
 
@@ -70,7 +73,7 @@ const roots: string[] = []
 afterEach(() => {
   folderReads.on = false; folderReads.paths = []
   objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []; objectFaults.files = undefined; objectFaults.refused = []
-  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.held = false; gitAdd.indexes = []; gitAdd.started = undefined
+  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.held = false; gitAdd.indexes = []; gitAdd.ended = []; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
@@ -692,9 +695,10 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
     try {
       await replacedWhileWarming(made, history)
       await history.exclusive(async () => {
-        await vi.waitFor(() => expect(existsSync(marker)).toBe(false), { timeout: 10_000, interval: 50 })
+        // The record's git has ended; what it made goes only under the lock (V1).
+        await vi.waitFor(() => expect(warmAdds(gitAdd.ended)).toHaveLength(1), { timeout: 10_000, interval: 50 })
         await new Promise(resolve => setTimeout(resolve, 300))
-        expect(leaked(made.directory)).toBe(true)
+        expect([existsSync(marker), leaked(made.directory)]).toEqual([true, true])
       })
       await vi.waitFor(() => expect(leaked(made.directory)).toBe(false), { timeout: 5_000, interval: 100 })
     } finally { await history.close() }
@@ -712,6 +716,88 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
       await history.run({ ...details, stageId: 'third' }, async () => 'ran')
       expect(Date.now() - started).toBeLessThan(400)
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
+    } finally { await history.close() }
+  })
+
+  // V1 and V2 of the Codex recheck of the W fixes: a record's marker names its own history instance; it is made exclusively,
+  // and it and the side index are removed only under the execution lock, by that instance or once its process is gone. So
+  // two instances in one process, as two processes, never take one folder's record at once, remove what the other's record
+  // runs on, or sweep while it writes.
+  const warmOptions = (made: ReturnType<typeof fixture>, baselineBudgetMs = 30_000) => ({ ...made.settings, captureBudgetMs: 500, baselineBudgetMs })
+  const markerOf = (made: ReturnType<typeof fixture>) => shadowIndex(made.directory, made.workspace).replace(/index$/, 'warming')
+  const warmAdds = (list: string[]) => list.filter(index => index.endsWith('index.warm'))
+  const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  it.skipIf(process.platform === 'win32')('takes no second record of a folder another history instance in the same process is taking, and keeps its marker', async () => {
+    const made = fixture()
+    const marker = markerOf(made)
+    const first = await openChangeHistory(warmOptions(made))
+    const second = await openChangeHistory(warmOptions(made))
+    try {
+      gitAdd.cold = 3
+      await first.run(made.details, async () => 'first')
+      await vi.waitFor(() => expect(warmAdds(gitAdd.indexes)).toHaveLength(1), { timeout: 10_000, interval: 50 })
+      const own = readFileSync(marker, 'utf8')
+      await second.run({ ...made.details, stageId: 'second' }, async () => 'second')
+      await pause(300)
+      expect(warmAdds(gitAdd.indexes)).toHaveLength(1)
+      expect(read(marker)).toBe(own)
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(false), { timeout: 20_000, interval: 100 })
+    } finally { await second.close(); await first.close() }
+  })
+
+  it.skipIf(process.platform === 'win32')('holds back the sweep of another history instance in the same process while it runs', async () => {
+    const made = fixture()
+    const other = join(made.root, 'other'); mkdirSync(other); writeFileSync(join(other, 'c.txt'), 'c1')
+    const first = await openChangeHistory(warmOptions(made))
+    const second = await openChangeHistory(warmOptions(made))
+    const store = openObjectStore(made.directory)
+    try {
+      await second.run({ ...made.details, roots: [other] }, async () => 'other')
+      gitAdd.cold = 3
+      await first.run(made.details, async () => 'first')
+      await vi.waitFor(() => expect(warmAdds(gitAdd.indexes)).toHaveLength(1), { timeout: 10_000, interval: 50 })
+      gitAdd.cold = 0
+      const orphan = await store.put(Buffer.from('ORPHAN'))
+      await second.run({ ...made.details, stageId: 'next', roots: [other] }, async () => { writeFileSync(join(other, 'c.txt'), 'c2') })
+      await pause(300)
+      expect(store.has(orphan)).toBe(true)
+      // Once the record ends, its own sweep runs.
+      await vi.waitFor(() => expect(store.has(orphan)).toBe(false), { timeout: 20_000, interval: 100 })
+    } finally { await second.close(); await first.close() }
+  })
+
+  it.skipIf(process.platform === 'win32')('removes what its record made only under the execution lock, once another holder lets it go', async () => {
+    const made = fixture()
+    const marker = markerOf(made)
+    const history = await openChangeHistory(warmOptions(made, 1_500))
+    const holder = await openChangeHistory(warmOptions(made))
+    try {
+      // The record runs out of its own budget, so it ends with no swap, which takes the lock too.
+      gitAdd.cold = 3
+      await history.run(made.details, async () => 'first')
+      await vi.waitFor(() => expect(warmAdds(gitAdd.indexes)).toHaveLength(1), { timeout: 10_000, interval: 50 })
+      await holder.exclusive(async () => {
+        await vi.waitFor(() => expect(warmAdds(gitAdd.ended)).toHaveLength(1), { timeout: 10_000, interval: 50 })
+        await pause(300)
+        expect(existsSync(marker)).toBe(true)
+      })
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(false), { timeout: 10_000, interval: 50 })
+    } finally { await holder.close(); await history.close() }
+  })
+
+  it('removes the marker and side index of a record whose process is gone at the next capture of its folder', async () => {
+    const made = fixture()
+    const marker = markerOf(made)
+    const side = shadowIndex(made.directory, made.workspace).replace(/index$/, 'index.warm')
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => 'first')
+      const gone = spawnSync(process.execPath, ['-e', '']).pid
+      writeFileSync(marker, JSON.stringify({ pid: gone, instance: 'stopped' })); copyFileSync(shadowIndex(made.directory, made.workspace), side)
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'a.txt'), 'a2') })
+      expect([existsSync(marker), existsSync(side)]).toEqual([false, false])
+      expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true })
     } finally { await history.close() }
   })
 })
