@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 /** A node with the stand-in agent-browser; `open` starts another Buckle process on the same workspace and state. */
-async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: () => Promise<BuckleRuntime>; stop: () => void; sessions: string }> {
+async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: (changed?: Record<string, string | undefined>) => Promise<BuckleRuntime>; stop: () => void; sessions: string }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-browser-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -47,15 +47,16 @@ async function node(environment: Record<string, string> = {}): Promise<{ bin: st
   writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}\n`)
   writeFileSync(join(bin, 'agent-browser'), STAND_IN)
   chmodSync(join(bin, 'agent-browser'), 0o755)
-  const settings = Object.fromEntries(Object.entries(environment).map(([key, value]) => [key, value.replace('<root>', root)]))
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: join(bin, 'agent-browser'), ...settings })
-  const open = async () => {
-    const opened = await createRuntime({ config: { ...config, secretFiles: ['.env.local'] } })
+  const configOf = (settings: Record<string, string | undefined>) => configFromEnvironment(Object.fromEntries(Object.entries({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'browser', BUCKLE_AGENT_BROWSER_COMMAND: join(bin, 'agent-browser'), ...settings }).flatMap(([key, value]) => value === undefined ? [] : [[key, value.replace('<root>', root)]])))
+  const config = configOf(environment)
+  // Another Buckle process on the same workspace and state, under the node's settings or, where named, changed ones.
+  const open = async (changed?: Record<string, string | undefined>) => {
+    const opened = await createRuntime({ config: { ...(changed ? configOf({ ...environment, ...changed }) : config), secretFiles: ['.env.local'] } })
     runtimes.push(opened)
     return opened
   }
-  // As a process that stopped without its close step leaves its records: written by a pid that no longer runs.
   const sessions = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
+  // As a process that stopped without its close step leaves its records: written by a pid that no longer runs.
   const stop = () => {
     const file = sessions
     const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, { writer: unknown }> }
@@ -179,6 +180,17 @@ describe('the hold a fill leaves on the workspace\'s browsers', () => {
     // Close shows no page, so it still runs, and ends the browser with both.
     expect(await browser(runtime, { command: 'close', args: [] })).toMatchObject({ outcome: 'ok' })
     expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
+  })
+
+  // Codex review L6: an attached Chrome's hold refused every call on a profile folder, which could never show its page.
+  it('refuses no call on a profile folder once a value an attached Chrome holds changed in its file', async () => {
+    const { workspace, runtime, open } = await node({ BUCKLE_BROWSER_CDP: 'ws://127.0.0.1:9222/devtools/browser/decoy' })
+    expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })
+    expect(await browser(runtime, { command: 'close', args: [] })).toMatchObject({ outcome: 'ok' })
+    await runtime.closeSessions()
+    const profile = await open({ BUCKLE_BROWSER_CDP: undefined, BUCKLE_BROWSER_PROFILE: '<root>/profile' })
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}-rotated\n`)
+    expect(await browser(profile, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
   })
 
   it('keeps the hold while another browser of the workspace runs', async () => {

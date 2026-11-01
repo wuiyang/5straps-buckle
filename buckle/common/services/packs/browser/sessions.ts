@@ -43,9 +43,12 @@ export type Writer = z.infer<typeof WriterSchema>
 export const SessionsSchema = z.object({
   browsers: z.record(z.string(), BrowserRecordSchema).default({}),
   /**
-   * What the owner's attached Chrome was filled with, held as `held` is: it only disconnects at a close or a shutdown and
-   * keeps its pages, so its hold stays until the owner's buckle browser close.
+   * What each attached Chrome was filled with, by the Chrome its endpoint reaches (attachedChrome), held as `held` is: a
+   * close or a shutdown only disconnects from it, and it keeps its pages, so its hold stays until the owner's buckle
+   * browser close. A call is masked by its own Chrome's alone (Codex review L6).
    */
+  chromes: z.record(z.string(), z.array(FilledSchema)).optional(),
+  /** A hold an earlier Buckle kept for an attached Chrome it did not name: every attached Chrome's calls are masked by it. */
   attached: z.array(FilledSchema).optional(),
   // The store of Buckle 0.1.9 and before, keyed by caller and settings: taken up once (upgradeSessions) and kept empty,
   // so an earlier Buckle still reads the file. Its hold was the workspace's, whichever browser was filled.

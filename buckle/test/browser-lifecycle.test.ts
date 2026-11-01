@@ -377,6 +377,29 @@ describe('the hold a fill leaves, per browser (F4 item 5)', () => {
     expect(JSON.parse(readFileSync(join(sessionDirectory, 'sessions.json'), 'utf8')).browsers).toEqual({})
   })
 
+  // Codex review L6: every profile and attached call was masked by the attached hold and every profile folder's, so a
+  // value one browser holds refused calls on another that could never show it once its file changed.
+  it.each<[string, BrowserMode, BrowserMode]>([
+    ['another profile folder', { kind: 'profile', directory: '/owner/profile' }, { kind: 'profile', directory: '/owner/other-profile' }],
+    ['a profile folder after an attached Chrome', { kind: 'attached', endpoint: '9222' }, { kind: 'profile', directory: '/owner/profile' }],
+    ['an attached Chrome after a profile folder', { kind: 'profile', directory: '/owner/profile' }, { kind: 'attached', endpoint: '9222' }],
+    ['another attached Chrome', { kind: 'attached', endpoint: '9222' }, { kind: 'attached', endpoint: 'ws://127.0.0.1:9333/devtools/browser/decoy' }],
+  ])('masks a call on %s by its own browser\'s hold alone', async (_, filledMode, otherMode) => {
+    const { open, sessionDirectory } = node({ mode: filledMode })
+    await call(open(), { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    // The filled browser's process still runs, so its browser, and its hold, stay beside the other.
+    rewrite(sessionDirectory, (record) => { record.writer = { pid: process.ppid, instance: 'live-sibling' } })
+    const other = open({ browser: { mode: otherMode } })
+    expect(await heldFor(other)).toEqual([])
+    expect(await heldFor(open())).toEqual(['LOGIN_PASSWORD'])
+  })
+
+  it('masks an attached Chrome by its hold under any spelling of its endpoint', async () => {
+    const { open } = node({ mode: { kind: 'attached', endpoint: '9222' } })
+    await call(open(), { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    expect(await heldFor(open({ browser: { mode: { kind: 'attached', endpoint: 'ws://localhost:9222/devtools/browser/decoy' } } }))).toEqual(['LOGIN_PASSWORD'])
+  })
+
   it('spreads an earlier Buckle\'s workspace-wide hold over the browsers it recorded, which end with them', async () => {
     const { browser, open, sessionDirectory } = node()
     await call(open(), { command: 'open', args: ['https://app.example.test/'] })

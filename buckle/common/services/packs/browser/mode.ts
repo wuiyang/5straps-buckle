@@ -95,6 +95,14 @@ export function cdpEndpointKey(endpoint: string): string {
 }
 
 /**
+ * Which Chrome an attached endpoint reaches (cdpEndpointKey), hashed, so the sessions store keeps a hold by the Chrome it
+ * was filled into (Codex review L6) and holds no endpoint.
+ */
+export function attachedChrome(endpoint: string): string {
+  return createHash('sha256').update(cdpEndpointKey(endpoint)).digest('hex').slice(0, 16)
+}
+
+/**
  * Which folder a profile setting hands on, for the one-owner rule (Q10): where it really lands (judgedFolder), else the
  * folder as typed while it is not there yet, in the case the volume compares.
  */

@@ -14,7 +14,7 @@ import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
 import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedFlag } from './effects.js'
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
-import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
+import { attachedChrome, containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { claimCaller, closeAll, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
 import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
@@ -148,6 +148,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     caller: { caller: context.sessionId, stage: context.stageId ?? 'default', alias: alias ?? 'default' },
     fingerprint,
     own: running.kind === 'profile' ? profileSession(running.directory) : null,
+    chrome: running.kind === 'attached' ? attachedChrome(running.endpoint) : null,
     flag,
   })
   const lifecycle: Lifecycle = {

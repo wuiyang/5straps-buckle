@@ -15,6 +15,8 @@ export interface CallScope {
   fingerprint: string
   /** The profile folder's one session, which every caller shares; null in the other modes. */
   own: string | null
+  /** The attached Chrome the call reaches (attachedChrome), whose hold masks it; null in the other modes. */
+  chrome: string | null
   /** The --allowed-domains the call passes, null for none. */
   flag: string | null
 }
@@ -141,7 +143,11 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
 function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: readonly FilledSecret[]): { session: string; sibling: boolean } {
   const now = Date.now()
   const fields = { ...scope.caller, mode: scope.fingerprint, writer: lifecycle.me, usedAt: now, idleTimeoutMs: lifecycle.idleTimeoutMs }
-  if (scope.kind === 'attached' && fills.length > 0) state.attached = withFilled(lifecycle, state.attached ?? [], fills)
+  if (scope.kind === 'attached' && fills.length > 0) {
+    // Checked against all the Chrome is masked by, an earlier Buckle's hold included; kept as the Chrome's own.
+    withFilled(lifecycle, chromeHold(state, scope.chrome!), fills)
+    state.chromes = { ...state.chromes, [scope.chrome!]: mergeFilled(state.chromes?.[scope.chrome!] ?? [], fills) }
+  }
   const held = (record: BrowserRecord | undefined) => {
     const kept = withFilled(lifecycle, record?.held ?? [], scope.kind === 'attached' ? [] : fills)
     return kept.length > 0 ? { held: kept } : {}
@@ -184,20 +190,26 @@ function ownerCommand(lifecycle: Lifecycle): string {
 }
 
 /**
- * The values a browser call is masked by (Slice F4, item 5): on a fresh browser, what its own session holds, the one
- * the call will run on; on a profile folder or an attached Chrome, the shared values, what every caller's browser
- * there holds: the profile folder's sessions, one a close failed for included, and the attached Chrome's hold. A
- * session about to be ended before the call runs is left out, as the call never reaches it.
+ * The values a browser call is masked by (Slice F4, item 5), those of the browser it reaches alone (Codex review L6):
+ * on a fresh browser, what its own session holds, the one the call will run on; on a profile folder, what the folder's
+ * one session holds, one a close failed for included; on an attached Chrome, that Chrome's hold. A session about to be
+ * ended before the call runs is left out, as the call never reaches it.
  */
 export function heldFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): HeldSecret[] {
   const now = Date.now()
   const ending = (record: BrowserRecord) => !record.closing && stranded(record, lifecycle.me, now, lifecycle.longestCallMs)
   const key = sessionKey(scope.kind, scope.caller)
+  const shared = scope.own === null ? undefined : state.browsers[scope.own]
   const values = scope.kind === 'fresh'
     ? [...Object.values(state.browsers).find(record => !record.closing && !ending(record) && keyOf(record) === key && record.mode === scope.fingerprint && (record.allowedDomains === undefined || record.allowedDomains === scope.flag))?.held ?? []]
-    : mergeFilled(state.attached ?? [], Object.values(state.browsers).filter(record => record.kind === 'profile' && !ending(record)).flatMap(record => record.held ?? []))
+    : scope.kind === 'profile' ? (shared === undefined || ending(shared) ? [] : [...shared.held ?? []]) : chromeHold(state, scope.chrome!)
   const command = ownerCommand(lifecycle)
   return values.map(value => ({ ...value, holders: holdersOf(state, value), ownerCommand: command }))
+}
+
+/** What an attached Chrome is masked by: its own hold, and one an earlier Buckle kept for a Chrome it did not name. */
+function chromeHold(state: Sessions, chrome: string): FilledSecret[] {
+  return mergeFilled(state.attached ?? [], state.chromes?.[chrome] ?? [])
 }
 
 /** What a refusal names for an attached Chrome, which a close only disconnects from. */
@@ -207,7 +219,7 @@ const ATTACHED_HOLDER = 'the owner\'s attached Chrome, which keeps its pages thr
 function holdersOf(state: Sessions, value: FilledSecret): string[] {
   const key = filledKey(value)
   const holders = Object.values(state.browsers).filter(record => (record.held ?? []).some(entry => filledKey(entry) === key)).map(describeHolder)
-  if ((state.attached ?? []).some(entry => filledKey(entry) === key)) holders.push(ATTACHED_HOLDER)
+  if ([...state.attached ?? [], ...Object.values(state.chromes ?? {}).flat()].some(entry => filledKey(entry) === key)) holders.push(ATTACHED_HOLDER)
   return holders
 }
 
@@ -312,6 +324,7 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
     const closed = await closeEach(lifecycle, names)
     forget(state, closed)
     delete state.attached
+    delete state.chromes
     const after = heldValues(state)
     const kept = after.size
     return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}) }
@@ -320,7 +333,7 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
 
 /** Every value the workspace's browsers hold, each once, by file, NAME, and digest. */
 function heldValues(state: Sessions): Set<string> {
-  return new Set([...state.attached ?? [], ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(entry => `${filledKey(entry)}\u0000${entry.digest}`))
+  return new Set([...state.attached ?? [], ...Object.values(state.chromes ?? {}).flat(), ...Object.values(state.browsers).flatMap(record => record.held ?? [])].map(entry => `${filledKey(entry)}\u0000${entry.digest}`))
 }
 
 /** Records how each claimed close went: a closed session is forgotten, one that did not close stays marked closing. */
