@@ -30,9 +30,16 @@ Buckle reads references in three places and no others:
 Anywhere else, Buckle refuses the call before judging it, with "references are read in shell words,
 browser fill values, and web_fetch headers only" and where the reference stood. That covers the
 program a command runs, a variable, a working directory, a file write, a URL, a request body, a
-header name, a browser selector, a Node or Python script body, and a `code_run` script. So does a
-command that starts an interpreter, such as `python3 -c`, whose code Buckle does not read. A call
-makes at most 64 references to at most 16 files.
+header name, a browser selector, and a Node or Python script body. So does a command that starts
+an interpreter, such as `python3 -c`, whose code Buckle does not read. A call makes at most 64
+references to at most 16 files.
+
+A [code mode](code-mode.md) script may pass a reference to a call it makes, as the text of a
+`fill` or `type`, a shell argument, or a `web_fetch` header. Buckle reads no reference in the
+script itself and reads no file for one. Each call the script makes is read as the same call made
+directly: the reference is read there, the file's first use asks as it would for a direct call,
+and the script sees `[secret:NAME]`. A reference the script passes anywhere else refuses that call
+alone, which the script may catch.
 
 In text a shell parses again, such as a `-c` body or a Bash script, write the reference inside
 quotes and never after `$` or a backslash. Buckle swaps in a stand-in value holding a blank, and

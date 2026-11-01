@@ -13,14 +13,18 @@ that reads fifty files and keeps three lines costs you three lines.
 buckle code run --script 'const r = await tools.fs_list({ path: "src" }); return r.entries.length'
 ```
 
-Over MCP, call `code_run` with `{ "script": "..." }`, and `timeoutMs` when it needs longer than a call's
-own timeout.
+Over MCP, call `code_run` with `{ "script": "..." }`, and `timeoutMs` for longer than a call's own
+timeout.
 
 ## Writing a script
 
 The script is the body of an async function: top-level `await` and `return` work. It has no
 files, network, processes, timers, `require`, or modules of its own. Everything it reaches goes
 through `tools`, in your session: its `browser_command` drives the page your own calls opened.
+
+A script may pass a [secret reference](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md), such as
+`{{file:.env.local:LOGIN_PASSWORD}}`, as `fill` or `type` text, a shell argument, or a `web_fetch`
+header: that call reads it as a direct call does, and the script sees `[secret:NAME]`.
 
 ```js
 const listed = await tools.fs_list({ path: 'docs' })
@@ -70,12 +74,10 @@ of every call that asked. Relay them as you would any ask. The person sees that 
 with a note that a `code_run` script made it.
 
 Once they answer, send the same script again, its text unchanged; `timeoutMs` may differ. Buckle
-replays the calls that already ran from its record of the first run, without running them again,
-and then runs the call that asked. A call refused or failed with a retryable error after the
-script stopped is made again, and past 50 pending asks in one session, the rest ask on the next
-send. On a node that waits for answers (the CLI, or a caller that
-sends a wait), the call simply waits inside the script, as a direct call would, until a second
-before the script's deadline.
+replays the calls that already ran from its record of the first run, then runs the call that
+asked. A call refused or failed with a retryable error after the script stopped is made again,
+and past 50 pending asks in one session, the rest ask on the next send. Where the caller waits for
+answers, as the CLI does, the call waits inside the script until a second before its deadline.
 
 Do not change the script to get around an ask. A changed script is a new script: Buckle replays
 nothing for it, its calls run again, and the same call asks again. Changing the script is right
@@ -89,10 +91,9 @@ call that asked on its own, or send a script that keeps less. A replay is kept f
 A script stopped by its deadline, a cancel, or a shutdown keeps the same record. The same script
 sent again within ten minutes goes on where it stopped: the calls that finished are replayed, not
 run again. Past 32 MiB of results it cannot go on, and each call that ran answers
-`REQUEST_ALREADY_EXECUTED` instead. To run it from its start, change one character of it, even in a
-comment. A call that
-answers `REQUEST_ALREADY_EXECUTED` ran before, perhaps cut short, and Buckle did not run it again:
-check what it did, then change the script to run it again.
+`REQUEST_ALREADY_EXECUTED` instead. A call that answers `REQUEST_ALREADY_EXECUTED` ran before,
+perhaps cut short, and was not run again: check what it did, then change one character of the
+script, even in a comment, to run it from its start.
 
 ## Limits
 
@@ -100,8 +101,8 @@ check what it did, then change the script to run it again.
 - At most 256 calls per script, refused ones and those before an ask counted; past it, the call
   fails inside the script with `CODE_CALL_LIMIT`, and a script that keeps calling is ended.
   `describeTool` and `searchTools` count apart: past 10000, `CODE_GLOBAL_LIMIT` ends the script. Eight
-  run at once, and the rest wait their turn, so `Promise.all` over many files works; a batch tool
-  such as `fs_read_batch` makes fewer calls.
+  run at once and the rest wait, so `Promise.all` over many files works; `fs_read_batch` makes fewer
+  calls.
 - One call's arguments, as JSON, are held to the node's request size, 1 MiB by default; past it the
   call fails with `REQUEST_TOO_LARGE`.
 - The sandbox has 256 MiB of memory. Running out throws inside the script.

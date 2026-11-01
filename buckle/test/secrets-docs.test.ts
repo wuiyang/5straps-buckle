@@ -5,10 +5,12 @@ import type { JsonObject } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
+import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { maskLabel, MIN_SECRET_LENGTH, PLACES_REASON, PLATFORM_REASON, readReferences, SHORT_REASON } from '../common/domain/secret-reference.js'
 import { referenceHint, type ReferenceHintTool } from '../common/domain/secret-reference-hint.js'
+import { codeRunDescription } from '../common/services/packs/code/declarations.js'
 import { loadPackSkill } from '../common/services/packs/pack-skill.js'
 import { MODE_DESCRIPTIONS } from '../common/services/packs/browser/mode.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
@@ -96,7 +98,7 @@ describe('docs/secrets.md quotes what the code says', () => {
 })
 
 describe('the pages that point at docs/secrets.md', () => {
-  it.each(['policy.md', 'sandbox-and-tools.md', 'workspaces-02.md', 'approvals.md'])('%s links to it', (name) => {
+  it.each(['policy.md', 'sandbox-and-tools.md', 'workspaces-02.md', 'approvals.md', 'code-mode.md'])('%s links to it', (name) => {
     expect(page(name)).toContain('](secrets.md')
   })
 
@@ -116,8 +118,21 @@ describe('the pages that point at docs/secrets.md', () => {
     expect(secrets).not.toContain('never answers this ask')
   })
 
-  it.each(['browser', 'web', 'shell'])('the %s skill links to it by its address on GitHub, which a shipped skill must use', (pack) => {
+  it.each(['browser', 'web', 'shell', 'code'])('the %s skill links to it by its address on GitHub, which a shipped skill must use', (pack) => {
     expect(loadPackSkill(pack).content).toContain(`](${LINK}`)
+  })
+
+  // The owner's report of 2026-11-01: a code_run script passes a reference on to the call it makes.
+  it('says a code_run script may pass a reference to a call, in secrets.md, code-mode.md, both skills, and code_run\'s description', () => {
+    expect(secrets).not.toContain('a `code_run` script. So does')
+    expect(secrets).toContain('A [code mode](code-mode.md) script may pass a reference to a call it makes, as the text of a `fill` or `type`, a shell argument, or a `web_fetch` header.')
+    expect(page('code-mode.md')).toContain('to a call as the text of a `fill` or `type`, a shell argument, or a `web_fetch` header.')
+    expect(loadPackSkill('code').content.replace(/\s+/g, ' ')).toContain('as `fill` or `type` text, a shell argument, or a `web_fetch` header: that call reads it as a direct call does')
+    expect(loadPackSkill('browser').content).toContain('A `code_run` script may pass the same reference in its own `fill` or `type` call.')
+    const guide = codeRunDescription(createPiCodemodeVm(), [])
+    const example = guide.match(/A secret reference such as `(\{\{file:[^{}\s]*\}\})` may be passed to a call as browser fill or type text, a shell argument, or a web_fetch header: that call reads it/)?.[1]
+    expect(example).toBeDefined()
+    expect(planSecrets({ tool: 'browser_command', pack: 'browser', args: { command: 'fill', args: ['#password', example!] }, enabled: true })).toMatchObject({ plan: { places: [{ kind: 'fill', references: [{ raw: example }] }] } })
   })
 })
 

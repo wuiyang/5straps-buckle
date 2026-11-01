@@ -54,6 +54,14 @@ calls reach only that workspace's tools, sessions, approvals, replay records, an
 carry the caller's own session and stage, so a script's `browser_command` drives the browser the
 agent's direct calls opened, on the same page.
 
+## Secret references in a script
+
+A script can fill a password or send a token without seeing it. It passes a
+[secret reference](secrets.md), such as `{{file:.env.local:LOGIN_PASSWORD}}`, to a call as the
+text of a `fill` or `type`, a shell argument, or a `web_fetch` header. That call reads it as a
+direct call would, asks about the file on its first use, and answers with `[secret:NAME]` in the
+value's place. Buckle reads no reference in the script itself.
+
 ## Approvals inside a script
 
 A script's call meets the same rules as a direct call: a read inside the workspace runs, the
