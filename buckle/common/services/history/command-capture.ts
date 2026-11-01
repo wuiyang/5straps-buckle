@@ -97,7 +97,8 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   /**
    * The shadow repository for `root`, made once; its excludes name Buckle's own state and the protected paths, which no
    * capture records. `protect` names those inside the root, each excluded from every pathspec too, as a workspace
-   * .gitignore outranks the shadow excludes and could re-include one (X3).
+   * .gitignore outranks the shadow excludes and could re-include one (X3). A background record runs it too, outside the
+   * execution lock, so it removes no index, no index lock, and no side index (T1).
    */
   async function prepare(found: Program, root: string, budget: CaptureBudget): Promise<{ root: string; git: string; extra: string[]; protect: string[] }> {
     const state = { root, git: gitDirectory(root) }
@@ -114,10 +115,6 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     const excludes = protect.map(name => `/${escapeIgnore(name)}`).join('\n') + '\n'
     const file = join(state.git, 'info', 'exclude')
     if (readText(file) !== excludes) writeFileSync(file, excludes, { mode: 0o600 })
-    // A killed child leaves its lock; under the execution lock no other capture of this root runs (A4, B6). A side index no
-    // background record is building is a stopped one's (W2).
-    rmSync(join(state.git, 'index.lock'), { force: true })
-    if (!warming.has(root)) tidy(root)
     const owner = ownerGitDirectory(root)
     const own = owner === undefined ? undefined : join(owner, 'info', 'exclude')
     return { ...state, protect, extra: own !== undefined && regularFile(own) ? ['-c', `core.excludesFile=${own}`] : [] }
@@ -174,6 +171,10 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const identity = folderIdentity(root)
       if (identity === undefined) throw new FolderReplacedError('A folder history records is no longer a folder')
       const state = await prepare(found, root, budget)
+      // Under the call's execution lock alone (T1): a killed child leaves the index's lock, and no other capture of this
+      // root runs, as a background record writes its side index's own (A4, B6); a side index no live record is building
+      // is a stopped one's (W2).
+      rmSync(join(state.git, 'index.lock'), { force: true }); tidy(root)
       const excludes = state.protect.map(name => `:(exclude,literal)${name}`)
       const refreshed = await refresh(found, state, budget)
       const warnings = { chunks: [] as Buffer[], bytes: 0 }
@@ -218,8 +219,9 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const identity = folderIdentity(root)
       if (identity === undefined) throw new FolderReplacedError('A folder history records is no longer a folder')
       const state = await prepare(found, root, background)
+      // What a stopped record left went under the lock as this one's marker was made (claim): outside the lock, the record
+      // writes its own side index alone (T1).
       const index = join(state.git, 'index'); const side = join(state.git, WARM_INDEX)
-      for (const name of [side, `${side}.lock`]) rmSync(name, { force: true })
       const base = fileIdentity(index)
       if (base !== undefined) copyFileSync(index, side)
       await refresh(found, state, background, side)

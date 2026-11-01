@@ -24,11 +24,14 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 // it ends only once the sleep does, as a child slow to stop (V2). `indexes`: the index each git add writes; `ended`: the
 // index of each git add that has ended, done or stopped.
 const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, held: false, indexes: [] as string[], ended: [] as string[], started: undefined as (() => void) | undefined }))
+// `gate`: each git init waits for it, as a slow one does while a background record makes its setup again (T1).
+const gitInit = vi.hoisted(() => ({ gate: undefined as Promise<void> | undefined }))
 vi.mock('../common/services/history/git-store.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
   const { existsSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
     const index = String(input.environment.GIT_INDEX_FILE)
+    if (input.operation === 'init' && gitInit.gate) return gitInit.gate.then(() => actual.runProgram(input))
     if (input.operation !== 'add') return actual.runProgram(input)
     gitAdd.indexes.push(index)
     if (gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
@@ -74,6 +77,7 @@ afterEach(() => {
   folderReads.on = false; folderReads.paths = []
   objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []; objectFaults.files = undefined; objectFaults.refused = []
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.held = false; gitAdd.indexes = []; gitAdd.ended = []; gitAdd.started = undefined
+  gitInit.gate = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
@@ -799,6 +803,29 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
       expect([existsSync(marker), existsSync(side)]).toEqual([false, false])
       expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true })
     } finally { await history.close() }
+  })
+
+  // T1 of the Codex recheck of round 3: a record that resumes outside the execution lock, its setup made again, never
+  // removes the shadow index's lock, which a git step of a call that holds the lock may own. Only a capture under the lock
+  // removes a stale one.
+  it.skipIf(process.platform === 'win32')('never removes the index lock a holder of the execution lock may own as it resumes outside that lock', async () => {
+    const made = fixture()
+    const git = shadowIndex(made.directory, made.workspace).replace(/index$/, '')
+    const lock = join(git, 'index.lock')
+    const history = await openChangeHistory(warmOptions(made))
+    const holder = await openChangeHistory(warmOptions(made))
+    try {
+      gitAdd.cold = 3
+      let release = () => {}
+      // The record's setup is gone as it starts, so its git init runs, and waits until another holder takes the lock.
+      await history.run(made.details, async () => { rmSync(join(git, 'buckle-setup-complete')); gitInit.gate = new Promise(resolve => { release = resolve }) })
+      await holder.exclusive(async () => {
+        writeFileSync(lock, '')
+        release()
+        await vi.waitFor(() => expect(warmAdds(gitAdd.indexes)).toHaveLength(1), { timeout: 10_000, interval: 50 })
+        expect(existsSync(lock)).toBe(true)
+      })
+    } finally { await holder.close(); await history.close() }
   })
 })
 
