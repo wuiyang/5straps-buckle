@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { copyFileSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, rmSync, utimesSync, writeFileSync, type Stats } from 'node:fs'
+import { closeSync, copyFileSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync, type Stats } from 'node:fs'
 import { join, relative } from 'pathe'
 import { replaceFile } from '../../adapters/replace-file.js'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
@@ -45,15 +45,12 @@ export class FolderReplacedError extends Error {}
 /** A command's root whose first record history is still taking in the background (W2): the command runs, never waiting on it. */
 export class BaselineWarmingError extends Error {}
 
-/** The side index a first record taken in the background is built in, and the marker that names its history instance and process to every sweep. */
+/**
+ * The side index a first record taken in the background is built in, and the marker that names its history instance, its
+ * process, and when that process started to every sweep.
+ */
 const WARM_INDEX = 'index.warm'
 const WARM_MARKER = 'warming'
-/**
- * How often a background record touches its marker while it runs, and how long one left untouched counts as a record that
- * no longer runs, its process gone and its pid perhaps reused since (V2).
- */
-const MARKER_BEAT_MS = 5_000
-const MARKER_STALE_MS = 60_000
 
 /**
  * Command capture (Slice F2, item 3, owner correction 2026-11-01): git itself, in a shadow repository per root with an
@@ -79,6 +76,8 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   const leftovers = new Set<string>()
   /** This history instance's name in each marker it makes, so two instances in one process tell their records apart (V2). */
   const instance = randomUUID()
+  /** When this process started, as the system counts it, in each marker it makes, so a later process given its pid is told apart (V2). */
+  const started = processStart(process.pid)
 
   function program(roots: string[]): Program | null {
     return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
@@ -202,15 +201,12 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    * that changed since it was copied. A marker names this instance and its process to every sweep, which removes nothing
    * while it stands, as git writes objects no index names yet. Called under the execution lock, as a command's call ends:
    * the marker is made there before anything is awaited, and it goes with the side index under the lock again as the record
-   * ends (V1). The record touches it while it runs (V2). Answers whether the record took its place.
+   * ends (V1). Answers whether the record took its place.
    */
   async function warm(root: string, budget: CaptureBudget, exclusive: (step: () => Promise<void>, options: { signal?: AbortSignal; immediate?: boolean }) => Promise<void>): Promise<boolean> {
     if (warming.has(root) || !claim(root)) return false
     const stop = new AbortController()
     warming.set(root, stop)
-    const marker = join(gitDirectory(root), WARM_MARKER)
-    const beat = setInterval(() => { touch(marker) }, MARKER_BEAT_MS)
-    beat.unref()
     const signals = [stop.signal, ...budget.signal ? [budget.signal] : []]
     const background = { deadline: budget.deadline, signal: AbortSignal.any(signals) }
     try {
@@ -233,7 +229,6 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (placed) rewritten.add(root)
       return placed
     } finally {
-      clearInterval(beat)
       // The root is let go first, so a removal the system refuses never leaves it marked as taking a record (V1).
       warming.delete(root)
       // Under the lock (V1). As history closes it is tried once; a lock taken leaves it to the root's next capture or sweep.
@@ -244,17 +239,21 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
 
   /**
    * Makes `root`'s marker, exclusively, under the execution lock, as no other marker is made or removed but under it (V1):
-   * what a record no longer running left goes first, and a live one's stays, so no second record of the root starts.
-   * Answers whether this instance took it.
+   * what a record no longer running left goes first, and a live one's stays, so no second record of the root starts. One
+   * made but not written whole, as on a full disk, names no record and goes at once, as nothing could prove it stale later
+   * (V2). Answers whether this instance took it.
    */
   function claim(root: string): boolean {
     const git = gitDirectory(root)
+    const marker = join(git, WARM_MARKER)
     tidy(root)
-    try {
-      mkdirSync(git, { recursive: true, mode: 0o700 })
-      writeFileSync(join(git, WARM_MARKER), JSON.stringify({ pid: process.pid, instance }), { mode: 0o600, flag: 'wx' })
-      return true
-    } catch (error) { if (systemCode(error) === 'EEXIST') return false; throw error }
+    mkdirSync(git, { recursive: true, mode: 0o700 })
+    let made: number
+    try { made = openSync(marker, 'wx', 0o600) } catch (error) { if (systemCode(error) === 'EEXIST') return false; throw error }
+    try { writeFileSync(made, JSON.stringify({ pid: process.pid, ...started === undefined ? {} : { started }, instance })) }
+    catch (error) { closeSync(made); rmSync(marker, { force: true }); throw error }
+    closeSync(made)
+    return true
   }
 
   /**
@@ -383,20 +382,23 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
-   * Whether `git`'s marker names a record that still runs (V1, V2): one of this instance while it runs here; one of another
-   * instance, in this process or another, while its process lives and it touched its marker within MARKER_STALE_MS. One
-   * that cannot be read counts while it is fresh.
+   * Whether `git`'s marker names a record that may still run (V1, V2): one of this instance while it runs here; one of
+   * another instance, in this process or another, until it is proven stale: its process gone, or its pid taken by a
+   * process that started after the marker was made, where the system says when each started (Linux). No marker expires
+   * with time. One never proven stale, unread or where the system does not say, holds back every sweep, never a call.
    */
   function liveMarker(git: string): boolean {
     const path = join(git, WARM_MARKER)
-    const stat = inspect(path)
-    if (!stat) return false
-    let marker: { pid?: unknown; instance?: unknown } = {}
-    try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); if (parsed && typeof parsed === 'object') marker = parsed } catch { /* read by its age below */ }
+    if (!inspect(path)) return false
+    let marker: { pid?: unknown; started?: unknown; instance?: unknown } = {}
+    try { const parsed: unknown = JSON.parse(readFileSync(path, 'utf8')); if (parsed && typeof parsed === 'object') marker = parsed } catch { /* unread: nothing proves it stale */ }
     if (marker.instance === instance) return [...warming.keys()].some(root => gitDirectory(root) === git)
-    if (Date.now() - stat.mtimeMs > MARKER_STALE_MS) return false
     const { pid } = marker
-    return typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || processLives(pid)
+    if (typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0) return true
+    if (!processLives(pid)) return false
+    // Another start than the one the marker names: the process that made it ended, and a later one took its pid.
+    const now = typeof marker.started === 'string' ? processStart(pid) : undefined
+    return now === undefined || now === marker.started
   }
 
   /**
@@ -589,10 +591,17 @@ function cacheTrees(data: Buffer, trees: string[]): boolean {
 function processLives(pid: number): boolean {
   try { process.kill(pid, 0); return true } catch (error) { return systemCode(error) === 'EPERM' }
 }
-/** A background record's touch of its marker, to say it still runs (V2); one already gone is left so. */
-function touch(path: string): void {
-  const now = new Date()
-  try { utimesSync(path, now, now) } catch { /* removed as its record ended, or as a stale one */ }
+/**
+ * When the process `pid` started, in clock ticks since boot, which never changes while it runs: field 22 of Linux's
+ * /proc/<pid>/stat, the 20th after the command name, which stands in parentheses and may hold any character. undefined
+ * elsewhere, or where the system hides it.
+ */
+function processStart(pid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined
+  let stat: string
+  try { stat = readFileSync(`/proc/${pid}/stat`, 'utf8') } catch { return undefined }
+  const start = stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19]
+  return start !== undefined && /^[0-9]+$/.test(start) ? start : undefined
 }
 function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
 /** A system error's code alone, as the owner's log may name it (D2). */

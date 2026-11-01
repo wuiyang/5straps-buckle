@@ -805,6 +805,44 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
     } finally { await history.close() }
   })
 
+  // V2 of the Codex recheck of round 3: no marker expires with time. One whose process lives stays however long ago it was
+  // made, and holds back every sweep, never a call; one whose pid a later process took goes, where the system says when
+  // each process started (Linux).
+  it('keeps the marker and side index of another instance\'s record whose process lives, however old, and sweeps nothing meanwhile', async () => {
+    const made = fixture()
+    const marker = markerOf(made)
+    const side = shadowIndex(made.directory, made.workspace).replace(/index$/, 'index.warm')
+    const store = openObjectStore(made.directory)
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => 'first')
+      writeFileSync(marker, JSON.stringify({ pid: process.pid, instance: 'other' })); copyFileSync(shadowIndex(made.directory, made.workspace), side)
+      const old = new Date(Date.now() - 3_600_000); utimesSync(marker, old, old)
+      const orphan = await store.put(Buffer.from('ORPHAN'))
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'a.txt'), 'a2') })
+      await pause(300)
+      expect([existsSync(marker), existsSync(side), store.has(orphan)]).toEqual([true, true, true])
+      expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true })
+    } finally { await history.close() }
+  })
+
+  it.skipIf(process.platform !== 'linux')('removes the marker and side index of a record whose pid a later process took, and sweeps again', async () => {
+    const made = fixture()
+    const marker = markerOf(made)
+    const side = shadowIndex(made.directory, made.workspace).replace(/index$/, 'index.warm')
+    const store = openObjectStore(made.directory)
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => 'first')
+      // This process's pid, named with a start that is not this process's: a record that ran before it took the pid.
+      writeFileSync(marker, JSON.stringify({ pid: process.pid, started: '1', instance: 'stopped' })); copyFileSync(shadowIndex(made.directory, made.workspace), side)
+      const orphan = await store.put(Buffer.from('ORPHAN'))
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'a.txt'), 'a2') })
+      expect([existsSync(marker), existsSync(side)]).toEqual([false, false])
+      await vi.waitFor(() => expect(store.has(orphan)).toBe(false), { timeout: 10_000, interval: 100 })
+    } finally { await history.close() }
+  })
+
   // T1 of the Codex recheck of round 3: a record that resumes outside the execution lock, its setup made again, never
   // removes the shadow index's lock, which a git step of a call that holds the lock may own. Only a capture under the lock
   // removes a stale one.
