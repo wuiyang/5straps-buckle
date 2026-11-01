@@ -1,21 +1,32 @@
 import { execFileSync, spawn } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import { historyGitProgram } from '../common/services/history/git-store.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
+import { blobId } from '../common/services/history/object-store.js'
+import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
 
-const fault = vi.hoisted(() => ({ enabled: false, writes: 0, noLink: false }))
+// `appear`: where the volume makes no hard link, an outside writer makes that file just as the restore puts its own there (R1.1).
+const fault = vi.hoisted(() => ({ enabled: false, writes: 0, noLink: false, appear: undefined as string | undefined }))
 // A restored file is put in place by a hard link, or a rename where the volume makes none: either fails on the second.
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>()
   const placed = (from: unknown) => { if (fault.enabled && String(from).includes('.buckle-restore-') && ++fault.writes === 2) { fault.enabled = false; throw new Error('injected restore failure') } }
+  const outside = (to: unknown) => {
+    const path = fault.appear
+    if (path === undefined || String(to).includes('.buckle-') || !String(to).endsWith(`/${path.split('/').at(-1)}`)) return
+    fault.appear = undefined; fs.writeFileSync(path, 'outside')
+  }
   return {
     ...fs,
-    renameSync: (...args: Parameters<typeof fs.renameSync>) => { placed(args[0]); return fs.renameSync(...args) },
+    renameSync: (...args: Parameters<typeof fs.renameSync>) => { placed(args[0]); if (String(args[0]).includes('.buckle-')) outside(args[1]); return fs.renameSync(...args) },
+    symlinkSync: (...args: Parameters<typeof fs.symlinkSync>) => { outside(args[1]); return fs.symlinkSync(...args) },
+    openSync: (...args: Parameters<typeof fs.openSync>) => { if (typeof args[1] === 'number' && (args[1] & fs.constants.O_EXCL)) outside(args[0]); return fs.openSync(...args) },
     linkSync: (...args: Parameters<typeof fs.linkSync>) => {
       placed(args[0])
+      if (String(args[0]).includes('.buckle-displaced-')) outside(args[1])
       if (fault.noLink && String(args[0]).includes('.buckle-restore-')) throw Object.assign(new Error('fixture volume makes no hard link'), { code: 'EPERM' })
       return fs.linkSync(...args)
     },
@@ -26,7 +37,7 @@ const roots: string[] = []
 const originalPath = process.env.PATH
 afterEach(() => {
   process.env.PATH = originalPath
-  fault.enabled = false; fault.writes = 0; fault.noLink = false
+  fault.enabled = false; fault.writes = 0; fault.noLink = false; fault.appear = undefined
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 async function fixture(extra: Parameters<typeof openChangeHistory>[0] extends infer T ? Partial<T> : never = {}) {
@@ -118,6 +129,35 @@ it('restores on a volume that makes no hard link', async () => {
     await node.history.restore((await node.history.list())[0]!.id)
     expect(readFileSync(a, 'utf8')).toBe('before-a')
   } finally { await node.history.close() }
+})
+
+// R1.1 of the Codex recheck: where the volume makes no hard link, a file is put in place by creating its name, which fails
+// where another writer made one since, never by a rename, which would write over it.
+it('never writes over a file another writer makes as the restore puts one back on a volume that makes no hard link', async () => {
+  const node = await fixture()
+  const a = join(node.workspace, 'a')
+  try {
+    await node.history.run({ ...node.details, scope: [{ path: a }] }, async () => { writeFileSync(a, 'before-a') })
+    await node.history.run({ ...node.details, scope: [{ path: a }] }, async () => { rmSync(a) })
+    fault.noLink = true; fault.appear = a
+    await expect(node.history.restore((await node.history.list()).at(-1)!.id)).rejects.toThrow()
+    expect(fault.appear).toBeUndefined()
+    expect(readFileSync(a, 'utf8')).toBe('outside')
+  } finally { await node.history.close() }
+})
+
+// The same for an entry a refused restore had moved aside: it goes back only where its name is still free as it is made.
+it('keeps an entry moved aside, never writing it over a file another writer makes as a refused restore puts it back', () => {
+  const root = mkdtempSync(join(tmpdir(), 'history-put-back-')); roots.push(root)
+  const [first, second] = [join(root, 'first.txt'), join(root, 'second.txt')]
+  writeFileSync(first, 'checked'); writeFileSync(second, 'edited outside')
+  const entry = { kind: 'file' as const, mode: 0o644, hash: blobId(Buffer.from('checked')) }
+  fault.appear = first
+  expect(() => applySnapshot({ current: { [first]: entry, [second]: entry }, target: {}, paths: [first, second], content: () => Buffer.alloc(0), roots: [root] })).toThrow(SnapshotConflictError)
+  expect(fault.appear).toBeUndefined()
+  expect([readFileSync(first, 'utf8'), readFileSync(second, 'utf8')]).toEqual(['outside', 'edited outside'])
+  const aside = readdirSync(root).filter(name => name.includes('.buckle-displaced-'))
+  expect(aside.map(name => readFileSync(join(root, name), 'utf8'))).toEqual(['checked'])
 })
 
 // Slice F2, items 3 and 6: the hard link and the FIFO never refuse the call; git records the write.

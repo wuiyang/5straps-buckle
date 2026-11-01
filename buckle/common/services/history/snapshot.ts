@@ -155,7 +155,7 @@ export function sameEntry(left: Entry | undefined, right: Entry | undefined): bo
 
 /**
  * Makes `paths` match `target`. Every entry is made beneath its parent directory opened from the real
- * root down without following a link, and files are written to a fresh name and renamed into place,
+ * root down without following a link, and files are written to a fresh name and linked into place (writeRestoredFile),
  * so a link swapped into the tree after the checkpoint check is refused instead of followed (review H1
  * of B23-B25). `roots` are the directories the snapshots were taken from; every path is inside one.
  *
@@ -185,7 +185,7 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
       if (!checked) throw new SnapshotConflictError(`${operation} conflict: a changed path changed again after the check, so nothing changed`, path)
     }
   } catch (error) {
-    putBack(directories, displaced)
+    putBack(directories, displaced, input.platform)
     directories.close()
     throw error
   }
@@ -224,7 +224,7 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
       changeMode(directory, name, entry.mode, path)
     }
   } finally {
-    putBack(directories, displaced)
+    putBack(directories, displaced, input.platform)
     directories.close()
   }
 }
@@ -239,12 +239,23 @@ function stillAsChecked(directory: PinnedDirectory, name: string, expected: Entr
   try { return digest(readFileSync(descriptor)) === expected.hash } finally { closeSync(descriptor) }
 }
 
-/** Each entry still moved aside goes back under its own name where that name is free; otherwise it stays aside, kept. */
-function putBack(directories: ReturnType<typeof createDirectoryCache>, displaced: Map<string, string>): void {
+/**
+ * Each entry still moved aside goes back under its own name where that name is free; otherwise it stays aside, kept. The
+ * name is made, a hard link to a file or the link itself again, which fails where another writer made one since; never
+ * renamed onto, which would write over it (R1.1 of the Codex recheck).
+ */
+function putBack(directories: ReturnType<typeof createDirectoryCache>, displaced: Map<string, string>, platform?: NodeJS.Platform): void {
   for (const [path, aside] of [...displaced].reverse()) {
     try {
       const { directory, name } = directories.parentOf(path, false)
-      if (!lstatSync(directory.child(name), { throwIfNoEntry: false })) renameSync(directory.child(aside), directory.child(name))
+      const [from, to] = [directory.child(aside), directory.child(name)]
+      const stat = lstatSync(from)
+      if (stat.isSymbolicLink()) restoreLink({ target: readlinkSync(from), at: to, parent: directory.self, shown: path, platform })
+      else try { linkSync(from, to) } catch (error) {
+        if (!(error instanceof Error && 'code' in error && NO_HARD_LINK.has(String(error.code))) || lstatSync(to, { throwIfNoEntry: false })) throw error
+        createRestoredFile({ directory, name, path, content: readFileSync(from), mode: modeOf(stat) })
+      }
+      rmSync(from)
     } catch { /* left aside under its displaced name, its content kept */ }
   }
   displaced.clear()
@@ -310,10 +321,13 @@ function changeMode(directory: PinnedDirectory, name: string, mode: number, show
   try { setDescriptorMode(descriptor, mode) } finally { closeSync(descriptor) }
 }
 
+const APPEARED = 'An entry appeared where the restore puts a file back, so it was left in place'
+
 /**
  * Writes a file's content to a fresh name, then puts it at `name`, which applySnapshot has emptied: by a hard link, which
- * fails where an entry appeared there since, so nothing is ever written over; where the volume makes no link, by a rename
- * once the name is checked still free.
+ * fails where an entry appeared there since, so nothing is ever written over. Where the volume makes no link, the name
+ * itself is created exclusively and written (createRestoredFile), never renamed onto, as a rename replaces whatever
+ * another writer made there after any check (R1.1 of the Codex recheck).
  */
 function writeRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
   const temporary = `${input.name}.buckle-restore-${randomUUID()}`
@@ -327,11 +341,31 @@ function writeRestoredFile(input: { directory: PinnedDirectory; name: string; pa
     const [from, to] = [input.directory.child(temporary), input.directory.child(input.name)]
     try { linkSync(from, to) }
     catch (error) {
-      if (isExisting(error) || lstatSync(to, { throwIfNoEntry: false })) throw new Error('An entry appeared where the restore puts a file back, so it was left in place', { cause: error })
+      if (isExisting(error) || lstatSync(to, { throwIfNoEntry: false })) throw new Error(APPEARED, { cause: error })
       if (!(error instanceof Error && 'code' in error && NO_HARD_LINK.has(String(error.code)))) throw error
-      renameSync(from, to)
+      createRestoredFile(input)
     }
   } finally { rmSync(input.directory.child(temporary), { force: true }) }
+}
+
+/**
+ * Creates `name` with O_EXCL, which fails where any entry stands, and writes the content through that descriptor. A
+ * write that fails removes the file only while the name still holds the one this created; one a crash cuts short is left
+ * as the restore's interrupted checkpoint names it.
+ */
+function createRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
+  let descriptor: number
+  try { descriptor = openBeneath(input.directory, input.name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, input.path, input.mode) }
+  catch (error) { if (isExisting(error)) throw new Error(APPEARED, { cause: error }); throw error }
+  try {
+    writeFileSync(descriptor, input.content)
+    setDescriptorMode(descriptor, input.mode)
+  } catch (error) {
+    const made = fstatSync(descriptor)
+    const there = lstatSync(input.directory.child(input.name), { throwIfNoEntry: false })
+    if (there && there.ino === made.ino && there.dev === made.dev) rmSync(input.directory.child(input.name), { force: true })
+    throw error
+  } finally { closeSync(descriptor) }
 }
 
 /** What a link answers on a volume or share that makes no hard link (FAT, some network shares), where a rename stands in. */
