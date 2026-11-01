@@ -21,7 +21,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) { execFileSync('chmod', ['-R', 'u+rwx', root]); rmSync(root, { recursive: true, force: true }) }
 })
 
-function fixture(options: { allowHostGit?: boolean; maxFileBytes?: number } = {}) {
+function fixture(options: { allowHostGit?: boolean; maxFileBytes?: number; excluded?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-command-capture-')); roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(join(workspace, 'src'), { recursive: true })
@@ -187,5 +187,78 @@ describe('an exec call through the invoker', () => {
         expect(result).toMatchObject({ meta: expect.not.objectContaining({ history: expect.anything() }) })
       } else expect(result).toMatchObject({ meta: { history: { checkpoint: checkpoint.id, restorable: false, reason: HOST_GIT_REASON } } })
     } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  })
+})
+
+// The Codex review of 670f1dc2..01d3b0c9: what git never read or never represented is never recorded as known.
+describe('a command\'s checkpoint, at the edges of what git reads', () => {
+  const posixUser = process.platform !== 'win32' && process.getuid?.() !== 0
+
+  // X3: a protected folder stays out of the shadow index whatever the workspace's own rules re-include.
+  it('never stores a protected folder that the workspace .gitignore re-includes, and drops one tracked before', async () => {
+    const { root, workspace, directory, details } = fixture()
+    const secret = join(workspace, 'private')
+    mkdirSync(secret); writeFileSync(join(secret, 'old'), 'OLD PRIVATE')
+    writeFileSync(join(workspace, '.gitignore'), '!private/\n!private/**\n')
+    const unprotected = await openChangeHistory({ directory, excluded: [], maxBytes: 64 * 1_048_576 })
+    try { await unprotected.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') }) } finally { await unprotected.close() }
+    const history = await openChangeHistory({ directory, excluded: [secret], maxBytes: 64 * 1_048_576 })
+    try {
+      await history.run(details, async () => { writeFileSync(join(secret, 'key'), 'NEW PRIVATE KEY'); writeFileSync(join(workspace, 'src', 'b.txt'), 'b2') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.changes).toEqual([{ path: join(workspace, 'src', 'b.txt'), kind: 'modified' }])
+      expect(historyObjects(directory).some(content => content.includes('NEW PRIVATE'))).toBe(false)
+      const shadow = join(directory, 'commands', readdirSync(join(directory, 'commands')).find(name => /^[0-9a-f]{24}$/.test(name))!)
+      const listed = execFileSync('git', ['--git-dir', shadow, 'ls-files'], { env: { ...process.env, GIT_INDEX_FILE: join(shadow, 'index'), GIT_OBJECT_DIRECTORY: join(directory, 'blobs') }, cwd: root, encoding: 'utf8' })
+      expect(listed).not.toContain('private/')
+    } finally { await history.close() }
+  })
+
+  // X4: a tracked file an ignore rule now covers leaves the index before git add reads it.
+  it('never stores the new content of a tracked file a command both ignores and changes', async () => {
+    const { workspace, directory, settings, details } = fixture()
+    const env = join(workspace, '.env')
+    writeFileSync(env, 'TOKEN=old')
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      await history.run(details, async () => { writeFileSync(join(workspace, '.gitignore'), '.env\n'); writeFileSync(env, 'TOKEN=NEWSECRET') })
+      expect(historyObjects(directory).some(content => content.includes('NEWSECRET'))).toBe(false)
+    } finally { await history.close() }
+  })
+
+  // X10: a folder that stood empty before the command is no folder the command made.
+  it('keeps a folder that stood empty before the command when restoring the file it made there', async () => {
+    const { workspace, settings, details } = fixture()
+    mkdirSync(join(workspace, 'empty', 'nested'), { recursive: true })
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'empty', 'nested', 'first.txt'), 'made'); mkdirSync(join(workspace, 'made', 'deep'), { recursive: true }); writeFileSync(join(workspace, 'made', 'deep', 'f'), 'x') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.changes).toEqual(expect.arrayContaining([{ path: join(workspace, 'empty', 'nested', 'first.txt'), kind: 'created' }, { path: join(workspace, 'made'), kind: 'created' }]))
+      expect(checkpoint.changes.map(change => change.path)).not.toContain(join(workspace, 'empty'))
+      await history.restore(checkpoint.id)
+      expect(existsSync(join(workspace, 'empty', 'nested', 'first.txt'))).toBe(false)
+      expect(existsSync(join(workspace, 'empty', 'nested'))).toBe(true)
+      expect(existsSync(join(workspace, 'made'))).toBe(false)
+    } finally { await history.close() }
+  })
+
+  // X5: a file git could not read before the command has no known before state, tracked or not.
+  for (const tracked of [true, false]) it.skipIf(!posixUser)(`lists a ${tracked ? 'tracked' : 'new'} file git could not read before the command as not restorable`, async () => {
+    const { workspace, settings, details } = fixture()
+    const file = join(workspace, 'held.txt')
+    const history = await openChangeHistory(settings)
+    try {
+      if (tracked) await history.run(details, async () => { writeFileSync(file, 'A') })
+      else writeFileSync(file, 'A')
+      writeFileSync(file, 'B'); chmodSync(file, 0o000)
+      await history.run(details, async () => { chmodSync(file, 0o644); writeFileSync(file, 'C') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ notRestorable: [file] })
+      expect(checkpoint.changes.map(change => change.path)).not.toContain(file)
+      await history.restore(checkpoint.id).catch(() => undefined)
+      expect(read(file)).toBe('C')
+    } finally { await history.close() }
   })
 })
