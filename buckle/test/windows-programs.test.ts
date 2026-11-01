@@ -328,7 +328,9 @@ describe('the packs on Windows, imitated, with every program on PATH outside the
     await call('git', 'git_status', {})
     await call('dev', 'lsp_discover', {})
     await call('shell', 'shell_exec', { command: 'git', args: ['status'] })
-    expect([...new Set(spawned.map(request => request.command))].sort()).toEqual(['/opt/tools/git.exe', '/opt/tools/ps.exe', '/opt/tools/rg.exe'])
+    // The browser pack asks agent-browser its version at start on Windows (Slice F4, item 1), by the same path.
+    expect([...new Set(spawned.map(request => request.command))].sort()).toEqual(['/opt/tools/agent-browser.exe', '/opt/tools/git.exe', '/opt/tools/ps.exe', '/opt/tools/rg.exe'])
+    expect(spawned.filter(request => request.command === '/opt/tools/agent-browser.exe').map(request => request.args)).toEqual([['--version']])
     expect(pack('browser').unavailableReason).toBeNull()
     expect(pack('git').unavailableReason).toBeNull()
   })
