@@ -59,8 +59,12 @@ pack's git tools.
 
 - A profile folder or an attached Chrome serves one workspace at a time, judged at each
   `browser_command` by the folder it really is and the Chrome's host and port. Two names of one
-  machine, such as a DNS name and its address, count as two Chromes: Buckle does not resolve them. A browser another workspace started on it before the change keeps running
-  until its `close` or its idle timeout.
+  machine, such as a DNS name and its address, count as two Chromes: Buckle does not resolve them.
+  A browser another workspace started on it before the change keeps running until its `close` or
+  its idle timeout; meanwhile a profile folder's browser here does not start.
+- `buckle browser close` drops an attached Chrome's hold only once its host and port refuse a
+  connection, so a remote browser service whose port stays open keeps its hold; put the file back to
+  keep calls running.
 - The holder of the node's profile folder or Chrome is chosen by the packs and tool policy in force,
   not by whether the pack runs. A workspace whose browser pack is withheld for its own reason, such as
   a refused setting, still holds it until the setting changes or the pack is switched off.
@@ -71,9 +75,7 @@ pack's git tools.
   Tab window beside the page, and starts `agent-browser` with no console window of its own.
   `agent-browser` before 0.37.1 still shows a headless browser's windows on the desktop, and can leave
   a browser open when its daemon ends; Buckle names that version in its log at start, and
-  `npm i -g agent-browser@latest` fixes both. Two calls that start one session at the same moment can
-  still start two browsers, as `agent-browser` does not lock its daemon's start (its issue 2074);
-  `buckle browser close` ends both.
+  `npm i -g agent-browser@latest` fixes both.
 - A screenshot, PDF, or download is copied beside its target and renamed onto it, taking the old
   file's mode or, for a new file, the mode `fs_write` gives one. A delivered file replaces the
   target, so a per-file ACL on the old one is not kept.

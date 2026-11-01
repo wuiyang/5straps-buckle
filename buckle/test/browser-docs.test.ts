@@ -39,6 +39,25 @@ describe('the browser sessions page', () => {
     expect(page('docs/browser-login.md')).not.toContain('by process id alone')
   })
 
+  // Codex review L1 to L7: what the owner's command leaves, which browser a hold masks, and who shares a profile folder.
+  it('says what the owner\'s command leaves and why it exits 1, which browser a hold masks, and that a session starts once', () => {
+    const sessions = page('docs/browser-login-02.md')
+    expect(sessions).toContain('It exits 1, saying what stays, where it could not end everything:')
+    expect(sessions).toContain('A browser whose close failed stays recorded with its hold')
+    expect(sessions).toContain('A browser a call still runs on closes when the last call on it ends')
+    expect(sessions).toContain('finds that Chrome closed')
+    expect(sessions).toContain('whose `packs.enabled` leaves the browser out')
+    expect(sessions).toContain('A call is masked by what the browser it reaches holds')
+    expect(sessions).toContain('Another workspace, or another Buckle node, on the same folder has its own')
+    expect(sessions).toContain('A session\'s first command runs alone')
+    const masking = page('docs/secrets-02.md')
+    expect(masking).toContain('a profile folder\'s, by what that folder\'s browser holds; an attached Chrome\'s, by what that Chrome holds')
+    expect(masking).toContain('finds that Chrome closed')
+    const limits = page('docs/known-limits-04.md')
+    expect(limits).not.toContain('can still start two browsers')
+    expect(limits).toContain('a remote browser service whose port stays open keeps its hold')
+  })
+
   it('names what Windows still shows among the known limits', () => {
     const limits = page('docs/known-limits-04.md')
     expect(limits).toContain('On Windows, Buckle passes `--no-startup-window`')
