@@ -8,6 +8,8 @@ import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { createHistoryPack } from '../common/services/packs/history/index.js'
+import { declare } from '../common/services/packs/code/declarations.js'
+import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -109,6 +111,23 @@ it('bounds native changed and skipped lists, counting hidden and excess names wi
     expect((checkpoint!.changed as string[]).length).toBe(100)
     expect((checkpoint!.notRestorable as string[]).length).toBe(100)
     expect(JSON.stringify(result)).not.toContain('secret.txt')
+  } finally { recent.mockRestore() }
+})
+
+// Review D4: a script reads what history_list answers from its declaration, so every field it can answer is named there.
+it('declares to a script every field history_list and history_restore can answer', async () => {
+  const { runtime, workspace } = await node()
+  await call(runtime, 'baseline', 'fs_write', { path: 'open.txt', content: 'shown' })
+  const original = await runtime.history.recent(1)
+  const paths = Array.from({ length: 105 }, (_, index) => join(workspace, `large-${index}`))
+  const recent = vi.spyOn(runtime.history, 'recent').mockResolvedValue({ more: false, checkpoints: [{ ...original.checkpoints[0]!, reason: 'fixture', restores: 'change-earlier', undoes: 2, ignored: { count: 3, reason: 'ignored' as const }, changes: paths.map(path => ({ path, kind: 'modified' as const })), changed: paths, notRestorable: paths }] })
+  try {
+    const answered = output(await call(runtime, 'declared-list', 'history_list', {}))!
+    const [checkpoint] = answered.checkpoints as JsonObject[]
+    const declared = (name: string) => declare(createPiCodemodeVm(), runtime.toolCatalog().tools.filter(tool => tool.name === name))
+    for (const field of [...Object.keys(answered), ...Object.keys(checkpoint!)]) expect(declared('history_list')).toMatch(new RegExp(`\\b${field}\\b`))
+    // What a restore can answer (packs/history/index.ts restore), the counts of the paths it leaves out among them.
+    for (const field of ['checkpoint', 'restores', 'undoes', 'changes', 'unlisted', 'notRestorable', 'notRestorableUnlisted']) expect(declared('history_restore')).toMatch(new RegExp(`\\b${field}\\b`))
   } finally { recent.mockRestore() }
 })
 
