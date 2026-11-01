@@ -48,6 +48,13 @@ describe('the three places', () => {
     expect([...outcome.plan!.files]).toEqual([['.env.local', ['API_TOKEN', 'C']], ['keys.env', ['B']]])
   })
 
+  // The owner's report of 2026-11-01: a script passes a reference on to the calls it makes, each planned as it is made.
+  it('reads nothing in a code_run script, which hands each reference to the call it makes, and refuses none there', () => {
+    expect(plan('code_run', 'code', { script: `await tools.browser_command({ command: 'fill', args: ['#password', '${REF}'] })` })).toEqual({ plan: null })
+    expect(plan('code_run', 'code', { script: `await tools.fs_write({ path: 'a', content: '${REF} {{env:API_KEY}} {{file:../up.env:A}}' })`, timeoutMs: 1_000 })).toEqual({ plan: null })
+    expect(plan('code_run', 'code', { script: `return '${REF}'` }, false)).toEqual({ plan: null })
+  })
+
   it('holds no plan for a call with no reference', () => {
     expect(plan('shell_exec', 'shell', { command: 'echo', args: ['{{ not a reference }}', 'plain'] })).toEqual({ plan: null })
   })
@@ -65,8 +72,8 @@ describe('anywhere else', () => {
     ['a fetched body', 'web_fetch', 'web', { url: 'https://api.example.test', method: 'POST', body: `{"key":"${REF}"}` }, 'body'],
     ['a browser selector', 'browser_command', 'browser', { command: 'fill', args: [REF, 'text'] }, 'args[0]'],
     ['a page the browser opens', 'browser_command', 'browser', { command: 'open', args: [`https://example.test/${REF}`] }, 'args[0]'],
-    ['a code_run script', 'code_run', 'code', { script: `await shell_exec({ command: 'curl', args: ['${REF}'] })` }, 'script'],
     ['a plugin tool under a built-in name', 'shell_exec', 'plugin-pack', { command: 'curl', args: [REF] }, 'args[0]'],
+    ['a plugin tool under the code_run name', 'code_run', 'plugin-pack', { script: `await tools.shell_exec({ command: 'curl', args: ['${REF}'] })` }, 'script'],
   ])('refuses a reference in %s', (_what, tool, pack, args, where) => {
     const refusal = refusalOf(plan(tool, pack, args as JsonObject))
     expect(refusal.startsWith(PLACES_REASON)).toBe(true)

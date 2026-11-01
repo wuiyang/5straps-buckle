@@ -249,7 +249,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             audited = prepared.audited
             // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
             // before anything is judged; each file the references name is judged where it lands, and its first use asks a
-            // person (docs/secrets.md).
+            // person (docs/secrets.md). A code_run script is not read: each call it makes comes back through here.
             const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
             effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
             // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).

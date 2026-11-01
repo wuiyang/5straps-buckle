@@ -48,14 +48,16 @@ const BROWSER_TEXT_COMMANDS = new Set(['fill', 'type'])
  * A call's references, read where the three places are and refused anywhere else (PLACES_REASON), keys included. A
  * reference outside the grammar refuses the call where references are read (readReferences); outside them only text
  * written as a file or env reference does (mentionsReference). With references off, a reference where they are read is
- * refused and other text is not read.
+ * refused and other text is not read. Text a tool hands on to calls of its own (handedOn) is not read at all.
  */
 export function planSecrets(input: { tool: string; pack: string; args: JsonObject; enabled: boolean }): PlanOutcome {
   const places: SecretPlace[] = []
   const kindAt = placeKinds(input)
+  const passes = handedOn(input)
   let refusal: string | null = null
   walk(input.args, [], (text, at, key) => {
     if (refusal !== null || !text.includes('{{')) return
+    if (!key && passes(at)) return
     const kind = key ? null : kindAt(at)
     if (kind === null) {
       if (input.enabled && mentionsReference(text)) refusal = `${PLACES_REASON}; this one is in ${key ? `a key of ${describeAt(at.slice(0, -1))}` : describeAt(at)}`
@@ -99,6 +101,16 @@ function placeKinds(input: { tool: string; pack: string; args: JsonObject }): (a
   }
   if (pack === 'web' && tool === 'web_fetch') return at => (at.length === 2 && at[0] === 'headers' && typeof at[1] === 'string' ? 'header' : null)
   return () => null
+}
+
+/**
+ * Where a built-in tool's arguments hold text it hands on to calls of its own, which is neither read nor refused here:
+ * code_run's script, each of whose calls is planned as the same call made directly when the script makes it, with that
+ * call's own ask, so a reference reaches a value only in one of the three places (the owner's report of 2026-11-01).
+ */
+function handedOn(input: { tool: string; pack: string }): (at: ReadonlyArray<string | number>) => boolean {
+  if (input.pack === 'code' && input.tool === 'code_run') return at => at.length === 1 && at[0] === 'script'
+  return () => false
 }
 
 /** Every string of a JSON value, keys included (`key` true, `at` ending with the key), with where it stands. */
