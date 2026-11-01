@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { closeSync, constants, fstatSync, lstatSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
-import { isAbsolute, join, relative } from 'pathe'
+import { isAbsolute, join, relative, resolve } from 'pathe'
 import { openNoFollow } from '../../adapters/beneath.js'
 
 /**
@@ -22,7 +22,7 @@ export interface RepositoryLocation { top: string; index: string; objects: strin
 export interface SourceRecord { objects: string; index: string; indexIdentity: string }
 
 const SOURCE_RECORD = 'source'
-/** Beside it, each blob id the seed found the repository holding, 20 bytes each: what the sweep need not keep a copy of. */
+/** Beside it, each blob id the seed found the repository holding, 20 bytes each: what a sweep need not keep a copy of while the repository holds it. */
 const SOURCE_IDS = 'source-ids'
 const STAGE_MASK = 0x3000
 const ASSUME_VALID = 0x8000
@@ -49,6 +49,9 @@ const INDEX_BYTES_MAX = 64 * 1_048_576
 const NAME_BYTES_MAX = 4_096
 const NAMES_BYTES_MAX = INDEX_BYTES_MAX
 const INDEX_ENTRIES_MAX = INDEX_BYTES_MAX / 64
+/** The largest alternates file read, and how deep alternates of alternates are followed: git reads five levels. */
+const ALTERNATES_BYTES_MAX = 65_536
+const ALTERNATES_DEPTH_MAX = 5
 
 /** The arguments of the one `git rev-parse` that locates a folder's repository; its answer reads with `parseLocation`. */
 export const LOCATE_ARGS = ['rev-parse', '--path-format=absolute', '--show-object-format', '--show-toplevel', '--git-path', 'index', '--git-path', 'objects', 'HEAD^{commit}']
@@ -74,23 +77,46 @@ export function prefixWithin(top: string, root: string): string | undefined {
   return path === '..' || path.startsWith('../') || isAbsolute(path) ? undefined : path
 }
 
+/** The repository's index as read: a regular file of INDEX_BYTES_MAX at most (readPlainFile, G1 of the Codex review). */
+export function readRepositoryIndex(path: string): Buffer | undefined { return readPlainFile(path, INDEX_BYTES_MAX) }
+
 /**
- * The repository's index as read: a regular file of INDEX_BYTES_MAX at most, never a link followed (G1 of the Codex
- * review). Opened without waiting, so a pipe in its place, which a command can make, never holds the process.
+ * A file of a repository as read: a regular file of `max` bytes at most, never a link followed (G1 of the Codex review).
+ * Opened without waiting, so a pipe in its place, which a command can make, never holds the process.
  */
-export function readRepositoryIndex(path: string): Buffer | undefined {
+function readPlainFile(path: string, max: number): Buffer | undefined {
   if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined
   let descriptor: number | undefined
   try {
     descriptor = openNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK)
     const stat = fstatSync(descriptor)
-    if (!stat.isFile() || stat.size > INDEX_BYTES_MAX) return undefined
-    const index = Buffer.alloc(stat.size)
+    if (!stat.isFile() || stat.size > max) return undefined
+    const data = Buffer.alloc(stat.size)
     let read = 0
-    while (read < index.length) { const bytes = readSync(descriptor, index, read, index.length - read, read); if (!bytes) return undefined; read += bytes }
-    return index
+    while (read < data.length) { const bytes = readSync(descriptor, data, read, data.length - read, read); if (!bytes) return undefined; read += bytes }
+    return data
   } catch { return undefined }
   finally { if (descriptor !== undefined) closeSync(descriptor) }
+}
+
+/**
+ * The object folders git reads for `objects`, as it follows alternates: the folder, then each its `info/alternates`
+ * names, a relative one from the folder that names it, and theirs. undefined where one such file is not a regular one
+ * of ALTERNATES_BYTES_MAX at most (readPlainFile), names a folder by a quoted path, or lies ALTERNATES_DEPTH_MAX deep:
+ * nothing is then proven to stand there (G3 of the Codex recheck).
+ */
+export function objectFolders(objects: string): string[] | undefined {
+  const folders: string[] = []
+  const follow = (folder: string, depth: number): boolean => {
+    if (folders.includes(folder)) return true
+    folders.push(folder)
+    const path = join(folder, 'info', 'alternates')
+    try { if (!lstatSync(path, { throwIfNoEntry: false })) return true } catch { return false }
+    const text = depth < ALTERNATES_DEPTH_MAX ? readPlainFile(path, ALTERNATES_BYTES_MAX)?.toString('utf8') : undefined
+    if (text === undefined) return false
+    return text.split('\n').every(line => !line || line.startsWith('#') || (!line.startsWith('"') && follow(resolve(folder, line), depth + 1)))
+  }
+  return follow(objects, 0) ? folders : undefined
 }
 
 /**
@@ -270,10 +296,11 @@ export function writeSource(git: string, record: SourceRecord, ids?: string[]): 
 /** The record and its ids, the ids last, so ids never stand without the record that says they still read. */
 export function removeSource(git: string): void { rmSync(join(git, SOURCE_RECORD), { force: true }); rmSync(join(git, SOURCE_IDS), { force: true }) }
 /**
- * The blob ids a root's seed found its repository holding, where its record stands: the sweep keeps no copy of one an
- * index names, as a command that changes its file copies it from the repository, and each capture before a command
- * first checks the repository alone still holds each one its index names (G3, G4 of the Codex review). Empty where none
- * stand; undefined where they do not read, so the sweep keeps all an index names.
+ * The blob ids a root's seed found its repository holding, where its record stands: a sweep removes the copy of one an
+ * index names only once it finds the repository still holding it, as a command that changes its file copies it from
+ * there, and each capture before a command first checks the repository alone still holds each one its index names (G3,
+ * G4 of the Codex review, G3 of its recheck). Empty where none stand; undefined where they do not read, so the sweep
+ * keeps all an index names.
  */
 export function readSourceIds(git: string): Set<string> | undefined {
   if (!lstatSync(join(git, SOURCE_RECORD), { throwIfNoEntry: false })) return new Set()

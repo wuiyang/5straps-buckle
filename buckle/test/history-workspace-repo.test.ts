@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it } from 'vitest'
-import { parseBatch, parseBatchCheck, parseExistence, parseIndex, parseLocation, readRepositoryIndex, refreshedAs, seedCandidates, unverified, writeIndex } from '../common/services/history/workspace-repo.js'
+import { objectFolders, parseBatch, parseBatchCheck, parseExistence, parseIndex, parseLocation, readRepositoryIndex, refreshedAs, seedCandidates, unverified, writeIndex } from '../common/services/history/workspace-repo.js'
 
 // Slice F3: the pure parts of a seed from a folder's repository, against what git itself writes and reads.
 
@@ -115,6 +115,34 @@ describe('a side index with no stat data, refreshed by git', () => {
     const kept = parseIndex(readFileSync(side))!.entries.filter(entry => refreshedAs(entry, sizes.get(entry.id)!)).map(entry => entry.name.toString())
     expect(kept).toEqual(['app/a.txt', 'app/deep/a-much-longer-name-than-the-others.txt', ...process.platform === 'win32' ? ['other/c.txt'] : []])
     expect(readdirSync(store)).toEqual([])
+  })
+})
+
+// G3 of the Codex recheck of F3: where git looks for a repository's objects, which a sweep stats before it removes a copy.
+describe('a repository\'s object folders, as git follows its alternates', () => {
+  it('follows alternates relative to the folder that names them, and absolute ones, each once, skipping comments', () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-workspace-repo-')); roots.push(root)
+    const [own, shared, deeper] = ['own', 'shared', 'deeper'].map(name => join(root, name, 'objects')) as [string, string, string]
+    for (const folder of [own, shared, deeper]) mkdirSync(join(folder, 'info'), { recursive: true })
+    writeFileSync(join(own, 'info', 'alternates'), `# a comment\n../../shared/objects\n\n${deeper}\n`)
+    writeFileSync(join(shared, 'info', 'alternates'), `${own}\n../../deeper/objects\n`)
+    expect(objectFolders(own)).toEqual([own, shared, deeper])
+    expect(objectFolders(deeper)).toEqual([deeper])
+  })
+
+  it('reads no folders where an alternates file names one by a quoted path, goes past git\'s depth, or is a pipe, and never waits for one', () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-workspace-repo-')); roots.push(root)
+    const chain = Array.from({ length: 7 }, (_, at) => join(root, `level${at}`, 'objects'))
+    for (const [at, folder] of chain.entries()) { mkdirSync(join(folder, 'info'), { recursive: true }); if (at < 6) writeFileSync(join(folder, 'info', 'alternates'), `${chain[at + 1]}\n`) }
+    expect(objectFolders(chain[1]!)).toEqual(chain.slice(1))
+    expect(objectFolders(chain[0]!)).toBeUndefined()
+    writeFileSync(join(chain[6]!, 'info', 'alternates'), '"quoted\\tname"\n')
+    expect(objectFolders(chain[6]!)).toBeUndefined()
+    if (process.platform === 'win32') return
+    rmSync(join(chain[6]!, 'info', 'alternates')); execFileSync('mkfifo', [join(chain[6]!, 'info', 'alternates')])
+    const started = performance.now()
+    expect(objectFolders(chain[6]!)).toBeUndefined()
+    expect(performance.now() - started).toBeLessThan(1000)
   })
 })
 

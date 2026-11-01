@@ -14,8 +14,22 @@ import { parseIndex, writeIndex } from '../common/services/history/workspace-rep
 // is never hashed or copied. A command that changes one copies the content it had into the history's own store before
 // the checkpoint is saved; a restore reads that store alone.
 
+/**
+ * G3 of the Codex recheck of F3: what runs once, from `after`, as a sweep's plan has found which copies each repository
+ * holds and before any slice of it removes one.
+ */
+const race = vi.hoisted(() => ({ after: undefined as (() => void) | undefined }))
+vi.mock('../common/services/history/command-capture.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/services/history/command-capture.js')>()
+  const createCommandCapture: typeof actual.createCommandCapture = input => {
+    const capture = actual.createCommandCapture(input)
+    return { ...capture, released: async (...args: Parameters<typeof capture.released>) => { const found = await capture.released(...args); const step = race.after; race.after = undefined; step?.(); return found } }
+  }
+  return { ...actual, createCommandCapture }
+})
+
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(() => { race.after = undefined; for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const DAY_AGO = new Date(Date.now() - 86_400_000)
 /** Git for the test's own repositories, never the host's global or system config. */
@@ -48,6 +62,12 @@ function repoFixture(options: { committed?: Record<string, string | Buffer>; sub
   return { root, top, workspace, directory, settings, shadow, committed, store: openObjectStore(directory), git: (args: string[], input?: string) => repoGit(root, top, args, input), details: { sessionId: 's', stageId: 'stage', tool: 'shell_exec', roots: [workspace] } }
 }
 function read(path: string): string | null { return existsSync(path) ? readFileSync(path, 'utf8') : null }
+/** The repository's history rewritten to one commit without `names`, every branch but it deleted, and their content pruned; the files stay on disk. */
+function rewriteWithout(made: ReturnType<typeof repoFixture>, names: string[]): void {
+  made.git(['checkout', '--quiet', '--orphan', 'rewritten']); made.git(['rm', '--quiet', '--cached', ...names]); made.git(['commit', '--quiet', '-m', 'rewritten'])
+  for (const branch of made.git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']).split('\n').filter(name => name && name !== 'rewritten')) made.git(['branch', '--quiet', '-D', branch])
+  made.git(['reflog', 'expire', '--expire=now', '--all']); made.git(['gc', '--quiet', '--prune=now'])
+}
 /** Each committed file's blob id, as the repository's index names it. */
 function committedIds(made: ReturnType<typeof repoFixture>): Map<string, string> {
   const listed = made.git(['ls-files', '-s', '-z']).split('\0').filter(Boolean)
@@ -359,6 +379,45 @@ describe('a command after its folder\'s repository is lost', () => {
       expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'one.txt'), kind: 'modified' }] })
       await history.restore(checkpoint.id)
       expect(read(join(made.workspace, 'src', 'one.txt'))).toBe(same)
+    } finally { await history.close() }
+  })
+
+  // G3 of the Codex recheck of F3: a sweep removes a copy the folder's index takes from its repository only once it has
+  // found the repository holding it, then and there; else the copy stays.
+  it('keeps a copy the folder\'s index names once its repository loses it, through the call\'s sweep and the one after, and removes one it still holds', async () => {
+    const same = 'the same content\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/one.txt': same, 'src/two.txt': same, 'src/held.txt': 'held\n' } })
+    const [id, held] = [blobId(Buffer.from(same)), blobId(Buffer.from('held\n'))]
+    const history = await openChangeHistory({ ...made.settings, keepTurns: 1 })
+    try {
+      await history.run({ ...made.details, stageId: 't1' }, async () => { rmSync(join(made.workspace, 'src', 'two.txt')) })
+      expect(made.store.has(id)).toBe(true)
+      // The next turn's command writes held.txt again as it was, which stores a copy nothing names, and the repository
+      // loses one.txt's content, which stays on disk and in the folder's index. Its turn drops the first one's checkpoint.
+      await history.run({ ...made.details, stageId: 't2' }, async () => {
+        writeFileSync(join(made.workspace, 'src', 'held.txt'), 'held\n')
+        rewriteWithout(made, ['src/one.txt', 'src/two.txt'])
+      })
+      expect(() => made.git(['cat-file', '-e', id])).toThrow()
+      expect((await history.list()).map(checkpoint => checkpoint.stageId)).toEqual(['t2'])
+      await vi.waitFor(() => expect(made.store.has(held)).toBe(false))
+      expect(made.store.has(id)).toBe(true)
+    } finally { await history.close() }
+  })
+
+  it('keeps a copy whose repository loses it after the sweep found it there and before a slice removes it', async () => {
+    const [lost, kept] = ['lost later\n', 'held on\n']
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/lost.txt': lost, 'src/kept.txt': kept } })
+    const [lostId, keptId] = [blobId(Buffer.from(lost)), blobId(Buffer.from(kept))]
+    const history = await openChangeHistory(made.settings)
+    try {
+      let ran = false
+      race.after = () => { ran = true; rmSync(join(made.top, '.git', 'objects', lostId.slice(0, 2), lostId.slice(2))) }
+      // Both written again as they were: each a copy nothing names, which the repository holds as the sweep's plan reads it.
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'lost.txt'), lost); writeFileSync(join(made.workspace, 'src', 'kept.txt'), kept) })
+      await vi.waitFor(() => expect(made.store.has(keptId)).toBe(false))
+      expect(ran).toBe(true)
+      expect(made.store.has(lostId)).toBe(true)
     } finally { await history.close() }
   })
 
