@@ -168,7 +168,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     const fallback = mode === '100755' ? 0o755 : 0o644
     const own = stat?.isFile() ? modeOf(stat) : fallback
     const size = stat?.isFile() ? stat.size : input.objects.size(id)
-    if (size !== undefined && size > input.maxFileBytes()) return { kind: 'excluded', mode: own, size, reason: 'size' }
+    if (size !== undefined && size > input.maxFileBytes()) return { kind: 'excluded', mode: own, size, ...(stat?.isFile() ? { mtime: stat.mtimeMs } : {}), reason: 'size' }
     return { kind: 'file', mode: own, hash: id }
   }
 

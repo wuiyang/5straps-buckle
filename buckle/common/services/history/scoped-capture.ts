@@ -35,7 +35,7 @@ export interface ScopeCapture {
 /**
  * The state of each path in `scope` as it stands now, read from the disk directly: nothing walks the rest of the
  * workspace, no ignore rule is read, and no program starts. A path that is absent has no key. A file over the content cap
- * is recorded with its size and reason `size`, one that cannot be read as `unreadable`, and a special file with reason
+ * is recorded with its size, its mtime, and reason `size`, one that cannot be read as `unreadable`, and a special file with reason
  * `special`, so no entry ever refuses the call; a folder tree past its bounds is recorded as that folder alone, reason
  * `limit`, so a restore never puts half of it back.
  */
@@ -124,7 +124,7 @@ async function entryOf(input: { path: string; stat: Stats; input: ScopeCapture; 
   }
   if (stat.isDirectory()) return { kind: 'directory', mode }
   if (!stat.isFile()) return { kind: 'excluded', mode, reason: 'special' }
-  if (stat.size > input.input.maxFileBytes) return { kind: 'excluded', mode, size: stat.size, reason: 'size' }
+  if (stat.size > input.input.maxFileBytes) return { kind: 'excluded', mode, size: stat.size, mtime: stat.mtimeMs, reason: 'size' }
   const content = await readStable(path, stat, input.platform) ?? await readStable(path, inspect(path) ?? stat, input.platform)
   if (content === undefined) return undefined
   if (content === null) return { kind: 'unreadable', mode }

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
@@ -119,5 +119,21 @@ describe('a file tool\'s checkpoint', () => {
     expect(await call(runtime, 'b-1', 'fs_write_batch', { files: [{ path: 'one.txt', content: '1' }, { path: 'two.txt', content: '2' }] })).toMatchObject({ outcome: 'ok' })
     expect((await newest(runtime)).changes).toEqual([{ path: join(workspace, 'one.txt'), kind: 'created' }, { path: join(workspace, 'two.txt'), kind: 'created' }])
     expect(await runtime.history.list()).toHaveLength(1)
+  })
+})
+
+// M6 (coordinator, review of 670f1dc2..01d3b0c9): a file over the content cap is compared by its size, mode, and mtime,
+// so a same-size rewrite of one is listed as not restorable, from a file tool's checkpoint and from a command's.
+describe('a file over the content cap rewritten at the same size', () => {
+  for (const kind of ['file tool', 'command'] as const) it(`is listed as not restorable from a ${kind}'s checkpoint`, async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-scoped-cap-')); roots.push(root)
+    const workspace = join(root, 'workspace'); mkdirSync(workspace)
+    const big = join(workspace, 'big.bin'); writeFileSync(big, Buffer.alloc(100, 1)); utimesSync(big, 1_000, 1_000)
+    const { openChangeHistory } = await import('../common/services/history/journal.js')
+    const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, maxFileBytes: 64 })
+    try {
+      await history.run({ sessionId: 's', stageId: 'one', tool: kind === 'file tool' ? 'fs_write' : 'shell_exec', roots: [workspace], ...(kind === 'file tool' ? { scope: [{ path: big }] } : {}) }, async () => { writeFileSync(big, Buffer.alloc(100, 2)); utimesSync(big, 2_000, 2_000) })
+      expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', notRestorable: [big], changes: [] })
+    } finally { await history.close() }
   })
 })

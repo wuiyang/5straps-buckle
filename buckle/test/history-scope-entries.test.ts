@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -47,10 +47,10 @@ describe('a scoped capture', () => {
     expect(Object.keys(await captureScope({ ...limits, scope: [{ path: many, tree: true }] }))).toHaveLength(7)
   })
 
-  it('records an oversized file by its size, never its content', async () => {
+  it('records an oversized file by its size and mtime, never its content', async () => {
     const root = scratch()
     writeFileSync(join(root, 'big.bin'), Buffer.alloc(1_001))
-    expect(await captureScope({ ...limits, scope: [{ path: join(root, 'big.bin') }] })).toEqual({ [join(root, 'big.bin')]: { kind: 'excluded', mode: expect.any(Number), size: 1_001, reason: 'size' } })
+    expect(await captureScope({ ...limits, scope: [{ path: join(root, 'big.bin') }] })).toEqual({ [join(root, 'big.bin')]: { kind: 'excluded', mode: expect.any(Number), size: 1_001, mtime: statSync(join(root, 'big.bin')).mtimeMs, reason: 'size' } })
   })
 
   it.runIf(posix)('records a FIFO, an unreadable file, and a folder it cannot list without refusing the capture', async () => {

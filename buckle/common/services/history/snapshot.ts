@@ -16,7 +16,7 @@ import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePa
  * program held open without read sharing (EBUSY), so its content could not be read. A command's checkpoint records a
  * nested repository git keeps as one commit id, reason `nested`: its files are that repository's own.
  */
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit', 'nested']).optional(), hash: z.string().optional(), target: z.string().optional() })
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), mtime: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit', 'nested']).optional(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>
@@ -142,10 +142,13 @@ export function notRestorablePaths(before: Snapshot, after: Snapshot): string[] 
     .filter(path => (uncapturedIn(before, path) || uncapturedIn(after, path)) && !sameEntry(before[path], after[path])).sort()
 }
 
-/** Field by field, so an entry read from the disk now equals the one a checkpoint recorded whatever order its keys were written in. */
+/**
+ * Field by field, so an entry read from the disk now equals the one a checkpoint recorded whatever order its keys were
+ * written in. A file over the content cap has no hash, so its mtime tells a same-size rewrite apart (M6).
+ */
 export function sameEntry(left: Entry | undefined, right: Entry | undefined): boolean {
   if (left === undefined || right === undefined) return left === right
-  return left.kind === right.kind && left.mode === right.mode && left.hash === right.hash && left.target === right.target && left.size === right.size && left.reason === right.reason
+  return left.kind === right.kind && left.mode === right.mode && left.hash === right.hash && left.target === right.target && left.size === right.size && left.mtime === right.mtime && left.reason === right.reason
 }
 
 /**
