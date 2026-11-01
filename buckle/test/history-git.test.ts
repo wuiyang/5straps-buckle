@@ -19,6 +19,10 @@ async function fixture(extra: Record<string, unknown> = {}) {
   const details = { sessionId: 's', stageId: 'one', tool: 'test', roots: [workspace] }
   return { root, workspace, directory, history, details }
 }
+/** Each path below `directory` with this name, walked with Node alone, so the test needs no Unix find (X15). */
+function named(directory: string, name: string): string[] {
+  return readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(path => path.split(/[\\/]/).at(-1) === name)
+}
 function storedObjects(directory: string): string[] { return historyObjects(directory).map(content => content.toString('latin1')) }
 function treeDigest(directory: string): string {
   const hash = createHash('sha256')
@@ -37,7 +41,7 @@ it('records a command in an owner repository without borrowing its objects or mo
   try {
     await history.run(details, async () => { writeFileSync(join(workspace, 'file'), 'changed') })
     const [checkpoint] = await history.list()
-    expect(execFileSync('find', [directory, '-name', 'alternates'], { encoding: 'utf8' })).toBe('')
+    expect(named(directory, 'alternates')).toEqual([])
     expect(checkpoint).toMatchObject({ restorable: true, paths: [join(workspace, 'file')] })
     await history.restore(checkpoint!.id)
     expect(readFileSync(join(workspace, 'file'), 'utf8')).toBe('original\r\n')

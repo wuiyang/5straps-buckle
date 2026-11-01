@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -33,8 +33,15 @@ const roots: string[] = []
 afterEach(() => {
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
-  for (const root of roots.splice(0)) { execFileSync('chmod', ['-R', 'u+rwx', root]); rmSync(root, { recursive: true, force: true }) }
+  for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
+/** Gives the owner back each folder a test locked, with Node alone, so cleanup needs no Unix chmod (X15). */
+function ownerWritable(path: string): void {
+  const stat = lstatSync(path, { throwIfNoEntry: false })
+  if (!stat || stat.isSymbolicLink()) return
+  try { chmodSync(path, stat.isDirectory() ? 0o700 : 0o600) } catch { /* removed below all the same */ }
+  if (stat.isDirectory()) for (const name of readdirSync(path)) ownerWritable(join(path, name))
+}
 
 function fixture(options: { allowHostGit?: boolean; maxFileBytes?: number; excluded?: string[] } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-command-capture-')); roots.push(root)
