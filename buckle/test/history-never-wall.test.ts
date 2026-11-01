@@ -19,18 +19,24 @@ vi.mock('../common/adapters/replace-file.js', async importOriginal => {
 })
 
 const moveFault = vi.hoisted(() => ({ enabled: false }))
+/** `stat`: the journal, or the legacy SQLite history beside it, answers its stat with EIO (X7 of the Codex recheck). */
+const statFault = vi.hoisted(() => ({ names: [] as string[] }))
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
   const renameSync: typeof actual.renameSync = (from, to) => {
     if (moveFault.enabled && String(to).includes('checkpoints.json.damaged')) throw Object.assign(new Error('fixture move failed'), { code: 'EPERM' })
     return actual.renameSync(from, to)
   }
-  return { ...actual, renameSync, default: { ...actual, renameSync } }
+  const statSync = ((path: Parameters<typeof actual.statSync>[0], options?: Parameters<typeof actual.statSync>[1]) => {
+    if (statFault.names.some(name => String(path).endsWith(`/${name}`))) throw Object.assign(new Error('fixture stat failed'), { code: 'EIO' })
+    return actual.statSync(path, options)
+  }) as typeof actual.statSync
+  return { ...actual, renameSync, statSync, default: { ...actual, renameSync, statSync } }
 })
 
 const roots: string[] = []
 afterEach(() => {
-  journalFault.enabled = false; moveFault.enabled = false
+  journalFault.enabled = false; moveFault.enabled = false; statFault.names = []
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { chmodSync(root, 0o700); rmSync(root, { recursive: true, force: true }) }
 })
@@ -165,5 +171,30 @@ it('runs a call over a damaged journal it cannot move aside, and never writes ov
     expect(readFileSync(file, 'utf8')).toBe('one')
     expect(readFileSync(journal, 'utf8')).toBe('{"damaged":')
     expect(history.notice('s', 'r-1')).toMatchObject({ restorable: false, reason: expect.stringContaining('EPERM') })
+  } finally { await history.close() }
+})
+
+// X7 and M1 of the Codex recheck: a journal whose file cannot even be looked at, its stat failing, never walls a call
+// either: the invoker's start of the call, the call, and its notice all run, and nothing writes over that journal.
+for (const name of ['checkpoints.json', 'history.sqlite']) it(`starts, runs, and notes a call while ${name} answers its stat with EIO`, async () => {
+  const { workspace, directory, options } = fixture()
+  const file = join(workspace, 'note.txt')
+  const details = { sessionId: 's', stageId: 'stage', tool: 'test', roots: [workspace], scope: [{ path: file }] }
+  const history = await openChangeHistory(options)
+  try {
+    await history.run({ ...details, requestId: 'r-0' }, async () => { writeFileSync(file, 'zero') })
+    const journal = join(directory, 'checkpoints.json')
+    const saved = readFileSync(journal, 'utf8')
+    statFault.names = [name]
+    const turn = history.startCall('s', 'stage')
+    await expect(history.run({ ...details, requestId: 'r-1' }, async () => { writeFileSync(file, 'one'); return 'ran' })).resolves.toBe('ran')
+    history.finishCall('s', 'stage', turn)
+    expect(readFileSync(file, 'utf8')).toBe('one')
+    if (name === 'checkpoints.json') {
+      expect(history.notice('s', 'r-1')).toMatchObject({ restorable: false, reason: expect.stringContaining('EIO') })
+      await expect(history.list()).resolves.toEqual([])
+    } else expect((await history.list()).map(record => record.requestId)).toEqual(['r-0', 'r-1'])
+    statFault.names = []
+    if (name === 'checkpoints.json') expect(readFileSync(journal, 'utf8')).toBe(saved)
   } finally { await history.close() }
 })

@@ -115,7 +115,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let legacy: { key: string; records: Checkpoint[] } | undefined
   function read(): State {
     if (closed) throw new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed')
-    const key = identity(file)
+    let key: string | undefined
+    try { key = identity(file) } catch (error) { return unreachable(error) }
     if (key === undefined) return { version: 2, checkpoints: [], lastGcAt: 0 }
     if (journal?.key === key) return JSON.parse(journal.text) as State
     let state: State
@@ -141,15 +142,32 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     logger.warn(`History could not read its journal, moved it aside to ${target} for the owner, and started a fresh one; the call runs`, { cause: causeOf(error) })
     return fresh
   }
+  /**
+   * A journal whose file cannot even be looked at, its stat failing (X7 of the Codex recheck): nothing can tell it apart
+   * from a damaged one or move it, so it is never written over. Under the lock the read throws, and the call runs without
+   * a checkpoint, its notice naming the cause (run); without it, as the owner's list and a call's start read it, it lists
+   * nothing.
+   */
+  function unreachable(error: unknown): State {
+    if (holding) throw error
+    logger.warn('History could not look at its journal, so it lists no checkpoints', { cause: causeOf(error) })
+    return { version: 2, checkpoints: [], lastGcAt: 0 }
+  }
   /** A fresh journal's first checkpoint carries the reason, which raises its call's notice (M1). */
   function resetNote(): { reason: string } | Record<string, never> {
     if (!journalReset) return {}
     journalReset = false
     return { reason: JOURNAL_RESET_REASON }
   }
+  /** The SQLite history's checkpoints, listed only; one that cannot be looked at or read lists none, and never walls a call (X7). */
   function legacyRecords(): Checkpoint[] {
-    const key = ['', '-wal'].map(suffix => identity(join(input.directory, `history.sqlite${suffix}`)) ?? '-').join('|')
-    if (legacy?.key !== key) legacy = { key, records: key === '-|-' ? [] : readLegacyHistory(input.directory) }
+    try {
+      const key = ['', '-wal'].map(suffix => identity(join(input.directory, `history.sqlite${suffix}`)) ?? '-').join('|')
+      if (legacy?.key !== key) legacy = { key, records: key === '-|-' ? [] : readLegacyHistory(input.directory) }
+    } catch (error) {
+      logger.warn('History could not read the SQLite history of an earlier Buckle, so it lists none of its checkpoints', { cause: causeOf(error) })
+      return []
+    }
     return legacy.records.map(record => structuredClone(record))
   }
   function records(): Checkpoint[] {
@@ -203,8 +221,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }
     await save(state)
   }
+  /** The call's turn: one the journal cannot give, read failing, falls back to the activity alone, so no call's start is walled (X7). */
   function observeCall(sessionId: string, stageId?: string): string {
-    const existing = records()
+    let existing: Checkpoint[]
+    try { existing = records() } catch (error) { existing = []; logger.warn('History could not read its journal to group this call into a turn; the call runs', { cause: causeOf(error) }) }
     const latest = existing.findLast(record => record.sessionId === sessionId)
     const known = activity.activeTurn(sessionId, stageId) ?? (stageId === undefined ? undefined : existing.find(record => record.sessionId === sessionId && record.turnStageId === stageId)?.turnId)
     const fallback = latest?.turnId ? { at: Date.parse(latest.createdAt), turn: latest.turnId, stage: latest.turnStageId ?? null } : undefined
@@ -583,7 +603,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     finishCall,
     notice: (sessionId: string, requestId: string) => {
       const matches = (record: Checkpoint) => record.sessionId === sessionId && (record.requestId === requestId || record.parentRequestId === requestId)
-      const found = [...unsaved.values()].findLast(matches) ?? records().findLast(matches)
+      let found = [...unsaved.values()].findLast(matches)
+      try { found ??= records().findLast(matches) } catch (error) { logger.warn('History could not read its journal for this call\'s notice', { cause: causeOf(error) }) }
       return found ? summary(found) : null
     },
     recent: async (count: number) => {
