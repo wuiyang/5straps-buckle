@@ -126,8 +126,9 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('History git wrote no tree')
       // Swapped while git read it: the index may name what the link held, so it goes, and nothing keeps that content.
       if (folderIdentity(root) !== identity) { rmSync(join(state.git, 'index'), { force: true }); throw new FolderReplacedError('A folder history records was replaced while git read it') }
-      const seen = leftovers(root, leftover.toString().split('\0').filter(Boolean))
-      result.push({ root, identity, git: state.git, tree, ignored: ignoredState(root, ignored.map(line => line.slice(2))), partial: added === 1, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)) })
+      const ignoredNow = ignoredState(root, ignored.map(line => line.slice(2)))
+      const seen = leftovers(root, leftover.toString().split('\0').filter(Boolean), ignoredNow)
+      result.push({ root, identity, git: state.git, tree, ignored: ignoredNow, partial: added === 1, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)) })
     }
     return result
   }
@@ -228,9 +229,10 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
 /**
  * What git listed on disk beside the index after git add, never stored: a folder it does not track (an empty one, or one
  * that holds only what it cannot store), or a file it could not read or would not store (a FIFO). Each such folder is read
- * here, bounded, for what stands in it; one that cannot be read, or holds more than the bound, is unknown below.
+ * here, bounded by `limit`, for what stands in it, never an entry git listed as `ignored` nor a nested repository's own
+ * `.git`, which no restore touches; one that cannot be read, or holds more than the bound, is unknown below.
  */
-function leftovers(root: string, listed: string[]): { present: Map<string, Entry>; unknown: Set<string> } {
+export function leftovers(root: string, listed: string[], ignored: Map<string, string>, limit = LEFTOVER_ENTRIES): { present: Map<string, Entry>; unknown: Set<string> } {
   const present = new Map<string, Entry>()
   const unknown = new Set<string>()
   let count = 0
@@ -241,15 +243,23 @@ function leftovers(root: string, listed: string[]): { present: Map<string, Entry
       const at = pending.pop()!
       const stat = inspect(childPath(root, at))
       if (!stat) continue
-      if (++count > LEFTOVER_ENTRIES) { unknown.add(name); break }
+      if (++count > limit) { unknown.add(name); break }
+      if (at.split('/').at(-1) === '.git') { present.set(at, { kind: 'excluded', mode: modeOf(stat), reason: 'nested' }); continue }
       if (!stat.isDirectory()) { present.set(at, stat.isFile() || stat.isSymbolicLink() ? { kind: 'unreadable', mode: modeOf(stat) } : { kind: 'excluded', mode: modeOf(stat), reason: 'special' }); continue }
       present.set(at, { kind: 'directory', mode: modeOf(stat) })
       let names: string[]
       try { names = readdirSync(childPath(root, at)) } catch { unknown.add(at); continue }
-      for (const child of names) if (isPlainName(child)) pending.push(`${at}/${child}`)
+      for (const child of names) if (isPlainName(child) && !listedIgnored(ignored, `${at}/${child}`)) pending.push(`${at}/${child}`)
     }
   }
   return { present, unknown }
+}
+
+/** Whether git listed `name` as ignored, itself or as a folder above it: never what it holds. */
+function listedIgnored(ignored: Map<string, string>, name: string): boolean {
+  if (ignored.has(name) || ignored.has(`${name}/`)) return true
+  for (let end = name.indexOf('/'); end !== -1; end = name.indexOf('/', end + 1)) if (ignored.has(name.slice(0, end + 1))) return true
+  return false
 }
 
 /** A path absent from a baseline's tree as the disk held it: what git saw there unstored, unknown below an unreadable folder, else absent. */

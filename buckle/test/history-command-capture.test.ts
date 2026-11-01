@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
-import { indexEntries } from '../common/services/history/command-capture.js'
+import { indexEntries, leftovers } from '../common/services/history/command-capture.js'
 import { historyObjects } from './support/history-objects.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -346,4 +346,16 @@ describe('a command\'s capture that takes too long', () => {
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('cancelled') })
     } finally { await history.close() }
   })
+})
+
+// X10 follow-up: what git saw on disk but did not store is read without the entries git lists as ignored, or a nested
+// repository's own files, so a folder of build output git ignores never runs into the bound and reads as unknown.
+it('reads a folder git did not store without its ignored entries or a nested repository', () => {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-leftovers-')); roots.push(root)
+  mkdirSync(join(root, 'obj')); for (let index = 0; index < 5; index++) writeFileSync(join(root, 'obj', `${index}.o`), 'object')
+  mkdirSync(join(root, 'nested', '.git', 'objects'), { recursive: true }); for (let index = 0; index < 5; index++) writeFileSync(join(root, 'nested', '.git', `f${index}`), 'git')
+  const seen = leftovers(root, ['obj/', 'nested/'], new Map([['obj/0.o', 'f'], ['obj/1.o', 'f'], ['obj/2.o', 'f'], ['obj/3.o', 'f'], ['obj/4.o', 'f']]), 4)
+  expect(seen.unknown).toEqual(new Set())
+  expect([...seen.present.keys()].sort()).toEqual(['nested', 'nested/.git', 'obj'])
+  expect(seen.present.get('nested/.git')).toMatchObject({ kind: 'excluded', reason: 'nested' })
 })
