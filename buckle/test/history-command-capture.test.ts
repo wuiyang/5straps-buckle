@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
 import { indexEntries } from '../common/services/history/command-capture.js'
 import { historyObjects } from './support/history-objects.js'
+import { configFromEnvironment } from './support/workspace-config.js'
+import { fixedInteraction } from './support/interaction.js'
+import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 
 // Slice F2, item 3 (owner correction 2026-11-01): a command's checkpoint comes from git itself, in a shadow repository
 // that reads the workspace's own ignore rules. git add -A brings its index up to date before and after the command, and
@@ -164,4 +167,25 @@ it('reads a version 2 git index in-process', () => {
   execFileSync('git', ['init', '--quiet', root]); execFileSync('git', ['-C', root, 'add', '-A'])
   const listed = execFileSync('git', ['-C', root, 'ls-files', '-s'], { encoding: 'utf8' }).trim().split('\n').map(line => line.split(' ')[1])
   expect(indexEntries(readFileSync(join(root, '.git', 'index')))).toEqual([{ id: listed[0], size: 4 }, { id: listed[1], size: 3 }])
+})
+
+describe('an exec call through the invoker', () => {
+  it.skipIf(process.platform === 'win32').each([true, false])('is recorded through git with host git %s, and its notice says when it cannot be', async hostGit => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-command-exec-')); roots.push(root)
+    const workspace = join(root, 'workspace'); mkdirSync(workspace)
+    writeFileSync(join(workspace, '.gitignore'), 'build/\n')
+    mkdirSync(join(workspace, 'seed', 'build'), { recursive: true }); writeFileSync(join(workspace, 'seed', 'out.txt'), 'made'); writeFileSync(join(workspace, 'seed', 'build', 'app.js'), 'built')
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_ALLOW_HOST_GIT: String(hostGit), BUCKLE_PACKS: 'fs,shell,history', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction() })
+    try {
+      await runtime.policy.setDangerouslyAllow(true)
+      const result = await runtime.invoke({ sessionId: 'agent', approvalWait: { mode: 'none' }, request: { requestId: 'exec-1', tool: 'shell_exec', args: { command: 'cp', args: ['-R', 'seed/.', '.'] }, approvalTokens: [] } })
+      expect(result, JSON.stringify(result)).toMatchObject({ outcome: 'ok' })
+      const checkpoint = (await runtime.history.list()).at(-1)!
+      if (hostGit) {
+        expect(checkpoint).toMatchObject({ tool: 'shell_exec', restorable: true, changes: [{ path: join(workspace, 'out.txt'), kind: 'created' }], ignored: { count: 1, reason: 'ignored' } })
+        expect(result).toMatchObject({ meta: expect.not.objectContaining({ history: expect.anything() }) })
+      } else expect(result).toMatchObject({ meta: { history: { checkpoint: checkpoint.id, restorable: false, reason: HOST_GIT_REASON } } })
+    } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  })
 })
