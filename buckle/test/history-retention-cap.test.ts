@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it } from 'vitest'
@@ -69,5 +69,22 @@ it('records a checkpoint that alone exceeds the cap without content, and keeps t
     const [first, second] = await history.list()
     expect(first).toMatchObject({ restorable: true, paths: [join(workspace, 'a.txt')] })
     expect(second).toMatchObject({ restorable: false, reason: expect.stringContaining('rolling size cap'), paths: [join(workspace, 'random.bin')] })
+  } finally { await history.close() }
+})
+
+// X13 of the Codex review of 670f1dc2..01d3b0c9: a stage restore checks every checkpoint it undoes, as a rollback does, so
+// a later checkpoint the cap left without content never has its paths removed under the first one's flag.
+it('refuses a stage restore past a checkpoint the cap left without content, and changes nothing', async () => {
+  const { workspace, settings } = fixture(100_000)
+  const small = join(workspace, 'a.txt'); writeFileSync(small, 'a1')
+  const big = join(workspace, 'big.bin')
+  const history = await openChangeHistory(settings)
+  try {
+    await history.run(fileTool('one', small), async () => { writeFileSync(small, 'a2') })
+    await history.run(fileTool('one', big), async () => { writeFileSync(big, randomBytes(300_000)) })
+    expect((await history.list()).map(item => item.restorable)).toEqual([true, false])
+    await expect(history.restoreStage('one', 's')).rejects.toThrow('rolling size cap')
+    expect(existsSync(big)).toBe(true)
+    expect(readFileSync(small, 'utf8')).toBe('a2')
   } finally { await history.close() }
 })

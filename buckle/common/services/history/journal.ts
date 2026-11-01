@@ -496,8 +496,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         input.onLocked?.()
         const selected = since(input.target); const chain = chained(selected); const plan = planOf(selected, chain)
         input.check?.(plan)
-        const first = selected[0]!
-        return restoreRecord({ ...first, id: plan.checkpoint, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []), restorable: selected.every(record => record.restorable !== false) }, input.by, plan.undoes)
+        return restoreRecord(combined(selected, plan.checkpoint, chain), input.by, plan.undoes)
       }, { owner: true, ...(input.signal ? { signal: input.signal } : {}) })
     },
     run<T>(details: HistoryInput, execute: () => Promise<T>, signal?: AbortSignal): Promise<T> {
@@ -541,7 +540,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         let chain
         try { chain = chained(selected) }
         catch (error) { if (error instanceof RestoreRefusedError) throw new RestoreRefusedError('Restore conflict: changes from another stage are interleaved'); throw error }
-        return restoreRecord({ ...selected[0]!, id: `stage:${stageId}`, roots: [...new Set(selected.flatMap(record => record.roots))], ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []) })
+        return restoreRecord(combined(selected, `stage:${stageId}`, chain))
       }, { owner: true, ...options })
     },
     prune: (options: { force?: boolean; legacy?: boolean } = {}) => locked(async () => {
@@ -655,6 +654,14 @@ function compact(record: Checkpoint): void {
 }
 function changesOf(before: Snapshot, after: Snapshot): Array<{ path: string; kind: ChangeKind }> { return changedPaths(before, after).map(path => ({ path, kind: !before[path] ? 'created' : !after[path] ? 'deleted' : 'modified' })) }
 function assertExcludedUntouched(paths: string[], excluded: string[] = []): void { if (paths.some(path => excluded.some(hidden => isInside(path, hidden) || isInside(hidden, path)))) throw new Error('Changes overlap a protected file or its parent directory') }
+/**
+ * The checkpoints one restore undoes, as one record: their roots, exclusions, and chained states, restorable only where
+ * every one is, with the reason of the first that is not (X13 of the Codex review of 670f1dc2..01d3b0c9).
+ */
+function combined(selected: Checkpoint[], id: string, chain: { before: Snapshot; after: Snapshot }): Checkpoint {
+  const unavailable = selected.find(record => record.restorable === false)
+  return { ...selected[0]!, id, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []), restorable: unavailable === undefined, ...(unavailable?.reason ? { reason: unavailable.reason } : {}) }
+}
 function planOf(selected: Checkpoint[], chain = chained(selected)): RollbackPlan { return { checkpoint: selected[0]!.id, head: selected.at(-1)!.id, undoes: selected.length, changes: changesOf(chain.before, chain.after) } }
 function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } {
   const base: Snapshot = {}; for (const record of selected) Object.assign(base, record.before, record.after)
