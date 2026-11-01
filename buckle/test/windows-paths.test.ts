@@ -507,8 +507,9 @@ describe('history beside a name holding a backslash, on Linux', () => {
       expect(first!.paths).toEqual([join(workspace, 'notes.md')])
       expect(second!.paths).toEqual([join(workspace, 'made')])
       expect(second!.notRestorable).toEqual([`${workspace}/made/a\\b`])
+      // Named once, by its place in the folder alone, when a command's checkpoint meets it (Slice F2, item 3).
       const named = warn.mock.calls.filter(([message]) => message.startsWith('History leaves out')).map(([, fields]) => fields)
-      expect(named).toEqual([{ root: workspace, name: 'inside\\..\\..\\x' }, { root: workspace, name: 'made/a\\b' }])
+      expect(named).toEqual([{ name: 'made/a\\b' }])
       await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a name Buckle would read as another path, which history does not capture')
       expect(readFileSync(`${workspace}/made/a\\b`, 'utf8')).toBe('made')
       expect(readFileSync(`${workspace}/inside\\..\\..\\x`, 'utf8')).toBe('literal')

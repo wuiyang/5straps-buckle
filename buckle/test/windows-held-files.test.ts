@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -94,20 +94,22 @@ describe('a capture on Windows, imitated, beside a file another program holds op
     expect(notRestorablePaths(before, after)).toEqual(['/ws/a', '/ws/b'])
   })
 
-  it.each(['held-open', 'locked-range'])('records a write beside %s, and refuses a restore that would remove the directory holding it', async (name) => {
+  // Slice F2, item 3: a command's checkpoint comes from git, which this imitation does not reach. A file git cannot open,
+  // as one another program holds is on Windows, is left as it was: the call runs, its checkpoint says so, and no
+  // restore writes or removes it.
+  it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('records a command beside a file git cannot read, says so, and never removes it on restore', async () => {
     const { root, workspace: ws } = workspace()
-    writeFileSync(join(ws, name), 'held')
-    const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30, platform: 'win32' })
+    const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, retentionDays: 30 })
     try {
-      const details = { sessionId: 'held', stageId: 'stage', tool: 'fs_write', roots: [ws] }
+      const details = { sessionId: 'held', stageId: 'stage', tool: 'shell_exec', roots: [ws] }
       await history.run(details, async () => { writeFileSync(join(ws, 'notes.md'), 'notes') })
-      await history.run(details, async () => { mkdirSync(join(ws, 'out')); writeFileSync(join(ws, 'out', name), 'log') })
+      await history.run(details, async () => { mkdirSync(join(ws, 'out')); writeFileSync(join(ws, 'out', 'held'), 'log'); chmodSync(join(ws, 'out', 'held'), 0o000); writeFileSync(join(ws, 'notes.md'), 'more') })
       const [first, second] = await history.list()
       expect(first!.paths).toEqual([join(ws, 'notes.md')])
-      expect(second!.paths).toEqual([join(ws, 'out')])
-      expect(second!.notRestorable).toEqual([join(ws, 'out', name)])
-      await expect(history.restore(second!.id)).rejects.toThrow('Restore conflict: a directory holds a file another program held open, which history could not read')
-      expect(readFileSync(join(ws, 'out', name), 'utf8')).toBe('log')
+      expect(second).toMatchObject({ restorable: true, paths: [join(ws, 'notes.md')], reason: expect.stringContaining('could not read some files') })
+      await history.restore(second!.id)
+      chmodSync(join(ws, 'out', 'held'), 0o600)
+      expect([readFileSync(join(ws, 'notes.md'), 'utf8'), readFileSync(join(ws, 'out', 'held'), 'utf8')]).toEqual(['notes', 'log'])
     } finally { await history.close() }
   })
 })

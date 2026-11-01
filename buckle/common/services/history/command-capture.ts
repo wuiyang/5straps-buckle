@@ -4,6 +4,7 @@ import { join, relative } from 'pathe'
 import type { Program, UntrustedRoots } from '../../domain/executable.js'
 import { childPath, isInside, isPlainName } from '../../domain/paths.js'
 import { escapeIgnore, gitOperation, historyGitProgram, isolatedGit, ownerGitDirectory, RAW_ATTRIBUTES, regularFile, runProgram } from './git-store.js'
+import { logger } from '../../runtime/log.js'
 import type { ObjectStore } from './object-store.js'
 import { modeOf } from './scoped-capture.js'
 import type { Entry, Snapshot } from './snapshot.js'
@@ -37,6 +38,7 @@ export class FolderReplacedError extends Error {}
  */
 export function createCommandCapture(input: { directory: string; objects: Pick<ObjectStore, 'root' | 'read' | 'size'>; excluded: () => string[]; allowed: () => boolean; untrusted?: () => UntrustedRoots; maxFileBytes: () => number }) {
   const folder = join(input.directory, 'commands')
+  const warned = new Set<string>()
   const { environment, safety, empty } = isolatedGit(join(folder, 'private'))
 
   function program(roots: string[]): Program | null {
@@ -117,7 +119,11 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
         if (change.status === 'M' && change.oldMode === '040000' && change.newMode === '040000') continue
         const parts = change.name.split('/')
         const path = childPath(left.root, change.name)
-        if (!parts.every(part => isPlainName(part))) { result.before[path] = { kind: 'excluded', mode: 0 }; result.after[path] = { kind: 'excluded', mode: 0, reason: 'special' }; continue }
+        if (!parts.every(part => isPlainName(part))) {
+          result.before[path] = { kind: 'excluded', mode: 0 }; result.after[path] = { kind: 'excluded', mode: 0, reason: 'special' }
+          if (!warned.has(path)) { warned.add(path); logger.warn('History leaves out a name Buckle would read as another path', { name: change.name }) }
+          continue
+        }
         // A path absent from one side's tree that an ignore rule covered there, or a folder holding what one covered,
         // was on disk all along: history never knew it, so no restore writes or removes it (A1).
         const was = ZERO.test(change.oldMode) && ignoredIn(left.ignored, change.name) ? ignoredEntry(path) : await sideBefore(change.oldMode, change.oldId, prior(path))
