@@ -70,7 +70,7 @@ describe('a program with leading arguments, at each spawn site', () => {
     expectLeading(spawned, ['open', 'https://example.com/'])
     spawned.length = 0
     await pack.close?.()
-    expectLeading(spawned, ['close', '--session'])
+    expectLeading(spawned, ['close', '--json', '--config'])
   })
 
   it('the dev pack\'s process list', async () => {

@@ -105,7 +105,9 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
     const stored = () => JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
     const failNext = () => writeFileSync(failMarker, '')
-    return { runtime, calls, config, stored, failNext }
+    // A bare close, as every close Buckle sends is (Slice F4, item 2).
+    const closeArgs = (session: string | undefined) => ['close', '--json', '--config', join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'fresh-config.json'), '--session', session]
+    return { runtime, calls, config, stored, failNext, closeArgs }
   }
 
   function policy(network: string[]): WorkspacePolicy {
@@ -135,13 +137,13 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   })
 
   it('closes the browsers it started when the node shuts down, and forgets their sessions (B19)', async () => {
-    const { runtime, calls } = await fixture(['*.example.test'])
+    const { runtime, calls, closeArgs } = await fixture(['*.example.test'])
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
     const session = sessionOf(calls()[0])
 
     await runtime.closeSessions()
 
-    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    expect(calls().at(-1)).toEqual(closeArgs(session))
     // A later call starts a fresh session instead of the one shutdown closed.
     await browse(runtime, { command: 'open', args: ['https://app.example.test'] })
     expect(sessionOf(calls().at(-1))).not.toBe(session)
@@ -198,14 +200,14 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   // A first call that fails still started the session's daemon under the list of that moment, so a change to the hosts
   // relaunches it, and the pack the change replaces ends it, as for one whose first call succeeded.
   it('relaunches, with the notice, a session whose first call failed once the hosts change, and ends the browser that call started', async () => {
-    const { runtime, calls, stored, failNext } = await fixture(['app.example.test', 'removed.example.test'])
+    const { runtime, calls, closeArgs, stored, failNext } = await fixture(['app.example.test', 'removed.example.test'])
     failNext()
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'error' })
     const first = sessionOf(calls()[0])
     expect(Object.values(stored().allowedDomains)).toEqual(['app.example.test,removed.example.test'])
     await runtime.policy.apply(policy(['app.example.test']))
     // The replaced pack's retire closes the browser the failed call started.
-    expect(calls().at(-1)).toEqual(['close', '--session', first, '--json'])
+    expect(calls().at(-1)).toEqual(closeArgs(first))
     const response = await browse(runtime, { command: 'snapshot', args: [] })
     expect(noticeOf(response)).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
     const snapshot = calls().find(call => call[0] === 'snapshot')
@@ -214,25 +216,25 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
   }, 20000)
 
   it('closes at shutdown the browser a session\'s only, failed, call started, and forgets the session', async () => {
-    const { runtime, calls, stored, failNext } = await fixture(['app.example.test'])
+    const { runtime, calls, closeArgs, stored, failNext } = await fixture(['app.example.test'])
     failNext()
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'error' })
     const session = sessionOf(calls()[0])
     await runtime.closeSessions()
-    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    expect(calls().at(-1)).toEqual(closeArgs(session))
     expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
   }, 20000)
 
   // Fix brief 2, R2: the pack a policy change replaces is retired, not shut down, so the agent's session carries over.
   it('ends the browsers of the pack a policy change replaces, keeps their sessions for the pack that follows, and forgets them at shutdown alone', async () => {
-    const { runtime, calls, stored } = await fixture(['*.example.test', 'docs.test'])
+    const { runtime, calls, closeArgs, stored } = await fixture(['*.example.test', 'docs.test'])
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'ok' })
     const session = sessionOf(calls()[0])
 
     await runtime.policy.apply(policy(['*.example.test']))
 
     // Closed as shutdown would close it, with its record left for the pack that follows: the session and its last list.
-    expect(calls().at(-1)).toEqual(['close', '--session', session, '--json'])
+    expect(calls().at(-1)).toEqual(closeArgs(session))
     expect(Object.values(stored().sessions)).toEqual([session])
     expect(Object.values(stored().allowedDomains)).toEqual(['*.example.test,docs.test'])
     expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
@@ -243,7 +245,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
 
     await runtime.closeSessions()
     // Two browsers were started for this session, one before the change and one after, and each was closed.
-    expect(calls().filter(call => call[0] === 'close')).toEqual([['close', '--session', session, '--json'], ['close', '--session', session, '--json'], ['close', '--session', relaunched, '--json']])
+    expect(calls().filter(call => call[0] === 'close')).toEqual([closeArgs(session), closeArgs(session), closeArgs(relaunched)])
     expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
   }, 20000)
 

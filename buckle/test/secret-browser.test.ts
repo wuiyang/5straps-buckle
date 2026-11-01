@@ -14,12 +14,14 @@ import { configFromEnvironment } from './support/workspace-config.js'
 
 const TOKEN = 'decoy-browser-0123456789'
 const LABEL = '[secret:API_TOKEN]'
+// A close is bare (Slice F4, item 2), so the stand-in tells an attached Chrome by the --cdp its other commands carried.
 const STAND_IN = `#!/bin/sh
 dir="$(dirname "$0")"
+case " $* " in *" --cdp "*) : > "$dir/attached" ;; esac
 case "$1" in
   fill) printf '%s' "$3" > "$dir/page.txt"; printf '{"success":true,"data":{"filled":"%s"}}' "$3" ;;
   snapshot) [ -f "$dir/slow" ] && sleep 1; printf '{"success":true,"data":{"page":"%s"}}' "$(cat "$dir/page.txt" 2>/dev/null)" ;;
-  close) case " $* " in *" --cdp "*) ;; *) rm -f "$dir/page.txt" ;; esac; printf '{"success":true,"data":{}}' ;;
+  close) [ -f "$dir/attached" ] || rm -f "$dir/page.txt"; printf '{"success":true,"data":{}}' ;;
   *) printf '{"success":true,"data":{}}' ;;
 esac
 `

@@ -20,6 +20,8 @@ import { ToolInputError, type ToolContext } from '../common/domain/tool.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 
 const PROFILE = mkdtempSync('/tmp/buckle-browser-pack-')
+/** A bare close, as every close Buckle sends is (Slice F4, item 2): the session and Buckle's empty configuration alone. */
+const closeArgs = (directory: string, session: string | undefined) => ['close', '--json', '--config', join(directory, 'fresh-config.json'), '--session', session]
 afterAll(() => rmSync(PROFILE, { recursive: true, force: true }))
 
 function stubResult(overrides: Partial<ProcessResult> = {}): ProcessResult {
@@ -146,10 +148,13 @@ describe('the browser the owner\'s settings choose', () => {
     expect(valueOf(args, '--session')).toMatch(/^buckle-/)
   })
 
-  it('attaches on close too, which agent-browser answers by disconnecting', async () => {
-    const { args } = await run({ command: 'close', args: [] }, { browser: { mode: ATTACHED } })
-    expect(args.slice(0, 2)).toEqual(['close', '--json'])
-    expect(valueOf(args, '--cdp')).toBe('ws://127.0.0.1:9222/devtools/browser/abc')
+  // The daemon holds the connection, so a bare close disconnects it; --cdp on a daemon that idled out would connect only to close.
+  it('closes an attached session with a bare close, which agent-browser answers by disconnecting', async () => {
+    const directory = freshDirectory()
+    await run({ command: 'snapshot', args: [] }, { sessionDirectory: directory, browser: { mode: ATTACHED } })
+    const { args } = await run({ command: 'close', args: [] }, { sessionDirectory: directory, browser: { mode: ATTACHED } })
+    expect(args).toEqual(closeArgs(directory, expect.stringMatching(/^buckle-/) as unknown as string))
+    rmSync(directory, { recursive: true, force: true })
   })
 
   it('tells the agent in the tool description what close keeps in each mode', () => {
@@ -261,7 +266,7 @@ describe('a session left by a run under other browser settings', () => {
     await call(directory, PROFILE_A, calls)
     const first = sessionOf(calls[0]!)
     await call(directory, PROFILE_B, calls)
-    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(calls[1]!.args).toEqual(closeArgs(directory, first))
     expect(sessionOf(calls[2]!)).not.toBe(first)
     expect(calls[2]!.args).toContain('/owner/profile-b')
     rmSync(directory, { recursive: true, force: true })
@@ -327,7 +332,7 @@ describe('a session left by a run under other browser settings', () => {
     const first = sessionOf(calls[0]!)
     writtenBy(directory, 1)
     await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
-    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(calls[1]!.args).toEqual(closeArgs(directory, first))
     expect(writers(directory)).toEqual([process.pid])
     rmSync(directory, { recursive: true, force: true })
   })
@@ -339,7 +344,7 @@ describe('a session left by a run under other browser settings', () => {
     const first = sessionOf(calls[0]!)
     writtenBy(directory, spawnSync(process.execPath, ['-e', '']).pid!)
     await call(directory, { ...PROFILE_A, launchArgs: '--lang=en-GB' }, calls)
-    expect(calls[1]!.args).toEqual(['close', '--session', first, '--json'])
+    expect(calls[1]!.args).toEqual(closeArgs(directory, first))
     expect(sessionOf(calls[2]!)).toBe(first)
     expect(writers(directory)).toEqual([process.pid])
     rmSync(directory, { recursive: true, force: true })
@@ -356,7 +361,7 @@ describe('a session left by a run under other browser settings', () => {
     expect(shared).toMatch(/^buckle-profile-/)
     expect(shared).not.toBe(sessionOf(calls[0]!))
     await call(directory, { ...profile, launchArgs: '--lang=en-GB' }, calls)
-    expect(calls[2]!.args).toEqual(['close', '--session', shared, '--json'])
+    expect(calls[2]!.args).toEqual(closeArgs(directory, shared))
     expect(sessionOf(calls[3]!)).toBe(shared)
     expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('/owner/profile')
     rmSync(directory, { recursive: true, force: true })
@@ -372,7 +377,7 @@ describe('shutdown in an attached browser', () => {
     const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
     expect(calls[0]!.args).toContain('--cdp')
     await pack.close?.()
-    expect(calls[1]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(calls[1]!.args).toEqual(closeArgs(directory, session))
     expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })
@@ -392,7 +397,7 @@ describe('a pack replaced by one built from other settings', () => {
     const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
 
     await replaced.retire?.()
-    expect(calls[1]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(calls[1]!.args).toEqual(closeArgs(directory, session))
     expect(Object.values(stored().sessions)).toEqual([session])
     expect(Object.values(stored().allowedDomains)).toEqual(['example.com'])
     // Nothing of the replaced pack is left to close: its close sends nothing and forgets nothing.
@@ -403,13 +408,13 @@ describe('a pack replaced by one built from other settings', () => {
     const successor = build(['example.com', 'docs.example.com'])
     const answer = await successor.tools[0]!.prepare({ command: 'snapshot' }).execute(context) as { notice?: string }
     // Fix brief 4, finding 9: the browser last run under the other list is closed, and the call runs on a new one.
-    expect(calls[2]!.args).toEqual(['close', '--session', session, '--json'])
+    expect(calls[2]!.args).toEqual(closeArgs(directory, session))
     expect(calls[3]!.args[0]).toBe('snapshot')
     const relaunched = calls[3]!.args[calls[3]!.args.indexOf('--session') + 1]!
     expect(relaunched).not.toBe(session)
     expect(answer.notice).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
     await successor.close?.()
-    expect(calls[4]!.args).toEqual(['close', '--session', relaunched, '--json'])
+    expect(calls[4]!.args).toEqual(closeArgs(directory, relaunched))
     expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })
