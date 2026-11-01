@@ -52,6 +52,16 @@ describe('docs/secrets.md quotes what the code says', () => {
     expect(secrets).toContain('`[secret:NAME]`')
   })
 
+  // Codex review of the code mode secret fix, finding S1: a script's later calls are masked by what its calls resolved.
+  it('says a code mode script\'s calls are masked by every value its calls resolved, after an ask too, and where that stops', () => {
+    const masking = page('secrets-02.md').replace(/\s+/g, ' ')
+    expect(masking).toContain('## In a code mode script')
+    expect(masking).toContain('A call with no reference of its own is masked too, so a file a page or a command saved the value to reads as `[secret:NAME]` when a later call of the same script reads it.')
+    expect(masking).toContain('The script\'s replay record keeps each value\'s file, NAME, and digest, never the value.')
+    expect(masking).toContain('A direct call or another script that reads the file back sees it')
+    expect(page('code-mode.md').replace(/\s+/g, ' ')).toContain('Every later call of the script is masked by each value its calls resolved')
+  })
+
   it('links the masking page, which says a filled page stays masked in every Buckle process and after a restart', () => {
     expect(secrets).toContain('](secrets-02.md)')
     expect(page('secrets-02.md')).toContain('in any Buckle process and after a restart')

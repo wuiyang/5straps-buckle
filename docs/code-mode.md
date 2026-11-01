@@ -60,7 +60,9 @@ A script can fill a password or send a token without seeing it. It passes a
 [secret reference](secrets.md), such as `{{file:.env.local:LOGIN_PASSWORD}}`, to a call as the
 text of a `fill` or `type`, a shell argument, or a `web_fetch` header. That call reads it as a
 direct call would, asks about the file on its first use, and answers with `[secret:NAME]` in the
-value's place. Buckle reads no reference in the script itself.
+value's place. Buckle reads no reference in the script itself. Every later call of the script is
+masked by each value its calls resolved, after an ask too, so a file a page saved the value to reads
+as the label ([secret masking](secrets-02.md#in-a-code-mode-script)).
 
 ## Approvals inside a script
 
