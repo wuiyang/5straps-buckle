@@ -467,12 +467,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * The temporaries a stopped write left go too: only the lock's holder sweeps, so none is in flight (X6).
    */
   function sweepBlobs(state: State): void {
+    // A command between its phases names what no index names yet (W1): the sweep that follows it runs once it is done.
+    if (baselines.size) return
     objects.clean()
     for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
     const named = namedObjects(state.checkpoints)
-    for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) { objects.remove(id); sizes.delete(id) }
+    // A removal the system refuses, as Windows does while another handle holds a file, leaves that object for the next sweep (W1).
+    let refused: unknown
+    for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) {
+      try { objects.remove(id); sizes.delete(id) } catch (error) { refused ??= error }
+    }
+    if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
   }
   /**
    * The shadow-git store's upkeep while one is left (item 7), in the background under the lock, never on a call's path

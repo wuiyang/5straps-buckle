@@ -1,11 +1,12 @@
 import { execFileSync } from 'node:child_process'
-import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
-import { indexEntries, unstoredState } from '../common/services/history/command-capture.js'
-import { openObjectStore } from '../common/services/history/object-store.js'
+import { readIndex, unstoredState } from '../common/services/history/command-capture.js'
+import { blobId, openObjectStore } from '../common/services/history/object-store.js'
 import { historyObjects } from './support/history-objects.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -31,19 +32,34 @@ vi.mock('../common/services/history/git-store.js', async importOriginal => {
 })
 
 // Each folder read while `on`: a command's capture reads none of the workspace's, as git's own listings name what it saw (R1.3).
+// `first`: the stored object a listing of history's objects names first. `refuse`: answers whether the system refuses the
+// removal of a stored object, as Windows does with EBUSY while another handle holds a file just written (W1).
 const folderReads = vi.hoisted(() => ({ on: false, paths: [] as string[] }))
+const objectFaults = vi.hoisted(() => ({ first: undefined as string | undefined, refuse: undefined as ((id: string) => boolean) | undefined, removed: [] as string[] }))
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
+  const objectId = (path: string) => /[\\/]blobs[\\/]([0-9a-f]{2})[\\/]([0-9a-f]{38})$/.exec(path)?.slice(1).join('')
   const readdirSync = ((path: Parameters<typeof actual.readdirSync>[0], options?: Parameters<typeof actual.readdirSync>[1]) => {
     if (folderReads.on) folderReads.paths.push(String(path))
-    return actual.readdirSync(path, options as never)
+    const names = actual.readdirSync(path, options as never)
+    const first = objectFaults.first
+    if (!first || options !== undefined) return names
+    const wanted = /[\\/]blobs$/.test(String(path)) ? first.slice(0, 2) : String(path).endsWith(`blobs/${first.slice(0, 2)}`) ? first.slice(2) : undefined
+    return wanted === undefined ? names : [...(names as string[]).filter(name => name === wanted), ...(names as string[]).filter(name => name !== wanted)]
   }) as typeof actual.readdirSync
-  return { ...actual, readdirSync, default: { ...actual, readdirSync } }
+  const rmSync = ((path: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
+    const id = objectId(String(path))
+    if (id && objectFaults.refuse?.(id)) throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+    actual.rmSync(path, options)
+    if (id) objectFaults.removed.push(id)
+  }) as typeof actual.rmSync
+  return { ...actual, readdirSync, rmSync, default: { ...actual, readdirSync, rmSync } }
 })
 
 const roots: string[] = []
 afterEach(() => {
   folderReads.on = false; folderReads.paths = []
+  objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
@@ -196,12 +212,18 @@ describe('a command\'s checkpoint', () => {
   })
 })
 
-it('reads a version 2 git index in-process', () => {
+it('reads a version 2 git index in-process, the trees its cache-tree names included (W1)', () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-index-')); roots.push(root)
   writeFileSync(join(root, 'one'), 'one'); mkdirSync(join(root, 'folder')); writeFileSync(join(root, 'folder', 'a-much-longer-name.txt'), 'two!')
   execFileSync('git', ['init', '--quiet', root]); execFileSync('git', ['-C', root, 'add', '-A'])
   const listed = execFileSync('git', ['-C', root, 'ls-files', '-s'], { encoding: 'utf8' }).trim().split('\n').map(line => line.split(' ')[1])
-  expect(indexEntries(readFileSync(join(root, '.git', 'index')))).toEqual([{ id: listed[0], size: 4 }, { id: listed[1], size: 3 }])
+  expect(readIndex(readFileSync(join(root, '.git', 'index')))).toEqual({ entries: [{ id: listed[0], size: 4 }, { id: listed[1], size: 3 }], trees: [] })
+  const tree = execFileSync('git', ['-C', root, 'write-tree'], { encoding: 'utf8' }).trim()
+  const folder = execFileSync('git', ['-C', root, 'rev-parse', `${tree}:folder`], { encoding: 'utf8' }).trim()
+  expect(readIndex(readFileSync(join(root, '.git', 'index')))?.trees).toEqual([tree, folder])
+  // A file tool's later change leaves the root and its folder invalid in the cache-tree: neither is named any more.
+  writeFileSync(join(root, 'folder', 'a-much-longer-name.txt'), 'three'); execFileSync('git', ['-C', root, 'add', '-A'])
+  expect(readIndex(readFileSync(join(root, '.git', 'index')))?.trees).toEqual([])
 })
 
 describe('an exec call through the invoker', () => {
@@ -415,6 +437,73 @@ describe('what a command\'s capture wrote that nothing names', () => {
         expect(historyObjects(directory).some(content => content.length > 200)).toBe(false)
         expect(readdirSync(folder).filter(name => name.startsWith('tmp'))).toEqual([])
       })
+    } finally { await history.close() }
+  })
+})
+
+// W1 of the Windows test of d26bf5ba: git takes a tree its index's cache-tree names as written while that tree is there,
+// and never looks below it. The sweep after a command removed every tree; one that stopped part way, Windows refusing a
+// removal while another handle held a file just written, left a named tree whose subtree was gone, so the next command's
+// before tree named a missing one and diff-tree exited with 128. The sweep keeps what a shadow index names, goes on past a
+// refused removal, and a node's first capture of a folder writes every tree again, whatever an earlier build left.
+describe('the trees a command\'s capture keeps', () => {
+  /** The id git gives a tree of these entries, each mode, name, and object id. */
+  function treeId(entries: Array<[string, string, string]>): string {
+    const body = Buffer.concat(entries.map(([mode, name, id]) => Buffer.concat([Buffer.from(`${mode} ${name}\0`), Buffer.from(id, 'hex')])))
+    return createHash('sha1').update(`tree ${body.length}\0`).update(body).digest('hex')
+  }
+  /** A folder lib/inner the first command leaves alone, its file old enough that git never hashes it again unchanged. */
+  function deepFixture() {
+    const made = fixture()
+    const file = join(made.workspace, 'lib', 'inner', 'd.txt')
+    mkdirSync(join(made.workspace, 'lib', 'inner'), { recursive: true }); writeFileSync(file, 'd1'); utimesSync(file, 1_600_000_000, 1_600_000_000)
+    return { ...made, file, inner: treeId([['100644', 'd.txt', blobId(Buffer.from('d1'))]]) }
+  }
+
+  it('keeps the trees a shadow index names, so a sweep that stops part way leaves the next command restorable', async () => {
+    const { workspace, settings, details, file, inner } = deepFixture()
+    // The sweep reaches the tree of lib/inner first; once it is gone, every other removal is refused.
+    objectFaults.first = inner
+    objectFaults.refuse = id => id !== inner && objectFaults.removed.includes(inner)
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      await vi.waitFor(() => expect(objectFaults.removed.length).toBeGreaterThan(0))
+      objectFaults.refuse = undefined
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(file, 'd2') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, changes: [{ path: file, kind: 'modified' }] })
+      await history.restore(checkpoint.id)
+      expect(read(file)).toBe('d1')
+    } finally { await history.close() }
+  })
+
+  it('goes on past a stored object the system refuses to remove', async () => {
+    const { workspace, directory, settings, details } = fixture({ maxFileBytes: 64 })
+    const big = (fill: number) => Buffer.alloc(200, fill)
+    const held = blobId(big(1))
+    objectFaults.first = held
+    objectFaults.refuse = id => id === held
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'one.bin'), big(1)); writeFileSync(join(workspace, 'two.bin'), big(2)) })
+      await vi.waitFor(() => expect(historyObjects(directory).filter(content => content.length > 200).map(content => content.at(-1))).toEqual([1]))
+    } finally { await history.close() }
+  })
+
+  it('writes every tree again at a node\'s first capture of a folder, so a tree an earlier sweep removed is never named', async () => {
+    const { root, workspace, directory, settings, details, file, inner } = deepFixture()
+    let history = await openChangeHistory(settings)
+    try { await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') }) } finally { await history.close() }
+    // As an earlier build's sweep that stopped part way left it: the trees the shadow index names, but not lib/inner's.
+    const shadow = join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24))
+    const config = join(root, 'empty-config'); writeFileSync(config, '')
+    execFileSync('git', ['write-tree', '--missing-ok'], { env: { ...process.env, GIT_DIR: shadow, GIT_INDEX_FILE: join(shadow, 'index'), GIT_WORK_TREE: workspace, GIT_OBJECT_DIRECTORY: join(directory, 'blobs'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config } })
+    rmSync(join(directory, 'blobs', inner.slice(0, 2), inner.slice(2)))
+    history = await openChangeHistory(settings)
+    try {
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(file, 'd2') })
+      expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true, changes: [{ path: file, kind: 'modified' }] })
     } finally { await history.close() }
   })
 })

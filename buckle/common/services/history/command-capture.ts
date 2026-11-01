@@ -55,6 +55,11 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   const folder = join(input.directory, 'commands')
   const warned = new Set<string>()
   const { environment, safety, empty } = isolatedGit(join(folder, 'private'))
+  /**
+   * The roots whose trees this process wrote again in full (W1): the first capture of each, and the next after a diff-tree
+   * that failed, writes every tree once more, so no tree an earlier build or an outside removal took is ever named.
+   */
+  const rewritten = new Set<string>()
 
   function program(roots: string[]): Program | null {
     return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
@@ -98,6 +103,20 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
+   * The tree of the index, written: git takes each tree the index's cache-tree names as written while that tree is there,
+   * never looking below it (W1). So the first write of each root in this process, and the next after a diff-tree that
+   * failed, ignores the cache-tree and writes every tree again; each other write trusts it, as the sweep keeps what a shadow
+   * index names.
+   */
+  async function writeTree(found: Program, state: { root: string; git: string }, budget: CaptureBudget): Promise<string> {
+    const again = !rewritten.has(state.root)
+    const written = (await git(found, state, ['write-tree', '--missing-ok', ...again ? ['--ignore-cache-tree'] : []], { budget })).toString().trim()
+    if (!/^[0-9a-f]{40}$/.test(written)) throw new Error('History git wrote no tree')
+    rewritten.add(state.root)
+    return written
+  }
+
+  /**
    * Each directory root's state now: the index brought up to date, and its tree written. First every tracked entry an
    * ignore rule now covers, or a protected path holds, leaves the index, so git add never reads one (X3, X4). Then git
    * add, with each protected path excluded from its pathspec. Then, together, the tree, the tracked files whose index
@@ -125,15 +144,13 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const added = await git(found, state, ['add', '-A', '--ignore-errors', '--', '.', ...excludes], { budget, whole: true, extra: state.extra, magic: excludes.length > 0 }).then(() => 0, (error: unknown) => { if (isExit(error, 1)) return 1; throw error })
       const warnings = { chunks: [] as Buffer[], bytes: 0 }
       const keep = (chunk: Buffer) => { warnings.bytes += chunk.length; if (warnings.bytes <= LISTING_ERRORS_BYTES) warnings.chunks.push(chunk) }
-      const [written, stale, folders, files] = await Promise.all([
-        git(found, state, ['write-tree', '--missing-ok'], { budget }),
+      const [tree, stale, folders, files] = await Promise.all([
+        writeTree(found, state, budget),
         git(found, state, ['diff-files', '--name-only', '-z'], { budget }),
         git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--directory', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0, budget }),
         // Without --directory git opens every folder it did not store, and warns of each it cannot open.
         git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0, budget, errors: keep }),
       ])
-      const tree = written.toString().trim()
-      if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('History git wrote no tree')
       // Swapped while git read it: the index may name what the link held, so it goes, and nothing keeps that content.
       if (folderIdentity(root) !== identity) { rmSync(join(state.git, 'index'), { force: true }); throw new FolderReplacedError('A folder history records was replaced while git read it') }
       const seen = unstoredState([folders, files], { text: Buffer.concat(warnings.chunks).toString(), complete: warnings.bytes <= LISTING_ERRORS_BYTES })
@@ -156,7 +173,8 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const right = after[index]!
       result.ignored += ignoredChanges(left.ignored, right.ignored)
       if (left.tree === right.tree) continue
-      const raw = await git(found, left, ['diff-tree', '-r', '-t', '-z', '--raw', '--no-renames', '--no-abbrev', '--no-commit-id', left.tree, right.tree], { budget })
+      // A tree that cannot be read: the next capture of this root writes every tree again (W1).
+      const raw = await git(found, left, ['diff-tree', '-r', '-t', '-z', '--raw', '--no-renames', '--no-abbrev', '--no-commit-id', left.tree, right.tree], { budget }).catch((error: unknown) => { rewritten.delete(left.root); throw error })
       for (const change of parseRaw(raw)) {
         if (change.status === 'M' && change.oldMode === '040000' && change.newMode === '040000') continue
         const parts = change.name.split('/')
@@ -220,7 +238,11 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return { kind: 'file', mode: own, hash: id }
   }
 
-  /** The blob ids each shadow index names whose file is within the content cap: the content the next command's before state reuses. */
+  /**
+   * The objects each shadow index names: each blob within the content cap, the content the next command's before state
+   * reuses, and each tree its cache-tree names, which git takes as written while it is there (W1). undefined where an index
+   * cannot be read, so nothing is swept on a guess.
+   */
   function indexed(): Set<string> | undefined {
     const ids = new Set<string>()
     let folders: string[]
@@ -228,10 +250,11 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     for (const name of folders) {
       if (!/^[0-9a-f]{24}$/.test(name)) continue
       let index: Buffer
-      try { index = readFileSync(join(folder, name, 'index')) } catch { continue }
-      const entries = indexEntries(index)
-      if (!entries) return undefined
-      for (const entry of entries) if (entry.size <= input.maxFileBytes()) ids.add(entry.id)
+      try { index = readFileSync(join(folder, name, 'index')) } catch (error) { if (isMissing(error)) continue; return undefined }
+      const read = readIndex(index)
+      if (!read) return undefined
+      for (const entry of read.entries) if (entry.size <= input.maxFileBytes()) ids.add(entry.id)
+      for (const tree of read.trees) ids.add(tree)
     }
     return ids
   }
@@ -348,11 +371,12 @@ function parseRaw(raw: Buffer): RawChange[] {
 }
 
 /**
- * A git index's entries, read in-process: version 2 or 3, which an isolated config writes. Each entry's blob id and the
- * file size its stat gave. undefined for any other version, so nothing is swept on a guess.
+ * A git index read in-process: version 2 or 3, which an isolated config writes. Each entry's blob id and the file size its
+ * stat gave, and each tree its cache-tree extension names as written (W1). undefined for any other form, an extension
+ * git requires its reader to know, or one cut short, so nothing is swept on a guess.
  */
-export function indexEntries(index: Buffer): Array<{ id: string; size: number }> | undefined {
-  if (index.length < 12 || index.toString('latin1', 0, 4) !== 'DIRC') return undefined
+export function readIndex(index: Buffer): { entries: Array<{ id: string; size: number }>; trees: string[] } | undefined {
+  if (index.length < 32 || index.toString('latin1', 0, 4) !== 'DIRC') return undefined
   const version = index.readUInt32BE(4)
   if (version !== 2 && version !== 3) return undefined
   const count = index.readUInt32BE(8)
@@ -370,8 +394,42 @@ export function indexEntries(index: Buffer): Array<{ id: string; size: number }>
     offset += Math.ceil((end - offset + 1) / 8) * 8
     entries.push({ id, size })
   }
-  return entries
+  const trees: string[] = []
+  // Extensions run to the 20-byte checksum; one whose name starts lowercase must be understood (index-format.txt).
+  const end = index.length - 20
+  if (offset > end) return undefined
+  while (offset < end) {
+    if (offset + 8 > end) return undefined
+    const signature = index.toString('latin1', offset, offset + 4)
+    const size = index.readUInt32BE(offset + 4)
+    const start = offset + 8
+    if (start + size > end || !/^[A-Z]/.test(signature)) return undefined
+    if (signature === 'TREE' && !cacheTrees(index.subarray(start, start + size), trees)) return undefined
+    offset = start + size
+  }
+  return { entries, trees }
 }
+
+/**
+ * The trees a cache-tree extension names, into `trees`: each node a NUL-ended name, its entry count and subtree count, and,
+ * where the count is not negative (a node git has not invalidated), its tree id. Answers false for data it cannot read.
+ */
+function cacheTrees(data: Buffer, trees: string[]): boolean {
+  let at = 0
+  while (at < data.length) {
+    const name = data.indexOf(0, at)
+    const line = name < 0 ? -1 : data.indexOf(10, name + 1)
+    const counts = line < 0 ? null : /^(-?[0-9]+) ([0-9]+)$/.exec(data.toString('latin1', name + 1, line))
+    if (!counts) return false
+    at = line + 1
+    if (Number(counts[1]) < 0) continue
+    if (at + 20 > data.length) return false
+    trees.push(data.toString('hex', at, at + 20)); at += 20
+  }
+  return true
+}
+
+function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
 
 function isExit(error: unknown, code: number): boolean {
   return error instanceof Error && 'details' in error && typeof error.details === 'object' && error.details !== null && 'exitCode' in error.details && error.details.exitCode === code
