@@ -67,19 +67,22 @@ content, the path is listed as not restorable, reason `source-gone`, and the cal
 So a command that deletes `.git`, or prunes its objects, while it changes committed files leaves
 those files not restorable.
 
-Content only the repository holds counts nothing toward the rolling cap. A committed file over
-`history.maxFileBytes` is never copied, and a change to one is recorded over the cap. A repository
-with SHA-256 objects, or a split or sparse index, is recorded the usual way. Buckle refers only to
-a repository whose Git folder, objects folder, pack folder, and each loose-object folder are real
-folders, never links or junctions, and that has no `alternates` or `http-alternates` file; any
-other is recorded the usual way.
+Content only the repository holds counts nothing toward the rolling cap. The sweep keeps every
+copy the folder's index names, even where the repository holds the same content, and none counts
+toward the cap: copies an earlier build made, and the copy Git stores of any committed file a
+command writes again with the same content, as an install can. Each stays while a file in the
+folder holds that content. Buckle never copies a committed file over `history.maxFileBytes` from
+the repository, and a change to one is recorded over the cap. A repository with SHA-256 objects,
+or a split or sparse index, is recorded the usual way. Buckle refers only to a repository whose
+Git folder, objects folder, pack folder, and each loose-object folder are real folders, never
+links or junctions, and that has no `alternates` or `http-alternates` file; any other is recorded
+the usual way.
 
 Before each command, Buckle checks that the repository still meets that rule, has a commit at
 HEAD, and holds the committed content the folder's index refers to. If not, or if the repository
 moves, is deleted, or its index turns split or sparse, that command builds the folder's index
 again from its files, and stays restorable. A folder an earlier build recorded starts from its
-repository at a node's first command there, and the copies it held go at the sweep after that
-command, once Buckle finds the repository holding them.
+repository at a node's first command there, and keeps the copies it already holds.
 
 ## Git history
 

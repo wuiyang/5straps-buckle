@@ -53,12 +53,11 @@ size, reason `size`, and cannot be restored. The node setting `BUCKLE_HISTORY_MA
 content kept checkpoints hold at 268435456 bytes (256 MiB) by default, each object counted once;
 the copy a command's private index keeps does not count. Over the cap, Buckle drops whole oldest
 turns, never the current one, and deletes the objects nothing names; so does a sweep after each
-command, which removes a file over the cap and what a stopped write left. It keeps every object
-a command's private index names, its folder trees included, except content the workspace's
-repository holds. A checkpoint that alone
-exceeds the cap keeps its paths without content. Retention never rewrites a kept checkpoint and
-never reads the workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery
-copies, not these turns.
+command, which removes a file over the cap and what a stopped write left. It keeps every object a
+command's private index names, its folder trees included. A checkpoint that alone exceeds the cap
+keeps its paths without content. Retention never rewrites a kept checkpoint and never reads the
+workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery copies, not these
+turns.
 
 ## Never in the way
 
