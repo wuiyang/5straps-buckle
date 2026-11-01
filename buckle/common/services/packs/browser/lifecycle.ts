@@ -32,6 +32,11 @@ export interface Lifecycle {
   close(session: string, signal: AbortSignal): Promise<boolean>
   /** The workspace's name, which the owner's command names; read at each refusal, as a rename takes effect at once. */
   workspaceName?: () => string
+  /**
+   * The attached Chrome the workspace attaches to (attachedChrome), where its endpoint is found closed (endpointClosed),
+   * else null: a close only disconnects from it, and it keeps its pages until it is closed. Absent in the other modes.
+   */
+  chromeClosed?: () => Promise<string | null>
 }
 
 /** How many filled values one browser is masked by at most. */
@@ -313,7 +318,9 @@ export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
  * browser meanwhile, every recorded session is closed, a live sibling's too, with a bare close in parallel under one
  * bound. Each that closed is forgotten with its hold. One that did not stays marked closing with its hold (Codex review
  * L1), as a profile folder's keeps its name and a call would reach its page again: the next start, or this command, ends
- * it. An attached Chrome's hold is forgotten too.
+ * it. An attached Chrome keeps its pages through a close, so its hold is forgotten only once the Chrome the workspace
+ * attaches to is found closed (Codex review L2), and with it an earlier Buckle's, which named no Chrome; another Chrome's
+ * stays, as nothing here can check it, until the workspace attaches to it again and this command finds it closed.
  */
 export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts> {
   return lifecycle.store.update(async (state) => {
@@ -323,11 +330,16 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
     for (const name of names) state.browsers[name]!.closing = true
     const closed = await closeEach(lifecycle, names)
     forget(state, closed)
-    delete state.attached
-    delete state.chromes
+    const chrome = state.chromes !== undefined || state.attached !== undefined ? await lifecycle.chromeClosed?.() ?? null : null
+    if (chrome !== null) {
+      delete state.chromes?.[chrome]
+      delete state.attached
+    }
+    if (state.chromes !== undefined && Object.keys(state.chromes).length === 0) delete state.chromes
     const after = heldValues(state)
     const kept = after.size
-    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}) }
+    const chromes = Object.keys(state.chromes ?? {}).length + (state.attached === undefined ? 0 : 1)
+    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}), ...(chromes > 0 ? { chromes } : {}) }
   })
 }
 

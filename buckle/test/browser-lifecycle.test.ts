@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer, type AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -322,6 +323,13 @@ describe('no browser outlives its session (F4 item 4)', () => {
 
 const FILL = { secretFills: [{ real: '/workspace/.env.local', written: '.env.local', name: 'LOGIN_PASSWORD', digest: 'd'.repeat(64) }] }
 
+/** A TCP port that answers, as an attached Chrome's DevTools port does, until it is closed. */
+async function listening(): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = createServer(socket => socket.destroy())
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  return { port: (server.address() as AddressInfo).port, close: () => new Promise(resolve => server.close(() => resolve())) }
+}
+
 /** The values a call of this context is masked by, by NAME. */
 async function heldFor(pack: ReturnType<ReturnType<typeof node>['open']>, overrides: Partial<ToolContext> = {}, args: Record<string, unknown> = { command: 'snapshot', args: [] }): Promise<string[]> {
   return (await pack.filled!.list({ context: context(overrides), args: args as never })).map(entry => entry.name)
@@ -413,7 +421,7 @@ describe('the hold a fill leaves, per browser (F4 item 5)', () => {
 })
 
 describe('the owner\'s buckle browser close (F4 item 6)', () => {
-  it('closes every recorded browser of the workspace, a live sibling\'s and one a close failed for included, and forgets every record and hold', async () => {
+  it('closes every recorded browser of the workspace, a live sibling\'s and one a close failed for included, and forgets each with its hold', async () => {
     const { browser, open, sessionDirectory, stored } = node()
     const pack = open()
     await call(pack, { command: 'open', args: ['https://app.example.test/'] })
@@ -423,16 +431,40 @@ describe('the owner\'s buckle browser close (F4 item 6)', () => {
       if (record.caller === 'sibling-agent') record.writer = { pid: process.ppid, instance: 'live-sibling' }
       if (record.caller === 'mcp') record.closing = true
     })
-    const file = join(sessionDirectory, 'sessions.json')
-    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), attached: [{ ...FILL.secretFills[0], name: 'CHROME_PASSWORD' }] }))
     const before = browser.alive()
     const counts = await pack.closeBrowsers!()
-    expect(counts).toEqual({ browsers: 3, closed: 3, held: 2 })
+    expect(counts).toEqual({ browsers: 3, closed: 3, held: 1 })
     expect(browser.calls.slice(3).map(request => sessionOf(request)).sort()).toEqual([...before].sort())
     for (const request of browser.calls.slice(3)) expect(request.args).toEqual(['close', '--json', '--config', join(sessionDirectory, 'fresh-config.json'), '--session', sessionOf(request)])
     expect(browser.alive()).toEqual([])
     expect(stored()).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     expect(await heldFor(pack, { sessionId: 'second-agent' })).toEqual([])
+  })
+
+  // Codex review L2: a close only disconnects from an attached Chrome, which keeps its pages, so its hold went while the
+  // page still showed the value, and went with no close at all once an earlier close had disconnected.
+  it('keeps an attached Chrome\'s hold while that Chrome still answers, and drops it once it is closed', async () => {
+    const chrome = await listening()
+    const { browser, open } = node({ mode: { kind: 'attached', endpoint: String(chrome.port) } })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await call(pack, { command: 'close' })
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 0, closed: 0, held: 0, kept: 1, chromes: 1 })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['fill', 'close'])
+    expect(await heldFor(pack)).toEqual(['LOGIN_PASSWORD'])
+    await chrome.close()
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 0, closed: 0, held: 1 })
+    expect(await heldFor(pack)).toEqual([])
+  })
+
+  it('keeps the hold of an attached Chrome the workspace no longer attaches to, which it cannot check, and an earlier Buckle\'s', async () => {
+    const { open, sessionDirectory, stored } = node({ mode: { kind: 'attached', endpoint: '9222' } })
+    await call(open(), { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const file = join(sessionDirectory, 'sessions.json')
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), attached: [{ ...FILL.secretFills[0], name: 'CHROME_PASSWORD' }] }))
+    const fresh = open({ browser: { mode: { kind: 'fresh' } } })
+    expect(await fresh.closeBrowsers!()).toEqual({ browsers: 1, closed: 1, held: 0, kept: 2, chromes: 2 })
+    expect(stored()).toMatchObject({ chromes: { [Object.keys(stored().chromes as object)[0]!]: [expect.objectContaining({ name: 'LOGIN_PASSWORD' })] }, attached: [expect.objectContaining({ name: 'CHROME_PASSWORD' })] })
   })
 
   it('closes them in parallel under one bound, holding the sessions lock, so no call starts a browser meanwhile', async () => {

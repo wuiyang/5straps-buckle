@@ -4,6 +4,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { browserCloseCommand } from '../cli/browser.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -82,6 +83,15 @@ describe('buckle browser close', () => {
     rmSync(failClose)
     expect(await owner({ config, argv: ['browser', 'close', '--workspace', name] })).toMatchObject({ exitCode: 0, out: `No browser of workspace ${name} was recorded open, so nothing was closed.\n` })
     expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
+  })
+
+  // Codex review L2: a close only disconnects from an attached Chrome, so its hold stays until that Chrome is closed.
+  it('says an attached Chrome\'s hold stays until the command finds that Chrome closed, and exits 1', async () => {
+    const runtime = { closeBrowsers: async () => ({ browsers: 0, closed: 0, held: 0, kept: 1, chromes: 1 }), workspaceName: () => 'site' } as unknown as BuckleRuntime
+    let out = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
+    expect((await browserCloseCommand(runtime, ['close'])).exitCode).toBe(1)
+    expect(out).toBe('No browser of workspace site was recorded open; dropped 0 held secret values. 1 held secret value stays. An attached Chrome keeps its pages through a close, so what it was filled with stays held until this command, run while the workspace attaches to that Chrome, finds it closed: close every window of it, then run this command again.\n')
   })
 
   it('acts on the workspace holding the current directory, and says so where nothing was open', async () => {

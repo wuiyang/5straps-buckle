@@ -16,6 +16,7 @@ import { argumentOrder, browserEffects, flagRefusal, navigationTargets, refusedF
 import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { attachedChrome, containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
+import { endpointClosed } from './endpoint-probe.js'
 import { claimCaller, closeAll, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
 import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
 
@@ -158,6 +159,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     longestCallMs: options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS,
     close: (session, signal) => closeSession(options, session, signal),
     ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}),
+    ...(mode?.kind === 'attached' ? { chromeClosed: async () => (await endpointClosed(mode.endpoint) ? attachedChrome(mode.endpoint) : null) } : {}),
   }
   // Slice F4, item 4: what a process that stopped without its close step left is ended at once, before any call here.
   const started = options.agentBrowser.path === null ? Promise.resolve() : endStranded(lifecycle).catch((error: unknown) => { logger.warn('The browser sessions a stopped Buckle process left could not be ended; the next start tries again', { error }) })

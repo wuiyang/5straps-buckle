@@ -36,8 +36,10 @@ export interface BrowserCloseCounts {
   browsers: number
   closed: number
   held: number
-  /** Values still held, by a browser that did not close; absent where none is. */
+  /** Values still held, by a browser that did not close or an attached Chrome not found closed; absent where none is. */
   kept?: number
+  /** Attached Chromes whose hold stays, as each still answers, or is not the one the workspace attaches to (Codex review L2). */
+  chromes?: number
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {
