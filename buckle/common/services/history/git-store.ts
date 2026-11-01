@@ -447,7 +447,8 @@ function safeErrno(error: unknown): string | undefined {
  * Runs one git child and answers its stdout. `timeoutMs` (10 s unless given) stops it, and so does `signal` (X14); a
  * timer or a cancellation never releases the caller while the child can still write.
  */
-export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number; signal?: AbortSignal }): Promise<Buffer> {
+/** `errors`: given, each chunk git writes to stderr, which is otherwise dropped; the caller bounds what it keeps. */
+export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number; signal?: AbortSignal; errors?: (chunk: Buffer) => void }): Promise<Buffer> {
   const started = performance.now()
   const details = (failure: GitFailure, code?: number | null, errno?: string): GitFailureDetails => ({ operation: input.operation, failure, elapsedMs: Math.round(performance.now() - started), ...(code !== null && code !== undefined && Number.isSafeInteger(code) && code >= 0 ? { exitCode: code } : {}), ...(errno ? { errno } : {}) })
   return new Promise((resolve, reject) => {
@@ -469,7 +470,8 @@ export function runProgram(input: { program: Program; operation: GitOperation; a
     if (input.signal?.aborted) abort()
     else input.signal?.addEventListener('abort', abort, { once: true })
     child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 64 * 1_048_576) stop('output-limit'); else output.push(chunk) })
-    child.stderr!.resume()
+    if (input.errors) child.stderr!.on('data', input.errors)
+    else child.stderr!.resume()
     child.on('error', error => { failure ??= 'start'; errno ??= safeErrno(error) })
     // A timer must never release the mutation lock while Git can still write.
     child.on('close', code => {

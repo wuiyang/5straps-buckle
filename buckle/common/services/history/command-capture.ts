@@ -19,17 +19,21 @@ const STEP_TIMEOUT_MS = 10_000
 const SETUP_MARKER = 'buckle-setup-complete'
 const ZERO = /^0+$/
 
-/** How many entries history reads of the folders git saw but stored nothing of (empty or unreadable ones) before it stops. */
-const LEFTOVER_ENTRIES = 10_000
+/** How much of git's stderr a listing keeps to read the folders it could not open; past it, every folder it listed is unknown. */
+const LISTING_ERRORS_BYTES = 1_048_576
+/** git's warning for a folder it could not open, in the C locale its listing runs in (dir.c, open_cached_dir). */
+const UNOPENED = /^warning: could not open directory '(.*)': [^']*$/
 
 /**
  * One root as git saw it at one phase of a command: the folder's identity on disk, the tree its shadow index wrote, and
  * the ignored entries beside it. What git saw on disk but did not store is kept apart, so its absence from the tree is
- * never read as absence from the disk: `present`, the folders git does not track (empty ones) and the files it could not
- * read, by name; `unknown`, the names below which nothing could be read; and `stale`, the tracked files the index still
- * holds an older state of, git having failed to read them (X5, X10 of the Codex review of 670f1dc2..01d3b0c9).
+ * never read as absence from the disk, and all of it comes from git's own listings, never a walk (R1.3 of the Codex
+ * recheck): `unstored`, the files git listed and could not store; `untrackedFolders`, the folders it listed holding
+ * nothing it stored (an empty one, or a nested repository); `unknown`, the folders it could not open, below which nothing
+ * is known; and `stale`, the tracked files the index still holds an older state of, git having failed to read them (X5,
+ * X10 of the Codex review of 670f1dc2..01d3b0c9).
  */
-export interface CommandBaseline { root: string; identity: string; git: string; tree: string; ignored: Map<string, string>; partial: boolean; present: Map<string, Entry>; unknown: Set<string>; stale: Set<string> }
+export interface CommandBaseline { root: string; identity: string; git: string; tree: string; ignored: Map<string, string>; partial: boolean; unstored: Set<string>; untrackedFolders: Set<string>; unknown: Set<string>; stale: Set<string> }
 
 /** What a command changed, read from two baselines: each changed path's entries, and how many ignored entries changed. */
 export interface CommandChanges { before: Snapshot; after: Snapshot; ignored: number; partial: boolean }
@@ -57,12 +61,13 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
   function gitDirectory(root: string): string { return join(folder, createHash('sha256').update(root).digest('hex').slice(0, 24)) }
 
-  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean } = {}): Promise<Buffer> {
+  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean; errors?: (chunk: Buffer) => void } = {}): Promise<Buffer> {
     // `magic`: pathspec magic is read, for the literal excludes of the protected paths; every other call takes paths as given.
     // Each step takes STEP_TIMEOUT_MS at most, git add (`whole`) all that is left of the budget, which it bounds too.
+    // `errors`: git's stderr, which it writes in the C locale, so its warnings read the same on every system.
     const left = options.budget ? Math.max(1, options.budget.deadline - Date.now()) : undefined
     const timeoutMs = left === undefined ? undefined : options.whole ? left : Math.min(STEP_TIMEOUT_MS, left)
-    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}) })
+    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
   }
 
   /**
@@ -96,7 +101,8 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    * Each directory root's state now: the index brought up to date, and its tree written. First every tracked entry an
    * ignore rule now covers, or a protected path holds, leaves the index, so git add never reads one (X3, X4). Then git
    * add, with each protected path excluded from its pathspec. Then, together, the tree, the tracked files whose index
-   * state git could not refresh, and what git saw on disk but did not store (X5, X10).
+   * state git could not refresh, and what git saw on disk but did not store: its folders, its files, and the folders it
+   * warned it could not open (X5, X10, R1.3).
    */
   async function baseline(roots: string[], budget: CaptureBudget): Promise<CommandBaseline[]> {
     const found = program(roots)
@@ -117,18 +123,22 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (leaving.length) await git(found, state, ['update-index', '--force-remove', '-z', '--stdin'], { data: leaving.join('\0') + '\0', budget })
       // Exit 1: some files could not be read, and the index holds the rest (A7).
       const added = await git(found, state, ['add', '-A', '--ignore-errors', '--', '.', ...excludes], { budget, whole: true, extra: state.extra, magic: excludes.length > 0 }).then(() => 0, (error: unknown) => { if (isExit(error, 1)) return 1; throw error })
-      const [written, stale, leftover] = await Promise.all([
+      const warnings = { chunks: [] as Buffer[], bytes: 0 }
+      const keep = (chunk: Buffer) => { warnings.bytes += chunk.length; if (warnings.bytes <= LISTING_ERRORS_BYTES) warnings.chunks.push(chunk) }
+      const [written, stale, folders, files] = await Promise.all([
         git(found, state, ['write-tree', '--missing-ok'], { budget }),
         git(found, state, ['diff-files', '--name-only', '-z'], { budget }),
         git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--directory', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0, budget }),
+        // Without --directory git opens every folder it did not store, and warns of each it cannot open.
+        git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0, budget, errors: keep }),
       ])
       const tree = written.toString().trim()
       if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('History git wrote no tree')
       // Swapped while git read it: the index may name what the link held, so it goes, and nothing keeps that content.
       if (folderIdentity(root) !== identity) { rmSync(join(state.git, 'index'), { force: true }); throw new FolderReplacedError('A folder history records was replaced while git read it') }
-      const ignoredNow = ignoredState(root, ignored.map(line => line.slice(2)))
-      const seen = leftovers(root, leftover.toString().split('\0').filter(Boolean), ignoredNow)
-      result.push({ root, identity, git: state.git, tree, ignored: ignoredNow, partial: added === 1, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)) })
+      const seen = unstoredState([folders, files], { text: Buffer.concat(warnings.chunks).toString(), complete: warnings.bytes <= LISTING_ERRORS_BYTES })
+      // A folder git could not open hides what changed in it: the checkpoint says so (PARTIAL_REASON).
+      result.push({ root, identity, git: state.git, tree, ignored: ignoredState(root, ignored.map(line => line.slice(2))), partial: added === 1 || seen.unknown.size > 0, ...seen, stale: new Set(stale.toString().split('\0').filter(Boolean)) })
     }
     return result
   }
@@ -158,11 +168,14 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
         }
         // A path absent from one side's tree that an ignore rule covered there, or a folder holding what one covered,
         // was on disk all along: history never knew it, so no restore writes or removes it (A1). One git saw there but
-        // stored nothing of was there too, and a tracked file git could not read holds an older state in its tree (X5, X10).
-        const was = ZERO.test(change.oldMode) ? ignoredIn(left.ignored, change.name) ? ignoredEntry(path) : notStored(left, change.name)
-          : left.stale.has(change.name) ? { kind: 'unreadable' as const, mode: change.oldMode === '100755' ? 0o755 : 0o644 } : await sideBefore(change.oldMode, change.oldId, prior(path))
+        // stored nothing of was there too, and a tracked file git could not read, or one in a folder it could not open,
+        // holds an older state in its tree (X5, X10, R1.3).
         const now = ZERO.test(change.newMode) ? untracked(path, ignoredIn(right.ignored, change.name))
-          : right.stale.has(change.name) ? { kind: 'unreadable' as const, mode: inspect(path) ? modeOf(inspect(path)!) : 0o644 } : sideAfter(change.newMode, change.newId, path)
+          : right.stale.has(change.name) || below(right.unknown, change.name) ? { kind: 'unreadable' as const, mode: inspect(path) ? modeOf(inspect(path)!) : 0o644 } : sideAfter(change.newMode, change.newId, path)
+        const was = ZERO.test(change.oldMode) && ignoredIn(left.ignored, change.name) ? ignoredEntry(path)
+          : below(left.unknown, change.name) ? { kind: 'unreadable' as const, mode: 0 }
+          : ZERO.test(change.oldMode) ? notStored(left, change.name, now)
+          : left.stale.has(change.name) ? { kind: 'unreadable' as const, mode: change.oldMode === '100755' ? 0o755 : 0o644 } : await sideBefore(change.oldMode, change.oldId, prior(path))
         if (was) result.before[path] = was
         if (now) result.after[path] = now
         // A folder the command made holds the ignored entries made in it, so a restore that would remove it says so.
@@ -227,48 +240,49 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
 }
 
 /**
- * What git listed on disk beside the index after git add, never stored: a folder it does not track (an empty one, or one
- * that holds only what it cannot store), or a file it could not read or would not store (a FIFO). Each such folder is read
- * here, bounded by `limit`, for what stands in it, never an entry git listed as `ignored` nor a nested repository's own
- * `.git`, which no restore touches; one that cannot be read, or holds more than the bound, is unknown below.
+ * What git listed beside its index after git add and stored nothing of, from its listings alone (R1.3 of the Codex
+ * recheck): each folder named, with --directory, as holding nothing stored; each file named that git could not store;
+ * and each folder the listing without --directory warns it could not open. A warning it does not read, or more than it keeps, leaves
+ * every folder it listed unknown, so nothing below one is ever taken as absent.
  */
-export function leftovers(root: string, listed: string[], ignored: Map<string, string>, limit = LEFTOVER_ENTRIES): { present: Map<string, Entry>; unknown: Set<string> } {
-  const present = new Map<string, Entry>()
+export function unstoredState(listings: Buffer[], warnings: { text: string; complete: boolean }): { unstored: Set<string>; untrackedFolders: Set<string>; unknown: Set<string> } {
+  const unstored = new Set<string>()
+  const untrackedFolders = new Set<string>()
   const unknown = new Set<string>()
-  let count = 0
-  for (const line of listed) {
-    const name = line.replace(/\/$/, '')
-    const pending = [name]
-    while (pending.length) {
-      const at = pending.pop()!
-      const stat = inspect(childPath(root, at))
-      if (!stat) continue
-      if (++count > limit) { unknown.add(name); break }
-      if (at.split('/').at(-1) === '.git') { present.set(at, { kind: 'excluded', mode: modeOf(stat), reason: 'nested' }); continue }
-      if (!stat.isDirectory()) { present.set(at, stat.isFile() || stat.isSymbolicLink() ? { kind: 'unreadable', mode: modeOf(stat) } : { kind: 'excluded', mode: modeOf(stat), reason: 'special' }); continue }
-      present.set(at, { kind: 'directory', mode: modeOf(stat) })
-      let names: string[]
-      try { names = readdirSync(childPath(root, at)) } catch { unknown.add(at); continue }
-      for (const child of names) if (isPlainName(child) && !listedIgnored(ignored, `${at}/${child}`)) pending.push(`${at}/${child}`)
-    }
+  for (const listing of listings) for (const line of listing.toString().split('\0')) {
+    if (line.endsWith('/')) untrackedFolders.add(line.slice(0, -1))
+    else if (line) unstored.add(line)
   }
-  return { present, unknown }
+  let unread = !warnings.complete
+  for (const line of warnings.text.split(/\r?\n/)) {
+    if (!line) continue
+    const found = UNOPENED.exec(line)
+    if (found) unknown.add(found[1]!.replace(/\/$/, ''))
+    else unread = true
+  }
+  if (unread) for (const name of untrackedFolders) unknown.add(name)
+  return { unstored, untrackedFolders, unknown }
 }
 
-/** Whether git listed `name` as ignored, itself or as a folder above it: never what it holds. */
-function listedIgnored(ignored: Map<string, string>, name: string): boolean {
-  if (ignored.has(name) || ignored.has(`${name}/`)) return true
-  for (let end = name.indexOf('/'); end !== -1; end = name.indexOf('/', end + 1)) if (ignored.has(name.slice(0, end + 1))) return true
-  return false
-}
-
-/** A path absent from a baseline's tree as the disk held it: what git saw there unstored, unknown below an unreadable folder, else absent. */
-function notStored(baseline: CommandBaseline, name: string): Entry | undefined {
-  const found = baseline.present.get(name)
-  if (found) return found
-  for (let at = name; at; at = at.includes('/') ? at.slice(0, at.lastIndexOf('/')) : '') if (baseline.unknown.has(at)) return { kind: 'unreadable', mode: 0 }
+/**
+ * A path absent from a baseline's tree as the disk held it, from git's listings: a file git listed and could not store; a
+ * folder it listed as holding nothing it stored; below one, a folder the after side holds, as it may have stood there
+ * already, kept rather than removed by a restore; else absent. Below a folder git could not open, the caller reads it unknown.
+ */
+function notStored(baseline: CommandBaseline, name: string, after: Entry | undefined): Entry | undefined {
+  if (baseline.unstored.has(name)) return { kind: 'unreadable', mode: 0 }
+  const folder = enclosing(baseline.untrackedFolders, name)
+  if (folder === name) return { kind: 'directory', mode: after?.kind === 'directory' ? after.mode : 0o755 }
+  if (folder !== undefined && after?.kind === 'directory') return { kind: 'directory', mode: after.mode }
   return undefined
 }
+
+/** `name` itself, or the nearest folder above it, where `folders` holds one. */
+function enclosing(folders: Set<string>, name: string): string | undefined {
+  for (let at = name; at; at = at.includes('/') ? at.slice(0, at.lastIndexOf('/')) : '') if (folders.has(at)) return at
+  return undefined
+}
+function below(folders: Set<string>, name: string): boolean { return folders.size > 0 && enclosing(folders, name) !== undefined }
 
 /** Each ignored entry git lists beside the index, by its stat: what a change among them is counted from. */
 function ignoredState(root: string, listed: string[]): Map<string, string> {

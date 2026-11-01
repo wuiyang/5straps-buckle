@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
-import { indexEntries, leftovers } from '../common/services/history/command-capture.js'
+import { indexEntries, unstoredState } from '../common/services/history/command-capture.js'
 import { openObjectStore } from '../common/services/history/object-store.js'
 import { historyObjects } from './support/history-objects.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -30,8 +30,20 @@ vi.mock('../common/services/history/git-store.js', async importOriginal => {
   } }
 })
 
+// Each folder read while `on`: a command's capture reads none of the workspace's, as git's own listings name what it saw (R1.3).
+const folderReads = vi.hoisted(() => ({ on: false, paths: [] as string[] }))
+vi.mock('node:fs', async importOriginal => {
+  const actual = await importOriginal<typeof import('node:fs')>()
+  const readdirSync = ((path: Parameters<typeof actual.readdirSync>[0], options?: Parameters<typeof actual.readdirSync>[1]) => {
+    if (folderReads.on) folderReads.paths.push(String(path))
+    return actual.readdirSync(path, options as never)
+  }) as typeof actual.readdirSync
+  return { ...actual, readdirSync, default: { ...actual, readdirSync } }
+})
+
 const roots: string[] = []
 afterEach(() => {
+  folderReads.on = false; folderReads.paths = []
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
@@ -267,6 +279,43 @@ describe('a command\'s checkpoint, at the edges of what git reads', () => {
     } finally { await history.close() }
   })
 
+  // R1.3 of the Codex recheck: what git saw on disk but stored nothing of comes from git's own listings, never a walk.
+  it('reads no folder of the workspace itself, nested empty folders included', async () => {
+    const { workspace, settings, details } = fixture()
+    mkdirSync(join(workspace, 'empty', 'a', 'b'), { recursive: true })
+    const history = await openChangeHistory(settings)
+    try {
+      folderReads.on = true
+      await history.run(details, async () => { writeFileSync(join(workspace, 'empty', 'a', 'b', 'f.txt'), 'made') })
+      folderReads.on = false
+      expect(folderReads.paths.filter(path => path.startsWith(workspace))).toEqual([])
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.changes).toEqual([{ path: join(workspace, 'empty', 'a', 'b', 'f.txt'), kind: 'created' }])
+      await history.restore(checkpoint.id)
+      expect(readdirSync(join(workspace, 'empty', 'a', 'b'))).toEqual([])
+    } finally { await history.close() }
+  })
+
+  // What stood in a folder git could not open before the command is unknown, a file it tracked there included.
+  for (const where of ['tracked', 'nested', 'new'] as const) it.skipIf(!posixUser)(`lists a file in a folder git could not open before the command as not restorable (${where})`, async () => {
+    const { workspace, settings, details } = fixture()
+    const folder = where === 'nested' ? join(workspace, 'outer', 'held') : join(workspace, 'held')
+    const file = join(folder, 'q.txt')
+    const history = await openChangeHistory(settings)
+    try {
+      if (where === 'tracked') await history.run(details, async () => { mkdirSync(folder); writeFileSync(file, 'A') })
+      else { mkdirSync(folder, { recursive: true }); writeFileSync(file, 'A') }
+      writeFileSync(file, 'B'); chmodSync(folder, 0o000)
+      await history.run(details, async () => { chmodSync(folder, 0o755); writeFileSync(file, 'C') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.notRestorable).toContain(file)
+      expect(checkpoint.changes.map(change => change.path)).not.toContain(file)
+      await history.restore(checkpoint.id).catch(() => undefined)
+      chmodSync(folder, 0o755)
+      expect(read(file)).toBe('C')
+    } finally { await history.close() }
+  })
+
   // X5: a file git could not read before the command has no known before state, tracked or not.
   for (const tracked of [true, false]) it.skipIf(!posixUser)(`lists a ${tracked ? 'tracked' : 'new'} file git could not read before the command as not restorable`, async () => {
     const { workspace, settings, details } = fixture()
@@ -365,14 +414,12 @@ describe('a command\'s capture that takes too long', () => {
   })
 })
 
-// X10 follow-up: what git saw on disk but did not store is read without the entries git lists as ignored, or a nested
-// repository's own files, so a folder of build output git ignores never runs into the bound and reads as unknown.
-it('reads a folder git did not store without its ignored entries or a nested repository', () => {
-  const root = mkdtempSync(join(tmpdir(), 'buckle-leftovers-')); roots.push(root)
-  mkdirSync(join(root, 'obj')); for (let index = 0; index < 5; index++) writeFileSync(join(root, 'obj', `${index}.o`), 'object')
-  mkdirSync(join(root, 'nested', '.git', 'objects'), { recursive: true }); for (let index = 0; index < 5; index++) writeFileSync(join(root, 'nested', '.git', `f${index}`), 'git')
-  const seen = leftovers(root, ['obj/', 'nested/'], new Map([['obj/0.o', 'f'], ['obj/1.o', 'f'], ['obj/2.o', 'f'], ['obj/3.o', 'f'], ['obj/4.o', 'f']]), 4)
-  expect(seen.unknown).toEqual(new Set())
-  expect([...seen.present.keys()].sort()).toEqual(['nested', 'nested/.git', 'obj'])
-  expect(seen.present.get('nested/.git')).toMatchObject({ kind: 'excluded', reason: 'nested' })
+// R1.3 of the Codex recheck: what git saw on disk but did not store comes from its listings and its warnings, never a
+// walk; a warning history cannot read leaves every folder git listed unknown, so nothing below one reads as absent.
+it('reads what git did not store from its listings and the folders it warned it could not open', () => {
+  const listings = [Buffer.from('empty/\0nested/\0tracked/unread\0'), Buffer.from('empty/held.txt\0tracked/unread\0nested/\0')]
+  const seen = unstoredState(listings, { text: "warning: could not open directory 'tracked/locked/': Permission denied\nwarning: could not open directory 'empty/inner/': Permission denied\n", complete: true })
+  expect(seen).toEqual({ unstored: new Set(['tracked/unread', 'empty/held.txt']), untrackedFolders: new Set(['empty', 'nested']), unknown: new Set(['tracked/locked', 'empty/inner']) })
+  expect(unstoredState(listings, { text: "warning: unable to access 'x/.gitignore': Permission denied\n", complete: true }).unknown).toEqual(new Set(['empty', 'nested']))
+  expect(unstoredState(listings, { text: '', complete: false }).unknown).toEqual(new Set(['empty', 'nested']))
 })
