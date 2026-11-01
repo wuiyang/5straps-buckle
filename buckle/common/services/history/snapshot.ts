@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { closeSync, constants, fstatSync, lstatSync, type Stats, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, linkSync, lstatSync, type Stats, mkdirSync, readFileSync, readdirSync, readlinkSync, realpathSync, renameSync, rmSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { basename, relative, resolve } from 'pathe'
 import { z } from 'zod'
 import { isDependencyBelowRoot, openBeneath, openNoFollow, openRealDirectory, type PinnedDirectory } from '../../adapters/beneath.js'
 import { setDescriptorMode } from '../../adapters/file-modes.js'
 import { childPath, entryBelowRoot, isInside, isInsideAny, isPlainName, nativePath, parentDirectory } from '../../domain/paths.js'
+import { blobId } from './object-store.js'
+import { modeOf } from './scoped-capture.js'
 
 /**
  * Two kinds are recorded without content, and history never restores, removes or rewrites one: each is left out of
@@ -156,9 +158,33 @@ export function sameEntry(left: Entry | undefined, right: Entry | undefined): bo
  * root down without following a link, and files are written to a fresh name and renamed into place,
  * so a link swapped into the tree after the checkpoint check is refused instead of followed (review H1
  * of B23-B25). `roots` are the directories the snapshots were taken from; every path is inside one.
+ *
+ * Before anything changes, each file and link `current` names is moved aside to a fresh name and checked again against
+ * it, its content hashed by `digest` (git's blob id unless given), so an outside edit made after the caller's check is
+ * never written over or removed (X2 of the Codex review of 670f1dc2..01d3b0c9): one that differs puts every entry back
+ * and throws SnapshotConflictError, naming it, with nothing changed. Any later failure throws another error.
  */
-export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer; roots: string[]; platform?: NodeJS.Platform }): void {
+export function applySnapshot(input: { target: Snapshot; current: Snapshot; paths: string[]; content: (hash: string) => Buffer; roots: string[]; platform?: NodeJS.Platform; digest?: (content: Buffer) => string; operation?: 'Restore' | 'Promotion' }): void {
   const directories = createDirectoryCache(input.roots)
+  const operation = input.operation ?? 'Restore'
+  /** Each file or link moved aside and found as the check saw it, by its path: the name it lies under until it goes. */
+  const displaced = new Map<string, string>()
+  try {
+    for (const path of input.paths) {
+      const current = input.current[path]
+      if (current?.kind !== 'file' && current?.kind !== 'symlink') continue
+      const { directory, name } = directories.parentOf(path, false)
+      const aside = `${name}.buckle-displaced-${randomUUID()}`
+      try { renameSync(directory.child(name), directory.child(aside)) }
+      catch (error) { throw new SnapshotConflictError(`${operation} conflict: a changed path could not be moved aside to check it again${codeOf(error)}, so nothing changed`, path) }
+      displaced.set(path, aside)
+      if (!stillAsChecked(directory, aside, current, input.digest ?? blobId)) throw new SnapshotConflictError(`${operation} conflict: a changed path changed again after the check, so nothing changed`, path)
+    }
+  } catch (error) {
+    putBack(directories, displaced)
+    directories.close()
+    throw error
+  }
   try {
     // Children leave before parents. Never recursively delete untracked contents.
     for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
@@ -167,7 +193,7 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
       if (current && (!target || target.kind !== current.kind || current.kind === 'symlink')) {
         const { directory, name } = directories.parentOf(path, false)
         if (current.kind === 'directory') rmdirSync(directory.child(name))
-        else rmSync(directory.child(name))
+        else { rmSync(directory.child(displaced.get(path)!)); displaced.delete(path) }
       }
     }
     // A directory removed above may be made again below: nothing opened before stands in for it.
@@ -177,11 +203,15 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
       if (!entry) continue
       const { directory, name } = directories.parentOf(path, true)
       if (entry.kind === 'directory') {
-        try { mkdirSync(directory.child(name), { mode: 0o700 }) } catch (error) { if (!isExisting(error)) throw error }
+        try { mkdirSync(directory.child(name), { mode: 0o700 }) } catch (error) { if (!isExisting(error) || !lstatSync(directory.child(name)).isDirectory()) throw error }
         changeMode(directory, name, entry.mode | 0o700, path)
       }
       else if (entry.kind === 'symlink') restoreLink({ target: entry.target!, at: directory.child(name), parent: directory.self, shown: path, platform: input.platform })
-      else if (entry.kind === 'file') writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
+      else if (entry.kind === 'file') {
+        writeRestoredFile({ directory, name, path, content: input.content(entry.hash!), mode: entry.mode })
+        const aside = displaced.get(path)
+        if (aside !== undefined) { rmSync(directory.child(aside)); displaced.delete(path) }
+      }
     }
     for (const path of [...input.paths].sort((a, b) => b.length - a.length)) {
       const entry = input.target[path]
@@ -189,7 +219,35 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
       const { directory, name } = directories.parentOf(path, false)
       changeMode(directory, name, entry.mode, path)
     }
-  } finally { directories.close() }
+  } finally {
+    putBack(directories, displaced)
+    directories.close()
+  }
+}
+
+/** Whether the entry moved aside to `name` is the one the check saw: its kind, mode, and content or link target. */
+function stillAsChecked(directory: PinnedDirectory, name: string, expected: Entry, digest: (content: Buffer) => string): boolean {
+  const stat = lstatSync(directory.child(name), { throwIfNoEntry: false })
+  if (!stat || modeOf(stat) !== expected.mode) return false
+  if (expected.kind === 'symlink') return stat.isSymbolicLink() && readlinkSync(directory.child(name)) === expected.target
+  if (!stat.isFile()) return false
+  const descriptor = openBeneath(directory, name, constants.O_RDONLY, name)
+  try { return digest(readFileSync(descriptor)) === expected.hash } finally { closeSync(descriptor) }
+}
+
+/** Each entry still moved aside goes back under its own name where that name is free; otherwise it stays aside, kept. */
+function putBack(directories: ReturnType<typeof createDirectoryCache>, displaced: Map<string, string>): void {
+  for (const [path, aside] of [...displaced].reverse()) {
+    try {
+      const { directory, name } = directories.parentOf(path, false)
+      if (!lstatSync(directory.child(name), { throwIfNoEntry: false })) renameSync(directory.child(aside), directory.child(name))
+    } catch { /* left aside under its displaced name, its content kept */ }
+  }
+  displaced.clear()
+}
+
+function codeOf(error: unknown): string {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? ` (${error.code})` : ''
 }
 
 /** How many opened parent directories one apply keeps; snapshots list siblings together, so few are needed. */
@@ -248,6 +306,11 @@ function changeMode(directory: PinnedDirectory, name: string, mode: number, show
   try { setDescriptorMode(descriptor, mode) } finally { closeSync(descriptor) }
 }
 
+/**
+ * Writes a file's content to a fresh name, then puts it at `name`, which applySnapshot has emptied: by a hard link, which
+ * fails where an entry appeared there since, so nothing is ever written over; where the volume makes no link, by a rename
+ * once the name is checked still free.
+ */
 function writeRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
   const temporary = `${input.name}.buckle-restore-${randomUUID()}`
   // Reserved before the cleanup below owns the name, so a name already taken is never removed.
@@ -257,9 +320,18 @@ function writeRestoredFile(input: { directory: PinnedDirectory; name: string; pa
       writeFileSync(descriptor, input.content)
       setDescriptorMode(descriptor, input.mode)
     } finally { closeSync(descriptor) }
-    renameSync(input.directory.child(temporary), input.directory.child(input.name))
+    const [from, to] = [input.directory.child(temporary), input.directory.child(input.name)]
+    try { linkSync(from, to) }
+    catch (error) {
+      if (isExisting(error) || lstatSync(to, { throwIfNoEntry: false })) throw new Error('An entry appeared where the restore puts a file back, so it was left in place', { cause: error })
+      if (!(error instanceof Error && 'code' in error && NO_HARD_LINK.has(String(error.code)))) throw error
+      renameSync(from, to)
+    }
   } finally { rmSync(input.directory.child(temporary), { force: true }) }
 }
+
+/** What a link answers on a volume or share that makes no hard link (FAT, some network shares), where a rename stands in. */
+const NO_HARD_LINK = new Set(['EPERM', 'ENOTSUP', 'EOPNOTSUPP', 'EXDEV', 'EMLINK', 'ENOSYS', 'EINVAL', 'EISDIR'])
 
 function isExisting(error: unknown): boolean {
   return error instanceof Error && 'code' in error && error.code === 'EEXIST'

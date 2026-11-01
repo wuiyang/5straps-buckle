@@ -478,17 +478,19 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const paths = changedPaths(record.before, record.after)
     assertExcludedUntouched(paths, [...input.excluded, ...record.excluded ?? []])
     assertShadowReachable(record, paths)
+    // Read first, so nothing waits between the check of each path's current state and its change (X2).
+    const content = await restoredContent(record, paths)
     const restore = await beginScoped({ ...(by ?? { sessionId: record.sessionId, stageId: record.stageId, tool: 'owner_restore' }), roots: record.roots, ...(record.excluded ? { excluded: record.excluded } : {}), scope: restoreScope(paths, record) }, { restores: record.id, undoes })
     let applying = false
     try {
       if (!restore.baselineAvailable) throw new RestoreRefusedError('History could not read the files this restore would change, so nothing was restored')
       const current = withRemovedChildren({ current: restore.before, expected: record.after, target: record.before, paths })
       assertSnapshotMatches({ current, expected: record.after, target: record.before, paths, operation: 'Restore' })
-      const content = await restoredContent(record, paths)
       applying = true
       applySnapshot({ target: record.before, current, paths, roots: record.roots, content: hash => { const value = content.get(hash); if (!value) throw new Error('History content is missing'); return value } })
     } catch (error) {
-      if (applying) {
+      // A conflict applySnapshot finds puts every entry back first: nothing changed, so the restore is refused, not interrupted.
+      if (applying && !(error instanceof SnapshotConflictError)) {
         await finish(restore); restore.status = 'interrupted'; restore.restorable = false; restore.reason = 'Restore stopped after some paths may have changed; history_list shows this interrupted checkpoint'; await saveRecord(restore)
         logger.warn(`Checkpoint ${restore.id}: ${restore.reason}`)
         throw new RestoreRefusedError(restore.reason, { cause: error })
@@ -602,7 +604,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         const current = await captureScope({ scope, digest: sha256, ...limits, excluded: [...limits.excluded, ...details.excluded ?? []] })
         assertSnapshotMatches({ current, expected, target, paths, operation: 'Promotion' })
         const record = await beginScoped({ ...details, scope })
-        try { onCheckpoint?.(); applySnapshot({ target, current, paths, content, roots: details.roots }) }
+        try { onCheckpoint?.(); applySnapshot({ target, current, paths, content, roots: details.roots, digest: sha256, operation: 'Promotion' }) }
         finally { await finish(record); completeCall(record.sessionId, record.turnId!) }
         return summary(record)
       })

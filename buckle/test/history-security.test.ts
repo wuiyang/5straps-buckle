@@ -6,20 +6,27 @@ import { afterEach, expect, it, vi } from 'vitest'
 import { historyGitProgram } from '../common/services/history/git-store.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 
-const fault = vi.hoisted(() => ({ enabled: false, writes: 0 }))
+const fault = vi.hoisted(() => ({ enabled: false, writes: 0, noLink: false }))
+// A restored file is put in place by a hard link, or a rename where the volume makes none: either fails on the second.
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>()
-  return { ...fs, renameSync: (...args: Parameters<typeof fs.renameSync>) => {
-    if (fault.enabled && String(args[0]).includes('.buckle-restore-') && ++fault.writes === 2) { fault.enabled = false; throw new Error('injected restore failure') }
-    return fs.renameSync(...args)
-  } }
+  const placed = (from: unknown) => { if (fault.enabled && String(from).includes('.buckle-restore-') && ++fault.writes === 2) { fault.enabled = false; throw new Error('injected restore failure') } }
+  return {
+    ...fs,
+    renameSync: (...args: Parameters<typeof fs.renameSync>) => { placed(args[0]); return fs.renameSync(...args) },
+    linkSync: (...args: Parameters<typeof fs.linkSync>) => {
+      placed(args[0])
+      if (fault.noLink && String(args[0]).includes('.buckle-restore-')) throw Object.assign(new Error('fixture volume makes no hard link'), { code: 'EPERM' })
+      return fs.linkSync(...args)
+    },
+  }
 })
 
 const roots: string[] = []
 const originalPath = process.env.PATH
 afterEach(() => {
   process.env.PATH = originalPath
-  fault.enabled = false; fault.writes = 0
+  fault.enabled = false; fault.writes = 0; fault.noLink = false
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 async function fixture(extra: Parameters<typeof openChangeHistory>[0] extends infer T ? Partial<T> : never = {}) {
@@ -98,6 +105,18 @@ it('retains an interrupted checkpoint after a restore fails following its first 
     expect(fault.writes).toBe(2)
     expect([readFileSync(a, 'utf8'), readFileSync(b, 'utf8')]).toEqual(['before-a', 'after-b'])
     expect((await node.history.list()).at(-1)).toMatchObject({ status: 'interrupted', restores: original.id, reason: expect.stringContaining('some paths may have changed') })
+  } finally { await node.history.close() }
+})
+
+// X2: a restored file is put in place by a hard link, which never replaces an entry; a volume that makes none renames.
+it('restores on a volume that makes no hard link', async () => {
+  const node = await fixture()
+  const a = join(node.workspace, 'a'); writeFileSync(a, 'before-a')
+  try {
+    await node.history.run({ ...node.details, scope: [{ path: a }] }, async () => { writeFileSync(a, 'after-a') })
+    fault.noLink = true
+    await node.history.restore((await node.history.list())[0]!.id)
+    expect(readFileSync(a, 'utf8')).toBe('before-a')
   } finally { await node.history.close() }
 })
 

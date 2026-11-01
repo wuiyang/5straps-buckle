@@ -1,9 +1,11 @@
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory, RestoreRefusedError, type ChangeHistory } from '../common/services/history/journal.js'
+import { blobId } from '../common/services/history/object-store.js'
+import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -11,10 +13,21 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // from the disk now and required to stand as the newest checkpoint left it, or the path is a conflict. Ignore rules never
 // decide what a restore writes or removes: a rule added or removed in a checkpoint never makes a file below it "absent".
 
+// A hook run once as a restore reads stored content back: an outside edit made while it waits (X2).
+const contentRead = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined }))
+vi.mock('../common/services/history/object-store.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/services/history/object-store.js')>()
+  return { ...actual, openObjectStore: (directory: string) => {
+    const store = actual.openObjectStore(directory)
+    return { ...store, read: async (id: string) => { const content = await store.read(id); const hook = contentRead.hook; contentRead.hook = undefined; hook?.(); return content } }
+  } }
+})
+
 const roots: string[] = []
 const histories: ChangeHistory[] = []
 const runtimes: BuckleRuntime[] = []
 afterEach(async () => {
+  contentRead.hook = undefined
   for (const history of histories.splice(0)) await history.close()
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -164,5 +177,35 @@ describe('a restore of a file tool\'s checkpoint', () => {
     expect(restored).toMatchObject({ tool: 'owner_restore', restorable: true, changes: [{ path: join(workspace, 'a.txt'), kind: 'modified' }] })
     await runtime.history.restore(restored.id)
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('two')
+  })
+})
+
+// X2 of the Codex review of 670f1dc2..01d3b0c9: the check a restore makes holds until each path is changed. The content is
+// read before the current state is, and each entry a restore changes is moved aside and checked again before anything is
+// written, so an outside edit made after the check is never written over or removed.
+describe('an outside edit after a restore checked the path', () => {
+  it('is never written over when it lands while the restore reads stored content', async () => {
+    const { workspace, runtime } = await node()
+    const file = join(workspace, 'a.txt')
+    expect(await call(runtime, 'w-1', 'fs_write', { path: 'a.txt', content: 'A' })).toMatchObject({ outcome: 'ok' })
+    expect(await call(runtime, 'w-2', 'fs_write', { path: 'a.txt', content: 'B' })).toMatchObject({ outcome: 'ok' })
+    contentRead.hook = () => writeFileSync(file, 'C')
+    const refused = await runtime.history.restore(await newestId(runtime.history)).catch((error: unknown) => error)
+    expect(refused).toBeInstanceOf(RestoreRefusedError)
+    expect(readFileSync(file, 'utf8')).toBe('C')
+  })
+
+  for (const change of ['rewrite', 'delete'] as const) it(`stops a ${change} before anything changes, leaving it in place`, () => {
+    const root = scratch()
+    const [first, second] = [join(root, 'first.txt'), join(root, 'second.txt')]
+    writeFileSync(first, 'checked'); writeFileSync(second, 'outside')
+    const entry = (content: string) => ({ kind: 'file' as const, mode: 0o644, hash: blobId(Buffer.from(content)) })
+    const current = { [first]: entry('checked'), [second]: entry('checked') }
+    const target = change === 'rewrite' ? { [first]: entry('A'), [second]: entry('A') } : {}
+    const applied = (() => { try { applySnapshot({ current, target, paths: [first, second], content: () => Buffer.from('A'), roots: [root] }) } catch (error) { return error } })()
+    expect(applied).toBeInstanceOf(SnapshotConflictError)
+    expect((applied as SnapshotConflictError).path).toBe(second)
+    expect([readFileSync(first, 'utf8'), readFileSync(second, 'utf8')]).toEqual(['checked', 'outside'])
+    expect(readdirSync(root).sort()).toEqual(['first.txt', 'second.txt'])
   })
 })
