@@ -69,6 +69,8 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   const rewritten = new Set<string>()
   /** Each root whose first record is being taken in the background, with what stops it (W2). */
   const warming = new Map<string, AbortController>()
+  /** Each root a background record left files in that the system would not remove, tried again at its next capture and sweep (V1). */
+  const leftovers = new Set<string>()
 
   function program(roots: string[]): Program | null {
     return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
@@ -107,7 +109,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     // A killed child leaves its lock; under the execution lock no other capture of this root runs (A4, B6). A side index no
     // background record is building is a stopped one's (W2).
     rmSync(join(state.git, 'index.lock'), { force: true })
-    if (!warming.has(root) && !liveMarker(state.git)) for (const name of [WARM_INDEX, `${WARM_INDEX}.lock`, WARM_MARKER]) rmSync(join(state.git, name), { force: true })
+    if (!warming.has(root)) tidy(root)
     const owner = ownerGitDirectory(root)
     const own = owner === undefined ? undefined : join(owner, 'info', 'exclude')
     return { ...state, protect, extra: own !== undefined && regularFile(own) ? ['-c', `core.excludesFile=${own}`] : [] }
@@ -218,10 +220,29 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       if (placed) rewritten.add(root)
       return placed
     } finally {
-      if (state) for (const name of [WARM_INDEX, `${WARM_INDEX}.lock`, WARM_MARKER]) rmSync(join(state.git, name), { force: true })
+      // The root is let go first, so a removal the system refuses never leaves it marked as taking a record (V1).
       warming.delete(root)
+      if (state) tidy(root)
     }
   }
+
+  /**
+   * Removes what a background record of `root` made, each file on its own, unless a live other process takes one there. A
+   * removal the system refuses, as Windows does while another handle holds the file, keeps the root among the leftovers,
+   * tried again at its next capture and before each sweep (V1): its marker never names this process to itself, and the
+   * sweep keeps what its side index names meanwhile.
+   */
+  function tidy(root: string): void {
+    const git = gitDirectory(root)
+    if (liveMarker(git)) return
+    let refused: unknown
+    for (const name of [WARM_INDEX, `${WARM_INDEX}.lock`, WARM_MARKER]) try { rmSync(join(git, name), { force: true }) } catch (error) { refused ??= error }
+    if (refused === undefined) { leftovers.delete(root); return }
+    if (!leftovers.has(root)) logger.warn('History could not remove what a background record left; it tries again before the next sweep', { code: systemCode(refused) ?? 'unknown' })
+    leftovers.add(root)
+  }
+  /** What background records left that the system refused to remove, tried again where none runs (V1). */
+  function tidyLeftovers(): void { for (const root of leftovers) if (!warming.has(root)) tidy(root) }
 
   /** Stops every first record this process takes in the background; each removes what it made as it ends. */
   function stopWarming(): void { for (const stop of warming.values()) stop.abort(new Error('History stopped its background record')) }
@@ -336,7 +357,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return names.some(name => /^[0-9a-f]{24}$/.test(name) && liveMarker(join(folder, name)))
   }
 
-  return { baseline, changes, indexed, warm, stopWarming, warming: warmingAny, available: (roots: string[]) => program(roots) !== null }
+  return { baseline, changes, indexed, warm, stopWarming, tidyLeftovers, warming: warmingAny, available: (roots: string[]) => program(roots) !== null }
 }
 
 /**
@@ -518,6 +539,10 @@ function liveMarker(git: string): boolean {
   try { process.kill(pid, 0); return true } catch (error) { return error instanceof Error && 'code' in error && error.code === 'EPERM' }
 }
 function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
+/** A system error's code alone, as the owner's log may name it (D2). */
+function systemCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined
+}
 /** A file's identity on disk, so a swap can tell the index it copied from one written since. */
 function fileIdentity(path: string): string | undefined {
   const stat = inspect(path)

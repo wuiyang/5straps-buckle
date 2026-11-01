@@ -514,6 +514,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     // A command between its phases, or a first record taken in the background, names what no index names yet (W1, W2):
     // the sweep that follows it runs once it is done.
     if (baselines.size || commands.warming()) return
+    commands.tidyLeftovers()
     objects.clean()
     for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
     const indexed = commands.indexed()

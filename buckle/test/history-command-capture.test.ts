@@ -37,8 +37,9 @@ vi.mock('../common/services/history/git-store.js', async importOriginal => {
 // Each folder read while `on`: a command's capture reads none of the workspace's, as git's own listings name what it saw (R1.3).
 // `first`: the stored object a listing of history's objects names first. `refuse`: answers whether the system refuses the
 // removal of a stored object, as Windows does with EBUSY while another handle holds a file just written (W1).
+// `files`: the same for any other file that stands, each refused one named in `refused` (V1).
 const folderReads = vi.hoisted(() => ({ on: false, paths: [] as string[] }))
-const objectFaults = vi.hoisted(() => ({ first: undefined as string | undefined, refuse: undefined as ((id: string) => boolean) | undefined, removed: [] as string[] }))
+const objectFaults = vi.hoisted(() => ({ first: undefined as string | undefined, refuse: undefined as ((id: string) => boolean) | undefined, removed: [] as string[], files: undefined as ((path: string) => boolean) | undefined, refused: [] as string[] }))
 vi.mock('node:fs', async importOriginal => {
   const actual = await importOriginal<typeof import('node:fs')>()
   const objectId = (path: string) => /[\\/]blobs[\\/]([0-9a-f]{2})[\\/]([0-9a-f]{38})$/.exec(path)?.slice(1).join('')
@@ -53,6 +54,7 @@ vi.mock('node:fs', async importOriginal => {
   const rmSync = ((path: Parameters<typeof actual.rmSync>[0], options?: Parameters<typeof actual.rmSync>[1]) => {
     const id = objectId(String(path))
     if (id && objectFaults.refuse?.(id)) throw Object.assign(new Error('resource busy or locked'), { code: 'EBUSY' })
+    if (!id && objectFaults.files?.(String(path)) && actual.existsSync(path)) { objectFaults.refused.push(String(path)); throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }) }
     actual.rmSync(path, options)
     if (id) objectFaults.removed.push(id)
   }) as typeof actual.rmSync
@@ -62,7 +64,7 @@ vi.mock('node:fs', async importOriginal => {
 const roots: string[] = []
 afterEach(() => {
   folderReads.on = false; folderReads.paths = []
-  objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []
+  objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []; objectFaults.files = undefined; objectFaults.refused = []
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
@@ -593,6 +595,28 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
       await expect(history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); return 'ran' })).resolves.toBe('ran')
       expect(Date.now() - started).toBeLessThan(400)
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
+    } finally { await history.close() }
+  })
+
+  // V1 of the Codex review of the W fixes: Windows refusing the removal of what the record made, its marker here, never
+  // leaves the folder marked as taking one, which would leave every later command unrestorable and stop every sweep.
+  it.skipIf(process.platform === 'win32')('lets its folder go once it ends, even where the system refuses to remove what it made, and removes that later', async () => {
+    const { root, workspace, directory, settings, details } = fixture({ maxFileBytes: 64 })
+    const other = join(root, 'other'); mkdirSync(other)
+    const marker = shadowIndex(directory, workspace).replace(/index$/, 'warming')
+    objectFaults.files = path => path === marker
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      gitAdd.cold = 2
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      await vi.waitFor(() => expect(objectFaults.refused).toContain(marker), { timeout: 20_000, interval: 100 })
+      objectFaults.files = undefined; gitAdd.cold = 0
+      // The sweep after a command in another folder tries the removal again.
+      await history.run({ ...details, stageId: 'other', roots: [other] }, async () => { writeFileSync(join(other, 'c.txt'), 'c1') })
+      await vi.waitFor(() => expect(existsSync(marker)).toBe(false))
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a3'); writeFileSync(join(workspace, 'big.bin'), Buffer.alloc(200, 7)) })
+      expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true, notRestorable: [join(workspace, 'big.bin')] })
+      await vi.waitFor(() => expect(historyObjects(directory).some(content => content.length > 200)).toBe(false))
     } finally { await history.close() }
   })
 
