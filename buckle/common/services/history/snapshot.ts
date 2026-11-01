@@ -117,10 +117,14 @@ function isUncaptured(entry: Entry | undefined): boolean {
  * 2026-11-01 review). A file below a folder an ignore rule covered is missing from that side, which is not "absent":
  * history never knew it, so no restore writes or removes it.
  */
-function uncapturedIn(snapshot: Snapshot, path: string): boolean {
-  if (isUncaptured(snapshot[path])) return true
-  for (let parent = parentDirectory(path); parent !== path; path = parent, parent = parentDirectory(parent)) if (isUncaptured(snapshot[parent])) return true
-  return false
+function uncapturedIn(snapshot: Snapshot, path: string): boolean { return uncapturedAt(snapshot, path) !== undefined }
+
+/** The entry `snapshot` recorded without content at `path` or at a folder above it; undefined where it recorded none. */
+export function uncapturedAt(snapshot: Snapshot, path: string): Entry | undefined {
+  for (let at = path; ; at = parentDirectory(at)) {
+    if (isUncaptured(snapshot[at])) return snapshot[at]
+    if (parentDirectory(at) === at) return undefined
+  }
 }
 
 /** The paths whose entry differs, never one recorded without content on either side: history leaves those as it finds them. */

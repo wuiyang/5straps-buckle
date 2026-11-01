@@ -11,7 +11,7 @@ import { replaceFile } from '../../adapters/replace-file.js'
 import { logger } from '../../runtime/log.js'
 import type { UntrustedRoots } from '../../domain/executable.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
-import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, type Entry, type Snapshot } from './snapshot.js'
+import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, uncapturedAt, type Entry, type Snapshot } from './snapshot.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
 import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError } from './git-store.js'
 import { readLegacyHistory } from './legacy.js'
@@ -663,13 +663,25 @@ function combined(selected: Checkpoint[], id: string, chain: { before: Snapshot;
   return { ...selected[0]!, id, roots: [...new Set(selected.flatMap(record => record.roots))], excluded: [...new Set(selected.flatMap(record => record.excluded ?? []))], ...chain, beforeTrees: selected.flatMap(record => record.beforeTrees ?? []), restorable: unavailable === undefined, ...(unavailable?.reason ? { reason: unavailable.reason } : {}) }
 }
 function planOf(selected: Checkpoint[], chain = chained(selected)): RollbackPlan { return { checkpoint: selected[0]!.id, head: selected.at(-1)!.id, undoes: selected.length, changes: changesOf(chain.before, chain.after) } }
+/**
+ * The checkpoints `selected` as one change: each path's first recorded state and its last. A path one of them recorded
+ * without content (ignored, over the cap, unreadable, or below such a folder) stays so for the whole chain: its state
+ * between the checkpoints was never known, so an outside edit then can never be told apart, and no restore of the chain
+ * writes or removes it (X1 of the Codex review of 670f1dc2..01d3b0c9).
+ */
 function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } {
   const base: Snapshot = {}; for (const record of selected) Object.assign(base, record.before, record.after)
   const first = new Map<string, Entry | undefined>(); const last = new Map<string, Entry | undefined>()
+  const unknown = new Map<string, Entry>()
   for (const record of selected) {
     if (!record.after) throw new RestoreRefusedError('A checkpoint among those it undoes never completed, so nothing is restored')
     const restorablePaths = changedPaths(record.before, record.after)
-    for (const path of [...restorablePaths, ...notRestorablePaths(record.before, record.after)]) {
+    const hidden = notRestorablePaths(record.before, record.after)
+    for (const path of hidden) {
+      const found = (uncapturedAt(record.after, path) ?? uncapturedAt(record.before, path))!
+      unknown.set(path, { kind: found.kind, mode: record.after[path]?.mode ?? record.before[path]?.mode ?? 0, ...(found.reason ? { reason: found.reason } : {}) })
+    }
+    for (const path of [...restorablePaths, ...hidden]) {
       if (restorablePaths.includes(path) && last.has(path) && !sameEntry(last.get(path), record.before[path])) throw new RestoreRefusedError('Restore conflict: a file changed outside Buckle between two of the checkpoints this restore undoes', { path })
       if (!first.has(path)) first.set(path, record.before[path]); last.set(path, record.after[path])
     }
@@ -677,5 +689,6 @@ function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } 
   const before: Snapshot = { ...base }; const after: Snapshot = { ...base }
   for (const [path, entry] of first) { if (entry) before[path] = entry; else delete before[path] }
   for (const [path, entry] of last) { if (entry) after[path] = entry; else delete after[path] }
+  for (const [path, entry] of unknown) if (uncapturedAt(before, path) === undefined && uncapturedAt(after, path) === undefined) after[path] = entry
   return { before, after }
 }

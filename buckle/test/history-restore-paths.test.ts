@@ -70,6 +70,38 @@ describe('a restore after an ignore rule changed, from a command\'s checkpoint',
   })
 })
 
+// X1 of the Codex review of 670f1dc2..01d3b0c9: a path a checkpoint recorded without content stays so across a chain of
+// checkpoints, so restoring both sides of an ignore toggle, or of a size-cap crossing, never joins the first known state
+// to the last and writes over an outside edit made while history could not see the path.
+describe('a restore of a chain whose middle state history could not see', () => {
+  it('leaves a file an ignore rule hid between two commands, edited outside in between', async () => {
+    const { workspace, history, run } = await commandHistory()
+    writeFileSync(join(workspace, '.gitignore'), '')
+    mkdirSync(join(workspace, 'data')); writeFileSync(join(workspace, 'data', 'app.db'), 'H1')
+    await run(() => writeFileSync(join(workspace, '.gitignore'), 'data/\n'))
+    writeFileSync(join(workspace, 'data', 'app.db'), 'H2')
+    await run(() => writeFileSync(join(workspace, '.gitignore'), ''))
+    const plan = await history.plan({ steps: 2 })
+    expect(plan.changes).toEqual([])
+    await history.rollback({ target: { steps: 2 }, by: { sessionId: 'agent', tool: 'history_restore' } })
+    expect(readFileSync(join(workspace, 'data', 'app.db'), 'utf8')).toBe('H2')
+    expect(readFileSync(join(workspace, '.gitignore'), 'utf8')).toBe('')
+  })
+
+  it('leaves a file that crossed the size cap between two file tool writes, edited outside in between', async () => {
+    const root = scratch()
+    const workspace = join(root, 'workspace'); mkdirSync(workspace)
+    const history = await openChangeHistory({ directory: join(root, 'history'), excluded: [], maxBytes: 1_000_000, maxFileBytes: 64 }); histories.push(history)
+    const file = join(workspace, 'a.txt'); writeFileSync(file, 'A')
+    const write = (content: string | Buffer) => history.run({ sessionId: 'agent', stageId: 'turn', tool: 'fs_write', roots: [file], scope: [{ path: file }] }, async () => writeFileSync(file, content))
+    await write(Buffer.alloc(100, 1))
+    writeFileSync(file, Buffer.alloc(120, 2))
+    await write('C')
+    await history.rollback({ target: { steps: 2 }, by: { sessionId: 'agent', tool: 'history_restore' } }).catch(() => undefined)
+    expect(readFileSync(file, 'utf8')).toBe('C')
+  })
+})
+
 describe('a restore of a file tool\'s checkpoint', () => {
   it('restores only .gitignore after a data/ rule was added through fs_write, the file below it edited outside', async () => {
     const { workspace, runtime } = await node()
