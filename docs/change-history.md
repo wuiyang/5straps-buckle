@@ -4,8 +4,8 @@ Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, kee
 history for each workspace: a checkpoint for every call that changes files, holding what each
 path it changed was before and after it. The agent or the owner can put those paths back.
 [Sandbox and tools](sandbox-and-tools.md#packs) lists the history pack. [Part
-two](change-history-02.md) covers the agent's tools, the restore ask, and history without host
-Git. Buckle never writes to the workspace's own `.git`.
+two](change-history-02.md) covers the agent's tools, the restore ask, a workspace in a Git
+repository, and history without host Git. Buckle never writes to the workspace's own `.git`.
 
 ## What a checkpoint records
 
@@ -18,23 +18,24 @@ Git. Buckle never writes to the workspace's own `.git`.
 - **The isolated shell.** A command run on a private copy publishes its changes as one
   checkpoint of the paths it changed, read the same way.
 - **Commands in the workspace.** With `shell.isolation` off, a command can change anything, such
-  as a build or an install. Buckle asks Git what changed, through a private index under the
-  node's state: before and after the command it adds the workspace's folders and writes a tree,
-  and the difference names the changed paths. The workspace's own ignore rules, every
-  `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under ignored
-  paths are counted, never stored, and never touched by a restore. A protected path is never
-  read, whatever a `.gitignore` re-includes. A folder Git does not track, such as an empty one,
-  a file Git could not read, and what stands in a folder it could not open keep their place: a
-  restore never removes or rewrites them. Buckle learns of them from Git's own listings, never by
-  walking a folder. A folder a command makes inside one that holds nothing Git stores stays after
-  a restore, listed as not restorable, as it may have stood there before. A workspace with no
-  `.gitignore` tracks everything, within the caps. A nested repository is left out, reason
-  `nested`. Each phase has 30 seconds; past that, or once the call is cancelled
-  before the command starts, the command runs without restorable content, and Buckle finishes
-  that folder's record in the background, within 10 minutes. A command that starts there
-  meanwhile runs at once, also without restorable content. This needs permitted,
-  trusted host Git; without it, the command runs and its checkpoint reads "Not restorable: host
-  git needed".
+  as a build or an install. Buckle asks Git what changed, through a private index under the node's
+  state: before and after the command it adds the workspace's folders and writes a tree, and the
+  difference names the changed paths. In a Git repository with a commit, that index starts from
+  the repository's own, so a committed file nobody changed is neither read nor copied ([part
+  two](change-history-02.md#a-workspace-in-a-git-repository)). The workspace's own ignore rules,
+  every `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under
+  ignored paths are counted, never stored, and never touched by a restore. A protected path is
+  never read, whatever a `.gitignore` re-includes. A folder Git does not track, such as an empty
+  one, a file Git could not read, and what stands in a folder it could not open keep their place:
+  a restore never removes or rewrites them. Buckle learns of them from Git's own listings, never
+  by walking a folder. A folder a command makes inside one that holds nothing Git stores stays
+  after a restore, listed as not restorable, as it may have stood there before. A workspace with
+  no `.gitignore` tracks everything, within the caps. A nested repository is left out, reason
+  `nested`. Each phase has 30 seconds; past that, or once the call is cancelled before the command
+  starts, the command runs without restorable content, and Buckle finishes that folder's record in
+  the background, within 10 minutes. A command that starts there meanwhile runs at once, also
+  without restorable content. This needs permitted, trusted host Git; without it, the command runs
+  and its checkpoint reads "Not restorable: host git needed".
 
 Content is kept as Git-format loose objects in the workspace's `history/` state folder. Buckle
 writes and reads them itself, so a restore starts no Git program.
@@ -53,7 +54,8 @@ content kept checkpoints hold at 268435456 bytes (256 MiB) by default, each obje
 the copy a command's private index keeps does not count. Over the cap, Buckle drops whole oldest
 turns, never the current one, and deletes the objects nothing names; so does a sweep after each
 command, which removes a file over the cap and what a stopped write left. It keeps every object
-a command's private index names, its folder trees included. A checkpoint that alone
+a command's private index names, its folder trees included, except content the workspace's
+repository holds. A checkpoint that alone
 exceeds the cap keeps its paths without content. Retention never rewrites a kept checkpoint and
 never reads the workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery
 copies, not these turns.
