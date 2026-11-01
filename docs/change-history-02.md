@@ -69,13 +69,17 @@ those files not restorable.
 
 Content only the repository holds counts nothing toward the rolling cap. A committed file over
 `history.maxFileBytes` is never copied, and a change to one is recorded over the cap. A repository
-with SHA-256 objects, or a split or sparse index, is recorded the usual way.
+with SHA-256 objects, or a split or sparse index, is recorded the usual way. Buckle refers only to
+a repository whose Git folder, objects folder, pack folder, and each loose-object folder are real
+folders, never links or junctions, and that has no `alternates` or `http-alternates` file; any
+other is recorded the usual way.
 
-Before each command, Buckle checks that the repository still holds the committed content the
-folder's index refers to. If the repository moves, is deleted, loses objects, or its index turns
-split or sparse, that command builds the folder's index again from its files, and stays
-restorable. A folder an earlier build recorded starts from its repository at a node's first
-command there, and the copies it held go at the next sweep.
+Before each command, Buckle checks that the repository still meets that rule, has a commit at
+HEAD, and holds the committed content the folder's index refers to. If not, or if the repository
+moves, is deleted, or its index turns split or sparse, that command builds the folder's index
+again from its files, and stays restorable. A folder an earlier build recorded starts from its
+repository at a node's first command there, and the copies it held go at the sweep after that
+command, once Buckle finds the repository holding them.
 
 ## Git history
 
