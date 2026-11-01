@@ -534,6 +534,125 @@ describe('the owner\'s buckle browser close (F4 item 6)', () => {
   })
 })
 
+/** Holds every request of `command` until opened, as a command still running holds its browser. */
+function gated(browser: StandIn, command: string): { arrived: Promise<void>; open: () => void } {
+  const run = browser.run
+  let release!: () => void
+  let reached!: () => void
+  const gate = new Promise<void>((resolve) => { release = resolve })
+  const arrived = new Promise<void>((resolve) => { reached = resolve })
+  browser.run = async (request) => {
+    if (request.args[0] === command) {
+      reached()
+      await gate
+    }
+    return run(request)
+  }
+  return { arrived, open: () => { browser.run = run; release() } }
+}
+
+const settle = () => new Promise(resolve => setTimeout(resolve, 100))
+
+// Codex review L3: a close came between a call taking its session and its command running, so the command started the
+// browser again with no record or hold left, a profile folder's under its one name, where a later call showed the value.
+describe('a close while a call runs on the browser (Codex review L3)', () => {
+  const PROFILE: BrowserMode = { kind: 'profile', directory: '/owner/profile' }
+
+  it('leaves the owner\'s close to the call running on it, which ends the browser once it is done, and keeps the hold meanwhile', async () => {
+    const { browser, open, stored } = node({ mode: PROFILE })
+    const pack = open()
+    const fill = gated(browser, 'fill')
+    const filling = call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await fill.arrived
+    expect(await pack.closeBrowsers!()).toEqual({ browsers: 1, closed: 0, held: 0, kept: 1, busy: 1 })
+    expect(await heldFor(pack, { sessionId: 'other-agent' })).toEqual(['LOGIN_PASSWORD'])
+    // No call takes it up again meanwhile, as its command would start the browser the close is waiting to end.
+    await expect(call(pack, { command: 'snapshot' }, { sessionId: 'other-agent' })).rejects.toThrow('The profile folder\'s browser is being closed: a close came while a call still runs on it, and it ends when that call does; call again then')
+    fill.open()
+    await filling
+    expect(browser.calls.map(request => request.args[0])).toEqual(['fill', 'close'])
+    expect(browser.alive()).toEqual([])
+    expect(stored().browsers).toEqual({})
+  })
+
+  it('leaves an agent\'s close to the call running on that browser, and says so', async () => {
+    const { browser, open, stored } = node({ mode: PROFILE })
+    const pack = open()
+    const snapshot = gated(browser, 'snapshot')
+    const running = call(pack, { command: 'snapshot' })
+    await snapshot.arrived
+    expect(await call(pack, { command: 'close' }, { sessionId: 'other-agent' })).toMatchObject({ result: { success: true, data: { closed: false } }, notice: 'A call still runs on this browser, so it closes when that call ends.' })
+    expect(browser.calls).toEqual([])
+    snapshot.open()
+    await running
+    expect(browser.calls.map(request => request.args[0])).toEqual(['snapshot', 'close'])
+    expect(stored().browsers).toEqual({})
+  })
+
+  it('ends no browser a stopped process left while a call of a running one is on it', async () => {
+    const { browser, open, sessionDirectory } = node({ mode: PROFILE })
+    const pack = open()
+    const snapshot = gated(browser, 'snapshot')
+    const running = call(pack, { command: 'snapshot' })
+    await snapshot.arrived
+    rewrite(sessionDirectory, (record) => { record.writer = { pid: stoppedPid(), instance: 'stopped' } })
+    await open().filled!.list({ context: context(), args: { command: 'snapshot', args: [] } as never })
+    snapshot.open()
+    await running
+    expect(browser.calls.map(request => request.args[0])).toEqual(['snapshot'])
+  })
+
+  it('masks the answer of the call that ended the browser by what that browser held, as the late masking reads it after', async () => {
+    const { browser, open } = node({ mode: PROFILE })
+    const pack = open()
+    await call(pack, { command: 'snapshot' })
+    const snapshot = gated(browser, 'snapshot')
+    // The late masking is handed the call's own context, its signal among it.
+    const signal = new AbortController().signal
+    const running = call(pack, { command: 'snapshot' }, { signal })
+    await snapshot.arrived
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'other-agent', ...FILL })
+    await pack.closeBrowsers!()
+    snapshot.open()
+    await running
+    expect(browser.alive()).toEqual([])
+    expect(await heldFor(pack, { signal })).toEqual(['LOGIN_PASSWORD'])
+    expect(await heldFor(pack)).toEqual([])
+  })
+})
+
+// agent-browser #2074: two invocations that start one session at once each spawn a daemon, and so a browser.
+describe('the first command of a session (Codex review L3)', () => {
+  it('runs alone, so two calls at once never start two daemons, and the second runs once it is done', async () => {
+    const { browser, open } = node()
+    const pack = open()
+    const first = gated(browser, 'open')
+    const one = call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    await first.arrived
+    const two = call(pack, { command: 'snapshot' })
+    await settle()
+    expect(browser.calls).toEqual([])
+    first.open()
+    await Promise.all([one, two])
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'snapshot'])
+    expect(new Set(browser.calls.map(sessionOf)).size).toBe(1)
+    expect(browser.launches).toBe(1)
+  })
+
+  it('runs beside others once the daemon has started', async () => {
+    const { browser, open } = node()
+    const pack = open()
+    await call(pack, { command: 'open', args: ['https://app.example.test/'] })
+    const slow = gated(browser, 'snapshot')
+    const one = call(pack, { command: 'snapshot' })
+    await slow.arrived
+    await call(pack, { command: 'get', args: ['title'] })
+    slow.open()
+    await one
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'get', 'snapshot'])
+  })
+})
+
 describe('the browsers a refusal names (F4 item 7)', () => {
   it('names each browser that holds a value, its caller, alias, stage, and last use, and the command that ends it', async () => {
     const { open } = node({ workspaceName: () => 'the site' })

@@ -11,6 +11,14 @@ const FilledSchema = z.object({ real: z.string(), written: z.string(), name: z.s
 const WriterSchema = z.object({ pid: z.number().int(), instance: z.string() })
 
 /**
+ * A call running on a session (Codex review L3), from when it takes the session until its command ends, or `until`
+ * passes: no close ends a session while one is live, as the call's command would start its browser again with no record
+ * or hold left. A close that comes meanwhile marks the session closing, and the last call to end ends it. `starting`
+ * marks the call that starts the session's daemon, which the session's other calls wait for (agent-browser #2074).
+ */
+const LeaseSchema = z.object({ id: z.string(), writer: WriterSchema, until: z.number(), starting: z.literal(true).optional() })
+
+/**
  * One browser session Buckle started, by its agent-browser session name: the caller, stage, and alias it serves (one
  * session for every caller on a profile folder), the settings its daemon started under, the list it last ran with,
  * who last wrote it, and when it was last used. `closing` marks one a close was sent to, which no call takes.
@@ -25,7 +33,7 @@ const BrowserRecordSchema = z.object({
   /** The --allowed-domains it last ran with, null for none, absent until a command ran: a change relaunches it. */
   allowedDomains: z.string().nullable().optional(),
   writer: WriterSchema,
-  /** When a call last took it, in milliseconds since the epoch. */
+  /** When a call last took it, or last ended on it, in milliseconds since the epoch. */
   usedAt: z.number(),
   /** The idle timeout its daemon started with: a session unused for longer, and the longest call, has ended. */
   idleTimeoutMs: z.number().int().positive(),
@@ -35,10 +43,13 @@ const BrowserRecordSchema = z.object({
    * never the value, so every Buckle process masks the page by it, after a restart too; it ends with the browser.
    */
   held: z.array(FilledSchema).optional(),
+  /** The calls running on it now (LeaseSchema). */
+  leases: z.array(LeaseSchema).optional(),
 })
 
 export type BrowserRecord = z.infer<typeof BrowserRecordSchema>
 export type Writer = z.infer<typeof WriterSchema>
+export type Lease = z.infer<typeof LeaseSchema>
 
 export const SessionsSchema = z.object({
   browsers: z.record(z.string(), BrowserRecordSchema).default({}),
@@ -144,6 +155,16 @@ export function processAlive(pid: number): boolean {
   } catch {
     return false
   }
+}
+
+/** The calls still running on a session: each whose process runs, and whose bound has not passed. */
+export function liveLeases(record: BrowserRecord, now: number): Lease[] {
+  return (record.leases ?? []).filter(lease => now <= lease.until && !writerGone(lease.writer))
+}
+
+/** Whether a call runs on a session now, so no close may end it (Codex review L3). */
+export function busy(record: BrowserRecord, now: number): boolean {
+  return liveLeases(record, now).length > 0
 }
 
 /** Whether another Buckle process, or runtime, still running wrote the record: its session is that one's to keep. */

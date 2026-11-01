@@ -7,8 +7,8 @@ import { hostEnvironment, type HostEnvironment } from '../../../domain/environme
 import { ownRoots, type Program, type ProgramRefusal, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
 import type { PathView } from '../../../domain/path-view.js'
-import { defineTool, ToolExecutionError, ToolInputError, type FilledSecrets, type ToolContext } from '../../../domain/tool.js'
-import type { ProcessRunner } from '../../../types/ports/process-runner.js'
+import { defineTool, ToolExecutionError, ToolInputError, type FilledSecret, type FilledSecrets, type ToolContext } from '../../../domain/tool.js'
+import type { ProcessResult, ProcessRunner } from '../../../types/ports/process-runner.js'
 import { logger } from '../../../runtime/log.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { browserAllowedDomains, type ApprovedList, type LoosenedEntry } from './allowed-domains.js'
@@ -17,8 +17,8 @@ import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { attachedChrome, containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 import { endpointClosed } from './endpoint-probe.js'
-import { claimCaller, closeAll, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
-import { holdInstance, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
+import { claimCaller, closeAll, closeEach, CLOSE_TIMEOUT_MS, closeWritten, endStranded, heldFor, releaseSession, retireSessions, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
+import { holdInstance, mergeFilled, PROCESS_INSTANCE, releaseInstance, sessionsStore, upgradeSessions, writerOf } from './sessions.js'
 
 const PACK_ID = 'browser'
 
@@ -44,6 +44,9 @@ const PROFILE_IN_USE = 'A profile folder opens in one browser at a time: where a
 
 /** What a close answers where its caller has no browser recorded: it ran nothing, so agent-browser launched nothing to close. */
 const NO_BROWSER_NOTICE = 'No browser was open for this session, so nothing was closed.'
+
+/** What a close answers where a call still runs on the browser, which closes once the last call on it ends (Codex review L3). */
+const CLOSES_AFTER_NOTICE = 'A call still runs on this browser, so it closes when that call ends.'
 
 const commandInput = z.object({
   command: z.string().regex(/^[a-z][a-z0-9-]*$/).max(100),
@@ -183,6 +186,10 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     const holder = running.kind === 'fresh' ? null : options.heldBy?.() ?? null
     if (holder !== null) throw new ToolExecutionError(heldRefusal(running, holder), { code: 'BROWSER_COMMAND_FAILED' })
   }
+  // What each call's session held as the call ended, by the call's own signal, which its late masking is handed too, for
+  // that masking, which reads it after: a close the call ended its session with, as the last call on it, forgot the
+  // session and its hold (Codex review L3).
+  const ended = new WeakMap<AbortSignal, FilledSecret[]>()
   // The values a call's browser holds from secret references, as the browser packs record them in sessions.json, read
   // again at each browser call (runWithSecrets), so a process beside the one that filled, or one started after it
   // stopped, masks the page too; once what a stopped process left is ended, as its hold ends with it (Slice F4, item 5).
@@ -192,8 +199,13 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
       if (mode === null) return []
       const state = sessions.read()
       upgradeSessions(state)
-      return heldFor(lifecycle, state, callScope(mode, context, typeof args.session === 'string' ? args.session : undefined))
+      const held = heldFor(lifecycle, state, callScope(mode, context, typeof args.session === 'string' ? args.session : undefined))
+      const last = ended.get(context.signal)
+      return last === undefined ? held : mergeFilled(held, last)
     },
+  }
+  const endedHold = (signal: AbortSignal, held: FilledSecret[]) => {
+    if (held.length > 0) ended.set(signal, held)
   }
   return {
     id: PACK_ID,
@@ -262,27 +274,33 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
             // Each value the call fills is held by its session under the same lock, before the browser is handed it, so a
-            // close in another process never ends a hold this call is about to need.
-            const { session, relaunchedFrom, sibling } = await takeSession(lifecycle, { scope, fills: context.secretFills ?? [] })
-            if (sibling) logSiblingSettings(options.sessionDirectory, options.serviceInstalled?.() === true)
-            // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
-            // retire of the pack a change replaces, and by the node's shutdown.
-            if (running.kind !== 'profile') opened.add(session)
-            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: launchArguments(options.launchArgs, options.platform ?? process.platform), idleTimeoutMs }))
-            if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
+            // close in another process never ends a hold this call is about to need. The call's lease on the session keeps
+            // every close off it until the call ends (Codex review L3).
+            const { session, relaunchedFrom, sibling, lease } = await takeSession(lifecycle, { scope, fills: context.secretFills ?? [], timeoutMs: context.timeoutMs, signal: context.signal })
+            let ran: ProcessResult
+            try {
+              if (sibling) logSiblingSettings(options.sessionDirectory, options.serviceInstalled?.() === true)
+              // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
+              // retire of the pack a change replaces, and by the node's shutdown.
+              if (running.kind !== 'profile') opened.add(session)
+              args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: launchArguments(options.launchArgs, options.platform ?? process.platform), idleTimeoutMs }))
+              if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
-            writeFileSync(configFile, '{}\n', { mode: 0o600 })
-            const program = browserProgram(options)
-            const ran = await options.runProcess({
-              command: program.path,
-              argv0: program.argv0,
-              args: [...program.args, ...args],
-              cwd: options.sessionDirectory,
-              timeoutMs: context.timeoutMs,
-              environment: browserEnvironment(options),
-              signal: context.signal,
-              windowsHide: true,
-            })
+              writeFileSync(configFile, '{}\n', { mode: 0o600 })
+              const program = browserProgram(options)
+              ran = await options.runProcess({
+                command: program.path,
+                argv0: program.argv0,
+                args: [...program.args, ...args],
+                cwd: options.sessionDirectory,
+                timeoutMs: context.timeoutMs,
+                environment: browserEnvironment(options),
+                signal: context.signal,
+                windowsHide: true,
+              })
+            } finally {
+              await releaseSession(lifecycle, session, lease).then(held => endedHold(context.signal, held), (error: unknown) => { logger.warn('A browser call could not end its lease on its session; it lapses at the call\'s timeout', { error }) })
+            }
             const failed = ran.exitCode !== 0
             const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout), failed), stderr: scrub(transfer.shown(ran.stderr), failed) }
             if (result.exitCode !== 0) {
@@ -321,11 +339,11 @@ function assertRunnable(input: { command: string; args: string[] }): void {
  */
 async function closeCaller(input: { options: BrowserPackOptions; lifecycle: Lifecycle; opened: Set<string>; scope: CallScope; context: ToolContext; scrub: (text: string, failed: boolean) => string }): Promise<JsonValue> {
   const { options } = input
-  const { own, stranded } = await claimCaller(input.lifecycle, input.scope)
+  const { own, waiting, stranded } = await claimCaller(input.lifecycle, input.scope)
   const ending = closeEach(input.lifecycle, stranded)
   if (own.length === 0) {
     await settleClaims(input.lifecycle, await ending)
-    return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: NO_BROWSER_NOTICE }
+    return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: waiting > 0 ? CLOSES_AFTER_NOTICE : NO_BROWSER_NOTICE }
   }
   const program = browserProgram(options)
   const results = await Promise.all(own.map(async (session) => {

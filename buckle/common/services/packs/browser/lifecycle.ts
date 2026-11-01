@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonFileStore } from '../../../adapters/json-file-store.js'
 import { printable, workspaceArgument } from '../../../domain/approval-instruction.js'
-import { ToolInputError, type FilledSecret, type HeldSecret } from '../../../domain/tool.js'
+import { ToolExecutionError, ToolInputError, type FilledSecret, type HeldSecret } from '../../../domain/tool.js'
 import { logger } from '../../../runtime/log.js'
 import type { BrowserModeName } from './mode.js'
 import type { BrowserCloseCounts } from '../../../domain/pack.js'
-import { filledKey, isWriter, keyOf, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Sessions, type Writer } from './sessions.js'
+import { busy, filledKey, isWriter, keyOf, liveLeases, liveSibling, mergeFilled, recordsWhere, sessionKey, stranded, upgradeSessions, type BrowserRecord, type Caller, type Lease, type Sessions, type Writer } from './sessions.js'
 
 /** Who a call is for, and what its browser is started with, which a session it takes must have been started under. */
 export interface CallScope {
@@ -45,9 +45,20 @@ const MAX_FILLED = 256
 /** How long the closes before a call, or at shutdown, wait for the daemons, all of them together. */
 export const CLOSE_TIMEOUT_MS = 5_000
 
+/** How long past its own timeout a call's lease lasts: what the call does around its command, and its release. */
+const LEASE_MARGIN_MS = CLOSE_TIMEOUT_MS
+
+/** How often a call waiting for a session's daemon to start looks again. */
+const START_POLL_MS = 25
+
+/** Fixed text: a close came while a call ran on the profile folder's one browser, which the last call to end ends. */
+const PROFILE_CLOSING = 'The profile folder\'s browser is being closed: a close came while a call still runs on it, and it ends when that call does; call again then'
+
 /** The session a call runs on, and why it changed: the list a relaunched one last ran with, or a sibling's settings. */
 export interface TakenSession {
   session: string
+  /** The call's lease on it (LeaseSchema), which releaseSession ends. */
+  lease: string
   /** The --allowed-domains a session closed for this call last ran with, null for none; absent where none was. */
   relaunchedFrom?: string | null
   /** A live Buckle process on other settings holds the key: its session is left running. */
@@ -56,16 +67,39 @@ export interface TakenSession {
 
 interface Claims { names: string[]; relaunchedFrom?: string | null; sibling: boolean }
 
+interface TakeInput {
+  scope: CallScope
+  fills: readonly FilledSecret[]
+  /** The call's own timeout, which bounds its lease. */
+  timeoutMs: number
+  /** The call's signal: a call waiting for a session's daemon to start stops waiting when it ends. */
+  signal?: AbortSignal
+}
+
+/** What a take answers where another call is starting the session's daemon: look again once it has. */
+const WAIT = Symbol('wait')
+
 /**
  * The session a call runs on (Slice F4, items 3 to 5): its caller's, stage's, and alias's, started under this pack's
- * settings. First, under the lock, every session left with no one to end it (stranded) is claimed, and so is a session
- * of the key started under other settings, or a fresh one last run under another list: each is closed, and a new one
- * named under the same key, so no record is left under the old settings; a live sibling's is left to it. Each value the
- * call fills is held by the session it takes, under the same lock, before the browser is handed it.
+ * settings, with a lease on it until releaseSession (Codex review L3). First, under the lock, every session left with no
+ * one to end it (stranded) is claimed, and so is a session of the key started under other settings, or a fresh one last
+ * run under another list: each is closed, and a new one named under the same key, so no record is left under the old
+ * settings; a live sibling's is left to it, and so is one a call runs on. Each value the call fills is held by the
+ * session it takes, under the same lock, before the browser is handed it. A session whose daemon another call is
+ * starting is waited for, so two calls never start two daemons for one session (agent-browser #2074).
  */
-export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScope; fills: readonly FilledSecret[] }): Promise<TakenSession> {
+export async function takeSession(lifecycle: Lifecycle, input: TakeInput): Promise<TakenSession> {
+  for (;;) {
+    const taken = await takeOnce(lifecycle, input)
+    if (taken !== WAIT) return taken
+    if (input.signal?.aborted) throw input.signal.reason instanceof Error ? input.signal.reason : new ToolExecutionError('The browser call ended while it waited for its browser to start', { code: 'BROWSER_COMMAND_FAILED' })
+    await new Promise(resolve => setTimeout(resolve, START_POLL_MS))
+  }
+}
+
+async function takeOnce(lifecycle: Lifecycle, input: TakeInput): Promise<TakenSession | typeof WAIT> {
   const { store } = lifecycle
-  const first = await store.update((state): Taking<TakenSession> | { claims: Claims } => {
+  const first = await store.update((state): Taking<TakenSession | typeof WAIT> | { claims: Claims } => {
     upgradeSessions(state)
     const claims = claimsFor(lifecycle, state, input.scope)
     if (claims.names.length > 0) {
@@ -73,8 +107,8 @@ export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScop
       return { claims }
     }
     return taking(() => {
-      const taken = take(lifecycle, state, input.scope, input.fills)
-      return { ...taken, sibling: taken.sibling || claims.sibling }
+      const taken = take(lifecycle, state, input)
+      return taken === WAIT ? WAIT : { ...taken, sibling: taken.sibling || claims.sibling }
     })
   })
   if (!('claims' in first)) return taken(first)
@@ -85,20 +119,20 @@ export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScop
     upgradeSessions(state)
     forget(state, closed)
     return taking(() => {
-      const taken = take(lifecycle, state, input.scope, input.fills)
-      return { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
+      const taken = take(lifecycle, state, input)
+      return taken === WAIT ? WAIT : { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
     })
   }))
 }
 
 /** A take, or the refusal it met, which is thrown once the store keeps what the update changed before it. */
-type Taking<T> = { taken: T } | { refused: ToolInputError }
+type Taking<T> = { taken: T } | { refused: ToolInputError | ToolExecutionError }
 
 function taking<T>(run: () => T): Taking<T> {
   try {
     return { taken: run() }
   } catch (error) {
-    if (error instanceof ToolInputError) return { refused: error }
+    if (error instanceof ToolInputError || error instanceof ToolExecutionError) return { refused: error }
     throw error
   }
 }
@@ -111,7 +145,7 @@ function taken<T>(result: Taking<T>): T {
 /**
  * The sessions to close before a call runs: every stranded one, whatever its key; and of the call's key, one started
  * under other settings that no live sibling holds, and a fresh one last run under another list, as a daemon keeps the
- * list it was launched with (fix brief 4, finding 9).
+ * list it was launched with (fix brief 4, finding 9). None a call runs on: its next call after closes it.
  */
 function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Claims {
   const key = sessionKey(scope.kind, scope.caller)
@@ -121,16 +155,17 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
   let sibling = false
   for (const [name, record] of Object.entries(state.browsers)) {
     if (record.closing) continue
+    const running = busy(record, now)
     if (stranded(record, lifecycle.me, now, lifecycle.longestCallMs)) {
-      names.push(name)
+      if (!running) names.push(name)
       continue
     }
     if (keyOf(record) !== key) continue
     // On a profile folder the key is every caller's: another folder's session is replaced as other settings are.
     if (record.mode !== scope.fingerprint || (scope.own !== null && name !== scope.own)) {
       if (liveSibling(record, lifecycle.me)) sibling = true
-      else names.push(name)
-    } else if (scope.kind === 'fresh' && record.allowedDomains !== undefined && record.allowedDomains !== scope.flag) {
+      else if (!running) names.push(name)
+    } else if (scope.kind === 'fresh' && record.allowedDomains !== undefined && record.allowedDomains !== scope.flag && !running) {
       names.push(name)
       relaunchedFrom = record.allowedDomains
     }
@@ -139,40 +174,95 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
 }
 
 /**
- * Takes the call's session and records it as this process's, used now, holding what the call fills. On a profile
- * folder it is the folder's one session, whose name never changes, so one marked closing is taken up again with its
- * hold, as a browser that did not close may still show it; one a live sibling wrote under other settings is reused as
- * it is, as closing it would relaunch Chrome at each call either process makes. Elsewhere it is the key's session from
- * these settings, or a new one. An attached Chrome's fills are its own hold, which no session ends.
+ * Takes the call's session and records it as this process's, used now, holding what the call fills, with the call's
+ * lease on it. On a profile folder it is the folder's one session, whose name never changes, so one marked closing is
+ * taken up again with its hold, as a browser that did not close may still show it, unless a call still runs on it: the
+ * close waits for that call, and a call taking it up would start the browser again, so it is refused (Codex review L3).
+ * One a live sibling wrote under other settings, or one a call runs on, is reused as it is, as closing it would relaunch
+ * Chrome at each call either process makes, or under the running call. Elsewhere it is the key's session from these
+ * settings and list, or a new one. An attached Chrome's fills are its own hold, which no session ends. Where another
+ * call is starting the session's daemon, nothing is taken: WAIT.
  */
-function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: readonly FilledSecret[]): { session: string; sibling: boolean } {
+function take(lifecycle: Lifecycle, state: Sessions, input: TakeInput): { session: string; sibling: boolean; lease: string } | typeof WAIT {
+  const { scope, fills } = input
   const now = Date.now()
   const fields = { ...scope.caller, mode: scope.fingerprint, writer: lifecycle.me, usedAt: now, idleTimeoutMs: lifecycle.idleTimeoutMs }
+  const held = (record: BrowserRecord | undefined) => {
+    const kept = withFilled(lifecycle, record?.held ?? [], scope.kind === 'attached' ? [] : fills)
+    return kept.length > 0 ? { held: kept } : {}
+  }
+  const lease = (record: BrowserRecord | undefined, cold: boolean): { leases: Lease[]; id: string } => {
+    const id = randomUUID()
+    const mine: Lease = { id, writer: lifecycle.me, until: now + input.timeoutMs + LEASE_MARGIN_MS, ...(cold ? { starting: true as const } : {}) }
+    return { leases: [...record === undefined ? [] : liveLeases(record, now), mine], id }
+  }
+  if (scope.own !== null) {
+    const record = state.browsers[scope.own]
+    if (record?.closing && busy(record, now)) throw new ToolExecutionError(PROFILE_CLOSING, { code: 'BROWSER_COMMAND_FAILED' })
+    if (record !== undefined && starting(record, now)) return WAIT
+    const cold = record === undefined || record.closing === true || idle(record, now)
+    if (record !== undefined && !record.closing && record.mode !== scope.fingerprint && (liveSibling(record, lifecycle.me) || busy(record, now))) {
+      const kept = held(record)
+      const { leases, id } = lease(record, cold)
+      Object.assign(record, kept, { usedAt: now, leases })
+      return { session: scope.own, sibling: liveSibling(record, lifecycle.me), lease: id }
+    }
+    const kept = held(record)
+    const { leases, id } = lease(record, cold)
+    state.browsers[scope.own] = { kind: 'profile', ...fields, ...kept, leases }
+    return { session: scope.own, sibling: false, lease: id }
+  }
+  const key = sessionKey(scope.kind, scope.caller)
+  const found = recordsWhere(state, record => !record.closing && keyOf(record) === key && record.mode === scope.fingerprint && (scope.kind !== 'fresh' || record.allowedDomains === undefined || record.allowedDomains === scope.flag))[0]
+  const record = found === undefined ? undefined : state.browsers[found]
+  if (record !== undefined && starting(record, now)) return WAIT
+  const session = found ?? `buckle-${randomUUID()}`
+  const kept = held(record)
   if (scope.kind === 'attached' && fills.length > 0) {
     // Checked against all the Chrome is masked by, an earlier Buckle's hold included; kept as the Chrome's own.
     withFilled(lifecycle, chromeHold(state, scope.chrome!), fills)
     state.chromes = { ...state.chromes, [scope.chrome!]: mergeFilled(state.chromes?.[scope.chrome!] ?? [], fills) }
   }
-  const held = (record: BrowserRecord | undefined) => {
-    const kept = withFilled(lifecycle, record?.held ?? [], scope.kind === 'attached' ? [] : fills)
-    return kept.length > 0 ? { held: kept } : {}
-  }
-  if (scope.own !== null) {
-    const record = state.browsers[scope.own]
-    if (record !== undefined && !record.closing && record.mode !== scope.fingerprint && liveSibling(record, lifecycle.me)) {
-      record.usedAt = now
-      Object.assign(record, held(record))
-      return { session: scope.own, sibling: true }
-    }
-    state.browsers[scope.own] = { kind: 'profile', ...fields, ...held(record) }
-    return { session: scope.own, sibling: false }
-  }
-  const key = sessionKey(scope.kind, scope.caller)
-  const session = recordsWhere(state, record => !record.closing && keyOf(record) === key && record.mode === scope.fingerprint)[0] ?? `buckle-${randomUUID()}`
+  const { leases, id } = lease(record, record === undefined || idle(record, now))
   // A daemon starts under this list at this call's first command, whether the call then succeeds, fails, or times out,
   // so the list is recorded before it runs: a later change then relaunches it.
-  state.browsers[session] = { kind: scope.kind, ...fields, ...(scope.kind === 'fresh' ? { allowedDomains: scope.flag } : {}), ...held(state.browsers[session]) }
-  return { session, sibling: false }
+  state.browsers[session] = { kind: scope.kind, ...fields, ...(scope.kind === 'fresh' ? { allowedDomains: scope.flag } : {}), ...kept, leases }
+  return { session, sibling: false, lease: id }
+}
+
+/** Whether another call is starting a session's daemon now, which this one waits for. */
+function starting(record: BrowserRecord, now: number): boolean {
+  return liveLeases(record, now).some(lease => lease.starting === true)
+}
+
+/** Whether a session's daemon may have ended by its idle timeout: no call runs on it, and none has for that long. */
+function idle(record: BrowserRecord, now: number): boolean {
+  return !busy(record, now) && now - record.usedAt >= record.idleTimeoutMs
+}
+
+/**
+ * Ends a call's lease (Codex review L3), with the session used now, and answers what the session held as it ended, which
+ * the call's own late masking reads. Where a close came while it ran, and no other call runs on the session, the close
+ * is this call's to send: it does, and the session is forgotten with its hold once it closed.
+ */
+export async function releaseSession(lifecycle: Lifecycle, session: string, lease: string): Promise<FilledSecret[]> {
+  const ended = await lifecycle.store.update((state) => {
+    upgradeSessions(state)
+    const record = state.browsers[session]
+    if (record === undefined) return { held: [], close: false }
+    const now = Date.now()
+    const leases = liveLeases(record, now).filter(item => item.id !== lease)
+    if (leases.length > 0) record.leases = leases
+    else delete record.leases
+    record.usedAt = now
+    return { held: [...record.held ?? []], close: record.closing === true && leases.length === 0 }
+  })
+  if (ended.close) {
+    const closed = await closeEach(lifecycle, [session])
+    if ([...closed.values()].includes(false)) logger.warn('A browser session a close came for while a call ran did not close; the next start ends it')
+    await settleClaims(lifecycle, closed)
+  }
+  return ended.held
 }
 
 /**
@@ -202,7 +292,7 @@ function ownerCommand(lifecycle: Lifecycle): string {
  */
 export function heldFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): HeldSecret[] {
   const now = Date.now()
-  const ending = (record: BrowserRecord) => !record.closing && stranded(record, lifecycle.me, now, lifecycle.longestCallMs)
+  const ending = (record: BrowserRecord) => !record.closing && !busy(record, now) && stranded(record, lifecycle.me, now, lifecycle.longestCallMs)
   const key = sessionKey(scope.kind, scope.caller)
   const shared = scope.own === null ? undefined : state.browsers[scope.own]
   const values = scope.kind === 'fresh'
@@ -241,9 +331,10 @@ function describeHolder(record: BrowserRecord): string {
 /**
  * An agent's close: every session of its key, except one a live sibling holds under other settings, which the caller
  * closes under its own timeout; and every stranded session, as before any call. Its own are empty where the key records
- * none, so nothing of the caller's runs.
+ * none, so nothing of the caller's runs. One a call runs on is marked closing and left to the last call on it to end
+ * (Codex review L3): `waiting` counts them.
  */
-export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promise<{ own: string[]; stranded: string[] }> {
+export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promise<{ own: string[]; waiting: number; stranded: string[] }> {
   return lifecycle.store.update((state) => {
     upgradeSessions(state)
     const key = sessionKey(scope.kind, scope.caller)
@@ -251,9 +342,10 @@ export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promi
     const own = scope.own !== null
       ? (state.browsers[scope.own] === undefined ? [] : [scope.own])
       : recordsWhere(state, record => !record.closing && keyOf(record) === key && !(record.mode !== scope.fingerprint && liveSibling(record, lifecycle.me)))
-    const left = recordsWhere(state, (record, name) => !record.closing && !own.includes(name) && stranded(record, lifecycle.me, now, lifecycle.longestCallMs))
+    const left = recordsWhere(state, (record, name) => !record.closing && !own.includes(name) && !busy(record, now) && stranded(record, lifecycle.me, now, lifecycle.longestCallMs))
     for (const name of [...own, ...left]) state.browsers[name]!.closing = true
-    return { own, stranded: left }
+    const closable = own.filter(name => !busy(state.browsers[name]!, now))
+    return { own: closable, waiting: own.length - closable.length, stranded: left }
   })
 }
 
@@ -265,7 +357,8 @@ export async function claimCaller(lifecycle: Lifecycle, scope: CallScope): Promi
  */
 export async function endStranded(lifecycle: Lifecycle): Promise<void> {
   const now = Date.now()
-  const left = (state: Sessions) => recordsWhere(state, record => record.closing === true || stranded(record, lifecycle.me, now, lifecycle.longestCallMs))
+  // One a call runs on is that call's to end, once a close marked it (Codex review L3).
+  const left = (state: Sessions) => recordsWhere(state, record => !busy(record, now) && (record.closing === true || stranded(record, lifecycle.me, now, lifecycle.longestCallMs)))
   const seen = lifecycle.store.read()
   upgradeSessions(seen)
   if (left(seen).length === 0) return
@@ -286,7 +379,10 @@ export async function endStranded(lifecycle: Lifecycle): Promise<void> {
  * relaunched where the list changed. A browser that closed holds nothing any more.
  */
 export async function retireSessions(lifecycle: Lifecycle, names: readonly string[]): Promise<void> {
-  const closed = await closeEach(lifecycle, names)
+  // One a call runs on, a sibling's on the same key, is left to it (Codex review L3); its next call replaces it.
+  const seen = lifecycle.store.read()
+  const now = Date.now()
+  const closed = await closeEach(lifecycle, names.filter(name => seen.browsers[name] === undefined || !busy(seen.browsers[name], now)))
   if ([...closed.values()].includes(false)) logger.warn('A browser session did not close when its settings changed; the next call of its session closes it again')
   const done = [...closed].flatMap(([name, ok]) => (ok ? [name] : []))
   if (done.length === 0) return
@@ -299,14 +395,16 @@ export async function retireSessions(lifecycle: Lifecycle, names: readonly strin
 /**
  * At shutdown (Slice F4, item 4): closes every session this process wrote, whichever pack started it and in whichever
  * mode, a profile folder's too, and forgets each that closed; one that did not stays marked closing, for the next start.
+ * One a call runs on, a sibling's on a profile folder, is marked closing and left to the last call on it (Codex review L3).
  */
 export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
   if (recordsWhere(lifecycle.store.read(), record => isWriter(record, lifecycle.me)).length === 0) return
   const names = await lifecycle.store.update((state) => {
     upgradeSessions(state)
+    const now = Date.now()
     const names = recordsWhere(state, record => isWriter(record, lifecycle.me))
     for (const name of names) state.browsers[name]!.closing = true
-    return names
+    return names.filter(name => !busy(state.browsers[name]!, now))
   })
   const closed = await closeEach(lifecycle, names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session did not close at shutdown; the next start ends it')
@@ -318,7 +416,8 @@ export async function closeWritten(lifecycle: Lifecycle): Promise<void> {
  * browser meanwhile, every recorded session is closed, a live sibling's too, with a bare close in parallel under one
  * bound. Each that closed is forgotten with its hold. One that did not stays marked closing with its hold (Codex review
  * L1), as a profile folder's keeps its name and a call would reach its page again: the next start, or this command, ends
- * it. An attached Chrome keeps its pages through a close, so its hold is forgotten only once the Chrome the workspace
+ * it. One a call runs on is marked closing with its hold, and the last call on it ends it (Codex review L3), as a close
+ * now would leave the call's command to start it again. An attached Chrome keeps its pages through a close, so its hold is forgotten only once the Chrome the workspace
  * attaches to is found closed (Codex review L2), and with it an earlier Buckle's, which named no Chrome; another Chrome's
  * stays, as nothing here can check it, until the workspace attaches to it again and this command finds it closed.
  */
@@ -327,8 +426,10 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
     upgradeSessions(state)
     const names = Object.keys(state.browsers)
     const before = heldValues(state)
+    const now = Date.now()
     for (const name of names) state.browsers[name]!.closing = true
-    const closed = await closeEach(lifecycle, names)
+    const running = names.filter(name => busy(state.browsers[name]!, now))
+    const closed = await closeEach(lifecycle, names.filter(name => !running.includes(name)))
     forget(state, closed)
     const chrome = state.chromes !== undefined || state.attached !== undefined ? await lifecycle.chromeClosed?.() ?? null : null
     if (chrome !== null) {
@@ -339,7 +440,7 @@ export async function closeAll(lifecycle: Lifecycle): Promise<BrowserCloseCounts
     const after = heldValues(state)
     const kept = after.size
     const chromes = Object.keys(state.chromes ?? {}).length + (state.attached === undefined ? 0 : 1)
-    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}), ...(chromes > 0 ? { chromes } : {}) }
+    return { browsers: names.length, closed: [...closed.values()].filter(Boolean).length, held: [...before].filter(value => !after.has(value)).length, ...(kept > 0 ? { kept } : {}), ...(chromes > 0 ? { chromes } : {}), ...(running.length > 0 ? { busy: running.length } : {}) }
   })
 }
 

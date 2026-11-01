@@ -40,6 +40,8 @@ export interface BrowserCloseCounts {
   kept?: number
   /** Attached Chromes whose hold stays, as each still answers, or is not the one the workspace attaches to (Codex review L2). */
   chromes?: number
+  /** Browsers a call still ran on, each left closing for the last call on it to end (Codex review L3); absent where none. */
+  busy?: number
 }
 
 export function packDescriptor(pack: Pack): PackDescriptor {

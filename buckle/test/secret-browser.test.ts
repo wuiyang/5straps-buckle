@@ -84,6 +84,8 @@ describe('a browser fill', () => {
 
   it('masks a snapshot that began before a fill beside it, in the same browser, and answered after', async () => {
     const { bin, runtime } = await node()
+    // A session's first command runs alone, as it starts the daemon (Codex review L3), so the browser is started first.
+    expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
     writeFileSync(join(bin, 'slow'), '')
     const snapshot = browser(runtime, { command: 'snapshot', args: [] })
     await new Promise(resolve => setTimeout(resolve, 300))
