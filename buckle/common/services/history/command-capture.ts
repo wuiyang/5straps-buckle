@@ -327,9 +327,10 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
-   * The objects each shadow index names, its side index included (W2): each blob within the content cap, the content the
-   * next command's before state reuses, and each tree its cache-tree names, which git takes as written while it is there
-   * (W1). undefined where an index cannot be read, so nothing is swept on a guess.
+   * The objects each shadow index names, its side index included (W2): each blob, the content the next command's before
+   * state reuses, one over the cap too, which git reads again only once its file changes (V4); and each tree its cache-tree
+   * names, which git takes as written while it is there (W1). undefined where an index cannot be read, so nothing is swept
+   * on a guess.
    */
   function indexed(): Set<string> | undefined {
     const ids = new Set<string>()
@@ -342,7 +343,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
         try { index = readFileSync(join(folder, name, file)) } catch (error) { if (isMissing(error)) continue; return undefined }
         const read = readIndex(index)
         if (!read) return undefined
-        for (const entry of read.entries) if (entry.size <= input.maxFileBytes()) ids.add(entry.id)
+        for (const entry of read.entries) ids.add(entry.id)
         for (const tree of read.trees) ids.add(tree)
       }
     }

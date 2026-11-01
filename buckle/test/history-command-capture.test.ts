@@ -434,7 +434,7 @@ describe('what a command\'s capture wrote that nothing names', () => {
     } finally { await history.close() }
   })
 
-  it('reclaims a file over the content cap and an abandoned temporary after the command', async () => {
+  it('reclaims a file over the content cap once no index names it, and an abandoned temporary, after the command', async () => {
     const { workspace, directory, settings, details } = fixture({ maxFileBytes: 64 })
     const history = await openChangeHistory(settings)
     try {
@@ -443,10 +443,33 @@ describe('what a command\'s capture wrote that nothing names', () => {
       for (const name of ['tmp-0123', 'tmp_obj_4567']) writeFileSync(join(folder, name), 'abandoned')
       await history.run(details, async () => { writeFileSync(join(workspace, 'big.bin'), Buffer.alloc(200, 7)) })
       expect((await history.list()).at(-1)).toMatchObject({ notRestorable: [join(workspace, 'big.bin')] })
+      await history.run(details, async () => { rmSync(join(workspace, 'big.bin')) })
       await vi.waitFor(() => {
         expect(historyObjects(directory).some(content => content.length > 200)).toBe(false)
         expect(readdirSync(folder).filter(name => name.startsWith('tmp'))).toEqual([])
       })
+    } finally { await history.close() }
+  })
+
+  // V4 of the Codex recheck of the W fixes: the sweep keeps every object a shadow index names, the content of a file over
+  // the cap included, as git reads such a file again only once it changes.
+  it('keeps the content of an unchanged file over the cap that the shadow index names, and reads its change as over the cap', async () => {
+    const { workspace, directory, settings, details } = fixture({ maxFileBytes: 64 })
+    const big = join(workspace, 'big.bin'); writeFileSync(big, Buffer.alloc(200, 7)); utimesSync(big, 1_600_000_000, 1_600_000_000)
+    const store = openObjectStore(directory)
+    const history = await openChangeHistory(settings)
+    try {
+      // An object nothing names: the sweep after the command has run once it is gone.
+      const orphan = await store.put(Buffer.from('ORPHAN'))
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      await vi.waitFor(() => expect(store.has(orphan)).toBe(false))
+      const shadow = join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24), 'index')
+      expect(readIndex(readFileSync(shadow))!.entries.filter(entry => !store.has(entry.id))).toEqual([])
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(big, Buffer.alloc(300, 8)) })
+      const saved = JSON.parse(readFileSync(join(directory, 'checkpoints.json'), 'utf8')) as { checkpoints: Array<{ before: Record<string, unknown> }> }
+      expect(saved.checkpoints.at(-1)!.before[big]).toMatchObject({ kind: 'excluded', reason: 'size', size: 200 })
+      // Its earlier content goes once no index names it.
+      await vi.waitFor(() => expect(store.has(blobId(Buffer.alloc(200, 7)))).toBe(false))
     } finally { await history.close() }
   })
 })
@@ -497,6 +520,8 @@ describe('the trees a command\'s capture keeps', () => {
     const history = await openChangeHistory(settings)
     try {
       await history.run(details, async () => { writeFileSync(join(workspace, 'one.bin'), big(1)); writeFileSync(join(workspace, 'two.bin'), big(2)) })
+      // Their content goes once no index names it.
+      await history.run(details, async () => { rmSync(join(workspace, 'one.bin')); rmSync(join(workspace, 'two.bin')) })
       await vi.waitFor(() => expect(historyObjects(directory).filter(content => content.length > 200).map(content => content.at(-1))).toEqual([1]))
     } finally { await history.close() }
   })
@@ -619,9 +644,11 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
       // The sweep after a command in another folder tries the removal again.
       await history.run({ ...details, stageId: 'other', roots: [other] }, async () => { writeFileSync(join(other, 'c.txt'), 'c1') })
       await vi.waitFor(() => expect(existsSync(marker)).toBe(false))
+      // An object nothing names, which the sweep after the next command removes.
+      const orphan = await openObjectStore(directory).put(Buffer.from('ORPHAN'))
       await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a3'); writeFileSync(join(workspace, 'big.bin'), Buffer.alloc(200, 7)) })
       expect((await history.list()).at(-1)).toMatchObject({ status: 'complete', restorable: true, notRestorable: [join(workspace, 'big.bin')] })
-      await vi.waitFor(() => expect(historyObjects(directory).some(content => content.length > 200)).toBe(false))
+      await vi.waitFor(() => expect(openObjectStore(directory).has(orphan)).toBe(false))
     } finally { await history.close() }
   })
 
