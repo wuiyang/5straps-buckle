@@ -151,11 +151,14 @@ export function modeFingerprint(mode: BrowserMode, settings: { launchArgs?: stri
 export const DEFAULT_IDLE_TIMEOUT_MS = 300_000
 
 /**
- * The one agent-browser session for a profile folder. Chrome opens a folder in one browser at a time, so every caller
- * in every workspace on the node shares this session, named from the folder so each process reaches the same daemon.
+ * The one agent-browser session for a profile folder in one workspace of one node, its sessions store `namespace`.
+ * Chrome opens a folder in one browser at a time, so every caller of the workspace shares this session, named from the
+ * folder and the store so each of its processes reaches the same daemon. Another workspace or node on the folder names
+ * its own (Codex review L5): it never reaches a page this one filled, with none of its hold, and neither one's reap or
+ * owner's command ends the other's browser; Chrome's own lock on the folder refuses a second browser until the first ends.
  */
-export function profileSession(directory: string): string {
-  return `buckle-profile-${createHash('sha256').update(directory).digest('hex').slice(0, 16)}`
+export function profileSession(directory: string, namespace: string): string {
+  return `buckle-profile-${createHash('sha256').update(JSON.stringify([namespace, directory])).digest('hex').slice(0, 16)}`
 }
 
 /**

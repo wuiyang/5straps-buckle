@@ -138,6 +138,30 @@ describe('a close (F4 item 2)', () => {
   })
 })
 
+// Codex review L5: a profile folder's daemon was named from the folder alone, so another workspace or node on it reached
+// the page this one filled, with none of its hold, and the reap or the owner's command of one closed the other's browser.
+describe('a profile folder\'s browser in two workspaces or nodes', () => {
+  const PROFILE: BrowserMode = { kind: 'profile', directory: '/owner/profile' }
+
+  it('is each one\'s own, so neither reaches the other\'s page nor ends its browser', async () => {
+    const { browser, open, root } = node({ mode: PROFILE })
+    const mine = open()
+    const theirs = open({ sessionDirectory: join(root, 'other-node-state') })
+    await call(mine, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await call(theirs, { command: 'snapshot' })
+    const [filled, other] = [sessionOf(browser.calls[0]!), sessionOf(browser.calls[1]!)]
+    expect(other).not.toBe(filled)
+    expect(await theirs.closeBrowsers!()).toMatchObject({ browsers: 1, closed: 1 })
+    expect(browser.alive()).toEqual([filled])
+  })
+
+  it('says, where a command on it fails, that the folder opens in one browser at a time, and what ends another\'s', async () => {
+    const { browser, open } = node({ mode: PROFILE })
+    browser.run = async () => ({ ...result({ success: false }), exitCode: 1, stderr: 'Chrome exited early' })
+    await expect(call(open(), { command: 'snapshot' })).rejects.toThrow('agent-browser failed (exit 1): Chrome exited early. A profile folder opens in one browser at a time: where another workspace or Buckle node still has it open, that browser ends first, at its idle timeout or with the owner\'s buckle browser close in that workspace')
+  })
+})
+
 /** The sessions the store records for a caller, by their key fields, whatever the store's shape. */
 function recordedFor(stored: Record<string, unknown>, caller: string): Array<{ name: string; stage: string; alias: string }> {
   const browsers = (stored.browsers ?? {}) as Record<string, { caller: string; stage: string; alias: string }>

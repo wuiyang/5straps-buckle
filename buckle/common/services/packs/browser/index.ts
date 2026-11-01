@@ -1,5 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { basename, isAbsolute, join } from 'pathe'
+import { basename, isAbsolute, join, resolve } from 'pathe'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
 import { browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
@@ -35,6 +35,12 @@ const SESSION_REFUSAL = 'Buckle\'s browser cannot attach, restore, or override s
  * allowed domains, so only a fresh browser relaunches when they change.
  */
 const RELAUNCH_NOTICE = 'The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.'
+
+/**
+ * Fixed text after a failed command on a profile folder: each workspace and node names its own browser on the folder
+ * (profileSession), and Chrome opens a folder in one browser at a time, so another's still open refuses this one's.
+ */
+const PROFILE_IN_USE = 'A profile folder opens in one browser at a time: where another workspace or Buckle node still has it open, that browser ends first, at its idle timeout or with the owner\'s buckle browser close in that workspace'
 
 /** What a close answers where its caller has no browser recorded: it ran nothing, so agent-browser launched nothing to close. */
 const NO_BROWSER_NOTICE = 'No browser was open for this session, so nothing was closed.'
@@ -142,13 +148,15 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const fingerprint = modeFingerprint(mode ?? FRESH_BROWSER, { launchArgs: options.launchArgs, headed: options.headed, idleTimeoutMs })
   // agent-browser refuses --allowed-domains with a profile or an attached browser, so only a fresh one is passed the list.
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
-  // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
-  // started under this pack's settings, so no process ever reaches a session started in another mode.
+  // Every caller of the workspace shares the one browser on a profile folder, its sessions store's own. Elsewhere each
+  // caller, stage, and alias has its own, started under this pack's settings, so no process ever reaches a session
+  // started in another mode.
+  const namespace = resolve(options.sessionDirectory)
   const callScope = (running: BrowserMode, context: ToolContext, alias: string | undefined): CallScope => ({
     kind: running.kind,
     caller: { caller: context.sessionId, stage: context.stageId ?? 'default', alias: alias ?? 'default' },
     fingerprint,
-    own: running.kind === 'profile' ? profileSession(running.directory) : null,
+    own: running.kind === 'profile' ? profileSession(running.directory, namespace) : null,
     chrome: running.kind === 'attached' ? attachedChrome(running.endpoint) : null,
     flag,
   })
@@ -278,7 +286,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const failed = ran.exitCode !== 0
             const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout), failed), stderr: scrub(transfer.shown(ran.stderr), failed) }
             if (result.exitCode !== 0) {
-              throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
+              throw new ToolExecutionError(`${describeProcessFailure('agent-browser', result)}${running.kind === 'profile' ? `. ${PROFILE_IN_USE}` : ''}`, { code: 'BROWSER_COMMAND_FAILED' })
             }
             await transfer.deliver()
             const relaunched = relaunchedFrom !== undefined
