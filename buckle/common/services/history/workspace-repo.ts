@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
-import { closeSync, fstatSync, lstatSync, openSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { closeSync, constants, fstatSync, lstatSync, readFileSync, readSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { isAbsolute, join, relative } from 'pathe'
+import { openNoFollow } from '../../adapters/beneath.js'
 
 /**
  * Slice F3 (owner question X6): a command's folder that lies in a git repository with a commit refers to that
@@ -14,8 +15,11 @@ export interface IndexEntry { stat: Buffer; id: string; flags: number; extended:
 /** Where `git rev-parse` found the repository a folder lies in, all absolute: its work tree's top, index, and objects. */
 export interface RepositoryLocation { top: string; index: string; objects: string }
 
-/** The record, in a root's shadow git folder, of the repository whose objects its shadow index refers to. */
-export interface SourceRecord { objects: string; stamp: string }
+/**
+ * The record, in a root's shadow git folder, of the repository whose objects its shadow index refers to: its objects
+ * folder, and its index with that file's identity on disk as the record last found it plain (G5 of the Codex review).
+ */
+export interface SourceRecord { objects: string; index: string; indexIdentity: string }
 
 const SOURCE_RECORD = 'source'
 /** Beside it, each blob id the seed found the repository holding, 20 bytes each: what the sweep need not keep a copy of. */
@@ -25,8 +29,18 @@ const ASSUME_VALID = 0x8000
 const EXTENDED = 0x4000
 const SKIP_WORKTREE = 0x4000
 const NAME_MASK = 0x0fff
-/** The modes a seed keeps: a file, an executable one, and a link. A nested repository (160000) git adds on its own. */
-const SEEDED_MODES = new Set([0o100644, 0o100755, 0o120000])
+/** The modes of an entry that names a blob: a file, an executable one, and a link; never a nested repository (160000). */
+const BLOB_MODES = new Set([0o100644, 0o100755, 0o120000])
+/**
+ * The modes a seed keeps: a file and an executable one, whose content git hashes from the file alone (G2). A link, whose
+ * target git compares with its blob as stored, and a nested repository are left to git add.
+ */
+const SEEDED_MODES = new Set([0o100644, 0o100755])
+/**
+ * The largest repository index read, some 600,000 entries (G1 of the Codex review): reading and parsing it hold the
+ * process, so a folder in a larger repository takes today's path.
+ */
+const INDEX_BYTES_MAX = 64 * 1_048_576
 
 /** The arguments of the one `git rev-parse` that locates a folder's repository; its answer reads with `parseLocation`. */
 export const LOCATE_ARGS = ['rev-parse', '--path-format=absolute', '--show-object-format', '--show-toplevel', '--git-path', 'index', '--git-path', 'objects', 'HEAD^{commit}']
@@ -52,17 +66,21 @@ export function prefixWithin(top: string, root: string): string | undefined {
   return path === '..' || path.startsWith('../') || isAbsolute(path) ? undefined : path
 }
 
-/** The repository's index as read, with its file's modification time in whole seconds, where git's racy check counts. */
-export function readRepositoryIndex(path: string): { index: Buffer; mtimeSeconds: number } | undefined {
+/**
+ * The repository's index as read: a regular file of INDEX_BYTES_MAX at most, never a link followed (G1 of the Codex
+ * review). Opened without waiting, so a pipe in its place, which a command can make, never holds the process.
+ */
+export function readRepositoryIndex(path: string): Buffer | undefined {
+  if (!lstatSync(path, { throwIfNoEntry: false })?.isFile()) return undefined
   let descriptor: number | undefined
   try {
-    descriptor = openSync(path, 'r')
+    descriptor = openNoFollow(path, constants.O_RDONLY | constants.O_NONBLOCK)
     const stat = fstatSync(descriptor)
-    if (!stat.isFile()) return undefined
+    if (!stat.isFile() || stat.size > INDEX_BYTES_MAX) return undefined
     const index = Buffer.alloc(stat.size)
     let read = 0
     while (read < index.length) { const bytes = readSync(descriptor, index, read, index.length - read, read); if (!bytes) return undefined; read += bytes }
-    return { index, mtimeSeconds: Math.floor(stat.mtimeMs / 1000) }
+    return index
   } catch { return undefined }
   finally { if (descriptor !== undefined) closeSync(descriptor) }
 }
@@ -126,17 +144,15 @@ export function parseIndex(index: Buffer): { entries: IndexEntry[]; plain: boole
 
 /**
  * The entries of the repository's index a shadow index may start from, named below the folder: each of stage 0 with a
- * file's or a link's mode, outside every protected name (`protect`, below the folder too), neither assumed unchanged nor
- * added with intent only, and older than the index file itself by its whole second, as git checks the content of any
- * entry as new as its index (racily clean) and a copy of it written later would not.
+ * file's mode, outside every protected name (`protect`, below the folder too), and neither assumed unchanged nor added
+ * with intent only. Their stat data is never trusted: each file's content is checked before its entry is seeded (G2).
  */
-export function seedCandidates(input: { entries: IndexEntry[]; mtimeSeconds: number; prefix: string; protect: string[] }): IndexEntry[] {
+export function seedCandidates(input: { entries: IndexEntry[]; prefix: string; protect: string[] }): IndexEntry[] {
   const prefix = input.prefix === '' ? Buffer.alloc(0) : Buffer.from(`${input.prefix}/`)
   const protect = input.protect.map(name => Buffer.from(name))
   const found: IndexEntry[] = []
   for (const entry of input.entries) {
-    if (entry.flags & (STAGE_MASK | ASSUME_VALID) || entry.extended) continue
-    if (!SEEDED_MODES.has(entry.stat.readUInt32BE(24)) || entry.stat.readUInt32BE(8) >= input.mtimeSeconds) continue
+    if (entry.flags & (STAGE_MASK | ASSUME_VALID) || entry.extended || !SEEDED_MODES.has(modeOf(entry))) continue
     if (!entry.name.subarray(0, prefix.length).equals(prefix)) continue
     const name = entry.name.subarray(prefix.length)
     if (protect.some(hidden => name.equals(hidden) || (name.length > hidden.length && name[hidden.length] === 0x2f && name.subarray(0, hidden.length).equals(hidden)))) continue
@@ -145,10 +161,33 @@ export function seedCandidates(input: { entries: IndexEntry[]; mtimeSeconds: num
   return found
 }
 
-/** The stat size an entry holds, which git keeps as its low 32 bits. */
-export function entrySize(entry: IndexEntry): number { return entry.stat.readUInt32BE(36) }
+function modeOf(entry: IndexEntry): number { return entry.stat.readUInt32BE(24) }
 /** Whether an entry names a blob: a file's or a link's, never a nested repository's commit. */
-export function namesBlob(entry: IndexEntry): boolean { return SEEDED_MODES.has(entry.stat.readUInt32BE(24)) }
+export function namesBlob(entry: IndexEntry): boolean { return BLOB_MODES.has(modeOf(entry)) }
+/** An entry's name as a key, every byte kept. */
+export function entryKey(entry: IndexEntry): string { return entry.name.toString('latin1') }
+
+/**
+ * `entry` with no stat data a file can match but its mode and its blob's `size` (git keeps the low 32 bits), so
+ * `git update-index --refresh` hashes the file to keep it, and skips one of another size or type unread (G2).
+ */
+export function unverified(entry: IndexEntry, size: number): IndexEntry {
+  const stat = Buffer.alloc(40)
+  stat.writeUInt32BE(modeOf(entry), 24); stat.writeUInt32BE(size % 2 ** 32, 36)
+  return { ...entry, stat }
+}
+/**
+ * Whether a refresh found `entry`'s file holding its blob, read back from the side index it refreshed: git then wrote the
+ * file's own stat data over what `unverified` gave it, and kept the blob's size. An entry it left as written, or marked
+ * to be read again (size 0), is not.
+ */
+export function refreshedAs(entry: IndexEntry, size: number): boolean {
+  return !entry.stat.equals(unverified(entry, size).stat) && entry.stat.readUInt32BE(36) === size % 2 ** 32
+}
+/** Whether `own`, an entry of the shadow index, names the same blob at the same mode as the repository's `entry`. */
+export function sameBlob(own: IndexEntry | undefined, entry: IndexEntry): own is IndexEntry {
+  return own !== undefined && own.id === entry.id && modeOf(own) === modeOf(entry) && !(own.flags & STAGE_MASK)
+}
 
 /** A version 2 index of `entries`, in their order, with no extension: what a shadow index is seeded with. */
 export function writeIndex(entries: IndexEntry[]): Buffer {
@@ -175,6 +214,11 @@ export function parseBatchCheck(output: Buffer): Map<string, number> {
   return sizes
 }
 
+/** `git cat-file --batch-check=%(objectname)` read: each id git found, from a look at its file or a pack's index alone. */
+export function parseExistence(output: Buffer): Set<string> {
+  return new Set(output.toString('latin1').split('\n').filter(line => /^[0-9a-f]{40}$/.test(line)))
+}
+
 /** `git cat-file --batch` read: each blob's content by id; an id git answers missing, or another kind, is absent. */
 export function parseBatch(output: Buffer): Map<string, Buffer> | undefined {
   const contents = new Map<string, Buffer>()
@@ -194,24 +238,15 @@ export function parseBatch(output: Buffer): Map<string, Buffer> | undefined {
   return contents
 }
 
-/** The value of `GIT_ALTERNATE_OBJECT_DIRECTORIES` naming one folder, quoted as git reads it, so no character splits it. */
-export function alternateValue(objects: string): string { return `"${objects.replace(/[\\"]/g, '\\$&')}"` }
-
-/**
- * Where the repository's objects stand on disk: the identity of its objects folder and of its pack folder, which a
- * collection, a fetch, a deletion, or a new repository in its place changes. Read with no git at each capture.
- */
-export function sourceStamp(objects: string): string {
-  return [objects, join(objects, 'pack')].map(path => { const stat = lstatSync(path, { throwIfNoEntry: false }); return stat?.isDirectory() ? `${stat.dev}:${stat.ino}:${stat.mtimeMs}` : '-' }).join('|')
-}
-
 /** The record of a root's shadow git folder: undefined where none stands, `invalid` where one does not read. */
 export function readSource(git: string): SourceRecord | 'invalid' | undefined {
   let text: string
   try { text = readFileSync(join(git, SOURCE_RECORD), 'utf8') } catch (error) { return error instanceof Error && 'code' in error && error.code === 'ENOENT' ? undefined : 'invalid' }
   try {
     const parsed: unknown = JSON.parse(text)
-    if (parsed && typeof parsed === 'object' && 'objects' in parsed && 'stamp' in parsed && typeof parsed.objects === 'string' && typeof parsed.stamp === 'string' && isAbsolute(parsed.objects)) return { objects: parsed.objects, stamp: parsed.stamp }
+    if (parsed && typeof parsed === 'object' && 'objects' in parsed && 'index' in parsed && 'indexIdentity' in parsed && typeof parsed.objects === 'string' && typeof parsed.index === 'string' && typeof parsed.indexIdentity === 'string' && isAbsolute(parsed.objects) && isAbsolute(parsed.index)) {
+      return { objects: parsed.objects, index: parsed.index, indexIdentity: parsed.indexIdentity }
+    }
   } catch { /* invalid below */ }
   return 'invalid'
 }
@@ -223,8 +258,9 @@ export function writeSource(git: string, record: SourceRecord, ids?: string[]): 
 export function removeSource(git: string): void { rmSync(join(git, SOURCE_RECORD), { force: true }); rmSync(join(git, SOURCE_IDS), { force: true }) }
 /**
  * The blob ids a root's seed found its repository holding, where its record stands: the sweep keeps no copy of one an
- * index names, as a command that changes its file copies it from the repository. Empty where none stand; undefined
- * where they do not read, so the sweep keeps all an index names.
+ * index names, as a command that changes its file copies it from the repository, and each capture before a command
+ * first checks the repository alone still holds each one its index names (G3, G4 of the Codex review). Empty where none
+ * stand; undefined where they do not read, so the sweep keeps all an index names.
  */
 export function readSourceIds(git: string): Set<string> | undefined {
   if (!lstatSync(join(git, SOURCE_RECORD), { throwIfNoEntry: false })) return new Set()

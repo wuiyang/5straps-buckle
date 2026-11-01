@@ -9,7 +9,7 @@ import { logger } from '../../runtime/log.js'
 import { blobId, type ObjectStore } from './object-store.js'
 import { modeOf } from './scoped-capture.js'
 import type { Entry, Snapshot } from './snapshot.js'
-import { alternateValue, entrySize, namesBlob, LOCATE_ARGS, parseBatch, parseBatchCheck, parseIndex, parseLocation, prefixWithin, readRepositoryIndex, readSource, readSourceIds, removeSource, seedCandidates, sourceStamp, writeIndex, writeSource, type SourceRecord } from './workspace-repo.js'
+import { entryKey, LOCATE_ARGS, namesBlob, parseBatch, parseBatchCheck, parseExistence, parseIndex, parseLocation, prefixWithin, readRepositoryIndex, readSource, readSourceIds, refreshedAs, removeSource, sameBlob, seedCandidates, unverified, writeIndex, writeSource, type IndexEntry, type SourceRecord } from './workspace-repo.js'
 
 /**
  * When a phase's capture must end, and the cancellation of its call, which stops the before phase (X14): git's children
@@ -45,6 +45,12 @@ export interface CommandBaseline { root: string; identity: string; git: string; 
 /** What a command changed, read from two baselines: each changed path's entries, and how many ignored entries changed. */
 export interface CommandChanges { before: Snapshot; after: Snapshot; ignored: number; partial: boolean }
 
+/**
+ * What settling a root's repository before a command found (Slice F3): the objects folder its shadow index refers to,
+ * and, for a record that stood, the check that the repository alone still holds each blob the index takes from it.
+ */
+interface Settled { objects: string; holds?: Promise<boolean> }
+
 export class HostGitNeededError extends Error {}
 /** A root that is no longer the folder it was, a link or another folder in its place: git would read where it lands. */
 export class FolderReplacedError extends Error {}
@@ -57,6 +63,8 @@ export class BaselineWarmingError extends Error {}
  */
 const WARM_INDEX = 'index.warm'
 const WARM_MARKER = 'warming'
+/** The side index a seed has git hash files in, to confirm each holds its repository's blob (Slice F3, G2). */
+const VERIFY_INDEX = 'index.verify'
 
 /**
  * Command capture (Slice F2, item 3, owner correction 2026-11-01): git itself, in a shadow repository per root with an
@@ -67,9 +75,10 @@ const WARM_MARKER = 'warming'
  * object store folder, which the in-process reader of item 4 reads, so a restore needs no git. An ignored path is never
  * stored, and only the count of ignored entries that changed is kept. Where the folder lies in a git repository with a
  * commit (Slice F3), the shadow index starts from that repository's index, so an unchanged committed file is never
- * hashed or copied; its content is copied into the store only as a command changes it, and a restore reads the store
- * alone. Nothing is written to the repository: only a step that reads objects (`cat-file`) sees its objects folder, as
- * an alternate, so git add and write-tree write every object they make into the store.
+ * copied: git hashes each such file once, storing nothing, to confirm it holds the committed blob. Its content is copied
+ * into the store only as a command changes it, and a restore reads the store alone. Nothing is written to the
+ * repository: only a step that reads objects (`cat-file`) sees its objects folder, as its only object store, so git add
+ * and write-tree write every object they make into the store.
  */
 export function createCommandCapture(input: { directory: string; objects: Pick<ObjectStore, 'root' | 'read' | 'size' | 'has' | 'put'>; excluded: () => string[]; allowed: () => boolean; untrusted?: () => UntrustedRoots; maxFileBytes: () => number }) {
   const folder = join(input.directory, 'commands')
@@ -94,14 +103,15 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
   function gitDirectory(root: string): string { return join(folder, createHash('sha256').update(root).digest('hex').slice(0, 24)) }
 
-  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean; errors?: (chunk: Buffer) => void; index?: string; alternate?: string } = {}): Promise<Buffer> {
+  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean; errors?: (chunk: Buffer) => void; index?: string; objects?: string } = {}): Promise<Buffer> {
     // `magic`: pathspec magic is read, for the literal excludes of the protected paths; every other call takes paths as given.
     // Each step takes STEP_TIMEOUT_MS at most, git add (`whole`) all that is left of the budget, which it bounds too.
     // `errors`: git's stderr, which it writes in the C locale, so its warnings read the same on every system.
-    // `alternate`: a folder's repository objects, read beside the history's own by a step that only reads (Slice F3).
+    // `objects`: a folder's repository objects, git's only store for a step that only reads (`cat-file`), so the history's
+    // own copy never stands for what the repository holds (Slice F3, G3 of the Codex review).
     const left = options.budget ? Math.max(1, options.budget.deadline - Date.now()) : undefined
     const timeoutMs = left === undefined ? undefined : options.whole ? left : Math.min(STEP_TIMEOUT_MS, left)
-    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: options.index ?? join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.alternate === undefined ? {} : { GIT_ALTERNATE_OBJECT_DIRECTORIES: alternateValue(options.alternate) }), ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
+    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: options.index ?? join(state.git, 'index'), GIT_OBJECT_DIRECTORY: options.objects ?? input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}), ...(options.errors ? { LC_ALL: 'C' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}), ...(options.errors ? { errors: options.errors } : {}) })
   }
 
   /**
@@ -166,69 +176,107 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
 
   /**
    * The repository a root's shadow index refers to, settled before a command (Slice F3): the objects folder named, or
-   * undefined where the index refers to none. A record whose repository stands as it did is kept. One that moved, went,
-   * or no longer holds an object the index names (item 7) goes with the index, which the work tree then builds again with
-   * every tree written again (W1); so does a record with no index or one that does not read. Then a root with no index,
-   * or with one this process has not written that refers to no repository, is seeded where it lies in one.
+   * undefined where the index refers to none. A record that stands (standing) is kept, and `holds` checks that the
+   * repository still holds each blob the index takes from it (G3, G4 of the Codex review). Any other record goes with
+   * the index, and the root is seeded again (item 7). A root with no index, or with one this process has not written
+   * that refers to no repository, is seeded where it lies in one.
    */
-  async function settleSource(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<string | undefined> {
-    const index = join(state.git, 'index')
-    let indexed = inspect(index) !== undefined
-    let record = readSource(state.git)
-    if (record !== undefined && (record === 'invalid' || !indexed || !await sourceHolds(found, state, record, budget).catch(unlessStopped(false)))) {
-      reset(state); record = undefined; indexed = false
-      logger.info('History\'s record of a command folder\'s repository no longer holds; it builds the record again from the folder')
+  async function settleSource(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<Settled | undefined> {
+    const indexed = inspect(join(state.git, 'index')) !== undefined
+    const record = readSource(state.git)
+    if (record === 'invalid' || (record !== undefined && !indexed)) return rebuild(found, state, budget)
+    if (record !== undefined) {
+      const ids = standing(state, record)
+      return ids ? { objects: record.objects, holds: holds(found, state, ids, record.objects, budget).catch(unlessStopped(false)) } : rebuild(found, state, budget)
     }
-    if (record !== undefined) return record.objects
     if (indexed && rewritten.has(state.root)) return undefined
-    return (await seed(found, state, budget).catch(unlessStopped(undefined)))?.objects
+    const seeded = await seed(found, state, budget).catch(unlessStopped(undefined))
+    return seeded && { objects: seeded.objects }
   }
 
   /**
-   * Whether the repository `record` names still holds what the shadow index refers to: found from the root with no git,
-   * at the same objects folder; and, where that folder or its packs changed since (a collection, a fetch), every blob the
-   * index names still read, from the history's own store or the repository (item 7).
+   * The blob ids the shadow index of a record that still stands takes from its repository, which `holds` then checks;
+   * undefined where it no longer stands: the repository, found from the root with no git, is at another objects folder
+   * or none; its index changed since and no longer reads plain (G5 of the Codex review); or the shadow index or its ids
+   * do not read.
    */
-  async function sourceHolds(found: Program, state: { root: string; git: string }, record: SourceRecord, budget: CaptureBudget): Promise<boolean> {
+  function standing(state: { root: string; git: string }, record: SourceRecord): string[] | undefined {
     const owner = ownerGitDirectory(state.root)
-    if (owner === undefined || realPath(join(owner, 'objects')) !== record.objects) return false
-    const stamp = sourceStamp(record.objects)
-    if (stamp === record.stamp) return true
-    let shadow: ReturnType<typeof parseIndex>
-    try { shadow = parseIndex(readFileSync(join(state.git, 'index'))) } catch { return false }
-    if (!shadow) return false
-    const ids = [...new Set(shadow.entries.filter(namesBlob).map(entry => entry.id))]
-    const sizes = await sizesOf(found, state, ids, record.objects, budget)
-    if (ids.some(id => !sizes.has(id))) return false
-    writeSource(state.git, { objects: record.objects, stamp })
-    return true
+    if (owner === undefined || realPath(join(owner, 'objects')) !== record.objects) return undefined
+    const identity = pathIdentity(record.index)
+    if (identity !== record.indexIdentity) {
+      const read = readRepositoryIndex(record.index)
+      if (!(read && parseIndex(read))?.plain) return undefined
+      writeSource(state.git, { ...record, indexIdentity: identity })
+    }
+    const held = readSourceIds(state.git)
+    const entries = shadowIndex(state.git)
+    if (!held || !entries) return undefined
+    return [...new Set(entries.filter(entry => namesBlob(entry) && held.has(entry.id)).map(entry => entry.id))]
+  }
+
+  /**
+   * Whether the repository's objects folder, read alone, holds each of `ids`: never the history's own copy, which the
+   * sweep may remove once no checkpoint holds it (G3). One look at each object's file or a pack's index, before each
+   * command, as no folder's time on disk proves an object is still there (G4). Like git add beside it, it takes what is
+   * left of the budget, as its work grows with the repository.
+   */
+  async function holds(found: Program, state: { root: string; git: string }, ids: string[], objects: string, budget: CaptureBudget): Promise<boolean> {
+    if (!ids.length) return true
+    const present = parseExistence(await git(found, state, ['cat-file', '--batch-check=%(objectname)'], { data: `${ids.join('\n')}\n`, objects, budget, whole: true }))
+    return ids.every(id => present.has(id))
+  }
+
+  /**
+   * git add, before a command beside the check that the repository still holds what its record refers to (G4): both end
+   * before either answer is used. Where it does not hold, the record is built again, and git add runs once more. After a
+   * command, git add alone.
+   */
+  async function refreshSettled(found: Program, state: { root: string; git: string; extra: string[]; protect: string[] }, budget: CaptureBudget, settled: Settled | undefined): Promise<{ refreshed: Awaited<ReturnType<typeof refresh>>; source?: string }> {
+    const [refreshed, held] = await both(refresh(found, state, budget), settled?.holds ?? Promise.resolve(true))
+    if (held) return { refreshed, ...settled ? { source: settled.objects } : {} }
+    const rebuilt = await rebuild(found, state, budget)
+    return { refreshed: await refresh(found, state, budget), ...rebuilt ? { source: rebuilt.objects } : {} }
+  }
+
+  /**
+   * Drops a root's record and index and seeds the root again, which W1's repair then completes from the work tree (item
+   * 7): an entry git wrote for a file that still holds the same blob needs no second read.
+   */
+  async function rebuild(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<Settled | undefined> {
+    logger.info('History\'s record of a command folder\'s repository no longer holds; it builds the record again from the folder')
+    const prior = shadowEntries(state.git)
+    reset(state)
+    const seeded = await seed(found, state, budget, prior).catch(unlessStopped(undefined))
+    return seeded && { objects: seeded.objects }
   }
 
   /**
    * Seeds a root's shadow index from the index of the repository it lies in (Slice F3, items 1 and 2): where that
    * repository has a commit, SHA-1 objects, and an index git can read with nothing beyond its entries, each entry below
-   * the root (seedCandidates) whose blob the repository holds at the size the file had, so no blob git converted as it
-   * stored it (line ends, a filter) stands for the file. Its stat data is the repository's, so git add hashes only the
-   * files that differ. The record is written first, so an index that refers to a repository is never left without it.
-   * Read with host git under the isolated config; nothing is written to the repository. undefined where nothing is seeded:
-   * the root then takes today's path, as for any failure of these steps but its budget's (settleSource).
+   * the root (seedCandidates) whose blob the repository holds and whose file holds that blob's very bytes (verified).
+   * Git add then hashes only the files that differ. The record is written first, so an index that refers to a repository
+   * is never left without it. Read with host git under the isolated config; nothing is written to the repository.
+   * undefined where nothing is seeded: the root then takes today's path, as for any failure of these steps but its
+   * budget's (settleSource). `prior`: the shadow index's entries as git last wrote them, read here unless given.
    */
-  async function seed(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<SourceRecord | undefined> {
+  async function seed(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget, prior?: Map<string, IndexEntry>): Promise<SourceRecord | undefined> {
     if (ownerGitDirectory(state.root) === undefined) return undefined
     const located = parseLocation((await locate(found, state.root, budget)).toString())
     const objects = located && realPath(located.objects)
     const prefix = located && prefixWithin(located.top, state.root)
     if (!located || objects === undefined || prefix === undefined) return undefined
-    const stamp = sourceStamp(objects)
+    // The index's identity before it is read, so a change while it is read is checked at the next capture (G5).
+    const indexIdentity = pathIdentity(located.index)
     const read = readRepositoryIndex(located.index)
-    const parsed = read && parseIndex(read.index)
-    if (!read || !parsed?.plain) return undefined
-    const candidates = seedCandidates({ entries: parsed.entries, mtimeSeconds: read.mtimeSeconds, prefix, protect: state.protect })
+    const parsed = read && parseIndex(read)
+    if (!parsed?.plain) return undefined
+    const candidates = seedCandidates({ entries: parsed.entries, prefix, protect: state.protect })
     if (!candidates.length) return undefined
     const sizes = await sizesOf(found, state, [...new Set(candidates.map(entry => entry.id))], objects, budget)
-    const entries = candidates.filter(entry => { const size = sizes.get(entry.id); return size !== undefined && size % 2 ** 32 === entrySize(entry) })
+    const entries = await verified(found, state, candidates.filter(entry => sizes.has(entry.id)), sizes, prior ?? shadowEntries(state.git), budget)
     if (!entries.length) return undefined
-    const record = { objects, stamp }
+    const record = { objects, index: located.index, indexIdentity }
     writeSource(state.git, record, [...new Set(entries.map(entry => entry.id))])
     const temporary = join(state.git, `index.seed-${randomUUID()}`)
     try { writeFileSync(temporary, writeIndex(entries), { mode: 0o600, flag: 'wx' }); await replaceFile(temporary, join(state.git, 'index')) }
@@ -237,6 +285,45 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     rewritten.delete(state.root)
     logger.debug('History seeded a command folder\'s record from its repository\'s index', { entries: entries.length, left: candidates.length - entries.length })
     return record
+  }
+
+  /**
+   * The entries of `held` whose file holds the very bytes of the repository's blob, as git hashes it raw (G2 of the
+   * Codex review). Never the repository's stat data alone: a clean filter that keeps a file's length, or an index
+   * written by hand, makes it stand for other content. An entry the shadow index holds for the same blob keeps the stat
+   * data git wrote as it hashed that file. Each other goes into a side index with no stat data but its blob's size
+   * (unverified), which `git update-index --refresh` brings up to date: git hashes each file of that size, writes no
+   * object, and gives the file's own stat data to each whose hash is its blob's. The rest are left to git add.
+   */
+  async function verified(found: Program, state: { root: string; git: string }, held: IndexEntry[], sizes: Map<string, number>, prior: Map<string, IndexEntry>, budget: CaptureBudget): Promise<IndexEntry[]> {
+    const unknown = held.filter(entry => !sameBlob(prior.get(entryKey(entry)), entry))
+    const hashed = new Map<string, Buffer>()
+    if (unknown.length) {
+      const side = join(state.git, VERIFY_INDEX)
+      try {
+        rmSync(side, { force: true })
+        writeFileSync(side, writeIndex(unknown.map(entry => unverified(entry, sizes.get(entry.id)!))), { mode: 0o600, flag: 'wx' })
+        await git(found, state, ['update-index', '-q', '--refresh'], { index: side, budget, whole: true })
+        for (const entry of parseIndex(readFileSync(side))?.entries ?? []) {
+          const size = sizes.get(entry.id)
+          if (size !== undefined && refreshedAs(entry, size)) hashed.set(entryKey(entry), entry.stat)
+        }
+      } finally { rmSync(side, { force: true }); rmSync(`${side}.lock`, { force: true }) }
+    }
+    return held.flatMap(entry => {
+      const own = prior.get(entryKey(entry))
+      const stat = sameBlob(own, entry) ? own.stat : hashed.get(entryKey(entry))
+      return stat ? [{ ...entry, stat }] : []
+    })
+  }
+
+  /** A root's shadow index's entries as git last wrote it; undefined where it does not read. */
+  function shadowIndex(git: string): IndexEntry[] | undefined {
+    try { return parseIndex(readFileSync(join(git, 'index')))?.entries } catch { return undefined }
+  }
+  /** Those entries by name; none where it does not read. */
+  function shadowEntries(git: string): Map<string, IndexEntry> {
+    return new Map((shadowIndex(git) ?? []).map(entry => [entryKey(entry), entry]))
   }
 
   /** Drops a root's shadow index and the record of the repository it refers to: its next capture builds it again (item 7). */
@@ -250,10 +337,14 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return runProgram({ program: found, operation: 'rev-parse', args: [...safety, ...LOCATE_ARGS], cwd: root, environment, timeoutMs, ...(budget.signal ? { signal: budget.signal } : {}) })
   }
 
-  /** Each of `ids`'s size where it names a blob in the history's store or the repository's `objects`: one batch check. */
+  /**
+   * Each of `ids`'s size where it names a blob the repository's `objects` folder holds, read as git's only store, so the
+   * history's own copy never stands for it (G3): one batch check, which takes what is left of the budget, as a seed's
+   * grows with the repository.
+   */
   async function sizesOf(found: Program, state: { root: string; git: string }, ids: string[], objects: string, budget: CaptureBudget): Promise<Map<string, number>> {
     if (!ids.length) return new Map()
-    return parseBatchCheck(await git(found, state, ['cat-file', '--batch-check'], { data: `${ids.join('\n')}\n`, alternate: objects, budget }))
+    return parseBatchCheck(await git(found, state, ['cat-file', '--batch-check'], { data: `${ids.join('\n')}\n`, objects, budget, whole: true }))
   }
 
   /**
@@ -270,7 +361,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const sizes = await sizesOf(found, left, wanted, left.source, budget)
       const gone = new Set(wanted.filter(id => !sizes.has(id)))
       for (const chunk of byBytes(wanted.filter(id => sizes.get(id)! <= input.maxFileBytes()), sizes)) {
-        const contents = parseBatch(await git(found, left, ['cat-file', '--batch'], { data: `${chunk.join('\n')}\n`, alternate: left.source, budget }))
+        const contents = parseBatch(await git(found, left, ['cat-file', '--batch'], { data: `${chunk.join('\n')}\n`, objects: left.source, budget }))
         for (const id of chunk) {
           const content = contents?.get(id)
           if (content === undefined || blobId(content) !== id) gone.add(id)
@@ -308,9 +399,9 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       // root runs, as a background record writes its side index's own (A4, B6); a side index no live record is building
       // is a stopped one's (W2).
       rmSync(join(state.git, 'index.lock'), { force: true }); tidy(root)
-      const source = phase === 'before' ? await settleSource(found, state, budget) : undefined
+      const settled = phase === 'before' ? await settleSource(found, state, budget) : undefined
       const excludes = state.protect.map(name => `:(exclude,literal)${name}`)
-      const refreshed = await refresh(found, state, budget)
+      const { refreshed, source } = await refreshSettled(found, state, budget, settled)
       const warnings = { chunks: [] as Buffer[], bytes: 0 }
       const keep = (chunk: Buffer) => { warnings.bytes += chunk.length; if (warnings.bytes <= LISTING_ERRORS_BYTES) warnings.chunks.push(chunk) }
       const [tree, stale, folders, files] = await Promise.all([
@@ -767,6 +858,13 @@ function processStart(pid: number): string | undefined {
   return start !== undefined && /^[0-9]+$/.test(start) ? start : undefined
 }
 function isMissing(error: unknown): boolean { return error instanceof Error && 'code' in error && error.code === 'ENOENT' }
+/** Both promises' values once both have ended, so no git child of either still runs as the first failure is thrown. */
+async function both<A, B>(first: Promise<A>, second: Promise<B>): Promise<[A, B]> {
+  const [one, two] = await Promise.allSettled([first, second])
+  if (one.status === 'rejected') throw one.reason
+  if (two.status === 'rejected') throw two.reason
+  return [one.value, two.value]
+}
 /** `ids` in runs of at most COPY_BATCH_BYTES of content by `sizes`, one object at least in each. */
 function byBytes(ids: string[], sizes: Map<string, number>): string[][] {
   const runs: string[][] = []

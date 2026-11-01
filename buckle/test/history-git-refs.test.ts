@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { readIndex } from '../common/services/history/command-capture.js'
 import { blobId, openObjectStore } from '../common/services/history/object-store.js'
+import { parseIndex, writeIndex } from '../common/services/history/workspace-repo.js'
 
 // Slice F3 (owner question X6, "why we need copy? cant it refer from git?"): where a command's folder lies in a git
 // repository with a commit, its shadow index is seeded from the repository's own index, so an unchanged committed file
@@ -18,9 +19,9 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 
 const DAY_AGO = new Date(Date.now() - 86_400_000)
 /** Git for the test's own repositories, never the host's global or system config. */
-function repoGit(root: string, cwd: string, args: string[]): string {
+function repoGit(root: string, cwd: string, args: string[], input?: string): string {
   const config = join(root, 'test-gitconfig'); if (!existsSync(config)) writeFileSync(config, '')
-  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgSign=false', ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config } })
+  return execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@t.invalid', '-c', 'commit.gpgSign=false', ...args], { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: config }, ...input === undefined ? {} : { input } })
 }
 
 /**
@@ -44,7 +45,7 @@ function repoFixture(options: { committed?: Record<string, string | Buffer>; sub
   const directory = join(root, 'history')
   const settings = { directory, excluded: options.excluded?.(workspace) ?? [], maxBytes: options.maxBytes ?? 64 * 1_048_576, sweepFreshMs: 0, ...options.maxFileBytes ? { maxFileBytes: options.maxFileBytes } : {} }
   const shadow = join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24))
-  return { root, top, workspace, directory, settings, shadow, committed, store: openObjectStore(directory), git: (args: string[]) => repoGit(root, top, args), details: { sessionId: 's', stageId: 'stage', tool: 'shell_exec', roots: [workspace] } }
+  return { root, top, workspace, directory, settings, shadow, committed, store: openObjectStore(directory), git: (args: string[], input?: string) => repoGit(root, top, args, input), details: { sessionId: 's', stageId: 'stage', tool: 'shell_exec', roots: [workspace] } }
 }
 function read(path: string): string | null { return existsSync(path) ? readFileSync(path, 'utf8') : null }
 /** Each committed file's blob id, as the repository's index names it. */
@@ -52,10 +53,13 @@ function committedIds(made: ReturnType<typeof repoFixture>): Map<string, string>
   const listed = made.git(['ls-files', '-s', '-z']).split('\0').filter(Boolean)
   return new Map(listed.map(line => { const [meta, name] = line.split('\t'); return [name!, meta!.split(' ')[1]!] }))
 }
-/** Every file below the repository's git folder, with its size, time, and content digest: what Buckle must never change. */
+/**
+ * Every file below the repository's git folder, with its size, time, and content digest, and every folder with its time,
+ * which a file made and removed there changes: what Buckle must never change.
+ */
 function gitFolderState(top: string): Record<string, string> {
   const state: Record<string, string> = {}
-  const walk = (folder: string) => { for (const name of readdirSync(folder)) { const path = join(folder, name); const stat = statSync(path); if (stat.isDirectory()) walk(path); else state[relative(top, path)] = `${stat.size}:${stat.mtimeMs}:${createHash('sha1').update(readFileSync(path)).digest('hex')}` } }
+  const walk = (folder: string) => { for (const name of readdirSync(folder)) { const path = join(folder, name); const stat = statSync(path); if (stat.isDirectory()) { state[`${relative(top, path)}/`] = `${stat.mtimeMs}`; walk(path) } else state[relative(top, path)] = `${stat.size}:${stat.mtimeMs}:${createHash('sha1').update(readFileSync(path)).digest('hex')}` } }
   walk(join(top, '.git'))
   return state
 }
@@ -162,6 +166,54 @@ describe('a command in a folder that is a git repository', () => {
     } finally { await history.close() }
   })
 
+  // G2 of the Codex review of F3: a stat match and a blob of the file's length never prove the blob is the file's content.
+  it.skipIf(process.platform === 'win32')('never takes a blob a clean filter wrote at the file\'s own length as the file: it restores the file as it stood', async () => {
+    const plain = 'hello world\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/rot.txt': plain }, before: top => {
+      writeFileSync(join(top, '.gitattributes'), 'rot.txt filter=rot\n'); utimesSync(join(top, '.gitattributes'), DAY_AGO, DAY_AGO)
+      repoGit(join(top, '..'), top, ['config', 'filter.rot.clean', 'tr a-z n-za-m'])
+    } })
+    // The repository's blob holds the filtered bytes, as long as the file.
+    expect(committedIds(made).get('src/rot.txt')).toBe(blobId(Buffer.from('uryyb jbeyq\n')))
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'rot.txt'), 'rewritten\n') })
+      await history.restore((await history.list()).at(-1)!.id)
+      expect(read(join(made.workspace, 'src', 'rot.txt'))).toBe(plain)
+    } finally { await history.close() }
+  })
+
+  it('never takes a blob an index written by hand names for a file, with the file\'s own stat data, as the file: it restores the file as it stood', async () => {
+    const made = repoFixture()
+    // Another blob as long as the file, which the repository's index then names for it, every byte of its stat data kept.
+    const forged = made.git(['hash-object', '-w', '--stdin'], 'COMMITTED 3\n').trim()
+    const index = join(made.top, '.git', 'index')
+    writeFileSync(index, writeIndex(parseIndex(readFileSync(index))!.entries.map(entry => entry.name.toString() === 'src/f3.txt' ? { ...entry, id: forged } : entry)))
+    expect(committedIds(made).get('src/f3.txt')).toBe(forged)
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'f3.txt'), 'rewritten\n') })
+      await history.restore((await history.list()).at(-1)!.id)
+      expect(read(join(made.workspace, 'src', 'f3.txt'))).toBe('committed 3\n')
+    } finally { await history.close() }
+  })
+
+  // G5 of the Codex review of F3: the repository's index checked again whenever it changes, as at the seed.
+  it('takes the usual path once the repository\'s index turns split after the record referred to it', async () => {
+    const made = repoFixture()
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'first\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(true)
+      made.git(['update-index', '--split-index'])
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f1.txt'), 'rewritten\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+      expect([...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').every(([, id]) => made.store.has(id))).toBe(true)
+      await history.restore((await history.list()).at(-1)!.id)
+      expect(read(join(made.workspace, 'src', 'f1.txt'))).toBe('committed 1\n')
+    } finally { await history.close() }
+  })
+
   it('seeds from a version 4 index, whose names git compresses', async () => {
     const made = repoFixture()
     made.git(['update-index', '--index-version', '4'])
@@ -265,6 +317,48 @@ describe('a command after its folder\'s repository is lost', () => {
       expect(existsSync(join(made.shadow, 'source'))).toBe(false)
       await history.restore(checkpoint.id)
       expect(read(join(made.workspace, 'src', 'f6.txt'))).toBe('committed 6\n')
+    } finally { await history.close() }
+  })
+
+  // G4 of the Codex review of F3: one loose object gone, its fan-out folder left, changes neither folder a stamp watched.
+  it('rebuilds its record when a loose object leaves the repository between commands, its folder staying, and stays restorable', async () => {
+    const made = repoFixture()
+    const gone = blobId(Buffer.from('committed 4\n'))
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'first\n') })
+      rmSync(join(made.top, '.git', 'objects', gone.slice(0, 2), gone.slice(2)))
+      expect(existsSync(join(made.top, '.git', 'objects', gone.slice(0, 2)))).toBe(true)
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f4.txt'), 'rewritten\n') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'f4.txt'), kind: 'modified' }] })
+      await history.restore(checkpoint.id)
+      expect(read(join(made.workspace, 'src', 'f4.txt'))).toBe('committed 4\n')
+    } finally { await history.close() }
+  })
+
+  // G3 of the Codex review of F3: the history's own copy never stands for the repository holding an object.
+  it('keeps a copy the repository no longer holds once the checkpoint that held it goes, so a later change to its file stays restorable', async () => {
+    const same = 'the same content\n'
+    const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/one.txt': same, 'src/two.txt': same } })
+    const id = blobId(Buffer.from(same))
+    const history = await openChangeHistory({ ...made.settings, keepTurns: 1 })
+    try {
+      // Deleting one of two files with the same content copies that content into the history; its checkpoint holds it.
+      await history.run({ ...made.details, stageId: 't1' }, async () => { rmSync(join(made.workspace, 'src', 'two.txt')) })
+      expect(made.store.has(id)).toBe(true)
+      // The repository's history is rewritten without either file, and that content pruned; one.txt stays on disk.
+      made.git(['checkout', '--quiet', '--orphan', 'rewritten']); made.git(['rm', '--quiet', '--cached', 'src/one.txt', 'src/two.txt']); made.git(['commit', '--quiet', '-m', 'rewritten'])
+      for (const branch of made.git(['for-each-ref', '--format=%(refname:short)', 'refs/heads']).split('\n').filter(name => name && name !== 'rewritten')) made.git(['branch', '--quiet', '-D', branch])
+      made.git(['reflog', 'expire', '--expire=now', '--all']); made.git(['gc', '--quiet', '--prune=now'])
+      expect(() => made.git(['cat-file', '-e', id])).toThrow()
+      // The next command's turn drops the first one's, and its checkpoint with it.
+      await history.run({ ...made.details, stageId: 't2' }, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'second\n') })
+      await history.run({ ...made.details, stageId: 't3' }, async () => { writeFileSync(join(made.workspace, 'src', 'one.txt'), 'rewritten\n') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'one.txt'), kind: 'modified' }] })
+      await history.restore(checkpoint.id)
+      expect(read(join(made.workspace, 'src', 'one.txt'))).toBe(same)
     } finally { await history.close() }
   })
 
