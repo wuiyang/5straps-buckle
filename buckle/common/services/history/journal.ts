@@ -18,7 +18,7 @@ import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError } from './g
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
 import { HistoryCaptureSafetyError } from './capture-hashes.js'
-import { createCommandCapture, FolderReplacedError, HostGitNeededError, type CaptureBudget, type CommandBaseline } from './command-capture.js'
+import { BaselineWarmingError, createCommandCapture, FolderReplacedError, HostGitNeededError, type CaptureBudget, type CommandBaseline } from './command-capture.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS, retainedTurns } from './turn-retention.js'
 import { openHistoryActivity } from './activity.js'
 import { blobId, HistoryContentError, openObjectStore } from './object-store.js'
@@ -50,6 +50,8 @@ export interface ChangeHistoryOptions {
   untrusted?: () => UntrustedRoots; allowHostGit?: boolean; keepTurns?: number; turnIdleMs?: number; maxFileBytes?: number
   /** How long one phase of a command's capture may take, all its roots together (X14); CAPTURE_BUDGET_MS unless given. */
   captureBudgetMs?: number
+  /** How long a first record that a command's budget cut short may take in the background (W2); BASELINE_BUDGET_MS unless given. */
+  baselineBudgetMs?: number
 }
 /** The reason a checkpoint a stopped call left pending is given once the next call takes the lock (Slice F2, item 6). */
 export const STOPPED_REASON = 'Buckle stopped before this call finished, so history could not record what it changed; this checkpoint is not restorable'
@@ -64,6 +66,13 @@ export const JOURNAL_RESET_REASON = 'History found its journal damaged, kept it 
  * content (X14): a first capture hashes every file git tracks, which a slow disk can stretch past an agent's patience.
  */
 export const CAPTURE_BUDGET_MS = 30_000
+/**
+ * How long a root's first record may take once a command's budget cut it short and history finishes it in the background
+ * (W2): no call waits on it, and a command in that root runs meanwhile without restorable content.
+ */
+export const BASELINE_BUDGET_MS = 600_000
+/** Told to a command that starts while history takes its folder's first record in the background (W2). */
+export const WARMING_REASON = 'History is still taking a first record of this folder in the background, so this command ran without restorable content; commands after it finishes are restorable'
 /** A checkpoint the shadow-git engine of 670f1dc2 wrote keeps its content in that store, which only git reads (Slice F2, item 7). */
 export const OLD_ENGINE_REASON = 'This checkpoint is from the earlier shadow-git history, whose content only permitted trusted host git can read; this node has none, so it cannot be restored'
 /** Those stores, in a workspace's history folder: shadow git (670f1dc2) and the SQLite history before it. */
@@ -90,9 +99,16 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const baselines = new Map<string, CommandBaseline[]>()
   /** Each running command whose before phase git ran but did not finish: what it wrote is swept after the call (X6). */
   const cutShort = new Set<string>()
+  /** Each running command whose before phase its budget or cancellation stopped, with the root git was reading: finished in the background after the call (W2). */
+  const unfinished = new Map<string, string>()
+  /** The first records history takes in the background, which close stops and waits for (W2). */
+  const warmJobs = new Set<Promise<void>>()
+  const closing = new AbortController()
   /** The sweep after a command, off its call path (X6): its timer, and the run close waits for. */
   let sweepTimer: ReturnType<typeof setTimeout> | undefined
   let sweeping: Promise<void> | undefined
+  /** Set when a sweep is asked for while one runs, as a background record ends (W2): it runs once that one is done. */
+  let sweepAgain = false
   /** Each stored object's bytes on disk, as its id names one content for good: read once, then kept. */
   const sizes = new Map<string, number>()
   /** The newest checkpoints the journal could not take, for their calls' notices. */
@@ -258,14 +274,20 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try { before = await captureScope({ scope: others, store: objects, ...scopeLimits() }) }
     catch (error) { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
     if (reason === undefined && folders.length) {
-      try { baselines.set(id, await commands.baseline(folders, budget(signal))) }
+      const progress: { root?: string } = {}
+      try { baselines.set(id, await commands.baseline(folders, budget(signal), progress)) }
       catch (error) {
         if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
+        else if (error instanceof BaselineWarmingError) reason = WARMING_REASON
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
-        // What git read through a folder swapped while it read goes at once, nothing naming it (X9); what a git child
-        // stopped part way wrote goes in the sweep after the call (X6 of the Codex recheck).
-        if (error instanceof FolderReplacedError) sweepBlobs(read())
-        else if (!(error instanceof HostGitNeededError)) cutShort.add(id)
+        // What git read through a folder swapped while it read goes at once, nothing naming it (X9), a background record
+        // stopped first; what a git child stopped part way wrote goes in the sweep after the call (X6 of the Codex recheck),
+        // and a record its budget or cancellation cut short is finished in the background (W2).
+        if (error instanceof FolderReplacedError) { await stopWarming(); sweepBlobs(read()) }
+        else if (!(error instanceof HostGitNeededError || error instanceof BaselineWarmingError)) {
+          cutShort.add(id)
+          if (stoppedEarly(error) && progress.root) unfinished.set(id, progress.root)
+        }
       }
     }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...resetNote(), ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
@@ -288,13 +310,14 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const baseline = baselines.get(record.id)
     baselines.delete(record.id)
     let replaced = false
+    const progress: { root?: string } = {}
     try {
       const after = await captureScope({ scope: record.scope ?? [], store: objects, ...scopeLimits() })
       if (!record.baselineAvailable) record.before = after
       record.after = after
       if (baseline) {
         // The command ran: its after phase records what it changed within the budget, whatever became of its caller.
-        const found = await commands.changes(baseline, priorEntry(record.id), budget())
+        const found = await commands.changes(baseline, priorEntry(record.id), budget(), progress)
         Object.assign(record.before, found.before); Object.assign(after, found.after)
         if (found.ignored) record.ignored = found.ignored
         if (found.partial) { record.reason ??= PARTIAL_REASON; logger.warn(`Checkpoint ${record.id}: ${PARTIAL_REASON}`, { phase: 'after' }) }
@@ -307,6 +330,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       record.reason = `History could not record the files after this call (${causeText(error)}); this checkpoint is not restorable. Later writes can continue`
       logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
       replaced = error instanceof FolderReplacedError
+      // An after phase its budget stopped leaves the next command all git had left to read: finished in the background (W2).
+      if (stoppedEarly(error) && progress.root) unfinished.set(record.id, progress.root)
     }
     compact(record)
     // One journal write: the finished checkpoint, with the turns retention drops beside it (item 5).
@@ -319,16 +344,35 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     // A command's git add can write what nothing names: a file over the cap, one changed outside since, or what a
     // stopped one wrote (X6).
     if (cutShort.delete(record.id) || baseline) scheduleSweep()
+    const root = unfinished.get(record.id)
+    unfinished.delete(record.id)
+    if (root !== undefined) warmInBackground(root)
   }
+  /**
+   * A root's first record, finished off every call path (W2): git builds it in a side index under its own budget, with no
+   * lock, and it takes the shadow index's place under the lock; the sweep waits for it, then runs.
+   */
+  function warmInBackground(root: string): void {
+    if (closed) return
+    const exclusive = (step: () => Promise<void>, signal: AbortSignal) => locked(step, { signal })
+    const job = commands.warm(root, { deadline: Date.now() + (input.baselineBudgetMs ?? BASELINE_BUDGET_MS), signal: closing.signal }, exclusive)
+      .then(placed => { if (placed) logger.info('History finished the first record of a command folder in the background; its commands are restorable again') })
+      .catch((error: unknown) => { if (!closing.signal.aborted) logger.warn('History could not finish the first record of a command folder in the background; the next command that runs out of time tries again', { cause: causeOf(error) }) })
+      .finally(() => { warmJobs.delete(job); scheduleSweep() })
+    warmJobs.add(job)
+  }
+  /** Stops each first record taken in the background and waits until none runs, as before a sweep that must run at once. */
+  async function stopWarming(): Promise<void> { commands.stopWarming(); await Promise.all(warmJobs) }
   /** The sweep after a command, under the lock once its call has left it, so the call never waits on it (X6). */
   function scheduleSweep(): void {
-    if (sweepTimer || sweeping || closed) return
+    if (sweeping) { sweepAgain = true; return }
+    if (sweepTimer || closed) return
     sweepTimer = setTimeout(() => {
       sweepTimer = undefined
       if (closed) return
       sweeping = locked(async () => { sweepBlobs(read()) }, { immediate: true })
         .catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History could not sweep its stored objects; it tries again after the next command', { cause: causeOf(error) }) })
-        .finally(() => { sweeping = undefined })
+        .finally(() => { sweeping = undefined; if (sweepAgain) { sweepAgain = false; scheduleSweep() } })
     }, 0)
     sweepTimer.unref()
   }
@@ -467,8 +511,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * The temporaries a stopped write left go too: only the lock's holder sweeps, so none is in flight (X6).
    */
   function sweepBlobs(state: State): void {
-    // A command between its phases names what no index names yet (W1): the sweep that follows it runs once it is done.
-    if (baselines.size) return
+    // A command between its phases, or a first record taken in the background, names what no index names yet (W1, W2):
+    // the sweep that follows it runs once it is done.
+    if (baselines.size || commands.warming()) return
     objects.clean()
     for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
     const indexed = commands.indexed()
@@ -710,7 +755,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     /** `engine` and `restorable` describe a command's checkpoints; a file tool's restore with no git at all (M4). */
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, fileToolsRestorable: true, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
-    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
+    async close(): Promise<void> { if (closed) return; closing.abort(new Error('History is closing')); await stopWarming(); if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
   }
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>
@@ -748,6 +793,10 @@ function causeText(error: unknown): string {
   if (error instanceof HistoryCaptureSafetyError) return error.message
   if (error instanceof FolderReplacedError) return 'a folder it records was replaced by a link or another folder'
   return error instanceof Error && error.constructor !== Error ? error.constructor.name : 'an unexpected error'
+}
+/** Whether a phase stopped at its budget or its call's cancellation, so what git had left to read is finished later (W2). */
+function stoppedEarly(error: unknown): boolean {
+  return error instanceof HistoryGitError && (error.details.failure === 'timeout' || error.details.failure === 'aborted')
 }
 function systemCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' && /^E[A-Z]+$/.test(error.code) ? error.code : undefined

@@ -19,14 +19,17 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 
 // A hook run once as git add starts, before the child reads the folder: a folder swapped while git reads it (X9).
 // `slow`: git add first sleeps that many seconds, in a shell that ends at once when stopped (X14).
-const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, started: undefined as (() => void) | undefined }))
+// `cold`: every git add into an index not made yet first sleeps that many seconds, as a first hash of a cold folder does (W2).
+const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, cold: 0, started: undefined as (() => void) | undefined }))
 vi.mock('../common/services/history/git-store.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
+  const { existsSync } = await vi.importActual<typeof import('node:fs')>('node:fs')
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
     if (input.operation === 'add' && gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
-    if (input.operation !== 'add' || !gitAdd.slow) return actual.runProgram(input)
-    const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', `trap 'exit 143' TERM; sleep ${gitAdd.slow} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`, input.program.path, ...input.program.args] }
-    gitAdd.slow = 0; queueMicrotask(() => gitAdd.started?.())
+    const cold = input.operation === 'add' && gitAdd.cold && !existsSync(String(input.environment.GIT_INDEX_FILE)) ? gitAdd.cold : 0
+    if (input.operation !== 'add' || !gitAdd.slow && !cold) return actual.runProgram(input)
+    const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', `trap 'exit 143' TERM; sleep ${gitAdd.slow || cold} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`, input.program.path, ...input.program.args] }
+    if (gitAdd.slow) { gitAdd.slow = 0; queueMicrotask(() => gitAdd.started?.()) }
     return actual.runProgram({ ...input, program })
   } }
 })
@@ -60,7 +63,7 @@ const roots: string[] = []
 afterEach(() => {
   folderReads.on = false; folderReads.paths = []
   objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []
-  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.started = undefined
+  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
@@ -550,6 +553,61 @@ describe('a command\'s capture that takes too long', () => {
       await history.run(details, async () => 'ran', cancel.signal)
       expect(Date.now() - started).toBeLessThan(10_000)
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('cancelled') })
+    } finally { await history.close() }
+  })
+})
+
+// W2 of the Windows test of d26bf5ba: a first record of a folder that a command's budget cut short is finished in the
+// background, off every call path, so later commands are restorable without paying the budget again; one that starts while
+// it runs neither waits on it nor starts its own.
+describe('a first record of a folder that a command\'s budget cut short', () => {
+  function shadowIndex(directory: string, workspace: string): string {
+    return join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24), 'index')
+  }
+
+  it.skipIf(process.platform === 'win32')('is finished in the background, so a later command is restorable without paying the budget again', async () => {
+    const { workspace, directory, settings, details } = fixture()
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      gitAdd.cold = 2
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
+      await vi.waitFor(() => expect(existsSync(shadowIndex(directory, workspace))).toBe(true), { timeout: 20_000, interval: 100 })
+      const started = Date.now()
+      await history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a3') })
+      expect(Date.now() - started).toBeLessThan(2_000)
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, changes: [{ path: join(workspace, 'src', 'a.txt'), kind: 'modified' }] })
+      await history.restore(checkpoint.id)
+      expect(read(join(workspace, 'src', 'a.txt'))).toBe('a2')
+    } finally { await history.close() }
+  })
+
+  it.skipIf(process.platform === 'win32')('runs a command that starts while it is taken at once, saying why it is not restorable', async () => {
+    const { workspace, settings, details } = fixture()
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      gitAdd.cold = 5
+      await history.run(details, async () => 'first')
+      const started = Date.now()
+      await expect(history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); return 'ran' })).resolves.toBe('ran')
+      expect(Date.now() - started).toBeLessThan(400)
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
+    } finally { await history.close() }
+  })
+
+  it.skipIf(process.platform === 'win32')('is taken in the background too once an after phase runs out of time', async () => {
+    const { workspace, settings, details } = fixture()
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      await history.run(details, async () => 'first')
+      // The after phase's git add, then the next one, take longer than a phase may.
+      await history.run({ ...details, stageId: 'second' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); gitAdd.slow = 20; gitAdd.started = () => { gitAdd.slow = 5 } })
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
+      const started = Date.now()
+      await history.run({ ...details, stageId: 'third' }, async () => 'ran')
+      expect(Date.now() - started).toBeLessThan(400)
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
     } finally { await history.close() }
   })
 })
