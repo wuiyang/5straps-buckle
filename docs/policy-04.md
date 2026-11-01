@@ -65,7 +65,7 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
   ([deletes](policy-05.md)).
 - The other subjects are `overwrite:<file>`, for the destructive-write check on one file,
   `rewrite-batch:<folder>`, for a batch, and `restore:<checkpoint>..<newest>`, for a restore of
-  the [change history](change-history.md#every-restore-asks), which offers `once` alone. A folder's
+  the [change history](change-history-02.md#every-restore-asks), which offers `once` alone. A folder's
   write grant never matches any of these.
 - `buckle grants list` shows the grants, and `buckle grants revoke <id>` removes one.
 

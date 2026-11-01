@@ -1,6 +1,6 @@
 # Known limits
 
-Limits on what Buckle reads, hides, or handles, with examples. [What stays unread](policy-03.md) goes deeper on commands,
+Limits on what Buckle, the approval and sandbox runtime on this machine, reads, hides, or handles, with examples. [What stays unread](policy-03.md) goes deeper on commands,
 [part two](known-limits-02.md) the programs it starts itself,
 [part three](known-limits-03.md) code mode, the command line, and workspaces,
 [part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the

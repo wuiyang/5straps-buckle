@@ -9,7 +9,7 @@ sees then and what it should do, the `_meta` hints a client may send, and how `b
 
 `/mcp` over HTTP holds a call that needs a person for the workspace's `approvalWaitMs`, 30
 seconds at most; `0`, which elsewhere waits until someone answers, holds it 30 seconds too. An
-MCP client times out on its own clock, Claude Code's near a minute, and the work after an approval counts against it, so the hold ends well inside it. History capture runs with the call after approval. When Git capture is available, Git hashes files off the event loop, but the caller waits for capture before it receives the result. `buckle mcp` over stdio holds the
+MCP client times out on its own clock, Claude Code's near a minute, and the work after an approval counts against it, so the hold ends well inside it. History capture runs with the call after approval: a file tool's reads only the paths it names, and a command's asks Git what changed. The caller waits for it before receiving the result. `buckle mcp` over stdio holds the
 call for `approvalWaitMs` as before, or answers at once with a form for a host that declares
 form elicitation.
 

@@ -26,7 +26,7 @@ node's applies again:
 | `packs.shell` | `on` or `off`: the shell pack | on |
 | `packs.code` | `on` or `off`: [code mode](code-mode.md) | on |
 | `packs.history` | `on` or `off`: the [change history tools](change-history.md), each restore asking a person | on |
-| `packs.hostGit` | `on` or `off`: the `git` and `forge` packs, which read the repository outside per-file checks | off |
+| `packs.hostGit` | `on` or `off`: the `git` and `forge` packs, which read the repository outside per-file checks, and restorable command checkpoints | off |
 | `packs.hostLsp` | `on` or `off`: language servers in the `dev` pack | off |
 | `shell.network` | `on` or `off`: shell commands may reach the network while no approved list is set | off |
 | `shell.isolation` | `on` or `off`: each shell command runs on a private copy of the folder | on |

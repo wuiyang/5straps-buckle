@@ -1,41 +1,67 @@
 # The change history
 
-Each approved file or shell mutation produces a checkpoint of its changed paths and content.
-Buckle stores checkpoints in a shadow Git repository under the node's state directory, one for
-each workspace root. Buckle never writes to the workspace's own `.git` directory. [Sandbox and
-tools](sandbox-and-tools.md#packs) lists the history pack; [the file floor](policy-04.md) explains
-restore approval.
+Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, keeps a change
+history for each workspace: a checkpoint for every call that changes files, holding what each
+path it changed was before and after it. The agent or the owner can put those paths back.
+[Sandbox and tools](sandbox-and-tools.md#packs) lists the history pack. [Part
+two](change-history-02.md) covers the agent's tools, the restore ask, and history without host
+Git. Buckle never writes to the workspace's own `.git`.
 
-## Capture and retention
+## What a checkpoint records
 
-When Buckle can use a trusted host Git executable, it builds a tree for each checkpoint and shares
-unchanged Git objects. It honors `.gitignore`, excludes the state directory, workspace `.git`, and
-protected paths, and can read the workspace repository's object store as a read-only alternate. It
-captures raw file bytes without applying Git filters.
+- **File tools.** `fs_write`, `fs_write_batch`, `fs_patch`, `fs_apply_patch`, `fs_delete`,
+  `fs_move`, and `fs_receive` name every path they change. Before the call, Buckle stores each
+  path's state: absent, a file's content and mode, a link's target, or, for a folder deleted or
+  moved, everything in it. After the call, it stores the new state. Nothing else is read, no
+  ignore rule applies, and no program starts, so a file `.gitignore` covers is still recorded
+  when the agent changes it.
+- **The isolated shell.** A command run on a private copy publishes its changes as one
+  checkpoint of the paths it changed, read the same way.
+- **Commands in the workspace.** With `shell.isolation` off, a command can change anything, such
+  as a build or an install. Buckle asks Git what changed, through a private index under the
+  node's state: before and after the command it adds the workspace's folders and writes a tree,
+  and the difference names the changed paths. The workspace's own ignore rules, every
+  `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under ignored
+  paths are counted, never stored, and never touched by a restore. A workspace with no
+  `.gitignore` tracks everything, within the caps. A nested repository is left out, reason
+  `nested`. This needs permitted, trusted host Git; without it, the command runs and its
+  checkpoint reads "Not restorable: host git needed".
 
-The node setting `BUCKLE_HISTORY_MAX_BYTES` limits each workspace history directory, including its shadow
-repositories and metadata, to 268435456 bytes (256 MiB) by default. It counts persisted byte
-lengths, not filesystem allocation blocks. Buckle drops the oldest turns first and reclaims bounded, unreachable loose objects
-under the history lock. Packed objects wait for eligible background Git garbage collection, at
-most once an hour and off the write path. Until then, packed bytes can leave too little room for
-content: Buckle records the checkpoint's paths and hashes without content and lets the write
-finish. Very small budgets can also be consumed by history metadata.
+Content is kept as Git-format loose objects in the workspace's `history/` state folder. Buckle
+writes and reads them itself, so a restore starts no Git program.
 
-The workspace setting `history.maxFileBytes` defaults to 33554432 bytes (32 MiB). A larger file is
-recorded by path, size, and hash, without content, and cannot be restored. `history.keepTurns`
-defaults to 10. A real `5straps/stageId` groups calls only within the same session. Without one,
-a new turn starts after more than `history.turnIdleMs` milliseconds without a call in that session
-(60000 by default). Calls, including reads, refresh idle activity, which survives restart; approval
-and lock waits keep a call in its starting turn. [Workspace settings](workspaces-02.md#settings)
-lists these keys.
+## Retention
 
-If Git is missing, disabled, or untrusted, the manifest reports hash-only history and content
-restores are unavailable. Other capture limits can also make an individual checkpoint
-non-restorable. Buckle includes the reason and warns the caller: MCP returns structured history
-metadata, while the CLI and `buckle cp` print the warning to stderr. Older SQLite history remains
-readable by `list` and `recover` until `buckle history prune --legacy` removes it. Buckle writes
-new checkpoints only to Git. The separate `BUCKLE_HISTORY_RETENTION_DAYS` setting still controls
-isolated-shell recovery copies, not these turns.
+`history.keepTurns` keeps the last 10 turns by default. A real `5straps/stageId` groups calls only
+within the same session. Without one, a new turn starts after more than `history.turnIdleMs`
+milliseconds without a call in that session (60000 by default). Calls, including reads, refresh
+idle activity, which survives restart; approval and lock waits keep a call in its starting turn.
+[Workspace settings](workspaces-02.md#settings) lists these keys.
+
+`history.maxFileBytes` defaults to 33554432 bytes (32 MiB). A larger file is recorded by path and
+size, reason `size`, and cannot be restored. The node setting `BUCKLE_HISTORY_MAX_BYTES` caps the
+content kept checkpoints hold at 268435456 bytes (256 MiB) by default, each object counted once;
+the copy a command's private index keeps does not count. Over the cap, Buckle drops whole oldest
+turns, never the current one, and deletes the objects nothing names. A checkpoint that alone
+exceeds the cap keeps its paths without content. Retention never rewrites a kept checkpoint and
+never reads the workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery
+copies, not these turns.
+
+## Never in the way
+
+History never refuses a call. When a capture fails, the call runs, and its checkpoint is marked
+not restorable with the reason. The agent sees the reason in the call's history notice: MCP
+returns structured history metadata, while the CLI and `buckle cp` print it to stderr. The
+owner's log names the cause. A checkpoint left pending when Buckle stopped is marked
+`interrupted`, with its reason, by the next call.
+
+## Older checkpoints
+
+Checkpoints from the shadow-git store of earlier builds, and from the SQLite history before it,
+stay listed. A shadow-git one restores through that store with permitted, trusted host Git;
+without Git, the restore is refused before anything asks, and the listing says why. A SQLite one
+is listed only. Once 10 turns of new checkpoints follow, Buckle deletes both stores and their
+checkpoints. `buckle history prune --legacy` removes the SQLite store at once.
 
 ## From the terminal
 
@@ -50,67 +76,7 @@ buckle history prune --legacy         # remove the old SQLite store
 
 `--last` accepts 1 to 100 checkpoints, newest first, under turn headings. It prints up to ten
 changed and ten non-restorable paths per checkpoint, counts the remainder, and shows any
-non-restorable reason. `list` reads without the history lock. `recover`, `restore`, and `prune`
-wait up to three seconds for a lock. If its process is still running, the refusal names its pid,
-start time, and label. `--force` clears a lock only after that process has exited.
-
-A checkpoint whose finish fails is marked `interrupted` with the reason, and later writes can
-continue. A crash may leave a checkpoint `pending`; the agent gets `HISTORY_RECOVERY_NEEDED`, its
-id, and `buckle history recover <id>` without waiting. With a person at the `buckle serve`
-terminal, `r` recovers it inline.
-
-## The agent's tools
-
-The `history` pack is on by default. Turn it off for a workspace with `buckle workspace set
-packs.history off`. When off, both tools are withheld and the manifest says why. `buckle tools`
-lists `history_list` and `history_restore`. Tool rules treat them as read and write verbs:
-`fs_read` denial hides `history_list`, and `fs_write` denial blocks `history_restore`. Tool allow
-lists must name each one.
-
-`history_list({ last })` returns checkpoints and `more`, with 10 by default and 100 at most. Each
-checkpoint has a `turnId`; `turns` groups checkpoints. `changed` and `notRestorable` each list up
-to 100 readable paths; `changedUnlisted` and `notRestorableUnlisted` count omitted or read-denied
-paths instead of naming them.
-
-`history_restore({ id })`, `history_restore({ steps })`, and `history_restore({ turns })` accept
-exactly one target. An id returns the workspace to the state before that checkpoint and later
-checkpoints. `steps` counts checkpoints; `turns` counts recent turns. Buckle applies selected
-changes through the shadow Git repository. It checks changed paths before applying them and
-refuses the whole operation if a path conflicts or policy denies it. An agent restore is itself
-checkpointed.
-
-## Every restore asks
-
-`history_restore` asks at the destructive floor every time, whatever the folders' write grants
-say, under `write_scope` with subject `restore:<checkpoint>..<newest>`, or `restore:<checkpoint>`
-when it is newest. The ask names how many checkpoints it undoes and lists the files it changes. It
-offers `once` alone. If the history changes before approval is spent, Buckle asks again rather
-than undoing more than the person saw. The owner's `buckle history restore` command needs no
-second approver.
-
-Neither [dangerously-allow](approvals.md#dangerously-allow) nor the [decision AI](judge.md)
-answers a restore. Every restored path must pass file-policy and mount checks; a deny or conflict
-refuses the whole restore. The history belongs to the workspace, so one session can restore
-another session's changes. Checkpoints name their session.
-
-## The setup face
-
-`GET /setup/history` and `/workspaces/<id>/setup/history` show the same checkpoint timeline. Their
-restore entries identify the checkpoint the workspace returned to and the checkpoints it undid.
-
-## Git history
-
-`git_revert` in the forge pack makes a commit that undoes another commit. It needs `packs.hostGit`
-and `BUCKLE_FORGE_GITHUB_TOKEN`, asks as `git_commit` does, and judges each changed file as a
-write. It is separate from restoring workspace file changes. See [host Git and
-forge](sandbox-and-tools-02.md#host-git-forge-and-language-servers).
-
-## When history records hashes only
-
-`history.engine: hashes` and `restorable: false` mean content capture lacks permitted, trusted host
-Git. The owner enables `packs.hostGit` with `buckle workspace set packs.hostGit on --workspace
-<workspace>` and ensures Git is installed on the node PATH outside folders writable by agents.
-Permission does not install Git. Check `buckle manifest --workspace <workspace>` after the change.
-Existing checkpoints containing only hashes cannot gain restorable content. New Git checkpoints
-can be restored. If history tools are absent, add `history` to `packs.enabled` while retaining
-the existing pack list, and enable `packs.history`.
+non-restorable reason. `recover <id>` prints an interrupted checkpoint and its reason; nothing
+needs recovering. `list` reads without the history lock. `recover`, `restore`, and `prune` wait
+up to three seconds for it. If its process is still running, the refusal names its pid, start
+time, and label. `--force` refuses at once while that process runs, and removes nothing.

@@ -1,6 +1,7 @@
 # Known limits, part nine
 
-Limits on read-only `git_push`, change history, MCP asks, `buckle cp`, and deletes.
+Limits of Buckle, the approval and sandbox runtime on this machine, on read-only `git_push`, change
+history, MCP asks, `buckle cp`, and deletes.
 [Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and the
 [first part](known-limits.md) lists the other limits.
 
@@ -28,25 +29,22 @@ Limits on read-only `git_push`, change history, MCP asks, `buckle cp`, and delet
 
 ## Change history
 
-- Content capture needs permitted, trusted host Git. If Git is missing, disabled, or untrusted,
-  the manifest reports hash-only history; the write caller gets a reasoned warning and content
-  restores are refused. Other capture limits can also make one checkpoint contentless.
-- Files above `history.maxFileBytes` (32 MiB by default) keep path, size, and hash metadata,
-  not content. The rolling `BUCKLE_HISTORY_MAX_BYTES` budget defaults to 256 MiB. Buckle drops
-  older turns and reclaims bounded unreachable loose objects under the history lock. Packed bytes
-  can keep new checkpoints contentless until eligible hourly background Git collection, which is
-  off the write path. Very small budgets also need room for metadata.
-- Buckle keeps 10 turns by default. A real `5straps/stageId` groups calls only within one session;
-  without it, more than 60 seconds without a call in that session starts a new turn. Calls,
-  including reads, refresh idle activity across restarts; approval and lock waits keep a call in
-  its starting turn.
-- Buckle honors `.gitignore` and excludes its state directory, protected paths, and the
-  workspace's `.git`. It never writes into the workspace's `.git`.
-- Owner deletion or pruning of borrowed Git objects can make a restore unavailable; missing
-  content refuses before writes.
-- Older SQLite history can be listed and recovered until `buckle history prune --legacy`
-  removes it. `BUCKLE_HISTORY_RETENTION_DAYS` still controls isolated-shell recovery-copy
-  retention, not change-history turns.
+[The change history](change-history.md) says how checkpoints are made.
+
+- A command's checkpoint in the workspace needs permitted, trusted host Git, which is off by
+  default. Without it the command runs and lists no change. File tools' checkpoints need no Git.
+- Git keeps file modes as 644 or 755, so restoring a command's change can reset another mode,
+  unless an earlier checkpoint recorded it.
+- A command's changes under ignored paths are counted, not stored. The count misses a change
+  deep inside an ignored folder that already existed. A `.gitignore` above the workspace folder,
+  such as a monorepo root's, is not read.
+- The first command in a folder hashes every file Git tracks there once; later ones hash only
+  what changed. That copy does not count toward `BUCKLE_HISTORY_MAX_BYTES`.
+- A file over `history.maxFileBytes` is compared by size and mode, so a change that keeps its size
+  is not listed. Git still reads such a file in a command's folder each time it changes.
+- A command interrupted while it runs leaves a checkpoint that is never restorable.
+- A shadow-git checkpoint of an earlier build restores only with host Git, and a SQLite one never
+  does. Both stores are deleted after 10 turns of new checkpoints.
 
 ## Asks over MCP
 

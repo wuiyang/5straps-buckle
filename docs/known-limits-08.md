@@ -26,9 +26,9 @@ seven](known-limits-07.md) covers the decision AI, and [the file floor](policy-0
 - A folder of more than 10,000 entries cannot be moved, or replaced by a move, in one call. A delete's count stops at
   10,000 and says "more than". A removal the system refuses, such as a read-only folder, is that
   path's refusal in the answer; a folder removed whole may then be gone in part.
-- A delete or a move outside the workspace is checkpointed from the entry alone. A path that does not
-  exist yet, such as a move's landing, is checkpointed from the nearest folder that does, which history
-  refuses if it holds a hard link, a pipe, or more than 100,000 entries.
+- A delete or a move is checkpointed from the paths it names: a folder with all it holds, and each
+  missing folder above a landing. A folder past 10,000 entries or the rolling cap is recorded
+  without content (reason `limit`), so it is not restorable.
 - The Windows retry for a held file, and moves across devices, are tested with injected errors
   only. No real Windows node or second device has run them yet.
 - The destructive-write check covers the file tools only. A shell command's writes are not
