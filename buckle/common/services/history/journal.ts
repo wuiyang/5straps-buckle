@@ -395,14 +395,13 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     sweepTimer.unref()
   }
   /**
-   * The background sweep (V3): no hold it takes runs past SWEEP_SLICE_MS by more than one removal, with the check that the
-   * repository a copy is lent from is referable still, however large the store, so a call that comes waits that long at
-   * most. What to keep and what to remove is read without the lock (sweepPlan). Each slice takes the lock only if it is
-   * free, its time counted from that ask, so the lock's own upkeep counts too. It checks, with a stat of the journal and
-   * of each path the plan named for the indexes and markers, that all stand as the plan read them, and that no command
-   * here is between its phases and no record of its own runs; it tidies what records left; and it removes temporaries,
-   * then objects, until its time ends, never one written since its plan began (U1). A state changed since asks for a
-   * sweep read afresh.
+   * The background sweep (V3): no hold it takes runs past SWEEP_SLICE_MS by more than one removal, however large the store,
+   * so a call that comes waits that long at most. What to keep and what to remove is read without the lock (sweepPlan).
+   * Each slice takes the lock only if it is free, its time counted from that ask, so the lock's own upkeep counts too. It
+   * checks, with a stat of the journal and of each path the plan named for the indexes and markers, that all stand as the
+   * plan read them, and that no command here is between its phases and no record of its own runs; it tidies what records
+   * left; and it removes temporaries, then objects, until its time ends, never one written since its plan began (U1). A
+   * state changed since asks for a sweep read afresh.
    */
   async function sweepInSlices(): Promise<void> {
     const plan = await sweepPlan()
@@ -421,7 +420,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         while (plan.temporaries.length && performance.now() < until) {
           try { rmSync(plan.temporaries.pop()!, { force: true }) } catch (error) { refused ??= error }
         }
-        const removed = removeObjects(plan.ids, next, until, plan.keepFrom, plan.still())
+        const removed = removeObjects(plan.ids, next, until, plan.keepFrom)
         next = removed.next; refused ??= removed.refused
         return true
       }, { immediate: true })
@@ -436,12 +435,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * plan reads escape every check (U1). Then the journal's identity and the paths of every index and marker with theirs,
    * so a slice tells any change made after; then, where no command here is between its phases and no live record writes,
    * what checkpoints and indexes name, the stored objects nothing names, and the temporaries of the store and the journal.
-   * A copy an index takes from its folder's repository is among them only where that repository was found referable and
-   * holding it, and `still` gives each slice its check that it is and does as the slice removes it (G3 of the Codex
-   * recheck of F3, K1 and K2 of its recheck 2). undefined where nothing may go now, or a journal or an index does not
-   * read, so nothing is swept on a guess.
+   * undefined where nothing may go now, or a journal or an index does not read, so nothing is swept on a guess.
    */
-  async function sweepPlan(): Promise<{ keepFrom: number; journal: string | undefined; paths: string[]; indexes: string; ids: string[]; still: () => (id: string) => boolean; temporaries: string[] } | undefined> {
+  async function sweepPlan(): Promise<{ keepFrom: number; journal: string | undefined; paths: string[]; indexes: string; ids: string[]; temporaries: string[] } | undefined> {
     // The wall clock, as a file's time on disk is, never the injected one.
     const keepFrom = Date.now() - (input.sweepFreshMs ?? SWEEP_FRESH_MS)
     const journalKey = identity(file)
@@ -456,9 +452,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const named = namedObjects(state.checkpoints)
     const listed = await objects.listing()
     const journals = (await readdir(input.directory)).filter(name => JOURNAL_TEMPORARY.test(name)).map(name => join(input.directory, name))
-    const unnamed = listed.ids.filter(id => !named.has(id) && !indexed.kept.has(id))
-    const released = await commands.released(indexed.lent, new Set(unnamed), closing.signal)
-    return { keepFrom, journal: journalKey, paths, indexes, ids: unnamed.filter(id => !released.kept.has(id)), still: released.still, temporaries: [...listed.temporaries, ...journals] }
+    return { keepFrom, journal: journalKey, paths, indexes, ids: listed.ids.filter(id => !named.has(id) && !indexed.has(id)), temporaries: [...listed.temporaries, ...journals] }
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -604,10 +598,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
     const named = namedObjects(state.checkpoints)
-    // A copy an index takes from its folder's repository stays: no git runs on a call's path to find the repository still
-    // holding it, as the sweep after the next command does (G3 of the Codex recheck of F3).
-    const kept = new Set([...indexed.kept, ...indexed.lent.flatMap(lender => [...lender.ids])])
-    const { refused } = removeObjects(objects.list().filter(id => !named.has(id) && !kept.has(id)), 0, Infinity)
+    const { refused } = removeObjects(objects.list().filter(id => !named.has(id) && !indexed.has(id)), 0, Infinity)
     if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
   }
   /**
@@ -623,18 +614,15 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * Removes `ids` from `from` on, until `until` passes: a removal the system refuses, as Windows does while another handle
    * holds a file, leaves that object for the next sweep (W1). With `keepFrom`, an object whose file was written at that
    * time or later, by the stat of its path just before, stays for a later sweep, as does one that stat fails on (U1).
-   * With `still`, an object it answers false for stays too: a copy whose repository is no longer referable, or no longer
-   * stands as it was found holding it (G3 of the Codex recheck of F3, K1 of its recheck 2). Answers where it stopped, and
-   * the first refusal.
+   * Answers where it stopped, and the first refusal.
    */
-  function removeObjects(ids: string[], from: number, until: number, keepFrom?: number, still?: (id: string) => boolean): { next: number; refused: unknown } {
+  function removeObjects(ids: string[], from: number, until: number, keepFrom?: number): { next: number; refused: unknown } {
     let next = from
     let refused: unknown
     while (next < ids.length && performance.now() < until) {
       const id = ids[next++]!
       try {
         if (keepFrom !== undefined && (objects.modified(id) ?? -Infinity) >= keepFrom) continue
-        if (still && !still(id)) continue
         objects.remove(id); sizes.delete(id)
       } catch (error) { refused ??= error }
     }

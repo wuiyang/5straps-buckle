@@ -51,9 +51,6 @@ export interface CommandChanges { before: Snapshot; after: Snapshot; ignored: nu
  */
 interface Settled { objects: string; holds?: Promise<boolean> }
 
-/** A root's blobs its shadow index takes from its repository (Slice F3): its shadow git folder, that repository's objects folder, and the ids. */
-export interface Lent { git: string; objects: string; ids: Set<string> }
-
 export class HostGitNeededError extends Error {}
 /** A root that is no longer the folder it was, a link or another folder in its place: git would read where it lands. */
 export class FolderReplacedError extends Error {}
@@ -79,9 +76,10 @@ const VERIFY_INDEX = 'index.verify'
  * stored, and only the count of ignored entries that changed is kept. Where the folder lies in a git repository with a
  * commit (Slice F3), the shadow index starts from that repository's index, so an unchanged committed file is never
  * copied: git hashes each such file once, storing nothing, to confirm it holds the committed blob. Its content is copied
- * into the store only as a command changes it, and a restore reads the store alone. Nothing is written to the
- * repository: only a step that reads objects (`cat-file`) sees its objects folder, as its only object store, so git add
- * and write-tree write every object they make into the store.
+ * into the store as a command changes it, or by git add as one rewrites it with the same content, and a sweep keeps each
+ * copy the shadow index names; a restore reads the store alone. Nothing is written to the repository: only a step that
+ * reads objects (`cat-file`) sees its objects folder, as its only object store, so git add and write-tree write every
+ * object they make into the store.
  */
 export function createCommandCapture(input: { directory: string; objects: Pick<ObjectStore, 'root' | 'read' | 'size' | 'has' | 'put'>; excluded: () => string[]; allowed: () => boolean; untrusted?: () => UntrustedRoots; maxFileBytes: () => number }) {
   const folder = join(input.directory, 'commands')
@@ -100,8 +98,6 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   const instance = randomUUID()
   /** When this process started, as the system counts it, in each marker it makes, so a later process given its pid is told apart (V2). */
   const started = processStart(process.pid)
-  /** Each root this process captured, by its shadow git folder: the root whose git a sweep checks its repository with (G3 of the Codex recheck of F3). */
-  const captured = new Map<string, string>()
 
   function program(roots: string[]): Program | null {
     return historyGitProgram({ allowed: input.allowed(), roots, ...(input.untrusted ? { untrusted: input.untrusted() } : {}) })
@@ -223,12 +219,12 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   /**
    * Whether the repository `record` names still stands as a seed found it (item 1), checked by git from the root: the
    * same objects folder and index, with a commit at HEAD, which a switch to a branch with none takes away (H1 of the
-   * Codex recheck); and whether its objects folder, read alone, holds each of `ids`: never the history's own copy, which
-   * the sweep may remove once no checkpoint holds it (G3). One look at each object's file or a pack's index, before each
-   * command, as no folder's time on disk proves an object is still there (G4). Both git steps run together, beside git
-   * add; the look takes what is left of the budget, as git add does, as its work grows with the repository. Once both
-   * end, the objects folder is checked to be referable still (K1, K2 of the Codex recheck 2): a link or an alternates
-   * file made since builds the record again, and its seed then leaves the folder to the usual path.
+   * Codex recheck); and whether its objects folder, read alone, holds each of `ids`, never the history's own copy
+   * standing for it (G3). One look at each object's file or a pack's index, before each command, as no folder's time on
+   * disk proves an object is still there (G4). Both git steps run together, beside git add; the look takes what is left
+   * of the budget, as git add does, as its work grows with the repository. Once both end, the objects folder is checked
+   * to be referable still (K1, K2 of the Codex recheck 2): a link or an alternates file made since builds the record
+   * again, and its seed then leaves the folder to the usual path.
    */
   async function holds(found: Program, state: { root: string; git: string }, ids: string[], record: SourceRecord, budget: CaptureBudget): Promise<boolean> {
     const [location, present] = await both(
@@ -409,7 +405,6 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       const identity = folderIdentity(root)
       if (identity === undefined) throw new FolderReplacedError('A folder history records is no longer a folder')
       const state = await prepare(found, root, budget)
-      captured.set(state.git, root)
       // Under the call's execution lock alone (T1): a killed child leaves the index's lock, and no other capture of this
       // root runs, as a background record writes its side index's own (A4, B6); a side index no live record is building
       // is a stopped one's (W2).
@@ -615,76 +610,26 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   /**
    * The objects each shadow index names, its side index included (W2): each blob, the content the next command's before
    * state reuses, one over the cap too, which git reads again only once its file changes (V4); and each tree its cache-tree
-   * names, which git takes as written while it is there (W1). `kept`, those a sweep keeps. `lent`, by root, each blob the
-   * root's repository was found holding as its index was seeded and that no index needs a copy of otherwise: a command
-   * that changes its file copies it from there, and a capture that finds it gone builds the index again (Slice F3, items
-   * 5 and 7), so a sweep removes its copy only once it finds the repository referable and holding it then and there
-   * (released, G3 of the Codex recheck, K1 of its recheck 2). undefined where an index or those ids cannot be read, so
-   * nothing is swept on a guess.
+   * names, which git takes as written while it is there (W1). A sweep keeps each, whatever the folder's repository holds
+   * (P1 to P3 of the Codex recheck 3 of F3): it never asks the repository, so no change made there while it runs takes a
+   * copy. undefined where an index cannot be read, so nothing is swept on a guess.
    */
-  function indexed(): { kept: Set<string>; lent: Lent[] } | undefined {
-    const kept = new Set<string>()
-    const lent: Lent[] = []
+  function indexed(): Set<string> | undefined {
+    const ids = new Set<string>()
     let folders: string[]
     try { folders = readdirNames(folder) } catch { return undefined }
     for (const name of folders) {
       if (!/^[0-9a-f]{24}$/.test(name)) continue
-      const git = join(folder, name)
-      const held = readSourceIds(git)
-      if (!held) return undefined
-      // Ids that stand with no record that reads lend nothing: the sweep keeps each.
-      const record = held.size ? readSource(git) : undefined
-      const borrowed = new Set<string>()
       for (const file of ['index', WARM_INDEX]) {
         let index: Buffer
-        try { index = readFileSync(join(git, file)) } catch (error) { if (isMissing(error)) continue; return undefined }
+        try { index = readFileSync(join(folder, name, file)) } catch (error) { if (isMissing(error)) continue; return undefined }
         const read = readIndex(index)
         if (!read) return undefined
-        for (const entry of read.entries) (typeof record === 'object' && held.has(entry.id) ? borrowed : kept).add(entry.id)
-        for (const tree of read.trees) kept.add(tree)
-      }
-      if (typeof record === 'object' && borrowed.size) lent.push({ git, objects: record.objects, ids: borrowed })
-    }
-    for (const lender of lent) for (const id of lender.ids) if (kept.has(id)) lender.ids.delete(id)
-    return { kept, lent }
-  }
-
-  /**
-   * Of `candidates`, the copies a sweep is to keep as `lent` takes them from repositories (G3 of the Codex recheck of
-   * F3): each, unless every repository that lends it was found referable (K1, K2 of its recheck 2) and holding it, read
-   * outside the lock as `holds` reads it, the repository's objects folder alone, in one existence check each. First a
-   * stat of the two places git keeps each id there is taken (holdingState). `still` gives each slice its own check, run
-   * under the lock just before a copy is removed: the repository referable still, checked once a slice, and each stat
-   * as it was, so a repository that lost or moved an object since, or that a link or an alternates file now stands in,
-   * keeps every copy. A repository whose root this process has not captured, or whose check fails, proves nothing. It
-   * never runs on a call's path.
-   */
-  async function released(lent: Lent[], candidates: Set<string>, signal?: AbortSignal): Promise<{ kept: Set<string>; still: () => (id: string) => boolean }> {
-    const kept = new Set<string>()
-    const proofs = new Map<string, Array<{ objects: string; state: string }>>()
-    for (const lender of lent) {
-      const ids = [...lender.ids].filter(id => candidates.has(id))
-      if (!ids.length) continue
-      const root = captured.get(lender.git)
-      const found = root === undefined ? null : program([root])
-      if (!found || root === undefined || !referable(lender.objects)) { for (const id of ids) kept.add(id); continue }
-      const states = new Map(ids.map(id => [id, holdingState(lender.objects, id)]))
-      const budget = { deadline: Date.now() + STEP_TIMEOUT_MS, ...signal ? { signal } : {} }
-      const present = await git(found, { root, git: lender.git }, ['cat-file', '--batch-check=%(objectname)'], { data: `${ids.join('\n')}\n`, objects: lender.objects, budget })
-        .then(parseExistence, (error: unknown) => { logger.debug('History keeps the copies a command folder\'s repository lends: it could not check that repository', { cause: gitCause(error) }); return new Set<string>() })
-      for (const id of ids) {
-        if (present.has(id)) proofs.set(id, [...proofs.get(id) ?? [], { objects: lender.objects, state: states.get(id)! }])
-        else kept.add(id)
+        for (const entry of read.entries) ids.add(entry.id)
+        for (const tree of read.trees) ids.add(tree)
       }
     }
-    return {
-      kept,
-      still: () => {
-        const checked = new Map<string, boolean>()
-        const holding = (objects: string) => { let found = checked.get(objects); if (found === undefined) checked.set(objects, found = referable(objects)); return found }
-        return id => (proofs.get(id) ?? []).every(proof => holding(proof.objects) && holdingState(proof.objects, id) === proof.state)
-      },
-    }
+    return ids
   }
 
   /**
@@ -730,7 +675,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   return {
-    baseline, changes, indexed, released, indexPaths, indexState, warm, stopWarming, tidyLeftovers, warming: warmingAny,
+    baseline, changes, indexed, indexPaths, indexState, warm, stopWarming, tidyLeftovers, warming: warmingAny,
     /** Whether this instance takes a first record in the background now, from its own state alone, with no read (V3). */
     recording: () => warming.size > 0,
     available: (roots: string[]) => program(roots) !== null,
@@ -971,15 +916,6 @@ function pathIdentity(path: string): string {
   return stat ? statIdentity(stat) : '-'
 }
 function statIdentity(stat: Stats): string { return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}` }
-/**
- * Where each place git keeps `id` in a referable `objects` folder stands on disk, from a stat of each (G3 of the Codex
- * recheck of F3): the fan-out folder of its loose object, and the packs' folder. Both are real folders while it stays
- * referable (K1 of the recheck 2), and git adds or removes no object there, loose or packed, without changing one of
- * them, so an answer that reads the same later says what git found in between still stands.
- */
-function holdingState(objects: string, id: string): string {
-  return [join(objects, id.slice(0, 2)), join(objects, 'pack')].map(pathIdentity).join('|')
-}
 
 function isExit(error: unknown, code: number): boolean {
   return error instanceof Error && 'details' in error && typeof error.details === 'object' && error.details !== null && 'exitCode' in error.details && error.details.exitCode === code

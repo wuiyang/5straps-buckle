@@ -15,15 +15,15 @@ import { parseIndex, writeIndex } from '../common/services/history/workspace-rep
 // the checkpoint is saved; a restore reads that store alone.
 
 /**
- * G3 of the Codex recheck of F3: what runs once, from `after`, as a sweep's plan has found which copies each repository
- * holds and before any slice of it removes one.
+ * What runs once, from `after`, as a sweep's plan has read what each shadow index names and before any slice of it
+ * removes an object: a repository that changes then, while the sweep runs.
  */
 const race = vi.hoisted(() => ({ after: undefined as (() => void) | undefined }))
 vi.mock('../common/services/history/command-capture.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/command-capture.js')>()
   const createCommandCapture: typeof actual.createCommandCapture = input => {
     const capture = actual.createCommandCapture(input)
-    return { ...capture, released: async (...args: Parameters<typeof capture.released>) => { const found = await capture.released(...args); const step = race.after; race.after = undefined; step?.(); return found } }
+    return { ...capture, indexed: () => { const found = capture.indexed(); const step = race.after; race.after = undefined; step?.(); return found } }
   }
   return { ...actual, createCommandCapture }
 })
@@ -278,8 +278,9 @@ describe('a command in a folder that is a git repository', () => {
   })
 
   // Q3 (reversible default): a folder recorded before it referred to a repository, as by Buckle 0.1.9, is seeded at a
-  // node's first capture of it, so the copies of its committed files go at the next sweep.
-  it('seeds a folder recorded before it referred to its repository at a node\'s first capture, and sweeps the copies', async () => {
+  // node's first capture of it. The copies of its committed files stay while its index names them (F3 P1 to P3 of the
+  // Codex recheck 3): the sweep never asks the repository whether it holds one.
+  it('seeds a folder recorded before it referred to its repository at a node\'s first capture, and keeps the copies', async () => {
     const made = repoFixture()
     const gitFolder = join(made.root, 'git-folder')
     rmSync(gitFolder, { recursive: true, force: true }); execFileSync('mv', [join(made.top, '.git'), gitFolder])
@@ -290,27 +291,65 @@ describe('a command in a folder that is a git repository', () => {
     execFileSync('mv', [gitFolder, join(made.top, '.git')])
     history = await openChangeHistory(made.settings)
     try {
-      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f8.txt'), 'rewritten\n') })
+      let planted = ''
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f8.txt'), 'rewritten\n'); planted = await made.store.put(Buffer.from('nothing names this\n')) })
       expect(existsSync(join(made.shadow, 'source'))).toBe(true)
-      await vi.waitFor(() => expect(unchanged.filter(id => id !== blobId(Buffer.from('committed 8\n')) && made.store.has(id))).toEqual([]))
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect(unchanged.filter(id => !made.store.has(id))).toEqual([])
       await history.restore((await history.list()).at(-1)!.id)
       expect(read(join(made.workspace, 'src', 'f8.txt'))).toBe('committed 8\n')
     } finally { await history.close() }
   })
 
-  it('keeps no copy of a committed file a command rewrote with the same content, as an install does, and still restores it later', async () => {
+  it('keeps the copy git stores of each committed file a command rewrote with the same content, as an install does, and restores it later', async () => {
     const made = repoFixture()
     const history = await openChangeHistory(made.settings)
     try {
-      await history.run(made.details, async () => { for (let index = 0; index < 30; index++) writeFileSync(join(made.workspace, 'src', `f${index}.txt`), `committed ${index}\n`) })
+      let planted = ''
+      await history.run(made.details, async () => { for (let index = 0; index < 30; index++) writeFileSync(join(made.workspace, 'src', `f${index}.txt`), `committed ${index}\n`); planted = await made.store.put(Buffer.from('nothing names this\n')) })
       expect((await history.list()).at(-1)).toMatchObject({ restorable: true, changes: [] })
       const unchanged = [...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').map(([, id]) => id)
-      await vi.waitFor(() => expect(unchanged.filter(id => made.store.has(id))).toEqual([]))
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect(unchanged.filter(id => !made.store.has(id))).toEqual([])
       await history.run({ ...made.details, stageId: 'next' }, async () => { rmSync(join(made.workspace, 'src', 'f11.txt')) })
       await history.restore((await history.list()).at(-1)!.id)
       expect(read(join(made.workspace, 'src', 'f11.txt'))).toBe('committed 11\n')
     } finally { await history.close() }
   })
+
+  // F3 P1 to P3 of the Codex recheck 3: every race there came from a sweep removing a copy the folder's index names
+  // because the repository held that object too. No sweep asks the repository now, so none takes such a copy: here the
+  // repository holds the object as git wrote it, and in name only, as a loose object that is a link whose target is
+  // gone, which git's existence check still finds (P2).
+  for (const [label, change] of [
+    ['as git wrote it', () => undefined],
+    ['in name only, a loose object that is a link whose target is gone', (made: ReturnType<typeof repoFixture>, id: string) => { const path = join(made.top, '.git', 'objects', id.slice(0, 2), id.slice(2)); rmSync(path); symlinkSync(join(made.root, 'gone'), path) }],
+  ] as const) {
+    it(`keeps a copy the folder's index names at a sweep while its repository holds the same object ${label}`, async () => {
+      const same = 'held on\n'
+      const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/same.txt': same } })
+      const id = blobId(Buffer.from(same))
+      const history = await openChangeHistory(made.settings)
+      try {
+        let planted = ''
+        // Written again as it was: git add stores a copy the index names. A copy nothing names marks the sweep's slice.
+        await history.run(made.details, async () => {
+          writeFileSync(join(made.workspace, 'src', 'same.txt'), same)
+          change(made, id)
+          planted = await made.store.put(Buffer.from('nothing names this\n'))
+        })
+        await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+        expect(existsSync(join(made.shadow, 'source'))).toBe(true)
+        expect(readIndex(readFileSync(join(made.shadow, 'index')))!.entries.map(entry => entry.id)).toContain(id)
+        expect(made.store.has(id)).toBe(true)
+        await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'same.txt'), 'rewritten\n') })
+        const checkpoint = (await history.list()).at(-1)!
+        expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'same.txt'), kind: 'modified' }] })
+        await history.restore(checkpoint.id)
+        expect(read(join(made.workspace, 'src', 'same.txt'))).toBe(same)
+      } finally { await history.close() }
+    })
+  }
 
   it('never writes to the repository: its git folder stands as it was through commands, a copy, a restore, and a sweep', async () => {
     const made = repoFixture()
@@ -388,9 +427,9 @@ describe('a command after its folder\'s repository is lost', () => {
     } finally { await history.close() }
   })
 
-  // G3 of the Codex recheck of F3: a sweep removes a copy the folder's index takes from its repository only once it has
-  // found the repository holding it, then and there; else the copy stays.
-  it('keeps a copy the folder\'s index names once its repository loses it, through the call\'s sweep and the one after, and removes one it still holds', async () => {
+  // G3 of the Codex recheck of F3, and P1 to P3 of its recheck 3: a sweep keeps each copy the folder's index names,
+  // whether its repository lost that object or still holds it.
+  it('keeps each copy the folder\'s index names, its repository holding it or not, through the call\'s sweep and the ones after', async () => {
     const same = 'the same content\n'
     const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/one.txt': same, 'src/two.txt': same, 'src/held.txt': 'held\n' } })
     const [id, held] = [blobId(Buffer.from(same)), blobId(Buffer.from('held\n'))]
@@ -406,12 +445,15 @@ describe('a command after its folder\'s repository is lost', () => {
       })
       expect(() => made.git(['cat-file', '-e', id])).toThrow()
       expect((await history.list()).map(checkpoint => checkpoint.stageId)).toEqual(['t2'])
-      await vi.waitFor(() => expect(made.store.has(held)).toBe(false))
-      expect(made.store.has(id)).toBe(true)
+      // A later command of the same turn drops no checkpoint; a copy nothing names marks its sweep's slice.
+      let planted = ''
+      await history.run({ ...made.details, stageId: 't2' }, async () => { planted = await made.store.put(Buffer.from('nothing names this\n')) })
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
+      expect([made.store.has(id), made.store.has(held)]).toEqual([true, true])
     } finally { await history.close() }
   })
 
-  it('keeps a copy whose repository loses it after the sweep found it there and before a slice removes it', async () => {
+  it('keeps each copy the folder\'s index names whether its repository loses that object while the sweep runs or keeps it', async () => {
     const [lost, kept] = ['lost later\n', 'held on\n']
     const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/lost.txt': lost, 'src/kept.txt': kept } })
     const [lostId, keptId] = [blobId(Buffer.from(lost)), blobId(Buffer.from(kept))]
@@ -419,11 +461,13 @@ describe('a command after its folder\'s repository is lost', () => {
     try {
       let ran = false
       race.after = () => { ran = true; rmSync(join(made.top, '.git', 'objects', lostId.slice(0, 2), lostId.slice(2))) }
-      // Both written again as they were: each a copy nothing names, which the repository holds as the sweep's plan reads it.
-      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'lost.txt'), lost); writeFileSync(join(made.workspace, 'src', 'kept.txt'), kept) })
-      await vi.waitFor(() => expect(made.store.has(keptId)).toBe(false))
+      let planted = ''
+      // Both written again as they were: each a copy only the index names, which the repository holds as the sweep's plan
+      // reads it. A copy nothing names marks the sweep's slice.
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'lost.txt'), lost); writeFileSync(join(made.workspace, 'src', 'kept.txt'), kept); planted = await made.store.put(Buffer.from('nothing names this\n')) })
+      await vi.waitFor(() => expect(made.store.has(planted)).toBe(false))
       expect(ran).toBe(true)
-      expect(made.store.has(lostId)).toBe(true)
+      expect([made.store.has(lostId), made.store.has(keptId)]).toEqual([true, true])
     } finally { await history.close() }
   })
 
@@ -468,8 +512,8 @@ describe('a command after its folder\'s repository is lost', () => {
 // K1 and K2 of the Codex recheck 2 of F3: git follows a link or a junction in a repository's objects folder, and a stat
 // of one never changes as what it names loses an object; alternates name further folders without bound. So a folder's
 // record refers only to a repository whose git folder, objects folder, pack folder, and each fan-out folder are real
-// folders, with no alternates file of either kind: checked at the seed, before each command, and at a sweep's plan and
-// each of its slices, which keep every copy the folder's index names while it does not hold.
+// folders, with no alternates file of either kind: checked at the seed and before each command. A sweep keeps every
+// copy the folder's index names, however the repository changes while it runs (P1 to P3 of the Codex recheck 3).
 describe('a command in a folder whose repository keeps its objects through a link or another repository', () => {
   for (const [label, linked] of [['its objects folder', () => ''], ['one fan-out folder', () => blobId(Buffer.from('committed 3\n')).slice(0, 2)]] as const) {
     it(`never refers to a repository where ${label} is a link or a junction: every committed file is copied the usual way`, async () => {
@@ -546,8 +590,8 @@ describe('a command in a folder whose repository keeps its objects through a lin
     } finally { await history.close() }
   })
 
-  // The plan's own check: a repository that holds a copy only through an alternates file as the plan reads it, and
-  // that drops the file before a slice, stands again as it did at the plan, though it no longer holds the copy.
+  // A repository that holds a copy only through an alternates file as the plan reads it, and that drops the file
+  // before a slice, stands again as it did at the plan, though it no longer holds the copy (P1 of the Codex recheck 3).
   it('keeps a copy its repository holds only through an alternates file as the sweep plans, though that file goes before a slice', async () => {
     const moved = 'moved away\n'
     const made = repoFixture({ committed: { 'src/f0.txt': 'committed 0\n', 'src/moved.txt': moved } })

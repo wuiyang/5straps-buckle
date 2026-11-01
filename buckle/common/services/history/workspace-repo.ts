@@ -23,7 +23,7 @@ export interface RepositoryLocation { top: string; index: string; objects: strin
 export interface SourceRecord { objects: string; index: string; indexIdentity: string }
 
 const SOURCE_RECORD = 'source'
-/** Beside it, each blob id the seed found the repository holding, 20 bytes each: what a sweep need not keep a copy of while the repository holds it. */
+/** Beside it, each blob id the seed found the repository holding, 20 bytes each: what each capture before a command checks it still holds. */
 const SOURCE_IDS = 'source-ids'
 const STAGE_MASK = 0x3000
 const ASSUME_VALID = 0x8000
@@ -106,8 +106,7 @@ function readPlainFile(path: string, max: number): Buffer | undefined {
  * never a link or a junction, which Node's lstat reads as a link; and no `info/alternates` or `info/http-alternates`
  * stands, of any kind, so git reads that folder alone. Git follows a link there, and a stat of one never changes as what
  * it names loses an object; alternates name further folders without bound. One stat of each fixed name, never a listing
- * or a read, so its work is bounded and nothing waits. Checked at the seed, before each command, and at a sweep's plan
- * and each of its slices.
+ * or a read, so its work is bounded and nothing waits. Checked at the seed and before each command.
  */
 export function referable(objects: string): boolean {
   const real = (path: string) => lstatSync(path, { throwIfNoEntry: false })?.isDirectory() === true
@@ -295,11 +294,10 @@ export function writeSource(git: string, record: SourceRecord, ids?: string[]): 
 /** The record and its ids, the ids last, so ids never stand without the record that says they still read. */
 export function removeSource(git: string): void { rmSync(join(git, SOURCE_RECORD), { force: true }); rmSync(join(git, SOURCE_IDS), { force: true }) }
 /**
- * The blob ids a root's seed found its repository holding, where its record stands: a sweep removes the copy of one an
- * index names only once it finds the repository still holding it, as a command that changes its file copies it from
- * there, and each capture before a command first checks the repository alone still holds each one its index names (G3,
- * G4 of the Codex review, G3 of its recheck). Empty where none stand; undefined where they do not read, so the sweep
- * keeps all an index names.
+ * The blob ids a root's seed found its repository holding, where its record stands: a command that changes the file of
+ * one copies it from there, so each capture before a command first checks the repository alone still holds each one its
+ * index names (G3, G4 of the Codex review). A sweep never reads them: it keeps every copy an index names (P1 to P3 of
+ * the Codex recheck 3). Empty where none stand; undefined where they do not read, so the record is built again.
  */
 export function readSourceIds(git: string): Set<string> | undefined {
   if (!lstatSync(join(git, SOURCE_RECORD), { throwIfNoEntry: false })) return new Set()
