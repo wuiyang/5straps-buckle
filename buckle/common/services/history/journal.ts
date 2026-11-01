@@ -74,6 +74,8 @@ const EXPIRED_PREFIX = 'expired-'
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0), oldStoreTurns: z.array(z.string()).optional() })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
+/** How soon a copy of the owner objects the shadow-git store borrows is tried again after one fails (R1.4). */
+const MATERIALIZE_RETRY_MS = 60_000
 
 export async function openChangeHistory(input: ChangeHistoryOptions) {
   mkdirSync(input.directory, { recursive: true, mode: 0o700 }); setMode(input.directory, 0o700); requireOwnerOnly(input.directory, 'directory')
@@ -97,8 +99,12 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
   const activity = await openHistoryActivity(input.directory)
-  /** Whether this process has copied in the owner objects the shadow-git store borrows (X12): tried once, then hourly. */
+  /**
+   * Whether this process has copied in the owner objects the shadow-git store borrows (X12), set once the copy is made, and
+   * when a copy that failed is tried again (R1.4 of the Codex recheck): soon, not at the hourly collection.
+   */
   let materialized = false
+  let materializeAt = 0
   /** Whether this process holds the execution lock now: only a holder moves a damaged journal aside (M1). */
   let holding = false
   /** Set as a damaged journal is moved aside, until the next checkpoint begun carries it to its call's notice (M1). */
@@ -472,7 +478,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   function scheduleCollection(state: State): void {
     if (gc || gcTimer || !oldStoresLeft(state) || !store.available) return
     const due = () => now() - read().lastGcAt >= GC_INTERVAL_MS
-    const borrows = () => !materialized && store.borrowing()
+    const borrows = () => !materialized && now() >= materializeAt && store.borrowing()
     if (now() - state.lastGcAt < GC_INTERVAL_MS && !borrows()) return
     gcTimer = setTimeout(() => {
       gcTimer = undefined
@@ -499,8 +505,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (!store.available || !oldStoresLeft(state)) return
     if (await store.isolate(state.checkpoints)) await save(state)
     await store.reconcile(state.checkpoints)
-    materialized = true
-    await store.materialize()
+    try { await store.materialize(); materialized = true }
+    catch (error) { materializeAt = now() + MATERIALIZE_RETRY_MS; throw error }
   }
   function since(target: RollbackTarget): Checkpoint[] {
     const recent = records().toReversed().slice(0, 'turns' in target ? undefined : RECENT_CHECKPOINTS_MAX)

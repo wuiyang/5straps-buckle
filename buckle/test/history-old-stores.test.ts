@@ -1,8 +1,9 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
 import { afterEach, expect, it, vi } from 'vitest'
+import { logger } from '../common/runtime/log.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 
@@ -176,4 +177,29 @@ it('copies the owner objects an old checkpoint borrows, so it restores after the
   rmSync(join(workspace, '.git'), { recursive: true, force: true })
   await history.rollback({ target: { id: old.id }, by: { sessionId: 'owner', stageId: 'restore', tool: 'test' } })
   expect(readFileSync(file, 'utf8')).toBe('original')
+})
+
+// R1.4 of the Codex recheck: a copy of the borrowed objects that fails is tried again within minutes, not after the hourly
+// collection, as history marks the copy made only once it is.
+it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)('tries a failed copy of the borrowed owner objects again soon', async () => {
+  const { workspace, directory, file } = fixture()
+  execFileSync('git', ['init', '-q', workspace])
+  writeFileSync(file, 'original')
+  execFileSync('git', ['-C', workspace, 'add', 'file'])
+  execFileSync('git', ['-C', workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'baseline'])
+  await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old engine') })
+  const [alternates, packs] = [join(directory, 'git', 'objects', 'info', 'alternates'), join(directory, 'git', 'objects', 'pack')]
+  mkdirSync(packs, { recursive: true }); chmodSync(packs, 0o500)
+  let clock = Date.now()
+  const warn = vi.spyOn(logger, 'warn')
+  const history = await openChangeHistory({ directory, excluded: [], maxBytes: 16 * 1_048_576, now: () => clock })
+  histories.push(history)
+  try {
+    await write(history, join(workspace, 'other'), 'new-1', 'new')
+    await vi.waitFor(() => expect(warn.mock.calls.some(([message]) => String(message).includes('garbage collection did not finish'))).toBe(true), { timeout: 10_000 })
+    expect(existsSync(alternates)).toBe(true)
+  } finally { chmodSync(packs, 0o700); warn.mockRestore() }
+  clock += 5 * 60_000
+  await write(history, join(workspace, 'other'), 'new-2', 'newer')
+  await vi.waitFor(() => expect(existsSync(alternates)).toBe(false), { timeout: 10_000 })
 })
