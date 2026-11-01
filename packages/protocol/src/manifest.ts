@@ -49,7 +49,11 @@ export const HarnessManifestSchema = z.object({
     /** What runs a content search: ripgrep, or the node's own walker where ripgrep is not installed; absent with no search. */
     searcher: z.enum(['rg', 'builtin']).optional(),
   }),
-  history: z.object({ engine: z.enum(['git', 'hashes']), restorable: z.boolean(), maxFileBytes: z.number().int().positive(), keepTurns: z.number().int().positive(), turnIdleMs: z.number().int().positive() }).optional(),
+  /**
+   * `engine` and `restorable` describe a command's checkpoints, which need permitted trusted host git. `fileToolsRestorable`,
+   * additive and optional (Slice F2): a file tool's checkpoints restore without host git; absent on an older node.
+   */
+  history: z.object({ engine: z.enum(['git', 'hashes']), restorable: z.boolean(), fileToolsRestorable: z.boolean().optional(), maxFileBytes: z.number().int().positive(), keepTurns: z.number().int().positive(), turnIdleMs: z.number().int().positive() }).optional(),
   generatedAt: z.iso.datetime(),
 })
 export type HarnessManifest = z.infer<typeof HarnessManifestSchema>

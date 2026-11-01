@@ -669,7 +669,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       await pruneRetained(); await shadowUpkeep(); return { ok: true }
     }, { owner: true, ...options }),
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
-    capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
+    /** `engine` and `restorable` describe a command's checkpoints; a file tool's restore with no git at all (M4). */
+    capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, fileToolsRestorable: true, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
     async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
   }
 }

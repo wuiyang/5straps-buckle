@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { InvokeResponse, JsonObject } from '@5straps/protocol'
+import { HarnessManifestSchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -50,6 +50,8 @@ describe('a file tool\'s checkpoint', () => {
     await runtime.history.restore((await newest(runtime)).id)
     expect(readFileSync(join(workspace, 'a.txt'), 'utf8')).toBe('one')
     expect(runtime.history.capability()).toMatchObject({ engine: 'hashes' })
+    // M4: the manifest says a file tool's checkpoints restore without host git, beside the command engine's own fields.
+    expect(HarnessManifestSchema.parse(runtime.manifest()).history).toMatchObject({ engine: 'hashes', restorable: false, fileToolsRestorable: true })
   })
 
   it('records a path .gitignore ignores, and the folders a write makes for it', async () => {

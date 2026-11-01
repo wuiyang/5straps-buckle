@@ -36,3 +36,16 @@ describe('the manifest\'s build', () => {
     expect(HarnessManifestSchema.parse({ ...OLDER_NODE, version: '0.1.8', build: '0.1.8+670f1dc2.dirty' }).build).toBe('0.1.8+670f1dc2.dirty')
   })
 })
+
+// M4 (coordinator, review of 670f1dc2..01d3b0c9): `history.engine` and `restorable` describe a command's checkpoints, which
+// need permitted host git; `fileToolsRestorable`, additive and optional, says a file tool's restore without it.
+describe('the manifest\'s history', () => {
+  const history = { engine: 'hashes', restorable: false, maxFileBytes: 33_554_432, keepTurns: 10, turnIdleMs: 600_000 } as const
+  it('validates an older node\'s history, which names no file tool restore', () => {
+    expect(HarnessManifestSchema.parse({ ...OLDER_NODE, history }).history).not.toHaveProperty('fileToolsRestorable')
+  })
+
+  it('keeps that a file tool\'s checkpoints restore without host git, beside the command engine', () => {
+    expect(HarnessManifestSchema.parse({ ...OLDER_NODE, history: { ...history, fileToolsRestorable: true } }).history).toMatchObject({ engine: 'hashes', restorable: false, fileToolsRestorable: true })
+  })
+})
