@@ -39,12 +39,13 @@ history, MCP asks, `buckle cp`, and deletes.
   deep inside an ignored folder that already existed. A `.gitignore` above the workspace folder,
   such as a monorepo root's, is not read.
 - The first command in a folder hashes every file Git tracks there once; later ones hash only
-  what changed. That copy does not count toward `BUCKLE_HISTORY_MAX_BYTES`.
-- A file over `history.maxFileBytes` is compared by size and mode, so a change that keeps its size
-  is not listed. Git still reads such a file in a command's folder each time it changes.
+  what changed. That copy does not count toward `BUCKLE_HISTORY_MAX_BYTES`. A first hash past 30
+  seconds leaves its command unrestorable, and the next starts over.
+- A file over `history.maxFileBytes` is compared by size, mode, and mtime. Git still reads such a
+  file in a command's folder each time it changes.
 - A command interrupted while it runs leaves a checkpoint that is never restorable.
 - A shadow-git checkpoint of an earlier build restores only with host Git, and a SQLite one never
-  does. Both stores are deleted after 10 turns of new checkpoints.
+  does. Both stores are deleted after `history.keepTurns` turns of new checkpoints.
 
 ## Asks over MCP
 

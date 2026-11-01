@@ -22,10 +22,14 @@ Git. Buckle never writes to the workspace's own `.git`.
   node's state: before and after the command it adds the workspace's folders and writes a tree,
   and the difference names the changed paths. The workspace's own ignore rules, every
   `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under ignored
-  paths are counted, never stored, and never touched by a restore. A workspace with no
-  `.gitignore` tracks everything, within the caps. A nested repository is left out, reason
-  `nested`. This needs permitted, trusted host Git; without it, the command runs and its
-  checkpoint reads "Not restorable: host git needed".
+  paths are counted, never stored, and never touched by a restore. A protected path is never
+  read, whatever a `.gitignore` re-includes. A folder Git does not track, such as an empty one,
+  and a file Git could not read keep their place: a restore never removes or rewrites them. A
+  workspace with no `.gitignore` tracks everything, within the caps. A nested repository is left
+  out, reason `nested`. Each phase has 30 seconds; past that, or once the call is cancelled
+  before the command starts, the command runs without restorable content. This needs permitted,
+  trusted host Git; without it, the command runs and its checkpoint reads "Not restorable: host
+  git needed".
 
 Content is kept as Git-format loose objects in the workspace's `history/` state folder. Buckle
 writes and reads them itself, so a restore starts no Git program.
@@ -42,7 +46,8 @@ idle activity, which survives restart; approval and lock waits keep a call in it
 size, reason `size`, and cannot be restored. The node setting `BUCKLE_HISTORY_MAX_BYTES` caps the
 content kept checkpoints hold at 268435456 bytes (256 MiB) by default, each object counted once;
 the copy a command's private index keeps does not count. Over the cap, Buckle drops whole oldest
-turns, never the current one, and deletes the objects nothing names. A checkpoint that alone
+turns, never the current one, and deletes the objects nothing names; so does a sweep after each
+command, which removes a file over the cap and what a stopped write left. A checkpoint that alone
 exceeds the cap keeps its paths without content. Retention never rewrites a kept checkpoint and
 never reads the workspace. `BUCKLE_HISTORY_RETENTION_DAYS` controls isolated-shell recovery
 copies, not these turns.
@@ -53,15 +58,20 @@ History never refuses a call. When a capture fails, the call runs, and its check
 not restorable with the reason. The agent sees the reason in the call's history notice: MCP
 returns structured history metadata, while the CLI and `buckle cp` print it to stderr. The
 owner's log names the cause. A checkpoint left pending when Buckle stopped is marked
-`interrupted`, with its reason, by the next call.
+`interrupted`, with its reason, by the next call. A journal that cannot be read is moved aside
+to `checkpoints.json.damaged-<date>` beside it, kept for the owner, and history starts a fresh
+one; the next call's notice says so, and the log names the cause.
 
 ## Older checkpoints
 
 Checkpoints from the shadow-git store of earlier builds, and from the SQLite history before it,
 stay listed. A shadow-git one restores through that store with permitted, trusted host Git;
-without Git, the restore is refused before anything asks, and the listing says why. A SQLite one
-is listed only. Once 10 turns of new checkpoints follow, Buckle deletes both stores and their
-checkpoints. `buckle history prune --legacy` removes the SQLite store at once.
+without Git, the restore is refused before anything asks, and the listing says why. Buckle
+copies into that store the objects it borrowed from the workspace's repository, so pruning the
+repository keeps them. A SQLite one is listed only. Once as many turns of new checkpoints follow
+as `history.keepTurns` keeps, their checkpoints leave the journal, and Buckle moves both stores
+aside and deletes them in the background. `buckle history prune --legacy` removes the SQLite
+store at once.
 
 ## From the terminal
 

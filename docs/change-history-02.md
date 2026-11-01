@@ -24,8 +24,11 @@ exactly one target. An id returns the workspace to the state before that checkpo
 checkpoints. `steps` counts checkpoints; `turns` counts recent turns. Buckle puts back only the
 paths those checkpoints changed. Each must stand as the newest of them left it, or the restore is
 refused naming that path; a folder it would remove that holds an entry no checkpoint names
-conflicts too. Ignore rules never decide what it writes or removes. An agent restore is itself
-checkpointed.
+conflicts too. The check holds until each path changes: Buckle moves each file aside and checks
+it again first, so an edit made meanwhile refuses the restore with nothing changed. A path one of
+them recorded without content (ignored, over the cap, or unreadable) is left as it stands, even
+where a later one saw it again. Ignore rules never decide what it writes or removes. An agent
+restore is itself checkpointed.
 
 ## Every restore asks
 
@@ -57,7 +60,8 @@ forge](sandbox-and-tools-02.md#host-git-forge-and-language-servers).
 
 `packs.hostGit` is off by default. File tools' and the isolated shell's checkpoints restore
 without it; a command's checkpoint in the workspace, and a shadow-git one, need it. The
-manifest's `history.engine: hashes` and `restorable: false` describe command checkpoints. The
+manifest's `history.engine: hashes` and `restorable: false` describe command checkpoints, and
+`history.fileToolsRestorable: true` says file tools' checkpoints restore without Git. The
 owner enables it with `buckle workspace set packs.hostGit on --workspace <workspace>` and installs
 Git on the node PATH outside folders writable by agents. The same setting offers the agent the
 `git` and `forge` packs. Check `buckle manifest --workspace <workspace>` after the change. A
