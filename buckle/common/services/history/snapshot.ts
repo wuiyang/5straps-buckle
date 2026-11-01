@@ -16,9 +16,12 @@ import { modeOf } from './scoped-capture.js'
  * another path, or ends in a dot or a space on Windows, which a program there reads as another name (isPlainName); its
  * key is its directory and its name joined as listed. `unreadable`: on Windows, a file another
  * program held open without read sharing (EBUSY), so its content could not be read. A command's checkpoint records a
- * nested repository git keeps as one commit id, reason `nested`: its files are that repository's own.
+ * nested repository git keeps as one commit id, reason `nested`: its files are that repository's own. Before a command,
+ * a folder below one git listed as holding nothing it stored, which git's listings cannot say stood there, is recorded
+ * `unreadable`, reason `unlisted`: absent then, or a folder holding no file (R2.2 of the Codex recheck). Not restorable
+ * itself, it hides nothing below it, as no file stood in it.
  */
-export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), mtime: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit', 'nested']).optional(), hash: z.string().optional(), target: z.string().optional() })
+export const entrySchema = z.object({ kind: z.enum(['file', 'directory', 'symlink', 'excluded', 'unreadable']), mode: z.number(), size: z.number().optional(), mtime: z.number().optional(), reason: z.enum(['ignored', 'size', 'special', 'limit', 'nested', 'unlisted']).optional(), hash: z.string().optional(), target: z.string().optional() })
 export const snapshotSchema = z.record(z.string(), entrySchema)
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type Entry = z.infer<typeof entrySchema>
@@ -121,10 +124,14 @@ function isUncaptured(entry: Entry | undefined): boolean {
  */
 function uncapturedIn(snapshot: Snapshot, path: string): boolean { return uncapturedAt(snapshot, path) !== undefined }
 
-/** The entry `snapshot` recorded without content at `path` or at a folder above it; undefined where it recorded none. */
+/**
+ * The entry `snapshot` recorded without content at `path` or at a folder above it; undefined where it recorded none. A
+ * folder recorded `unlisted` stands for itself alone (entrySchema).
+ */
 export function uncapturedAt(snapshot: Snapshot, path: string): Entry | undefined {
   for (let at = path; ; at = parentDirectory(at)) {
-    if (isUncaptured(snapshot[at])) return snapshot[at]
+    const entry = snapshot[at]
+    if (isUncaptured(entry) && (at === path || entry!.reason !== 'unlisted')) return entry
     if (parentDirectory(at) === at) return undefined
   }
 }

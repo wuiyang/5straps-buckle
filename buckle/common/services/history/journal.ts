@@ -820,17 +820,22 @@ function planOf(selected: Checkpoint[], chain = chained(selected)): RollbackPlan
  * The checkpoints `selected` as one change: each path's first recorded state and its last. A path one of them recorded
  * without content (ignored, over the cap, unreadable, or below such a folder) stays so for the whole chain: its state
  * between the checkpoints was never known, so an outside edit then can never be told apart, and no restore of the chain
- * writes or removes it (X1 of the Codex review of 670f1dc2..01d3b0c9).
+ * writes or removes it (X1 of the Codex review of 670f1dc2..01d3b0c9). One exception: a folder a command recorded
+ * `unlisted`, absent or holding no file before it (entrySchema), that an earlier checkpoint here left absent or a folder
+ * is known from there, so it joins the chain as a path it can restore (R2.2 of the Codex recheck).
  */
 function chained(selected: Checkpoint[]): { before: Snapshot; after: Snapshot } {
   const base: Snapshot = {}; for (const record of selected) Object.assign(base, record.before, record.after)
   const first = new Map<string, Entry | undefined>(); const last = new Map<string, Entry | undefined>()
   const unknown = new Map<string, Entry>()
+  /** The exception above: `path` recorded `unlisted` in a checkpoint's `before`, and left absent or a folder by an earlier one. */
+  const known = (before: Snapshot, after: Snapshot, path: string) => before[path]?.reason === 'unlisted' && uncapturedAt(after, path) === undefined && first.has(path) && (last.get(path) === undefined || last.get(path)!.kind === 'directory')
   for (const record of selected) {
     if (!record.after) throw new RestoreRefusedError('A checkpoint among those it undoes never completed, so nothing is restored')
     const restorablePaths = changedPaths(record.before, record.after)
     const hidden = notRestorablePaths(record.before, record.after)
     for (const path of hidden) {
+      if (known(record.before, record.after, path)) continue
       const found = (uncapturedAt(record.after, path) ?? uncapturedAt(record.before, path))!
       unknown.set(path, { kind: found.kind, mode: record.after[path]?.mode ?? record.before[path]?.mode ?? 0, ...(found.reason ? { reason: found.reason } : {}) })
     }

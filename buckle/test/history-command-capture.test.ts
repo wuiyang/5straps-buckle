@@ -296,6 +296,57 @@ describe('a command\'s checkpoint, at the edges of what git reads', () => {
     } finally { await history.close() }
   })
 
+  // R2.2 of the Codex recheck: git's listings cannot say whether a folder below one holding nothing git stored stood there
+  // before the command, so one the after side holds there is not restorable, never taken as there before; the file made in
+  // it was absent before, so a restore removes it.
+  it('lists a folder made inside one holding nothing git stores as not restorable, and restores the file made in it', async () => {
+    const { workspace, settings, details } = fixture()
+    const made = join(workspace, 'out', 'made')
+    mkdirSync(join(workspace, 'out'))
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { mkdirSync(made); writeFileSync(join(made, 'f.txt'), 'made') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.notRestorable).toEqual([made])
+      expect(checkpoint.changes).toEqual([{ path: join(made, 'f.txt'), kind: 'created' }])
+      expect((await history.restore(checkpoint.id)).notRestorable).toEqual([made])
+      expect(existsSync(join(made, 'f.txt'))).toBe(false)
+    } finally { await history.close() }
+  })
+
+  // Across a turn, an earlier checkpoint that left the folder absent or a folder is its state: the file tool that made it
+  // knows it, so the turn's restore removes it.
+  it('restores a turn whose file tool made the folder a command later wrote in', async () => {
+    const { workspace, settings, details } = fixture()
+    const [out, made] = [join(workspace, 'out'), join(workspace, 'out', 'made')]
+    const scope = [{ path: out }, { path: made }, { path: join(made, 'f.txt') }]
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run({ ...details, tool: 'fs_write', scope }, async () => { mkdirSync(made, { recursive: true }); writeFileSync(join(made, 'f.txt'), 'f') })
+      await history.run({ ...details, tool: 'fs_delete', scope: [{ path: join(made, 'f.txt') }] }, async () => { rmSync(join(made, 'f.txt')) })
+      await history.run(details, async () => { writeFileSync(join(made, 'g.txt'), 'g') })
+      expect((await history.list()).at(-1)!.notRestorable).toEqual([made])
+      await history.restoreStage('stage', 's')
+      expect(existsSync(out)).toBe(false)
+    } finally { await history.close() }
+  })
+
+  // The same folder that held a file git listed before was there: nothing about it is unknown.
+  it.skipIf(!posixUser)('takes a folder below one holding nothing git stores as there before when git listed a file in it', async () => {
+    const { workspace, settings, details } = fixture()
+    const held = join(workspace, 'out', 'held')
+    mkdirSync(held, { recursive: true }); writeFileSync(join(held, 'locked.txt'), 'L'); chmodSync(join(held, 'locked.txt'), 0o000)
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(held, 'f.txt'), 'made') })
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint.notRestorable).toEqual([])
+      expect(checkpoint.changes).toEqual([{ path: join(held, 'f.txt'), kind: 'created' }])
+      await history.restore(checkpoint.id)
+      expect(readdirSync(held)).toEqual(['locked.txt'])
+    } finally { await history.close() }
+  })
+
   // What stood in a folder git could not open before the command is unknown, a file it tracked there included.
   for (const where of ['tracked', 'nested', 'new'] as const) it.skipIf(!posixUser)(`lists a file in a folder git could not open before the command as not restorable (${where})`, async () => {
     const { workspace, settings, details } = fixture()

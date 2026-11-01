@@ -266,15 +266,23 @@ export function unstoredState(listings: Buffer[], warnings: { text: string; comp
 
 /**
  * A path absent from a baseline's tree as the disk held it, from git's listings: a file git listed and could not store; a
- * folder it listed as holding nothing it stored; below one, a folder the after side holds, as it may have stood there
- * already, kept rather than removed by a restore; else absent. Below a folder git could not open, the caller reads it unknown.
+ * folder it listed as holding nothing it stored; below one, a folder the after side holds, there before where git listed
+ * an entry inside it, and otherwise unknown, as git lists no empty folder below one it lists: reason `unlisted`, not
+ * restorable, never taken as there before (R2.2 of the Codex recheck); else absent. Below a folder git could not open,
+ * the caller reads it unknown.
  */
 function notStored(baseline: CommandBaseline, name: string, after: Entry | undefined): Entry | undefined {
   if (baseline.unstored.has(name)) return { kind: 'unreadable', mode: 0 }
   const folder = enclosing(baseline.untrackedFolders, name)
   if (folder === name) return { kind: 'directory', mode: after?.kind === 'directory' ? after.mode : 0o755 }
-  if (folder !== undefined && after?.kind === 'directory') return { kind: 'directory', mode: after.mode }
-  return undefined
+  if (folder === undefined || after?.kind !== 'directory') return undefined
+  return listedInside(baseline, name) ? { kind: 'directory', mode: after.mode } : { kind: 'unreadable', mode: 0, reason: 'unlisted' }
+}
+
+/** Whether git's listings name an entry inside the folder `name`: a file it could not store, a folder it listed, or one it could not open. */
+function listedInside(baseline: CommandBaseline, name: string): boolean {
+  const inside = `${name}/`
+  return [baseline.unstored, baseline.untrackedFolders, baseline.unknown].some(names => [...names].some(listed => listed.startsWith(inside)))
 }
 
 /** `name` itself, or the nearest folder above it, where `folders` holds one. */
