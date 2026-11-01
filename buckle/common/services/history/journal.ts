@@ -88,6 +88,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...input.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
   const baselines = new Map<string, CommandBaseline[]>()
+  /** Each running command whose before phase git ran but did not finish: what it wrote is swept after the call (X6). */
+  const cutShort = new Set<string>()
   /** The sweep after a command, off its call path (X6): its timer, and the run close waits for. */
   let sweepTimer: ReturnType<typeof setTimeout> | undefined
   let sweeping: Promise<void> | undefined
@@ -260,8 +262,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       catch (error) {
         if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
-        // What git read through a folder swapped while it read goes at once, nothing naming it (X9).
+        // What git read through a folder swapped while it read goes at once, nothing naming it (X9); what a git child
+        // stopped part way wrote goes in the sweep after the call (X6 of the Codex recheck).
         if (error instanceof FolderReplacedError) sweepBlobs(read())
+        else if (!(error instanceof HostGitNeededError)) cutShort.add(id)
       }
     }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...resetNote(), ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
@@ -312,8 +316,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       try { if (read().checkpoints.find(saved => saved.id === record.id)?.status !== record.status) await saveRecord(record) }
       catch (failure) { unsavedRecord(record, failure) }
     }
-    // A command's git add can write what nothing names: a file over the cap, or one changed outside since (X6).
-    if (baseline) scheduleSweep()
+    // A command's git add can write what nothing names: a file over the cap, one changed outside since, or what a
+    // stopped one wrote (X6).
+    if (cutShort.delete(record.id) || baseline) scheduleSweep()
   }
   /** The sweep after a command, under the lock once its call has left it, so the call never waits on it (X6). */
   function scheduleSweep(): void {

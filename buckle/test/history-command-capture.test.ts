@@ -5,6 +5,7 @@ import { join } from 'pathe'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { HOST_GIT_REASON, openChangeHistory } from '../common/services/history/journal.js'
 import { indexEntries, leftovers } from '../common/services/history/command-capture.js'
+import { openObjectStore } from '../common/services/history/object-store.js'
 import { historyObjects } from './support/history-objects.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -331,6 +332,22 @@ describe('a command\'s capture that takes too long', () => {
       expect(Date.now() - started).toBeLessThan(10_000)
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
       expect(read(join(workspace, 'src', 'a.txt'))).toBe('a2')
+    } finally { await history.close() }
+  })
+
+  // X6 of the Codex recheck: what a git add cut short wrote before it stopped is swept after the command, as after any other.
+  it.skipIf(process.platform === 'win32')('reclaims what git add wrote before its budget stopped it', async () => {
+    const { workspace, directory, settings, details } = fixture()
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500 })
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      let orphan = ''
+      gitAdd.hook = () => { void openObjectStore(directory).put(Buffer.from('CUT SHORT')).then(id => { orphan = id }) }
+      gitAdd.slow = 20
+      await expect(history.run(details, async () => 'ran')).resolves.toBe('ran')
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
+      expect(orphan).not.toBe('')
+      await vi.waitFor(() => expect(historyObjects(directory).some(content => content.includes('CUT SHORT'))).toBe(false))
     } finally { await history.close() }
   })
 
