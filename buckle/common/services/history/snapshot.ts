@@ -239,26 +239,32 @@ function stillAsChecked(directory: PinnedDirectory, name: string, expected: Entr
   try { return digest(readFileSync(descriptor)) === expected.hash } finally { closeSync(descriptor) }
 }
 
-/**
- * Each entry still moved aside goes back under its own name where that name is free; otherwise it stays aside, kept. The
- * name is made, a hard link to a file or the link itself again, which fails where another writer made one since; never
- * renamed onto, which would write over it (R1.1 of the Codex recheck).
- */
+/** Each entry still moved aside goes back under its own name where that name is free (returnAside); otherwise it stays aside, kept. */
 function putBack(directories: ReturnType<typeof createDirectoryCache>, displaced: Map<string, string>, platform?: NodeJS.Platform): void {
   for (const [path, aside] of [...displaced].reverse()) {
     try {
       const { directory, name } = directories.parentOf(path, false)
-      const [from, to] = [directory.child(aside), directory.child(name)]
-      const stat = lstatSync(from)
-      if (stat.isSymbolicLink()) restoreLink({ target: readlinkSync(from), at: to, parent: directory.self, shown: path, platform })
-      else try { linkSync(from, to) } catch (error) {
-        if (!(error instanceof Error && 'code' in error && NO_HARD_LINK.has(String(error.code))) || lstatSync(to, { throwIfNoEntry: false })) throw error
-        createRestoredFile({ directory, name, path, content: readFileSync(from), mode: modeOf(stat) })
-      }
-      rmSync(from)
+      returnAside({ directory, aside, name, path, platform })
     } catch { /* left aside under its displaced name, its content kept */ }
   }
   displaced.clear()
+}
+
+/**
+ * Puts the file or link moved aside to `aside` back under `name` by making the name, a hard link to a file, the link itself
+ * again, or where the volume makes no hard link an exclusive copy, each of which fails where another writer made one
+ * since; never renamed onto, which would write over it (R1.1 of the Codex recheck). Throws where it cannot, the entry
+ * left aside with its content kept. `keepForeign`: passed on to createRestoredFile.
+ */
+function returnAside(input: { directory: PinnedDirectory; aside: string; name: string; path: string; platform?: NodeJS.Platform; keepForeign?: boolean }): void {
+  const [from, to] = [input.directory.child(input.aside), input.directory.child(input.name)]
+  const stat = lstatSync(from)
+  if (stat.isSymbolicLink()) restoreLink({ target: readlinkSync(from), at: to, parent: input.directory.self, shown: input.path, platform: input.platform })
+  else try { linkSync(from, to) } catch (error) {
+    if (!(error instanceof Error && 'code' in error && NO_HARD_LINK.has(String(error.code))) || lstatSync(to, { throwIfNoEntry: false })) throw error
+    createRestoredFile({ directory: input.directory, name: input.name, path: input.path, content: readFileSync(from), mode: modeOf(stat), ...(input.keepForeign ? { keepForeign: true } : {}) })
+  }
+  rmSync(from)
 }
 
 function codeOf(error: unknown): string {
@@ -350,22 +356,40 @@ function writeRestoredFile(input: { directory: PinnedDirectory; name: string; pa
 
 /**
  * Creates `name` with O_EXCL, which fails where any entry stands, and writes the content through that descriptor. A
- * write that fails removes the file only while the name still holds the one this created; one a crash cuts short is left
- * as the restore's interrupted checkpoint names it.
+ * write that fails removes the file this created and nothing else (discardMade); one a crash cuts short is left as the
+ * restore's interrupted checkpoint names it. `keepForeign`: passed on to discardMade.
  */
-function createRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number }): void {
+function createRestoredFile(input: { directory: PinnedDirectory; name: string; path: string; content: Buffer; mode: number; keepForeign?: boolean }): void {
   let descriptor: number
   try { descriptor = openBeneath(input.directory, input.name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, input.path, input.mode) }
   catch (error) { if (isExisting(error)) throw new Error(APPEARED, { cause: error }); throw error }
+  let made: Stats | undefined
   try {
     writeFileSync(descriptor, input.content)
     setDescriptorMode(descriptor, input.mode)
   } catch (error) {
-    const made = fstatSync(descriptor)
-    const there = lstatSync(input.directory.child(input.name), { throwIfNoEntry: false })
-    if (there && there.ino === made.ino && there.dev === made.dev) rmSync(input.directory.child(input.name), { force: true })
+    made = fstatSync(descriptor)
     throw error
-  } finally { closeSync(descriptor) }
+  } finally {
+    closeSync(descriptor)
+    if (made) discardMade({ ...input, made })
+  }
+}
+
+/**
+ * Removes the file `made` that a failed write left at `name`, never another entry: the name is first renamed aside to a
+ * fresh one, so the entry checked there is the one removed. An entry that is not the one made, another writer's that
+ * replaced it since, goes back under the name where that is still free (returnAside), or stays aside, kept. With
+ * `keepForeign`, as while one is put back, it stays aside, so this goes no deeper (R2.1 of the Codex recheck). Never throws.
+ */
+function discardMade(input: { directory: PinnedDirectory; name: string; path: string; made: Stats; keepForeign?: boolean }): void {
+  const aside = `${input.name}.buckle-failed-${randomUUID()}`
+  try {
+    renameSync(input.directory.child(input.name), input.directory.child(aside))
+    const there = lstatSync(input.directory.child(aside))
+    if (there.ino === input.made.ino && there.dev === input.made.dev) rmSync(input.directory.child(aside))
+    else if (!input.keepForeign) returnAside({ directory: input.directory, aside, name: input.name, path: input.path, keepForeign: true })
+  } catch { /* left under its name, or aside under its fresh one, never removed */ }
 }
 
 /** What a link answers on a volume or share that makes no hard link (FAT, some network shares), where a rename stands in. */

@@ -9,7 +9,9 @@ import { blobId } from '../common/services/history/object-store.js'
 import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
 
 // `appear`: where the volume makes no hard link, an outside writer makes that file just as the restore puts its own there (R1.1).
-const fault = vi.hoisted(() => ({ enabled: false, writes: 0, noLink: false, appear: undefined as string | undefined }))
+// `failWrite`: the write into the file a restore creates exclusively at that path fails; with `other`, another writer then
+// puts its own file at that name the moment the cleanup next reaches it, to look at it or to take it (`replace`, R2.1).
+const fault = vi.hoisted(() => ({ enabled: false, writes: 0, noLink: false, appear: undefined as string | undefined, failWrite: undefined as { path: string; other: boolean } | undefined, failing: undefined as number | undefined, replace: undefined as string | undefined }))
 // A restored file is put in place by a hard link, or a rename where the volume makes none: either fails on the second.
 vi.mock('node:fs', async (importOriginal) => {
   const fs = await importOriginal<typeof import('node:fs')>()
@@ -19,15 +21,33 @@ vi.mock('node:fs', async (importOriginal) => {
     if (path === undefined || String(to).includes('.buckle-') || !String(to).endsWith(`/${path.split('/').at(-1)}`)) return
     fault.appear = undefined; fs.writeFileSync(path, 'outside')
   }
+  const named = (path: unknown, at: string) => !String(path).includes('.buckle-') && String(path).endsWith(`/${at.split('/').at(-1)}`)
+  const replaced = (path: unknown) => {
+    const at = fault.replace
+    if (at === undefined || !named(path, at)) return
+    fault.replace = undefined; fs.writeFileSync(`${at}.other`, 'outside'); fs.renameSync(`${at}.other`, at)
+  }
   return {
     ...fs,
-    renameSync: (...args: Parameters<typeof fs.renameSync>) => { placed(args[0]); if (String(args[0]).includes('.buckle-')) outside(args[1]); return fs.renameSync(...args) },
+    renameSync: (...args: Parameters<typeof fs.renameSync>) => { placed(args[0]); replaced(args[0]); if (String(args[0]).includes('.buckle-')) outside(args[1]); return fs.renameSync(...args) },
+    lstatSync: ((...args: Parameters<typeof fs.lstatSync>) => { const found = fs.lstatSync(...args); replaced(args[0]); return found }) as typeof fs.lstatSync,
     symlinkSync: (...args: Parameters<typeof fs.symlinkSync>) => { outside(args[1]); return fs.symlinkSync(...args) },
-    openSync: (...args: Parameters<typeof fs.openSync>) => { if (typeof args[1] === 'number' && (args[1] & fs.constants.O_EXCL)) outside(args[0]); return fs.openSync(...args) },
+    openSync: (...args: Parameters<typeof fs.openSync>) => {
+      if (typeof args[1] === 'number' && (args[1] & fs.constants.O_EXCL)) outside(args[0])
+      const descriptor = fs.openSync(...args)
+      if (fault.failWrite && typeof args[1] === 'number' && (args[1] & fs.constants.O_EXCL) && named(args[0], fault.failWrite.path)) fault.failing = descriptor
+      return descriptor
+    },
+    writeFileSync: (...args: Parameters<typeof fs.writeFileSync>) => {
+      if (fault.failing === undefined || args[0] !== fault.failing) return fs.writeFileSync(...args)
+      if (fault.failWrite?.other) fault.replace = fault.failWrite.path
+      fault.failing = undefined; fault.failWrite = undefined
+      throw Object.assign(new Error('injected write failure'), { code: 'ENOSPC' })
+    },
     linkSync: (...args: Parameters<typeof fs.linkSync>) => {
       placed(args[0])
       if (String(args[0]).includes('.buckle-displaced-')) outside(args[1])
-      if (fault.noLink && String(args[0]).includes('.buckle-restore-')) throw Object.assign(new Error('fixture volume makes no hard link'), { code: 'EPERM' })
+      if (fault.noLink && String(args[0]).includes('.buckle-')) throw Object.assign(new Error('fixture volume makes no hard link'), { code: 'EPERM' })
       return fs.linkSync(...args)
     },
   }
@@ -37,7 +57,7 @@ const roots: string[] = []
 const originalPath = process.env.PATH
 afterEach(() => {
   process.env.PATH = originalPath
-  fault.enabled = false; fault.writes = 0; fault.noLink = false; fault.appear = undefined
+  fault.enabled = false; fault.writes = 0; fault.noLink = false; fault.appear = undefined; fault.failWrite = undefined; fault.failing = undefined; fault.replace = undefined
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 async function fixture(extra: Parameters<typeof openChangeHistory>[0] extends infer T ? Partial<T> : never = {}) {
@@ -158,6 +178,19 @@ it('keeps an entry moved aside, never writing it over a file another writer make
   expect([readFileSync(first, 'utf8'), readFileSync(second, 'utf8')]).toEqual(['outside', 'edited outside'])
   const aside = readdirSync(root).filter(name => name.includes('.buckle-displaced-'))
   expect(aside.map(name => readFileSync(join(root, name), 'utf8'))).toEqual(['checked'])
+})
+
+// R2.1 of the Codex recheck: where the volume makes no hard link and a restored file's write fails, the cleanup removes the
+// file it made and nothing else, never one another writer put at that name as the cleanup reached it.
+for (const other of [true, false]) it(`removes only the file it made as a failed restore write is cleaned up${other ? ', never one another writer puts there' : ''}`, () => {
+  const root = mkdtempSync(join(tmpdir(), 'history-cleanup-')); roots.push(root)
+  const a = join(root, 'a')
+  fault.noLink = true; fault.failWrite = { path: a, other }
+  const target = { [a]: { kind: 'file' as const, mode: 0o644, hash: blobId(Buffer.from('restored')) } }
+  expect(() => applySnapshot({ current: {}, target, paths: [a], content: () => Buffer.from('restored'), roots: [root] })).toThrow('injected write failure')
+  expect([fault.failWrite, fault.replace]).toEqual([undefined, undefined])
+  expect(existsSync(a) ? readFileSync(a, 'utf8') : null).toBe(other ? 'outside' : null)
+  expect(readdirSync(root).filter(name => name.includes('.buckle-') || name.endsWith('.other'))).toEqual([])
 })
 
 // Slice F2, items 3 and 6: the hard link and the FIFO never refuse the call; git records the write.
