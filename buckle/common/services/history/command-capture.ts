@@ -182,9 +182,9 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   /**
    * The repository a root's shadow index refers to, settled before a command (Slice F3): the objects folder named, or
    * undefined where the index refers to none. A record that stands (standing) is kept, and `holds` checks that the
-   * repository still holds each blob the index takes from it (G3, G4 of the Codex review). Any other record goes with
-   * the index, and the root is seeded again (item 7). A root with no index, or with one this process has not written
-   * that refers to no repository, is seeded where it lies in one.
+   * repository still has a commit at HEAD and holds each blob the index takes from it (G3, G4 of the Codex review, H1 of
+   * its recheck). Any other record goes with the index, and the root is seeded again (item 7). A root with no index, or
+   * with one this process has not written that refers to no repository, is seeded where it lies in one.
    */
   async function settleSource(found: Program, state: { root: string; git: string; protect: string[] }, budget: CaptureBudget): Promise<Settled | undefined> {
     const indexed = inspect(join(state.git, 'index')) !== undefined
@@ -192,7 +192,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     if (record === 'invalid' || (record !== undefined && !indexed)) return rebuild(found, state, budget)
     if (record !== undefined) {
       const ids = standing(state, record)
-      return ids ? { objects: record.objects, holds: holds(found, state, ids, record.objects, budget).catch(unlessStopped(false)) } : rebuild(found, state, budget)
+      return ids ? { objects: record.objects, holds: holds(found, state, ids, record, budget).catch(unlessStopped(false)) } : rebuild(found, state, budget)
     }
     if (indexed && rewritten.has(state.root)) return undefined
     const seeded = await seed(found, state, budget).catch(unlessStopped(undefined))
@@ -221,15 +221,19 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
 
   /**
-   * Whether the repository's objects folder, read alone, holds each of `ids`: never the history's own copy, which the
-   * sweep may remove once no checkpoint holds it (G3). One look at each object's file or a pack's index, before each
-   * command, as no folder's time on disk proves an object is still there (G4). Like git add beside it, it takes what is
-   * left of the budget, as its work grows with the repository.
+   * Whether the repository `record` names still stands as a seed found it (item 1), checked by git from the root: the
+   * same objects folder and index, with a commit at HEAD, which a switch to a branch with none takes away (H1 of the
+   * Codex recheck); and whether its objects folder, read alone, holds each of `ids`: never the history's own copy, which
+   * the sweep may remove once no checkpoint holds it (G3). One look at each object's file or a pack's index, before each
+   * command, as no folder's time on disk proves an object is still there (G4). Both git steps run together, beside git
+   * add; the look takes what is left of the budget, as git add does, as its work grows with the repository.
    */
-  async function holds(found: Program, state: { root: string; git: string }, ids: string[], objects: string, budget: CaptureBudget): Promise<boolean> {
-    if (!ids.length) return true
-    const present = parseExistence(await git(found, state, ['cat-file', '--batch-check=%(objectname)'], { data: `${ids.join('\n')}\n`, objects, budget, whole: true }))
-    return ids.every(id => present.has(id))
+  async function holds(found: Program, state: { root: string; git: string }, ids: string[], record: SourceRecord, budget: CaptureBudget): Promise<boolean> {
+    const [location, present] = await both(
+      locate(found, state.root, budget).then(output => parseLocation(output.toString())),
+      ids.length ? git(found, state, ['cat-file', '--batch-check=%(objectname)'], { data: `${ids.join('\n')}\n`, objects: record.objects, budget, whole: true }).then(parseExistence) : Promise.resolve(new Set<string>()),
+    )
+    return location !== undefined && realPath(location.objects) === record.objects && location.index === record.index && ids.every(id => present.has(id))
   }
 
   /**

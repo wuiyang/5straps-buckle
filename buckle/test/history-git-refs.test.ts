@@ -421,6 +421,25 @@ describe('a command after its folder\'s repository is lost', () => {
     } finally { await history.close() }
   })
 
+  // H1 of the Codex recheck of F3: a commit at HEAD is checked again before each command, with the objects and the index.
+  it('takes the usual path once the repository\'s HEAD names a branch with no commit', async () => {
+    const made = repoFixture()
+    const history = await openChangeHistory(made.settings)
+    try {
+      await history.run(made.details, async () => { writeFileSync(join(made.workspace, 'src', 'new.txt'), 'first\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(true)
+      made.git(['symbolic-ref', 'HEAD', 'refs/heads/unborn'])
+      expect(() => made.git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])).toThrow()
+      await history.run({ ...made.details, stageId: 'next' }, async () => { writeFileSync(join(made.workspace, 'src', 'f1.txt'), 'rewritten\n') })
+      expect(existsSync(join(made.shadow, 'source'))).toBe(false)
+      expect([...committedIds(made)].filter(([name]) => name !== 'src/changed.txt').every(([, id]) => made.store.has(id))).toBe(true)
+      const checkpoint = (await history.list()).at(-1)!
+      expect(checkpoint).toMatchObject({ status: 'complete', restorable: true, notRestorable: [], changes: [{ path: join(made.workspace, 'src', 'f1.txt'), kind: 'modified' }] })
+      await history.restore(checkpoint.id)
+      expect(read(join(made.workspace, 'src', 'f1.txt'))).toBe('committed 1\n')
+    } finally { await history.close() }
+  })
+
   it('rebuilds its record once the repository is rewritten and its old objects pruned, and stays restorable', async () => {
     const made = repoFixture()
     const history = await openChangeHistory(made.settings)
