@@ -15,8 +15,19 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 // diff-tree names what changed. Nothing ignored is stored or restored; only a count of ignored changes is kept. Git
 // writes loose objects into history's own object folder, so a restore needs no git.
 
+// A hook run once as git add starts, before the child reads the folder: a folder swapped while git reads it (X9).
+const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined }))
+vi.mock('../common/services/history/git-store.js', async importOriginal => {
+  const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
+  return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
+    if (input.operation === 'add' && gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
+    return actual.runProgram(input)
+  } }
+})
+
 const roots: string[] = []
 afterEach(() => {
+  gitAdd.hook = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { execFileSync('chmod', ['-R', 'u+rwx', root]); rmSync(root, { recursive: true, force: true }) }
 })
@@ -259,6 +270,39 @@ describe('a command\'s checkpoint, at the edges of what git reads', () => {
       expect(checkpoint.changes.map(change => change.path)).not.toContain(file)
       await history.restore(checkpoint.id).catch(() => undefined)
       expect(read(file)).toBe('C')
+    } finally { await history.close() }
+  })
+})
+
+// X9 and X6 of the Codex review of 670f1dc2..01d3b0c9: what a command's capture wrote that no checkpoint and no shadow
+// index names is reclaimed under the lock: a rejected capture's objects at once, a file over the cap and an abandoned
+// temporary by the sweep that follows each command.
+describe('what a command\'s capture wrote that nothing names', () => {
+  it.skipIf(process.platform === 'win32')('keeps nothing git read through a link swapped in while it read the folder', async () => {
+    const { root, workspace, directory, settings, details } = fixture()
+    const elsewhere = join(root, 'elsewhere'); mkdirSync(elsewhere); writeFileSync(join(elsewhere, 'key'), 'PRIVATE KEY')
+    const history = await openChangeHistory(settings)
+    try {
+      gitAdd.hook = () => { renameSync(workspace, join(root, 'moved')); symlinkSync(elsewhere, workspace) }
+      await expect(history.run(details, async () => 'ran')).resolves.toBe('ran')
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('replaced by a link') })
+      expect(historyObjects(directory).some(content => content.includes('PRIVATE'))).toBe(false)
+    } finally { await history.close() }
+  })
+
+  it('reclaims a file over the content cap and an abandoned temporary after the command', async () => {
+    const { workspace, directory, settings, details } = fixture({ maxFileBytes: 64 })
+    const history = await openChangeHistory(settings)
+    try {
+      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+      const folder = join(directory, 'blobs', 'ab'); mkdirSync(folder, { recursive: true })
+      for (const name of ['tmp-0123', 'tmp_obj_4567']) writeFileSync(join(folder, name), 'abandoned')
+      await history.run(details, async () => { writeFileSync(join(workspace, 'big.bin'), Buffer.alloc(200, 7)) })
+      expect((await history.list()).at(-1)).toMatchObject({ notRestorable: [join(workspace, 'big.bin')] })
+      await vi.waitFor(() => {
+        expect(historyObjects(directory).some(content => content.length > 200)).toBe(false)
+        expect(readdirSync(folder).filter(name => name.startsWith('tmp'))).toEqual([])
+      })
     } finally { await history.close() }
   })
 })

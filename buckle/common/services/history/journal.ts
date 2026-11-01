@@ -79,6 +79,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   const commands = createCommandCapture({ directory: input.directory, objects, excluded: () => [...input.excluded, input.directory], allowed: () => settings.allowHostGit, maxFileBytes: () => settings.maxFileBytes, ...(input.untrusted ? { untrusted: input.untrusted } : {}) })
   /** Each running command's state before it ran, by checkpoint, until its finish reads what changed. */
   const baselines = new Map<string, CommandBaseline[]>()
+  /** The sweep after a command, off its call path (X6): its timer, and the run close waits for. */
+  let sweepTimer: ReturnType<typeof setTimeout> | undefined
+  let sweeping: Promise<void> | undefined
   /** Each stored object's bytes on disk, as its id names one content for good: read once, then kept. */
   const sizes = new Map<string, number>()
   /** The newest checkpoints the journal could not take, for their calls' notices. */
@@ -222,6 +225,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       catch (error) {
         if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
+        // What git read through a folder swapped while it read goes at once, nothing naming it (X9).
+        if (error instanceof FolderReplacedError) sweepBlobs(read())
       }
     }
     const record: Checkpoint = { ...details, id, stageId: details.stageId ?? turnId, turnId, turnStageId: stage ?? null, requestId: details.requestId?.slice(0, 200), createdAt: new Date(now()).toISOString(), status: 'pending', baselineAvailable: reason === undefined, before, restorable: reason === undefined, ...resetNote(), ...(reason ? { reason } : {}), content: 'blobs', scope: others, ...restore }
@@ -243,6 +248,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   async function finishScoped(record: Checkpoint): Promise<void> {
     const baseline = baselines.get(record.id)
     baselines.delete(record.id)
+    let replaced = false
     try {
       const after = await captureScope({ scope: record.scope ?? [], store: objects, ...scopeLimits() })
       if (!record.baselineAvailable) record.before = after
@@ -260,15 +266,30 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       record.status = 'interrupted'; record.restorable = false
       record.reason = `History could not record the files after this call (${causeText(error)}); this checkpoint is not restorable. Later writes can continue`
       logger.warn(`Checkpoint ${record.id}: ${record.reason}`, { phase: 'after', cause: causeOf(error) })
+      replaced = error instanceof FolderReplacedError
     }
     compact(record)
     // One journal write: the finished checkpoint, with the turns retention drops beside it (item 5).
-    try { await pruneRetained(record) }
+    try { await pruneRetained(record, { sweep: replaced }) }
     catch (error) {
       logger.warn('History could not drop its oldest turns; it tries again after the next write', { cause: causeOf(error) })
       try { if (read().checkpoints.find(saved => saved.id === record.id)?.status !== record.status) await saveRecord(record) }
       catch (failure) { unsavedRecord(record, failure) }
     }
+    // A command's git add can write what nothing names: a file over the cap, or one changed outside since (X6).
+    if (baseline) scheduleSweep()
+  }
+  /** The sweep after a command, under the lock once its call has left it, so the call never waits on it (X6). */
+  function scheduleSweep(): void {
+    if (sweepTimer || sweeping || closed) return
+    sweepTimer = setTimeout(() => {
+      sweepTimer = undefined
+      if (closed) return
+      sweeping = locked(async () => { sweepBlobs(read()) }, { immediate: true })
+        .catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History could not sweep its stored objects; it tries again after the next command', { cause: causeOf(error) }) })
+        .finally(() => { sweeping = undefined })
+    }, 0)
+    sweepTimer.unref()
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -305,7 +326,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
    * fit is saved with its paths and no content. Then it deletes the objects nothing names. A retained checkpoint is
    * never rewritten, and the workspace is never read (B2, A9).
    */
-  async function pruneRetained(current?: Checkpoint): Promise<void> {
+  async function pruneRetained(current?: Checkpoint, options: { sweep?: boolean } = {}): Promise<void> {
     const state = read()
     if (current) {
       const index = state.checkpoints.findIndex(record => record.id === current.id)
@@ -333,7 +354,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (current || dropped.length) await save(state)
     // Only once the journal no longer lists their checkpoints do the old stores go (X8).
     if (expired) discardOldStores()
-    if (dropped.length || capped) sweepBlobs(state)
+    if (dropped.length || capped || options.sweep) sweepBlobs(state)
     scheduleCollection(state)
   }
   /** Whether a store written before the object store is left: a checkpoint of one in the journal, or its files (item 7). */
@@ -402,8 +423,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   /**
    * Removes each object no restorable checkpoint names and no shadow index reuses for the next command's before state:
    * a dropped turn's content, an over-cap file's, and the trees git wrote. An index history cannot read removes nothing.
+   * The temporaries a stopped write left go too: only the lock's holder sweeps, so none is in flight (X6).
    */
   function sweepBlobs(state: State): void {
+    objects.clean()
+    for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
     const named = namedObjects(state.checkpoints)
@@ -636,7 +660,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     }, { owner: true, ...options }),
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
-    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); await gc; await Promise.all(deletions); await activity.close(); closed = true },
+    async close(): Promise<void> { if (closed) return; if (gcTimer) clearTimeout(gcTimer); if (sweepTimer) clearTimeout(sweepTimer); await gc; await sweeping; await Promise.all(deletions); await activity.close(); closed = true },
   }
 }
 export type ChangeHistory = Awaited<ReturnType<typeof openChangeHistory>>

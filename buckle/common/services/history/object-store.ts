@@ -93,9 +93,22 @@ export function openObjectStore(directory: string) {
     return ids
   }
 
+  /**
+   * Removes each temporary a write left: this store's `tmp-` files and git's `tmp_obj_` and `tmp_pack_` ones, which a
+   * stopped process leaves and no listing names (X6). Only under the execution lock, when no write is in flight.
+   */
+  function clean(): void {
+    if (!lstatSync(root, { throwIfNoEntry: false })?.isDirectory()) return
+    for (const folder of readdirSync(root)) {
+      if (!/^([0-9a-f]{2}|pack)$/.test(folder)) continue
+      for (const name of readdirSync(join(root, folder))) if (/^tmp[-_]/.test(name)) rmSync(join(root, folder, name), { force: true })
+    }
+  }
+
   return {
     put,
     read,
+    clean,
     has: (id: string): boolean => sizeAt(pathOf(id)) !== undefined,
     size,
     /** The bytes `id` takes on disk; undefined where the store does not hold it. */
