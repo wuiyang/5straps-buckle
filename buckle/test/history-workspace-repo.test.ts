@@ -20,6 +20,17 @@ function repository() {
   git(['init', '--quiet']); git(['add', '-A'])
   return { root, top, git }
 }
+/**
+ * A version 4 index of `count` entries, its checksum left zero as `index.skipHash` writes it: the first named with
+ * `first` bytes, each after it the whole name before it and `more` bytes besides.
+ */
+function prefixReuse(input: { first: number; count: number; more?: number }): Buffer {
+  const fixed = Buffer.alloc(62); fixed.writeUInt32BE(0o100644, 24); fixed.fill(0xab, 40, 60); fixed.writeUInt16BE(0x0fff, 60)
+  const header = Buffer.alloc(12); header.write('DIRC', 0, 'latin1'); header.writeUInt32BE(4, 4); header.writeUInt32BE(input.count, 8)
+  const parts = [header]
+  for (let at = 0; at < input.count; at++) parts.push(fixed, Buffer.from([0]), Buffer.alloc(at ? input.more ?? 0 : input.first, 0x61), Buffer.from([0]))
+  return Buffer.concat([...parts, Buffer.alloc(20)])
+}
 /** `git ls-files -s` of an index: each entry's mode, blob id, stage, and name. */
 function listed(git: ReturnType<typeof repository>['git'], index?: string): string[] { return git(['ls-files', '-s'], index ? { GIT_INDEX_FILE: index } : {}).trim().split('\n') }
 
@@ -55,6 +66,23 @@ describe('a repository\'s index read in-process', () => {
     expect(parseIndex(readFileSync(join(top, '.git', 'index')))?.plain).toBe(false)
     git(['update-index', '--no-split-index'])
     const index = readFileSync(join(top, '.git', 'index')); index[40] = index[40]! ^ 1
+    expect(parseIndex(index)).toBeUndefined()
+  })
+
+  // G1 of the Codex recheck of F3: a version 4 name reuses the end of the one before it, so a short index can name far
+  // more bytes than it holds. Past git's 4,096 bytes for one name, or 64 MiB for all, it reads as no index to seed from.
+  it('reads a version 4 index whose names reuse one past git\'s limit, or name more than the input cap in all, as none to seed from', () => {
+    expect(parseIndex(prefixReuse({ first: 4_097, count: 2 }))).toBeUndefined()
+    expect(parseIndex(prefixReuse({ first: 4_000, count: 2, more: 97 }))).toBeUndefined()
+    expect(parseIndex(prefixReuse({ first: 4_096, count: 16_385 }))).toBeUndefined()
+    // Within both: every entry read, its name expanded in full.
+    const within = parseIndex(prefixReuse({ first: 4_096, count: 16_384 }))!
+    expect([within.plain, within.entries.length, within.entries.at(-1)!.name.length]).toEqual([true, 16_384, 4_096])
+    expect(parseIndex(prefixReuse({ first: 4_000, count: 2, more: 96 }))!.entries.map(entry => entry.name.length)).toEqual([4_000, 4_096])
+  })
+
+  it('reads a version 4 index that says it holds more entries than the input cap can as none to seed from, before reading one', () => {
+    const index = prefixReuse({ first: 8, count: 2 }); index.writeUInt32BE(1_048_577, 8)
     expect(parseIndex(index)).toBeUndefined()
   })
 

@@ -41,6 +41,14 @@ const SEEDED_MODES = new Set([0o100644, 0o100755])
  * process, so a folder in a larger repository takes today's path.
  */
 const INDEX_BYTES_MAX = 64 * 1_048_576
+/**
+ * What a version 4 index may name, as its names reuse the end of the one before (G1 of the Codex recheck), so a short
+ * input could name far more bytes than it holds: each name git's 4,096 bytes at most, and the names in all, and their
+ * count, what a version 2 index of INDEX_BYTES_MAX holds at most, its names a view of it and each entry 64 bytes of it.
+ */
+const NAME_BYTES_MAX = 4_096
+const NAMES_BYTES_MAX = INDEX_BYTES_MAX
+const INDEX_ENTRIES_MAX = INDEX_BYTES_MAX / 64
 
 /** The arguments of the one `git rev-parse` that locates a folder's repository; its answer reads with `parseLocation`. */
 export const LOCATE_ARGS = ['rev-parse', '--path-format=absolute', '--show-object-format', '--show-toplevel', '--git-path', 'index', '--git-path', 'objects', 'HEAD^{commit}']
@@ -89,20 +97,22 @@ export function readRepositoryIndex(path: string): Buffer | undefined {
  * A git index read in full, version 2 to 4, its trailing checksum checked (all zero where `index.skipHash` left it).
  * `plain` holds where git needs nothing beyond the entries to read it: no extension a reader must understand (a split
  * index's `link`, a sparse index's `sdir`) and no entry outside a sparse checkout (skip-worktree). undefined for
- * anything else, or data cut short.
+ * anything else, or data cut short, or a version 4 index past what it may name, which a seed takes as not plain: before
+ * its checksum or any entry is read where its count is past it, else at the first name past it, none copied.
  */
 export function parseIndex(index: Buffer): { entries: IndexEntry[]; plain: boolean } | undefined {
   if (index.length < 32 || index.toString('latin1', 0, 4) !== 'DIRC') return undefined
   const version = index.readUInt32BE(4)
-  if (version < 2 || version > 4) return undefined
+  const count = index.readUInt32BE(8)
+  if (version < 2 || version > 4 || (version === 4 && count > INDEX_ENTRIES_MAX)) return undefined
   const end = index.length - 20
   const sum = index.subarray(end)
   if (!sum.every(byte => byte === 0) && !createHash('sha1').update(index.subarray(0, end)).digest().equals(sum)) return undefined
-  const count = index.readUInt32BE(8)
   const entries: IndexEntry[] = []
   let plain = true
   let offset = 12
   let previous: Buffer = Buffer.alloc(0)
+  let named = 0
   for (let entry = 0; entry < count; entry++) {
     const start = offset
     if (start + 62 > end) return undefined
@@ -119,7 +129,10 @@ export function parseIndex(index: Buffer): { entries: IndexEntry[]; plain: boole
       while (byte & 128) { byte = index[at++]; if (byte === undefined || at > end) return undefined; strip = (strip + 1) * 128 + (byte & 127) }
       const nul = index.indexOf(0, at)
       if (nul < 0 || nul >= end || strip > previous.length) return undefined
-      name = Buffer.concat([previous.subarray(0, previous.length - strip), index.subarray(at, nul)])
+      const length = previous.length - strip + nul - at
+      named += length
+      if (length > NAME_BYTES_MAX || named > NAMES_BYTES_MAX) return undefined
+      name = Buffer.concat([previous.subarray(0, previous.length - strip), index.subarray(at, nul)], length)
       offset = nul + 1
     } else {
       const nul = index.indexOf(0, at)
