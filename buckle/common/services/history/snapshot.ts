@@ -173,12 +173,16 @@ export function applySnapshot(input: { target: Snapshot; current: Snapshot; path
     for (const path of input.paths) {
       const current = input.current[path]
       if (current?.kind !== 'file' && current?.kind !== 'symlink') continue
-      const { directory, name } = directories.parentOf(path, false)
-      const aside = `${name}.buckle-displaced-${randomUUID()}`
-      try { renameSync(directory.child(name), directory.child(aside)) }
-      catch (error) { throw new SnapshotConflictError(`${operation} conflict: a changed path could not be moved aside to check it again${codeOf(error)}, so nothing changed`, path) }
-      displaced.set(path, aside)
-      if (!stillAsChecked(directory, aside, current, input.digest ?? blobId)) throw new SnapshotConflictError(`${operation} conflict: a changed path changed again after the check, so nothing changed`, path)
+      let checked: boolean
+      try {
+        // A folder above it gone, or a link in its place, since the check is a conflict too: nothing has changed yet.
+        const { directory, name } = directories.parentOf(path, false)
+        const aside = `${name}.buckle-displaced-${randomUUID()}`
+        renameSync(directory.child(name), directory.child(aside))
+        displaced.set(path, aside)
+        checked = stillAsChecked(directory, aside, current, input.digest ?? blobId)
+      } catch (error) { throw new SnapshotConflictError(`${operation} conflict: a changed path could not be moved aside to check it again${codeOf(error)}, so nothing changed`, path) }
+      if (!checked) throw new SnapshotConflictError(`${operation} conflict: a changed path changed again after the check, so nothing changed`, path)
     }
   } catch (error) {
     putBack(directories, displaced)

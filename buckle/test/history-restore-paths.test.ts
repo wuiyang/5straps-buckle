@@ -208,4 +208,15 @@ describe('an outside edit after a restore checked the path', () => {
     expect([readFileSync(first, 'utf8'), readFileSync(second, 'utf8')]).toEqual(['checked', 'outside'])
     expect(readdirSync(root).sort()).toEqual(['first.txt', 'second.txt'])
   })
+
+  it('stops, with nothing changed, where a folder above a path is gone since the check', () => {
+    const root = scratch()
+    const [kept, gone] = [join(root, 'kept.txt'), join(root, 'gone', 'file.txt')]
+    writeFileSync(kept, 'checked')
+    const entry = (content: string) => ({ kind: 'file' as const, mode: 0o644, hash: blobId(Buffer.from(content)) })
+    const applied = (() => { try { applySnapshot({ current: { [kept]: entry('checked'), [gone]: entry('checked') }, target: {}, paths: [kept, gone], content: () => Buffer.alloc(0), roots: [root] }) } catch (error) { return error } })()
+    expect(applied).toBeInstanceOf(SnapshotConflictError)
+    expect((applied as SnapshotConflictError).path).toBe(gone)
+    expect(readdirSync(root)).toEqual(['kept.txt'])
+  })
 })
