@@ -85,7 +85,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let gc: Promise<void> | undefined
   let gcTimer: ReturnType<typeof setTimeout> | undefined
   const activity = await openHistoryActivity(input.directory)
-  let reconcile = true
+  /** Whether this process has copied in the owner objects the shadow-git store borrows (X12): tried once, then hourly. */
+  let materialized = false
   /** Set once no old store is left on disk: nothing writes one any more, so none comes back (item 7). */
   let oldStoresGone = false
   /** The background deletions of expired old stores, which close waits for (M2). */
@@ -131,11 +132,6 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     if (index === -1) state.checkpoints.push(saved)
     else state.checkpoints[index] = saved
     await save(state)
-  }
-  async function repairRefs(state: State): Promise<void> {
-    reconcile = true
-    await store.reconcile(state.checkpoints)
-    reconcile = false
   }
   function locked<T>(operation: () => Promise<T>, options: { owner?: boolean; force?: boolean; signal?: AbortSignal; immediate?: boolean } = {}): Promise<T> {
     if (closed) return Promise.reject(new RuntimeError(SqliteErrorCode.ownerClosed, 'History is closed'))
@@ -293,15 +289,11 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       current.restorable = false; current.reason = CAP_REASON; capped = true
       logger.warn(`Checkpoint ${current.id}: ${CAP_REASON}`)
     }
-    // A checkpoint the shadow-git engine wrote keeps its content there, pinned by its refs, until its turn drops (item 7):
-    // its commits are moved to the graph that engine settled on, published, and only then are refs changed.
-    const shadow = !expired && store.available && (state.checkpoints.some(hasTrees) || dropped.some(hasTrees))
-    if (shadow && await store.isolate(state.checkpoints)) reconcile = true
-    if (dropped.some(hasTrees)) reconcile = true
-    if (current || dropped.length || shadow && reconcile) await save(state)
+    // A checkpoint the shadow-git engine wrote keeps its content there, pinned by its refs, until its store expires (item
+    // 7); that store's upkeep runs in the background collection, never on a call's path, which starts no git (X11).
+    if (current || dropped.length) await save(state)
     // Only once the journal no longer lists their checkpoints do the old stores go (X8).
     if (expired) discardOldStores()
-    if (shadow && reconcile) await repairRefs(state)
     if (dropped.length || capped) sweepBlobs(state)
     scheduleCollection(state)
   }
@@ -378,22 +370,44 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     const named = namedObjects(state.checkpoints)
     for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) { objects.remove(id); sizes.delete(id) }
   }
-  /** The shadow-git store's hourly collection, while one is left: the object store needs none (item 7). */
+  /**
+   * The shadow-git store's upkeep while one is left (item 7), in the background under the lock, never on a call's path
+   * (X11): its commits moved to the graph that engine settled on and published, and only then its refs matched to the
+   * journal; the owner objects its checkpoints borrow copied in (X12), first soon after it opens; and hourly a collection.
+   * The object store needs none.
+   */
   function scheduleCollection(state: State): void {
-    if (gc || gcTimer || now() - state.lastGcAt < GC_INTERVAL_MS || !oldStoresLeft(state) || !store.available) return
+    if (gc || gcTimer || !oldStoresLeft(state) || !store.available) return
+    const due = () => now() - read().lastGcAt >= GC_INTERVAL_MS
+    const borrows = () => !materialized && store.borrowing()
+    if (now() - state.lastGcAt < GC_INTERVAL_MS && !borrows()) return
     gcTimer = setTimeout(() => {
       gcTimer = undefined
       if (closed) return
       gc = locked(async () => {
-        const state = read()
-        if (now() - state.lastGcAt < GC_INTERVAL_MS) return
-        const trees = state.checkpoints.flatMap(record => [...record.beforeTrees ?? [], ...record.afterTrees ?? []])
+        const collect = due()
+        if (!collect && !borrows()) return
         // An attempt counts whether or not it finishes, so a failing collection waits its interval, not the next write (A9).
-        try { await repairRefs(state); await store.collect(trees) }
-        finally { const saved = read(); saved.lastGcAt = now(); await save(saved) }
+        try {
+          await shadowUpkeep()
+          if (collect) await store.collect(read().checkpoints.flatMap(record => [...record.beforeTrees ?? [], ...record.afterTrees ?? []]))
+        } finally { if (collect) { const saved = read(); saved.lastGcAt = now(); await save(saved) } }
       }, { immediate: true }).catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History garbage collection did not finish; it tries again in an hour', { cause: causeOf(error) }) }).finally(() => { gc = undefined })
     }, 0)
     gcTimer.unref()
+  }
+  /**
+   * The shadow-git store's upkeep, from the owner's prune or the background collection only: its commits moved to the
+   * graph that engine settled on and published, only then its refs matched to the journal, so a dropped checkpoint's
+   * commits can be collected, and the owner objects it borrows copied in (X12).
+   */
+  async function shadowUpkeep(): Promise<void> {
+    const state = read()
+    if (!store.available || !oldStoresLeft(state)) return
+    if (await store.isolate(state.checkpoints)) await save(state)
+    await store.reconcile(state.checkpoints)
+    materialized = true
+    await store.materialize()
   }
   function since(target: RollbackTarget): Checkpoint[] {
     const recent = records().toReversed().slice(0, 'turns' in target ? undefined : RECENT_CHECKPOINTS_MAX)
@@ -571,7 +585,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     },
     prune: (options: { force?: boolean; legacy?: boolean } = {}) => locked(async () => {
       if (options.legacy) { for (const suffix of ['', '-wal', '-shm', '-journal']) rmSync(join(input.directory, `history.sqlite${suffix}`), { force: true }); const state = read(); state.checkpoints = state.checkpoints.filter(record => !record.legacy); await save(state) }
-      await pruneRetained(); return { ok: true }
+      await pruneRetained(); await shadowUpkeep(); return { ok: true }
     }, { owner: true, ...options }),
     configure(next: Partial<typeof settings>): void { Object.assign(settings, next) },
     capability: () => ({ engine: store.available ? 'git' as const : 'hashes' as const, restorable: store.available, maxFileBytes: settings.maxFileBytes, keepTurns: settings.keepTurns, turnIdleMs: settings.turnIdleMs }),
@@ -585,7 +599,6 @@ function identity(path: string): string | undefined {
   const stat = statSync(path, { throwIfNoEntry: false, bigint: true })
   return stat ? `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}` : undefined
 }
-function hasTrees(record: Checkpoint): boolean { return Boolean(record.beforeTrees?.length || record.afterTrees?.length) }
 /** A checkpoint an engine before the object store wrote (670f1dc2's shadow git, or SQLite): every new one is `blobs`. */
 function isOldRecord(record: Checkpoint): boolean { return record.content !== 'blobs' }
 function turnOf(record: Checkpoint): string { return record.turnId ?? record.id }

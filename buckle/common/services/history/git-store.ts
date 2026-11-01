@@ -23,7 +23,7 @@ const CHECKPOINT_ID = /^change-[a-zA-Z0-9-]+$/
 export const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**/* -text -filter -ident -working-tree-encoding\n'
 
 const SETUP_MARKER = 'buckle-setup-complete'
-const GIT_OPERATIONS = ['init', 'ls-files', 'update-index', 'add', 'read-tree', 'write-tree', 'commit-tree', 'ls-tree', 'check-ignore', 'cat-file', 'update-ref', 'diff-tree', 'checkout-index', 'for-each-ref', 'rev-parse', 'verify-pack', 'rev-list', 'gc'] as const
+const GIT_OPERATIONS = ['init', 'ls-files', 'update-index', 'add', 'read-tree', 'write-tree', 'commit-tree', 'ls-tree', 'check-ignore', 'cat-file', 'update-ref', 'diff-tree', 'checkout-index', 'for-each-ref', 'rev-parse', 'verify-pack', 'rev-list', 'gc', 'repack', 'diff-files'] as const
 export type GitOperation = typeof GIT_OPERATIONS[number] | 'unknown'
 type GitFailure = 'start' | 'timeout' | 'output-limit' | 'exit'
 interface GitFailureDetails { operation: GitOperation; failure: GitFailure; elapsedMs: number; exitCode?: number; errno?: string }
@@ -341,6 +341,20 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
     const directories = [join(input.directory, 'git'), ...existsSync(roots) ? readdirSync(roots, { withFileTypes: true }).filter(entry => entry.isDirectory()).map(entry => join(roots, entry.name, 'git')) : []]
     return directories.filter(directory => lstatSync(directory, { throwIfNoEntry: false })?.isDirectory() && existsSync(join(directory, 'HEAD')))
   }
+  /** Whether a shadow-git folder still borrows objects from the owner's repository through alternates (X12). */
+  function borrowing(): boolean { return gitDirectories().some(directory => existsSync(alternatesOf(directory))) }
+  /**
+   * Copies into each shadow-git folder the owner's objects its refs reach, then drops its alternates, so the owner pruning
+   * their repository never takes a retained checkpoint's content (X12). Run once reconcile has pinned every checkpoint.
+   */
+  async function materialize(): Promise<void> {
+    for (const directory of gitDirectories()) {
+      if (!existsSync(alternatesOf(directory))) continue
+      // Without --local, pack-objects packs a borrowed object too, so the pack holds all a ref reaches.
+      await git({ git: directory, workTree: owned }, ['repack', '-a', '-d', '-q'])
+      rmSync(alternatesOf(directory), { force: true })
+    }
+  }
   async function collect(trees: TreeCapture[]): Promise<void> {
     const directories = new Map(trees.map(tree => [tree.git, tree]))
     for (const directory of gitDirectories()) if (!directories.has(directory)) directories.set(directory, { git: directory, workTree: owned, root: owned, selector: '.', commit: '', extra: {} })
@@ -350,10 +364,11 @@ export function createGitStore(input: { directory: string; excluded: string[]; m
       await git(tree, ['-c', 'gc.reflogExpire=now', '-c', 'gc.reflogExpireUnreachable=now', 'gc', '--quiet', '--prune=now'])
     }
   }
-  return { capture, loadTree: (captured: TreeCapture) => loadTree(captured), changed, restoreContent, removeRefs, reconcile, isolate, collect, get available() { return trustedProgram([]) !== null } }
+  return { capture, loadTree: (captured: TreeCapture) => loadTree(captured), changed, restoreContent, removeRefs, reconcile, isolate, borrowing, materialize, collect, get available() { return trustedProgram([]) !== null } }
 }
 
 function shapeKey(directory: string, commit: string): string { return `${directory}\0${commit}` }
+function alternatesOf(directory: string): string { return join(directory, 'objects', 'info', 'alternates') }
 function nativeInside(root: string, path: string): boolean { const below = nativeRelative(root, path); return below === '' || below !== '..' && !below.startsWith(`..${nativeSeparator}`) && !nativeIsAbsolute(below) }
 function gitName(root: string, path: string): string { return historyCapturePath({ path: nativeRelative(root, path), platform: process.platform }) }
 function normalizedRoots(roots: string[]): string[] { return [...new Set(roots.map(root => resolve(root)))].filter(root => !roots.some(parent => parent !== root && lstatSync(parent, { throwIfNoEntry: false })?.isDirectory() && isInside(parent, root))) }

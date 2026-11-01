@@ -147,3 +147,26 @@ it('waits its interval after a shadow-git collection that fails, never starting 
     expect(collections).toBe(1)
   } finally { await history.close() }
 })
+
+// X11 of the Codex review of 670f1dc2..01d3b0c9: a file tool's write starts no git child, even while shadow-git checkpoints
+// are retained, host git is permitted, and a turn of them drops; their upkeep runs in the background collection only.
+it('starts no git child for a file tool write while shadow-git checkpoints are retained', async () => {
+  const { workspace, directory } = fixture()
+  const file = join(workspace, 'file')
+  for (const turn of ['old-1', 'old-2']) await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: turn, execute: () => writeFileSync(file, turn) })
+  const journal = join(directory, 'checkpoints.json')
+  actualFs.writeFileSync(journal, JSON.stringify({ ...JSON.parse(actualFs.readFileSync(journal, 'utf8')), lastGcAt: Date.now() }))
+  const history = await openChangeHistory({ directory, excluded: [], maxBytes: 1_000_000, keepTurns: 3 })
+  const started: string[][] = []
+  let writing = false
+  vi.mocked(spawn).mockImplementation((...args: Parameters<typeof spawn>) => { if (writing) started.push([...args[1] ?? []]); return actualProcess.spawn(...args) })
+  try {
+    for (const turn of ['new-1', 'new-2']) {
+      writing = true
+      await history.run({ sessionId: 's', stageId: turn, tool: 'fs_write', roots: [file], scope: [{ path: file }] }, async () => { writeFileSync(file, turn) })
+      writing = false
+    }
+    expect((await history.list()).map(record => record.stageId)).toEqual(['old-2', 'new-1', 'new-2'])
+    expect(started).toEqual([])
+  } finally { await history.close() }
+})

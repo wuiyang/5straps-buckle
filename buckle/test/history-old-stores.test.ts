@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'pathe'
@@ -156,4 +157,23 @@ it('makes none of the old stores\' folders in a new history, for a file tool or 
   await history.run({ sessionId: 's', stageId: 'new-2', tool: 'exec', roots: [workspace] }, async () => { writeFileSync(join(workspace, 'built'), 'command') })
   expect((await history.list()).every(record => record.restorable)).toBe(true)
   for (const name of OLD_STORES) expect(existsSync(join(directory, name))).toBe(false)
+})
+
+// X12 of the Codex review of 670f1dc2..01d3b0c9: a shadow-git checkpoint that borrows its content from the owner's
+// repository through alternates gets a copy of its own, so the owner pruning that repository keeps it restorable.
+it('copies the owner objects an old checkpoint borrows, so it restores after the owner prunes them', async () => {
+  const { workspace, directory, file } = fixture()
+  execFileSync('git', ['init', '-q', workspace])
+  writeFileSync(file, 'original')
+  execFileSync('git', ['-C', workspace, 'add', 'file'])
+  execFileSync('git', ['-C', workspace, '-c', 'user.name=Test', '-c', 'user.email=test@example.test', 'commit', '-qm', 'baseline'])
+  const old = await shadowGitCheckpoint({ directory, roots: [workspace], sessionId: 's', stageId: 'old', execute: () => writeFileSync(file, 'old engine') })
+  const alternates = join(directory, 'git', 'objects', 'info', 'alternates')
+  expect(existsSync(alternates)).toBe(true)
+  const history = await open(directory)
+  await write(history, join(workspace, 'other'), 'new-1', 'new')
+  await vi.waitFor(() => expect(existsSync(alternates)).toBe(false), { timeout: 10_000 })
+  rmSync(join(workspace, '.git'), { recursive: true, force: true })
+  await history.rollback({ target: { id: old.id }, by: { sessionId: 'owner', stageId: 'restore', tool: 'test' } })
+  expect(readFileSync(file, 'utf8')).toBe('original')
 })
