@@ -209,6 +209,23 @@ describe('an outside edit after a restore checked the path', () => {
     expect(readdirSync(root).sort()).toEqual(['first.txt', 'second.txt'])
   })
 
+  // R1.2 of the Codex recheck: the file a checkpoint made in a folder it made leaves before that folder does.
+  it('removes a folder a checkpoint made with the file it made inside, and leaves nothing aside', async () => {
+    const { workspace, runtime } = await node()
+    expect(await call(runtime, 'w-1', 'fs_write', { path: 'made/deep/f.txt', content: 'A', createParents: true })).toMatchObject({ outcome: 'ok' })
+    await runtime.history.restore(await newestId(runtime.history))
+    expect(readdirSync(workspace)).toEqual([])
+    const command = await commandHistory()
+    await command.run(() => { mkdirSync(join(command.workspace, 'built', 'out'), { recursive: true }); writeFileSync(join(command.workspace, 'built', 'out', 'f.txt'), 'A') })
+    await command.history.restore(await newestId(command.history))
+    expect(readdirSync(command.workspace)).toEqual([])
+    const root = scratch()
+    const [folder, file] = [join(root, 'd'), join(root, 'd', 'f.txt')]
+    mkdirSync(folder); writeFileSync(file, 'A')
+    applySnapshot({ current: { [folder]: { kind: 'directory', mode: 0o755 }, [file]: { kind: 'file', mode: 0o644, hash: blobId(Buffer.from('A')) } }, target: {}, paths: [folder, file], content: () => Buffer.alloc(0), roots: [root] })
+    expect(readdirSync(root)).toEqual([])
+  })
+
   it('stops, with nothing changed, where a folder above a path is gone since the check', () => {
     const root = scratch()
     const [kept, gone] = [join(root, 'kept.txt'), join(root, 'gone', 'file.txt')]
