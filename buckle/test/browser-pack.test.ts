@@ -209,18 +209,20 @@ describe('a session left by a run under other browser settings', () => {
   /** Marks every session in the store as written by `pid`, as a sibling process would have. */
   function writtenBy(directory: string, pid: number) {
     const store = join(directory, 'sessions.json')
-    const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
-    for (const key of Object.keys(state.writers)) state.writers[key] = pid
+    const state = JSON.parse(readFileSync(store, 'utf8')) as { browsers: Record<string, { writer: { pid: number; instance: string } }> }
+    for (const record of Object.values(state.browsers)) record.writer = { pid, instance: 'another-process' }
     writeFileSync(store, JSON.stringify(state))
   }
-  const writers = (directory: string) => Object.values((JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { writers: Record<string, number> }).writers)
+  const records = (directory: string) => (JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { browsers: Record<string, { writer: { pid: number } }> }).browsers
+  const writers = (directory: string) => Object.values(records(directory)).map(record => record.writer.pid)
 
-  // Fresh and attached sessions are keyed by their mode and settings, so a session from other ones is never reached.
+  // A daemon keeps the settings it started with, so a session from other ones is closed and a new one named under the
+  // same key, never reached (Slice F4, item 3).
   it.each<[string, Partial<BrowserPackOptions>]>([
     ['an attached browser', { browser: { mode: { kind: 'attached', endpoint: '9222' } } }],
     ['other arguments', { launchArgs: '--lang=en-GB' }],
     ['a window', { headed: true }],
-  ])('is never reused when the node now runs %s', async (_, changed) => {
+  ])('is closed and replaced when the node now runs %s', async (_, changed) => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
     const calls: ProcessRequest[] = []
     await call(directory, {}, calls)
@@ -228,21 +230,22 @@ describe('a session left by a run under other browser settings', () => {
     const first = sessionOf(calls[0]!)
     expect(sessionOf(calls[1]!)).toBe(first)
     await call(directory, changed, calls)
-    expect(calls).toHaveLength(3)
-    expect(sessionOf(calls[2]!)).toMatch(/^buckle-/)
-    expect(sessionOf(calls[2]!)).not.toBe(first)
+    expect(calls[2]!.args).toEqual(closeArgs(directory, first))
+    expect(sessionOf(calls[3]!)).toMatch(/^buckle-/)
+    expect(sessionOf(calls[3]!)).not.toBe(first)
+    expect(Object.keys(records(directory))).toEqual([sessionOf(calls[3]!)])
     expect(readFileSync(join(directory, 'sessions.json'), 'utf8')).not.toContain('9222')
     rmSync(directory, { recursive: true, force: true })
   })
 
-  it('is never reused when the attached endpoint changes', async () => {
+  it('is closed and replaced when the attached endpoint changes', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'buckle-browser-replaced-'))
     const calls: ProcessRequest[] = []
     await call(directory, { browser: { mode: { kind: 'attached', endpoint: '9222' } } }, calls)
     await call(directory, { browser: { mode: { kind: 'attached', endpoint: '9333' } } }, calls)
-    expect(calls.map(request => request.args[0])).toEqual(['snapshot', 'snapshot'])
-    expect(sessionOf(calls[1]!)).not.toBe(sessionOf(calls[0]!))
-    expect(calls[1]!.args).toContain('9333')
+    expect(calls.map(request => request.args[0])).toEqual(['snapshot', 'close', 'snapshot'])
+    expect(sessionOf(calls[2]!)).not.toBe(sessionOf(calls[0]!))
+    expect(calls[2]!.args).toContain('9333')
     rmSync(directory, { recursive: true, force: true })
   })
 
@@ -315,12 +318,13 @@ describe('a session left by a run under other browser settings', () => {
     await call(directory, PROFILE_A, calls)
     const first = sessionOf(calls[0]!)
     writtenBy(directory, process.ppid)
-    const pack = createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [], runProcess: async (request) => { calls.push(request); return stubResult() }, ...PROFILE_B })
+    const pack = await call(directory, PROFILE_B, calls)
     await pack.tools[0]!.prepare({ command: 'close', args: [] }).execute({ requestId: 'r2', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal })
-    expect(sessionOf(calls[1]!)).not.toBe(first)
-    const stored = JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; writers: Record<string, number> }
-    expect(Object.values(stored.sessions)).toEqual([first])
-    expect(Object.values(stored.writers)).toEqual([process.ppid])
+    expect(calls.map(request => request.args[0])).toEqual(['snapshot', 'snapshot', 'close'])
+    expect(sessionOf(calls[2]!)).toBe(sessionOf(calls[1]!))
+    expect(sessionOf(calls[2]!)).not.toBe(first)
+    expect(Object.keys(records(directory))).toEqual([first])
+    expect(writers(directory)).toEqual([process.ppid])
     rmSync(directory, { recursive: true, force: true })
   })
 
@@ -378,7 +382,7 @@ describe('shutdown in an attached browser', () => {
     expect(calls[0]!.args).toContain('--cdp')
     await pack.close?.()
     expect(calls[1]!.args).toEqual(closeArgs(directory, session))
-    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })
 })
@@ -391,19 +395,22 @@ describe('a pack replaced by one built from other settings', () => {
     const calls: ProcessRequest[] = []
     const build = (approved: string[]) => createBrowserPack({ cwd: '/work', paths: createPathView({ root: '/work', mount: null }), agentBrowserCommand: 'agent-browser', sessionDirectory: directory, headed: false, agentBrowser: { path: 'agent-browser', argv0: 'agent-browser', args: [] }, approvedLists: [{ name: 'workspace', entries: approved }], browser: { mode: { kind: 'fresh' } }, runProcess: async (request) => { calls.push(request); return stubResult() } })
     const context = { requestId: 'r1', sessionId: 's1', timeoutMs: 1000, signal: new AbortController().signal }
-    const stored = () => JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
+    const stored = () => {
+      const { browsers, ...rest } = JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')) as { browsers: Record<string, { allowedDomains?: string | null }> }
+      return { ...rest, browsers, sessions: Object.keys(browsers), allowedDomains: Object.values(browsers).map(record => record.allowedDomains) }
+    }
     const replaced = build(['example.com'])
     await replaced.tools[0]!.prepare({ command: 'open', args: ['example.com'] }).execute(context)
     const session = calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]!
 
     await replaced.retire?.()
     expect(calls[1]!.args).toEqual(closeArgs(directory, session))
-    expect(Object.values(stored().sessions)).toEqual([session])
-    expect(Object.values(stored().allowedDomains)).toEqual(['example.com'])
+    expect(stored().sessions).toEqual([session])
+    expect(stored().allowedDomains).toEqual(['example.com'])
     // Nothing of the replaced pack is left to close: its close sends nothing and forgets nothing.
     await replaced.close?.()
     expect(calls).toHaveLength(2)
-    expect(Object.values(stored().sessions)).toEqual([session])
+    expect(stored().sessions).toEqual([session])
 
     const successor = build(['example.com', 'docs.example.com'])
     const answer = await successor.tools[0]!.prepare({ command: 'snapshot' }).execute(context) as { notice?: string }
@@ -415,7 +422,7 @@ describe('a pack replaced by one built from other settings', () => {
     expect(answer.notice).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
     await successor.close?.()
     expect(calls[4]!.args).toEqual(closeArgs(directory, relaunched))
-    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    expect(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8'))).toEqual({ browsers: {}, sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
     rmSync(directory, { recursive: true, force: true })
   })
 })
@@ -431,7 +438,7 @@ describe('shutdown with a profile folder', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0]!.args[0]).toBe('open')
     // The store still names the shared session, so the next process finds it running.
-    expect(Object.values(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')).sessions)).toEqual([calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]])
+    expect(Object.keys(JSON.parse(readFileSync(join(directory, 'sessions.json'), 'utf8')).browsers)).toEqual([calls[0]!.args[calls[0]!.args.indexOf('--session') + 1]])
     rmSync(directory, { recursive: true, force: true })
   })
 })

@@ -1,8 +1,6 @@
-import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { basename, isAbsolute, join } from 'pathe'
 import { z } from 'zod'
-import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
 import { browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
@@ -19,6 +17,9 @@ import { prepareTransfer, sweepTransfers } from './file-transfer.js'
 import { containmentWarning, DEFAULT_IDLE_TIMEOUT_MS, FRESH_BROWSER, MODE_DESCRIPTIONS, modeFingerprint, profileSession, settingScrubber, type BrowserChoice, type BrowserMode } from './mode.js'
 import { describeProcessFailure } from '../process-failure.js'
 import type { FilledSecrets } from '../../secrets/call-secrets.js'
+import { claimCaller, closeEach, CLOSE_TIMEOUT_MS, settleClaims, takeSession, type CallScope, type Lifecycle } from './lifecycle.js'
+import { PROCESS_INSTANCE, sessionsStore, upgradeSessions, writerOf, type Sessions } from './sessions.js'
+import type { JsonFileStore } from '../../../adapters/json-file-store.js'
 
 const PACK_ID = 'browser'
 
@@ -30,10 +31,6 @@ const SESSION_FLAGS = ['--session', '--namespace', '--restore', '--restore-save'
 /** Mode-neutral: a profile or an attached browser is the owner's choice, never one an agent's call can make. */
 const SESSION_REFUSAL = 'Buckle\'s browser cannot attach, restore, or override session identity'
 
-/** The sessions store's key for the one session every caller shares on a profile folder. */
-const SHARED_PROFILE_KEY = JSON.stringify(['profile'])
-
-
 /**
  * Fixed text, so the agent reads the same sentence whichever browser was reset. Only a fresh browser is passed
  * allowed domains, so only a fresh browser relaunches when they change.
@@ -42,29 +39,6 @@ const RELAUNCH_NOTICE = 'The browser was relaunched because the allowed domains 
 
 /** What a close answers where its caller has no browser recorded: it ran nothing, so agent-browser launched nothing to close. */
 const NO_BROWSER_NOTICE = 'No browser was open for this session, so nothing was closed.'
-
-const SessionsSchema = z.object({
-  sessions: z.record(z.string(), z.string()),
-  /** The --allowed-domains each session last ran with, null for none, so a change can be told. */
-  allowedDomains: z.record(z.string(), z.string().nullable()).default({}),
-  /** The settings each session's daemon was started with (modeFingerprint), so one from other settings is replaced. */
-  modes: z.record(z.string(), z.string()).default({}),
-  /** The process that wrote each session's settings, so a live sibling's daemon is reused rather than closed. */
-  writers: z.record(z.string(), z.number().int()).default({}),
-  /**
-   * Each value a fill or type handed a browser of the workspace from a secret reference (docs/secrets.md), by file, NAME,
-   * and sha256, never the value, so every Buckle process on the workspace masks the page by it, after a restart too;
-   * absent while none is held. It ends with the workspace's last browser where closing ends the page (endsHold).
-   */
-  filled: z.array(z.object({ real: z.string(), written: z.string(), name: z.string(), digest: z.string() })).optional(),
-})
-
-type Sessions = z.infer<typeof SessionsSchema>
-
-/** A fresh record each time, as a store's update may change the fallback it was handed. */
-function emptySessions(): Sessions {
-  return { sessions: {}, allowedDomains: {}, modes: {}, writers: {} }
-}
 
 /** How many filled values a workspace's browsers are masked by at most. */
 const MAX_FILLED = 256
@@ -75,7 +49,7 @@ const MAX_FILLED = 256
  * stopped, masks the page too.
  */
 export function browserFilledSecrets(sessionDirectory: string): FilledSecrets {
-  const sessions = createJsonFileStore({ filePath: join(sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: emptySessions() })
+  const sessions = sessionsStore(sessionDirectory)
   return { list: () => sessions.read().filled ?? [] }
 }
 
@@ -180,7 +154,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   // A node that stopped mid-call leaves its transfer copies behind; each pack start clears them (review L4 of the second re-review).
   const staleAfterMs = 2 * (options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS)
   sweepTransfers({ directory: options.sessionDirectory, staleAfterMs })
-  const sessions = createJsonFileStore({ filePath: join(options.sessionDirectory, 'sessions.json'), schema: SessionsSchema, fallback: emptySessions() })
+  const sessions = sessionsStore(options.sessionDirectory)
+  const lifecycle: Lifecycle = { store: sessions, me: writerOf(PROCESS_INSTANCE), close: (session, signal) => closeSession(options, session, signal) }
   const configFile = join(options.sessionDirectory, CONFIG_FILE)
   const allowedDomains = browserAllowedDomains(options.approvedLists)
   const choice = options.browser ?? { mode: FRESH_BROWSER }
@@ -209,8 +184,8 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     skills: [loadPackSkill(PACK_ID)],
     // No path: the manifest carrying it is read with the agent token, and the configured path is the owner's.
     unavailableReason,
-    close: () => closeSessions({ options, sessions, opened, forget: true, endsHold: endsHold(mode) }),
-    retire: () => closeSessions({ options, sessions, opened, forget: false, endsHold: endsHold(mode) }),
+    close: () => closeSessions({ lifecycle, sessions, opened, forget: true, endsHold: endsHold(mode) }),
+    retire: () => closeSessions({ lifecycle, sessions, opened, forget: false, endsHold: endsHold(mode) }),
     tools: [
       defineTool(PACK_ID, {
         name: 'browser_command',
@@ -238,10 +213,15 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
           const refused = refusedFlag(input.args)
           if (refused) throw new ToolInputError(flagRefusal(refused))
           // Every caller shares the one browser on a profile folder. Elsewhere each caller, stage, and alias has its own,
-          // keyed by the mode and its settings too, so no process ever reaches a session started in another mode.
-          const key = running.kind === 'profile' ? SHARED_PROFILE_KEY : JSON.stringify([running.kind, fingerprint, context.sessionId, context.stageId ?? 'default', input.session ?? 'default'])
-          const own = running.kind === 'profile' ? profileSession(running.directory) : null
-          if (input.command === 'close') return await closeCaller({ options, sessions, opened, key, own, running, context, scrub })
+          // started under this pack's settings, so no process ever reaches a session started in another mode.
+          const scope: CallScope = {
+            kind: running.kind,
+            caller: { caller: context.sessionId, stage: context.stageId ?? 'default', alias: input.session ?? 'default' },
+            fingerprint,
+            own: running.kind === 'profile' ? profileSession(running.directory) : null,
+            flag,
+          }
+          if (input.command === 'close') return await closeCaller({ options, lifecycle, opened, scope, running, context, scrub })
 
           // Resolve file arguments against the authorized workspace, not the daemon state directory.
           const fileEffects = browserEffects(input.command, input.args)
@@ -256,41 +236,14 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             const targets = navigationTargets(input.command, input.args)
             const passed = input.args.map((argument, index) => targets.get(index) ?? transfer.argument(argument) ?? realPath(argument, options.paths))
             const args = [input.command, ...argumentOrder(input.command, input.args).map(index => passed[index]!), '--json']
-            const { session, relaunchedFrom, replaced, sibling } = await sessions.update((state) => {
+            const { session, relaunchedFrom, sibling } = await takeSession(lifecycle, {
+              scope,
+              now: Date.now(),
               // Recorded under the same lock as the session, before the browser is handed a value, so a close in another
               // process never ends a hold this call is about to need.
-              if (context.secretFills && context.secretFills.length > 0) state.filled = withFilled(state.filled ?? [], context.secretFills)
-              const known = state.sessions[key]
-              // Only the shared profile key can hold other settings: every other key carries its own.
-              const mismatch = known !== undefined && state.modes[key] !== fingerprint
-              // A live Buckle process on other profile settings keeps its daemon: closing it would relaunch Chrome on each
-              // call either makes. The same folder's session is reused; another folder's is left alone beside this one.
-              const writer = state.writers[key]
-              if (own !== null && mismatch && writer !== undefined && writer !== process.pid && processAlive(writer)) {
-                return { session: own === known ? known : own, relaunchedFrom: undefined, replaced: null, sibling: true }
-              }
-              // A daemon keeps the --allowed-domains it was launched with, so a fresh session last run under another list
-              // is relaunched as one from other settings is: closed, and a new one named, before this call runs, so the
-              // notice is true, and the pack this one replaced, ending what it opened once its calls end, never reaches the
-              // new one (fix brief 4, finding 9).
-              const recorded = state.allowedDomains[key]
-              const stale = running.kind === 'fresh' && known !== undefined && recorded !== undefined && recorded !== flag
-              // A daemon started under other settings keeps them, so its session is closed and a new one named.
-              const replaced = mismatch || stale ? known : null
-              if (known === undefined || replaced !== null) state.sessions[key] = own ?? `buckle-${randomUUID()}`
-              // A daemon starts under this list at this call's first command, whether the call then succeeds, fails, or
-              // times out, so the list is recorded before it runs: a later change then relaunches it.
-              state.allowedDomains[key] = flag
-              state.modes[key] = fingerprint
-              state.writers[key] = process.pid
-              return { session: state.sessions[key]!, relaunchedFrom: stale ? recorded : undefined, replaced, sibling: false }
+              record: (state) => { if (context.secretFills && context.secretFills.length > 0) state.filled = withFilled(state.filled ?? [], context.secretFills) },
             })
-            if (sibling) logSiblingSettings(options.serviceInstalled?.() === true)
-            if (replaced !== null) {
-              opened.delete(replaced)
-              const closed = await closeSession(options, replaced, AbortSignal.timeout(CLOSE_TIMEOUT_MS))
-              if (!closed) logger.warn('A browser session from other settings did not close; its idle timeout ends it')
-            }
+            if (sibling) logSiblingSettings(options.sessionDirectory, options.serviceInstalled?.() === true)
             // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
             // retire of the pack a change replaces, and by the node's shutdown.
             if (running.kind !== 'profile') opened.add(session)
@@ -340,28 +293,28 @@ function assertRunnable(input: { command: string; args: string[] }): void {
 }
 
 /**
- * An agent's close: its caller's recorded browser alone, with a bare close (closeArguments), so agent-browser never
- * launches a browser to close it; where none is recorded nothing runs. The record is forgotten only while it names this
- * session: on another profile folder beside a live sibling, the shared key still records the sibling's.
+ * An agent's close: its caller's recorded browsers alone, each with a bare close (closeArguments) under the call's own
+ * timeout, so agent-browser never launches a browser to close one; where none is recorded nothing runs. A live sibling's
+ * session under other settings is that process's to close.
  */
-async function closeCaller(input: { options: BrowserPackOptions; sessions: JsonFileStore<Sessions>; opened: Set<string>; key: string; own: string | null; running: BrowserMode; context: ToolContext; scrub: (text: string, failed: boolean) => string }): Promise<JsonValue> {
-  const { options, key } = input
-  const session = input.sessions.read().sessions[key] === undefined ? null : input.own ?? input.sessions.read().sessions[key]!
-  if (session === null) return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: NO_BROWSER_NOTICE }
+async function closeCaller(input: { options: BrowserPackOptions; lifecycle: Lifecycle; opened: Set<string>; scope: CallScope; running: BrowserMode; context: ToolContext; scrub: (text: string, failed: boolean) => string }): Promise<JsonValue> {
+  const { options } = input
+  const names = await claimCaller(input.lifecycle, input.scope)
+  if (names.length === 0) return { result: { success: true, data: { closed: false } }, stderr: '', truncated: false, notice: NO_BROWSER_NOTICE }
   const program = browserProgram(options)
-  const ran = await options.runProcess({ command: program.path, argv0: program.argv0, args: [...program.args, ...closeArguments(emptyConfig(options), session)], cwd: options.sessionDirectory, timeoutMs: input.context.timeoutMs, environment: browserEnvironment(options), signal: input.context.signal, windowsHide: true })
-  const failed = ran.exitCode !== 0
-  const result = { ...ran, stdout: input.scrub(ran.stdout, failed), stderr: input.scrub(ran.stderr, failed) }
-  if (failed) throw new ToolExecutionError(describeProcessFailure('agent-browser', result), { code: 'BROWSER_COMMAND_FAILED' })
-  input.opened.delete(session)
-  await input.sessions.update((state) => {
-    if (state.sessions[key] !== session) return
-    delete state.sessions[key]
-    delete state.allowedDomains[key]
-    delete state.modes[key]
-    delete state.writers[key]
-    if (endsHold(input.running) && Object.keys(state.sessions).length === 0) delete state.filled
+  const results = await Promise.all(names.map(async (session) => {
+    const ran = await options.runProcess({ command: program.path, argv0: program.argv0, args: [...program.args, ...closeArguments(emptyConfig(options), session)], cwd: options.sessionDirectory, timeoutMs: input.context.timeoutMs, environment: browserEnvironment(options), signal: input.context.signal, windowsHide: true })
+      .catch((error: unknown) => ({ exitCode: null, signal: null, stdout: '', stderr: error instanceof Error ? error.message : String(error), truncated: false, timedOut: false }))
+    const failed = ran.exitCode !== 0
+    return { session, failed, result: { ...ran, stdout: input.scrub(ran.stdout, failed), stderr: input.scrub(ran.stderr, failed) } }
+  }))
+  for (const { session, failed } of results) if (!failed) input.opened.delete(session)
+  await settleClaims(input.lifecycle, new Map(results.map(({ session, failed }) => [session, !failed])), (state) => {
+    if (endsHold(input.running) && Object.keys(state.browsers).length === 0) delete state.filled
   })
+  const failure = results.find(item => item.failed)
+  if (failure) throw new ToolExecutionError(describeProcessFailure('agent-browser', failure.result), { code: 'BROWSER_COMMAND_FAILED' })
+  const { result } = results[0]!
   return { result: parseJsonOutput(result.stdout), stderr: result.stderr, truncated: result.truncated }
 }
 
@@ -465,9 +418,6 @@ function browserEnvironment(options: BrowserPackOptions): NodeJS.ProcessEnv {
   return (options.environment ?? hostEnvironment(() => ownRoots(options.paths)))()
 }
 
-/** How long shutdown waits for the browser daemons to close, all of them together. */
-const CLOSE_TIMEOUT_MS = 5_000
-
 /**
  * Closes each browser this pack started, as the close command would, so no daemon outlives the pack by its idle
  * timeout. They close in parallel under one bound, so a few stuck daemons cannot outlast the close step before the
@@ -476,27 +426,18 @@ const CLOSE_TIMEOUT_MS = 5_000
  * records instead (fix brief 2, R2): the successor finds each session's key and the list it last ran under, and at the
  * session's next call closes it and starts a browser under a new name and the new list, saying it was relaunched.
  */
-async function closeSessions(input: { options: BrowserPackOptions; sessions: JsonFileStore<Sessions>; opened: Set<string>; forget: boolean; endsHold: boolean }): Promise<void> {
+async function closeSessions(input: { lifecycle: Lifecycle; sessions: JsonFileStore<Sessions>; opened: Set<string>; forget: boolean; endsHold: boolean }): Promise<void> {
   const closing = [...input.opened]
   input.opened.clear()
   if (closing.length === 0) return
-  const bound = AbortSignal.timeout(CLOSE_TIMEOUT_MS)
-  const closed = await Promise.all(closing.map(async (session) => {
-    const done = await closeSession(input.options, session, bound)
-    if (!done) logger.warn(input.forget ? 'A browser session did not close at shutdown; its idle timeout ends it' : 'A browser session did not close when its settings changed; its idle timeout ends it')
-    return done
-  }))
+  const closed = await closeEach(input.lifecycle, closing)
+  for (const done of closed.values()) if (!done) logger.warn(input.forget ? 'A browser session did not close at shutdown; its idle timeout ends it' : 'A browser session did not close when its settings changed; its idle timeout ends it')
   if (!input.forget) return
   await input.sessions.update((state) => {
-    for (const [key, session] of Object.entries(state.sessions)) {
-      if (!closing.includes(session)) continue
-      delete state.sessions[key]
-      delete state.allowedDomains[key]
-      delete state.modes[key]
-      delete state.writers[key]
-    }
+    upgradeSessions(state)
+    for (const session of closing) delete state.browsers[session]
     // A browser that would not close may still show a filled page until its idle timeout, so the hold stays.
-    if (input.endsHold && closed.every(Boolean) && Object.keys(state.sessions).length === 0) delete state.filled
+    if (input.endsHold && [...closed.values()].every(Boolean) && Object.keys(state.browsers).length === 0) delete state.filled
   })
 }
 
@@ -519,26 +460,13 @@ async function closeSession(options: BrowserPackOptions, session: string, signal
   return result.exitCode === 0
 }
 
-/**
- * Whether a process this user runs is alive: a Buckle sibling runs as the owner, so one Buckle may not signal (EPERM)
- * is another user's, and the session it wrote is the owner's to replace. A signal of 0 tests and sends nothing.
- */
-function processAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    return false
-  }
-}
+const loggedSibling = new Set<string>()
 
-let loggedSibling = false
-
-/** Once per process: fixed text naming the settings, never their values. */
-function logSiblingSettings(serviceInstalled: boolean): void {
-  if (loggedSibling) return
-  loggedSibling = true
-  logger.warn(`Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is reused, not closed. Restart every Buckle process on the node after changing them${serviceInstalled ? ': buckle service restart for the service, and each buckle mcp through its client' : ''}`)
+/** Once per process for each workspace: fixed text naming the settings, never their values. */
+function logSiblingSettings(sessionDirectory: string, serviceInstalled: boolean): void {
+  if (loggedSibling.has(sessionDirectory)) return
+  loggedSibling.add(sessionDirectory)
+  logger.warn(`Another Buckle process on this node runs the browser under other BUCKLE_BROWSER_CDP, BUCKLE_BROWSER_PROFILE, BUCKLE_BROWSER_ARGS, or BUCKLE_BROWSER_HEADED settings; its browser session is not closed: a profile folder's is shared, and any other runs beside this process's own. Restart every Buckle process on the node after changing them${serviceInstalled ? ': buckle service restart for the service, and each buckle mcp through its client' : ''}`)
 }
 
 const loggedLoosened = new Set<string>()

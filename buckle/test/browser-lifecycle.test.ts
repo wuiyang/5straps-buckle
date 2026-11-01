@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -135,3 +135,70 @@ describe('a close (F4 item 2)', () => {
     expect(browser.calls).toEqual([])
   })
 })
+
+/** The sessions the store records for a caller, by their key fields, whatever the store's shape. */
+function recordedFor(stored: Record<string, unknown>, caller: string): Array<{ name: string; stage: string; alias: string }> {
+  const browsers = (stored.browsers ?? {}) as Record<string, { caller: string; stage: string; alias: string }>
+  return Object.entries(browsers).filter(([, record]) => record.caller === caller).map(([name, record]) => ({ name, stage: record.stage, alias: record.alias }))
+}
+
+const sessionOf = (request: ProcessRequest) => request.args[request.args.indexOf('--session') + 1]!
+
+describe('the key a browser session is kept under (F4 item 3)', () => {
+  it('keeps one browser across a caller\'s turns, and gives each stage and alias its own, as Rings stages never share a page', async () => {
+    const { browser, open } = node()
+    const pack = open()
+    expect(await launchesOf(browser, () => call(pack, { command: 'open', args: ['https://app.example.test/'] }))).toBe(1)
+    expect(await launchesOf(browser, () => call(pack, { command: 'snapshot', args: ['-i'] }))).toBe(0)
+    expect(await launchesOf(browser, () => call(pack, { command: 'click', args: ['@e3'] }))).toBe(0)
+    expect(await launchesOf(browser, () => call(pack, { command: 'snapshot' }, { stageId: 'turn-2' }))).toBe(1)
+    expect(await launchesOf(browser, () => call(pack, { command: 'snapshot', session: 'checkout' }))).toBe(1)
+    expect(browser.alive()).toHaveLength(3)
+  })
+
+  it.each<[string, Partial<BrowserPackOptions>]>([
+    ['a window', { headed: true }],
+    ['other arguments', { launchArgs: '--lang=en-GB' }],
+    ['another idle timeout', { idleTimeoutMs: 120_000 }],
+    ['an attached Chrome', { browser: { mode: { kind: 'attached', endpoint: '9222' } } }],
+  ])('replaces the session under the same key when the node now runs %s, and keeps no record under the old settings', async (_, changed) => {
+    const { browser, open, stored } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] }, { stageId: 'turn-2' })
+    const first = sessionOf(browser.calls[0]!)
+    await call(open(changed), { command: 'snapshot' }, { stageId: 'turn-2' })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'close', 'snapshot'])
+    expect(sessionOf(browser.calls[1]!)).toBe(first)
+    const second = sessionOf(browser.calls[2]!)
+    expect(second).not.toBe(first)
+    expect(browser.alive()).toEqual([second])
+    expect(recordedFor(stored(), 'mcp')).toEqual([{ name: second, stage: 'turn-2', alias: 'default' }])
+    // A close from the same caller and stage reaches it, and leaves nothing behind.
+    await call(open(changed), { command: 'close' }, { stageId: 'turn-2' })
+    expect(browser.alive()).toEqual([])
+    expect(recordedFor(stored(), 'mcp')).toEqual([])
+  })
+
+  it('leaves a live sibling process\'s browser from other settings running, and starts this process\'s own beside it', async () => {
+    const { browser, open, stored, sessionDirectory } = node()
+    await call(open(), { command: 'open', args: ['https://app.example.test/'] })
+    const sibling = sessionOf(browser.calls[0]!)
+    writtenBy(sessionDirectory, process.ppid)
+    await call(open({ headed: true }), { command: 'snapshot' })
+    expect(browser.calls.map(request => request.args[0])).toEqual(['open', 'snapshot'])
+    const own = sessionOf(browser.calls[1]!)
+    expect(own).not.toBe(sibling)
+    expect(recordedFor(stored(), 'mcp').map(record => record.name).sort()).toEqual([own, sibling].sort())
+    // Each process reaches its own: a call under the sibling's settings finds its browser, and this process's window,
+    // from settings it no longer runs, is replaced first.
+    await call(open(), { command: 'snapshot' })
+    expect(browser.calls.slice(2).map(request => [request.args[0], sessionOf(request)])).toEqual([['close', own], ['snapshot', sibling]])
+  })
+})
+
+/** Marks every record in the store as written by `pid`, as another Buckle process would have left it. */
+function writtenBy(sessionDirectory: string, pid: number): void {
+  const file = join(sessionDirectory, 'sessions.json')
+  const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers?: Record<string, { writer: { pid: number; instance: string } }> }
+  for (const record of Object.values(state.browsers ?? {})) record.writer = { pid, instance: 'another-process' }
+  writeFileSync(file, JSON.stringify(state))
+}

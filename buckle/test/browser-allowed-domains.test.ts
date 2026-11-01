@@ -103,7 +103,11 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const runtime = await createRuntime({ config })
     if (network.length) await runtime.policy.apply(policy(network))
     const calls = (): string[][] => existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').map(line => JSON.parse(line) as string[]) : []
-    const stored = () => JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { sessions: Record<string, string>; allowedDomains: Record<string, string | null> }
+    // The store's records by session name, read as the session names and the lists they last ran with.
+    const stored = () => {
+      const { browsers, ...rest } = JSON.parse(readFileSync(join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json'), 'utf8')) as { browsers: Record<string, { allowedDomains?: string | null }> }
+      return { ...rest, browsers, sessions: Object.keys(browsers), allowedDomains: Object.values(browsers).map(record => record.allowedDomains) }
+    }
     const failNext = () => writeFileSync(failMarker, '')
     // A bare close, as every close Buckle sends is (Slice F4, item 2).
     const closeArgs = (session: string | undefined) => ['close', '--json', '--config', join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'fresh-config.json'), '--session', session]
@@ -204,7 +208,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     failNext()
     expect(await browse(runtime, { command: 'open', args: ['https://app.example.test'] })).toMatchObject({ outcome: 'error' })
     const first = sessionOf(calls()[0])
-    expect(Object.values(stored().allowedDomains)).toEqual(['app.example.test,removed.example.test'])
+    expect(stored().allowedDomains).toEqual(['app.example.test,removed.example.test'])
     await runtime.policy.apply(policy(['app.example.test']))
     // The replaced pack's retire closes the browser the failed call started.
     expect(calls().at(-1)).toEqual(closeArgs(first))
@@ -222,7 +226,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const session = sessionOf(calls()[0])
     await runtime.closeSessions()
     expect(calls().at(-1)).toEqual(closeArgs(session))
-    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    expect(stored()).toEqual({ browsers: {}, sessions: [], allowedDomains: [], modes: {}, writers: {} })
   }, 20000)
 
   // Fix brief 2, R2: the pack a policy change replaces is retired, not shut down, so the agent's session carries over.
@@ -235,18 +239,18 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
 
     // Closed as shutdown would close it, with its record left for the pack that follows: the session and its last list.
     expect(calls().at(-1)).toEqual(closeArgs(session))
-    expect(Object.values(stored().sessions)).toEqual([session])
-    expect(Object.values(stored().allowedDomains)).toEqual(['*.example.test,docs.test'])
+    expect(stored().sessions).toEqual([session])
+    expect(stored().allowedDomains).toEqual(['*.example.test,docs.test'])
     expect(noticeOf(await browse(runtime, { command: 'snapshot', args: [] }))).toBe('The browser was relaunched because the allowed domains changed; open tabs and cookies were reset.')
     // The session's next call closes what ran under the old list, whoever closed it before, and starts a browser under a new name (fix brief 4, finding 9).
     const relaunched = sessionOf(calls().at(-1))
     expect(relaunched).not.toBe(session)
-    expect(Object.values(stored().sessions)).toEqual([relaunched])
+    expect(stored().sessions).toEqual([relaunched])
 
     await runtime.closeSessions()
     // Two browsers were started for this session, one before the change and one after, and each was closed.
     expect(calls().filter(call => call[0] === 'close')).toEqual([closeArgs(session), closeArgs(session), closeArgs(relaunched)])
-    expect(stored()).toEqual({ sessions: {}, allowedDomains: {}, modes: {}, writers: {} })
+    expect(stored()).toEqual({ browsers: {}, sessions: [], allowedDomains: [], modes: {}, writers: {} })
   }, 20000)
 
   // Fix brief 4, finding 9: a host list swapped in while another call ran left the session on the daemon launched with

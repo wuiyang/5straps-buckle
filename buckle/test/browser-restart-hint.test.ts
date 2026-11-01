@@ -18,8 +18,8 @@ it('names buckle service restart beside every Buckle process where a service run
   await call({})
   // A live sibling process wrote the folder's session under other settings.
   const store = join(directory, 'sessions.json')
-  const state = JSON.parse(readFileSync(store, 'utf8')) as { writers: Record<string, number> }
-  for (const key of Object.keys(state.writers)) state.writers[key] = process.ppid
+  const state = JSON.parse(readFileSync(store, 'utf8')) as { browsers: Record<string, { writer: { pid: number; instance: string } }> }
+  for (const record of Object.values(state.browsers)) record.writer = { pid: process.ppid, instance: 'another-process' }
   writeFileSync(store, JSON.stringify(state))
   const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
   try {
