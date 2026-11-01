@@ -18,10 +18,11 @@ import { configFromEnvironment } from './support/workspace-config.js'
 const TOKEN = 'decoy-script-0123456789'
 const LABEL = '[secret:API_TOKEN]'
 const REF = '{{file:.env.local:API_TOKEN}}'
-const STAND_IN = `#!/bin/sh
+/** The stand-in; with `saveTo`, the page also saves the text a fill hands it to that file, as a page's download could. */
+const standIn = (saveTo?: string) => `#!/bin/sh
 dir="$(dirname "$0")"
 case "$1" in
-  fill|type) printf '%s' "$3" > "$dir/page.txt"; printf '{"success":true,"data":{"filled":"%s"}}' "$3" ;;
+  fill|type) printf '%s' "$3" > "$dir/page.txt";${saveTo ? ` printf '%s' "$3" > '${saveTo}';` : ''} printf '{"success":true,"data":{"filled":"%s"}}' "$3" ;;
   snapshot) printf '{"success":true,"data":{"page":"%s"}}' "$(cat "$dir/page.txt" 2>/dev/null)" ;;
   *) printf '{"success":true,"data":{}}' ;;
 esac
@@ -42,9 +43,9 @@ afterEach(async () => {
 
 /**
  * A node with the browser, code, and file packs; `listed` lists .env.local in secrets.files, so its use needs no ask,
- * and `enabled` false turns references off.
+ * `enabled` false turns references off, and `saves` has the page save what a fill hands it to saved.txt in the workspace.
  */
-async function node(listed = true, enabled = true) {
+async function node(listed = true, enabled = true, saves = false) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-code-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -53,7 +54,7 @@ async function node(listed = true, enabled = true) {
   mkdirSync(bin)
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}\n`)
-  writeFileSync(join(bin, 'agent-browser'), STAND_IN)
+  writeFileSync(join(bin, 'agent-browser'), standIn(saves ? join(workspace, 'saved.txt') : undefined))
   chmodSync(join(bin, 'agent-browser'), 0o755)
   const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'browser,code,fs',
@@ -198,5 +199,71 @@ describe('the ask a nested reference makes', () => {
     expect(ran(second)).toMatchObject({ ok: true, value: { filled: LABEL, page: LABEL } })
     expect(page()).toBe(TOKEN)
     expect(JSON.stringify([second, runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
+  })
+})
+
+// Codex review of fix 1, finding S1: a value a script's call resolved can come back through a later call that has no
+// reference of its own, such as an fs_read of a file the page saved the value to. Every call a script makes is masked
+// by every value its calls resolved, before the script, its record, or the audit sees it, across an ask too.
+describe('a value a script\'s fill leaves in a file', () => {
+  /** Fills through a reference, reads the file the page saved, prints it, types it elsewhere, and returns it. */
+  const SAVE_AND_READ = `await tools.browser_command({ command: 'fill', args: ['#password', '${REF}'] })
+const read = await tools.fs_read({ path: 'saved.txt' })
+text(read.content)
+await tools.browser_command({ command: 'type', args: ['#search', read.content] })
+return read.content`
+
+  it('reads as the label in every later call, its output, its result, the log, the audit, and the record, and a call that reuses it is handed the label', async () => {
+    const { root, workspace, runtime, page } = await node(true, true, true)
+    let response: InvokeResponse | undefined
+    const log = await logged(async () => { response = await codeRun(runtime, SAVE_AND_READ) })
+    const result = ran(response!)
+    expect(result).toMatchObject({ ok: true, value: LABEL })
+    expect(result.output).toBe(LABEL)
+    expect(result.calls.map(item => [item.tool, item.status])).toEqual([['browser_command', 'ok'], ['fs_read', 'ok'], ['browser_command', 'ok']])
+    // The type was handed the label the read showed the script, never the value, and the page saved that.
+    expect(page()).toBe(LABEL)
+    expect(readFileSync(join(workspace, 'saved.txt'), 'utf8')).toBe(LABEL)
+    expect(JSON.stringify([response, runtime.actions.read(50), log, stateText(root)])).not.toContain(TOKEN)
+  })
+
+  const ACROSS_ASK = `await tools.browser_command({ command: 'fill', args: ['#password', '${REF}'] })
+const before = await tools.fs_read({ path: 'saved.txt' })
+await tools.fs_write({ path: 'one/out.md', content: 'x', createParents: true })
+const after = await tools.fs_read({ path: 'saved.txt' })
+return { before: before.content, after: after.content }`
+
+  /** Sends ACROSS_ASK, which stops at the write's ask, checks nothing holds the value, and answers the ask. */
+  async function stopAtAsk() {
+    const setup = await node(true, true, true)
+    const first = await codeRun(setup.runtime, ACROSS_ASK)
+    if (first.outcome !== 'approval_required') throw new Error(`expected an ask, got ${JSON.stringify(first)}`)
+    const ask = first.approvals.find(approval => approval.rule === 'write_scope')!
+    expect(ask).toMatchObject({ tool: 'fs_write' })
+    // The record holds the read's result for the resumed run, masked.
+    expect(JSON.stringify([first, setup.runtime.actions.read(50), stateText(setup.root)])).not.toContain(TOKEN)
+    expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    return setup
+  }
+
+  it('stays masked once the script resumes after an ask: a call before it is replayed masked, and one after it reads the label', async () => {
+    const { root, workspace, runtime } = await stopAtAsk()
+    const second = await codeRun(runtime, ACROSS_ASK)
+    expect(ran(second)).toMatchObject({ ok: true, value: { before: LABEL, after: LABEL } })
+    expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('x')
+    expect(JSON.stringify([second, runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
+  })
+
+  it('refuses the resumed script where a value its calls used before the ask no longer reads as it did, and runs it once the file is back', async () => {
+    const { root, workspace, runtime } = await stopAtAsk()
+    const other = 'decoy-changed-9876543210'
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${other}\n`)
+    const refused = await codeRun(runtime, ACROSS_ASK)
+    expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('API_TOKEN in .env.local') } })
+    // Nothing after the ask ran, so the old value the file saved never reached a call the script could not mask.
+    expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
+    expect(JSON.stringify([refused, runtime.actions.read(50), stateText(root)])).not.toMatch(new RegExp(`${TOKEN}|${other}`))
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}\n`)
+    expect(ran(await codeRun(runtime, ACROSS_ASK))).toMatchObject({ ok: true, value: { before: LABEL, after: LABEL } })
   })
 })
