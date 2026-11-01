@@ -24,8 +24,11 @@ Git. Buckle never writes to the workspace's own `.git`.
   `.gitignore` and the repository's `info/exclude`, decide what Git reads. Changes under ignored
   paths are counted, never stored, and never touched by a restore. A protected path is never
   read, whatever a `.gitignore` re-includes. A folder Git does not track, such as an empty one,
-  and a file Git could not read keep their place: a restore never removes or rewrites them. A
-  workspace with no `.gitignore` tracks everything, within the caps. A nested repository is left
+  a file Git could not read, and what stands in a folder it could not open keep their place: a
+  restore never removes or rewrites them. Buckle learns of them from Git's own listings, never by
+  walking a folder. A folder a command makes inside one that holds nothing Git stores stays after
+  a restore, as it may have stood there before. A workspace with no `.gitignore` tracks
+  everything, within the caps. A nested repository is left
   out, reason `nested`. Each phase has 30 seconds; past that, or once the call is cancelled
   before the command starts, the command runs without restorable content. This needs permitted,
   trusted host Git; without it, the command runs and its checkpoint reads "Not restorable: host
