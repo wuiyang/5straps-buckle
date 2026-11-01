@@ -3,7 +3,7 @@ import type { JsonObject, JsonValue } from '@5straps/protocol'
 import type { ExecEffect, ResolvedEffect } from '../../domain/effect.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import { MIN_SECRET_LENGTH, SHORT_REASON, type FileReference } from '../../domain/secret-reference.js'
-import { ToolInputError, type FilledSecret, type FilledSecrets, type PreparedCall, type ToolContext } from '../../domain/tool.js'
+import { ToolInputError, type FilledSecret, type FilledSecrets, type HeldSecret, type PreparedCall, type ToolContext } from '../../domain/tool.js'
 import { createMasker, holdMasker, type SecretValue } from './mask.js'
 import type { SecretPlace, SecretPlan } from './places.js'
 import { readSecretValues } from './secret-file.js'
@@ -135,28 +135,40 @@ function readCallValues(checked: CheckedSecrets, input: { protectedRoots: readon
  * than the one filled, refuses the call, as its result could not be masked, except a close (`skipStale`), which shows no
  * page and is masked by the rest.
  */
-function readFilledValues(filled: readonly FilledSecret[], input: { protectedRoots: readonly string[]; roots: readonly string[] }, skipStale: boolean): SecretValue[] {
+function readFilledValues(filled: readonly HeldSecret[], input: { protectedRoots: readonly string[]; roots: readonly string[] }, skipStale: boolean): SecretValue[] {
   const byFile = new Map<string, { written: string; names: string[] }>()
   for (const entry of filled) {
     const file = byFile.get(entry.real) ?? { written: entry.written, names: [] }
     file.names.push(entry.name)
     byFile.set(entry.real, file)
   }
+  const ends = (test: (entry: HeldSecret) => boolean) => heldHint(filled.filter(test))
   const digests = new Map(filled.map(entry => [`${entry.real}\u0000${entry.name}`, entry.digest]))
   const values: SecretValue[] = []
   for (const [real, file] of byFile) {
     let read: Map<string, string>
     try { read = readSecretValues({ real, written: file.written, names: file.names, protectedRoots: input.protectedRoots, roots: input.roots }) } catch (error) {
       if (skipStale) continue
-      throw refused(`A secret value this workspace's browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}. Put the file back, or end the workspace's browsers with the close command`)
+      throw refused(`A secret value this browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}.${ends(entry => entry.real === real)}`)
     }
     for (const [name, value] of read) {
       if (digests.get(`${real}\u0000${name}`) === digestOf(value)) values.push({ name, value })
-      else if (!skipStale) throw refused(`The secret ${name} in ${file.written} changed since this workspace's browser was filled with it, so this browser call's result could not be masked. Put the file back, or end the workspace's browsers with the close command`)
+      else if (!skipStale) throw refused(`The secret ${name} in ${file.written} changed since this browser was filled with it, so this browser call's result could not be masked.${ends(entry => entry.real === real && entry.name === name)}`)
     }
     read.clear()
   }
   return values
+}
+
+/**
+ * What ends a hold that refused a call (Slice F4, item 7): every browser of the workspace that holds the value, by whom it
+ * serves and when it was last used, with the agent's close that ends it, and the owner's command that ends them all.
+ */
+function heldHint(entries: readonly HeldSecret[]): string {
+  const holders = [...new Set(entries.flatMap(entry => entry.holders ?? []))]
+  const command = entries.find(entry => entry.ownerCommand !== undefined)?.ownerCommand ?? 'buckle browser close'
+  const held = holders.length === 0 ? '' : ` It is held by ${holders.length} ${holders.length === 1 ? 'browser' : 'browsers'}: ${holders.join('; ')}.`
+  return `${held} Put the file back, or end ${holders.length === 1 ? 'it' : 'them'}; the owner's ${command} ends every browser of the workspace and drops what they hold`
 }
 
 export function digestOf(value: string): string {

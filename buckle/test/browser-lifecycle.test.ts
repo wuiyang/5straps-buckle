@@ -447,3 +447,44 @@ describe('the owner\'s buckle browser close (F4 item 6)', () => {
     expect(stored().browsers).toEqual({})
   })
 })
+
+describe('the browsers a refusal names (F4 item 7)', () => {
+  it('names each browser that holds a value, its caller, alias, stage, and last use, and the command that ends it', async () => {
+    const { open } = node({ workspaceName: () => 'the site' })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'], session: 'checkout' }, { stageId: 'turn-2', ...FILL })
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'other-agent', ...FILL })
+    const [held] = await pack.filled!.list({ context: context({ stageId: 'turn-2' }), args: { command: 'snapshot', args: [], session: 'checkout' } })
+    expect(held!.holders).toEqual([
+      expect.stringMatching(/^the fresh browser of caller mcp, session checkout, stage turn-2, last used \d{4}-\d{2}-\d{2}T[\d:.]+Z, which browser_command close with session checkout from that caller and stage ends$/),
+      expect.stringMatching(/^the fresh browser of caller other-agent, last used \d{4}-\d{2}-\d{2}T[\d:.]+Z, which browser_command close from that caller ends$/),
+    ])
+    expect(held!.ownerCommand).toBe('buckle browser close --workspace \'the site\'')
+  })
+
+  it('names a profile folder\'s browser and an attached Chrome as every caller\'s', async () => {
+    const profile = node({ mode: { kind: 'profile', directory: '/owner/profile' }, workspaceName: () => 'site' })
+    const pack = profile.open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const [shared] = await pack.filled!.list({ context: context({ sessionId: 'other-agent' }), args: { command: 'snapshot', args: [] } })
+    expect(shared!.holders).toEqual([expect.stringMatching(/^the profile folder's browser, which every caller shares, last used \S+, which browser_command close from any caller ends$/)])
+    const attached = node({ mode: { kind: 'attached', endpoint: '9222' }, workspaceName: () => 'site' })
+    const chrome = attached.open()
+    await call(chrome, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    const [owners] = await chrome.filled!.list({ context: context(), args: { command: 'snapshot', args: [] } })
+    expect(owners!.holders).toEqual(['the owner\'s attached Chrome, which keeps its pages through a close, so only the owner\'s command ends its hold'])
+    expect(owners!.ownerCommand).toBe('buckle browser close --workspace site')
+  })
+})
+
+describe('the most values one browser holds', () => {
+  it('refuses a fill past 256 values in one browser, naming the closes that end it, and leaves other browsers free', async () => {
+    const { open } = node({ workspaceName: () => 'site' })
+    const pack = open()
+    const fills = (count: number, from = 0) => ({ secretFills: Array.from({ length: count }, (_, index) => ({ ...FILL.secretFills[0]!, name: `VALUE_${from + index}` })) })
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, fills(256))
+    await expect(call(pack, { command: 'fill', args: ['@e5', 'x'] }, fills(1, 256))).rejects.toThrow('A browser is masked by at most 256 filled secret values; end it with browser_command close, or the owner\'s buckle browser close --workspace site, to fill more')
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, fills(1))
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, { sessionId: 'other-agent', ...fills(1, 256) })
+  })
+})

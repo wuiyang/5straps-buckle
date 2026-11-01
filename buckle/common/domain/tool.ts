@@ -22,7 +22,15 @@ export interface FilledSecret {
  * browser. Answered once what a stopped process left is ended (Slice F4, item 4).
  */
 export interface FilledSecrets {
-  list(call: { context: ToolContext; args: JsonObject }): Promise<readonly FilledSecret[]>
+  list(call: { context: ToolContext; args: JsonObject }): Promise<readonly HeldSecret[]>
+}
+
+/** A value a browser call is masked by, with what a refusal names for it (Slice F4, item 7). */
+export interface HeldSecret extends FilledSecret {
+  /** Each browser of the workspace that holds it: whom it serves, when it was last used, and what ends it. */
+  holders?: readonly string[]
+  /** The owner's command that ends every browser of the workspace and drops what they hold. */
+  ownerCommand?: string
 }
 
 export interface ToolContext {

@@ -152,6 +152,20 @@ describe('the hold a fill leaves on the workspace\'s browsers', () => {
     expect(await browser(runtime, { command: 'snapshot', args: [] }, 'chat-2')).toMatchObject({ outcome: 'ok' })
   })
 
+  // Slice F4, item 7: the refusal names the browser that holds the value, and the commands that end it.
+  it('names the browser that holds a value no longer read, and the close and the owner\'s command that end it', async () => {
+    const { workspace, runtime } = await node()
+    expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'], session: 'login' })).toMatchObject({ outcome: 'ok' })
+    writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}-rotated\n`)
+    const refused = await browser(runtime, { command: 'snapshot', args: [], session: 'login' })
+    const message = (refused as { error?: { message?: string } }).error?.message ?? ''
+    expect(message).toMatch(/^The secret API_TOKEN in \.env\.local changed since this browser was filled with it, so this browser call's result could not be masked\. It is held by 1 browser: the fresh browser of caller chat-1, session login, last used \S+, which browser_command close with session login from that caller ends\. Put the file back, or end it; the owner's buckle browser close --workspace \S+ ends every browser of the workspace and drops what they hold\./)
+    expect(message).toContain(`--workspace ${runtime.workspaceName()}`)
+    writeFileSync(join(workspace, '.env.local'), 'OTHER=decoy-other-0123\n')
+    const gone = await browser(runtime, { command: 'snapshot', args: [], session: 'login' })
+    expect((gone as { error?: { message?: string } }).error?.message).toMatch(/can no longer be read, so this browser call's result could not be masked: .*\. It is held by 1 browser: the fresh browser of caller chat-1, session login/)
+  })
+
   it('keeps the hold while another browser of the workspace runs', async () => {
     const { workspace, runtime } = await node()
     expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })

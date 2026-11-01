@@ -70,6 +70,8 @@ export interface BuiltinPackOptions {
   browserHeldBy?: () => string | null
   /** The runtime that writes the browser's sessions, beside the process's pid (Slice F4, item 4); the process's own when absent. */
   browserInstance?: string
+  /** The workspace's name, which the browser's refusals name in the owner's buckle browser close (Slice F4, item 7). */
+  workspaceName?: () => string
   /** Whether a service runs this node, for the browser's restart hint. */
   serviceInstalled?: () => boolean
   allowHostGit?: boolean
@@ -189,6 +191,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.serviceInstalled ? { serviceInstalled: options.serviceInstalled } : {}),
       ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}),
       ...(options.browserInstance ? { instance: options.browserInstance } : {}),
+      ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}),
     }),
   ]
 

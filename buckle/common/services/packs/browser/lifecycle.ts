@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonFileStore } from '../../../adapters/json-file-store.js'
-import { ToolInputError, type FilledSecret } from '../../../domain/tool.js'
+import { printable, workspaceArgument } from '../../../domain/approval-instruction.js'
+import { ToolInputError, type FilledSecret, type HeldSecret } from '../../../domain/tool.js'
 import { logger } from '../../../runtime/log.js'
 import type { BrowserModeName } from './mode.js'
 import type { BrowserCloseCounts } from '../../../domain/pack.js'
@@ -27,6 +28,8 @@ export interface Lifecycle {
   longestCallMs: number
   /** Sends one bare close, as shutdown does: whether it closed. */
   close(session: string, signal: AbortSignal): Promise<boolean>
+  /** The workspace's name, which the owner's command names; read at each refusal, as a rename takes effect at once. */
+  workspaceName?: () => string
 }
 
 /** How many filled values one browser is masked by at most. */
@@ -117,9 +120,9 @@ function claimsFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): Cla
 function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: readonly FilledSecret[]): { session: string; sibling: boolean } {
   const now = Date.now()
   const fields = { ...scope.caller, mode: scope.fingerprint, writer: lifecycle.me, usedAt: now, idleTimeoutMs: lifecycle.idleTimeoutMs }
-  if (scope.kind === 'attached' && fills.length > 0) state.attached = withFilled(state.attached ?? [], fills)
+  if (scope.kind === 'attached' && fills.length > 0) state.attached = withFilled(lifecycle, state.attached ?? [], fills)
   const held = (record: BrowserRecord | undefined) => {
-    const kept = withFilled(record?.held ?? [], scope.kind === 'attached' ? [] : fills)
+    const kept = withFilled(lifecycle, record?.held ?? [], scope.kind === 'attached' ? [] : fills)
     return kept.length > 0 ? { held: kept } : {}
   }
   if (scope.own !== null) {
@@ -141,10 +144,16 @@ function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: re
 }
 
 /** A hold with a call's fills in it, refused past MAX_FILLED values. */
-function withFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
+function withFilled(lifecycle: Lifecycle, held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
   const merged = mergeFilled(held, added)
-  if (merged.length > MAX_FILLED && merged.length > held.length) throw new ToolInputError(`A browser is masked by at most ${MAX_FILLED} filled secret values; end it with the close command to fill more`, { code: 'PERMISSION_DENIED' })
+  if (merged.length > MAX_FILLED && merged.length > held.length) throw new ToolInputError(`A browser is masked by at most ${MAX_FILLED} filled secret values; end it with browser_command close, or the owner's ${ownerCommand(lifecycle)}, to fill more`, { code: 'PERMISSION_DENIED' })
   return merged
+}
+
+/** The owner's command that ends every browser of the workspace (Slice F4, item 6), as a refusal names it. */
+function ownerCommand(lifecycle: Lifecycle): string {
+  const name = lifecycle.workspaceName?.()
+  return `buckle browser close${name === undefined ? '' : ` --workspace ${workspaceArgument(name)}`}`
 }
 
 /**
@@ -153,16 +162,36 @@ function withFilled(held: readonly FilledSecret[], added: readonly FilledSecret[
  * there holds: the profile folder's sessions, one a close failed for included, and the attached Chrome's hold. A
  * session about to be ended before the call runs is left out, as the call never reaches it.
  */
-export function heldFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): FilledSecret[] {
+export function heldFor(lifecycle: Lifecycle, state: Sessions, scope: CallScope): HeldSecret[] {
   const now = Date.now()
   const ending = (record: BrowserRecord) => !record.closing && stranded(record, lifecycle.me, now, lifecycle.longestCallMs)
-  if (scope.kind === 'fresh') {
-    const key = sessionKey(scope.kind, scope.caller)
-    const own = Object.values(state.browsers).find(record => !record.closing && !ending(record) && keyOf(record) === key && record.mode === scope.fingerprint && (record.allowedDomains === undefined || record.allowedDomains === scope.flag))
-    return [...own?.held ?? []]
-  }
-  const shared = Object.values(state.browsers).filter(record => record.kind === 'profile' && !ending(record)).flatMap(record => record.held ?? [])
-  return mergeFilled(state.attached ?? [], shared)
+  const key = sessionKey(scope.kind, scope.caller)
+  const values = scope.kind === 'fresh'
+    ? [...Object.values(state.browsers).find(record => !record.closing && !ending(record) && keyOf(record) === key && record.mode === scope.fingerprint && (record.allowedDomains === undefined || record.allowedDomains === scope.flag))?.held ?? []]
+    : mergeFilled(state.attached ?? [], Object.values(state.browsers).filter(record => record.kind === 'profile' && !ending(record)).flatMap(record => record.held ?? []))
+  const command = ownerCommand(lifecycle)
+  return values.map(value => ({ ...value, holders: holdersOf(state, value), ownerCommand: command }))
+}
+
+/** What a refusal names for an attached Chrome, which a close only disconnects from. */
+const ATTACHED_HOLDER = 'the owner\'s attached Chrome, which keeps its pages through a close, so only the owner\'s command ends its hold'
+
+/** Every browser of the workspace that holds a value, as a refusal names it (Slice F4, item 7). */
+function holdersOf(state: Sessions, value: FilledSecret): string[] {
+  const key = filledKey(value)
+  const holders = Object.values(state.browsers).filter(record => (record.held ?? []).some(entry => filledKey(entry) === key)).map(describeHolder)
+  if ((state.attached ?? []).some(entry => filledKey(entry) === key)) holders.push(ATTACHED_HOLDER)
+  return holders
+}
+
+/** One browser by whom it serves and when it was last used, and the agent's close that ends it. */
+function describeHolder(record: BrowserRecord): string {
+  const used = new Date(record.usedAt).toISOString()
+  if (record.kind === 'profile') return `the profile folder's browser, which every caller shares, last used ${used}, which browser_command close from any caller ends`
+  const alias = record.alias === 'default' ? null : printable(record.alias)
+  const stage = record.stage === 'default' ? null : printable(record.stage)
+  const close = `browser_command close${alias === null ? '' : ` with session ${alias}`} from that caller${stage === null ? '' : ' and stage'} ends`
+  return `the fresh browser of caller ${printable(record.caller)}${alias === null ? '' : `, session ${alias}`}${stage === null ? '' : `, stage ${stage}`}, last used ${used}, which ${close}`
 }
 
 /**

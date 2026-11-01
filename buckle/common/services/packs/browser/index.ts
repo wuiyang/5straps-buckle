@@ -94,6 +94,8 @@ export interface BrowserPackOptions {
    * where absent.
    */
   instance?: string
+  /** The workspace's name, which a refusal's owner command names (buckle browser close --workspace); read at each refusal. */
+  workspaceName?: () => string
 }
 
 /** The node's own default for the longest call, when the pack is built without one. */
@@ -152,6 +154,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
     idleTimeoutMs,
     longestCallMs: options.maxTimeoutMs ?? DEFAULT_MAX_TIMEOUT_MS,
     close: (session, signal) => closeSession(options, session, signal),
+    ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}),
   }
   // Slice F4, item 4: what a process that stopped without its close step left is ended at once, before any call here.
   const started = options.agentBrowser.path === null ? Promise.resolve() : endStranded(lifecycle).catch((error: unknown) => { logger.warn('The browser sessions a stopped Buckle process left could not be ended; the next start tries again', { error }) })

@@ -340,7 +340,7 @@ describe('a browser fill', () => {
     const { workspace, browserCall } = await setup()
     await browserCall({ command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] }, () => 'ok')
     writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}-rotated\n`)
-    await expect(browserCall({ command: 'snapshot', args: [] }, () => TOKEN)).rejects.toThrow('changed since this workspace\'s browser was filled with it')
+    await expect(browserCall({ command: 'snapshot', args: [] }, () => TOKEN)).rejects.toThrow('changed since this browser was filled with it')
   })
 
   it('refuses fill text a program would read as an option', async () => {

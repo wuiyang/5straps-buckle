@@ -406,7 +406,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   const browserHeldBy = input.browserHeldBy
   // Which runtime writes the browser's sessions, beside the pid, so a session a runtime left is told from a live one's.
   const browserInstance = randomUUID()
-  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance })
+  const workspaceName = () => config.serverName
+  let packs = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName })
   let registry = createToolRegistry(availableTools(packs))
 
   let activeInvocations = 0
@@ -681,7 +682,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // none of them to be open. A process holding no workbenches (another runs them) has none to wait for or stop.
     if (input.waitForWork && (reshaped ? await runtime.hasActiveWork() : policyMoved && await workbenches.hasActiveWork())) throw new WorkspaceError(RESHAPE_WAITS, 409)
     const nextPermissions = buildPermissionEngine({ config: nextConfig, compiled: nextCompiled, paths: nextPaths, dangerouslyAllowLevel })
-    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance }) : null
+    const built = rebuild ? await buildPacks({ config: nextConfig, sandbox, plugins, compiled: nextCompiled, paths: nextPaths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance, workspaceName }) : null
     const next = built ? carryPacks({ built, current: packs, carried: id => id === BROWSER_PACK && browserInputs({ config: nextConfig, compiled: nextCompiled, mounts: [resolved.mount, resolved.mounts] }) === browserInputs({ config, compiled, mounts: [before.mount, before.mounts] }) }) : null
     if (policyMoved) await workbenches.policyChanged()
     // A verdict was given under the policy in force, which its key names too; a new policy rates every call afresh.
@@ -856,6 +857,8 @@ async function buildPacks(input: {
   reachableTools: () => ToolCapability[]
   browserHeldBy?: (() => string | null) | undefined
   browserInstance: string
+  /** The workspace's name as the runtime holds it, which a rename changes in place. */
+  workspaceName: () => string
 }): Promise<Pack[]> {
   const builtin = createBuiltinPacks({
     cwd: input.config.cwd,
@@ -884,6 +887,7 @@ async function buildPacks(input: {
     browserSettingNames: input.config.browserSettingNames,
     ...(input.browserHeldBy ? { browserHeldBy: input.browserHeldBy } : {}),
     browserInstance: input.browserInstance,
+    workspaceName: input.workspaceName,
     serviceInstalled: () => serviceInstalled(input.config.nodeStateDirectory ?? input.config.stateDirectory),
     enableShell: input.config.enableShell,
     allowCode: input.config.allowCode,
