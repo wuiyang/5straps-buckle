@@ -139,11 +139,16 @@ function readFilledValues(filled: readonly HeldSecret[], input: { protectedRoots
   const byFile = new Map<string, { written: string; names: string[] }>()
   for (const entry of filled) {
     const file = byFile.get(entry.real) ?? { written: entry.written, names: [] }
-    file.names.push(entry.name)
+    if (!file.names.includes(entry.name)) file.names.push(entry.name)
     byFile.set(entry.real, file)
   }
   const ends = (test: (entry: HeldSecret) => boolean) => heldHint(filled.filter(test))
-  const digests = new Map(filled.map(entry => [`${entry.real}\u0000${entry.name}`, entry.digest]))
+  // Every value a reference was filled with, as two fills of it may have reached one page (Codex review L4).
+  const digests = new Map<string, Set<string>>()
+  for (const entry of filled) {
+    const key = `${entry.real}\u0000${entry.name}`
+    digests.set(key, (digests.get(key) ?? new Set()).add(entry.digest))
+  }
   const values: SecretValue[] = []
   for (const [real, file] of byFile) {
     let read: Map<string, string>
@@ -152,8 +157,11 @@ function readFilledValues(filled: readonly HeldSecret[], input: { protectedRoots
       throw refused(`A secret value this browser was filled with can no longer be read, so this browser call's result could not be masked: ${(error as Error).message}.${ends(entry => entry.real === real)}`)
     }
     for (const [name, value] of read) {
-      if (digests.get(`${real}\u0000${name}`) === digestOf(value)) values.push({ name, value })
-      else if (!skipStale) throw refused(`The secret ${name} in ${file.written} changed since this browser was filled with it, so this browser call's result could not be masked.${ends(entry => entry.real === real && entry.name === name)}`)
+      const held = digests.get(`${real}\u0000${name}`)
+      const matches = held?.has(digestOf(value)) === true
+      if (matches) values.push({ name, value })
+      // The file gives one value: a page that also shows another the reference was filled with cannot be masked.
+      if ((!matches || held!.size > 1) && !skipStale) throw refused(`The secret ${name} in ${file.written} changed since this browser was filled with it, so this browser call's result could not be masked.${ends(entry => entry.real === real && entry.name === name)}`)
     }
     read.clear()
   }

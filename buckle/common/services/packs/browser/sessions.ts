@@ -186,11 +186,19 @@ export function upgradeSessions(state: Sessions): void {
   state.writers = {}
 }
 
-/** A hold with more values in it, one entry a file and NAME, the latest digest kept. */
+/**
+ * A hold with more values in it, one entry a file, NAME, and digest: a page two fills of one reference reached shows both
+ * values, so each is kept until the browser ends (Codex review L4), and a call it can no longer mask by both is refused.
+ */
 export function mergeFilled(held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
-  const entries = new Map(held.map(entry => [filledKey(entry), entry]))
-  for (const entry of added) entries.set(filledKey(entry), { real: entry.real, written: entry.written, name: entry.name, digest: entry.digest })
+  const entries = new Map(held.map(entry => [valueKey(entry), entry]))
+  for (const entry of added) if (!entries.has(valueKey(entry))) entries.set(valueKey(entry), { real: entry.real, written: entry.written, name: entry.name, digest: entry.digest })
   return [...entries.values()]
+}
+
+/** A reference's one value: its file, NAME, and digest. */
+function valueKey(entry: FilledSecret): string {
+  return `${filledKey(entry)}\u0000${entry.digest}`
 }
 
 export function filledKey(entry: FilledSecret): string {

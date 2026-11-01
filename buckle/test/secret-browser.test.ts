@@ -36,7 +36,7 @@ afterEach(async () => {
 })
 
 /** A node with the stand-in agent-browser; `open` starts another Buckle process on the same workspace and state. */
-async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: () => Promise<BuckleRuntime>; stop: () => void }> {
+async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: () => Promise<BuckleRuntime>; stop: () => void; sessions: string }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-browser-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -55,13 +55,14 @@ async function node(environment: Record<string, string> = {}): Promise<{ bin: st
     return opened
   }
   // As a process that stopped without its close step leaves its records: written by a pid that no longer runs.
+  const sessions = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
   const stop = () => {
-    const file = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd), 'sessions.json')
+    const file = sessions
     const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, { writer: unknown }> }
     for (const record of Object.values(state.browsers)) record.writer = { pid: spawnSync(process.execPath, ['-e', '']).pid, instance: 'stopped' }
     writeFileSync(file, JSON.stringify(state))
   }
-  return { bin, workspace, runtime: await open(), open, stop }
+  return { bin, workspace, runtime: await open(), open, stop, sessions }
 }
 
 let sequence = 0
@@ -164,6 +165,20 @@ describe('the hold a fill leaves on the workspace\'s browsers', () => {
     writeFileSync(join(workspace, '.env.local'), 'OTHER=decoy-other-0123\n')
     const gone = await browser(runtime, { command: 'snapshot', args: [], session: 'login' })
     expect((gone as { error?: { message?: string } }).error?.message).toMatch(/can no longer be read, so this browser call's result could not be masked: .*\. It is held by 1 browser: the fresh browser of caller chat-1, session login/)
+  })
+
+  // Codex review L4: a browser two fills of one reference reached, the file rotated between them, shows both values.
+  it('refuses a call on a browser that holds two values of one reference, as the file now gives only one', async () => {
+    const { runtime, sessions: file } = await node()
+    expect(await browser(runtime, { command: 'fill', args: ['@e5', '{{file:.env.local:API_TOKEN}}'] })).toMatchObject({ outcome: 'ok' })
+    const state = JSON.parse(readFileSync(file, 'utf8')) as { browsers: Record<string, { held: Array<{ digest: string }> }> }
+    // The earlier value first, as the hold kept it, then the file's own.
+    for (const record of Object.values(state.browsers)) record.held = [{ ...record.held[0]!, digest: 'e'.repeat(64) }, ...record.held]
+    writeFileSync(file, JSON.stringify(state))
+    expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'error' })
+    // Close shows no page, so it still runs, and ends the browser with both.
+    expect(await browser(runtime, { command: 'close', args: [] })).toMatchObject({ outcome: 'ok' })
+    expect(await browser(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
   })
 
   it('keeps the hold while another browser of the workspace runs', async () => {

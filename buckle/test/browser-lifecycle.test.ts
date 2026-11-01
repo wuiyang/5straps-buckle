@@ -1,5 +1,5 @@
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -481,6 +481,32 @@ describe('the browsers a refusal names (F4 item 7)', () => {
     const [owners] = await chrome.filled!.list({ context: context(), args: { command: 'snapshot', args: [] } })
     expect(owners!.holders).toEqual(['the owner\'s attached Chrome, which keeps its pages through a close, so only the owner\'s command ends its hold'])
     expect(owners!.ownerCommand).toBe('buckle browser close --workspace site')
+  })
+})
+
+// Codex review L4: two fills of one reference that each passed their checks before either was held, with the file
+// rotated between their reads, left the browser showing both values and the hold only the later one.
+describe('a fill of a value the browser already holds another value for', () => {
+  const second = { secretFills: [{ ...FILL.secretFills[0]!, digest: 'e'.repeat(64) }] }
+
+  it('is refused under the sessions lock before the browser is handed it, and the hold keeps the first', async () => {
+    const { browser, open, stored } = node({ workspaceName: () => 'site' })
+    const pack = open()
+    await call(pack, { command: 'fill', args: ['@e5', 'x'] }, FILL)
+    await expect(call(pack, { command: 'fill', args: ['@e6', 'y'] }, second)).rejects.toThrow('The secret LOGIN_PASSWORD in .env.local changed since this browser was filled with it, so it is not filled with another value beside the first; end this browser with browser_command close, or the owner\'s buckle browser close --workspace site, then fill again')
+    expect(browser.calls.map(request => request.args[0])).toEqual(['fill'])
+    const records = Object.values(stored().browsers as Record<string, { held: Array<{ digest: string }> }>)
+    expect(records.map(record => record.held.map(entry => entry.digest))).toEqual([['d'.repeat(64)]])
+    // Another browser holds its own.
+    await call(pack, { command: 'fill', args: ['@e6', 'y'] }, { sessionId: 'other-agent', ...second })
+  })
+
+  it('keeps every value an earlier Buckle\'s hold merged in, each with its own digest', async () => {
+    const { open, sessionDirectory } = node({ mode: { kind: 'attached', endpoint: '9222' } })
+    mkdirSync(sessionDirectory, { recursive: true })
+    writeFileSync(join(sessionDirectory, 'sessions.json'), JSON.stringify({ attached: FILL.secretFills, filled: second.secretFills }))
+    const pack = open()
+    expect((await pack.filled!.list({ context: context(), args: { command: 'snapshot', args: [] } as never })).map(entry => entry.digest).sort()).toEqual(['d'.repeat(64), 'e'.repeat(64)])
   })
 })
 

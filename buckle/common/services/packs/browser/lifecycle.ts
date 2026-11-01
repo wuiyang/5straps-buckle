@@ -58,26 +58,47 @@ interface Claims { names: string[]; relaunchedFrom?: string | null; sibling: boo
  */
 export async function takeSession(lifecycle: Lifecycle, input: { scope: CallScope; fills: readonly FilledSecret[] }): Promise<TakenSession> {
   const { store } = lifecycle
-  const first = await store.update((state): { taken: TakenSession } | { claims: Claims } => {
+  const first = await store.update((state): Taking<TakenSession> | { claims: Claims } => {
     upgradeSessions(state)
     const claims = claimsFor(lifecycle, state, input.scope)
     if (claims.names.length > 0) {
       for (const name of claims.names) state.browsers[name]!.closing = true
       return { claims }
     }
-    const taken = take(lifecycle, state, input.scope, input.fills)
-    return { taken: { ...taken, sibling: taken.sibling || claims.sibling } }
+    return taking(() => {
+      const taken = take(lifecycle, state, input.scope, input.fills)
+      return { ...taken, sibling: taken.sibling || claims.sibling }
+    })
   })
-  if ('taken' in first) return first.taken
+  if (!('claims' in first)) return taken(first)
   const { claims } = first
   const closed = await closeEach(lifecycle, claims.names)
   if ([...closed.values()].includes(false)) logger.warn('A browser session Buckle ended before a call did not close; the next start ends it')
-  return store.update((state) => {
+  return taken(await store.update((state) => {
     upgradeSessions(state)
     forget(state, closed)
-    const taken = take(lifecycle, state, input.scope, input.fills)
-    return { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
-  })
+    return taking(() => {
+      const taken = take(lifecycle, state, input.scope, input.fills)
+      return { ...taken, sibling: taken.sibling || claims.sibling, ...(claims.relaunchedFrom === undefined ? {} : { relaunchedFrom: claims.relaunchedFrom }) }
+    })
+  }))
+}
+
+/** A take, or the refusal it met, which is thrown once the store keeps what the update changed before it. */
+type Taking<T> = { taken: T } | { refused: ToolInputError }
+
+function taking<T>(run: () => T): Taking<T> {
+  try {
+    return { taken: run() }
+  } catch (error) {
+    if (error instanceof ToolInputError) return { refused: error }
+    throw error
+  }
+}
+
+function taken<T>(result: Taking<T>): T {
+  if ('refused' in result) throw result.refused
+  return result.taken
 }
 
 /**
@@ -143,8 +164,14 @@ function take(lifecycle: Lifecycle, state: Sessions, scope: CallScope, fills: re
   return { session, sibling: false }
 }
 
-/** A hold with a call's fills in it, refused past MAX_FILLED values. */
+/**
+ * A hold with a call's fills in it, refused past MAX_FILLED values, and refused where the browser holds another value of
+ * a reference the call fills (Codex review L4): two fills that each passed their checks before either was held, the file
+ * rotated between their reads, would leave both values on the page, and no later call could be masked by the first.
+ */
 function withFilled(lifecycle: Lifecycle, held: readonly FilledSecret[], added: readonly FilledSecret[]): FilledSecret[] {
+  const other = added.find(entry => held.some(kept => filledKey(kept) === filledKey(entry) && kept.digest !== entry.digest))
+  if (other) throw new ToolInputError(`The secret ${other.name} in ${other.written} changed since this browser was filled with it, so it is not filled with another value beside the first; end this browser with browser_command close, or the owner's ${ownerCommand(lifecycle)}, then fill again`, { code: 'PERMISSION_DENIED' })
   const merged = mergeFilled(held, added)
   if (merged.length > MAX_FILLED && merged.length > held.length) throw new ToolInputError(`A browser is masked by at most ${MAX_FILLED} filled secret values; end it with browser_command close, or the owner's ${ownerCommand(lifecycle)}, to fill more`, { code: 'PERMISSION_DENIED' })
   return merged
