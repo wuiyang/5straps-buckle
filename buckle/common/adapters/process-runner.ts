@@ -24,6 +24,7 @@ export const runProcess: ProcessRunner = (request: ProcessRequest): Promise<Proc
       env: request.environment,
       shell: false,
       stdio: [request.stdin ?? 'ignore', 'pipe', 'pipe'],
+      windowsHide: request.windowsHide === true,
     })
 
     const stdout = createBoundedBuffer()

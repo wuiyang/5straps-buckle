@@ -8,6 +8,8 @@ export interface ProcessRequest {
   environment: NodeJS.ProcessEnv
   stdin?: number
   signal?: AbortSignal
+  /** On Windows, start it with no console window of its own, as a node with no console (a service) would open one. */
+  windowsHide?: boolean
 }
 
 export interface ProcessResult {

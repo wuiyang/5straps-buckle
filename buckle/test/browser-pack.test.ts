@@ -99,39 +99,40 @@ describe('the browser the owner\'s settings choose', () => {
   it('holds a fresh browser to the approved hosts and passes the owner\'s arguments with them', async () => {
     const { args } = await run({ command: 'snapshot', args: [] }, { approvedLists: approved, launchArgs: '--disable-blink-features=AutomationControlled' })
     expect(valueOf(args, '--allowed-domains')).toBe('example.com')
-    expect(valueOf(args, '--args')).toBe('--disable-blink-features=AutomationControlled')
+    expect(valueOf(args, '--args')).toBe('--disable-blink-features=AutomationControlled,--no-startup-window')
     expect(valueOf(args, '--idle-timeout')).toBe('300000')
     expect(args).not.toContain('--profile')
     expect(args).not.toContain('--cdp')
   })
 
-  // With no setting the argv is the one Buckle passed before the owner could choose a browser, flag for flag.
+  // With no setting the argv is the one Buckle passed before the owner could choose a browser, flag for flag, with
+  // --no-startup-window as its --args since Slice F4, item 1.
   it('hands a fresh browser the whole argv it always had, with and without a list or a window', async () => {
     const directory = freshDirectory()
     const config = join(directory, 'fresh-config.json')
     const session = expect.stringMatching(/^buckle-[0-9a-f-]{36}$/)
     expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: directory, approvedLists: approved })).args)
-      .toEqual(['snapshot', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com'])
+      .toEqual(['snapshot', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com', '--args', '--no-startup-window'])
     expect((await run({ command: 'open', args: ['example.com'] }, { sessionDirectory: directory, approvedLists: approved })).args)
-      .toEqual(['open', 'https://example.com/', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com'])
+      .toEqual(['open', 'https://example.com/', '--json', '--config', config, '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com', '--args', '--no-startup-window'])
     const other = freshDirectory()
     expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: other })).args)
-      .toEqual(['snapshot', '--json', '--config', join(other, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000'])
+      .toEqual(['snapshot', '--json', '--config', join(other, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000', '--args', '--no-startup-window'])
     const headed = freshDirectory()
     expect((await run({ command: 'snapshot', args: [] }, { sessionDirectory: headed, headed: true, approvedLists: approved })).args)
-      .toEqual(['snapshot', '--json', '--config', join(headed, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com', '--headed'])
+      .toEqual(['snapshot', '--json', '--config', join(headed, 'fresh-config.json'), '--session', session, '--idle-timeout', '300000', '--allowed-domains', 'example.com', '--args', '--no-startup-window', '--headed'])
     for (const folder of [directory, other, headed]) rmSync(folder, { recursive: true, force: true })
   })
 
-  it('passes no --args when the owner set none', async () => {
+  it('passes --no-startup-window alone as --args when the owner set none', async () => {
     const { args } = await run({ command: 'snapshot', args: [] })
-    expect(args).not.toContain('--args')
+    expect(valueOf(args, '--args')).toBe('--no-startup-window')
   })
 
   it('launches a profile folder with its arguments and window, and never with --allowed-domains, which agent-browser refuses there', async () => {
     const { args } = await run({ command: 'snapshot', args: [] }, { browser: { mode: PROFILE_MODE }, approvedLists: approved, headed: true, launchArgs: '--lang=en-GB' })
     expect(valueOf(args, '--profile')).toBe('/owner/browser-profile')
-    expect(valueOf(args, '--args')).toBe('--lang=en-GB')
+    expect(valueOf(args, '--args')).toBe('--lang=en-GB,--no-startup-window')
     expect(args).toContain('--headed')
     expect(args).not.toContain('--allowed-domains')
     expect(valueOf(args, '--idle-timeout')).toBe('300000')

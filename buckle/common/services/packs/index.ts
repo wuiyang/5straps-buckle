@@ -185,6 +185,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.browserIdleTimeoutMs === undefined ? {} : { idleTimeoutMs: options.browserIdleTimeoutMs }),
       ...(options.browserHeldBy ? { heldBy: options.browserHeldBy } : {}),
       ...(options.serviceInstalled ? { serviceInstalled: options.serviceInstalled } : {}),
+      ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}),
     }),
   ]
 

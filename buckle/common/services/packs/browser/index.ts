@@ -4,6 +4,7 @@ import { basename, isAbsolute, join } from 'pathe'
 import { z } from 'zod'
 import { createJsonFileStore, type JsonFileStore } from '../../../adapters/json-file-store.js'
 import type { JsonValue } from '@5straps/protocol'
+import { browserArguments, chromiumSwitch } from '../../../domain/browser-arguments.js'
 import { hostEnvironment, type HostEnvironment } from '../../../domain/environment.js'
 import { ownRoots, type Program, type ProgramRefusal, type ResolvedProgram } from '../../../domain/executable.js'
 import type { Pack } from '../../../domain/pack.js'
@@ -142,6 +143,8 @@ export interface BrowserPackOptions {
   heldBy?: () => string | null
   /** Whether a service runs this node, read when a restart hint is logged, so it names buckle service restart (Phase 3, item 7). */
   serviceInstalled?: () => boolean
+  /** The platform the node runs on; the host's unless a test imitates Windows. */
+  platform?: NodeJS.Platform
 }
 
 /** The node's own default for the longest call, when the pack is built without one. */
@@ -187,6 +190,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
   const flag = mode?.kind === 'fresh' && 'value' in allowedDomains ? allowedDomains.value : null
   const unavailableReason = options.agentBrowser.path !== null ? ('refusal' in choice ? choice.refusal : null) : browserUnavailable(options.agentBrowserCommand, options.agentBrowser)
   if (unavailableReason === null && mode) logContainmentOff(mode)
+  if (unavailableReason === null) warnOldWindowsBrowser(options)
   // The browser daemons this pack started and has not closed, which outlive single calls and end at its shutdown. The
   // one browser on a profile folder is never among them: other Buckle processes share it, so only the close command
   // and its idle timeout end it.
@@ -286,7 +290,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
             // Tracked before it runs, for the same reason: a daemon a failed first call started is still ended by the
             // retire of the pack a change replaces, and by the node's shutdown.
             if (running.kind !== 'profile' && input.command !== 'close') opened.add(session)
-            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: options.launchArgs, idleTimeoutMs }))
+            args.push('--config', configFile, '--session', session, ...modeArguments(running, { flag, headed: options.headed && !input.args.includes('--headed'), launchArgs: launchArguments(options.launchArgs, options.platform ?? process.platform), idleTimeoutMs }))
             if (flag !== null && 'loosened' in allowedDomains) logLoosened(allowedDomains.loosened)
 
             writeFileSync(configFile, '{}\n', { mode: 0o600 })
@@ -299,6 +303,7 @@ export function createBrowserPack(options: BrowserPackOptions): Pack {
               timeoutMs: context.timeoutMs,
               environment: browserEnvironment(options),
               signal: context.signal,
+              windowsHide: true,
             })
             const failed = ran.exitCode !== 0
             const result = { ...ran, stdout: scrub(transfer.shown(ran.stdout), failed), stderr: scrub(transfer.shown(ran.stderr), failed) }
@@ -346,18 +351,60 @@ function browserMode(mode: BrowserMode | null): BrowserMode {
 
 /**
  * The flags each mode adds after the session. A fresh browser takes the allowed domains; a profile folder takes
- * --profile instead, as agent-browser refuses the two together; both take the owner's --args and --headed. An
+ * --profile instead, as agent-browser refuses the two together; both take --args (launchArguments) and --headed. An
  * attached browser takes --cdp alone: it keeps the profile, arguments, and window its owner started it with, and
  * agent-browser's close and idle shutdown only disconnect from it.
  */
-function modeArguments(mode: BrowserMode, input: { flag: string | null; headed: boolean; launchArgs: string | undefined; idleTimeoutMs: number }): string[] {
+function modeArguments(mode: BrowserMode, input: { flag: string | null; headed: boolean; launchArgs: string; idleTimeoutMs: number }): string[] {
   const args = ['--idle-timeout', String(input.idleTimeoutMs)]
   if (mode.kind === 'attached') return [...args, '--cdp', mode.endpoint]
   if (mode.kind === 'profile') args.push('--profile', mode.directory)
   if (input.flag !== null) args.push('--allowed-domains', input.flag)
-  if (input.launchArgs) args.push('--args', input.launchArgs)
+  args.push('--args', input.launchArgs)
   if (input.headed) args.push('--headed')
   return args
+}
+
+/**
+ * Chrome opens a New Tab window of its own at start, beside the page agent-browser makes, which agent-browser never
+ * tracks, so it dangles until the browser closes (agent-browser #1544); this switch keeps it shut.
+ */
+const NO_STARTUP_WINDOW = '--no-startup-window'
+
+/**
+ * The --args a browser Buckle launches takes: the owner's arguments (BUCKLE_BROWSER_ARGS or browser.args), then
+ * --no-startup-window, so one launch shows one window; the owner's value as written where it holds that switch already.
+ */
+export function launchArguments(owner: string | undefined, platform: NodeJS.Platform): string {
+  if (owner !== undefined && browserArguments(owner).some(argument => chromiumSwitch(argument, platform)?.name === NO_STARTUP_WINDOW.slice(2))) return owner
+  const written = owner?.replace(/[,\s]+$/, '') ?? ''
+  return written ? `${written},${NO_STARTUP_WINDOW}` : NO_STARTUP_WINDOW
+}
+
+/** The first agent-browser that keeps a headless browser off the Windows desktop (agent-browser #1498). */
+const WINDOWS_MINIMUM = [0, 37, 1] as const
+const VERSION_TIMEOUT_MS = 10_000
+const checkedVersions = new Set<string>()
+
+/**
+ * At pack start on Windows, once per process for each program: agent-browser before 0.37.1 shows a headless browser's
+ * windows on the desktop, and leaves the old browser open when a daemon that ended is started again, so the owner's
+ * log names its version and the upgrade. Asked of the program itself, which answers `agent-browser <version>`.
+ */
+function warnOldWindowsBrowser(options: BrowserPackOptions): void {
+  const program = options.agentBrowser
+  if ((options.platform ?? process.platform) !== 'win32' || program.path === null || checkedVersions.has(program.path)) return
+  checkedVersions.add(program.path)
+  void (async () => {
+    mkdirSync(options.sessionDirectory, { recursive: true, mode: 0o700 })
+    const ran = await options.runProcess({ command: program.path, argv0: program.argv0, args: [...program.args, '--version'], cwd: options.sessionDirectory, timeoutMs: VERSION_TIMEOUT_MS, environment: browserEnvironment(options), windowsHide: true })
+    const found = /(\d+)\.(\d+)\.(\d+)/.exec(ran.stdout)
+    if (!found) return
+    const parts = found.slice(1, 4).map(Number)
+    const older = parts.findIndex((part, index) => part !== WINDOWS_MINIMUM[index]!)
+    if (older === -1 || parts[older]! > WINDOWS_MINIMUM[older]!) return
+    logger.warn(`agent-browser ${found[0]} is older than ${WINDOWS_MINIMUM.join('.')}, which on Windows shows a headless browser's windows on the desktop and can leave a browser open when its daemon ends; upgrade it with npm i -g agent-browser@latest`, { version: found[0] })
+  })().catch(() => {})
 }
 
 /** Why a call is refused while another workspace holds the profile folder or the attached Chrome: names that workspace, never the setting's value. */
@@ -426,6 +473,7 @@ async function closeSession(options: BrowserPackOptions, session: string, signal
     timeoutMs: CLOSE_TIMEOUT_MS,
     environment: browserEnvironment(options),
     signal,
+    windowsHide: true,
   }).catch(() => ({ exitCode: null }))
   return result.exitCode === 0
 }

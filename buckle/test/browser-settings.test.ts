@@ -343,7 +343,7 @@ describe('what a real runtime hands a fake agent-browser in each mode', () => {
     const { response, call, status } = await fixture({ BUCKLE_BROWSER_ARGS: '--disable-blink-features=AutomationControlled' })
     expect(response.outcome).toBe('ok')
     expect(valueOf(call, '--allowed-domains')).toBe('example.com')
-    expect(valueOf(call, '--args')).toBe('--disable-blink-features=AutomationControlled')
+    expect(valueOf(call, '--args')).toBe('--disable-blink-features=AutomationControlled,--no-startup-window')
     expect(status.browser).toEqual({ mode: 'fresh', setting: null, withheld: null })
   })
 
