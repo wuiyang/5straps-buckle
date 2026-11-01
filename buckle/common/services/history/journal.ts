@@ -18,7 +18,7 @@ import { createGitStore, DEFAULT_HISTORY_FILE_BYTES, HistoryGitError } from './g
 import { readLegacyHistory } from './legacy.js'
 import { checkpointSchema, type Checkpoint } from './records.js'
 import { HistoryCaptureSafetyError } from './capture-hashes.js'
-import { createCommandCapture, FolderReplacedError, HostGitNeededError, type CommandBaseline } from './command-capture.js'
+import { createCommandCapture, FolderReplacedError, HostGitNeededError, type CaptureBudget, type CommandBaseline } from './command-capture.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS, retainedTurns } from './turn-retention.js'
 import { openHistoryActivity } from './activity.js'
 import { blobId, HistoryContentError, openObjectStore } from './object-store.js'
@@ -48,6 +48,8 @@ export function withConflictPath(refusal: { message: string }, shown: string | u
 export interface ChangeHistoryOptions {
   directory: string; excluded: string[]; maxBytes: number; retentionDays?: number; label?: string; lockDeadlineMs?: number; now?: () => number; platform?: NodeJS.Platform
   untrusted?: () => UntrustedRoots; allowHostGit?: boolean; keepTurns?: number; turnIdleMs?: number; maxFileBytes?: number
+  /** How long one phase of a command's capture may take, all its roots together (X14); CAPTURE_BUDGET_MS unless given. */
+  captureBudgetMs?: number
 }
 /** The reason a checkpoint a stopped call left pending is given once the next call takes the lock (Slice F2, item 6). */
 export const STOPPED_REASON = 'Buckle stopped before this call finished, so history could not record what it changed; this checkpoint is not restorable'
@@ -57,6 +59,11 @@ const PARTIAL_REASON = 'Git could not read some files this command may have chan
 const CAP_REASON = 'History reached its rolling size cap; this checkpoint records changes without restorable content'
 /** Told to the call whose checkpoint is the first in a fresh journal, once a damaged one was moved aside (M1). */
 export const JOURNAL_RESET_REASON = 'History found its journal damaged, kept it beside the new one for the owner, and started a fresh journal; checkpoints before this call are no longer listed'
+/**
+ * How long one phase of a command's capture may take before history stops git and runs the call without restorable
+ * content (X14): a first capture hashes every file git tracks, which a slow disk can stretch past an agent's patience.
+ */
+export const CAPTURE_BUDGET_MS = 30_000
 /** A checkpoint the shadow-git engine of 670f1dc2 wrote keeps its content in that store, which only git reads (Slice F2, item 7). */
 export const OLD_ENGINE_REASON = 'This checkpoint is from the earlier shadow-git history, whose content only permitted trusted host git can read; this node has none, so it cannot be restored'
 /** Those stores, in a workspace's history folder: shadow git (670f1dc2) and the SQLite history before it. */
@@ -210,7 +217,9 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   function completeCall(sessionId: string, turn: string): void { activity.complete(sessionId, turn, now()) }
   function finishCall(sessionId: string, stageId: string | undefined, turn: string): void { activity.finish(sessionId, stageId, turn, now()) }
-  async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }): Promise<Checkpoint> {
+  /** The capture budget of one phase from now, with the call's cancellation for the before phase alone (X14). */
+  function budget(signal?: AbortSignal): CaptureBudget { return { deadline: Date.now() + (input.captureBudgetMs ?? CAPTURE_BUDGET_MS), ...(signal ? { signal } : {}) } }
+  async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }, signal?: AbortSignal): Promise<Checkpoint> {
     if (details.scope) return beginScoped({ ...details, scope: details.scope }, restore)
     const stage = details.turnStageId === undefined ? details.stageId : details.turnStageId ?? undefined
     const turnId = activity.activeTurn(details.sessionId, stage) ?? observeCall(details.sessionId, stage)
@@ -221,7 +230,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     try { before = await captureScope({ scope: others, store: objects, ...scopeLimits() }) }
     catch (error) { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
     if (reason === undefined && folders.length) {
-      try { baselines.set(id, await commands.baseline(folders)) }
+      try { baselines.set(id, await commands.baseline(folders, budget(signal))) }
       catch (error) {
         if (error instanceof HostGitNeededError) reason = HOST_GIT_REASON
         else { reason = `History could not record the files before this command (${causeText(error)}); it ran without restorable content`; logger.warn(`Checkpoint ${id}: ${reason}`, { phase: 'before', cause: causeOf(error) }) }
@@ -254,7 +263,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       if (!record.baselineAvailable) record.before = after
       record.after = after
       if (baseline) {
-        const found = await commands.changes(baseline, priorEntry(record.id))
+        // The command ran: its after phase records what it changed within the budget, whatever became of its caller.
+        const found = await commands.changes(baseline, priorEntry(record.id), budget())
         Object.assign(record.before, found.before); Object.assign(after, found.after)
         if (found.ignored) record.ignored = found.ignored
         if (found.partial) { record.reason ??= PARTIAL_REASON; logger.warn(`Checkpoint ${record.id}: ${PARTIAL_REASON}`, { phase: 'after' }) }
@@ -608,7 +618,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       return locked(async () => {
         // No history reason ever refuses a call (item 6): one whose checkpoint cannot begin runs without one, and its notice says why.
         let record: Checkpoint
-        try { record = await begin(details) }
+        try { record = await begin(details, undefined, signal) }
         catch (error) { unbegun(details, error); return execute() }
         try { return await execute() } finally { await finish(record); completeCall(record.sessionId, record.turnId!) }
       }, signal ? { signal } : {})
@@ -689,7 +699,7 @@ function causeOf(error: unknown): Record<string, string | number> {
 function causeText(error: unknown): string {
   if (error instanceof HistoryGitError) {
     const { operation, failure, exitCode } = error.details
-    const how = failure === 'exit' ? `exited with ${exitCode ?? 'a signal'}` : failure === 'timeout' ? 'timed out' : failure === 'start' ? 'could not start' : 'wrote more output than history reads'
+    const how = failure === 'exit' ? `exited with ${exitCode ?? 'a signal'}` : failure === 'timeout' ? 'timed out' : failure === 'start' ? 'could not start' : failure === 'aborted' ? 'was stopped as its call was cancelled' : 'wrote more output than history reads'
     return `git ${operation} ${how}`
   }
   const code = systemCode(error)

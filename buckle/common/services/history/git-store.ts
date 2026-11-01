@@ -25,7 +25,7 @@ export const RAW_ATTRIBUTES = '* -text -filter -ident -working-tree-encoding\n**
 const SETUP_MARKER = 'buckle-setup-complete'
 const GIT_OPERATIONS = ['init', 'ls-files', 'update-index', 'add', 'read-tree', 'write-tree', 'commit-tree', 'ls-tree', 'check-ignore', 'cat-file', 'update-ref', 'diff-tree', 'checkout-index', 'for-each-ref', 'rev-parse', 'verify-pack', 'rev-list', 'gc', 'repack', 'diff-files'] as const
 export type GitOperation = typeof GIT_OPERATIONS[number] | 'unknown'
-type GitFailure = 'start' | 'timeout' | 'output-limit' | 'exit'
+type GitFailure = 'start' | 'timeout' | 'output-limit' | 'exit' | 'aborted'
 interface GitFailureDetails { operation: GitOperation; failure: GitFailure; elapsedMs: number; exitCode?: number; errno?: string }
 interface CaptureTiming { captureHashesMs: number; resolveMs: number; gitSubprocessMs: number; commandCount: number }
 interface CheckpointTrees { id: string; beforeTrees?: TreeCapture[]; afterTrees?: TreeCapture[] }
@@ -444,10 +444,10 @@ function safeErrno(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' && Object.hasOwn(systemConstants.errno, error.code) ? error.code : undefined
 }
 /**
- * Runs one git child and answers its stdout. `timeoutMs` (10 s unless given) stops it; a timer never releases the
- * caller while the child can still write.
+ * Runs one git child and answers its stdout. `timeoutMs` (10 s unless given) stops it, and so does `signal` (X14); a
+ * timer or a cancellation never releases the caller while the child can still write.
  */
-export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number }): Promise<Buffer> {
+export function runProgram(input: { program: Program; operation: GitOperation; args: string[]; cwd: string; environment: NodeJS.ProcessEnv; data?: string | Buffer; acceptedCodes?: number[]; timeoutMs?: number; signal?: AbortSignal }): Promise<Buffer> {
   const started = performance.now()
   const details = (failure: GitFailure, code?: number | null, errno?: string): GitFailureDetails => ({ operation: input.operation, failure, elapsedMs: Math.round(performance.now() - started), ...(code !== null && code !== undefined && Number.isSafeInteger(code) && code >= 0 ? { exitCode: code } : {}), ...(errno ? { errno } : {}) })
   return new Promise((resolve, reject) => {
@@ -458,19 +458,22 @@ export function runProgram(input: { program: Program; operation: GitOperation; a
     let failure: GitFailure | undefined; let errno: string | undefined
     let force: ReturnType<typeof setTimeout> | undefined
     const signal = (value: NodeJS.Signals): void => { try { child.kill(value) } catch (error) { errno ??= safeErrno(error) } }
-    const stop = (reason: 'timeout' | 'output-limit'): void => {
+    const stop = (reason: 'timeout' | 'output-limit' | 'aborted'): void => {
       if (failure) return
       failure = reason
       signal('SIGTERM')
       force = setTimeout(() => { logger.warn('History waits for Git exit before continuing', { ...details(reason, undefined, errno) }); signal('SIGKILL') }, 1_000)
     }
     const timeout = setTimeout(() => stop('timeout'), input.timeoutMs ?? 10_000)
+    const abort = (): void => stop('aborted')
+    if (input.signal?.aborted) abort()
+    else input.signal?.addEventListener('abort', abort, { once: true })
     child.stdout!.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 64 * 1_048_576) stop('output-limit'); else output.push(chunk) })
     child.stderr!.resume()
     child.on('error', error => { failure ??= 'start'; errno ??= safeErrno(error) })
     // A timer must never release the mutation lock while Git can still write.
     child.on('close', code => {
-      clearTimeout(timeout); clearTimeout(force)
+      clearTimeout(timeout); clearTimeout(force); input.signal?.removeEventListener('abort', abort)
       if (!failure && code !== null && (input.acceptedCodes ?? [0]).includes(code)) resolve(Buffer.concat(output))
       else reject(new HistoryGitError(details(failure ?? 'exit', code, errno)))
     })

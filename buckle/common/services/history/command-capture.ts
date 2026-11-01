@@ -9,8 +9,13 @@ import type { ObjectStore } from './object-store.js'
 import { modeOf } from './scoped-capture.js'
 import type { Entry, Snapshot } from './snapshot.js'
 
-/** How long `git add -A` may run: a first capture hashes every file git tracks once, which can take minutes on a slow disk. */
-const ADD_TIMEOUT_MS = 300_000
+/**
+ * When a phase's capture must end, and the cancellation of its call, which stops the before phase (X14): git's children
+ * are stopped there and waited for, and the call runs without restorable content.
+ */
+export interface CaptureBudget { deadline: number; signal?: AbortSignal }
+/** How long one git step other than git add may run, as every history git child before (runProgram's default). */
+const STEP_TIMEOUT_MS = 10_000
 const SETUP_MARKER = 'buckle-setup-complete'
 const ZERO = /^0+$/
 
@@ -52,9 +57,12 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
   }
   function gitDirectory(root: string): string { return join(folder, createHash('sha256').update(root).digest('hex').slice(0, 24)) }
 
-  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { timeoutMs?: number; extra?: string[]; data?: string; magic?: boolean } = {}): Promise<Buffer> {
+  async function git(found: Program, state: { root: string; git: string }, args: string[], options: { budget?: CaptureBudget; whole?: boolean; extra?: string[]; data?: string; magic?: boolean } = {}): Promise<Buffer> {
     // `magic`: pathspec magic is read, for the literal excludes of the protected paths; every other call takes paths as given.
-    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(options.timeoutMs ? { timeoutMs: options.timeoutMs } : {}) })
+    // Each step takes STEP_TIMEOUT_MS at most, git add (`whole`) all that is left of the budget, which it bounds too.
+    const left = options.budget ? Math.max(1, options.budget.deadline - Date.now()) : undefined
+    const timeoutMs = left === undefined ? undefined : options.whole ? left : Math.min(STEP_TIMEOUT_MS, left)
+    return runProgram({ program: found, operation: gitOperation(args), args: [...safety, ...options.extra ?? [], ...args], cwd: folder, environment: { ...environment, GIT_DIR: state.git, GIT_WORK_TREE: state.root, GIT_INDEX_FILE: join(state.git, 'index'), GIT_OBJECT_DIRECTORY: input.objects.root, ...(options.magic ? { GIT_LITERAL_PATHSPECS: '0' } : {}) }, ...(options.data === undefined ? {} : { data: options.data }), ...(timeoutMs === undefined ? {} : { timeoutMs }), ...(options.budget?.signal ? { signal: options.budget.signal } : {}) })
   }
 
   /**
@@ -62,13 +70,13 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    * capture records. `protect` names those inside the root, each excluded from every pathspec too, as a workspace
    * .gitignore outranks the shadow excludes and could re-include one (X3).
    */
-  async function prepare(found: Program, root: string): Promise<{ root: string; git: string; extra: string[]; protect: string[] }> {
+  async function prepare(found: Program, root: string, budget: CaptureBudget): Promise<{ root: string; git: string; extra: string[]; protect: string[] }> {
     const state = { root, git: gitDirectory(root) }
     const attributes = join(state.git, 'info', 'attributes')
     if (!regularFile(join(state.git, SETUP_MARKER)) || !regularFile(join(state.git, 'HEAD')) || !regularFile(attributes, Buffer.byteLength(RAW_ATTRIBUTES))) {
       rmSync(join(state.git, SETUP_MARKER), { force: true })
       mkdirSync(state.git, { recursive: true, mode: 0o700 }); mkdirSync(input.objects.root, { recursive: true, mode: 0o700 })
-      await git(found, state, ['init', '--quiet', `--template=${empty}`, state.git])
+      await git(found, state, ['init', '--quiet', `--template=${empty}`, state.git], { budget })
       mkdirSync(join(state.git, 'info'), { recursive: true, mode: 0o700 })
       writeFileSync(attributes, RAW_ATTRIBUTES, { mode: 0o600 })
       writeFileSync(join(state.git, SETUP_MARKER), '', { mode: 0o600 })
@@ -90,7 +98,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    * add, with each protected path excluded from its pathspec. Then, together, the tree, the tracked files whose index
    * state git could not refresh, and what git saw on disk but did not store (X5, X10).
    */
-  async function baseline(roots: string[]): Promise<CommandBaseline[]> {
+  async function baseline(roots: string[], budget: CaptureBudget): Promise<CommandBaseline[]> {
     const found = program(roots)
     if (!found) throw new HostGitNeededError('Host git is not permitted')
     const result: CommandBaseline[] = []
@@ -98,21 +106,21 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
       // Git follows a work tree that is a link, so a folder swapped for one is never read (folder-swap review).
       const identity = folderIdentity(root)
       if (identity === undefined) throw new FolderReplacedError('A folder history records is no longer a folder')
-      const state = await prepare(found, root)
+      const state = await prepare(found, root, budget)
       const excludes = state.protect.map(name => `:(exclude,literal)${name}`)
       const [listed, protectedTracked] = await Promise.all([
-        git(found, state, ['ls-files', '-z', '-t', '--cached', '--others', '--ignored', '--exclude-standard', '--directory'], { extra: state.extra }),
-        state.protect.length ? git(found, state, ['ls-files', '-z', '--cached', '--', ...state.protect]) : Promise.resolve(Buffer.alloc(0)),
+        git(found, state, ['ls-files', '-z', '-t', '--cached', '--others', '--ignored', '--exclude-standard', '--directory'], { extra: state.extra, budget }),
+        state.protect.length ? git(found, state, ['ls-files', '-z', '--cached', '--', ...state.protect], { budget }) : Promise.resolve(Buffer.alloc(0)),
       ])
       const ignored = listed.toString().split('\0').filter(line => /^[H?] ./.test(line))
       const leaving = [...ignored.filter(line => line.startsWith('H ')).map(line => line.slice(2)), ...protectedTracked.toString().split('\0').filter(Boolean)]
-      if (leaving.length) await git(found, state, ['update-index', '--force-remove', '-z', '--stdin'], { data: leaving.join('\0') + '\0' })
+      if (leaving.length) await git(found, state, ['update-index', '--force-remove', '-z', '--stdin'], { data: leaving.join('\0') + '\0', budget })
       // Exit 1: some files could not be read, and the index holds the rest (A7).
-      const added = await git(found, state, ['add', '-A', '--ignore-errors', '--', '.', ...excludes], { timeoutMs: ADD_TIMEOUT_MS, extra: state.extra, magic: excludes.length > 0 }).then(() => 0, (error: unknown) => { if (isExit(error, 1)) return 1; throw error })
+      const added = await git(found, state, ['add', '-A', '--ignore-errors', '--', '.', ...excludes], { budget, whole: true, extra: state.extra, magic: excludes.length > 0 }).then(() => 0, (error: unknown) => { if (isExit(error, 1)) return 1; throw error })
       const [written, stale, leftover] = await Promise.all([
-        git(found, state, ['write-tree', '--missing-ok']),
-        git(found, state, ['diff-files', '--name-only', '-z']),
-        git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--directory', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0 }),
+        git(found, state, ['write-tree', '--missing-ok'], { budget }),
+        git(found, state, ['diff-files', '--name-only', '-z'], { budget }),
+        git(found, state, ['ls-files', '-z', '--others', '--exclude-standard', '--directory', '--', '.', ...excludes], { extra: state.extra, magic: excludes.length > 0, budget }),
       ])
       const tree = written.toString().trim()
       if (!/^[0-9a-f]{40}$/.test(tree)) throw new Error('History git wrote no tree')
@@ -128,16 +136,16 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
    * What changed between `before` and now, each changed path's entry on both sides. A side's mode is its file's own on
    * disk after the command, and before it the mode `prior` last recorded for the same content, else git's 644 or 755.
    */
-  async function changes(before: CommandBaseline[], prior: (path: string) => Entry | undefined): Promise<CommandChanges> {
+  async function changes(before: CommandBaseline[], prior: (path: string) => Entry | undefined, budget: CaptureBudget): Promise<CommandChanges> {
     if (before.some(item => folderIdentity(item.root) !== item.identity)) throw new FolderReplacedError('A folder history records was replaced during the command')
-    const after = await baseline(before.map(item => item.root))
+    const after = await baseline(before.map(item => item.root), budget)
     const found = program(before.map(item => item.root))!
     const result: CommandChanges = { before: {}, after: {}, ignored: 0, partial: after.some(item => item.partial) }
     for (const [index, left] of before.entries()) {
       const right = after[index]!
       result.ignored += ignoredChanges(left.ignored, right.ignored)
       if (left.tree === right.tree) continue
-      const raw = await git(found, left, ['diff-tree', '-r', '-t', '-z', '--raw', '--no-renames', '--no-abbrev', '--no-commit-id', left.tree, right.tree])
+      const raw = await git(found, left, ['diff-tree', '-r', '-t', '-z', '--raw', '--no-renames', '--no-abbrev', '--no-commit-id', left.tree, right.tree], { budget })
       for (const change of parseRaw(raw)) {
         if (change.status === 'M' && change.oldMode === '040000' && change.newMode === '040000') continue
         const parts = change.name.split('/')

@@ -16,18 +16,22 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 // writes loose objects into history's own object folder, so a restore needs no git.
 
 // A hook run once as git add starts, before the child reads the folder: a folder swapped while git reads it (X9).
-const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined }))
+// `slow`: git add first sleeps that many seconds, in a shell that ends at once when stopped (X14).
+const gitAdd = vi.hoisted(() => ({ hook: undefined as (() => void) | undefined, slow: 0, started: undefined as (() => void) | undefined }))
 vi.mock('../common/services/history/git-store.js', async importOriginal => {
   const actual = await importOriginal<typeof import('../common/services/history/git-store.js')>()
   return { ...actual, runProgram: (input: Parameters<typeof actual.runProgram>[0]) => {
     if (input.operation === 'add' && gitAdd.hook) { const hook = gitAdd.hook; gitAdd.hook = undefined; hook() }
-    return actual.runProgram(input)
+    if (input.operation !== 'add' || !gitAdd.slow) return actual.runProgram(input)
+    const program = { path: '/bin/sh', argv0: 'sh', args: ['-c', `trap 'exit 143' TERM; sleep ${gitAdd.slow} >/dev/null 2>&1 </dev/null & wait $!; exec "$0" "$@"`, input.program.path, ...input.program.args] }
+    gitAdd.slow = 0; queueMicrotask(() => gitAdd.started?.())
+    return actual.runProgram({ ...input, program })
   } }
 })
 
 const roots: string[] = []
 afterEach(() => {
-  gitAdd.hook = undefined
+  gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.started = undefined
   vi.restoreAllMocks()
   for (const root of roots.splice(0)) { execFileSync('chmod', ['-R', 'u+rwx', root]); rmSync(root, { recursive: true, force: true }) }
 })
@@ -303,6 +307,36 @@ describe('what a command\'s capture wrote that nothing names', () => {
         expect(historyObjects(directory).some(content => content.length > 200)).toBe(false)
         expect(readdirSync(folder).filter(name => name.startsWith('tmp'))).toEqual([])
       })
+    } finally { await history.close() }
+  })
+})
+
+// X14 of the Codex review of 670f1dc2..01d3b0c9: a command's capture runs within a short budget, and its before phase stops
+// with its call's cancellation, so history never holds the lock for minutes before a command; the command runs all the same.
+describe('a command\'s capture that takes too long', () => {
+  it.skipIf(process.platform === 'win32')('stops at its budget and runs the command without restorable content', async () => {
+    const { workspace, settings, details } = fixture()
+    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500 })
+    try {
+      gitAdd.slow = 20
+      const started = Date.now()
+      await expect(history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); return 'ran' })).resolves.toBe('ran')
+      expect(Date.now() - started).toBeLessThan(10_000)
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
+      expect(read(join(workspace, 'src', 'a.txt'))).toBe('a2')
+    } finally { await history.close() }
+  })
+
+  it.skipIf(process.platform === 'win32')('stops its before phase as its call is cancelled', async () => {
+    const { settings, details } = fixture()
+    const history = await openChangeHistory(settings)
+    try {
+      const cancel = new AbortController()
+      gitAdd.slow = 20; gitAdd.started = () => setTimeout(() => cancel.abort(new Error('cancelled')), 200)
+      const started = Date.now()
+      await history.run(details, async () => 'ran', cancel.signal)
+      expect(Date.now() - started).toBeLessThan(10_000)
+      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('cancelled') })
     } finally { await history.close() }
   })
 })
