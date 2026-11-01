@@ -83,6 +83,12 @@ const EXPIRED_PREFIX = 'expired-'
 const stateSchema = z.object({ version: z.literal(2), checkpoints: z.array(checkpointSchema), lastGcAt: z.number().default(0), oldStoreTurns: z.array(z.string()).optional() })
 type State = z.infer<typeof stateSchema>
 const GC_INTERVAL_MS = 3_600_000
+/**
+ * How long one slice of the background sweep removes objects under the execution lock, and how long it then leaves the
+ * lock free, past a waiting call's 25 ms poll, so that call takes it first (V3).
+ */
+const SWEEP_SLICE_MS = 25
+const SWEEP_GAP_MS = 50
 /** How soon a copy of the owner objects the shadow-git store borrows is tried again after one fails (R1.4). */
 const MATERIALIZE_RETRY_MS = 60_000
 
@@ -366,18 +372,57 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       .finally(() => { warmJobs.delete(job); scheduleSweep() })
     warmJobs.add(job)
   }
-  /** The sweep after a command, under the lock once its call has left it, so the call never waits on it (X6). */
+  /** The sweep after a command, in slices under the lock once its call has left it, so the call never waits on it (X6, V3). */
   function scheduleSweep(): void {
     if (sweeping) { sweepAgain = true; return }
     if (sweepTimer || closed) return
     sweepTimer = setTimeout(() => {
       sweepTimer = undefined
       if (closed) return
-      sweeping = locked(async () => { sweepBlobs(read()) }, { immediate: true })
+      sweeping = sweepInSlices()
         .catch(error => { if (error instanceof HistoryBusyError) sweepOwed = true; else logger.warn('History could not sweep its stored objects; it tries again after the next command', { cause: causeOf(error) }) })
         .finally(() => { sweeping = undefined; if (sweepAgain) { sweepAgain = false; scheduleSweep() } })
     }, 0)
     sweepTimer.unref()
+  }
+  /**
+   * The background sweep (V3): a call that comes while it runs waits for the lock one slice at most, however large the store.
+   * One short hold removes what background records and journal writes left and reads what checkpoints name; what the shadow
+   * indexes name is read without the lock, with the state of the journal and the indexes it came from; the store is listed
+   * without it. Then each slice takes the lock, checks that state is unchanged and nothing is between its phases, and
+   * removes for SWEEP_SLICE_MS. A state changed since asks for a sweep read afresh.
+   */
+  async function sweepInSlices(): Promise<void> {
+    const start = await locked(async () => {
+      if (!sweepable()) return undefined
+      commands.tidyLeftovers(); removeJournalTemporaries()
+      const named = namedObjects(read().checkpoints)
+      return { named, journal: identity(file) }
+    }, { immediate: true })
+    if (!start) return
+    const indexes = commands.indexState()
+    const indexed = commands.indexed()
+    if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
+    if (commands.indexState() !== indexes) { sweepAgain = true; return }
+    const listed = await objects.listing()
+    const ids = listed.ids.filter(id => !start.named.has(id) && !indexed.has(id))
+    let temporaries = listed.temporaries
+    let next = 0
+    let refused: unknown
+    while (!closing.signal.aborted && (next < ids.length || temporaries.length)) {
+      const unchanged = await locked(async () => {
+        if (!sweepable() || identity(file) !== start.journal || commands.indexState() !== indexes) return false
+        // No write is in flight under the lock while no background record runs, so each temporary is a stopped one's (X6).
+        for (const path of temporaries) try { rmSync(path, { force: true }) } catch (error) { refused ??= error }
+        temporaries = []
+        const removed = removeObjects(ids, next, performance.now() + SWEEP_SLICE_MS)
+        next = removed.next; refused ??= removed.refused
+        return true
+      }, { immediate: true })
+      if (!unchanged) { sweepAgain = true; break }
+      if (next < ids.length) await new Promise(resolve => setTimeout(resolve, SWEEP_GAP_MS))
+    }
+    if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
   }
   /** A checkpoint saved as its call begins; where the journal cannot take it, the call runs all the same (item 6). */
   async function savePending(record: Checkpoint): Promise<void> {
@@ -510,25 +555,43 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   /**
    * Removes each object no restorable checkpoint names and no shadow index reuses for the next command's before state:
-   * a dropped turn's content, an over-cap file's, and the trees git wrote. An index history cannot read removes nothing.
-   * The temporaries a stopped write left go too: only the lock's holder sweeps, so none is in flight (X6).
+   * a dropped turn's content, an over-cap file's once no index names it, and the trees git wrote. An index history cannot
+   * read removes nothing. The temporaries a stopped write left go too: only the lock's holder sweeps, so none is in flight
+   * (X6). This one runs whole, within the call that asks for it (retention, a folder replaced, a restore refused); the
+   * sweep after a command runs in slices (sweepInSlices).
    */
   function sweepBlobs(state: State): void {
-    // A command between its phases, or a first record taken in the background, names what no index names yet (W1, W2):
-    // the sweep that follows it runs once it is done.
-    if (baselines.size || commands.warming()) return
+    if (!sweepable()) return
     commands.tidyLeftovers()
     objects.clean()
-    for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
+    removeJournalTemporaries()
     const indexed = commands.indexed()
     if (indexed === undefined) { logger.warn('History keeps every stored object: a command index is in a form it cannot read'); return }
     const named = namedObjects(state.checkpoints)
-    // A removal the system refuses, as Windows does while another handle holds a file, leaves that object for the next sweep (W1).
+    const { refused } = removeObjects(objects.list().filter(id => !named.has(id) && !indexed.has(id)), 0, Infinity)
+    if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
+  }
+  /**
+   * Whether a sweep may remove anything now: a command between its phases, or a first record taken in the background,
+   * names what no index names yet (W1, W2), and the sweep that follows it runs once it is done.
+   */
+  function sweepable(): boolean { return !baselines.size && !commands.warming() }
+  /** The temporaries a stopped journal write left; only the lock's holder sweeps, so none is in flight. */
+  function removeJournalTemporaries(): void {
+    for (const name of readdirSync(input.directory)) if (/^checkpoints\.json\.[0-9a-f-]{36}\.tmp$/.test(name)) rmSync(join(input.directory, name), { force: true })
+  }
+  /**
+   * Removes `ids` from `from` on, until `until` passes: a removal the system refuses, as Windows does while another handle
+   * holds a file, leaves that object for the next sweep (W1). Answers where it stopped, and the first refusal.
+   */
+  function removeObjects(ids: string[], from: number, until: number): { next: number; refused: unknown } {
+    let next = from
     let refused: unknown
-    for (const id of objects.list()) if (!named.has(id) && !indexed.has(id)) {
+    while (next < ids.length && performance.now() < until) {
+      const id = ids[next++]!
       try { objects.remove(id); sizes.delete(id) } catch (error) { refused ??= error }
     }
-    if (refused !== undefined) logger.warn('History could not remove some stored objects; the next sweep tries again', { cause: causeOf(refused) })
+    return { next, refused }
   }
   /**
    * The shadow-git store's upkeep while one is left (item 7), in the background under the lock, never on a call's path

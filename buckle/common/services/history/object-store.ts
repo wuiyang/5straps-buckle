@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { readFile } from 'node:fs/promises'
+import { readdir, readFile } from 'node:fs/promises'
 import { promisify } from 'node:util'
 import { constants as zlib, deflate, inflate, inflateSync } from 'node:zlib'
 import { join } from 'pathe'
@@ -94,6 +94,23 @@ export function openObjectStore(directory: string) {
   }
 
   /**
+   * What `list` names, and the temporaries `clean` removes, read without blocking the event loop or holding the execution
+   * lock: what a sweep in slices removes from, each removal checked under the lock (V3).
+   */
+  async function listing(): Promise<{ ids: string[]; temporaries: string[] }> {
+    const found = { ids: [] as string[], temporaries: [] as string[] }
+    const folders = lstatSync(root, { throwIfNoEntry: false })?.isDirectory() ? await readdir(root) : []
+    for (const folder of folders) {
+      if (!/^([0-9a-f]{2}|pack)$/.test(folder)) continue
+      for (const name of await readdir(join(root, folder))) {
+        if (/^tmp[-_]/.test(name)) found.temporaries.push(join(root, folder, name))
+        else if (folder !== 'pack' && /^[0-9a-f]{38}$/.test(name)) found.ids.push(folder + name)
+      }
+    }
+    return found
+  }
+
+  /**
    * Removes each temporary a write left: this store's `tmp-` files and git's `tmp_obj_` and `tmp_pack_` ones, which a
    * stopped process leaves and no listing names (X6). Only under the execution lock, when no write is in flight.
    */
@@ -117,5 +134,6 @@ export function openObjectStore(directory: string) {
     root,
     remove: (id: string): void => forget(pathOf(id)),
     list,
+    listing,
   }
 }

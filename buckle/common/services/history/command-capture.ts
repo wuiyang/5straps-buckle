@@ -397,6 +397,15 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return typeof pid !== 'number' || !Number.isSafeInteger(pid) || pid <= 0 || processLives(pid)
   }
 
+  /**
+   * The identity on disk of every shadow index and side index, which changes as any is written, made, or removed: the state
+   * a sweep in slices read what to keep from, checked again under the lock before each slice (V3).
+   */
+  function indexState(): string {
+    const names = readdirNames(folder).filter(name => /^[0-9a-f]{24}$/.test(name)).sort()
+    return names.map(name => [name, ...['index', WARM_INDEX].map(file => fileIdentity(join(folder, name, file)) ?? '-')].join(',')).join('|')
+  }
+
   /** Whether a first record is being taken in the background, by this instance or by a live other one (W2, V2). */
   function warmingAny(): boolean {
     if (warming.size) return true
@@ -405,7 +414,7 @@ export function createCommandCapture(input: { directory: string; objects: Pick<O
     return names.some(name => /^[0-9a-f]{24}$/.test(name) && liveMarker(join(folder, name)))
   }
 
-  return { baseline, changes, indexed, warm, stopWarming, tidyLeftovers, warming: warmingAny, available: (roots: string[]) => program(roots) !== null }
+  return { baseline, changes, indexed, indexState, warm, stopWarming, tidyLeftovers, warming: warmingAny, available: (roots: string[]) => program(roots) !== null }
 }
 
 /**
