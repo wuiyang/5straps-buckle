@@ -109,6 +109,8 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   let sweeping: Promise<void> | undefined
   /** Set when a sweep is asked for while one runs, as a background record ends (W2): it runs once that one is done. */
   let sweepAgain = false
+  /** Set when a sweep finds the lock taken, as by a call while a background record ends (V2): it runs once a call here lets the lock go. */
+  let sweepOwed = false
   /** Each stored object's bytes on disk, as its id names one content for good: read once, then kept. */
   const sizes = new Map<string, number>()
   /** The newest checkpoints the journal could not take, for their calls' notices. */
@@ -225,7 +227,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
         try { await settleStopped() } catch (error) { logger.warn('History could not mark the checkpoints a stopped call left; the call runs', { cause: causeOf(error) }) }
         return await operation()
       } finally { holding = false }
-    })
+    }).finally(() => { if (sweepOwed) { sweepOwed = false; scheduleSweep() } })
   }
   /**
    * Marks each checkpoint left pending interrupted, with its reason (Slice F2, item 6): one seen while this process holds
@@ -371,7 +373,7 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
       sweepTimer = undefined
       if (closed) return
       sweeping = locked(async () => { sweepBlobs(read()) }, { immediate: true })
-        .catch(error => { if (!(error instanceof HistoryBusyError)) logger.warn('History could not sweep its stored objects; it tries again after the next command', { cause: causeOf(error) }) })
+        .catch(error => { if (error instanceof HistoryBusyError) sweepOwed = true; else logger.warn('History could not sweep its stored objects; it tries again after the next command', { cause: causeOf(error) }) })
         .finally(() => { sweeping = undefined; if (sweepAgain) { sweepAgain = false; scheduleSweep() } })
     }, 0)
     sweepTimer.unref()

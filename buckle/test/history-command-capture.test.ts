@@ -627,22 +627,49 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
 
   // V2 of the Codex review of the W fixes: a folder swapped for a link while git reads it stops every background record, as
   // the sweep that removes what git read through the link waits for them; its command never waits for one to end.
-  it.skipIf(process.platform === 'win32')('is stopped by a command whose own folder is replaced as git reads it, which runs without waiting for it to end', async () => {
-    const { root, workspace, directory, settings, details } = fixture()
+  /**
+   * A record of `workspace` in the background, slow to stop, and a command in another folder that git finds swapped for a
+   * link to one holding a key while it reads it. Answers how long that command took.
+   */
+  async function replacedWhileWarming(made: ReturnType<typeof fixture>, history: Awaited<ReturnType<typeof openChangeHistory>>): Promise<number> {
+    const { root, workspace, details } = made
     const other = join(root, 'other'); mkdirSync(other); writeFileSync(join(other, 'c.txt'), 'c1')
     const elsewhere = join(root, 'elsewhere'); mkdirSync(elsewhere); writeFileSync(join(elsewhere, 'key'), 'PRIVATE KEY')
-    const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    await history.run({ ...details, roots: [other] }, async () => 'first there')
+    gitAdd.cold = 5; gitAdd.held = true
+    await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
+    await vi.waitFor(() => expect(gitAdd.indexes.some(index => index.endsWith('index.warm'))).toBe(true), { timeout: 10_000, interval: 50 })
+    gitAdd.hook = () => { renameSync(other, join(root, 'moved')); symlinkSync(elsewhere, other) }
+    const started = Date.now()
+    await expect(history.run({ ...details, stageId: 'next', roots: [other] }, async () => 'ran')).resolves.toBe('ran')
+    const took = Date.now() - started
+    expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('replaced by a link') })
+    return took
+  }
+  const leaked = (directory: string) => historyObjects(directory).some(content => content.includes('PRIVATE'))
+
+  it.skipIf(process.platform === 'win32')('is stopped by a command whose own folder is replaced as git reads it, which runs without waiting for it to end', async () => {
+    const made = fixture()
+    const history = await openChangeHistory({ ...made.settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
     try {
-      await history.run({ ...details, roots: [other] }, async () => 'first there')
-      gitAdd.cold = 5; gitAdd.held = true
-      await history.run(details, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2') })
-      await vi.waitFor(() => expect(gitAdd.indexes.some(index => index.endsWith('index.warm'))).toBe(true), { timeout: 10_000, interval: 50 })
-      gitAdd.hook = () => { renameSync(other, join(root, 'moved')); symlinkSync(elsewhere, other) }
-      const started = Date.now()
-      await expect(history.run({ ...details, stageId: 'next', roots: [other] }, async () => 'ran')).resolves.toBe('ran')
-      expect(Date.now() - started).toBeLessThan(2_000)
-      expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('replaced by a link') })
-      await vi.waitFor(() => expect(historyObjects(directory).some(content => content.includes('PRIVATE'))).toBe(false), { timeout: 10_000, interval: 100 })
+      expect(await replacedWhileWarming(made, history)).toBeLessThan(2_000)
+      await vi.waitFor(() => expect(leaked(made.directory)).toBe(false), { timeout: 10_000, interval: 100 })
+    } finally { await history.close() }
+  })
+
+  // The sweep that record asks for as it ends finds the lock taken by another call: it runs once that call lets it go.
+  it.skipIf(process.platform === 'win32')('has what git read through the link swept once a call that held the lock as it ended lets it go', async () => {
+    const made = fixture()
+    const marker = shadowIndex(made.directory, made.workspace).replace(/index$/, 'warming')
+    const history = await openChangeHistory({ ...made.settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
+    try {
+      await replacedWhileWarming(made, history)
+      await history.exclusive(async () => {
+        await vi.waitFor(() => expect(existsSync(marker)).toBe(false), { timeout: 10_000, interval: 50 })
+        await new Promise(resolve => setTimeout(resolve, 300))
+        expect(leaked(made.directory)).toBe(true)
+      })
+      await vi.waitFor(() => expect(leaked(made.directory)).toBe(false), { timeout: 5_000, interval: 100 })
     } finally { await history.close() }
   })
 
