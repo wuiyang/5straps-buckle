@@ -96,7 +96,7 @@ other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-in
 
 The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
 node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the
-package runners `npx`, `pnpx`, and `bunx` (owner ruling of 2026-10-15), the C shells, and the
+package runners `npx`, `pnpx`, and `bunx`, the C shells, and the
 busybox and toybox shell applets. The optional decision AI, which rates an interpreter call before
 a person has to, is described on [the decision AI](../judge.md).
 

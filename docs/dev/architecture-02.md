@@ -47,7 +47,7 @@ runs. Plugins load through `common/adapters/plugin-registry.ts` from modules tha
 
 ## Code mode
 
-Code mode (owner decision D82, proposed as BUCKLE-D22; user guide [Code mode](../code-mode.md))
+Code mode (user guide [Code mode](../code-mode.md))
 runs an agent's script that calls the other tools. Four pieces:
 
 - **The port**, `common/types/ports/script-vm.ts`: what Buckle needs from a script VM. A run takes

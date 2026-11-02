@@ -13,12 +13,12 @@ Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less
 - **Approvals.** Every call is allowed, asked, or denied. A person answers an ask once, for the
   session, or always.
 - **[A sandboxed shell](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md).** bubblewrap (a Linux sandbox) or Seatbelt
-  (macOS's built-in sandbox) holds each command; without one, the shell pack is withheld. On Linux,
+  (macOS's built-in sandbox; shell isolation and mounts off) holds each command; without one, the shell pack is withheld. On Linux,
   commands by default run on private workspace copies and publish checked changes.
 - **Tools in one workspace.** Files, Git and GitHub pull requests, web fetch and search, language
   servers, and a browser through agent-browser (a command-line browser for agents;
-  [sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)). Git and language servers are off until you turn them on.
-- **Code mode.** An agent sends one JavaScript program that calls the other tools. Each call is
+  [sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)). Git and language servers run on the host, outside the sandbox, and are off until you turn them on.
+- **Code mode.** An agent sends one JavaScript program that calls the tools. Each call is
   judged like a direct one, and only the result goes back to the model.
 - **[Secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md).** An agent names a dotenv value, as
   `{{file:.env.local:NAME}}`, in a command, a browser fill, or a request header, and never sees it.
