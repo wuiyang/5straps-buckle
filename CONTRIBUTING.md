@@ -16,9 +16,10 @@ Before opening a pull request, run the same gate CI runs:
 pnpm release:check
 ```
 
-It checks the runtime pins and the route tables, typechecks, runs every package test and the
-release-script tests, builds, installs the packed packages in a scratch directory and drives
-them, and audits the production dependencies, including the code bundled into the server build.
+It checks that the package readme matches the root readme, the runtime pins, and the route
+tables, typechecks, runs every package test and the release-script tests, builds, installs the
+packed packages in a scratch directory and drives them, and audits the production dependencies,
+including the code bundled into the server build.
 
 ## Repository layout
 
@@ -36,6 +37,8 @@ them, and audits the production dependencies, including the code bundled into th
   deprecated aliases, dual writes, migration bridges, or release-long compatibility fallbacks
   unless the maintainer asks for compatibility. Update affected code, tests, and docs together.
 - Documentation pages stay at or under 1100 words. Split a long page into numbered pages.
+- Edit the root `README.md` only. It links pages relatively, and `buckle/README.md`, which ships
+  to npm, is generated from it with `pnpm readme:sync`.
 - A design decision that shapes the code is recorded in the developer docs: the reasoning lives in
   [docs/dev/architecture.md](docs/dev/architecture.md) or a research record under
   [docs/dev/research/](docs/dev/research/), and the code and its tests point to it in prose, not by a

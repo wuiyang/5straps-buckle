@@ -12,27 +12,27 @@ Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less
 - **Three faces, one policy.** The CLI, MCP over stdio, and HTTP offer the same tools and approvals.
 - **Approvals.** Every call is allowed, asked, or denied. A person answers an ask once, for the
   session, or always.
-- **[A sandboxed shell](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md).** bubblewrap (a Linux sandbox) or Seatbelt
+- **[A sandboxed shell](./docs/sandbox-and-tools.md).** bubblewrap (a Linux sandbox) or Seatbelt
   (macOS's built-in sandbox; shell isolation and mounts off) holds each command; without one, the shell pack is withheld. On Linux,
   commands by default run on private workspace copies and publish checked changes.
 - **Tools in one workspace.** Files, Git and GitHub pull requests, web fetch and search, language
   servers, and a browser through agent-browser (a command-line browser for agents;
-  [sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)). Git and language servers run on the host, outside the sandbox, and are off until you turn them on.
+  [sessions](./docs/browser-login-02.md)). Git and language servers run on the host, outside the sandbox, and are off until you turn them on.
 - **Code mode.** An agent sends one JavaScript program that calls the tools. Each call is
   judged like a direct one, and only the result goes back to the model.
-- **[Secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md).** An agent names a dotenv value, as
+- **[Secret references](./docs/secrets.md).** An agent names a dotenv value, as
   `{{file:.env.local:NAME}}`, in a command, a browser fill, or a request header, and never sees it.
-- **[Change history](https://github.com/wuiyang/5straps-buckle/blob/main/docs/change-history.md).** Each change is a checkpoint, kept for the last 10
+- **[Change history](./docs/change-history.md).** Each change is a checkpoint, kept for the last 10
   turns by default. Restoring one asks a person.
-- **[An audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md).** Each workspace logs what Buckle does, read with
+- **[An audit log](./docs/audit-log.md).** Each workspace logs what Buckle does, read with
   `buckle log`. The log is append-only, not tamper-proof.
 - **Workspaces and mounts.** One node serves many folders, each with its own token, policy, and
   mounts. `buckle cp` copies a file without passing it through the model.
-- **[A decision AI](https://github.com/wuiyang/5straps-buckle/blob/main/docs/judge.md).** Optional and off by default, it rates asks with models you
+- **[A decision AI](./docs/judge.md).** Optional and off by default, it rates asks with models you
   configure. In automated mode a `safe` rating can pass an interpreter ask; destructive asks always
   reach a person.
-- **[A service](https://github.com/wuiyang/5straps-buckle/blob/main/docs/service.md).** `buckle service install` starts the node at login.
-- **[Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md), optionally.** Rings, the separate 5straps control plane for agents, can
+- **[A service](./docs/service.md).** `buckle service install` starts the node at login.
+- **[Rings](./docs/rings.md), optionally.** Rings, the separate 5straps control plane for agents, can
   pair with a node to collect its logs and relay approvals. Buckle runs without it.
 
 ## Install
@@ -44,7 +44,7 @@ npm i -g @5straps/buckle
 ```
 
 To build from a clone, see
-[building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md).
+[building and testing](./docs/dev/building-and-testing.md).
 
 ## First run
 
@@ -89,7 +89,7 @@ ask. Reads outside the workspace ask when no mount is set. A granted directory n
 credential file inside it, and destructive commands never offer the scope always.
 
 The approver sees the full action before anything runs, common credential shapes hidden
-([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)),
+([known limits](./docs/known-limits.md#credential-hiding)),
 and the decision binds the whole call. The answer can come from a prompt in the terminal running
 `buckle serve`, MCP elicitation over stdio where the host supports it, or `buckle approve <token>`
 from another terminal.
@@ -105,13 +105,13 @@ Owners set policy with `buckle policy`: command globs, an approved host and URL 
 the folder shows. Deny wins.
 
 `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders
-([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)).
+([mounts](./docs/mounts.md)).
 `buckle policy dangerously-allow on` removes the person from most asks and is off by default
-([Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)).
+([Approvals](./docs/approvals.md#dangerously-allow)).
 
 ## Roadmap
 
-[Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md) lists every
+[Known limits](./docs/known-limits.md) lists every
 known gap. These are open now:
 
 - **Desktop control.** There is no desktop pack yet. It would build on agent-desktop, a tool that
@@ -139,7 +139,7 @@ ideas in [Discussions](https://github.com/wuiyang/5straps-buckle/discussions).
 
 ## Documentation
 
-The [documentation index](https://github.com/wuiyang/5straps-buckle/blob/main/docs/README.md) lists
+The [documentation index](./docs/README.md) lists
 every page, from installing to troubleshooting.
 
 ## Packages
@@ -150,17 +150,17 @@ every page, from installing to troubleshooting.
 | `packages/protocol/` | `@5straps/protocol` | The wire schemas |
 | `packages/runtime/` | `@5straps/runtime` | Runtime primitives |
 
-Settings are in [`.env.example`](https://github.com/wuiyang/5straps-buckle/blob/main/.env.example).
-To work on Buckle, see [CONTRIBUTING.md](https://github.com/wuiyang/5straps-buckle/blob/main/CONTRIBUTING.md).
-Changes are in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/main/CHANGELOG.md).
+Settings are in [`.env.example`](./.env.example).
+To work on Buckle, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+Changes are in [CHANGELOG.md](./CHANGELOG.md).
 
 ## Security
 
 Report a vulnerability privately through GitHub private vulnerability reporting, as
-[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes, not in a
+[SECURITY.md](./SECURITY.md) describes, not in a
 public issue.
 
 ## License
 
-Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/5straps-buckle/blob/main/LICENSE)
-and [NOTICE](https://github.com/wuiyang/5straps-buckle/blob/main/NOTICE).
+Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](./LICENSE)
+and [NOTICE](./NOTICE).
