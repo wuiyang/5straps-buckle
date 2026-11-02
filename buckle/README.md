@@ -1,39 +1,61 @@
 # Buckle
 
-Buckle is an approval and sandbox runtime for AI agents: a tool-execution node that any AI
-harness can drive over CLI, MCP (the Model Context Protocol, a standard for giving agents tools),
-or HTTP, which runs what its owner allows, asks a person before anything else runs, and refuses
-the rest.
+In short, Buckle is a lightweight remote execution harness for AI agents: a small program you
+install on a machine, so an agent can work there through tools you allow.
+
+- **Goal.** Plug and play your environment, so it is ready for an agent to work in.
+- **Why.** Let AI work across devices without exposing the whole device. Giving an agent SSH
+  (remote shell login) access hands it everything that account can do. Buckle gives it only the
+  tools, folders, and sites you allow, and asks a person before anything else.
+- **Rules.** Fine-grained static restrictions, checked before anything runs: command globs
+  (patterns), an approved URL list, mounts (the folders an agent sees), and credential-file
+  protection.
+- **Near future.** More tools through plugins, which Buckle calls packs. The first planned is
+  desktop control, built on agent-desktop (a tool that lets an agent drive desktop apps). Simpler
+  deployment and exportable rules follow.
+- **Growth plan.** A multiplayer, centralized AI session server for internal enterprise use,
+  building on Rings (the separate 5straps control plane for agents), with audit logs, single
+  sign-on through OIDC (OpenID Connect, a login standard), background agents, teammate agents, and
+  more. None of this exists today.
 
 Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less testing.
 
-## What you get today
+## Features
 
-- **Three faces, one policy.** The CLI, MCP over stdio, and HTTP offer the same tools and approvals.
-- **Approvals.** Every call is allowed, asked, or denied. A person answers an ask once, for the
-  session, or always.
+- **Multiple entry points.** The command line (CLI), MCP (the Model Context Protocol, a standard
+  for giving agents tools) over stdio, and HTTP offer the same tools and approvals.
+- **Approvals.** Every call is allowed, asked, or denied. A person answers an ask.
 - **[A sandboxed shell](https://github.com/wuiyang/5straps-buckle/blob/main/docs/sandbox-and-tools.md).** bubblewrap (a Linux sandbox) or Seatbelt
-  (macOS's built-in sandbox; shell isolation and mounts off) holds each command; without one, the shell pack is withheld. On Linux,
-  commands by default run on private workspace copies and publish checked changes.
-- **Tools in one workspace.** Files, Git and GitHub pull requests, web fetch and search, language
-  servers, and a browser through agent-browser (a command-line browser for agents;
-  [sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)). Git and language servers run on the host, outside the sandbox, and are off until you turn them on.
+  (macOS's built-in sandbox; shell isolation and mounts off) holds each command; without one, the
+  shell pack is withheld. On Linux, commands by default run on private workspace copies and publish
+  checked changes.
+- **Tools in one workspace.** Files, Git and GitHub pull requests, web fetch and search, and
+  language servers. Git and language servers run on the host, outside the sandbox, and are off
+  until you turn them on.
+- **A browser, on the same URL list.** The browser pack drives agent-browser (a command-line
+  browser for agents, installed separately; [sessions](https://github.com/wuiyang/5straps-buckle/blob/main/docs/browser-login-02.md)). With a fresh
+  browser, Buckle passes the approved list's hosts to its `--allowed-domains`, so clicks,
+  redirects, and page requests stay on them. With a profile folder or an attached Chrome, the list
+  is not passed, and Buckle warns. Chrome regularly fixes bugs that attackers already exploit
+  through web pages, such as
+  [CVE-2026-2441](https://chromereleases.googleblog.com/2026/02/stable-channel-update-for-desktop_13.html),
+  a memory bug in its CSS handling that Google said had an exploit in the wild, so limiting where
+  an agent can browse reduces that risk.
 - **Code mode.** An agent sends one JavaScript program that calls the tools. Each call is
   judged like a direct one, and only the result goes back to the model.
 - **[Secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md).** An agent names a dotenv value, as
   `{{file:.env.local:NAME}}`, in a command, a browser fill, or a request header, and never sees it.
-- **[Change history](https://github.com/wuiyang/5straps-buckle/blob/main/docs/change-history.md).** Each change is a checkpoint, kept for the last 10
-  turns by default. Restoring one asks a person.
+- **[Change history](https://github.com/wuiyang/5straps-buckle/blob/main/docs/change-history.md).** Each change is a checkpoint, kept for the last
+  10 turns by default. Restoring one asks a person.
 - **[An audit log](https://github.com/wuiyang/5straps-buckle/blob/main/docs/audit-log.md).** Each workspace logs what Buckle does, read with
   `buckle log`. The log is append-only, not tamper-proof.
-- **Workspaces and mounts.** One node serves many folders, each with its own token, policy, and
-  mounts. `buckle cp` copies a file without passing it through the model.
+- **Workspaces and mounts.** One node serves many folders, each with its own token and policy.
+  `buckle cp` copies a file without passing it through the model.
 - **[A decision AI](https://github.com/wuiyang/5straps-buckle/blob/main/docs/judge.md).** Optional and off by default, it rates asks with models you
-  configure. In automated mode a `safe` rating can pass an interpreter ask; destructive asks always
-  reach a person.
+  configure. Destructive asks always reach a person.
 - **[A service](https://github.com/wuiyang/5straps-buckle/blob/main/docs/service.md).** `buckle service install` starts the node at login.
-- **[Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md), optionally.** Rings, the separate 5straps control plane for agents, can
-  pair with a node to collect its logs and relay approvals. Buckle runs without it.
+- **[Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/rings.md), optionally.** Rings can pair with a node to collect its logs and
+  relay approvals. Buckle runs without it.
 
 ## Install
 
@@ -43,8 +65,7 @@ Buckle needs Node.js 24 or newer.
 npm i -g @5straps/buckle
 ```
 
-To build from a clone, see
-[building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md).
+To build from a clone, see [building and testing](https://github.com/wuiyang/5straps-buckle/blob/main/docs/dev/building-and-testing.md).
 
 ## First run
 
@@ -53,16 +74,12 @@ cd ~/some/project
 buckle init
 ```
 
-`buckle init` sets up the node once, writing its settings and admin credential to
-`buckle.env`, owner-only, in the state directory: `~/.5straps/buckle`, or the absolute path in
-`BUCKLE_STATE_DIR`. It serves the current directory as a workspace, shown to the agent as
-`/workspace`, and prints its agent token once. `--yes` takes the defaults; another
-`buckle init` adds a workspace.
+`buckle init` sets up the node once, writing its settings and admin credential to an owner-only
+`buckle.env` in the state directory (`~/.5straps/buckle`, or `BUCKLE_STATE_DIR`). It serves the
+current directory as a workspace and prints its agent token once. Another `buckle init` adds a
+workspace. With `BUCKLE_SANDBOX=none`, a shell command can read `buckle.env` without an ask.
 
-Only a process sandbox hides the state directory from shell commands: with
-`BUCKLE_SANDBOX=none`, a shell command can read `buckle.env` without an ask.
-
-## Three faces
+## Entry points
 
 **CLI**
 
@@ -85,53 +102,33 @@ anything beyond this host.
 ## Approvals
 
 The first write to a directory, credential files, destructive commands, and private-network URLs
-ask. Reads outside the workspace ask when no mount is set. A granted directory never unlocks a
-credential file inside it, and destructive commands never offer the scope always.
-
-The approver sees the full action before anything runs, common credential shapes hidden
-([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)),
-and the decision binds the whole call. The answer can come from a prompt in the terminal running
-`buckle serve`, MCP elicitation over stdio where the host supports it, or `buckle approve <token>`
-from another terminal.
+ask ([approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md)). The approver sees the full action before anything runs,
+common credential shapes hidden ([known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md#credential-hiding)), and the
+decision binds the whole call.
 
 ```bash
 buckle approvals --watch
 buckle approve <token> --scope session
 buckle policy allow-command 'pnpm {build,test} *'
-buckle policy allow-url localhost:3000
 ```
 
-Owners set policy with `buckle policy`: command globs, an approved host and URL list, and where
-the folder shows. Deny wins.
-
-`buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders
-([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)).
-`buckle policy dangerously-allow on` removes the person from most asks and is off by default
-([Approvals](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)).
+Deny wins. `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders
+([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/mounts.md)). `buckle policy dangerously-allow on` removes the person from most
+asks and is off by default ([details](https://github.com/wuiyang/5straps-buckle/blob/main/docs/approvals.md#dangerously-allow)).
 
 ## Roadmap
 
-[Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md) lists every
-known gap. These are open now:
+[Known limits](https://github.com/wuiyang/5straps-buckle/blob/main/docs/known-limits.md) lists every known gap. These are open now:
 
-- **Desktop control.** There is no desktop pack yet. It would build on agent-desktop, a tool that
-  lets an agent drive desktop apps, as the browser pack builds on agent-browser.
 - **Real-machine checks.** The service install has not run under a real systemd, launchd, or Task
   Scheduler (the service managers of Linux, macOS, and Windows), and Windows is experimental.
-- **Command reading.** Buckle refuses or asks about a command it cannot read whole, such as shell
-  text built at run time. Credential hiding covers common shapes only.
-- **History size.** A rewrite with the same content, and a folder an older build recorded, keep
-  copies outside the size cap.
-- **`code_run` errors.** A script that throws still answers the call as `ok`, with the failure in
-  the result.
-- **The decision AI.** It has not run against a live AI gateway, Jev (its quick rater), or Socket
-  (a package-security service); the tests imitate them.
+- **Command reading.** Buckle asks about or refuses a command it cannot read whole.
+- **History size.** Some copies fall outside the size cap.
+- **`code_run` errors.** A script that throws still answers the call as `ok`.
+- **The decision AI.** Not yet run against a live AI gateway, Jev (its quick rater), or Socket
+  (a package-security service).
 - **Copies and secrets.** `buckle cp` cannot copy between two nodes, and secret references read
   dotenv files only.
-
-**Plan.** The direction is a desktop pack, live checks on real machines, and a smarter command
-reader, then more secret sources, such as Rings or a password manager, and a Rings view of the
-decision AI's verdict. What comes first depends on what people ask for.
 
 **Feedback.** Report a bug or request a feature in
 [GitHub issues](https://github.com/wuiyang/5straps-buckle/issues), and ask questions or share
@@ -139,8 +136,7 @@ ideas in [Discussions](https://github.com/wuiyang/5straps-buckle/discussions).
 
 ## Documentation
 
-The [documentation index](https://github.com/wuiyang/5straps-buckle/blob/main/docs/README.md) lists
-every page, from installing to troubleshooting.
+The [documentation index](https://github.com/wuiyang/5straps-buckle/blob/main/docs/README.md) lists every page.
 
 ## Packages
 
@@ -157,10 +153,8 @@ Changes are in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/mai
 ## Security
 
 Report a vulnerability privately through GitHub private vulnerability reporting, as
-[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes, not in a
-public issue.
+[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes, not in a public issue.
 
 ## License
 
-Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/5straps-buckle/blob/main/LICENSE)
-and [NOTICE](https://github.com/wuiyang/5straps-buckle/blob/main/NOTICE).
+Apache-2.0. Copyright 2026 The 5straps Authors. See [LICENSE](https://github.com/wuiyang/5straps-buckle/blob/main/LICENSE) and [NOTICE](https://github.com/wuiyang/5straps-buckle/blob/main/NOTICE).
