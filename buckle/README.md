@@ -11,10 +11,7 @@ machine, so an agent can work on your remote environment with tools you allow.
 - **Near future:** more tools through plugins, starting with desktop control on agent-desktop,
   simpler deployment, and exportable rules.
 - **Growth plan:** a multiplayer, centralized AI session server for internal enterprise use,
-  building on Rings, the 5straps control plane, with audit logs, OIDC, background agents, teammate
-  agents, and more.
-
-Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less testing.
+  with audit logs, OIDC, background agents, teammate agents, and more.
 
 ## Features
 
@@ -44,7 +41,6 @@ Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less
 - **[Decision AI](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/judge.md):** optional and off by default, it rates asks with models you
   configure. Destructive asks always reach a person.
 - **[Service](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/service.md):** `buckle service install` starts the node at login.
-- **[Rings](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/rings.md), optional:** pairs with a node to collect its logs and relay approvals.
 
 ## Install
 
@@ -142,7 +138,7 @@ Changes are in [CHANGELOG.md](https://github.com/wuiyang/5straps-buckle/blob/mai
 ## Security
 
 Report a vulnerability privately through GitHub private vulnerability reporting, as
-[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes, not in a public issue.
+[SECURITY.md](https://github.com/wuiyang/5straps-buckle/blob/main/SECURITY.md) describes.
 
 ## License
 
