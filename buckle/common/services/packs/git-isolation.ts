@@ -114,6 +114,11 @@ export function isolationConfig(hooksDirectory: string): GitConfig[] {
     // A file git diff and git status read as an order of paths, with no read of it judged: its lines ordered a diff's
     // files, and a missing one failed the call quoting the configured place. An empty file is git's own order.
     { key: 'diff.orderFile', value: '/dev/null' },
+    // A commit ends by running `git maintenance run --auto`, which repacks the repository once it holds enough
+    // loose objects or packs, and on a newer git keeps running in the background after the call has returned: a write in
+    // the owner's repository that no rule judged. `gc.auto=0` ends the gc heuristics, `maintenance.auto=false` the run.
+    { key: 'gc.auto', value: '0' },
+    { key: 'maintenance.auto', value: 'false' },
   ]
 }
 
@@ -133,7 +138,7 @@ const TRANSPORTS = ['file', 'git', 'ssh', 'http', 'https', 'ftp', 'ftps', 'ext',
  *
  * Everything `isolationConfig` resets, then what receive-pack itself honours:
  * - `core.alternateRefsCommand` lists an alternate's refs; `true` lists none, so none is advertised.
- * - `receive.autogc`, `gc.auto` and `maintenance.auto`: no gc or maintenance runs in the destination afterwards.
+ * - `receive.autogc`: no gc runs in the destination afterwards (`gc.auto` and `maintenance.auto` come from `isolationConfig`).
  * - `receive.denyCurrentBranch=refuse`, git's default: `updateInstead` would check the pushed branch out into the
  *   destination's worktree, running its filter programs and fsmonitor, so a push to its checked-out branch is refused.
  * - `protocol.allow` and each built-in transport's `protocol.<name>.allow` set to never, beside GIT_NO_LAZY_FETCH in
@@ -152,8 +157,6 @@ export function receivingIsolationConfig(hooksDirectory: string): GitConfig[] {
     ...isolationConfig(hooksDirectory),
     { key: 'core.alternateRefsCommand', value: 'true' },
     { key: 'receive.autogc', value: 'false' },
-    { key: 'gc.auto', value: '0' },
-    { key: 'maintenance.auto', value: 'false' },
     { key: 'receive.denyCurrentBranch', value: 'refuse' },
     { key: 'protocol.allow', value: 'never' },
     ...TRANSPORTS.map(name => ({ key: `protocol.${name}.allow`, value: 'never' })),

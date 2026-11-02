@@ -174,6 +174,27 @@ describe('git_commit', () => {
     expect(git(repository, 'status', '--porcelain')).toContain('left.txt')
   })
 
+  // A commit ends by running `git maintenance run --auto`; here that would consolidate the owner's packs, in the background
+  // on a newer git, after the call has returned.
+  it('starts no gc or maintenance in the repository, where it holds more packs than gc.autoPackLimit allows', async () => {
+    const { repository } = bareOrigin()
+    git(repository, 'config', 'gc.autoPackLimit', '1')
+    for (const name of ['a', 'b']) {
+      writeFileSync(join(repository, `${name}.txt`), `${name}\n`)
+      git(repository, 'add', '.')
+      git(repository, ...COMMITTER, 'commit', '-q', '-m', name)
+      git(repository, 'repack', '-q')
+    }
+    const packs = () => readdirSync(join(repository, '.git', 'objects', 'pack')).filter(name => name.endsWith('.pack'))
+    expect(packs()).toHaveLength(2)
+    writeFileSync(join(repository, 'kept.txt'), 'kept\n')
+    const calls: ProcessRequest[] = []
+    await call({ repository, tool: 'git_commit', args: { message: 'add kept', paths: ['kept.txt'] }, runner: async (request) => { calls.push(request); return await runProcess(request) } })
+    const commit = calls.find(request => request.args[0] === 'commit')!
+    expect(gitConfigOf(commit.environment)).toMatchObject({ 'gc.auto': '0', 'maintenance.auto': 'false' })
+    expect(packs()).toHaveLength(2)
+  })
+
   it('declares a write on the repository, so the write gate judges it', () => {
     const { repository } = bareOrigin()
     expect(effectsOf({ repository, tool: 'git_commit', args: { message: 'm', paths: ['a.txt'] } })).toEqual([{ kind: 'write_path', path: '.' }])
