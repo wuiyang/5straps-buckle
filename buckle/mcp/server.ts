@@ -330,7 +330,7 @@ function approvalForm(input: { approval: ApprovalRequest; message: string }) {
     message: input.message,
     requestedSchema: {
       type: 'object',
-      // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/secrets.md).
+      // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/user/how-to/secrets.md).
       properties: approval.rule === 'sensitive_path' ? {
         action: { type: 'string', enum: [...approval.offeredScopes.map(scope => `allow_${scope}`), 'deny', 'deny_session', 'always_deny'], description: `${approval.offeredScopes.map(scope => ALLOW_LABELS[scope]).join(', ')}, Deny, Deny this session, Always deny` },
       } : {

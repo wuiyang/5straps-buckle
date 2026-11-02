@@ -1,5 +1,5 @@
 /**
- * A dotenv file as a secret reference reads it (docs/secrets.md): `NAME=value` lines, each may start with `export `;
+ * A dotenv file as a secret reference reads it (docs/user/how-to/secrets.md): `NAME=value` lines, each may start with `export `;
  * blanks around the `=`; a value in double quotes takes the escapes \n, \r, \t, \\, and \", in single quotes is
  * taken as written, and either may span lines; an unquoted value ends at a `#` after a blank and has its blanks
  * trimmed; a line starting with `#` and a blank line are skipped; a later line for a NAME wins. Nothing is interpolated:

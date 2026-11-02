@@ -21,30 +21,30 @@ Buckle is at version 0.1. CI runs on Linux only; macOS and Windows have had less
 - **Multiple entry points:** the CLI, MCP over stdio, and HTTP offer the same tools and approvals.
 - **Approvals:** every call is allowed, asked, or denied. A person answers an ask once, for the
   session, or always.
-- **[Sandboxed shell](./docs/sandbox-and-tools.md):** bubblewrap on Linux, or Seatbelt on macOS
+- **[Sandboxed shell](./docs/user/how-to/sandbox-and-tools.md):** bubblewrap on Linux, or Seatbelt on macOS
   with shell isolation and mounts off, holds each command; without one, the shell pack is
   withheld. On Linux, commands run on private workspace copies by default and publish checked
   changes.
 - **Tools in one workspace:** files, Git and GitHub pull requests, web fetch and search, and
   language servers. Git and language servers run on the host, outside the sandbox, and are off
   until you turn them on.
-- **[Agent browser with whitelist](./docs/browser-login-02.md):** only specified safe domains are
+- **[Agent browser with whitelist](./docs/user/how-to/browser-login-02.md):** only specified safe domains are
   allowed to the agent through agent-browser, and non-whitelisted URLs are blocked from opening,
   including through clicked links.
 - **Code mode:** an agent sends one JavaScript program that calls the tools. Each call is judged
   like a direct one, and only the result goes back to the model.
-- **[Secret references](./docs/secrets.md):** an agent names a dotenv value, as
+- **[Secret references](./docs/user/how-to/secrets.md):** an agent names a dotenv value, as
   `{{file:.env.local:NAME}}`, in a command, a browser fill, or a request header, and never sees it.
-- **[Change history](./docs/change-history.md):** each change is a checkpoint, kept for the last
+- **[Change history](./docs/user/how-to/change-history.md):** each change is a checkpoint, kept for the last
   10 turns by default. Restoring one asks a person.
-- **[Audit log](./docs/audit-log.md):** each workspace logs what Buckle does, read with
+- **[Audit log](./docs/user/how-to/audit-log.md):** each workspace logs what Buckle does, read with
   `buckle log`. The log is append-only, not tamper-proof.
 - **Workspaces and mounts:** one node serves many folders, each with its own token and policy.
   `buckle cp` copies a file without passing it through the model.
-- **[Decision AI](./docs/judge.md):** optional and off by default, it rates asks with models you
+- **[Decision AI](./docs/user/how-to/judge.md):** optional and off by default, it rates asks with models you
   configure. Destructive asks always reach a person.
-- **[Service](./docs/service.md):** `buckle service install` starts the node at login.
-- **[Rings](./docs/rings.md), optional:** pairs with a node to collect its logs and relay approvals.
+- **[Service](./docs/user/how-to/service.md):** `buckle service install` starts the node at login.
+- **[Rings](./docs/user/how-to/rings.md), optional:** pairs with a node to collect its logs and relay approvals.
 
 ## Install
 
@@ -54,7 +54,7 @@ Buckle needs Node.js 24 or newer.
 npm i -g @5straps/buckle
 ```
 
-To build from a clone, see [building and testing](./docs/dev/building-and-testing.md).
+To build from a clone, see [building and testing](./docs/developer/building-and-testing.md).
 
 ## First run
 
@@ -91,8 +91,8 @@ anything beyond this host.
 ## Approvals
 
 The first write to a directory, credential files, destructive commands, and private-network URLs
-ask ([approvals](./docs/approvals.md)). The approver sees the full action before anything runs,
-common credential shapes hidden ([known limits](./docs/known-limits.md#credential-hiding)), and the
+ask ([approvals](./docs/user/how-to/approvals.md)). The approver sees the full action before anything runs,
+common credential shapes hidden ([known limits](./docs/user/caveats/known-limits.md#credential-hiding)), and the
 decision binds the whole call.
 
 ```bash
@@ -102,12 +102,12 @@ buckle policy allow-command 'pnpm {build,test} *'
 ```
 
 Deny wins. `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders
-([mounts](./docs/mounts.md)). `buckle policy dangerously-allow on` removes the person from most
-asks and is off by default ([details](./docs/approvals.md#dangerously-allow)).
+([mounts](./docs/user/how-to/mounts.md)). `buckle policy dangerously-allow on` removes the person from most
+asks and is off by default ([details](./docs/user/how-to/approvals.md#dangerously-allow)).
 
 ## Roadmap
 
-[Known limits](./docs/known-limits.md) lists every known gap. Open now:
+[Known limits](./docs/user/caveats/known-limits.md) lists every known gap. Open now:
 
 - **Real-machine checks:** the service install has not run under a real systemd, launchd, or Task
   Scheduler, and Windows is experimental.
@@ -124,7 +124,8 @@ ideas in [Discussions](https://github.com/wuiyang/5straps-buckle/discussions).
 
 ## Documentation
 
-The [documentation index](./docs/README.md) lists every page.
+Start with the [user docs](./docs/user/README.md). The [developer docs](./docs/developer/README.md) cover
+architecture, building, and releasing.
 
 ## Packages
 

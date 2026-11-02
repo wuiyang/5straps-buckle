@@ -8,7 +8,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
-// The secret-references slice, parts 5 and 6 (docs/secrets.md), through the browser pack: the value a fill enters is
+// The secret-references slice, parts 5 and 6 (docs/user/how-to/secrets.md), through the browser pack: the value a fill enters is
 // handed to agent-browser as its text, and every later browser call that shows the page is masked by it, one that ran
 // beside the fill included, and one another Buckle process on the workspace makes, before or after a restart. The
 // agent-browser here is a stand-in script that keeps the text it was handed as its page, which close ends, except in an

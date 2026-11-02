@@ -21,17 +21,17 @@ import { MAX_SECRET_FILE_BYTES } from '../common/services/secrets/secret-file.js
 import { BUILT_IN_SETTINGS } from '../common/services/workspaces/workspace-settings.js'
 import { DANGEROUSLY_ALLOW_LEVELS } from '../common/types/ports/dangerously-allow-store.js'
 
-// The secret references page (docs/secrets.md) and the places that point at it, held to what the code reads and
+// The secret references page (docs/user/how-to/secrets.md) and the places that point at it, held to what the code reads and
 // prints, so the page cannot drift from the grammar, the reasons, the limits, or the settings it states.
 
-const DOCS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs')
+const DOCS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'user', 'how-to')
 const page = (name: string) => {
   try { return readFileSync(join(DOCS, name), 'utf8').replace(/\s+/g, ' ') } catch { return '' }
 }
 const secrets = page('secrets.md')
-const LINK = 'https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md'
+const LINK = 'https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md'
 
-describe('docs/secrets.md quotes what the code says', () => {
+describe('docs/user/how-to/secrets.md quotes what the code says', () => {
   it('is a page', () => {
     expect(secrets.startsWith('# Secret references ')).toBe(true)
   })
@@ -107,7 +107,7 @@ describe('docs/secrets.md quotes what the code says', () => {
   })
 })
 
-describe('the pages that point at docs/secrets.md', () => {
+describe('the pages that point at docs/user/how-to/secrets.md', () => {
   it.each(['policy.md', 'sandbox-and-tools.md', 'workspaces-02.md', 'approvals.md', 'code-mode.md'])('%s links to it', (name) => {
     expect(page(name)).toContain('](secrets.md')
   })

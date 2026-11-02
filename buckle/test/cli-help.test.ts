@@ -46,7 +46,7 @@ describe('buckle --help', () => {
     expect(result).toEqual({ exitCode: 0 })
     expect(io.out()).toContain('buckle policy dangerously-allow on [command|all] | off')
     expect(io.out()).toContain('DANGEROUS')
-    // At level command, the bare on, the switch never answers a secret reference's ask (docs/secrets.md), so its help
+    // At level command, the bare on, the switch never answers a secret reference's ask (docs/user/how-to/secrets.md), so its help
     // says so (review of 6de734c); at level all it does (owner ruling of 2026-10-25).
     expect(io.out().replace(/\s+/g, ' ')).toContain(LEVELS_SAID)
   })

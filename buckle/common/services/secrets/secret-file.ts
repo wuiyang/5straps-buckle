@@ -14,7 +14,7 @@ export const MAX_SECRET_FILE_BYTES = 1_048_576
 const refused = (message: string) => new ToolInputError(message, { code: 'PERMISSION_DENIED' })
 
 /**
- * The real file a reference's path names (docs/secrets.md): the path as written is read from the workspace as the agent
+ * The real file a reference's path names (docs/user/how-to/secrets.md): the path as written is read from the workspace as the agent
  * sees it, so under a mounted view a path beneath a mount's target names that mount's file; every link is followed, and
  * where it lands must be a regular file inside the workspace's folder or the source of a mount the owner declared, never
  * a scratch root and never beyond. A path that names nothing is refused, naming the path.
@@ -37,7 +37,7 @@ export function resolveSecretFile(written: string, view: PathView): string {
 }
 
 /**
- * The file a secrets.files entry lists (docs/secrets.md): the regular file at that path in the workspace or a mount,
+ * The file a secrets.files entry lists (docs/user/how-to/secrets.md): the regular file at that path in the workspace or a mount,
  * reached through no link and holding no other hard link, or null. A link at the listed name, or at a folder above it,
  * and a hard link there to a file named elsewhere too, list nothing, so a link planted at a name missing or replaced
  * never moves the listing onto another file.
@@ -54,7 +54,7 @@ export function listedSecretFile(written: string, view: PathView): string | null
 
 /**
  * The files a call's references name, each judged where it lands (resolveSecretFile) with the NAMEs the call reads from
- * it, so the rules ask about each before Buckle reads any (docs/secrets.md). One file the references spell two ways,
+ * it, so the rules ask about each before Buckle reads any (docs/user/how-to/secrets.md). One file the references spell two ways,
  * `./.env.local` or a link to it beside `.env.local`, is one effect naming every spelling and every NAME, so its one ask
  * names them all.
  */
@@ -84,7 +84,7 @@ function judgedSecretFile(written: string, names: readonly string[], view: PathV
 }
 
 /**
- * The values a call's references name in one file, read at the moment the call runs (docs/secrets.md): the file is
+ * The values a call's references name in one file, read at the moment the call runs (docs/user/how-to/secrets.md): the file is
  * opened where the rules judged it, beneath its pinned folder and never through a link, and read as dotenv. A link that
  * moved it since, a hard link on the disk that holds Buckle's state, a file Buckle may not open, a file over
  * MAX_SECRET_FILE_BYTES, and a NAME it does not define, or defines on a line Buckle cannot read, each refuse, naming the

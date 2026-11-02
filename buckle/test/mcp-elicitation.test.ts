@@ -220,7 +220,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
   })
 })
 
-// The secret-references slice, part 4 (docs/secrets.md): a secret file's use is remembered as other grants are, so its
+// The secret-references slice, part 4 (docs/user/how-to/secrets.md): a secret file's use is remembered as other grants are, so its
 // form offers each scope the ask does; a credential file's still offers to allow it once alone.
 describe('a secret file ask under the credential-file rule', () => {
   const secret: ApprovalRequest = { ...approval, rule: 'sensitive_path', subject: 'secret-file:/workspace/.env.local', reason: 'WARNING: Buckle reads API_TOKEN from .env.local', offeredScopes: ['once', 'session', 'always'] }

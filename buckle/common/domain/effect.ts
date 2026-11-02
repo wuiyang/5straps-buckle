@@ -91,7 +91,7 @@ export type DestructiveWriteEffect =
   | { kind: 'many_rewrites'; files: number }
 
 /**
- * A file the call's secret references name (docs/secrets.md), added by the invoker and never declared by a tool: `path`
+ * A file the call's secret references name (docs/user/how-to/secrets.md), added by the invoker and never declared by a tool: `path`
  * where it really lands, `written` each spelling the references name it by, and the NAMEs the call reads from it under
  * any of them. Buckle reads it itself as the call runs; nothing of it reaches the agent.
  */

@@ -11,7 +11,7 @@ import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
 import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
 import { fixedInteraction } from './support/interaction.js'
 
-// The secret-references slice, part 6 (docs/secrets.md): every resolved value is shown as [secret:NAME] wherever text
+// The secret-references slice, part 6 (docs/user/how-to/secrets.md): every resolved value is shown as [secret:NAME] wherever text
 // leaves Buckle, in its common encodings too when they are at least 8 characters, and every log line, audit entry, and
 // approval view written while a call holds values is masked by them.
 

@@ -121,7 +121,7 @@ export function administersBuckleService(line: string): boolean {
  * A call Buckle cannot read whole, past READ_BUDGET, MAX_DEPTH or MAX_SUBSTITUTIONS, at a find -exec command that
  * is a primary, at a script that arrives as data, at shell text an expansion supplies (an eval or a shell -c string),
  * or running code with an interpreter this policy does not allow, is refused whenever a deny glob exists, naming the
- * limit that stopped the reading, since the glob might have met the part left unread (docs/dev/architecture.md,
+ * limit that stopped the reading, since the glob might have met the part left unread (docs/developer/architecture.md,
  * Interpreters). The node's deny lists are folded into the workspace's in force, a floor over every workspace (D85, Q14;
  * resolveSettings), so every refusal here names the workspace's policy in force.
  *

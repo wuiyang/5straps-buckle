@@ -16,7 +16,7 @@ import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_RE
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The secret-references slice, parts 5 and 6 (docs/secrets.md): the rules judge the reference text as written; each
+// The secret-references slice, parts 5 and 6 (docs/user/how-to/secrets.md): the rules judge the reference text as written; each
 // value is read and put in place only as the tool starts, into the argument list, never the child's environment; and
 // every value is shown as [secret:NAME] wherever text leaves Buckle.
 

@@ -1511,7 +1511,7 @@ describe('a call Buckle cannot read whole', () => {
   }, PROCESSOR_TIME_ROW_TIMEOUT)
 })
 
-// The interpreter decision (docs/dev/architecture.md, Interpreters): a body run by python, node, deno, bun, perl, ruby,
+// The interpreter decision (docs/developer/architecture.md, Interpreters): a body run by python, node, deno, bun, perl, ruby,
 // php, awk (gawk, mawk, nawk), lua, luajit, pwsh, powershell, tsx or ts-node is code Buckle cannot read as shell, so
 // such a call is unknown: refused naming the limit under any deny glob, with the dangerously-allow switch on or off,
 // and asked at the floor otherwise, as an unread call is, until the workspace's policy allows that interpreter, which
@@ -2369,7 +2369,7 @@ describe('a zsh glob qualifier that may run shell code (fix brief 9, A6)', () =>
     if (outcome.kind === 'ask') expect(outcome.asks.map(ask => [ask.rule, ask.reason])).toEqual([['destructive_command', `${qualifier}; asked rather than guessed at`]])
   })
 
-  // The recorded limit (docs/known-limits.md): any glued body holding an e, a +, a $, or a backtick is read as one that
+  // The recorded limit (docs/user/caveats/known-limits.md): any glued body holding an e, a +, a $, or a backtick is read as one that
   // may run code, so an ordinary extended glob or a body inside a substitution of that shape is unread too (D91
   // follow-ups, F5).
   it.each(['ls *.@(png|jpeg)', 'echo $(echo a(e))'])('leaves zsh -c %j unread, refused under a deny list and asked at the floor', text => {
@@ -2924,7 +2924,7 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(evaluate('/opt/tools/agent-browser', ['open', 'https://x.test'], { allow: ['agent-browser *'] }, 'agent-browser').kind).toBe('allow')
   })
 
-  it('admits every path spelling under */* *, as docs/policy-02.md says, and still asks at the floor where the call asks', () => {
+  it('admits every path spelling under */* *, as docs/user/how-to/policy-02.md says, and still asks at the floor where the call asks', () => {
     for (const command of ['./gradlew', '/usr/bin/git', 'node_modules/.bin/vitest']) expect(evaluate(command, ['run'], { allow: ['*/* *'] }).kind, command).toBe('allow')
     expect(evaluate('/bin/rm', ['-rf', 'build'], { allow: ['*/* *'] }).kind).toBe('ask')
   })

@@ -89,7 +89,7 @@ Never guess a ref. Take a snapshot and use what it returns.
 
 To enter a value from a dotenv file without seeing it, write `fill @e5 "{{file:.env.local:LOGIN_PASSWORD}}"`,
 or the same in `type`. Buckle asks a person once per file, enters the value, and shows you
-`[secret:NAME]` in its place, in this call and every later one on that browser ([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+`[secret:NAME]` in its place, in this call and every later one on that browser ([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md)).
 If the file changes, calls on that browser are refused, naming the `close` that ends it.
 A `code_run` script may pass the same reference in its own `fill` or `type` call.
 

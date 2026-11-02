@@ -15,7 +15,7 @@ export const LEVEL_DEFINITIONS: Readonly<Record<JudgeLevel, string>> = Object.fr
 /**
  * The fixed instructions every rating is asked under (D91), whichever provider answers. The command, its code, and
  * everything beside it arrive as one JSON document in the user turn, data the model rates and never instructions it
- * follows. docs/judge.md quotes its gist.
+ * follows. docs/user/how-to/judge.md quotes its gist.
  */
 export const JUDGE_SYSTEM_PROMPT = `You rate one command for Buckle, a permission node that decides whether an AI agent's tool call may run on its owner's machine. Buckle could not settle the command by the workspace's lists: most often it runs code with an interpreter (such as python3, node, or perl), and Buckle reads shell alone, so it cannot tell what that code does; otherwise Buckle's own floor or the owner's destructive list asks about it, for the reason given in reason. Your rating decides one thing: a safe rating with high confidence lets the call run without asking the owner, and any other answer asks the owner as before.
 

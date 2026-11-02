@@ -30,7 +30,7 @@ export async function guardedFetch(input: {
   approved: UrlMatcher | null
   /** The permission rules on each hop, so a host the owner approved is reached like a listed one. */
   judge?: (url: URL) => Promise<NetworkVerdict>
-  /** Headers whose values Buckle filled from secret references (docs/secrets.md): dropped on a hop to another origin too. */
+  /** Headers whose values Buckle filled from secret references (docs/user/how-to/secrets.md): dropped on a hop to another origin too. */
   secretHeaders?: readonly string[]
 }): Promise<Response> {
   let current = input.url

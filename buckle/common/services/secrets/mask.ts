@@ -8,7 +8,7 @@ export interface SecretValue {
 
 /**
  * Replaces every value a call resolved, and each common encoding of it, with `[secret:NAME]` wherever text leaves
- * Buckle (docs/secrets.md). `drop` forgets the values once the call has answered.
+ * Buckle (docs/user/how-to/secrets.md). `drop` forgets the values once the call has answered.
  */
 export interface Masker {
   text(text: string): string
@@ -325,7 +325,7 @@ function walk<T>(value: T, text: (input: string, cut?: boolean) => string, depth
 
 /**
  * The values of every call that holds some now, so a log line any part of Buckle writes meanwhile is masked as the
- * call's own result is (docs/secrets.md). A call holds its masker from the moment it reads its values until it has
+ * call's own result is (docs/user/how-to/secrets.md). A call holds its masker from the moment it reads its values until it has
  * answered.
  */
 const held = new Set<Masker>()

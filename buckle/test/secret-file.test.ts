@@ -7,7 +7,7 @@ import { ToolInputError } from '../common/domain/tool.js'
 import { readDotenv } from '../common/services/secrets/dotenv.js'
 import { MAX_SECRET_FILE_BYTES, readSecretValues, resolveSecretFile } from '../common/services/secrets/secret-file.js'
 
-// The secret-references slice, part 3 (docs/secrets.md): Buckle reads the named file itself as the call runs, as
+// The secret-references slice, part 3 (docs/user/how-to/secrets.md): Buckle reads the named file itself as the call runs, as
 // dotenv with no interpolation, and only where it lands inside the workspace or a mount the owner declared.
 
 const DECOY = 'decoy-value-0123456789'

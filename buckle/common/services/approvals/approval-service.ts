@@ -276,7 +276,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
   const service: ApprovalService = {
     async request(asked) {
-      // What a person reads of the ask, masked by every secret value a call holds now (docs/secrets.md); the subject a
+      // What a person reads of the ask, masked by every secret value a call holds now (docs/user/how-to/secrets.md); the subject a
       // grant binds stays as the rule named it.
       const input = masksHeld() ? { ...asked, asks: asked.asks.map(ask => ({ ...ask, reason: maskHeld(ask.reason) })), ...(asked.call === undefined ? {} : { call: maskHeldJson(asked.call) }) } : asked
       input.signal?.throwIfAborted()

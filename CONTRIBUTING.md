@@ -40,9 +40,9 @@ including the code bundled into the server build.
 - Edit the root `README.md` only. It links pages relatively, and `buckle/README.md`, which ships
   to npm, is generated from it with `pnpm readme:sync`.
 - A design decision that shapes the code is recorded in the developer docs: the reasoning lives in
-  [docs/dev/architecture.md](docs/dev/architecture.md) or a research record under
-  [docs/dev/research/](docs/dev/research/), and the code and its tests point to it in prose, not by a
-  bare identifier.
+  [docs/developer/architecture.md](docs/developer/architecture.md) or a research record under
+  [docs/developer/research/](docs/developer/research/), and the code and its tests point to it in
+  prose, not by a bare identifier.
 - No em-dashes in code, docs, or commit messages.
 - Commits are scoped by path and use conventional subjects. The subject says what changed and
   the body says why.

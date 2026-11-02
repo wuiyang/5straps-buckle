@@ -124,7 +124,7 @@ const FilesSchema = z.object({
 export const MAX_LISTED_SECRET_FILES = 64
 
 /**
- * Its secret references (docs/secrets.md): `enabled` says whether Buckle reads them at all, on where unset; `files`
+ * Its secret references (docs/user/how-to/secrets.md): `enabled` says whether Buckle reads them at all, on where unset; `files`
  * lists the files, by their paths relative to the folder as a reference writes them, whose use needs no ask. Absent from
  * a file that sets none, so a workspace.json written before it reads as it did.
  */
@@ -324,7 +324,7 @@ export interface ResolvedSettings {
   shell: { network: boolean; isolation: boolean }
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean }
   approval: ResolvedApproval
-  /** Its secret references (docs/secrets.md): the workspace's own alone, else Buckle's; the node names none. */
+  /** Its secret references (docs/user/how-to/secrets.md): the workspace's own alone, else Buckle's; the node names none. */
   secrets: { enabled: boolean; files: readonly string[] }
   /** Its file tools' delete policy (the delete policy brief): the workspace's own, else the node's, else Buckle's. */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }

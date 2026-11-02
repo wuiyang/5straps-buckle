@@ -43,7 +43,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
   const log: ActionLog = {
     recoverInterrupted: () => pending.recover(),
     async record(written) {
-      // Masked by every secret value a call holds now, as a log line is (docs/secrets.md): a value never reaches the file.
+      // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md): a value never reaches the file.
       const entry = named(masksHeld() ? maskHeldJson(written) : written)
       try {
         const offset = appendSynced(filePath, (size, tail) => {

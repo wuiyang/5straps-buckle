@@ -154,7 +154,7 @@ export interface BuckleConfig extends NodeConfig {
   approvalTimeoutMs: number | null
   /** The plain variables the workspace's settings give its shell commands (Q13); a call's own `env` is set over them. */
   commandEnvironment: Readonly<Record<string, string>>
-  /** Whether Buckle reads the workspace's secret references (secrets.enabled, docs/secrets.md); on where absent. */
+  /** Whether Buckle reads the workspace's secret references (secrets.enabled, docs/user/how-to/secrets.md); on where absent. */
   secretsEnabled?: boolean
   /** The files whose use by a secret reference needs no ask (secrets.files), as a reference writes their paths; none where absent. */
   secretFiles?: readonly string[]
@@ -420,7 +420,7 @@ export interface WorkspaceScope {
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Its decision AI (D91). */
   approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
-  /** Its secret references (docs/secrets.md); on, and no file listed, where absent. */
+  /** Its secret references (docs/user/how-to/secrets.md); on, and no file listed, where absent. */
   secrets?: { enabled: boolean; files: readonly string[] }
   /** Its delete policy (the delete policy brief). */
   files: { deleteInWorkspace: DeleteInWorkspace; massDeleteLimit: number }

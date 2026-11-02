@@ -106,7 +106,7 @@ interface InForce {
   toolPolicy: Pick<WorkspacePolicy, 'tools'>
   /** The decision AI as the call found the settings (D91). */
   judge: JudgeGate
-  /** The secret reference settings as the call found them (docs/secrets.md). */
+  /** The secret reference settings as the call found them (docs/user/how-to/secrets.md). */
   secrets: SecretSettings
   /** What the browser pack the call runs on holds from secret references, which a browser call is masked by. */
   filledSecrets: FilledSecrets | undefined
@@ -715,7 +715,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     const packView = packs.map(packDescriptor)
     const features = { enabledPacks: config.enabledPacks, enableShell: config.enableShell, allowCode: config.allowCode, allowHistory: config.allowHistory, allowHostGit: config.allowHostGit, allowHostLsp: config.allowHostLsp }
     // The values this workspace's browsers were filled with, by file and NAME, as its browser packs record them beside
-    // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/secrets.md).
+    // their sessions, so every Buckle process on the workspace masks by them, after a restart too (docs/user/how-to/secrets.md).
     const filledSecrets = packs.find(pack => pack.id === BROWSER_PACK)?.filled
     return { toolPolicy: policy, unavailableTool: tool => unavailableToolReason({ tool, workspaceId, packs: packView, config: features }), registry, permissions, deletes: deletePolicyOf(config), paths, toolDenial: tool => (isToolAllowed(policy, tool) ? null : TOOL_DISABLED), judge: judgeGate({ compiled, paths, permissions, cache: judgeCache }), secrets: { enabled: config.secretsEnabled ?? true }, filledSecrets }
   }
@@ -993,7 +993,7 @@ function settingsOf(config: BuckleConfig): WorkspaceSettings {
 }
 
 /**
- * Whether secrets.files lists the real file a reference names (docs/secrets.md): each listed path names the regular file
+ * Whether secrets.files lists the real file a reference names (docs/user/how-to/secrets.md): each listed path names the regular file
  * that stands at it now, reached through no link, so a link at a listed name or a folder above it lists nothing.
  */
 function secretFileListed(listed: readonly string[], paths: PathView, real: string): boolean {

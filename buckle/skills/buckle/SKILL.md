@@ -79,7 +79,7 @@ cannot read: it asks, or is refused when the owner has deny rules, until the own
 A workspace may be mounted: then `buckle manifest` names `/workspace` (or similar) as the root,
 and that is the path to use. Relative paths work the same either way.
 
-Write a value from a workspace file as `{{file:<path>:NAME}}` in a shell word, a browser fill value, or a web_fetch header, and Buckle fills it in and masks it; the full page is [docs/secrets.md](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md).
+Write a value from a workspace file as `{{file:<path>:NAME}}` in a shell word, a browser fill value, or a web_fetch header, and Buckle fills it in and masks it; the full page is [docs/user/how-to/secrets.md](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md).
 
 ## Packs
 

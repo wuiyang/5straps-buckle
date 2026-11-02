@@ -15,7 +15,7 @@ import { resolveSettings, WorkspaceSettingsSchema } from '../common/services/wor
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The secret-references slice, part 4 (docs/secrets.md): the first use of a file in a workspace asks a person once under
+// The secret-references slice, part 4 (docs/user/how-to/secrets.md): the first use of a file in a workspace asks a person once under
 // the credential-file rule, naming the file and the NAMEs and never a value; the answer is remembered per workspace and
 // file as other grants are, a session at most in strict mode, and secrets.files lists files that need no ask.
 

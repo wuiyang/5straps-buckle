@@ -48,7 +48,7 @@ const BrowserRecordSchema = z.object({
   /** The close on its way to it now (CloserSchema); absent once it closed, or failed and left the session closing. */
   closer: CloserSchema.optional(),
   /**
-   * Each value a fill or type handed this browser from a secret reference (docs/secrets.md), by file, NAME, and sha256,
+   * Each value a fill or type handed this browser from a secret reference (docs/user/how-to/secrets.md), by file, NAME, and sha256,
    * never the value, so every Buckle process masks the page by it, after a restart too; it ends with the browser.
    */
   held: z.array(FilledSchema).optional(),

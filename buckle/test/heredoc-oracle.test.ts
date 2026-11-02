@@ -458,7 +458,7 @@ const OWN_PARSING: Shape[] = [
 ]
 
 /**
- * The interpreter decision (docs/dev/architecture.md, Interpreters): code a non-shell interpreter runs is unknown to
+ * The interpreter decision (docs/developer/architecture.md, Interpreters): code a non-shell interpreter runs is unknown to
  * Buckle, so the call is unread (unknown interpreter) until a policy allows that interpreter. The two python shapes of
  * the first probes ran the sentinel.
  */

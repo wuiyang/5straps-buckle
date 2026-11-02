@@ -379,7 +379,7 @@ function standsAlone(label: string, own: WorkspacePolicy | null, node: NodeConfi
   if (lists.length === 0) return []
   const names = lists.map(([, name]) => name)
   const keys = lists.map(([key]) => key)
-  return [`${label} keeps its own ${names.join(' and ')}, which it now uses alone: the node's ${keys.join(' and ')} ${keys.length === 1 ? 'applies' : 'apply'} only to a workspace without one of its own (docs/workspaces-03.md). Add to its list with buckle policy where it needs what the node's admitted.`]
+  return [`${label} keeps its own ${names.join(' and ')}, which it now uses alone: the node's ${keys.join(' and ')} ${keys.length === 1 ? 'applies' : 'apply'} only to a workspace without one of its own (docs/user/how-to/workspaces-03.md). Add to its list with buckle policy where it needs what the node's admitted.`]
 }
 
 /**
@@ -810,7 +810,7 @@ function notices(input: { node: NodeConfig; plans: Planned[]; hadRegistry: boole
   const file = input.node.migration.file
   const named = workspaceArgument(own.record.name)
   return [
-    `Buckle moved this node to the workspace model: workspaces.json is version 2, and the node's own folder ${own.record.dir} is workspace ${own.record.name} (id ${own.record.id}), with its records in workspaces/${own.record.id}/ in the state directory. The registry and policy files it changed are kept as ${REGISTRY_BACKUP} and ${POLICY_BACKUP} in the state directory, with ${GRANTS_BACKUP} and ${SWITCH_BACKUP} beside where each grants and switch file it moved was, for going back to 0.1 (docs/workspaces-04.md). An older Buckle sharing this state directory now refuses to start: policy.json is a version 2 file it cannot read.`,
+    `Buckle moved this node to the workspace model: workspaces.json is version 2, and the node's own folder ${own.record.dir} is workspace ${own.record.name} (id ${own.record.id}), with its records in workspaces/${own.record.id}/ in the state directory. The registry and policy files it changed are kept as ${REGISTRY_BACKUP} and ${POLICY_BACKUP} in the state directory, with ${GRANTS_BACKUP} and ${SWITCH_BACKUP} beside where each grants and switch file it moved was, for going back to 0.1 (docs/user/how-to/workspaces-04.md). An older Buckle sharing this state directory now refuses to start: policy.json is a version 2 file it cannot read.`,
     ...(token ? [`BUCKLE_AUTH_TOKEN is now token node of workspace ${own.record.name}, so agents configured with it keep working${file === null ? '; the node no longer reads the variable, so remove it from the environment Buckle starts with' : `, and it was taken out of ${file}, which the node no longer reads it from`}. Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent's own configuration. To rotate it, run buckle workspace token create --workspace ${named}, give agents the new token, then buckle workspace token revoke node --workspace ${named}.`] : []),
     ...input.retired,
     ...(input.movesKeys ? [`Each device key enrolled for a workspace now names the workspace's id, so it keeps signing for it; ${CLIENT_KEYS_BACKUP} in the state directory keeps the keys as 0.1 named them, for going back to 0.1.`] : []),

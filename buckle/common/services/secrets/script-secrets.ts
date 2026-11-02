@@ -15,7 +15,7 @@ export interface ResolvedSecret {
 /**
  * The values a code_run script's calls resolved from references, which mask every later call the script makes, before
  * the script, its replay record, the audit log, or the call's own log line sees it, and the script's own result
- * (docs/secrets-02.md). A call with no reference of its own, such as an fs_read of a file a page saved a filled value
+ * (docs/user/how-to/secrets-02.md). A call with no reference of its own, such as an fs_read of a file a page saved a filled value
  * to, is masked by them too. The script's text is never read for them: only a call that resolves a value adds it.
  */
 export interface ScriptSecrets {

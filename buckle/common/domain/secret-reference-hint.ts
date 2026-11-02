@@ -1,4 +1,4 @@
-/** The three tools that read a secret reference (docs/secrets.md), each told where in its arguments one goes. */
+/** The three tools that read a secret reference (docs/user/how-to/secrets.md), each told where in its arguments one goes. */
 export type ReferenceHintTool = 'shell_exec' | 'browser_command' | 'web_fetch'
 
 const WHERE: Readonly<Record<ReferenceHintTool, { place: string; example: string }>> = {

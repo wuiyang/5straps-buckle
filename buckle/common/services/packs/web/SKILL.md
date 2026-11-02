@@ -26,7 +26,7 @@ covers is refused where it resolves into one.
 To send a value from a dotenv file without seeing it, write `{{file:.env.local:API_TOKEN}}` in a header's
 value. Buckle asks a person once per file, puts the value in, shows you `[secret:NAME]` where the
 response echoes it, and drops the header on a redirect to another origin
-([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md)).
 
 ## Responses
 

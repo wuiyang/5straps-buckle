@@ -21,11 +21,11 @@ describe('rewriteRelativeLinks', () => {
   })
 
   it('keeps a nested docs path', () => {
-    expect(rewriteRelativeLinks('[Building](./docs/dev/building-and-testing.md)')).toBe(`[Building](${BLOB}docs/dev/building-and-testing.md)`)
+    expect(rewriteRelativeLinks('[Building](./docs/developer/building-and-testing.md)')).toBe(`[Building](${BLOB}docs/developer/building-and-testing.md)`)
   })
 
   it('keeps the anchor', () => {
-    expect(rewriteRelativeLinks('[limits](./docs/known-limits.md#credential-hiding)')).toBe(`[limits](${BLOB}docs/known-limits.md#credential-hiding)`)
+    expect(rewriteRelativeLinks('[limits](./docs/user/caveats/known-limits.md#credential-hiding)')).toBe(`[limits](${BLOB}docs/user/caveats/known-limits.md#credential-hiding)`)
   })
 
   it('normalises dot segments from the repository root', () => {

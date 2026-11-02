@@ -21,7 +21,7 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
  * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28, owner decision D7 of
  * 2026-09-29): every ask becomes an allow, sensitive files and file writes included, reported as
  * `dangerously_allow:<level>:<rule>:<subject>` so the invoker audits each use at the level it ran at. At level
- * `command` a secret reference's file is the one ask it leaves to a person (docs/secrets.md); at level `all` it
+ * `command` a secret reference's file is the one ask it leaves to a person (docs/user/how-to/secrets.md); at level `all` it
  * answers that one too (owner ruling of 2026-10-25). A restore of the change history it leaves to a person at either
  * level, as every restore asks one (slice D). It is bound to the workspace at either level:
  * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
@@ -48,7 +48,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { level: (
 
 /**
  * Whether the switch answers this ask: one about a path only inside the workspace root. A secret file's use is one only
- * at level `all`; at `command` a person allows it (docs/secrets.md).
+ * at level `all`; at `command` a person allows it (docs/user/how-to/secrets.md).
  */
 function covers(input: { ask: Ask; root: string; level: DangerouslyAllowLevel }): boolean {
   const { ask, root, level } = input

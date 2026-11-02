@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { maskLabel, mentionsReference, PLATFORM_REASON, readReferences } from '../common/domain/secret-reference.js'
 import { LINEAR_TENFOLD_LIMIT, PROCESSOR_TIME_ROW_TIMEOUT, tenfoldProcessorRatio } from './support/processor-time.js'
 
-// The secret-references slice, part 1 (docs/secrets.md): the grammar names its source. A file reference is read; a
+// The secret-references slice, part 1 (docs/user/how-to/secrets.md): the grammar names its source. A file reference is read; a
 // platform reference is reserved and refused; any other text written as a reference refuses the call, naming the form.
 
 const refusalOf = (text: string): string => {

@@ -4,7 +4,7 @@ import { mentionsReference, PLACES_REASON, readReferences, type FileReference } 
 import { positionalIndexes } from '../packs/browser/effects.js'
 
 /**
- * Where a reference is read (docs/secrets.md): a word of a program's argument list (`argv`), shell text a shell parses
+ * Where a reference is read (docs/user/how-to/secrets.md): a word of a program's argument list (`argv`), shell text a shell parses
  * (`shell`, script_run's bash body), the text a browser fill or type enters (`fill`), and a web_fetch header's value
  * (`header`).
  */

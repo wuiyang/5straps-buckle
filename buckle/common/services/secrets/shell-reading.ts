@@ -16,7 +16,7 @@ export interface ArgumentPlace {
 }
 
 /**
- * How a shell reads an argument that holds a reference (docs/secrets.md): `argv`, handed to its program as one word that
+ * How a shell reads an argument that holds a reference (docs/user/how-to/secrets.md): `argv`, handed to its program as one word that
  * no shell parses again; `shell`, text a shell parses, a `-c` body, script_run's bash body, a command ssh sends, a
  * find -exec command, where a value is held to the characters no shell reads as syntax.
  */
@@ -40,7 +40,7 @@ export const secretKey = (path: string, name: string) => `${path}${SOH}${name}`
 const referenceKey = (reference: FileReference) => secretKey(reference.path, reference.name)
 
 /**
- * The references of a shell call, read as the rules read the call, before anyone is asked (docs/secrets.md): the call
+ * The references of a shell call, read as the rules read the call, before anyone is asked (docs/user/how-to/secrets.md): the call
  * must be read whole, run no interpreter (whose code Buckle does not read, so a reference there is an interpreter body's),
  * and hold no reference in a command word; a reference in text a shell parses must sit inside quotes, and not in the word
  * of a parameter expansion no double quotes hold, which a probe holding a blank shows (probesFor, UNQUOTED_REASON), and
@@ -129,7 +129,7 @@ function expansionsIn(text: string, end: number): number {
 
 /**
  * Whether the call with each reference's value in its place reads as the call with the references did, word for word
- * with each value where its reference stood (docs/secrets.md): a value that splits a word, starts a statement, or
+ * with each value where its reference stood (docs/user/how-to/secrets.md): a value that splits a word, starts a statement, or
  * opens a substitution changes the reading, and the call does not run.
  */
 export function readsAsReferenced(input: { call: ProgramCall; substituted: ProgramCall; references: readonly FileReference[]; values: ReadonlyMap<string, string> }): boolean {

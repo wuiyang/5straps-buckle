@@ -62,7 +62,7 @@ changed path or relaxed sandbox. Interactive terminals do not support these per-
 When a command needs one value from a dotenv file, write `{{file:.env.local:API_TOKEN}}` in an argument, or
 inside quotes in a Bash `script_run` body, instead of reading the file. Buckle asks a person once per
 file, puts the value in as the command starts, and shows you `[secret:NAME]` in the output
-([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md)).
+([secret references](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md)).
 
 ## Sandboxing
 

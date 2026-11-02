@@ -22,7 +22,7 @@ The script is the body of an async function: top-level `await` and `return` work
 files, network, processes, timers, `require`, or modules of its own. Everything it reaches goes
 through `tools`, in your session: its `browser_command` drives the page your own calls opened.
 
-A script may pass a [secret reference](https://github.com/wuiyang/5straps-buckle/blob/main/docs/secrets.md), such as
+A script may pass a [secret reference](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/secrets.md), such as
 `{{file:.env.local:LOGIN_PASSWORD}}`, as `fill` or `type` text, a shell argument, or a `web_fetch`
 header: that call reads it as a direct call does, and the script sees `[secret:NAME]`.
 

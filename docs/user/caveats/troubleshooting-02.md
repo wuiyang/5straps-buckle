@@ -1,0 +1,82 @@
+# Troubleshooting: refused commands
+
+The command refusals people meet with Buckle, the approval and sandbox runtime on their machine,
+each with its message and the fix. [Troubleshooting](troubleshooting.md) covers installing and
+starting Buckle. A refusal comes back to the agent as `PERMISSION_DENIED` with the reason.
+
+## A bash script is refused
+
+```
+PERMISSION_DENIED: A shell wrapper hides its command from the word globs, so it needs an allow rule of its own: buckle policy allow-command 'bash -c *'
+```
+
+`script_run` with the `bash` runtime, and a `bash -c` the call starts with or reaches through a
+prefix such as `sudo` or `env`, is refused until a rule allows the wrapper; one reached through
+`find -exec`, `su -c`, or `sudo -s` meets only the deny rules and the destructive floor. Prefer
+`shell_exec` with the program and its arguments, or allow the wrapper with the rule the message
+names. An allow rule admits a call only as typed, so behind a prefix the message names the prefix
+too: `sudo bash -c ls` names `sudo bash -c *`, and `env bash -c ls` names
+`env bash -c *`. No rule admits a word written with a `.` or `..` step, a doubled slash, a
+leading `~`, or a backslash on Linux and macOS, so `/usr//bin/sh -c ls` names the bare `sh -c *`,
+under which it asks at the destructive floor; write the path plainly instead. [Policy](../how-to/policy.md#commands) explains why.
+
+## An interpreter is refused or asks
+
+With a deny glob in the policy, a call that runs code with `python3`, `node`, or another
+[interpreter](../how-to/policy-02.md#interpreters) is refused:
+
+```
+PERMISSION_DENIED: Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3 (allow it with buckle policy allow-interpreter python3), so the workspace command policy's deny list cannot meet all of it; refused rather than asked
+```
+
+With none, the destructive floor asks with the same reason. Buckle cannot read the code, so no
+deny glob can meet what it runs. When the owner trusts that interpreter as an ordinary command,
+judged by its own words, allow it by its exact name:
+
+```bash
+buckle policy allow-interpreter python3
+```
+
+It applies to that workspace alone, from its next call. `python3` and `python3.12` are separate
+names. A version or help call, such as `python3 --version`, never needs it.
+
+## A call Buckle cannot read whole is refused
+
+With a deny glob in the policy, a call Buckle could not read to the end is refused, since the
+part left unread might hold a denied command:
+
+```
+PERMISSION_DENIED: Runs a command word or shell text an expansion supplies, or a command an expansion among a wrapper's own words may move, which exists only once the shell has run ($cmd args, eval "$x", bash -c "$(...)", timeout $t cmd), so Buckle cannot read it (expansion), so the workspace command policy's deny list cannot meet all of it; refused rather than asked
+```
+
+With none, the destructive floor asks instead. The name in parentheses, or a constant such as
+`MAX_DEPTH`, is the limit that stopped the reading. [Reading limits](../how-to/policy-02.md#reading-limits)
+lists each with an example and the fix, which is usually to spell the command out, quote a
+variable after an option that takes one (`nice -n "$n" make`), or hand a shell its script with
+`-c`. [What stays unread](../how-to/policy-03.md) shows the forms an expansion leaves read, and
+[Known limits](known-limits.md) what Buckle does not read at all.
+
+## A push is refused by the receive guard
+
+When `origin` is a repository on the same machine, `git_push` checks it before the push, and
+again inside the receiving git through a guard that is that git's only hook. Both refuse when git
+would write somewhere other than the repository Buckle judged: a `.git` that is a file or a
+symbolic link, a `commondir` or `gitdir` pointer file, or a symbolic link in the git directory,
+its `objects`, `refs`, or `logs`. The agent sees:
+
+```
+PERMISSION_DENIED: /home/you/repos/app/.git is a file pointing git at another repository, so git would write somewhere the permission rules never judged; push to the real repository by its own path (set origin to it) so the permission rules judge it
+```
+
+Point `origin` at the real repository directory, for example with
+`git remote set-url origin /home/you/repos/app-main`, and push again. If the message instead
+says the guard `cannot be run`, its execute permission was lost or the state directory sits on a
+`noexec` mount: restore the permission, or move the state directory with `BUCKLE_STATE_DIR`.
+
+## A rule changes another workspace than you meant
+
+`buckle policy` acts on the workspace `--workspace <name>` or `--dir <path>` names, or else on the
+one whose folder holds the current directory, and `buckle policy show` names it on its first
+line. A rule `buckle policy` adds is that workspace's own, so it does nothing in another; only the
+node's lists in `buckle.env` reach every workspace ([Node defaults](../how-to/workspaces-03.md)). `buckle workspace list` shows each workspace's id and folder
+([Workspaces](../how-to/workspaces.md#which-workspace-a-command-means)).

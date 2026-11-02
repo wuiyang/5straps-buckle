@@ -695,7 +695,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
         // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
         const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
-        // A secret file's use (docs/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
+        // A secret file's use (docs/user/how-to/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
         if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once' && !isSecretFileSubject(subject)) return { ok: false, reason: 'Sensitive files can only be allowed once' }
         if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
         const now = Date.now()

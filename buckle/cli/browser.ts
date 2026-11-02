@@ -39,7 +39,7 @@ function chromesLeft(counts: BrowserCloseCounts): string {
   return counts.chromes ? ` ${CHROME_LEFT}` : ''
 }
 
-/** What buckle browser close prints, which docs/browser-login-02.md quotes. */
+/** What buckle browser close prints, which docs/user/how-to/browser-login-02.md quotes. */
 export function describeCounts(counts: BrowserCloseCounts, workspace: string): string {
   const values = `${counts.held} held secret ${counts.held === 1 ? 'value' : 'values'}`
   const kept = counts.kept ? ` ${counts.kept} held secret ${counts.kept === 1 ? 'value stays' : 'values stay'}.` : ''

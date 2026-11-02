@@ -166,7 +166,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const notices = vi.spyOn(logger, 'warn')
     const manager = await open(input)
 
-    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site keeps its own command allow list and approved URL list, which it now uses alone: the node\'s BUCKLE_COMMAND_ALLOW and BUCKLE_NETWORK_ALLOW apply only to a workspace without one of its own (docs/workspaces-03.md). Add to its list with buckle policy where it needs what the node\'s admitted.')
+    expect(notices.mock.calls.map(([message]) => String(message))).toContainEqual('Workspace site keeps its own command allow list and approved URL list, which it now uses alone: the node\'s BUCKLE_COMMAND_ALLOW and BUCKLE_NETWORK_ALLOW apply only to a workspace without one of its own (docs/user/how-to/workspaces-03.md). Add to its list with buckle policy where it needs what the node\'s admitted.')
     expect((await byName(manager, 'site')).runtime.policy.effective()).toMatchObject({ commands: { allow: ['git *'] }, network: { allow: ['b.example'] } })
   })
 
@@ -574,8 +574,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
     const marker = (input: Scene) => join(input.state, 'moving-onto-workspaces')
     const moved = (input: Scene, file: string) => join(input.state, 'workspaces', ownId(input), file)
     /** A docs page, its lines joined, as it quotes what the move prints. */
-    const page = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', name), 'utf8').replace(/\s+/g, ' ')
-    const troubleshooting = () => page('troubleshooting.md')
+    const page = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'user', name), 'utf8').replace(/\s+/g, ' ')
+    const troubleshooting = () => page('caveats/troubleshooting.md')
     /** What the move says holds a record open on Windows, and the step it asks for: the words the pages quote. */
     const HOLDERS = 'a buckle serve, a buckle mcp an MCP client started, the Buckle service, the browser Buckle opened (agent-browser and its Chromium), or an antivirus scan'
     const STOP_EVERY = 'Stop every Buckle process (buckle serve, the Buckle service, and each MCP client that runs buckle mcp) and the browser it opened'
@@ -794,13 +794,13 @@ describe('moving a 0.1 node onto the workspace model', () => {
 
       it('is quoted by the pages: Windows, the holders, the codes, and the order', () => {
         const words = (name: string) => page(name).replaceAll('`', '')
-        expect(words('workspaces-04.md')).toContain(`most likely ${HOLDERS}`)
-        expect(words('workspaces-04.md')).toContain('EPERM, EBUSY, or EACCES')
-        expect(words('workspaces-04.md')).not.toContain('EPERM or EBUSY')
-        expect(words('workspaces-04.md')).toContain('(history, browser-sessions, and workbenches) move first within each workspace')
-        expect(words('workspaces-04.md')).toContain('the node\'s folder moves before the registered workspaces')
-        expect(words('troubleshooting.md')).toContain(STOP_EVERY)
-        expect(words('install.md')).toContain('the browser Buckle opened')
+        expect(words('how-to/workspaces-04.md')).toContain(`most likely ${HOLDERS}`)
+        expect(words('how-to/workspaces-04.md')).toContain('EPERM, EBUSY, or EACCES')
+        expect(words('how-to/workspaces-04.md')).not.toContain('EPERM or EBUSY')
+        expect(words('how-to/workspaces-04.md')).toContain('(history, browser-sessions, and workbenches) move first within each workspace')
+        expect(words('how-to/workspaces-04.md')).toContain('the node\'s folder moves before the registered workspaces')
+        expect(words('caveats/troubleshooting.md')).toContain(STOP_EVERY)
+        expect(words('quick-start/install.md')).toContain('the browser Buckle opened')
       })
     })
 
@@ -962,7 +962,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
       expect(told).toContainEqual(expect.stringContaining('buckle workspace token create --workspace project, give agents the new token, then buckle workspace token revoke node --workspace project'))
       expect(told).toContainEqual(expect.stringContaining('An older Buckle sharing this state directory now refuses to start'))
       expect(told).toContainEqual(expect.stringContaining(`the node's own folder ${input.folder} is workspace project (id ${ownId(input)}), with its records in workspaces/${ownId(input)}/ in the state directory`))
-      // What docs/workspaces-04.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
+      // What docs/user/how-to/workspaces-04.md says of going back: the four copies, the stub, the token out of the file, and its digest alone kept.
       expect(told).toContainEqual(expect.stringContaining('The registry and policy files it changed are kept as workspaces.v1.json and policy.v1.json in the state directory, with grants.v1.json and dangerously-allow.v1.json beside where each grants and switch file it moved was, for going back to 0.1'))
       expect(told).toContainEqual(expect.stringContaining('policy.json is a version 2 file it cannot read'))
       expect(told).toContainEqual(expect.stringContaining('Buckle keeps the token as its digest alone, with no copy of its value: to go back to 0.1, set BUCKLE_AUTH_TOKEN again from an agent\'s own configuration'))

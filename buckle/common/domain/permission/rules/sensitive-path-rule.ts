@@ -46,7 +46,7 @@ const SENSITIVE_FILENAME_PATTERNS = [
 ]
 
 /**
- * The subject a secret file's use is asked and granted under (docs/secrets.md): never a path, so a grant to read the
+ * The subject a secret file's use is asked and granted under (docs/user/how-to/secrets.md): never a path, so a grant to read the
  * file into a command's argument list never opens the file to the agent, nor a read of it the other way round.
  */
 export const SECRET_FILE_PREFIX = 'secret-file:'
@@ -71,7 +71,7 @@ export interface SensitivePathOptions {
    * same directory there, so the roots are compared folded (review item 13 of the proof-of-possession fixes).
    */
   caseInsensitive?: boolean
-  /** Whether the workspace's secrets.files lists the real file a reference names, so its use needs no ask (docs/secrets.md). */
+  /** Whether the workspace's secrets.files lists the real file a reference names, so its use needs no ask (docs/user/how-to/secrets.md). */
   secretListed?: (path: string) => boolean
   /** Strict mode: a secret file's use is granted for a session at most, so it asks again each session. */
   strict?: boolean
@@ -108,7 +108,7 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
 }
 
 /**
- * A secret file's first use in a workspace asks a person once (docs/secrets.md), naming the file as the reference wrote
+ * A secret file's first use in a workspace asks a person once (docs/user/how-to/secrets.md), naming the file as the reference wrote
  * it and the NAMEs the call reads, never a value; the answer is remembered as the scope chosen, a session at most in
  * strict mode, and a file secrets.files lists needs none. Buckle's own state is never read, and a remembered denial
  * stands, as for any credential file.

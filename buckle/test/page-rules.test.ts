@@ -31,7 +31,7 @@ const pages = [
 describe('every page', () => {
   it('reads the docs, every shipped skill, both READMEs, and .env.example', () => {
     expect(pages.length).toBeGreaterThan(20)
-    expect(pages.map(item => item.page)).toEqual(expect.arrayContaining(['README.md', 'buckle/README.md', '.env.example', 'docs/browser-login.md', 'buckle/common/services/packs/browser/SKILL.md']))
+    expect(pages.map(item => item.page)).toEqual(expect.arrayContaining(['README.md', 'buckle/README.md', '.env.example', 'docs/user/how-to/browser-login.md', 'buckle/common/services/packs/browser/SKILL.md']))
   })
 
   it.each(pages)('$page stays at or under 1100 words', ({ text }) => {

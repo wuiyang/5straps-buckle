@@ -1,5 +1,5 @@
 /**
- * Secret references (docs/secrets.md): text a call writes in place of a value Buckle reads for it, so the value never
+ * Secret references (docs/user/how-to/secrets.md): text a call writes in place of a value Buckle reads for it, so the value never
  * passes through the agent. `{{file:<path>:NAME}}` names NAME in a dotenv file inside the workspace or a mount, by a
  * relative path. `{{env:<platform>:NAME}}` names a value a platform holds; the form is reserved, and refused until Rings
  * supplies it. A bare `{{env:NAME}}` names no source and is refused, as is any other text written as a reference.

@@ -12,7 +12,7 @@ import { positionalIndexes } from '../packs/browser/effects.js'
 import { readShellReferences, readsAsReferenced, referenceKey, replaceReferences, secretKey, substituted, type ArgumentPlace, type ProgramCall, type ShellTier } from './shell-reading.js'
 
 /**
- * A call's references as the gate checked them (docs/secrets.md): the plan, each file's real path as the rules judged
+ * A call's references as the gate checked them (docs/user/how-to/secrets.md): the plan, each file's real path as the rules judged
  * it, and for a shell call how each argument holding one is read, which the run checks the values against.
  */
 export interface CheckedSecrets {
@@ -30,7 +30,7 @@ interface ShellCall {
 export type { FilledSecrets }
 
 /**
- * The gate's check of a call's references (docs/secrets.md), before anyone is asked: for shell_exec and script_run's
+ * The gate's check of a call's references (docs/user/how-to/secrets.md), before anyone is asked: for shell_exec and script_run's
  * bash body, how Buckle reads each argument that holds one (readShellReferences), refusing a reference the rules could
  * not read as written. Browser fill text and web_fetch headers reach no shell.
  */
@@ -51,7 +51,7 @@ export function checkSecrets(input: { tool: string; args: JsonObject; plan: Secr
 }
 
 /**
- * Runs a call with each reference's value in its place, read just before the tool starts (docs/secrets.md): every file
+ * Runs a call with each reference's value in its place, read just before the tool starts (docs/user/how-to/secrets.md): every file
  * is read where it was judged, each value checked for where it goes (MIN_SECRET_LENGTH, and what its place may hold), the
  * arguments rebuilt with the values in them and the tool prepared from them, and a shell call read again to be sure it
  * reads as it did with the references, by the command reader and by the rules. Everything the tool answers, and every
@@ -195,7 +195,7 @@ const SHELL_UNSAFE = /["'`\\$!\u0000-\u001f\u007f]/
 const NEVER = /[\u0000\u0001]/
 
 /**
- * Whether a value may stand where its reference does (docs/secrets.md), refused naming the reference, never the value: at
+ * Whether a value may stand where its reference does (docs/user/how-to/secrets.md), refused naming the reference, never the value: at
  * least MIN_SECRET_LENGTH characters (SHORT_REASON); in shell text, none a shell reads as syntax inside quotes, and no
  * leading `-`; as a whole argument or browser text, no leading `-`, which its program would read as an option; in a
  * header, no line break.
@@ -222,7 +222,7 @@ function substitutedArguments(args: JsonObject, places: readonly SecretPlace[], 
 }
 
 /**
- * Refuses a shell call whose values change how it reads (docs/secrets.md): the command reader must read it word for word
+ * Refuses a shell call whose values change how it reads (docs/user/how-to/secrets.md): the command reader must read it word for word
  * as it read the references, each value where its reference stood, and the rules, judged with no grant, must ask and
  * refuse about it as they did, so no value moves what a rule matched.
  */

@@ -32,7 +32,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
   }
 
   return {
-    // A sensitive file is allowed once at a time; only a secret file's use (docs/secrets.md) is remembered.
+    // A sensitive file is allowed once at a time; only a secret file's use (docs/user/how-to/secrets.md) is remembered.
     activeSubjects: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && (rule !== 'sensitive_path' || isSecretFileSubject(grant.subject))).map(grant => grant.subject),
 
     activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),

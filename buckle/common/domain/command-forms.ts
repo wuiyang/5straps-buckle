@@ -307,7 +307,7 @@ const NO_INTERPRETERS: ReadonlySet<string> = new Set()
 /**
  * The limit a reading stopped at, the first in READ_LIMITS order, or null when the call was read whole. An interpreter
  * the policy allows (`allowed`) is an ordinary command, so only another one leaves the call unknown
- * (docs/dev/architecture.md, Interpreters).
+ * (docs/developer/architecture.md, Interpreters).
  */
 export function readLimitOf(forms: CommandForms, allowed: ReadonlySet<string> = NO_INTERPRETERS): ReadLimit | null {
   if (forms.unread === 'depth') return 'depth'
@@ -550,7 +550,7 @@ function readsValueAsPattern(words: readonly string[], place: Place): boolean {
 const PYTHONS: readonly string[] = ['python', 'pypy']
 
 /**
- * Programs whose code Buckle cannot read as shell (docs/dev/architecture.md, Interpreters): each name, alone or with a
+ * Programs whose code Buckle cannot read as shell (docs/developer/architecture.md, Interpreters): each name, alone or with a
  * version (`python3`, `python3.12`, `node22`, `perl5.36`, `lua5.4`). A policy names the ones it reads as ordinary
  * commands. awk and its variants, lua, PowerShell, and the TypeScript runners are listed; so are the package runners
  * npx, pnpx, and bunx (D86 (4)), which fetch and run a package's code Buckle never reads, so a command allow alone never
@@ -635,7 +635,7 @@ function printsInfo(command: string, args: readonly string[]): boolean {
 }
 
 /**
- * The interpreter the command a chain ends in runs code with, or null (docs/dev/architecture.md, Interpreters): any
+ * The interpreter the command a chain ends in runs code with, or null (docs/developer/architecture.md, Interpreters): any
  * call of one with inline code (`-c`, `-e`, `--eval`, `-r`, `-p`, pwsh's `-Command`), a script, `-m`, awk's program or
  * `-f`, or any other argument, and one behind xargs, whose items become its code or its script. Its version or its
  * help alone runs nothing; nor does a bare interpreter as the call itself, whose input is empty. In shell text a bare

@@ -137,7 +137,7 @@ function createHumanSink(input: { console: ConsoleWriter; level: LogLevel }): Lo
 
 /**
  * Resolved on every call, so a logger taken at import time follows the root main configures later. While a call holds
- * secret values, each line is masked as it is logged, before any sink queues it (docs/secrets.md); a child's bindings
+ * secret values, each line is masked as it is logged, before any sink queues it (docs/user/how-to/secrets.md); a child's bindings
  * are masked as they are bound.
  */
 function delegate(resolve: () => Logger): Logger {

@@ -69,7 +69,7 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
   return {
     id: 'filesystem_policy',
     evaluate({ effect, grants }) {
-      // A secret file a reference names is read, by Buckle, as any read of it is judged (docs/secrets.md).
+      // A secret file a reference names is read, by Buckle, as any read of it is judged (docs/user/how-to/secrets.md).
       if (effect.kind !== 'read_path' && effect.kind !== 'write_path' && effect.kind !== 'delete_path' && effect.kind !== 'secret_file') return null
       // A delete is a write; a folder removed or moved whole meets a rule on any path beneath it too.
       const operation = effect.kind === 'write_path' || effect.kind === 'delete_path' ? 'write' : 'read'

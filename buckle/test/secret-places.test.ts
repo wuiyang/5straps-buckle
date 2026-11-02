@@ -10,7 +10,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The secret-references slice, part 2 (docs/secrets.md): references are read in three places only, shell words,
+// The secret-references slice, part 2 (docs/user/how-to/secrets.md): references are read in three places only, shell words,
 // browser fill values, and web_fetch header values; a reference anywhere else refuses the call before it is judged.
 
 const REF = '{{file:.env.local:API_TOKEN}}'

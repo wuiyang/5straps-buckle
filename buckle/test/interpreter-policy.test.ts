@@ -12,7 +12,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 
 /**
- * The interpreter decision (docs/dev/architecture.md, Interpreters): a call that runs code with python, node, deno, bun,
+ * The interpreter decision (docs/developer/architecture.md, Interpreters): a call that runs code with python, node, deno, bun,
  * perl, ruby, php, awk, lua, pwsh, tsx, or another listed interpreter is unknown to Buckle until the policy allows that
  * interpreter. These drive the CLI verbs and the real permission pipeline of a runtime.
  */
@@ -166,7 +166,7 @@ describe('allowedInterpreters in a policy document', () => {
   })
 })
 
-// Each workspace judges interpreters by the list in force (docs/dev/architecture.md, Interpreters): its own, else the
+// Each workspace judges interpreters by the list in force (docs/developer/architecture.md, Interpreters): its own, else the
 // node's BUCKLE_ALLOWED_INTERPRETERS, whole (D85, Q14). The node's deny list is a floor over every workspace, so an
 // interpreter left unread is refused wherever the node denies anything.
 describe('a workspace\'s own interpreter allowance', () => {

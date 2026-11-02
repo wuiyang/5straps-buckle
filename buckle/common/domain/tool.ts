@@ -4,7 +4,7 @@ import { TOOL_NAME_PATTERN } from '@5straps/protocol'
 import type { ToolEffect } from './effect.js'
 
 /**
- * One value filled into a browser from a secret reference (docs/secrets.md): its file as the rules judged it and as
+ * One value filled into a browser from a secret reference (docs/user/how-to/secrets.md): its file as the rules judged it and as
  * written, its NAME, and the sha256 of the value it was, so a file changed since is told apart while the page still holds
  * the value it was filled with.
  */
@@ -17,7 +17,7 @@ export interface FilledSecret {
 
 /**
  * The values a browser call is masked by, which its browser pack reads again at each call from what its browsers were
- * filled with (docs/secrets.md), so a later snapshot, `get value`, or `eval` that shows the page is masked too, in any
+ * filled with (docs/user/how-to/secrets.md), so a later snapshot, `get value`, or `eval` that shows the page is masked too, in any
  * Buckle process on the workspace and after a restart. The call is its context and its arguments, which choose its
  * browser. Answered once what a stopped process left is ended (Slice F4, item 4).
  */
@@ -94,12 +94,12 @@ export interface ToolContext {
    */
   relocated?: (from: string, to: string | null) => void
   /**
-   * The request headers whose values Buckle filled from secret references (docs/secrets.md): a fetch drops them on a
+   * The request headers whose values Buckle filled from secret references (docs/user/how-to/secrets.md): a fetch drops them on a
    * hop to another origin, as it drops a credential header.
    */
   secretHeaders?: readonly string[]
   /**
-   * The values a browser fill or type call hands the browser from secret references (docs/secrets.md), each by its file,
+   * The values a browser fill or type call hands the browser from secret references (docs/user/how-to/secrets.md), each by its file,
    * NAME, and sha256, never the value: the browser pack records them before the browser runs, so every later browser call
    * on the workspace, in any Buckle process, is masked by them while a browser may still show them.
    */

@@ -182,7 +182,7 @@ describe('buckle check-url refused before a workspace is chosen', () => {
 })
 
 // Recheck of finding 31: three more refusals of an owner's command that the audit log kept nowhere. The node's log holds
-// each as an attempt and a failed result, as docs/audit-log.md says of every refusal.
+// each as an attempt and a failed result, as docs/user/how-to/audit-log.md says of every refusal.
 describe('an owner\'s command refused before it names a workspace, under the node scope', () => {
   const nodeEntries = (tool: string) => createFileActionLog(actionsPath(node)).read(40).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])
   const recorded = [['attempt', 'started'], ['result', 'error']]

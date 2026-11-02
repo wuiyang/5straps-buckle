@@ -76,7 +76,7 @@ export interface InvokerOptions {
   reporter: Reporter
   /** The workspace's decision AI as the call found it (D91): in automated mode it may pass a command ask its stages cover. */
   judge?: JudgeGate
-  /** The workspace's secret reference settings as the call found them (docs/secrets.md); on where absent. */
+  /** The workspace's secret reference settings as the call found them (docs/user/how-to/secrets.md); on where absent. */
   secrets?: SecretSettings
   /** The values the workspace's browsers were filled with, by file and NAME, which every later browser call is masked by. */
   filledSecrets?: FilledSecrets
@@ -261,7 +261,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             audited = prepared.audited
             // A reference is read in shell words, browser fill values, and web_fetch headers, and refused anywhere else,
             // before anything is judged; each file the references name is judged where it lands, and its first use asks a
-            // person (docs/secrets.md). A code_run script is not read: each call it makes comes back through here.
+            // person (docs/user/how-to/secrets.md). A code_run script is not read: each call it makes comes back through here.
             const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
             effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
             // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).

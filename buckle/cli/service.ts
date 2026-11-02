@@ -25,7 +25,7 @@ export interface CliResult {
 export const SERVICE_USAGE = `Usage: buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n <lines>]
 
 Runs this machine's node with no terminal, starting at login: a systemd user unit on Linux, a launchd agent on
-macOS, a Task Scheduler task on Windows (docs/service.md). One node per machine. install writes the definition and
+macOS, a Task Scheduler task on Windows (docs/user/how-to/service.md). One node per machine. install writes the definition and
 enables it, and --now starts it too; --skip-owner-only-check on install is kept in the definition. uninstall stops
 it and removes the definition, keeping the state directory. Where no service manager answers,
 buckle serve --background runs the node until it stops, and stop, status, and logs work on that node too.

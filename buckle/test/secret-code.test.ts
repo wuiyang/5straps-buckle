@@ -9,7 +9,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The owner's report of 2026-11-01 (docs/secrets.md): a code_run script could not fill a password through a secret
+// The owner's report of 2026-11-01 (docs/user/how-to/secrets.md): a code_run script could not fill a password through a secret
 // reference, as the whole code_run call was refused for the reference in its script. The script is not read for
 // references: each call it makes is planned as the same call made directly, so a reference in a nested fill is read
 // there, with that call's own ask, and one anywhere else is refused there. The agent-browser here is a stand-in that

@@ -19,8 +19,8 @@ import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports
 // What the decision AI's pages say of standard scripts (D91, addendum 2, defect 5): bun is an interpreter, so `bun run`
 // asks on its own and `bun run *` applies; no page may call it an ordinary command.
 
-const DOCS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs')
-const pages = readdirSync(DOCS).filter(name => name.endsWith('.md')).map(name => ({ name, text: readFileSync(join(DOCS, name), 'utf8').replace(/\s+/g, ' ') }))
+const DOCS = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'user')
+const pages = ['quick-start', 'how-to', 'caveats'].flatMap(group => readdirSync(join(DOCS, group)).filter(name => name.endsWith('.md')).map(name => ({ name, text: readFileSync(join(DOCS, group, name), 'utf8').replace(/\s+/g, ' ') })))
 
 describe('the time budgets', () => {
   it('are 20 s for the thorough stage, 5 s an attempt for the quick stage, and 10 s for Socket, as judge-02.md quotes them', () => {

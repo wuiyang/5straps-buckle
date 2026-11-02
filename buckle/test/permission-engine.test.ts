@@ -425,7 +425,7 @@ describe('destructive commands', () => {
     expect(evaluate([exec(command, args)], { write_scope: ['/'] }).kind).toBe('allow')
   })
 
-  // The interpreter decision (docs/dev/architecture.md, Interpreters): a script an interpreter runs is code Buckle
+  // The interpreter decision (docs/developer/architecture.md, Interpreters): a script an interpreter runs is code Buckle
   // cannot read as shell, so with no policy allowing
   // node the floor asks about it rather than allow it as an ordinary command.
   it('asks about node script.js, whose code Buckle cannot read as shell', () => {

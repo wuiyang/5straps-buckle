@@ -554,7 +554,7 @@ async function askYesNo(prompt: InitPrompt, text: string): Promise<boolean | und
   }
 }
 
-/** A program `buckle init` checks, by the name it is looked up by, with what it unlocks as docs/install.md words it. */
+/** A program `buckle init` checks, by the name it is looked up by, with what it unlocks as docs/user/quick-start/install.md words it. */
 interface CheckedProgram {
   label: string
   name: string

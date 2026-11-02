@@ -9,7 +9,7 @@ import { describeApprovalRequest } from '../common/domain/approval-instruction.j
 // Output a page shows a reader, held to what the code prints, so a page cannot drift from it again (fix brief 4, finding 43).
 
 const PACKAGE = join(dirname(fileURLToPath(import.meta.url)), '..')
-const PAGES = ['docs/first-run.md', 'buckle/skills/buckle/SKILL.md']
+const PAGES = ['docs/user/quick-start/first-run.md', 'buckle/skills/buckle/SKILL.md']
 
 describe('the approval message a page shows', () => {
   const lines = describeApprovalRequest({
@@ -36,13 +36,13 @@ describe('the terminal question a page shows', () => {
     workspaceId: 'a9f9e5a2-52ac-5720-bc81-771fd12913c6', workspaceName: 'my-project', call: { arguments: {}, cwd: '/workspace', description: null },
   })
 
-  it('quotes a write\'s choices and its prompt row in docs/first-run.md', () => {
-    expect(page('docs/first-run.md')).toContain(`${approvalBlock(question('fs_write', 'write_scope', ['once', 'session', 'always']), new Date()).at(-1)}\n[my-project] Your choice:`)
+  it('quotes a write\'s choices and its prompt row in docs/user/quick-start/first-run.md', () => {
+    expect(page('docs/user/quick-start/first-run.md')).toContain(`${approvalBlock(question('fs_write', 'write_scope', ['once', 'session', 'always']), new Date()).at(-1)}\n[my-project] Your choice:`)
   })
 
-  it('quotes the head line and the destructive floor\'s choices in docs/approvals-02.md', () => {
+  it('quotes the head line and the destructive floor\'s choices in docs/user/how-to/approvals-02.md', () => {
     const block = approvalBlock(question('shell_exec', 'destructive_command', ['once', 'session']), new Date())
-    expect(page('docs/approvals-02.md')).toContain(` [approval] [my-project] action pending approval: ${actionPhrase('shell_exec')}\n`)
-    expect(page('docs/approvals-02.md')).toContain(`${block.at(-1)}\n[my-project] Your choice: 2\n`)
+    expect(page('docs/user/how-to/approvals-02.md')).toContain(` [approval] [my-project] action pending approval: ${actionPhrase('shell_exec')}\n`)
+    expect(page('docs/user/how-to/approvals-02.md')).toContain(`${block.at(-1)}\n[my-project] Your choice: 2\n`)
   })
 })
