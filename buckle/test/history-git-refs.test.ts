@@ -8,6 +8,7 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { readIndex } from '../common/services/history/command-capture.js'
 import { blobId, openObjectStore } from '../common/services/history/object-store.js'
 import { parseIndex, writeIndex } from '../common/services/history/workspace-repo.js'
+import './support/no-git-maintenance.js'
 
 // Slice F3 (owner question X6, "why we need copy? cant it refer from git?"): where a command's folder lies in a git
 // repository with a commit, its shadow index is seeded from the repository's own index, so an unchanged committed file

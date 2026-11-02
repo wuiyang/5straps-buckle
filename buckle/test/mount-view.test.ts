@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
+import './support/no-git-maintenance.js'
 import type { JsonValue } from '@5straps/protocol'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import { createPathView, OUTSIDE_PATH } from '../common/domain/path-view.js'
