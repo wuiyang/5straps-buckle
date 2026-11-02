@@ -1,6 +1,57 @@
 # Changelog
 
 
+## v0.1.10
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.9...v0.1.10)
+
+### 🚀 Enhancements
+
+- **history:** Refer a command folder's record to its git repository's committed objects, copying a file only as a command changes it (F3) ([9fe1b196](https://github.com/wuiyang/5straps-buckle/commit/9fe1b196))
+- **history:** Keep no copy of content a command folder's repository holds, so a rewrite with the same content or an earlier build's copies go at the next sweep (F3) ([95a42948](https://github.com/wuiyang/5straps-buckle/commit/95a42948))
+- **cli:** Add buckle browser close, which ends every browser a workspace recorded and every hold (F4 item 6) ([859192f2](https://github.com/wuiyang/5straps-buckle/commit/859192f2))
+
+### 🩹 Fixes
+
+- **history:** Seed a command folder only with committed files git hashed as they stand, and check its repository alone before each command (F3 review G1 to G5) ([7d88c9fa](https://github.com/wuiyang/5straps-buckle/commit/7d88c9fa))
+- **history:** Bound what a version 4 repository index names, so a crafted one never holds the process before a command (F3 G1) ([c1c0c8eb](https://github.com/wuiyang/5straps-buckle/commit/c1c0c8eb))
+- **history:** Remove a copy a command folder's index takes from its repository only once the sweep finds the repository holding it (F3 G3) ([7b1372a0](https://github.com/wuiyang/5straps-buckle/commit/7b1372a0))
+- **history:** Check again before each command that a command folder's repository has a commit at HEAD (F3 H1) ([6e3c824a](https://github.com/wuiyang/5straps-buckle/commit/6e3c824a))
+- **history:** Refer a command folder only to a repository whose objects stand in real folders of its own, with no alternates (F3 K1, K2) ([c4fabf4b](https://github.com/wuiyang/5straps-buckle/commit/c4fabf4b))
+- **history:** Keep every copy a command folder's index names at a sweep, whatever its repository holds (F3 P1 to P3) ([a08dd5c3](https://github.com/wuiyang/5straps-buckle/commit/a08dd5c3))
+- **browser:** Open one window per launch, with no console window, and name an old agent-browser on Windows (F4 item 1) ([2583c0cd](https://github.com/wuiyang/5straps-buckle/commit/2583c0cd))
+- **browser:** Close without launching, and run nothing for a caller with no browser (F4 item 2) ([c6cadcbe](https://github.com/wuiyang/5straps-buckle/commit/c6cadcbe))
+- **browser:** Keep a session under its caller, stage, and alias, and replace it there when the settings change (F4 item 3) ([074ccbe0](https://github.com/wuiyang/5straps-buckle/commit/074ccbe0))
+- **browser:** End every browser a stopped process or an idle timeout left, and close what this process wrote at shutdown (F4 item 4) ([b382ff51](https://github.com/wuiyang/5straps-buckle/commit/b382ff51))
+- **browser:** Hold each filled value by the browser it was filled into, and end the hold with that browser (F4 item 5) ([c0b36d47](https://github.com/wuiyang/5straps-buckle/commit/c0b36d47))
+- **browser:** Name each browser that holds a refused value, and the commands that end it (F4 item 7) ([ccd9e113](https://github.com/wuiyang/5straps-buckle/commit/ccd9e113))
+- **browser:** Declare the allowed-domains flag before the call scope that reads it, and say what opened is for now ([e7911ba1](https://github.com/wuiyang/5straps-buckle/commit/e7911ba1))
+- **browser:** Keep a browser whose close failed at buckle browser close, with its hold, and say the command did not finish ([7bbca713](https://github.com/wuiyang/5straps-buckle/commit/7bbca713))
+- **browser:** Keep every value a reference was filled with, and refuse a second value of it into the same browser ([4ccc6e43](https://github.com/wuiyang/5straps-buckle/commit/4ccc6e43))
+- **browser:** Mask a call by the hold of the browser it reaches alone, each attached Chrome by its own ([b364a023](https://github.com/wuiyang/5straps-buckle/commit/b364a023))
+- **browser:** Keep an attached Chrome's hold at buckle browser close until that Chrome is found closed ([eaae8563](https://github.com/wuiyang/5straps-buckle/commit/eaae8563))
+- **browser:** Name a profile folder's browser for the workspace and node that use it, so no other reaches or ends it ([4d4feba8](https://github.com/wuiyang/5straps-buckle/commit/4d4feba8))
+- **browser:** End a workspace's recorded browsers at buckle browser close and shutdown when packs.enabled leaves the pack out ([4d36e17c](https://github.com/wuiyang/5straps-buckle/commit/4d36e17c))
+- **browser:** End no browser while a call runs on it, leave the close to the last call, and start a session's daemon once ([7478913d](https://github.com/wuiyang/5straps-buckle/commit/7478913d))
+- **browser:** Mark a session closing under the lock before any close, and let no call take one marked closing (F4 M1, L3) ([e5dcfcd8](https://github.com/wuiyang/5straps-buckle/commit/e5dcfcd8))
+- **git:** Start no gc or maintenance from a git_commit in the owner's repository ([0e956464](https://github.com/wuiyang/5straps-buckle/commit/0e956464))
+
+### 📖 Documentation
+
+- Say a command folder in a git repository refers to its committed objects, copies a file only as a command changes it, and what source-gone means ([d97f51e9](https://github.com/wuiyang/5straps-buckle/commit/d97f51e9))
+- Say Git reads a command folder's committed files once to confirm them, and Buckle checks the repository before each command ([188fc9d3](https://github.com/wuiyang/5straps-buckle/commit/188fc9d3))
+- Say a command folder refers only to a repository whose objects stand in real folders with no alternates file, and when its copies go ([b86b5c56](https://github.com/wuiyang/5straps-buckle/commit/b86b5c56))
+- Say a sweep keeps every copy a command folder's index names, even where its repository holds the same content ([a6333bd7](https://github.com/wuiyang/5straps-buckle/commit/a6333bd7))
+- Say what a close, a restart, and buckle browser close end, and what Windows still shows (F4 item 8) ([712835cc](https://github.com/wuiyang/5straps-buckle/commit/712835cc))
+- Say what buckle browser close leaves and why it exits 1, which browser a hold masks, and who shares a profile folder ([21151b32](https://github.com/wuiyang/5straps-buckle/commit/21151b32))
+- **browser:** Name what an attached Chrome's host and port leave in known limits, part ten (F4 L2, L6) ([f55e17e2](https://github.com/wuiyang/5straps-buckle/commit/f55e17e2))
+
+### ✅ Tests
+
+- **browser:** Count the browser's Windows version check among the programs spawned by the path PATH gave ([731b04ca](https://github.com/wuiyang/5straps-buckle/commit/731b04ca))
+- **browser:** Hold buckle browser close to what it prints for a browser a call still runs on ([468eda0c](https://github.com/wuiyang/5straps-buckle/commit/468eda0c))
+- **forge:** Start no git maintenance in the fixtures of the tests that snapshot a .git folder ([993b516b](https://github.com/wuiyang/5straps-buckle/commit/993b516b))
+
 ## v0.1.9
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.8...v0.1.9)
