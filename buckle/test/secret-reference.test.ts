@@ -78,6 +78,14 @@ describe('other forms written as a reference', () => {
     expect(refusalOf('{{env:Rings:NAME}}')).toContain('is not a platform reference')
   })
 
+  // An agent reads these refusals, and Buckle's messages name no other product (owner ruling of 2026-11-03).
+  it('says the platform form is reserved and names no product in any of its refusals', () => {
+    expect(PLATFORM_REASON).toBe('platform references are reserved and not supported yet')
+    expect(refusalOf('{{env:API_KEY}}')).toMatch(/, or \{\{env:<platform>:NAME\}\} once platform values are supported$/)
+    expect(refusalOf('{{env:vault:sub:NAME}}')).toMatch(/: write \{\{env:<platform>:NAME\}\}, which is reserved$/)
+    for (const text of ['{{env:API_KEY}}', '{{env:vault:API_KEY}}', '{{env:vault:sub:NAME}}']) expect(refusalOf(text)).not.toMatch(/\bRings\b/i)
+  })
+
   it.each(['{{vault:secret/db:PASSWORD}}', '{{secret:TOKEN}}', '{{op:vault/item:field}}'])('refuses %s, an unknown scheme', (text) => {
     expect(refusalOf(`x ${text} y`)).toContain('which Buckle does not read')
   })

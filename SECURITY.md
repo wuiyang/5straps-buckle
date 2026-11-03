@@ -35,7 +35,7 @@ In scope, as built in this repository:
 Out of scope:
 
 - Third-party model providers and gateways, and their handling of data sent to them
-- Services Buckle can report to, such as a Rings control plane, which are not built here
+- Services Buckle can report to, which are not built here
 - The owner's own configuration: environment files, tokens, policy rules, host setup,
   and any permission the owner chose to grant
 

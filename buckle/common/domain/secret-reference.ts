@@ -1,12 +1,13 @@
 /**
  * Secret references (docs/user/how-to/secrets.md): text a call writes in place of a value Buckle reads for it, so the value never
  * passes through the agent. `{{file:<path>:NAME}}` names NAME in a dotenv file inside the workspace or a mount, by a
- * relative path. `{{env:<platform>:NAME}}` names a value a platform holds; the form is reserved, and refused until Rings
- * supplies it. A bare `{{env:NAME}}` names no source and is refused, as is any other text written as a reference.
+ * relative path. `{{env:<platform>:NAME}}` names a value a platform holds; the form is reserved, and refused until
+ * platform values are supported. A bare `{{env:NAME}}` names no source and is refused, as is any other text written as a
+ * reference.
  */
 
 /** Why a platform reference is refused in this release: never passed through as text. */
-export const PLATFORM_REASON = 'platform references arrive with Rings'
+export const PLATFORM_REASON = 'platform references are reserved and not supported yet'
 /** Why a reference anywhere but the three places is refused. */
 export const PLACES_REASON = 'references are read in shell words, browser fill values, and web_fetch headers only'
 /** Why a value shorter than MIN_SECRET_LENGTH is refused: a shorter one would mask ordinary text. */
@@ -86,9 +87,9 @@ function shapedReference(raw: string, scheme: string, body: string): { path: str
   const shown = quoted(raw)
   if (scheme === 'env') {
     const parts = body.split(':')
-    if (parts.length === 1) return { refusal: `${shown} names no source: a bare env reference is not read; write {{file:<path>:${NAME.test(body) ? body : 'NAME'}}} for a file in the workspace, or {{env:<platform>:NAME}} once Rings supplies platform values` }
+    if (parts.length === 1) return { refusal: `${shown} names no source: a bare env reference is not read; write {{file:<path>:${NAME.test(body) ? body : 'NAME'}}} for a file in the workspace, or {{env:<platform>:NAME}} once platform values are supported` }
     if (parts.length === 2 && PLATFORM.test(parts[0]!) && NAME.test(parts[1]!)) return { refusal: `${PLATFORM_REASON}: ${shown} names the platform ${parts[0]}` }
-    return { refusal: `${shown} is not a platform reference: write {{env:<platform>:NAME}}, which arrives with Rings` }
+    return { refusal: `${shown} is not a platform reference: write {{env:<platform>:NAME}}, which is reserved` }
   }
   if (scheme !== 'file') {
     return { refusal: `${shown} names the source ${scheme.toLowerCase() === 'file' || scheme.toLowerCase() === 'env' ? `${scheme}, which is written in lower case` : `${scheme}, which Buckle does not read`}: write {{file:<path>:NAME}}` }

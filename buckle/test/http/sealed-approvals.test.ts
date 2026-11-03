@@ -200,7 +200,7 @@ describe('sealed approval decisions on the setup face', () => {
 
   it('refuses to start on a malformed key without echoing it', () => {
     expect(() => configFromEnvironment({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81', BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-')), BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-sealed-bad-ws-')) }))
-      .toThrow(/^BUCKLE_RINGS_APPROVAL_KEY is not a key Rings minted/)
+      .toThrow(/^BUCKLE_RINGS_APPROVAL_KEY is not an approval key \(32 bytes in base64url\); remove it, or set the key this node shares with its control plane$/)
     try { configFromEnvironment({ BUCKLE_RINGS_APPROVAL_KEY: 'not-a-key-fixture-zq81' }) } catch (error) { expect(String(error)).not.toContain('zq81') }
   })
 })

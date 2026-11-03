@@ -773,7 +773,7 @@ function parseRingsApprovalKey(value: string | undefined): ApprovalKey | undefin
   try {
     return approvalKey(value.trim())
   } catch {
-    throw new Error('BUCKLE_RINGS_APPROVAL_KEY is not a key Rings minted; remove it and pair the node with Rings again')
+    throw new Error('BUCKLE_RINGS_APPROVAL_KEY is not an approval key (32 bytes in base64url); remove it, or set the key this node shares with its control plane')
   }
 }
 

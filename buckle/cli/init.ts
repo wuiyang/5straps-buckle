@@ -179,7 +179,7 @@ Next:
 ${startSteps(start, { out, platform, stateDirectory: node.stateDirectory })}
 ${served.token ? `  2. Give an agent this workspace's token, shown once; it reaches /mcp and /v1 at http://127.0.0.1:${nodePort}:
        agent token        ${served.token.token}
-` : ''}${adminToken ? `     The node's admin credential, for Rings and the experimental /setup face:
+` : ''}${adminToken ? `     The node's admin credential, for the experimental /setup face:
        admin credential   ${adminToken}
 ` : ''}${hintStep('  3. Restrict it:', restrictCommands(platform))}
 
@@ -442,7 +442,7 @@ BUCKLE_HOST=127.0.0.1
 BUCKLE_PORT=${input.port}
 
 # What configures the node through /setup, mints workspace tokens and writes a persisted approval: the one admin
-# credential, every workspace's. Rings stores it at pairing. /setup is experimental and served only with
+# credential, every workspace's. /setup is experimental and served only with
 # BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true (buckle settings set experimental-admin-http on).
 BUCKLE_ADMIN_TOKEN=${input.adminToken}
 
@@ -454,8 +454,7 @@ BUCKLE_SANDBOX=auto
 ${input.allowedHosts ? `BUCKLE_ALLOWED_HOSTS=${input.allowedHosts}` : '# BUCKLE_ALLOWED_HOSTS=db.internal'}
 
 # Where this node reports what it did, and where a request waiting for a decision is announced.
-# buckle init --pair fills all three in from Rings, with the report credential Rings mints for
-# this node; Rings refuses a report filed for a node that credential does not belong to.
+# Set the report URL and token together; the token goes as a bearer to the report URL and the webhook.
 # BUCKLE_REPORT_URL=
 # BUCKLE_REPORT_TOKEN=
 # BUCKLE_APPROVAL_WEBHOOK=

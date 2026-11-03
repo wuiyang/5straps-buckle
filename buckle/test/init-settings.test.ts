@@ -877,8 +877,8 @@ describe.each([['node'], ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e']])('buckle init
   })
 })
 
-// Buckle's public surface discusses Buckle only, and init no longer pairs the node with a control plane (owner ruling
-// of 2026-11-03).
+// Buckle's public surface discusses Buckle only: init no longer pairs the node with a control plane, and what it
+// writes and prints names no other product (owner ruling of 2026-11-03).
 describe('buckle init names no other product', () => {
   it('offers no pairing: its usage names no --pair, --rings or --url, and each is refused as unknown before anything is written', async () => {
     const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
@@ -890,5 +890,15 @@ describe('buckle init names no other product', () => {
       await expect(runInit(['--out', out, '--port', '4399', '--yes', '--dir', workspace, option!, value!], scripted([], false), {})).rejects.toThrow(`Unknown option '${option}'`)
     }
     expect(existsSync(out)).toBe(false)
+  })
+
+  it('writes a settings file and prints a summary that name no other product', async () => {
+    const result = await init(scripted([], false), ['--dir', workspace, '--name', 'Fixture'])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.written).toContain('BUCKLE_APPROVAL_WEBHOOK')
+    expect(result.written).not.toMatch(/\bRings\b|--pair/i)
+    expect(result.printed).toContain('admin credential')
+    expect(result.printed).not.toMatch(/\bRings\b/i)
   })
 })
