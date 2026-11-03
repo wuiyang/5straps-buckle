@@ -1,9 +1,7 @@
 # Known limits, part eight
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet cover in its file
-tools: delete, move, patch, the destructive-write check, and search without `rg`. [Part
-seven](known-limits-07.md) covers the decision AI, and [the file floor](../how-to/policy-04.md) and
-[deletes](../how-to/policy-05.md) say what asks.
+[Part seven](known-limits-07.md) covers the decision AI, and [the file floor](../how-to/policy-04.md)
+and [deletes](../how-to/policy-05.md) say what asks.
 
 ## What the file tools leave alone
 
@@ -22,7 +20,7 @@ seven](known-limits-07.md) covers the decision AI, and [the file floor](../how-t
 - A rename refused with `EPERM` or `EBUSY` is read as a held file on Windows alone. Elsewhere the
   code is reported as it is.
 - A move refuses hard links of one file as "the same file". A link that resolves outside a mount
-  cannot be moved, though only the link itself would move. The check is conservative.
+  cannot be moved, though only the link itself would move.
 - A folder of more than 10,000 entries cannot be moved, or replaced by a move, in one call. A delete's count stops at
   10,000 and says "more than". A removal the system refuses, such as a read-only folder, is that
   path's refusal in the answer; a folder removed whole may then be gone in part.
@@ -30,7 +28,7 @@ seven](known-limits-07.md) covers the decision AI, and [the file floor](../how-t
   missing folder above a landing. A folder past 10,000 entries or the rolling cap is recorded
   without content (reason `limit`), so it is not restorable.
 - The Windows retry for a held file, and moves across devices, are tested with injected errors
-  only. No real Windows node or second device has run them yet.
+  only, not on a real Windows node or a second device.
 - The destructive-write check covers the file tools only. A shell command's writes are not
   checked, and they meet only the command floor.
 - The check trusts the session's last read of a file for an hour. A change made outside Buckle

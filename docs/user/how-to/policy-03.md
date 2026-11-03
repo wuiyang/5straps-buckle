@@ -9,7 +9,7 @@ refused under any deny glob and asked about at the
 
 A word an expansion supplies (`$x`, `"$(...)"`, a glob such as `*.log`, a brace expansion, or a
 word starting with an unquoted `=`, which zsh turns into the path of the command it names, `=rm`)
-exists only once the shell runs, so Buckle cannot know it.
+exists only once the shell runs.
 
 - As a command word it leaves the call unread (expansion): `$cmd push origin main`,
   `x=git; $x push`, `{git,true} push`, `=git push` in any shell's text, and a lone `~`, `~-`,

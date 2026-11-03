@@ -1,8 +1,6 @@
 # Troubleshooting: refused commands
 
-The command refusals people meet with Buckle, the approval and sandbox runtime on their machine,
-each with its message and the fix. [Troubleshooting](troubleshooting.md) covers installing and
-starting Buckle. A refusal comes back to the agent as `PERMISSION_DENIED` with the reason.
+[Troubleshooting](troubleshooting.md) covers installing and starting Buckle. A refusal comes back to the agent as `PERMISSION_DENIED` with the reason.
 
 ## A bash script is refused
 
@@ -29,8 +27,7 @@ With a deny glob in the policy, a call that runs code with `python3`, `node`, or
 PERMISSION_DENIED: Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): python3 (allow it with buckle policy allow-interpreter python3), so the workspace command policy's deny list cannot meet all of it; refused rather than asked
 ```
 
-With none, the destructive floor asks with the same reason. Buckle cannot read the code, so no
-deny glob can meet what it runs. When the owner trusts that interpreter as an ordinary command,
+With none, the destructive floor asks with the same reason. When the owner trusts that interpreter as an ordinary command,
 judged by its own words, allow it by its exact name:
 
 ```bash

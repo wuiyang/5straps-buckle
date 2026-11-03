@@ -1,8 +1,6 @@
 # Building and testing
 
-How to build Buckle, the approval and sandbox runtime for AI agents, from a clone, and how its
-tests are organised. [CONTRIBUTING.md](../../CONTRIBUTING.md) has the house rules for a pull
-request.
+[CONTRIBUTING.md](../../CONTRIBUTING.md) has the house rules for a pull request.
 
 ## Clone and install
 
@@ -17,8 +15,8 @@ CI=true pnpm install --frozen-lockfile
 
 `CI=true` runs pnpm as the CI workflow does, without prompts. `pnpm-workspace.yaml` lets one
 dependency run its install script, `node-pty`, which compiles from source on Linux. Where your
-npm or pnpm configuration sets `ignore-scripts=true`, it is left unbuilt; build it and check that
-it loads, as the arm64 CI job does:
+npm or pnpm configuration sets `ignore-scripts=true`, it stays unbuilt; build it and check that it
+loads, as the arm64 CI job does:
 
 ```bash
 npm_config_ignore_scripts=false pnpm -r rebuild node-pty
@@ -105,10 +103,10 @@ pnpm release:check
 
 This is the gate CI runs on every pull request and every push to `main`. The release commit
 [Prepare release](releasing.md#step-one-prepare-release) pushes skips it, and Stage Buckle reuses
-the checks of its parent. It runs
-`check:runtime-pins` (Nitro, h3, and db0 at their reviewed versions), `check:routes` (no two
-Nitro routes claim one path and method), `typecheck`, `test`, `pnpm -r build`, `test:package`,
-and `audit:release` (`pnpm audit --prod`, plus the packages bundled into `.output`).
+the checks of its parent. It runs `check:runtime-pins` (Nitro, h3, and db0 at their reviewed
+versions), `check:routes` (no two Nitro routes claim one path and method), `typecheck`, `test`,
+`pnpm -r build`, `test:package`, and `audit:release` (`pnpm audit --prod`, plus the packages
+bundled into `.output`).
 
 `pnpm test:package` is the packaged smoke. `scripts/release/packaged-smoke.mjs` packs the three
 packages, installs the tarballs with npm in a scratch directory with install scripts off and

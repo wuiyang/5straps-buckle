@@ -1,6 +1,6 @@
 # OpenCode command matching research
 
-> Research record from 2026-09-27, lightly edited for this repository: links to design notes outside it are removed. It describes another project's matcher and the options it raised, not how Buckle matches commands today; for that, see [Policy](../../user/how-to/policy.md#commands).
+> Research record from 2026-09-27. It describes another project's matcher and the options it raised, not how Buckle matches commands today; for that, see [Policy](../../user/how-to/policy.md#commands).
 
 ## Overview
 
@@ -10,7 +10,7 @@
 
 ## Source behavior
 
-Research date: 2026-09-27. Inspected OpenCode revision `a42f393c850bec0c0f395fb91bf19b1ee8b31666`; this describes the linked source, not every released OpenCode version.
+Inspected OpenCode revision `a42f393c850bec0c0f395fb91bf19b1ee8b31666`; this describes the linked source, not every released OpenCode version.
 
 The permission evaluator flattens rules, chooses the last matching permission/action pattern, and defaults to ask when no rule matches. Its imported core wildcard matcher:
 
@@ -34,10 +34,10 @@ These describe the wildcard function alone, not a guarantee that the whole appli
 | `git *` | `git status; curl example.com` | Match |
 | `echo ?` | `echo ab` | No match |
 
-Matching raw text cannot establish what a shell will execute. Parsing, working directory, executable resolution, wrappers, and policy evaluation are separate concerns. Avoid treating one matcher function as an execution sandbox.
+Matching raw text cannot establish what a shell will execute. Parsing, working directory, executable resolution, wrappers, and policy evaluation are separate concerns.
 
 ## Buckle implications
 
-Keep the proposed command contract from the design notes: executable identity plus exact/regex/token-glob argument rules, explicit shell handling, and a rule-preview UI. Do not quietly adopt OpenCode's last-match behavior while documenting first-match firewall rules.
+Keep the proposed command contract: executable identity plus exact/regex/token-glob argument rules, explicit shell handling, and a rule-preview UI. Do not quietly adopt OpenCode's last-match behavior while documenting first-match firewall rules.
 
 Define fixtures before implementation: quoted spaces, pipelines, substitutions, redirects, newlines, Windows paths, interpreters, executable replacement, and unmatched commands. Scope an approval to the normalized action and parameters actually executed. Broad interpreter or package-script permission can authorize arbitrary code; filesystem and network containment remain necessary.

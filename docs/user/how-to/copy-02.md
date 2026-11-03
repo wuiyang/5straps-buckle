@@ -54,17 +54,15 @@ Copied 3145728 bytes to my-project:/workspace/random.bin (sha256 65315623a565af1
 
 ## Windows
 
-On Windows, `buckle cp` treats a drive letter as a drive, so `C:\release.tgz` and `C:/release.tgz`
-are files on this machine. The rule applies only to a single letter. A workspace named `d` is
-written as its id, a full UUID such as `0b7e4f3a-5c1d-4e2b-9a86-3f1c7d2e8b40:/workspace`. The usage
+On Windows, `C:\release.tgz` and `C:/release.tgz` are files on this machine. A workspace named `d`
+is written as its id, a full UUID such as `0b7e4f3a-5c1d-4e2b-9a86-3f1c7d2e8b40:/workspace`. The usage
 text says so.
 
 Drive-letter parsing is covered by unit tests only. A copy from a real Windows machine is not yet tested.
 
 ## Not included
 
-- Copies between two different nodes. Each copy names one node. Rings, the separate 5straps control
-  plane, brokers copies across nodes later.
+- Copies between two different nodes. Each copy names one node.
 - Copies between two workspaces. A token opens one workspace. Copy out to this machine, then in.
 - An MCP tool for copies. A copy through an agent would pass every byte through the model, which
   defeats the point. Agents use `fs_read` and `fs_write` for small text.

@@ -1,6 +1,6 @@
 # Known limits
 
-Limits on what Buckle, the approval and sandbox runtime on this machine, reads, hides, or handles, with examples. [What stays unread](../how-to/policy-03.md) goes deeper on commands,
+[What stays unread](../how-to/policy-03.md) goes deeper on commands,
 [part two](known-limits-02.md) the programs it starts itself,
 [part three](known-limits-03.md) code mode, the command line, and workspaces,
 [part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the
@@ -13,8 +13,8 @@ pushes, MCP asks, deletes, and history.
 ## Reading commands
 
 - A call Buckle cannot read whole is refused under a deny rule, and asked about at the
-  [destructive floor](../how-to/approvals.md#the-destructive-floor) with none, so some ordinary calls are
-  refused: under any deny rule, `timeout "$T" make test` and `nice -n"$N" make` are refused.
+  [destructive floor](../how-to/approvals.md#the-destructive-floor) with none: under any deny rule,
+  `timeout "$T" make test` and `nice -n"$N" make` are refused.
 - A deny rule meets the words as typed: `git $x origin main` does not meet `git push *`, and runs
   whatever `$x` holds. Deny the program itself, or use an allow list.
 - A script file on disk, and text bash builds at run time, are not read: `bash deploy.sh` is judged

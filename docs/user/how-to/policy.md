@@ -1,10 +1,9 @@
 # Policy
 
 The policy is the owner's standing answer about what an agent may run and reach through Buckle,
-the approval and sandbox runtime on this machine. What it refuses is refused without a question.
-Buckle's file tools cannot read or change it. Only a process sandbox hides it from shell
-commands: with `BUCKLE_SANDBOX=none`, a shell command can read and change its files without a
-question.
+the approval and sandbox runtime on this machine. Buckle's file tools cannot read or change it.
+Only a process sandbox hides it from shell commands: with `BUCKLE_SANDBOX=none`, a shell command
+can read and change its files without a question.
 
 ## Where it lives
 
@@ -51,9 +50,9 @@ and the destructive floor judge its commands.
 No pattern lets a tool run Buckle's admin commands, such as `buckle approve`, `buckle policy`,
 or `buckle settings`.
 
-[What Buckle reads](policy-02.md) in a call, where that reading stops, and how interpreters count
-continue on the next page, and [what stays unread](policy-03.md), with what to do about it, on the
-one after. [Known limits](../caveats/known-limits.md) lists what Buckle does not yet read or hide.
+[What Buckle reads](policy-02.md) covers where that reading stops and how interpreters count;
+[what stays unread](policy-03.md) covers what to do about it.
+[Known limits](../caveats/known-limits.md) lists what Buckle does not yet read or hide.
 
 ## Network
 

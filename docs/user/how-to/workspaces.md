@@ -4,10 +4,10 @@ Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, run
 machine. The node serves workspaces: each one is a folder an agent works in, with its own agent
 tokens, policy, settings, grants, approvals, and history. The node's admin credential, host,
 port, and other node settings are its alone; its other settings in `buckle.env` are each
-workspace's defaults. This page covers making and changing workspaces; [the next
-one](workspaces-02.md) covers their settings, [Node defaults](workspaces-03.md) how the node's
-settings apply to each, [Moving a node from 0.1](workspaces-04.md) a node set up before them,
-and [Serving workspaces](workspaces-05.md) what `buckle serve` shows.
+workspace's defaults. [The next page](workspaces-02.md) covers their settings,
+[Node defaults](workspaces-03.md) how the node's settings apply to each,
+[Moving a node from 0.1](workspaces-04.md) a node set up before them, and
+[Serving workspaces](workspaces-05.md) what `buckle serve` shows.
 
 ## buckle init
 
@@ -34,8 +34,8 @@ through it.
 
 ## buckle workspace
 
-`buckle workspace` changes the node's workspaces. Every verb needs the node's admin credential,
-`BUCKLE_ADMIN_TOKEN` in `buckle.env`.
+Every `buckle workspace` verb needs the node's admin credential, `BUCKLE_ADMIN_TOKEN` in
+`buckle.env`.
 
 ```bash
 buckle workspace init [--dir <path>] [--name <name>] [--volume <local>:<sandbox>[:ro]] [--yes]
@@ -63,7 +63,7 @@ buckle workspace token revoke <token-id>
   holding one or the state directory, is refused.
 - `list` shows every workspace, online or not. `show`, the default verb, prints one workspace's
   settings in force, each with where it comes from; no token is ever shown again.
-- `disable` stops serving a workspace, as an MCP server is switched off: calls to it are refused,
+- `disable` stops serving a workspace: calls to it are refused,
   and its files, records, and tokens stay. `enable` serves it again. `rename` gives it another
   name; its id never changes.
 - `remove` forgets a workspace and never touches its folder. Its records stay in the state

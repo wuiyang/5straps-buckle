@@ -1,6 +1,6 @@
 # Buckle transport and terminal packages
 
-> Research record from 2026-09-27, lightly edited for this repository: links to design notes outside it are removed. It is a snapshot of upstream packages and options, not a list of Buckle's dependencies; for the current code, see [Architecture](../architecture.md).
+> Research record from 2026-09-27. It is a snapshot of upstream packages and options, not a list of Buckle's dependencies; for the current code, see [Architecture](../architecture.md).
 
 ## Overview
 
@@ -10,7 +10,7 @@
 
 ## Maintenance evidence
 
-Research snapshot, not dependency pins or installed changes. Versions and publication dates come from npm registry metadata; activity dates come from each upstream default branch. All listed repositories were unarchived and packages were not marked deprecated when checked. Activity supports continued maintenance; it is not a security guarantee.
+Versions and publication dates come from npm registry metadata; activity dates come from each upstream default branch. All listed repositories were unarchived and packages were not marked deprecated when checked.
 
 | Package | Maintainer/project | Latest npm version | Published | Latest upstream commit |
 |---|---|---|---|---|
@@ -35,14 +35,14 @@ FlatBuffers ships the JavaScript runtime through npm and generates TypeScript wi
 
 MessagePack is a serialization format, not a complete RPC protocol or shared type-definition system. A custom endpoint still needs methods, schema/version negotiation, validation, errors, cancellation, and streaming. [Upstream JavaScript implementation](https://github.com/msgpack/msgpack-javascript)
 
-Recommendation remains provisional: benchmark Protobuf/Connect, FlatBuffers, and MessagePack against identical Buckle payloads. Include compressed/uncompressed bytes, complete HTTP overhead, cold/warm connections, encryption/signatures, CPU, and package size. No measured winner is claimed.
+Recommendation remains provisional: benchmark Protobuf/Connect, FlatBuffers, and MessagePack against identical Buckle payloads. Include compressed/uncompressed bytes, complete HTTP overhead, cold/warm connections, encryption/signatures, CPU, and package size.
 
 Cloudflare compatibility depends on HTTP/WS transport and deployment settings, not the binary encoding. Preserve MCP adapters for ecosystem compatibility.
 
 ## Interactive CLI
 
 - `node-pty`: actual interactive child processes, REPLs, input/output, and terminal resize. Buckle already has a PTY adapter; validate native installation on supported Linux architectures. [Upstream API](https://github.com/microsoft/node-pty)
-- `@xterm/xterm`: browser terminal rendering; already used by Visual, the 5straps web client. It needs the remote PTY service and authenticated transport. [xterm.js](https://github.com/xtermjs/xterm.js)
+- `@xterm/xterm`: browser terminal rendering. It needs the remote PTY service and authenticated transport. [xterm.js](https://github.com/xtermjs/xterm.js)
 - `@inquirer/prompts`: owner-facing setup selections, confirmations, and password prompts. It does not turn arbitrary subprocesses into shared terminals. [Inquirer prompts](https://github.com/SBoudrias/Inquirer.js)
 
-Use the existing PTY/browser terminal combination and consider Inquirer for init. Common services must supply controller handoff, approval routing, output fan-out, censoring, and audit. No listed package supplies that entire security contract. Preserve shared output and hidden human password input as the terminal interaction design specifies.
+Use the existing PTY adapter and consider Inquirer for init. Common services must supply controller handoff, approval routing, output fan-out, censoring, and audit. No listed package supplies that entire security contract. Preserve shared output and hidden human password input.

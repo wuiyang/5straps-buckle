@@ -1,22 +1,19 @@
 # Known limits, part five
 
-What running Buckle as a service ([part one](../how-to/service.md) and [part two](../how-to/service-02.md)), or at a
-terminal, does not yet cover. Buckle is the approval and sandbox runtime that runs an AI agent's
-tool calls on your machine; the [first part](known-limits.md) lists the other limits.
+Limits of running Buckle as a service ([part one](../how-to/service.md) and
+[part two](../how-to/service-02.md)) or at a terminal. The [first part](known-limits.md) lists the
+other limits.
 
 ## Tested without the service managers
 
-- No systemd user session (Linux's own service manager, per user) runs on CI or on the machine
-  the service was built on. The unit is checked as text, and `systemctl` is a program on `PATH`
+- No systemd user session runs on CI or on the machine the service was built on. The unit is checked as text, and `systemctl` is a program on `PATH`
   in the tests that runs the unit's `ExecStart` as the user manager would; a real user manager
   has not run it.
-- Windows is experimental, and Task Scheduler, Windows' own way to start a program at logon, has
-  not run the task on a machine yet. The task's XML and each `schtasks.exe` call are checked on
+- Windows is experimental, and Task Scheduler has not run the task on a machine yet. The task's XML and each `schtasks.exe` call are checked on
   Linux, imitating Windows. Whether a node the task's start detached outlives that start on every
   Windows version, and which encoding `schtasks.exe` writes its answers in, are for the owner's
   Windows machine to confirm.
-- No Mac has run the launchd agent yet (launchd is macOS's own service manager), and macOS
-  testing is parked until there is a Mac to test on. The agent is checked as the text launchd
+- No Mac has run the launchd agent yet. The agent is checked as the text launchd
   reads, and `launchctl` is a program the tests imitate at a path of their own, as the Windows task
   is checked without Windows.
 
@@ -55,7 +52,7 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
 
 - Closing the terminal sends SIGHUP, which Buckle handles on Windows alone. On Linux and macOS a
   `buckle serve` then stops at once, with any open question unanswered, and runs none of its close
-  steps. Stop it with Ctrl-C instead. This is recorded, not fixed.
+  steps. Stop it with Ctrl-C instead.
 - The terminal's log is for people: local time, a date line when the day changes, one line per
   request, and the startup and shutdown steps only at `BUCKLE_LOG_LEVEL=debug` or `trace`.
   Machines read the JSON lines, which Buckle writes wherever stderr is not a terminal and to the
@@ -69,7 +66,7 @@ tool calls on your machine; the [first part](known-limits.md) lists the other li
   `xterm-256color` for shell commands. Under `dumb`, a line logged while a question is open is
   written on its own line, and the prompt and what was typed are written again below it, so the
   earlier prompt row stays above the line; a denial or an ending is written as a row of its own
-  below the typed one, not on it. Node's readline, the line editor the question uses, still
+  below the typed one, not on it. Node's readline still
   redraws the row with escapes when a key edits the typed text, such as Backspace or an arrow, and
   for keys typed in the half second before the prompt shows; a terminal that does not act on them
   shows them as text. The typed answer still counts: the next keys and Enter add to it.

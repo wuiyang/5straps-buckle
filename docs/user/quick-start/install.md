@@ -1,8 +1,7 @@
 # Installing Buckle
 
 Buckle is an approval and sandbox runtime for AI agents. It runs on one machine, runs the tool
-calls its owner allows, asks a person about the rest, and refuses what the owner ruled out. This
-page covers installing, checking, upgrading, and removing it, and what it keeps on disk.
+calls its owner allows, asks a person about the rest, and refuses what the owner ruled out.
 
 ## Requirements
 
@@ -56,8 +55,8 @@ is on [Mounts](../how-to/mounts.md). [Sandbox and tools](../how-to/sandbox-and-t
 npm i -g @5straps/buckle
 ```
 
-This puts one command, `buckle`, on your `PATH`. npm installs its companion packages
-`@5straps/protocol` and `@5straps/runtime` with it. `node-pty` is an optional dependency that
+This puts one command, `buckle`, on your `PATH`, and installs `@5straps/protocol` and
+`@5straps/runtime` with it. `node-pty` is an optional dependency that
 only the interactive terminal feature uses; on Linux it compiles during install, so an npm
 configured to skip install scripts leaves it unbuilt. The rest works:
 [Troubleshooting](../caveats/troubleshooting.md#node-pty-was-not-built) has the fix.
@@ -85,8 +84,7 @@ buckle --version
 ```
 
 Then restart any running `buckle serve` (`buckle service restart` where a service runs it), and
-any MCP client that started `buckle mcp`. Grants,
-policies, and the audit log carry over: the calls of a 0.1 node's folder are its workspace's log,
+any MCP client that started `buckle mcp`. Grants, policies, and the audit log carry over: the calls of a 0.1 node's folder are its workspace's log,
 which `buckle log --workspace <name>` reads. The first command after an upgrade from 0.1 moves the
 node onto workspaces once, and an older Buckle then fails closed;
 [Moving a node from 0.1](../how-to/workspaces-04.md) says what changes, and how to go back. Stop
@@ -100,14 +98,15 @@ browser it opened, holds open.
 npm uninstall -g @5straps/buckle
 ```
 
-Run `buckle service uninstall` first where a service runs the node ([Uninstall](../how-to/service-02.md)), or
-its definition keeps naming a program that is gone. This removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state
-directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
+Run `buckle service uninstall` first where a service runs the node
+([Uninstall](../how-to/service-02.md)), or its definition keeps naming a program that is gone. This
+removes the program, not its state. Buckle keeps everything under `~/.5straps`: the state directory `~/.5straps/buckle`, settings-file locks in `~/.5straps/locks`, and the device key of
 `buckle client` in `~/.5straps/client`. Deleting `~/.5straps/buckle` deletes the audit logs, so
 copy `actions.jsonl`, which holds the node's own commands, and each `workspaces/<id>/actions.jsonl`,
 which holds that workspace's calls, first.
 
-What Buckle keeps in its state directory, file by file, is on [the next page](install-02.md). To
-keep the node running at every login, with no terminal open, see [Running Buckle as a service](../how-to/service.md).
+[The next page](install-02.md) lists what Buckle keeps in its state directory, file by file. To
+keep the node running at every login, with no terminal open, see
+[Running Buckle as a service](../how-to/service.md).
 
 Next: [First run](first-run.md).

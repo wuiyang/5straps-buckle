@@ -1,8 +1,7 @@
 # Installing Buckle: the state directory
 
-Buckle, the approval and sandbox runtime on this machine, keeps its records in one state
-directory. This page says where it is, how it is protected, and what each file holds.
-[Installing Buckle](install.md) covers installing, checking, upgrading, and removing it.
+Buckle keeps its records in one state directory. [Installing Buckle](install.md) covers
+installing, checking, upgrading, and removing it.
 
 ## What the state directory holds
 
@@ -12,9 +11,8 @@ its state files owner-only (mode 600), and refuses to start when other users can
 directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle leaves file permissions
 alone: Windows protects the default one under your profile, and one moved elsewhere is yours to
 protect. It refuses a workspace folder that holds the state directory, where an agent writes
-anywhere. Buckle's file tools refuse to read or write
-anything under `~/.5straps` or the state directory. Only a process sandbox hides both from shell
-commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
+anywhere. Buckle's file tools refuse to read or write anything under `~/.5straps` or the state
+directory. Only a process sandbox hides both from shell commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
 not ask about them.
 
 Each workspace keeps the files from `dangerously-allow.json` down in its own `workspaces/<id>/`,

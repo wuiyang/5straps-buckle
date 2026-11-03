@@ -96,6 +96,5 @@ forms, the browser's hold after a fill, and what stays unmasked.
 
 ## Platform values
 
-`{{env:<platform>:NAME}}` is reserved for a value a platform holds, such as Rings, the agent control
-plane. Until it ships, Buckle refuses every platform reference, such as `{{env:rings:API_TOKEN}}`, with
-"platform references arrive with Rings", and passes none through as text.
+`{{env:<platform>:NAME}}` is reserved for a value a platform holds. Buckle refuses every platform
+reference, such as `{{env:vault:API_TOKEN}}`, and passes none through as text.

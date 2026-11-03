@@ -6,10 +6,9 @@ approval and sandbox runtime on this machine, asks one or two models with the no
 - **Jev**, TypeSafe AI's quick stage: a decision model that answers typed questions with a choice
   and a confidence, in well under a second, with no written reasoning.
 - **The thorough model**: a general model reached through an OpenAI-compatible endpoint, such as an
-  AI gateway (one address that forwards to many model providers).
+  AI gateway.
 
-Both answer `safe`, `warning`, or `danger` with a confidence from 0 to 1. Everything is off until
-the owner turns it on. [What it reads and sends](judge-02.md), [what it keeps and
+Both answer `safe`, `warning`, or `danger` with a confidence from 0 to 1. [What it reads and sends](judge-02.md), [what it keeps and
 shows](judge-03.md), [its instructions, settings, cache, and cost](judge-04.md), and [why it rates
 nothing](judge-05.md) continue on the next pages.
 

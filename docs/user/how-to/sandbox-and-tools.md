@@ -19,9 +19,9 @@ that cannot run here is withheld with a reason rather than failing at call time,
 | `code` | `code_run`, `code_api`: a script that calls the other tools, each call judged as a direct one ([Code mode](code-mode.md)) | nothing, not even a sandbox; on unless the workspace sets `packs.code` off |
 | `environment` | `env_validate` | `BUCKLE_ENV_VALIDATOR_COMMAND` |
 
-The file tools change files in these ways. `fs_apply_patch` applies a unified diff to several
+`fs_apply_patch` applies a unified diff to several
 files, checking every hunk before it writes any. `fs_delete` removes files, and a folder only with `recursive: true`.
-`fs_move` renames or moves. Its `replace` flag says what you expect at `to`, and a mismatch is
+`fs_move`'s `replace` flag says what you expect at `to`, and a mismatch is
 refused: without it, anything standing there is refused (`TARGET_EXISTS`); with it, nothing standing
 there is refused (`NOTHING_TO_REPLACE`), and otherwise the file, link, or folder there is replaced,
 a folder with everything in it. Each change is checkpointed, so [`buckle history restore`](change-history.md) brings it back.
@@ -57,7 +57,7 @@ for the agent: `buckle skills` lists them and `buckle skills buckle-shell` print
   Under Seatbelt, Buckle supports neither a workspace mount nor shell isolation.
 - Anywhere else, or Linux without `bwrap`: no sandbox, and the shell pack is withheld.
 
-`BUCKLE_SANDBOX=none` runs commands with no sandbox, on purpose. It still needs
+`BUCKLE_SANDBOX=none` runs commands with no sandbox. It still needs
 `shell.isolation` off and no workspace mount before shell tools appear. Every shell result
 carries a `sandbox` field naming the mode it ran under.
 

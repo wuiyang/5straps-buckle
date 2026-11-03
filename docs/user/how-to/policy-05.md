@@ -1,9 +1,8 @@
 # Policy: deletes in and outside the workspace
 
 Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, judges a delete by
-where it lands. Inside the workspace's own folder a delete is part of a coding task, such as
-removing old code in a refactor, so by default it runs where the folder's writes are granted.
-Outside that folder every delete asks a person, who approves the target alone or its folder with
+where it lands. Inside the workspace's own folder a delete is part of a coding task, so by default it runs
+where the folder's writes are granted. Outside that folder every delete asks a person, who approves the target alone or its folder with
 its subfolders. [The file floor](policy-04.md) covers the rest of what the file tools ask, and
 [known limits, part nine](../caveats/known-limits-09.md#deletes) what this policy leaves out.
 
@@ -13,8 +12,8 @@ its subfolders. [The file floor](policy-04.md) covers the rest of what the file 
 
 - `allow`, the default: a delete is judged as a write to its folder. That covers `fs_delete`,
   what `fs_move` replaces, and a file `fs_apply_patch` deletes. The folder's write grant covers it,
-  the first write into a folder asks as it always did, and the file floor asks nothing.
-- `ask`: every delete asks at the file floor, as before this policy.
+  the first write into a folder asks, and the file floor asks nothing.
+- `ask`: every delete asks at the file floor.
 
 Moving a whole folder always asks at the file floor with `warn` severity. An ordinary write
 grant and a mass-delete limit of `0` do not answer that ask. Its exact `move-tree:<path>` grant
@@ -41,8 +40,8 @@ Under `allow`, one call still asks at the floor when it would remove:
   `delete-batch:<workspace folder>`, asked once.
 
 The reason says which: "removes more than 100 entries at once", "at the top of the workspace", or
-"This call deletes 140 entries in the workspace at once". A folder moved whole removes nothing,
-since all of it lands elsewhere, so it is not counted; its move asks separately. In a script
+"This call deletes 140 entries in the workspace at once". A folder moved whole is not counted; its
+move asks separately. In a script
 ([code mode](code-mode.md)) the calls count together, so a loop of single deletes asks once it passes the limit, with "This script
 has deleted N entries in the workspace so far"; a folder at the top that the script took entries
 out of asks when it is removed, though it holds nothing by then. A grant of `delete-tree:<folder>` or
@@ -53,7 +52,7 @@ out of asks when it is removed, though it holds nothing by then. A grant of `del
 ## Outside the workspace's folder
 
 A delete outside the folder asks at the floor, whatever the folder's write grant says, under
-`delete:<folder>` for an entry or `delete-tree:<path>` for a folder removed whole, as before. The
+`delete:<folder>` for an entry or `delete-tree:<path>` for a folder removed whole. The
 ask also offers `delete-below:<folder>`: the folder that holds the target, with its subfolders. A
 grant of it covers every later delete of that folder or of anything in it, at any depth, matched
 as a write grant matches, except inside the workspace's own folder, which its setting decides.
@@ -69,7 +68,7 @@ moved from outside the folder into it asks as the delete it is, since a delete i
 | this session, or always, folder and below | `delete-below:<folder>` |
 
 The wider subject is never offered for `once`, and strict mode (`BUCKLE_STRICT_WRITES=true`)
-offers `once` alone, with no wider subject.
+offers `once` alone.
 
 ## Approving
 
@@ -80,9 +79,9 @@ offers `once` alone, with no wider subject.
   `--scope once`, `--deny`, `--host`, and an ask that offers no wider subject.
 - `buckle approvals --watch` takes `sb` for the session, and the word `always-below`.
 - An ask in JSON carries `widerSubject`, and a decision may name the subject it grants as
-  `subject`. Both are optional, so Rings, the 5straps agent control plane, at protocol 0.1.7 shows
-  and approves the first subject unchanged. A device key's signed decision grants the subject of
-  the challenge it signed, and names no other.
+  `subject`. Both are optional, so a client at protocol 0.1.7 shows and approves the first subject
+  unchanged. A device key's signed decision grants the subject of the challenge it signed, and
+  names no other.
 
 `buckle grants list` shows a `delete-below:` grant, and `buckle grants revoke <id>` removes it.
 

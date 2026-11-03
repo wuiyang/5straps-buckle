@@ -29,9 +29,8 @@ The deny list and the destructive floor judge every command a call runs:
 ## A command written as a path
 
 A rule names a command by its bare word: `git status` admits `git status`, not `./git status`,
-`/usr/bin/git status`, or `bin/git status`, each of which runs the program at that path, which may
-be one the agent placed. So does `FOO=./git status` where Buckle, `find`, or a prefix such as
-`nice` runs it (the file `git` in a folder named `FOO=.`); opening a shell statement, or after `env`
+`/usr/bin/git status`, or `bin/git status`, each of which runs the program at that path. So does `FOO=./git status` where Buckle,
+`find`, or a prefix such as `nice` runs it (the file `git` in a folder named `FOO=.`); opening a shell statement, or after `env`
 or `sudo`, it is an assignment. Such a call, or a shell body holding one, asks at the
 [destructive floor](approvals.md#the-destructive-floor) instead of running, with the whole call
 shown, wherever only a bare-word allow glob names it. An allow glob that spells the path admits that

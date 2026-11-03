@@ -1,7 +1,5 @@
 # Known limits, part nine
 
-Limits of Buckle, the approval and sandbox runtime on this machine, on read-only `git_push`, change
-history, MCP asks, `buckle cp`, and deletes.
 [Part four](known-limits-04.md#the-forge-pack) covers the rest of the forge pack, and the
 [first part](known-limits.md) lists the other limits.
 
@@ -54,7 +52,7 @@ history, MCP asks, `buckle cp`, and deletes.
 
 - `/mcp` over HTTP never elicits, by ruling: its client holds the agent token, so a form answered
   there would be the agent approving its own call. A person answers at the node, with
-  `buckle approvals`, or through Rings, the 5straps app a node can pair with.
+  `buckle approvals`.
 - Every HTTP MCP client under one token shares the session `mcp` and one actor. Identical calls
   from two such clients count as one call, and their asks share the session's 50. A session per
   client is a follow-up.
@@ -68,7 +66,7 @@ history, MCP asks, `buckle cp`, and deletes.
 - An ask at `approvalWaitMs` `0` from an MCP call or a copy still states no deadline in its
   `expiresAt`, since a person's device signs that field in its challenge; the lapse is kept
   beside it. A decision on a lapsed ask is refused as unknown or expired. `/v1/invoke` asks do
-  not lapse at wait `0`, so a run Rings parked keeps its ask until it is answered.
+  not lapse at wait `0`: the ask stays until it is answered.
 - An ask held until answered keeps no lapse when its node process is killed rather than stopped:
   it waits, as before, until it is answered or withdrawn.
 - A copy approved late in its hold has what is left of node:http's 300 seconds for the checkpoint
@@ -83,8 +81,7 @@ history, MCP asks, `buckle cp`, and deletes.
   gate alone. A script that stopped at an ask and is sent again counts from that send, as the calls
   it replays do not run again. A folder moved whole is not counted, as nothing of it is removed.
 - The wider subject, `delete-below:<folder>`, is not part of the challenge a device key signs, so a
-  person's device cannot grant it yet, and Rings at protocol 0.1.7 offers the ask's own subject
-  alone. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
+  person's device cannot grant it yet. The serve terminal, `buckle approve --below`, and `buckle approvals --watch` grant it.
 - MCP elicitation answers `once`, `session`, or `always` for the ask's own subject, and offers no
   wider choice.
 - The shell is outside the policy: `rm`, `find -delete`, and the other commands at the command floor

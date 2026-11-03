@@ -22,10 +22,10 @@ trusted publisher for GitHub Actions:
 | Allowed actions | `npm stage publish` only, which trusted publishing always allows |
 
 Do not allow `npm publish`. With it allowed, any `release.yml` run could publish without human
-approval, a copy on another branch included. Earlier versions of this page asked for it. A
-connection cannot be edited, so delete any connection that allows `npm publish` and create a
-stage-only one in its place, on every package. New connections created after 3 September 2026
-allow staged publishing by default. Check the active connection's identity fields on every package.
+approval, a copy on another branch included. A connection cannot be edited, so delete any
+connection that allows `npm publish` and create a stage-only one in its place, on every package.
+New connections created after 3 September 2026 allow staged publishing by default. Check the
+active connection's identity fields on every package.
 See [npm trusted publishers](https://docs.npmjs.com/trusted-publishers/) and
 [staged publishing](https://docs.npmjs.com/staged-publishing/).
 

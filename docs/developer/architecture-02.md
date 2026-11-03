@@ -1,10 +1,7 @@
 # Architecture: state and packs
 
-The second part of the map of Buckle, the approval and sandbox runtime that lets an AI agent work
-on one machine: how workspaces are kept, where approvals live on disk, how packs bring tools, and
-how code mode runs scripts.
-[Architecture](architecture.md) covers the packages, the layers, the path of a tool call, and the
-pieces that decide it. Paths are inside `buckle/` unless they start with `packages/`.
+The second part of [Architecture](architecture.md). Paths are inside `buckle/` unless they start
+with `packages/`.
 
 ## Workspaces
 
@@ -25,7 +22,6 @@ directory:
 | `approvals.json` | pending asks, recent decisions, unspent `once` approvals, and undelivered webhook notices |
 | `approval-calls/<uuid>.json` | the whole call of each request group, written once however many asks it made |
 | `grants.json` | `session` and `always` grants and remembered denials (`common/adapters/grant-store/file-grant-store.ts`) |
-| `approval-nonces.json` | nonces of sealed decisions, once a Rings key is paired |
 
 Every file goes through `common/adapters/json-file-store.ts`: a write is an atomic rename,
 and an update holds a cross-process lock in `<file>.lock.sqlite`, waiting up to 5 seconds before
@@ -47,22 +43,22 @@ runs. Plugins load through `common/adapters/plugin-registry.ts` from modules tha
 
 ## Code mode
 
-Code mode (user guide [Code mode](../user/how-to/code-mode.md))
-runs an agent's script that calls the other tools. Four pieces:
+Code mode ([user guide](../user/how-to/code-mode.md)) runs an agent's script that calls the other
+tools. Four pieces:
 
-- **The port**, `common/types/ports/script-vm.ts`: what Buckle needs from a script VM. A run takes
+- **The port:** `common/types/ports/script-vm.ts`, what Buckle needs from a script VM. A run takes
   the script, the tools it may call, limits (deadline, memory, output), a clock start, a seed, and
   `onCall`; the host answers each call with `deliver(seq, now, id, outcome)`, and the run yields
   output items, the return value, the calls made, and an error kind (`script`, `timeout`,
   `aborted`, `sandbox`). The run reports `onIdle` once it has applied every result it was handed,
   after the calls that turn made, so a host stops it at an ask without losing a call. The port also
   renders the declarations a script reads.
-- **The adapter**, `common/adapters/script-vm/pi-codemode.ts`, the only module that imports
+- **The adapter:** `common/adapters/script-vm/pi-codemode.ts`, the only module that imports
   `@earendil-works/pi-codemode`. It runs QuickJS, compiled to WebAssembly by `quickjs-wasi`, in a
   worker thread per script through `CodemodeSandbox.start()`, the deterministic run. It finds the
   worker file and the wasm where the package is installed, so a bundled server finds them too,
   gives each VM 256 MiB, and holds at most four live VMs per process, two of them per workspace.
-- **The pack**, `common/services/packs/code/`: `code_run` and `code_api`. The pack never reaches
+- **The pack:** `common/services/packs/code/`, with `code_run` and `code_api`. The pack never reaches
   the registry: `ToolDefinition.reachesTools` makes the invoker hand it `invokeNested`, and the
   invoker builds each nested request itself, with the outer call's session, actor, approval tokens,
   wait, signal, and context, its stage unchanged so a script reaches the caller's browser sessions,
@@ -74,7 +70,7 @@ runs an agent's script that calls the other tools. Four pieces:
   `approval_required`. The invoker tells the pack when a nested call's tool begins to run, and
   only the outer caller's own cancel reports as one. The re-send dedupe keeps a nested call that
   ran as a stub without its body, in a bound of its own, since the journal replays its result.
-- **The journal**, `common/services/packs/code/journal.ts`: one file per script that stopped
+- **The journal:** `common/services/packs/code/journal.ts`, one file per script that stopped
   before its own end (an ask, its deadline, a cancel, a shutdown, or its sandbox),
   `<state>/code-journal/<workspace key>/<key>.json`, holding the clock start, the seed, the tools,
   the first run's requestId, the script, the tokens of its asks, and every tool call's result, in

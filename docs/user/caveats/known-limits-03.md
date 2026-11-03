@@ -1,7 +1,6 @@
 # Known limits, part three
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet handle in code mode, on
-the command line, and in workspaces. [Known limits](known-limits.md) covers reading commands, credential hiding, and
+[Known limits](known-limits.md) covers reading commands, credential hiding, and
 paths, [part two](known-limits-02.md) the programs Buckle starts itself, and [part four](known-limits-04.md) mounts,
 the sandbox layout, the URL list, the browser, and the forge pack.
 
@@ -68,13 +67,10 @@ The first release of [workspaces](../how-to/workspaces.md) leaves these open for
   longer by 0.1 or by the move keeps its name, which `buckle client` cannot sign for: it says so,
   and the workspace's id, which `buckle workspace list` prints, takes its place.
 - The node level serves no workspace: apart from the registry's routes and the node-scoped setup
-  session, a `/setup` route without `/workspaces/<name>/` answers 404, so scripts and Rings
+  session, a `/setup` route without `/workspaces/<name>/` answers 404, so scripts
   address `/workspaces/<name>/setup/`.
-- [Rings](../how-to/rings.md), the separate 5straps control plane for agents, keeps its own copy of a
-  node's workspace list; a workspace renamed, added, or removed here is not pushed to it, so Rings
-  re-reads the list to see the change. Upgrading from 0.1 gives every workspace a new UUID id, and
-  the node's folder loses the id `default`, so a Rings holding the old ids has to re-read the list;
-  a registered workspace's old id stays as its name.
+- Upgrading from 0.1 gives every workspace a new UUID id, and the node's folder loses the id
+  `default`; a registered workspace's old id stays as its name.
 - [Node defaults](../how-to/workspaces-03.md) cover the settings a 0.1 node kept in `buckle.env`. The node
   names no command variables and no tool lists there, as `buckle.env` takes `BUCKLE_` settings
   alone: a workspace's variables and tool lists are its own, and each resolves over an empty node

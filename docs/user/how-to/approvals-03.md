@@ -1,9 +1,8 @@
 # Approvals: calls over MCP, and copies
 
 Buckle, the local permission node that runs an AI agent's tool calls, holds a call that needs a
-person for a short while, then answers it with the ask. This page says what an agent over MCP
-sees then and what it should do, the `_meta` hints a client may send, and how `buckle cp` waits.
-[Approvals](approvals.md) covers what asks and where to answer.
+person for a short while, then answers it with the ask. [Approvals](approvals.md) covers what
+asks and where to answer.
 
 ## An ask over MCP
 
@@ -13,8 +12,7 @@ MCP client times out on its own clock, Claude Code's near a minute, and the work
 call for `approvalWaitMs` as before, or answers at once with a form for a host that declares
 form elicitation.
 
-An answer within the hold lets the call run, and the agent gets its result. When the hold ends
-unanswered, the result is no error (`isError: false`). Its text names each ask, the commands
+When the hold ends unanswered, the result is no error (`isError: false`). Its text names each ask, the commands
 that show and answer it, and says to send the same call again once it is decided. Its
 `structuredContent` is the `approval_required` answer `/v1/invoke` gives:
 
@@ -74,7 +72,7 @@ anything is asked or run.
   audited `CALLER_CANCELLED`.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
   minutes after its hold ended. The same call sent again joins it and starts the ten minutes
-  over. An ask on `/v1/invoke`, where Rings parks a run, waits until it is answered.
+  over. An ask on `/v1/invoke` waits until it is answered.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.

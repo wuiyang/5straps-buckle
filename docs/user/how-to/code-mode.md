@@ -2,8 +2,7 @@
 
 Buckle, the approval and sandbox runtime on your machine, can run a short JavaScript program an
 agent writes, called a script, that calls Buckle's other tools. The agent sends one `code_run`
-call instead of many, and only what the script prints and returns goes back to the model. A
-script that reads fifty files and keeps three lines costs the agent three lines, not fifty files.
+call instead of many, and only what the script prints and returns goes back to the model.
 
 Every call a script makes is judged, approved, and audited exactly as the same call made
 directly. [Code mode, part two](code-mode-02.md) covers replay, and
@@ -67,7 +66,7 @@ as the label ([secret masking](secrets-02.md#in-a-code-mode-script)).
 ## Approvals inside a script
 
 A script's call meets the same rules as a direct call: a read inside the workspace runs, the
-first write into a directory asks, and a refusal is a refusal. A refused call rejects inside the
+first write into a directory asks. A refused call rejects inside the
 script, where the script may catch it; the refusal is in the audit log either way.
 
 When a call needs a person, the script stops there. The script gets no further results, but every
@@ -76,7 +75,7 @@ Buckle stops the script and answers `code_run` with `approval_required`, carryin
 call that asked.
 
 Each ask is that call's own. The approver sees the call whole, in the terminal, in
-`buckle approvals`, in `--watch`, or in an MCP host's form, and that call is what they approve.
+`buckle approvals`, in `--watch`, or in an MCP host's form.
 Its summary line says a `code_run` script made it, names the `requestId` of the `code_run` call that
 sent the script, and says that `buckle approvals show <token>` prints the script. That command prints the
 ask whole, decides nothing, and adds the script's text, which Buckle keeps with the script's

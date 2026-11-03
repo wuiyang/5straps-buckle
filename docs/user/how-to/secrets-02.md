@@ -1,9 +1,7 @@
 # Secret masking
 
 Buckle, the local permission node, never hands the agent the value a
-[secret reference](secrets.md) names: it shows `[secret:NAME]` in the value's place. This page
-says where and in which forms, how a browser keeps a value after a fill, and what masking cannot
-reach.
+[secret reference](secrets.md) names: it shows `[secret:NAME]` in the value's place.
 
 ## Where and in which forms
 

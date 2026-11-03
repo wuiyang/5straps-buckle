@@ -1,9 +1,9 @@
 # The change history, part two
 
-This part covers how the agent reads and restores the change history that Buckle, the approval
+How the agent reads and restores the change history that Buckle, the approval
 and sandbox runtime that runs an AI agent's tool calls, keeps for each workspace, how each restore
 asks a person, a workspace in a Git repository, and history without host Git. [Part one](change-history.md) covers what a checkpoint records,
-retention, older checkpoints, and the owner's commands; [the file floor](policy-04.md) explains
+retention, older checkpoints, and the owner's commands; [the file floor](policy-04.md) covers
 restore approval.
 
 ## The agent's tools

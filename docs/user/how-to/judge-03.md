@@ -24,8 +24,7 @@ object beside each ask: the thorough model's `level`, `confidence`, `model`, `re
 `latencyMs`, or `unavailable`, with Jev's verdict as `quick` and the floor's line as `warning`;
 `buckle approvals --json` carries the same inside the ask's `call`.
 `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason,
-because a signed challenge carries no verdict yet. Rings, the 5straps agent control plane, does not
-show the verdict yet, because its approvals reader drops the webhook's `judge` field. An allowed
+because a signed challenge carries no verdict yet. An allowed
 command Jev rated `danger` asks with the reason "The decision AI's quick stage rated this command
 danger, so a person decides; nothing it says refuses a command".
 
@@ -51,8 +50,7 @@ code changed before the program started, so the call did not run and a person de
 rated on its command line. `promptDigest` is the sha256 of the model, the prompt, and the JSON sent,
 kept in place of them. The reasoning is the model's, with the
 credentials the display hides hidden wherever it is kept or shown, the cache included, then cut to
-2,000 characters (ending `[cut]` on a line of its own). The report to Rings does not carry the
-verdict yet.
+2,000 characters (ending `[cut]` on a line of its own).
 
 ## On request
 

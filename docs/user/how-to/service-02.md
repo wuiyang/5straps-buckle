@@ -2,12 +2,10 @@
 
 Buckle, the approval and sandbox runtime that runs an AI agent's tool calls on your machine, keeps
 its node running with no terminal through the commands on [part one](service.md), which also
-covers Linux and Windows. This page covers macOS, a node detached once, approvals with no terminal,
-logs and status, upgrades, and removal.
+covers Linux and Windows.
 
 ## macOS: a launchd agent
 
-launchd is macOS's own service manager, and an agent is a program it runs in your login session.
 `buckle service install` writes `~/Library/LaunchAgents/com.5straps.buckle.plist`, owner-only,
 making the folder where it is missing, and enables it; `--now` also loads it, which starts the
 node. The agent runs the Node binary and `main.js` by absolute path with `serve`, each a separate
@@ -17,7 +15,7 @@ Ctrl-C does. A node that finds another one serving the state directory exits 0 t
 does not start it again every five seconds.
 
 These commands run `/bin/launchctl`, by that path, in your login session's domain, `gui/<uid>`,
-and `buckle service logs` runs none. The verbs, command by command:
+and `buckle service logs` runs none.
 
 | Command | What launchctl does |
 |---|---|
@@ -34,7 +32,7 @@ lets it open a visible browser window or your own Chrome. A start before anyone 
 launchd daemon, which runs as root, and Buckle writes none, so `buckle service status` prints no
 line about starting before login on macOS.
 
-Run `install` from a terminal in your login session at the Mac. Over SSH (a remote shell) with
+Run `install` from a terminal in your login session at the Mac. Over SSH with
 nobody logged in at the Mac, no login session answers, and `install` refuses, naming
 `buckle serve --background`.
 
@@ -85,7 +83,7 @@ installed one, and on Linux whether the node starts before login.
 
 After `npm i -g @5straps/buckle@latest`, the running node keeps the old version until it restarts;
 `buckle service status` says so and names `buckle service restart`. Where Node itself moved, as nvm
-(the Node Version Manager) moves it on an upgrade, the definition names a Node that is gone;
+moves it on an upgrade, the definition names a Node that is gone;
 `status`, `start`, and `restart` say to run `buckle service install` again.
 
 A node setting in `buckle.env` takes effect when the node restarts: `buckle settings set` names

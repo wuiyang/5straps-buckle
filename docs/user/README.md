@@ -23,7 +23,8 @@ shows what Buckle does today and what is still open.
   and cost](how-to/judge-04.md), and [why it rates nothing](how-to/judge-05.md) continue it.
 - [Secret references](how-to/secrets.md): values from dotenv files in commands, browser fills, and
   fetch headers, never shown. [Secret masking](how-to/secrets-02.md) lists the forms.
-- [Audit log](how-to/audit-log.md): what `actions.jsonl` records and trims.
+- [Audit log](how-to/audit-log.md): what `actions.jsonl` records and trims. [Part two](how-to/audit-log-02.md)
+  covers posting it to a URL.
 - [Workspaces](how-to/workspaces.md): one node, many folders, and their tokens.
   [Settings](how-to/workspaces-02.md), [node defaults](how-to/workspaces-03.md), [moving from
   0.1](how-to/workspaces-04.md), and [serving workspaces](how-to/workspaces-05.md) continue it.
@@ -42,7 +43,6 @@ shows what Buckle does today and what is still open.
   [Sessions](how-to/browser-login-02.md) says what a close and a restart end.
 - [Service](how-to/service.md): start at login on Linux and Windows. [Part two](how-to/service-02.md)
   covers macOS, a detached node, logs, upgrades, and removal.
-- [Rings](how-to/rings.md): the optional pairing with the 5straps control plane.
 
 ## Caveats and fixes
 

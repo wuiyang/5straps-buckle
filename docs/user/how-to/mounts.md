@@ -95,7 +95,7 @@ a shell copy awaiting review; until then calls are refused with a 409.
 
 ## Platforms
 
-- Linux with bubblewrap: as above.
+- Linux with bubblewrap: the shell reaches every mount.
 - macOS and Windows: the table is path policy for the file, git, code, and browser tools. The
   shell stays withheld wherever the folder is mounted, as Seatbelt and an unsandboxed node cannot
   show a command the same view.

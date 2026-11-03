@@ -3,12 +3,11 @@
 `buckle cp` copies one file between this machine and a workspace on a node. Buckle is the program that
 gives an agent a folder to work in and asks a person before anything risky. A
 [workspace](workspaces.md) is that folder, and a node is the running `buckle serve` that serves it.
-The file goes straight over HTTP. It never passes through the agent's context, so a large file costs
-no tokens.
+The file goes straight over HTTP and never passes through the agent's context.
 
-Each copy is judged the way a write or a read is judged. A write into a workspace is judged as
-`fs_receive`, and a read out of one as `fs_send`. The same [policy](policy.md) and
-[approvals](approvals.md) apply, and the copy lands in the [audit log](audit-log.md).
+A write into a workspace is judged as a write, under the name `fs_receive`, and a read out of one as
+a read, under `fs_send`. The same [policy](policy.md) and [approvals](approvals.md) apply, and the
+copy lands in the [audit log](audit-log.md).
 
 ```bash
 buckle cp ./release.tgz my-project:/workspace
@@ -16,8 +15,6 @@ buckle cp my-project:/workspace/report.txt ./report.txt
 ```
 
 ## The two spellings
-
-Each end of a copy is one of two spellings:
 
 - A bare path, or `local:<path>`, is a file on the machine that runs `buckle cp`. A path with a
   slash before its first colon, such as `./notes:2026.txt`, is also a file here.
@@ -59,7 +56,7 @@ The credential is the workspace's agent token, the same one an HTTP client prese
 - The `BUCKLE_AUTH_TOKEN` variable. It is used only when no `--token-file` is given.
 
 The token never goes on the command line. `buckle cp` refuses `--token`, `--auth-token`, and
-`--bearer` before it reads anything else, and it does not echo the value it was given. The token is
+`--bearer` before it reads anything else. The token is
 never printed, logged, or written to an error. A refusal can name the token file's path, but never
 its contents.
 
@@ -68,7 +65,7 @@ first version with file copies.
 
 ## Approvals
 
-A copy that needs a person waits for one. The node holds the copy for the workspace's wait first, 15
+The node holds a copy that needs a person for the workspace's wait first, 15
 seconds by default and 120 at most, then answers that a person must approve it. The CLI prints what
 the node asks and the command that approves it there, and one line naming the ask, never its token:
 
@@ -83,22 +80,21 @@ This copy needs a person to approve it at the node, with these commands there:
 Waiting for approval of write_scope /srv/my-project; sending the copy again under the same request until it is decided (Ctrl-C stops)
 ```
 
-The whole action is shown at the node, by `buckle approvals` and again by `buckle approve`, as every
-approval shows it. For a write, that is the path, the byte count, and the full sha256 digest. For a
+The whole action is shown at the node, by `buckle approvals` and again by `buckle approve`. For a write, that is the path, the byte count, and the full sha256 digest. For a
 read, it is the path and its size. The bytes are not part of the action. They stand behind their
 count and digest, and the node refuses a body whose digest does not match.
 
 While the copy waits, the CLI sends the same request again 2 seconds after each answer, and the node
 holds each send for its own wait first. Each send joins the same pending ask, so the copy does not
-start over. Once the ask is answered, the copy runs. When the ask is denied, the copy stops and exits
+start over. An approved copy runs; a denied one stops and exits
 1. An ask that expires before anyone answers is asked again by the next send, which shows the fresh
 ask. A node that holds a copy past node:http's 300 seconds answers HTTP 408; the CLI says so on one
 line and sends the same request again too. Ctrl-C stops the wait, exit 130, and nothing is copied
 ([approvals over MCP, and copies](approvals-03.md#copies)).
 
-Each copy asks in a session of its own, `buckle-cp-` and a random id. Callers name their own sessions,
-so a fixed name would let an approval at session scope cover anyone who used it, an agent's own writes
-included. The printed command is the one-time approval for that reason. A person who wants later
+Each copy asks in a session of its own, `buckle-cp-` and a random id, so an approval at session scope
+never covers another caller's writes, an agent's included. The printed command is the one-time approval
+for that reason. A person who wants later
 copies to go ahead can approve with `--scope always`, which covers every caller of the workspace.
 
 [Part two](copy-02.md) covers the limit, the checks on each copy, what lands on this machine, Windows,

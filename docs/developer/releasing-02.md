@@ -44,28 +44,28 @@ changes with every pack.
 
 ## Repeating a failed release
 
-- **Source checks failed.** Fix the source and pass `verify` and `package-arm64` on its exact
+- **Source checks failed:** Fix the source and pass `verify` and `package-arm64` on its exact
   commit before Prepare release.
-- **Prepare failed before its atomic push.** Neither the release commit nor tag reached GitHub.
+- **Prepare failed before its atomic push:** Neither the release commit nor tag reached GitHub.
   Fix the cause and repeat preparation. A refused branch or tag update, or a `main` that no
   longer names the source commit, refuses both refs.
-- **Preparation succeeded.** Run Stage Buckle on the prepared commit. Generated metadata skips
+- **Preparation succeeded:** Run Stage Buckle on the prepared commit. Generated metadata skips
   Release checks; staging validates its diff and source parent's checks.
-- **Some packages staged before failure.** Inspect npm's Staged Packages page and approve those
+- **Some packages staged before failure:** Inspect npm's Staged Packages page and approve those
   stages, each only when its integrity matches the run summary, before re-running failed jobs on
   the same run. The workflow skips now-public versions and stages the remaining packages. Keep the
   version and tag; do not prepare again.
-- **npm reports a duplicate version while the public registry returns 404.** A pending stage
+- **npm reports a duplicate version while the public registry returns 404:** A pending stage
   can reserve that version. Approve the existing stage only when its integrity matches the run
   summary of the run that staged it; otherwise reject it and stage again. OIDC cannot list or
   inspect stages.
-- **The staging job succeeded.** Approve all three packages, then "Re-run all jobs" to create
+- **The staging job succeeded:** Approve all three packages, then "Re-run all jobs" to create
   the GitHub release. "Re-run failed jobs" is insufficient when finalization was skipped.
-- **Tag missing or moved.** Staging stops. Inspect preparation and tag history; release jobs
+- **Tag missing or moved:** Staging stops. Inspect preparation and tag history; release jobs
   never create or move tags.
-- **A source fix is required.** Finish existing stages first. A new source commit needs its
+- **A source fix is required:** Finish existing stages first. A new source commit needs its
   own checks and preparation for the next version. Do not move the old version's tag.
-- **A runner fault affects source checks.** Re-run those source checks without changing source.
+- **A runner fault affects source checks:** Re-run those source checks without changing source.
   Release gates take the latest run of each required job, and its `release-check.yml` run must
   have succeeded.
 

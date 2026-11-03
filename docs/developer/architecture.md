@@ -1,8 +1,7 @@
 # Architecture
 
-Buckle is the approval and sandbox runtime that lets an AI agent work on one machine. This page
-maps the code: the three packages, the layers inside Buckle, the path a tool call takes, and
-the pieces that decide it. Paths are inside `buckle/` unless they start with `packages/`.
+Buckle is the approval and sandbox runtime that lets an AI agent work on one machine. Paths are
+inside `buckle/` unless they start with `packages/`.
 
 ## Packages
 
@@ -16,8 +15,9 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
 
 - `main.ts` is the entry. `selectMode` sends `init`, `settings`, `client`, and `service` to
   commands that need no node, `serve` and `mcp` to long-lived services, and everything else to
-  the one-shot CLI; `serve --background` and `buckle service` run before `buckle.env` is read. Before a node starts, it loads `buckle.env` (`common/runtime/environment.ts`) and builds
-  the configuration (`common/runtime/config.ts`).
+  the one-shot CLI; `serve --background` and `buckle service` run before `buckle.env` is read.
+  Before a node starts, it loads `buckle.env` (`common/runtime/environment.ts`) and builds the
+  configuration (`common/runtime/config.ts`).
 - `common/` holds what every face shares. `common/runtime/` starts one common runtime per
   process (`initialize.ts`, `services.ts`). `common/domain/` is pure logic: permission rules,
   the command reader, policy, URL patterns, redaction, effects, tools, and packs.
@@ -27,7 +27,7 @@ the pieces that decide it. Paths are inside `buckle/` unless they start with `pa
   `common/types/ports/` holds the interfaces adapters implement.
 - `cli/` is the one-shot commands: `main.ts` dispatches, and `init.ts`, `settings.ts`,
   `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
-  `workspace.ts`, `workspace-keys.ts`, `target.ts`, `pairing.ts`, and `service.ts` implement them.
+  `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `service.ts` implement them.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
   ask into elicitation forms or relay text; `stdio.ts`, `stdio-wire.ts`, and
   `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one stateless handler per
@@ -97,8 +97,8 @@ other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-in
 The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
 node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the
 package runners `npx`, `pnpx`, and `bunx`, the C shells, and the
-busybox and toybox shell applets. The optional decision AI, which rates an interpreter call before
-a person has to, is described on [the decision AI](../user/how-to/judge.md).
+busybox and toybox shell applets. The optional [decision AI](../user/how-to/judge.md) rates an
+interpreter call before a person has to.
 
 The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
 

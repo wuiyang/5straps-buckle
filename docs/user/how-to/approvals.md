@@ -55,9 +55,8 @@ and asks about an `eval` of text that only exists at run time and a call past th
 
 `buckle policy destructive-command '<glob>'` adds to the floor, and nothing removes a built-in.
 The command floor never offers `always`, and its subject is the exact command with its
-arguments' digest, so approving `rm -rf build` does not approve `rm -rf /`. The
-[file floor](policy-04.md) offers `always`, a [history restore](change-history.md) `once`
-alone.
+arguments' digest. The [file floor](policy-04.md) offers `always`, a
+[history restore](change-history.md) `once` alone.
 
 ## What the approver sees
 
@@ -72,35 +71,34 @@ ask whose whole call was not recorded can be denied, never approved.
 
 | Channel | How |
 |---|---|
-| The terminal running `buckle serve` | asks in place when stdin and stderr are terminals: `1`, `2`, `3` pick an offered scope, `n` or Enter denies |
+| The terminal running [`buckle serve`](approvals-02.md) | asks in place when stdin and stderr are terminals: `1`, `2`, `3` pick an offered scope, `n` or Enter denies |
 | A CLI tool command at a terminal | the same question, before it returns |
 | `buckle approvals --watch` | a second terminal: `o` once, `s` session, the word `always`, `d` deny, `n` skip; `ds` or `da` deny a sensitive file for the session or always |
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
 | MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, are pointed to `buckle approvals` |
 
-A question ignores keys until the keyboard rests half a second; [`buckle serve`](approvals-02.md)
-marks each line `[<name>]`. `buckle approvals`, `--watch`, and `buckle approve` take the
-[workspace](workspaces.md) holding the current directory, `--workspace <name>`, or every online
-one with `--all`.
+A question ignores keys until the keyboard rests half a second. `buckle approvals`, `--watch`,
+and `buckle approve` take the [workspace](workspaces.md) holding the current directory,
+`--workspace <name>`, or every online one with `--all`.
 
 Nothing the agent token reaches can decide. With the experimental
 `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /workspaces/<name>/setup/approvals` takes a denial
 under the admin credential, and an approval only when a device key enrolled with `buckle keys
 enroll` signed it, as `buckle client approve <node-url> <token> --workspace <name>` does.
 
-`BUCKLE_APPROVAL_WEBHOOK` names a URL each new ask is posted to. It never
-decides; [Rings](rings.md#approval-webhook) describes what it sends.
+`BUCKLE_APPROVAL_WEBHOOK` names a URL each new ask is posted to, carrying the node (`serverId`), the
+workspace, and per ask the token, tool, rule, subject, reason, expiry, scopes, and the answering
+commands. Later posts say how each ask ended. A post times out after 5 seconds; a failure is
+logged, never failing the call. It never decides.
 
 ## Timeouts
 
 `buckle serve` and `buckle mcp` hold a gated call for the workspace's `approvalWaitMs`, 15000
-by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. Answered within
-the hold, it runs; unanswered, it returns `approval_required`; the agent sends the same
-call again once decided ([over MCP](approvals-03.md)). An HTTP caller's
-`context.approvalWait` overrides it:
-`{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute. A one-shot CLI
-command waits while its question is open. `buckle workspace set approvalWaitMs
-60000` changes it from the next call.
+by default, `0` until answered; `/mcp` over HTTP holds 30 seconds at most. Unanswered, it
+returns `approval_required`, and the agent sends the same call again once decided
+([over MCP](approvals-03.md)). An HTTP caller's `context.approvalWait` overrides it:
+`{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute.
+`buckle workspace set approvalWaitMs 60000` changes it from the next call.
 
 ## Dangerously allow
 
@@ -109,12 +107,12 @@ buckle policy dangerously-allow on [command|all] [--workspace <name>]
 buckle policy dangerously-allow off
 ```
 
-Warning: this removes the person. At level `command`, the default, every ask about a path inside
+This removes the person. At level `command`, the default, every ask about a path inside
 the workspace, and every command, host, and process ask, is allowed, sensitive files, writes, and
 destructive commands included, except a secret reference's file. Level `all` allows that file
 too. History restores ask. Paths outside it keep their normal outcome, and deny rules, the mount, and the state
 directory still refuse.
 
 Only the local CLI sets it, per workspace; `buckle policy import` refuses a file that names it,
-and `buckle policy clear` leaves it on. A running node reads it each call, so `off` applies at
-once. Each use is logged as `policy_dangerously_allowed` with its level.
+and `buckle policy clear` leaves it on. A running node reads it each call. Each use is logged as
+`policy_dangerously_allowed` with its level.

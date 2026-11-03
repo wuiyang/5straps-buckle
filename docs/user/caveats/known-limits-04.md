@@ -1,8 +1,5 @@
 # Known limits, part four
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet handle in a
-workspace's [mounts](../how-to/mounts.md), its sandbox layout, its one URL list, its browser, and the forge
-pack's git tools.
 [Part three](known-limits-03.md) covers code mode, the command line, and workspaces.
 
 ## The sandbox layout
@@ -67,8 +64,7 @@ pack's git tools.
   not by whether the pack runs. A workspace whose browser pack is withheld for its own reason, such as
   a refused setting, still holds it until the setting changes or the pack is switched off.
 - The setup face's `/workspaces/<name>/setup/status` still names the node's `BUCKLE_BROWSER_*`
-  setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode,
-  as [Rings](../how-to/rings.md), the 5straps control plane for agents, reads that field.
+  setting in `browser.setting`, whether the workspace's own setting or the node's chose the mode.
 - On Windows, Buckle passes `--no-startup-window`, so a launch opens one window, not Chrome's own New
   Tab window beside the page, and starts `agent-browser` with no console window of its own.
   `agent-browser` before 0.37.1 still shows a headless browser's windows on the desktop, and can leave

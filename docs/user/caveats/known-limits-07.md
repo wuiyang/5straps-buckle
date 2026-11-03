@@ -1,8 +1,7 @@
 # Known limits, part seven
 
-More of what the [decision AI](../how-to/judge.md), the optional model check Buckle (the approval and sandbox
-runtime on this machine) runs with the node's own keys, does not yet do, after
-[part six](known-limits-06.md). The [first part](known-limits.md) lists the other limits.
+Continues [part six](known-limits-06.md) on the [decision AI](../how-to/judge.md). The
+[first part](known-limits.md) lists the other limits.
 
 ## Programs the agent may have placed
 
@@ -84,8 +83,6 @@ runtime on this machine) runs with the node's own keys, does not yet do, after
   starts; a write the lock does not hold back (a process still running from an earlier call, or
   another workspace writing through a shared mount) can land after that check.
 - No local model ships with Buckle: point `BUCKLE_JUDGE_BASE_URL` at one that speaks OpenAI's API.
-- No Rings view of the verdict yet: Rings, the 5straps agent control plane, drops the webhook's
-  `judge` field in its approvals reader, and the report to Rings carries none.
 - `buckle client approve`, the enrolled-device route, shows the level alone in the ask's reason:
   a signed challenge carries no verdict yet.
 - No live call has been made yet to a real AI gateway, TypeSafe, or Socket: the built-in model name

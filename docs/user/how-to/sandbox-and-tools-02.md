@@ -1,9 +1,7 @@
 # Sandbox and tools, part two
 
-More of how Buckle, the approval and sandbox runtime on your machine, runs its tools: host Git,
-forge, and language servers, the browser's allowed hosts, how `web_fetch` follows redirects, and the
-change history. [Part one](sandbox-and-tools.md) covers the packs, sandboxing per platform, and shell
-isolation.
+More of how Buckle, the approval and sandbox runtime on your machine, runs its tools. [Part one](sandbox-and-tools.md) covers the packs, sandboxing per platform, and
+shell isolation.
 
 ## The browser's allowed hosts
 

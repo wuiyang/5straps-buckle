@@ -1,7 +1,6 @@
 # Known limits, part ten
 
-What Buckle, the approval and sandbox runtime on this machine, does not yet handle for an attached
-Chrome: your own Chrome, which the browser pack drives over its DevTools port
+Limits of an attached Chrome
 ([`browser.cdp`](../how-to/browser-login.md#attaching-your-own-chrome)).
 [Part four](known-limits-04.md#the-browser) covers the rest of the browser, and the
 [first part](known-limits.md) lists the other limits.

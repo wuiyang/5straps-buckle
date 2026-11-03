@@ -36,8 +36,15 @@ describe('docs/user/how-to/secrets.md quotes what the code says', () => {
     expect(secrets.startsWith('# Secret references ')).toBe(true)
   })
 
-  it('quotes the three reasons a reference is refused with, as an agent reads them', () => {
-    for (const reason of [PLATFORM_REASON, PLACES_REASON, SHORT_REASON]) expect(secrets, reason).toContain(`"${reason}"`)
+  it('quotes the two reasons a reference is refused with that the page names, as an agent reads them', () => {
+    for (const reason of [PLACES_REASON, SHORT_REASON]) expect(secrets, reason).toContain(`"${reason}"`)
+  })
+
+  it('describes the reserved platform form, says Buckle refuses it, and names no product or message of the code', () => {
+    expect(secrets).toContain('`{{env:<platform>:NAME}}` is reserved for a value a platform holds. Buckle refuses every platform reference, such as `{{env:vault:API_TOKEN}}`, and passes none through as text.')
+    expect(secrets).not.toContain(PLATFORM_REASON)
+    expect(secrets).not.toMatch(/\bRings\b/i)
+    expect(readReferences('{{env:vault:API_TOKEN}}')).toEqual({ refusal: expect.stringContaining(PLATFORM_REASON) })
   })
 
   it('states the limits the code holds: the value floor, the references and files a call may make, and the file size', () => {
@@ -101,8 +108,7 @@ describe('docs/user/how-to/secrets.md quotes what the code says', () => {
       if (text.startsWith('{{file:')) expect(reading, text).toMatchObject({ references: [{ raw: text }] })
       else expect(reading, text).toHaveProperty('refusal')
     }
-    expect(readReferences('{{env:rings:API_TOKEN}}')).toEqual({ refusal: expect.stringContaining(PLATFORM_REASON) })
-    expect(secrets).toContain('{{env:rings:API_TOKEN}}')
+    expect(secrets).toContain('{{env:vault:API_TOKEN}}')
     expect(secrets).toContain('{{env:API_TOKEN}}')
   })
 })

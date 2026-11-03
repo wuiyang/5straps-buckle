@@ -2,8 +2,7 @@
 
 Buckle, the approval and sandbox runtime that runs an AI agent's tool calls, asks each question
 in place on the terminal running `buckle serve` when its input and its error output are both
-terminals. This page shows what that terminal prints; [Approvals](approvals.md) covers what asks,
-and every other way to answer.
+terminals. [Approvals](approvals.md) covers what asks, and every other way to answer.
 
 ## A question
 
@@ -57,7 +56,7 @@ A question that ends with no answer says why on its row:
 | `[no longer waiting]` | it was answered elsewhere, or the agent's call withdrew it |
 | `[stopped]` | the node is stopping |
 
-Ctrl-C at a question stops the node, as it does with no question open; the shutdown lines follow.
+Ctrl-C at a question stops the node, as it does with no question open.
 A question whose ask expired while it waited its turn is not shown.
 
 ## The log beside it

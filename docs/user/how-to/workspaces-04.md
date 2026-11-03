@@ -2,9 +2,8 @@
 
 Buckle, the approval and sandbox runtime on this machine, served one folder in 0.1. This release
 serves [workspaces](workspaces.md), and the first command of it on a state directory 0.1 used moves
-the node onto them, once, under the registry's lock. This page says what moves, what the move keeps
-for going back, and how to go back. [Workspace settings](workspaces-02.md) covers what each
-workspace then holds.
+the node onto them, once, under the registry's lock. [Workspace settings](workspaces-02.md)
+covers what each workspace then holds.
 
 ## What the move does
 

@@ -1,11 +1,10 @@
 # The audit log
 
-Buckle, the approval and sandbox runtime on your machine, records what it was asked to do. Every
-[workspace](workspaces.md) keeps its calls in `workspaces/<id>/actions.jsonl` in the state
+Buckle, the approval and sandbox runtime on your machine, records what it was asked to do, a refusal as fully
+as a success. Every [workspace](workspaces.md) keeps its calls in `workspaces/<id>/actions.jsonl` in the state
 directory, `~/.5straps/buckle` by default, and the node keeps its own commands and refusals in
 `actions.jsonl` beside it. The workspace made of a 0.1 node's folder starts with the calls 0.1
-recorded, which the move brings along. The log shows what an agent tried as well as what ran: a refusal
-is recorded as fully as a success.
+recorded, which the move brings along.
 
 ## Reading it
 
@@ -68,16 +67,15 @@ The log keeps the shape of a call, not its content:
 Three exceptions keep text as it is. In `judge`, the thorough model's reasoning about the command
 and its code is kept as it wrote it, clipped at 2,000 characters, with credentials hidden.
 
-A file copy is the other. Its entry (`fs_receive` for a copy in, `fs_send` for a copy out, from
+A file copy is the second. Its entry (`fs_receive` for a copy in, `fs_send` for a copy out, from
 [`buckle cp`](copy.md)) keeps the path as written, with credentials hidden and at most 1,024
 characters, the byte count, and the file's sha256, so the log says which file moved. It never keeps
-the content. A digest can be guessed for a short or predictable file, and Rings reports carry the
-entry as the log keeps it.
+the content. A digest can be guessed for a short or predictable file.
 
 The file tools that remove or reshape files are the third. `fs_delete` keeps every path it was
 asked to remove, `fs_move` both of its paths, and `fs_apply_patch` every file the diff names, each
 as written, with credentials hidden and at most 1,024 characters. They never keep content or the
-diff, and Rings reports carry them too.
+diff.
 
 Apart from those, the log says that `fs_write` wrote something and which gate asked, not what it wrote or
 where. Approvers see the whole call when they decide; the log does not keep it.
@@ -94,13 +92,13 @@ where. Approvers see the whole call when they decide; the log does not keep it.
 ## Not tamper-proof
 
 The log is a plain append-only file protected by file permissions alone. Anyone who can write to
-the state directory can edit or delete it. It is a record for the owner to read, not evidence
-that stands up to someone with access to the machine.
+the state directory can edit or delete it.
 
 ## Sending it elsewhere
 
 With `BUCKLE_REPORT_URL` and `BUCKLE_REPORT_TOKEN` set, Buckle also posts each tool call's
-result entry to that URL in batches, as [Rings](rings.md) describes. The local file is written either way.
+result entry to that URL. The local file is written either way. [Part two](audit-log-02.md) covers
+the batches and what a report carries.
 
 ## Terminal feedback
 

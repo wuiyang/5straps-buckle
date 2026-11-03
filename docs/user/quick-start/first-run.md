@@ -1,8 +1,6 @@
 # First run
 
-This page takes a fresh install of Buckle, the approval and sandbox runtime that runs an AI
-agent's tool calls on your machine, to its first approval. It assumes `buckle --version`
-works; see [Installing Buckle](install.md) if it does not.
+This assumes `buckle --version` works; see [Installing Buckle](install.md) if it does not.
 
 ## buckle init
 
@@ -134,7 +132,7 @@ again once it is decided ([approvals over MCP](../how-to/approvals-03.md)).
 
 ## The first approval
 
-Reads inside the workspace just run. The first write asks:
+The first write to a directory asks:
 
 ```bash
 buckle fs write notes.txt hello

@@ -1,14 +1,13 @@
 # Known limits, part six
 
-What the [decision AI](../how-to/judge.md), the optional model check Buckle (the approval and sandbox
-runtime on this machine) runs with the node's own keys, does not yet do. The
+Limits of the [decision AI](../how-to/judge.md), which runs with the node's own keys. The
 [first part](known-limits.md) lists the other limits.
 
 ## Judgement
 
-- A verdict is a model's judgement and can be wrong. In automated mode the thorough model's `safe`
-  at 0.8 or above runs an interpreter ask with no person. Jev's verdict never runs a call, and an
-  ask the built-in floor or the destructive list makes always goes to a person.
+- In automated mode the thorough model's `safe` at 0.8 or above runs an interpreter ask with no
+  person. Jev's verdict never runs a call, and an ask the built-in floor or the destructive list
+  makes always goes to a person.
 - Jev, TypeSafe AI's quick stage, writes no reasoning: an approver reads its level, confidence,
   and model alone.
 - Prompt injection through the command, a comment, or a file it reads is bounded, not ruled out:
@@ -21,7 +20,7 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
 ## Reading
 
 - Third-party code is never read: a package in `node_modules` or `site-packages` runs unseen. Its
-  name, its version, and Socket's view of it (a supply-chain security service) are what a stage
+  name, its version, and Socket's view of it are what a stage
   sees, and Python packages carry no version.
 - Imports are read by their text: a computed `require(name)`, an `importlib` call, and the imports
   of Perl, Ruby, PHP, or Lua code are not followed. Past 50 files or 512 KiB, no stage is asked.
@@ -80,5 +79,5 @@ runtime on this machine) runs with the node's own keys, does not yet do. The
   not rated either, since Python may run it in place of the source. Python writes those caches
   itself, so a tree it has run asks a person until they are removed.
 
-The round's further refusals, and the limits that are not about reading, are on [part
-seven](known-limits-07.md).
+[Part seven](known-limits-07.md) lists the further refusals, and the limits that are not about
+reading.

@@ -1,7 +1,5 @@
 # Known limits, part two
 
-More of what Buckle, the approval and sandbox runtime on this machine, does not yet handle: the
-programs it starts itself, such as `rg`, `git`, and `agent-browser`, a browser for agents.
 [Known limits](known-limits.md) covers reading commands, credential hiding, and paths,
 [part three](known-limits-03.md) code mode, the command line, and workspaces, and
 [part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser and the files
@@ -60,8 +58,8 @@ its commands write, and the forge pack.
 
 ## Windows shims
 
-- npm installs a command on Windows as a `.cmd` shim, a small batch file that Node.js starts only
-  through `cmd.exe`, which Buckle never runs: the agent's arguments would pass through its quoting.
+- npm installs a command on Windows as a `.cmd` shim. Node.js starts a shim only through
+  `cmd.exe`, which Buckle never runs, as the agent's arguments would pass through its quoting.
   Buckle reads the shim instead, at most 64 KiB, and runs the `.exe` it names, or the script it
   names under Buckle's own Node.js. A `.exe` or `.com` of the same name in any place wins.
 - Buckle reads two shapes of shim, each matched exactly, line by line and in order: the one npm

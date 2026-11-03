@@ -58,14 +58,14 @@ The workflow has two jobs, so no installed dependency runs where `main` can be p
 can only read: it first requires successful `verify` and `package-arm64` checks on the exact
 source commit, installs with install scripts off, runs `prepare.mjs`, and hands over the four
 files and the inferred version. `commit` holds the write token, installs nothing, and copies just
-those files over a fresh checkout of the same commit. `scripts/release/check-prepared.mjs`, which needs only Node and git,
-then refuses unless `git status` names exactly the four, each `package.json` differs from `HEAD`
+those files over a fresh checkout of the same commit. `scripts/release/check-prepared.mjs`, which
+needs only Node and git, then refuses unless `git status` names exactly the four, each `package.json` differs from `HEAD`
 only in its version, matching the inferred output and one allowed bump from `HEAD`, and
 `CHANGELOG.md` only gains the new top section, with no other heading of level one or two. The job
 commits as `github-actions[bot]`, subject `chore(release): v<version> [skip ci]`, creates the
 lightweight `v<version>` tag, and atomically pushes `main` and that tag, leased on the source
-commit. Unless `main` still names the source commit, or if either update is refused, neither update
-reaches GitHub. It starts no Release checks on the generated commit. The run summary names the
+commit. If `main` no longer names the source commit, or either update is refused, neither reaches
+GitHub. It starts no Release checks on the generated commit. The run summary names the
 release commit and tag.
 
 ## Step two: Stage Buckle

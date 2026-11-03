@@ -9,15 +9,15 @@ repository, and history without host Git. Buckle never writes to the workspace's
 
 ## What a checkpoint records
 
-- **File tools.** `fs_write`, `fs_write_batch`, `fs_patch`, `fs_apply_patch`, `fs_delete`,
+- **File tools:** `fs_write`, `fs_write_batch`, `fs_patch`, `fs_apply_patch`, `fs_delete`,
   `fs_move`, and `fs_receive` name every path they change. Before the call, Buckle stores each
   path's state: absent, a file's content and mode, a link's target, or, for a folder deleted or
   moved, everything in it. After the call, it stores the new state. Nothing else is read, no
   ignore rule applies, and no program starts, so a file `.gitignore` covers is still recorded
   when the agent changes it.
-- **The isolated shell.** A command run on a private copy publishes its changes as one
+- **The isolated shell:** A command run on a private copy publishes its changes as one
   checkpoint of the paths it changed, read the same way.
-- **Commands in the workspace.** With `shell.isolation` off, a command can change anything, such
+- **Commands in the workspace:** With `shell.isolation` off, a command can change anything, such
   as a build or an install. Buckle asks Git what changed, through a private index under the node's
   state: before and after the command it adds the workspace's folders and writes a tree, and the
   difference names the changed paths. In a Git repository with a commit, that index starts from

@@ -22,7 +22,7 @@ asking more than a session's 50 pending asks asks again for the rest.
 
 A script stopped by its deadline, a cancel, a shutdown, or a failure of its sandbox keeps the same
 record of the calls that finished. Sent again within ten minutes, after a restart too, it goes on
-where it stopped, and none of those calls runs twice. That is by design. To run such a script from
+where it stopped, and none of those calls runs twice. To run such a script from
 its start, change one character of it, even in a comment. Buckle writes the record when the script
 stops, so a crash or kill of the Buckle process mid-script loses the calls since its last stop, and
 the next unchanged send runs them again.

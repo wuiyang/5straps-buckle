@@ -1,7 +1,7 @@
 # Serving workspaces
 
 Buckle, the approval and sandbox runtime on this machine, serves its [workspaces](workspaces.md)
-from one node, started with `buckle serve`. This page says what that command does and shows.
+from one node, started with `buckle serve`.
 
 `buckle serve` serves every online workspace, and opens each at start, so a broken one is named
 then rather than at its first call; the rest are served. On its terminal it lists them, each with

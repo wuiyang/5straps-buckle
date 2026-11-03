@@ -94,4 +94,4 @@ Inside the workspace folder, the [dangerously-allow switch](approvals.md#dangero
 answers the file floor as it answers `rm -r`. Outside that folder, and in a scratch root, a
 person still decides, and for every restore of the change history.
 
-The [decision AI](judge.md) never rates these asks. A person decides each one.
+The [decision AI](judge.md) never rates these asks.

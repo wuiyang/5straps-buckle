@@ -2,16 +2,13 @@
 
 A node of Buckle, the approval and sandbox runtime on this machine, has settings of its own in
 `buckle.env`, in its state directory, and each of its [workspaces](workspaces.md) has its own in
-its `workspace.json` ([Workspace settings](workspaces-02.md)). This page says how the two make
-the settings a workspace runs under.
+its `workspace.json` ([Workspace settings](workspaces-02.md)).
 
 ## How a setting resolves
 
 For each setting a workspace runs under, Buckle takes the workspace's own value, else the node's
-value in `buckle.env`, else its built-in default. A workspace that sets nothing of its own runs
-on the node's settings; one that sets `packs.shell off` keeps the shell off whatever the node
-says. `buckle workspace unset <key>` takes the workspace's own value out, so the node's applies
-again. A workspace's variables (`env.<NAME>`) are its own; where a later release gives the node
+value in `buckle.env`, else its built-in default. `buckle workspace unset <key>` takes the workspace's own value out,
+so the node's applies again. A workspace's variables (`env.<NAME>`) are its own; where a later release gives the node
 variables of its own, the workspace's are set over them, name by name.
 
 The node reads these defaults from `buckle.env` alone, never from a shell's or an MCP config's
@@ -58,8 +55,8 @@ Some settings belong to the node alone, the same for every workspace, and no wor
 them: the host and port, the admin credential, the state directory, the server's id and name, the
 sandbox mode, logging, request and timeout caps, history and isolation budgets, the experimental
 admin face, where programs such as `agent-browser` are, the toolchains every sandbox binds
-(`BUCKLE_MOUNT_READ_ONLY`), and the pairing with [Rings](rings.md) (the 5straps control plane for
-agents). Each workspace also takes the node's skill folders and `BUCKLE_STRICT_WRITES`.
+(`BUCKLE_MOUNT_READ_ONLY`). Each workspace also takes the node's skill folders and
+`BUCKLE_STRICT_WRITES`.
 
 `buckle settings show` lists the node's settings, then the workspace defaults, each with its
 value and where it comes from. `buckle settings set <key> <value>` and `unset <key>` change one,

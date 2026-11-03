@@ -3,8 +3,7 @@
 Each [workspace](workspaces.md) of a node of Buckle, the approval and sandbox runtime on this
 machine, keeps its own settings in `workspaces/<id>/workspace.json` in the state directory. The
 node keeps its own in `buckle.env`, and those are every workspace's defaults: a setting a
-workspace leaves unset is the node's, else Buckle's built-in one. This page lists the settings
-and says when a change applies; [moving from 0.1](workspaces-04.md) has its own page. [Node
+workspace leaves unset is the node's, else Buckle's built-in one. [Node
 defaults](workspaces-03.md) covers how each setting resolves, the deny lists every workspace is
 held to, and the node's own settings.
 
@@ -62,7 +61,7 @@ with a warning that its value is plain text in `workspace.json` and reaches ever
 starting `BUCKLE_`, and the names Buckle passes to every command (`PATH`, `HOME`, `USER`,
 `LOGNAME`, `SHELL`, and `TMPDIR`), are refused. So is a value that contains a secret the node
 holds (the admin token, `BUCKLE_AUTH_TOKEN`, the forge token, the Brave search key, the report
-token, the Rings pairing key, or the approval webhook's URL) or a workspace's agent token as a
+token, or the approval webhook's URL) or a workspace's agent token as a
 word of it. Keep real secrets in your own store: `buckle workspace show` prints the variables,
 and every command can read them. A call's own `env` is set over them.
 

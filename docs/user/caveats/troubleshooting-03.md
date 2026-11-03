@@ -1,8 +1,7 @@
 # Troubleshooting: file calls
 
-The refusals and asks the file tools give, with the message Buckle prints and the fix. A file
-tool names its refusal in the message, and the result carries a code. A batch
-of `fs_delete` stops at its first refusal and lists the rest as `notAttempted`. A missing path is
+A file tool names its refusal in the message, and the result carries a code. A batch of
+`fs_delete` stops at its first refusal and lists the rest as `notAttempted`. A missing path is
 reported as `missing`, and does not stop the batch. [Refused commands](troubleshooting-02.md)
 covers the shell.
 
@@ -40,7 +39,7 @@ already written.
 
 ## Asks
 
-These are asks, not refusals. They wait for a person, as [approvals](../how-to/approvals.md) describes.
+These wait for a person, as [approvals](../how-to/approvals.md) describes.
 
 - "Deleting ... asks a person, whatever the folder's write grant says": the person approves once,
   for the session, or always. A write grant on the folder is not enough, but a delete grant is.

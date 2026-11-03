@@ -1,16 +1,13 @@
 # Browser sessions
 
 Buckle, the approval and sandbox runtime on your machine, drives a browser for an agent through `agent-browser`, a
-browser for agents, and records each browser it starts in the workspace's state, so it can end every one. This page
-says which browser a call reaches, what ends a browser, and what ends the hold a
-[secret fill](secrets-02.md#after-a-browser-fill) leaves. [Using your own browser](browser-login.md) covers the
-settings that choose the browser.
+browser for agents, and records each browser it starts in the workspace's state, so it can end every one. [Using your own browser](browser-login.md) covers the settings that choose the browser,
+and [Secret masking](secrets-02.md#after-a-browser-fill) the hold a secret fill leaves.
 
 ## Which browser a call reaches
 
-A fresh browser serves one caller, stage, and alias: the agent's connection, the stage a client such as
-[Rings](rings.md), the 5straps control plane for agents, sends with each call, and the `session` alias the agent names,
-`default` where absent. Calls with the same three reach one browser across turns; a new stage or alias starts another,
+A fresh browser serves one caller, stage, and alias: the agent's connection, the stage a client sends
+with each call, and the `session` alias the agent names, `default` where absent. Calls with the same three reach one browser across turns; a new stage or alias starts another,
 so two stages never share a page. A profile folder has one browser that every caller of the workspace shares, and an
 attached Chrome is one browser every caller connects to. Another workspace, or another Buckle node, on the same folder has
 its own; Chrome opens a folder in one browser at a time, so a call there fails, saying so, until the other's browser ends.

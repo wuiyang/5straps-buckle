@@ -40,8 +40,7 @@ Each is a workspace setting (`buckle workspace set <key> <value>`), else the nod
 | `approval.quickJudgeProvider` | none | `typesafe` |
 | `approval.quickJudgeModel` | `BUCKLE_APPROVAL_QUICK_JUDGE_MODEL` | `jev-latest` |
 
-Set the model your gateway serves: it may name `gpt-6-luna` differently. The keys and addresses
-are the node's alone, as the next section says.
+Set the model your gateway serves: it may name `gpt-6-luna` differently.
 
 ## The node's keys
 
@@ -67,7 +66,7 @@ workspace's state directory, readable by the owner alone, at most 1,000 with the
 a restart keeps them. A policy change empties it. No failure is kept, nor a verdict reached while
 the Socket lookup failed.
 
-Socket, a supply-chain security service that scores open source packages, has its summaries kept
+Socket's summaries are kept
 the same way, by package URL, for 24 hours, in `socket-cache.json` beside it, at most 2,000.
 `buckle workspace judge-cache clear` empties both by hand.
 

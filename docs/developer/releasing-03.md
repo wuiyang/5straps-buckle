@@ -7,7 +7,6 @@
 
 ## What each package ships
 
-What each of the three packages holds, and how to look inside the tarballs before a release.
 [Releasing](releasing.md) covers the two release workflows, and
 [Releasing: repeats and approval](releasing-02.md) covers failed runs and human approval.
 
