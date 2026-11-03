@@ -876,3 +876,19 @@ describe.each([['node'], ['3f2a1c2e-8b4d-4f0a-9c7e-2d5b1a8f3c6e']])('buckle init
     expect(served(folder).name).toBe('nodejs')
   })
 })
+
+// Buckle's public surface discusses Buckle only, and init no longer pairs the node with a control plane (owner ruling
+// of 2026-11-03).
+describe('buckle init names no other product', () => {
+  it('offers no pairing: its usage names no --pair, --rings or --url, and each is refused as unknown before anything is written', async () => {
+    const printed = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect((await runInit(['--help'], scripted([], false), {})).exitCode).toBe(0)
+    const usage = printed.mock.calls.map(call => String(call[0])).join('')
+    printed.mockRestore()
+    expect(usage).not.toMatch(/\bRings\b|--pair|--rings|--url/i)
+    for (const [option, value] of [['--pair', 'ABCD-EFGH'], ['--rings', 'http://relay.test'], ['--url', 'http://node.test:4399']]) {
+      await expect(runInit(['--out', out, '--port', '4399', '--yes', '--dir', workspace, option!, value!], scripted([], false), {})).rejects.toThrow(`Unknown option '${option}'`)
+    }
+    expect(existsSync(out)).toBe(false)
+  })
+})

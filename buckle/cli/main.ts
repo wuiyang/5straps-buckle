@@ -313,7 +313,6 @@ function printUsage(): CliResult {
 
   buckle init                        Set this machine's node up once, and serve the current folder as a
                                      workspace; prints its agent token once
-  buckle init --pair <code> --rings <url>   Redeem a Rings pairing code and register this node
   buckle serve [--background]        Serve every online workspace over HTTP: native RPC and MCP; detached
                                      from this terminal with --background
   buckle service install [--now] | uninstall | start | stop | restart | status [--json] | logs [-f] [-n N]

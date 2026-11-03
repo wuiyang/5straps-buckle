@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline/promises'
 import { dirname, resolve } from 'pathe'
 import { parseArgs } from 'node:util'
-import { MountPathSchema, type HarnessManifest } from '@5straps/protocol'
+import { MountPathSchema } from '@5straps/protocol'
 import { loadConfig, realPathOf, stateDirectoryOf, WORKSPACE_DEFAULT_KEYS, workspaceHolds, type NodeConfig } from '../common/runtime/config.js'
 import { buckleVariables, defaultEnvironmentFile, environmentFilePath } from '../common/runtime/environment.js'
 import { AS_NAMED, findProgram, ON_PATH, type ProgramSearch, type UntrustedRoots } from '../common/domain/executable.js'
@@ -20,9 +20,8 @@ import { formatMountRow, parseMountSpec, type MountRow, type OwnerMount } from '
 import { editEnvironmentVariable, writeEnvironmentFile } from '../common/adapters/environment-file.js'
 import { workspaceArgument } from '../common/domain/approval-instruction.js'
 import { findNodeSetting, NODE_SETTINGS, normaliseSetting } from './node-settings.js'
-import { redeemPairingCode } from './pairing.js'
 import { checkedVolumes, createNamed, unnamedMount } from './workspace.js'
-import { restartRoute, serviceInstalled, type RestartRoute } from '../common/services/node-service/installed.js'
+import { serviceInstalled } from '../common/services/node-service/installed.js'
 import { drivesServiceManager } from '../common/adapters/service-manager/index.js'
 import { attachCommand } from '../common/services/node-service/attach.js'
 import { runningNode, type RunningNode } from '../common/services/node-service/serve-record.js'
@@ -34,7 +33,7 @@ export interface CliResult {
 }
 
 const USAGE = `Usage: buckle init [--dir <dir>] [--mount <path>] [--volume <local>:<sandbox>[:ro]]... [--name <name>] [--port <n>]
-                  [--out <file>] [--yes] [--force] [--pair <code> --rings <url> [--url <public url>]]
+                  [--out <file>] [--yes] [--force]
 
 Sets this machine's node up once, then serves a folder as one of its workspaces: the current directory, or --dir
 (--root is its earlier name), seen by the agent at /workspace, or at --mount. Each --volume shares another host
@@ -49,11 +48,6 @@ to mount, which packs to offer, the shell, host Git, and the approved hosts; --y
 defaults and the --volume mounts alone, and says what it kept. Change them later with buckle workspace set,
 buckle workspace mount, and buckle policy. The workspace's agent token is printed once; buckle workspace token create
 mints more.
-
-With --pair, the node registers itself with Rings by redeeming a code issued there, with the workspace's token, so no
-credential is typed from one screen into another. --url is where Rings reaches this node, and defaults to
-http://127.0.0.1:<port>, which only serves a Rings on this host. Pairing again keeps the node's settings, mints the
-workspace a token for Rings, and updates the node's URL.
 `
 
 /** Where the questions are asked. A terminal by default; a test hands in scripted answers. */
@@ -91,7 +85,7 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     args: argv,
     options: {
       dir: { type: 'string' }, root: { type: 'string' }, mount: { type: 'string' }, volume: { type: 'string', multiple: true }, name: { type: 'string' }, port: { type: 'string' }, out: { type: 'string' },
-      pair: { type: 'string' }, rings: { type: 'string' }, url: { type: 'string' }, yes: { type: 'boolean' }, force: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
+      yes: { type: 'boolean' }, force: { type: 'boolean' }, help: { type: 'boolean', short: 'h' },
     },
     allowPositionals: false,
   })
@@ -99,7 +93,6 @@ export async function runInit(argv: string[], prompt: InitPrompt = terminalPromp
     process.stdout.write(USAGE)
     return { exitCode: 0 }
   }
-  if (values.pair && !values.rings) return fail('--pair needs --rings <url>, the Rings that issued the code.')
 
   const out = values.out ? resolve(values.out) : environmentFilePath()
   const writesNode = !existsSync(out) || values.force === true
@@ -194,10 +187,7 @@ The agent token runs tools in this workspace alone. The admin credential reads a
 /setup, mints and revokes workspace tokens, and nothing else; keep them apart. /setup is experimental and off until you
 switch it on: buckle settings set experimental-admin-http on
 `)
-    if (!values.pair) return { exitCode: 0 }
-    const token = served.token ?? await workspaces.addToken(served.id, { label: 'Rings' })
-    const { runtime } = await workspaces.resolve(served.id)
-    return await pair({ out, code: values.pair, rings: values.rings!, url: values.url, port: nodePort, home: options.home, platform, authToken: token.token, adminToken: node.adminToken, manifest: runtime.manifest(), name: node.serverName, restart: await restartRoute(node.stateDirectory), start })
+    return { exitCode: 0 }
   } catch (error) {
     if (error instanceof WorkspaceError) return fail(error.message)
     throw error
@@ -232,13 +222,6 @@ function startSteps(start: NodeStart, input: { out: string; platform: NodeJS.Pla
   if (start.kind === 'service') return hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform, 'buckle service start'))
   const offer = drivesServiceManager(input.platform) ? `\n${hintStep('     Or at every login:', serveCommand(input.out, process.env, input.platform, 'buckle service install --now'))}` : ''
   return `${hintStep('  1. Start the node:', serveCommand(input.out, process.env, input.platform))}${offer}`
-}
-
-/** The pairing's last line: how to start the node, unless one runs, whose restart the credential's own line names. */
-function pairingStart(input: { out: string; platform: NodeJS.Platform; start: NodeStart }): string {
-  if (input.start.kind === 'running') return ''
-  const command = input.start.kind === 'service' ? 'buckle service start' : 'buckle serve'
-  return ` ${hintStep('Start it with:', serveCommand(input.out, process.env, input.platform, command), { column: 'Start it with: '.length, indent: '  ' })}`
 }
 
 /**
@@ -359,15 +342,6 @@ function withChoices(settings: WorkspaceSettings, choices: WorkspaceChoices, mou
     policy: { ...settings.policy, network: { allow: choices.networkAllow ?? [] } },
   }, mount)
   return mounts.length === 0 ? chosen : withOwnerMounts(chosen, mounts, mount)
-}
-
-/** Re-pairs or pairs the node, sending the workspace's token and its manifest (BUCKLE-D08). */
-async function pair(input: { out: string; code: string; rings: string; url?: string; port: string; home?: string; platform: NodeJS.Platform; authToken: string; adminToken: string; manifest: HarnessManifest; name: string; restart: RestartRoute; start: NodeStart }): Promise<CliResult> {
-  const baseUrl = input.url?.trim() || `http://127.0.0.1:${input.port}`
-  const result = await redeemPairingCode({ code: input.code, ringsUrl: input.rings, baseUrl, environmentFile: input.out, authToken: input.authToken, adminToken: input.adminToken, manifest: input.manifest, name: input.name, restart: input.restart, ...(input.home ? { home: input.home } : {}) })
-  process.stdout.write(`\n${result.message}\n`)
-  if (result.ok) process.stdout.write(`Rings will reach it at ${baseUrl}.${pairingStart(input)}\n`)
-  return { exitCode: result.ok ? 0 : 1 }
 }
 
 async function askFolder(prompt: InitPrompt, defaults: { folder?: string; mount?: string; name?: string; writesNode: boolean; served: (folder: string) => boolean }) {
@@ -519,16 +493,17 @@ export function restrictCommands(platform: NodeJS.Platform = process.platform): 
 
 /** Where the hints' commands start, after the widest step label, as `buckle init` has always aligned them. */
 const HINT_COLUMN = 32
+const HINT_INDENT = '       '
 const SHELL_LABEL_WIDTH = 13
 
 /**
  * A hint: one form follows its label on the same line, its further lines aligned beneath; several forms each go
  * on lines of their own below the label, each labelled with its shell.
  */
-function hintStep(label: string, forms: ShellForm[], layout: { column: number; indent: string } = { column: HINT_COLUMN, indent: '       ' }): string {
+function hintStep(label: string, forms: ShellForm[]): string {
   const [only] = forms
-  if (forms.length === 1 && only!.shell === null) return `${label.padEnd(layout.column)}${only!.lines.join(`\n${' '.repeat(layout.column)}`)}`
-  const labelled = forms.flatMap(form => form.lines.map((line, index) => `${layout.indent}${(index === 0 ? form.shell ?? '' : '').padEnd(SHELL_LABEL_WIDTH)}${line}`))
+  if (forms.length === 1 && only!.shell === null) return `${label.padEnd(HINT_COLUMN)}${only!.lines.join(`\n${' '.repeat(HINT_COLUMN)}`)}`
+  const labelled = forms.flatMap(form => form.lines.map((line, index) => `${HINT_INDENT}${(index === 0 ? form.shell ?? '' : '').padEnd(SHELL_LABEL_WIDTH)}${line}`))
   return [label, ...labelled].join('\n')
 }
 

@@ -56,6 +56,14 @@ describe('buckle --help', () => {
     answerWithoutConfiguration(['--help'])
     expect(io.out()).toMatch(/^ {2}buckle client .*\| approve <node-url> <token>$/m)
   })
+
+  // Buckle's public surface discusses Buckle only, and init no longer pairs the node with a control plane (owner ruling of 2026-11-03).
+  it('names no other product and no pairing option', () => {
+    const io = captured()
+    answerWithoutConfiguration(['--help'])
+    expect(io.out()).toContain('buckle init')
+    expect(io.out()).not.toMatch(/\bRings\b|--pair|--rings/i)
+  })
 })
 
 describe('buckle policy --help', () => {
