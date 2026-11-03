@@ -3,6 +3,8 @@
 Buckle is a lightweight remote execution harness for AI agents: a small program you install on a
 machine, so an agent can work on your remote environment with tools you allow.
 
+![An agent's rm -rf is held until a person denies it](./docs/assets/approval-demo.gif)
+
 - **Goal:** plug and play your environment, so it is ready for an agent to work in.
 - **Why:** let AI work across devices without full device exposure, as with SSH. Buckle exposes
   only the tools, folders, and sites you allow, and asks a person before anything else.
