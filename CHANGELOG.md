@@ -1,6 +1,30 @@
 # Changelog
 
 
+## v0.1.11
+
+[compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.10...v0.1.11)
+
+### 🩹 Fixes
+
+- **cli:** Remove the rings pairing from buckle init ([ba151545](https://github.com/wuiyang/5straps-buckle/commit/ba151545))
+- Name no other product in buckle's messages, security policy, settings example, and protocol readme ([4aa1f0dc](https://github.com/wuiyang/5straps-buckle/commit/4aa1f0dc))
+- **cli:** Keep the service usage within the width of its first line after the docs move ([cde8142f](https://github.com/wuiyang/5straps-buckle/commit/cde8142f))
+
+### 📖 Documentation
+
+- Showcase what buckle does today and add a roadmap to the readme ([a00bb27f](https://github.com/wuiyang/5straps-buckle/commit/a00bb27f))
+- Say where seatbelt and host tools run, drop internal ids from the dev docs, and point questions to discussions ([e493109b](https://github.com/wuiyang/5straps-buckle/commit/e493109b))
+- Open the readme with what buckle is for, rename features and entry points, and add the browser url limits ([d6a004c7](https://github.com/wuiyang/5straps-buckle/commit/d6a004c7))
+- Tighten the readme wording, drop glosses of known terms, and describe the browser whitelist ([3e4f594a](https://github.com/wuiyang/5straps-buckle/commit/3e4f594a))
+- Split the docs into a user section and a developer section ([bfae4128](https://github.com/wuiyang/5straps-buckle/commit/bfae4128))
+- Drop the version line, rings, and a repeated phrase from the readme ([90a04dc8](https://github.com/wuiyang/5straps-buckle/commit/90a04dc8))
+- Remove rings and cut filler across the docs ([065c0c43](https://github.com/wuiyang/5straps-buckle/commit/065c0c43))
+
+### 📦 Build
+
+- Generate the package readme from the root readme so the root can use relative links ([8c7ef8dc](https://github.com/wuiyang/5straps-buckle/commit/8c7ef8dc))
+
 ## v0.1.10
 
 [compare changes](https://github.com/wuiyang/5straps-buckle/compare/v0.1.9...v0.1.10)
