@@ -10,6 +10,7 @@ import { generatePackageReadme, rewriteRelativeLinks } from '../scripts/sync-pac
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const BLOB = 'https://github.com/wuiyang/5straps-buckle/blob/main/'
+const RAW = 'https://raw.githubusercontent.com/wuiyang/5straps-buckle/main/'
 
 describe('rewriteRelativeLinks', () => {
   it('makes a relative path absolute', () => {
@@ -58,6 +59,35 @@ describe('rewriteRelativeLinks', () => {
   it('refuses a link that leaves the repository', () => {
     expect(() => rewriteRelativeLinks('[out](../outside.md)')).toThrow(/outside the repository/)
   })
+
+  it('points a relative image at its raw file', () => {
+    expect(rewriteRelativeLinks('![Demo](docs/assets/demo.gif)')).toBe(`![Demo](${RAW}docs/assets/demo.gif)`)
+  })
+
+  it('drops a ./ prefix from an image', () => {
+    expect(rewriteRelativeLinks('![Demo](./docs/assets/demo.gif)')).toBe(`![Demo](${RAW}docs/assets/demo.gif)`)
+  })
+
+  it('leaves an image with an absolute URL untouched', () => {
+    const text = '![Badge](https://img.shields.io/npm/v/@5straps/buckle.svg)'
+    expect(rewriteRelativeLinks(text)).toBe(text)
+  })
+
+  it('keeps the blob URL for an ordinary link next to an image on the same line', () => {
+    expect(rewriteRelativeLinks('![Demo](./docs/assets/demo.gif) and [Security](./SECURITY.md)')).toBe(`![Demo](${RAW}docs/assets/demo.gif) and [Security](${BLOB}SECURITY.md)`)
+  })
+
+  it('treats an image inside a link as an image and the link as a link', () => {
+    expect(rewriteRelativeLinks('[![Demo](./a.gif)](./b.md)')).toBe(`[![Demo](${RAW}a.gif)](${BLOB}b.md)`)
+  })
+
+  it('keeps the title of an image', () => {
+    expect(rewriteRelativeLinks('![Demo](./a.gif "A demo")')).toBe(`![Demo](${RAW}a.gif "A demo")`)
+  })
+
+  it('refuses an image that leaves the repository', () => {
+    expect(() => rewriteRelativeLinks('![out](../outside.gif)')).toThrow(/outside the repository/)
+  })
 })
 
 describe('the package readme', () => {
@@ -68,6 +98,11 @@ describe('the package readme', () => {
   it('holds no relative link, so it renders the same on npmjs.com', () => {
     const links = [...readFileSync(join(ROOT, 'buckle/README.md'), 'utf8').matchAll(/\]\(([^)\s]+)/g)].map(match => match[1] ?? '')
     expect(links.filter(link => !/^(?:[a-z][a-z0-9+.-]*:|#)/i.test(link))).toEqual([])
+  })
+
+  it('points every image at a raw file', () => {
+    const images = [...readFileSync(join(ROOT, 'buckle/README.md'), 'utf8').matchAll(/!\[[^\]]*\]\(([^)\s]+)/g)].map(match => match[1] ?? '')
+    expect(images.filter(image => !image.startsWith(RAW))).toEqual([])
   })
 
   it('links the root readme relatively', () => {
