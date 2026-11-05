@@ -17,6 +17,8 @@ machine, so an agent can work on your remote environment with tools you allow.
 
 ## Features
 
+![One agent working across three Buckle environments: a server and two browsers](./docs/assets/three-environments.gif)
+
 - **Multiple entry points:** the CLI, MCP over stdio, and HTTP offer the same tools and approvals.
 - **Approvals:** every call is allowed, asked, or denied. A person answers an ask once, for the
   session, or always.
