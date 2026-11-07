@@ -390,7 +390,10 @@ export interface ApprovalRegistry {
   waitingAsk(token: string): PendingAsk | undefined
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): UnspentOnce[]
-  /** Run as the workspace opens: writes the grants decisions left owed when a process stopped between the two writes. */
+  /**
+   * Run as the workspace opens: applies the revokes recorded while approvals.json could not be read, then writes the grants
+   * decisions left owed when a process stopped between the two writes.
+   */
   recover(): Promise<void>
 }
 
