@@ -27,7 +27,7 @@ afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync
 // A node entry point with nobody at its terminal: the call is held for the configured grace period.
 async function fixture(timeoutMs: number | null) {
   const root = directory()
-  const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
+  const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), timeoutMs)
   const service = createApprovalService({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
   const ask: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
   const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', call: recorded, asks })

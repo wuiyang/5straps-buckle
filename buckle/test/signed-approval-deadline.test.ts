@@ -24,7 +24,7 @@ async function queue() {
   roots.push(root)
   const file = join(root, 'approvals.json')
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-  const registry = createApprovalRegistry(grants, file, root)
+  const registry = createApprovalRegistry(grants, file)
   const token = (await registry.ask({ tool: 'fs_write', sessionId: 's', requestId: 'r', asks: [{ ...prompt, offeredScopes: [...prompt.offeredScopes] }], call: { arguments: { path: '/outside/notes.md', content: 'hello' }, cwd: '/workspace', description: 'Write notes', effects: ['write /outside/notes.md'], complete: true } })).requests[0]!.token
   const decision = { token, approved: true, scope: 'once' as const }
   const evaluate = (extra: Partial<Parameters<typeof registry.evaluate>[0]> = {}) => registry.evaluate({ tokens: [token], sessionId: 's', tool: 'fs_write', check: subjects => subjects.length ? { kind: 'allow', allowedBy: ['once'] } : { kind: 'ask', asks: [{ ...prompt, offeredScopes: [...prompt.offeredScopes] }] }, ...extra })

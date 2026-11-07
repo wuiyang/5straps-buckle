@@ -183,7 +183,7 @@ describe('while a call holds values', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-secret-mask-'))
     roots.push(root)
     const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), root, 15_000)
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
     const release = holdMasker(masker())
     try {

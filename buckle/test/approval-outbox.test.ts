@@ -20,7 +20,7 @@ function queue(workspaceKey?: string, stateDirectory?: string) {
   const root = stateDirectory ?? mkdtempSync(join(tmpdir(), 'buckle-outbox-'))
   const file = join(root, 'approvals.json')
   const workspace = workspaceKey ?? root
-  const open = () => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), file, workspace, 1, { durableNotices: true })
+  const open = () => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), file, 1, { durableNotices: true })
   const registry = open()
   const ask = async (count = 1, sessionId: string = randomUUID()) => (await registry.ask({ tool: 'fs_write', sessionId,
     asks: Array.from({ length: count }, (_, i) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${i}`, reason: 'outside', offeredScopes: ['once' as const] })),
@@ -315,7 +315,7 @@ describe('the outcome sender keeps its retry delay while the receiver fails', ()
   it('starts no attempt for updates that queue nothing, and holds a newly queued outcome for the retry', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-outbox-retry-'))
     let notices: ApprovalNotices | undefined
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, 1, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), 1, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
     const attempts: number[] = []
     notices = createApprovalNotices(async () => { attempts.push(Date.now()); throw new Error('HTTP 503') }, { registry, retryMs: 2_000 })
     const asked = async () => (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { path: '/outside', content: 'x' }, cwd: root, description: null, complete: true } })).requests

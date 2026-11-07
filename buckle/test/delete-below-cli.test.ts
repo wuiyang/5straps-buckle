@@ -84,7 +84,7 @@ function node(): BuckleConfig {
 }
 
 const grants = (config: BuckleConfig) => createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId })
-const registry = (config: BuckleConfig) => createApprovalRegistry(grants(config), approvalsPath(config), config.workspaceId)
+const registry = (config: BuckleConfig) => createApprovalRegistry(grants(config), approvalsPath(config))
 
 /** A delete outside the workspace's folder waiting on the node, with or without its wider subject. */
 async function waiting(config: BuckleConfig, wider = true): Promise<string> {

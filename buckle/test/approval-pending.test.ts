@@ -61,7 +61,7 @@ describe('a pending approval on a node with no terminal', () => {
   it('logs one Approval pending line for every ask of a call, not only its first', async () => {
     configureRootLogger({})
     const root = mkdtempSync(join(tmpdir(), 'buckle-pending-asks-'))
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, 20)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), 20)
     const cli = setupCli({ terminal: null, logPending: true })
     const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs: 20, interaction: async () => ({ hold: 'grace', requestCli: cli.requestCli }) })
     const asks = ['/outside/one', '/outside/two'].map(subject => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] }))

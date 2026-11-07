@@ -322,7 +322,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // stands at each post, so a rename shows.
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, get workspaceName() { return config.serverName }, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   let notices: ApprovalNotices | undefined
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), workspaceId, config.approvalTimeoutMs, {
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,
     onExpired: requests => notices?.expired(requests),
     onNoticeQueued: () => { void notices?.flush() },
@@ -330,8 +330,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined, webhook ? { registry: approvals } : {})
   const noticeOwner = notices
   input.onApprovalCleanup(() => noticeOwner.settle())
-  // Before any call runs here, so a grant a stopped process left owed is in force for the first one.
-  await approvals.recoverGrants()
+  // Before any call runs here, so an ask an earlier build kept is answerable and a grant left owed is in force.
+  await approvals.recover()
   const auditHealth = input.auditHealth ?? createAuditHealth()
   // Each entry carries the workspace's name as it stands, beside its id (D85, Q15).
   const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, workspaceName: () => config.serverName, ...(input.serving ? { serving: input.serving } : {}) })

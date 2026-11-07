@@ -33,7 +33,7 @@ function queue() {
   roots.push(root)
   const filePath = join(root, 'approvals.json')
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-  const registry = createApprovalRegistry(grants, filePath, root)
+  const registry = createApprovalRegistry(grants, filePath)
   const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
   return { root, filePath, grants, registry, service }
 }
@@ -149,7 +149,7 @@ describe('a re-send of a large waiting group stays cheap under the approvals loc
         import { createFileGrantStore } from ${JSON.stringify(new URL('../common/adapters/grant-store/file-grant-store.ts', import.meta.url).href)};
         import { createApprovalRegistry } from ${JSON.stringify(new URL('../common/services/approvals/approval-registry.ts', import.meta.url).href)};
         const [root, token] = process.argv.slice(2);
-        const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants.json', workspace: root }), root + '/approvals.json', root);
+        const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants.json', workspace: root }), root + '/approvals.json');
         const started = Date.now();
         const decided = await registry.resolve({ token, approved: false, scope: 'once' }, 'cli');
         console.log(JSON.stringify({ ok: decided.ok, ms: Date.now() - started }));
@@ -223,7 +223,7 @@ describe('a re-send of a large nested script approved once', () => {
       import { createFileGrantStore } from ${JSON.stringify(new URL('../common/adapters/grant-store/file-grant-store.ts', import.meta.url).href)};
       import { createApprovalRegistry } from ${JSON.stringify(new URL('../common/services/approvals/approval-registry.ts', import.meta.url).href)};
       const [root, marker] = process.argv.slice(2);
-      const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants-other.json', workspace: root }), root + '/approvals.json', root);
+      const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants-other.json', workspace: root }), root + '/approvals.json');
       console.log('ready');
       while (!existsSync(marker)) await new Promise(resolve => setTimeout(resolve, 5));
       const started = Date.now();
@@ -295,7 +295,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
   it.skipIf(process.getuid?.() === 0)('prunes an expired ask from another process at the first ordinary call after the retry delay, and warns once', async () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const { root, filePath, grants, registry, service } = queue()
-    const other = createApprovalRegistry(grants, filePath, root)
+    const other = createApprovalRegistry(grants, filePath)
     const warn = vi.spyOn(logger, 'warn')
     try {
       expect(await allowed(registry)).toMatchObject({ kind: 'allow' })
@@ -358,7 +358,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
       const filePath = join(root, 'approvals.json')
       const sent: ApprovalNotice[] = []
       let notices: ApprovalNotices | undefined
-      const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), filePath, root, 0, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
+      const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), filePath, 0, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
       notices = createApprovalNotices(async (batch) => { sent.push(...batch) }, { registry, retryMs: 20 })
       return { root, filePath, registry, notices, sent }
     }
@@ -763,7 +763,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     vi.useFakeTimers({ toFake: ['Date'] })
     const { root, filePath, grants, registry, service } = queue()
     const expired: string[] = []
-    const watching = createApprovalRegistry(grants, filePath, root, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
+    const watching = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
     try {
       const [request] = (await issue(watching)).requests
       vi.setSystemTime(Date.now() + 11 * 60_000)
@@ -781,7 +781,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     try {
       await service.close()
       const expired: string[] = []
-      const serving = createApprovalRegistry(grants, filePath, root, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
+      const serving = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => expired.push(...requests.map(request => request.token)) })
       await serving.sweepIfDue()
       const [request] = (await issue(registry)).requests
       vi.setSystemTime(Date.now() + 11 * 60_000)
@@ -801,7 +801,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     vi.setSystemTime(Date.now() + 11 * 60_000)
     const sent: ApprovalNotice[] = []
     const notices = createApprovalNotices(async batch => { await new Promise(resolve => setTimeout(resolve, 20)); sent.push(...batch) })
-    const restarted = createApprovalRegistry(grants, filePath, root, 0, { onExpired: requests => notices.expired(requests) })
+    const restarted = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => notices.expired(requests) })
     const closing = createApprovalService({ registry: restarted, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, notices })
     await closing.close()
     expect(sent).toEqual([expect.objectContaining({ token: request!.token, event: 'expired' })])

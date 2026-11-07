@@ -48,6 +48,9 @@ the sandbox layout, the URL list, the browser, and the forge pack.
 
 The first release of [workspaces](../how-to/workspaces.md) leaves these open for a later release.
 
+- An earlier Buckle kept approvals under the workspace's folder, and this one keeps them under its
+  id. Run beside this one, an earlier `buckle approve` or `buckle serve` sees none of its asks, and
+  this one takes up the earlier one's when it next opens the workspace.
 - `disable` and `remove` check for running calls, then change the registry: a call that begins in
   another process between the two runs on, and `remove --purge` can delete its records under it.
   A call that begins in the process making the change keeps its runtime open until it ends, and

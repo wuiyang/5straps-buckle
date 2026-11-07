@@ -97,14 +97,14 @@ describe('approval severity delivery', () => {
     roots.push(root)
     const filePath = join(root, 'approvals.json')
     const grantStore = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-    const registry = createApprovalRegistry(grantStore, filePath, root)
+    const registry = createApprovalRegistry(grantStore, filePath)
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
     try {
       const call = { arguments: { from: 'src/lib', to: 'src/old-lib' }, cwd: '/workspace', description: 'Move a folder', effects: ['read /workspace/src/lib', 'write /workspace/src/old-lib'], complete: true as const }
       const issued = await registry.ask({ tool: 'fs_move', sessionId: 's', asks: [{ kind: 'ask', ...FILE_FLOOR_MARKS, rule: 'write_scope', subject: `move-tree:${ROOT}/src/lib`, reason: 'Moving the folder needs approval', offeredScopes: ['once', 'session', 'always'], severity }], call })
       const request = issued.requests[0]!
       expect(request).toMatchObject({ severity, reason: `[${severity}] Moving the folder needs approval` })
-      const reopened = createApprovalRegistry(grantStore, filePath, root)
+      const reopened = createApprovalRegistry(grantStore, filePath)
       expect(reopened.pending()[0]).toMatchObject({ severity })
       const challenge = service.challengeListing().challenges[0]?.challenge
       expect(challenge?.reason).toBe(request.reason)
@@ -132,7 +132,7 @@ describe('approval risk changes while a request waits', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-severity-join-'))
     roots.push(root)
     const grantStore = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-    const registry = createApprovalRegistry(grantStore, join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(grantStore, join(root, 'approvals.json'))
     const item = { kind: 'ask' as const, ...FILE_FLOOR_MARKS, rule: 'write_scope' as const, subject: `move-tree:${ROOT}/src/lib`, reason: 'A folder changes', offeredScopes: ['once' as const] }
     const call = { arguments: { from: 'src/lib', to: 'src/old-lib' }, cwd: '/workspace', description: 'Move a folder', effects: ['write /workspace/src/old-lib'], complete: true as const }
     const base = { tool: 'fs_move', sessionId: 's', requestId: 'same-action', call }

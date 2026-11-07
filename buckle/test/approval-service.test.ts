@@ -25,7 +25,7 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 function queue(root = mkdtempSync(join(tmpdir(), 'buckle-approval-service-'))) {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-  return { root, grants, registry: createApprovalRegistry(grants, join(root, 'approvals.json'), root, 15_000) }
+  return { root, grants, registry: createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000) }
 }
 
 function ask(subject: string, rule: PermissionRuleId = 'write_scope') {

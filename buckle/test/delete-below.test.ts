@@ -141,7 +141,7 @@ const WIDE: Extract<PermissionDecision, { kind: 'ask' }> = { kind: 'ask', ...FIL
 function queue() {
   const root = scratch()
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-  return { grants, registry: createApprovalRegistry(grants, join(root, 'approvals.json'), root, 15_000) }
+  return { grants, registry: createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000) }
 }
 
 describe('the approval queue', () => {

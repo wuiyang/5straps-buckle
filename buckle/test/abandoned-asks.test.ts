@@ -37,7 +37,7 @@ function clockAt(time: number): void {
 
 function queue() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-queue-'))
-  return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, null)
+  return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), null)
 }
 
 const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
@@ -132,9 +132,9 @@ describe('an abandoned ask', () => {
 
   it('makes room from its own workspace\'s abandoned asks alone, where two workspaces share one queue file', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-shared-'))
-    const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
-    const other = createApprovalRegistry(grants, join(root, 'approvals.json'), 'other', null)
-    const own = createApprovalRegistry(grants, join(root, 'approvals.json'), 'own', null)
+    const keyed = (workspace: string) => createFileGrantStore({ filePath: join(root, 'grants.json'), workspace })
+    const other = createApprovalRegistry(keyed('other'), join(root, 'approvals.json'), null)
+    const own = createApprovalRegistry(keyed('own'), join(root, 'approvals.json'), null)
     const older = await other.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
     await other.holdEnded({ tokens: older.requests.map(request => request.token), abandoned: true })
     const asked = await own.ask({ tool: 'fs_write', sessionId: 'mcp', asks: Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => outside(index)), holdMs: 30_000 })
@@ -334,7 +334,7 @@ describe('an abandoned ask under the other caps', () => {
   it('withdraws abandoned asks when the outbox of undelivered notices has no room for another ask, and tells it cancelled', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-outbox-'))
     const file = join(root, 'approvals.json')
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, root, 1, { durableNotices: true })
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, 1, { durableNotices: true })
     const older = await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
     await registry.holdEnded({ tokens: older.requests.map(request => request.token), abandoned: true })
     // Notices the receiver has not taken, leaving room for the waiting ask's two and no ask besides it.
@@ -351,7 +351,7 @@ describe('an abandoned ask under the other caps', () => {
   it('still refuses when the outbox has no room and no ask is abandoned', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-abandoned-outbox-'))
     const file = join(root, 'approvals.json')
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, root, 1, { durableNotices: true })
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), file, 1, { durableNotices: true })
     await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: [outside(0)], holdMs: 30_000 })
     const state = JSON.parse(readFileSync(file, 'utf8')) as { outbox: unknown[] }
     state.outbox = Array.from({ length: APPROVAL_OUTBOX_COUNT_MAX - 3 }, () => ({ id: crypto.randomUUID(), workspace: root, expiresAt: new Date(Date.now() + APPROVAL_OUTBOX_RETENTION_MS).toISOString(), notice: { token: crypto.randomUUID(), event: 'cancelled', at: new Date().toISOString() } }))

@@ -182,7 +182,7 @@ describe('the terminal question after the grace period', () => {
 
   it('records an answer given after the grace period, resolving the pending approval', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-grace-'))
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const held = heldQuestion()
     const result = await waitingService({ registry, graceMs: 200, requestCli: held.requestCli })()
     expect(result).toMatchObject({ settled: false })
@@ -334,7 +334,7 @@ describe('keys meant for another terminal question', () => {
 
   it('carries a terminal answer into the queue through the approval service', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-terminal-answer-'))
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const terminal = keyboardTerminal()
     const call = waitingService({ registry, graceMs: 15_000, requestCli: setupCli({ terminal }).requestCli, hold: 'prompt' })()
     await prompted(terminal, 1)

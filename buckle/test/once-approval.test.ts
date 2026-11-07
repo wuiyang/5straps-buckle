@@ -104,7 +104,7 @@ describe('which late onces a call spends', () => {
 
  it('isolates approvals between workspaces sharing the same state directory', async () => {
   const root = mkdtempSync('/tmp/buckle-workspace-'); roots.push(root)
-  const create = (workspace: string) => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), join(root, 'approvals.json'), workspace)
+  const create = (workspace: string) => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), join(root, 'approvals.json'))
   const first = create('/first'); const second = create('/second')
   const [request] = (await first.ask({ call: recorded, tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
   const decision = { token: request!.token, approved: true, scope: 'once' as const }

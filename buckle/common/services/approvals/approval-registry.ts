@@ -105,7 +105,7 @@ const marks = { floor: z.boolean().default(true), destructive: z.boolean().defau
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // owedGrant: the session or always grant a decision makes, kept with its resolved entry until the grant store holds it.
 // The entry commits first, so a grant never stands without its decision; one a stopped process left owed is written
-// when the workspace opens again (recoverGrants), or by the next decision.
+// when the workspace opens again (recover), or by the next decision.
 const owedGrantSchema = z.object({
   sessionId: z.string(), actor: z.string().optional(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
   denied: z.literal(true).optional(), pattern: z.literal(true).optional(), ...decidedBy,
@@ -386,8 +386,11 @@ export interface ApprovalRegistry {
   waitingAsk(token: string): PendingAsk | undefined
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
-  /** Writes the grants decisions left owed when a process stopped between the two writes; run as the workspace opens. */
-  recoverGrants(): Promise<void>
+  /**
+   * Run as the workspace opens: takes up the entries an earlier build kept under the workspace's folder, then writes the
+   * grants decisions left owed when a process stopped between the two writes.
+   */
+  recover(): Promise<void>
 }
 
 /** One call to withdraw, with its requestId hashed as the registry keeps it. */
@@ -413,7 +416,9 @@ export interface ApprovalRegistryOptions {
   onExpired?: (requests: ApprovalRequest[]) => void
 }
 
-export function createApprovalRegistry(grants: GrantStore, filePath: string, workspace = filePath, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
+/** The ledger is keyed by the grant store's workspace, so its asks and their grants never part. */
+export function createApprovalRegistry(grants: GrantStore, filePath: string, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
+  const { workspace } = grants
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [] }, lockDeadlineMs: options.lockDeadlineMs })
   const durableNotices = options.durableNotices === true
   const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
@@ -593,6 +598,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     return named
   }
 
+  /** The entries kept under another key; the file is in this workspace's own state directory, so each is its own. */
+  function foreignEntries(state: State): Array<{ workspace: string }> {
+    return [...state.pending, ...state.once, ...state.resolved, ...state.outbox].filter(entry => entry.workspace !== workspace)
+  }
+
   /**
    * Writes this workspace's owed grants under the approvals lock (approvals, then grants), each mark cleared once its
    * grant is held. The first failure stops the pass and is returned, leaving the rest owed for the next one.
@@ -727,12 +737,22 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
 
     unspent: sessionId => unspentOnces(read().once, { workspace, sessionId }),
 
-    async recoverGrants() {
+    async recover() {
       try {
-        if (!read().resolved.some(entry => entry.workspace === workspace && entry.owedGrant !== undefined)) return
-        const failure = await update(state => settleGrants(state))
+        const found = read()
+        const owed = found.resolved.some(entry => entry.owedGrant !== undefined)
+        if (foreignEntries(found).length === 0 && !owed) return
+        const failure = await update(async (state, commit) => {
+          const adopted = foreignEntries(state)
+          for (const entry of adopted) entry.workspace = workspace
+          if (adopted.length > 0) {
+            await commit()
+            logger.info('Took up the approvals an earlier build kept under the workspace folder', { entries: adopted.length })
+          }
+          return settleGrants(state)
+        })
         if (failure !== undefined) throw failure
-        logger.info('Wrote the grants a stopped process left owed')
+        if (owed) logger.info('Wrote the grants a stopped process left owed')
       } catch (error) {
         // Fail closed: the grant stays owed and its calls ask again, while the workspace opens as it did.
         if (!alreadyReported(error)) logger.warn('Could not write the grants decisions left owed; they are written at the next decision', { error: withoutCause(error) })

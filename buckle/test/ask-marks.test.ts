@@ -113,7 +113,7 @@ describe('the ask record', () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-marks-'))
     roots.push(root)
     const file = join(root, 'approvals.json')
-    return { file, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: '/workspace' }), file, '/workspace') }
+    return { file, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: '/workspace' }), file) }
   }
   const call = { arguments: { paths: ['a.txt'] }, cwd: '/workspace', description: null, effects: [], complete: true as const }
 

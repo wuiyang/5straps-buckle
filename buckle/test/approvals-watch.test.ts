@@ -29,7 +29,7 @@ function node(): BuckleConfig {
 
 /** A second registry over the node's state files, which is what a second terminal holds. */
 function registryOf(config: BuckleConfig): ApprovalRegistry {
-  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.workspaceId)
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config))
 }
 
 /** The approval service a `buckle approvals --watch` process answers through, over the same state files. */

@@ -182,7 +182,7 @@ describe('the question a hinted call still puts to the terminal (review L3)', ()
 
   it('asks the terminal the same whatever the hint says: the hint sets only how long the caller is held (owner ruling of 2026-09-28)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-join-nowait-'))
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
 
@@ -197,7 +197,7 @@ describe('the question a hinted call still puts to the terminal (review L3)', ()
 describe('ordering inside a request and at close (review L5)', () => {
   function queue() {
     const root = mkdtempSync(join(tmpdir(), 'buckle-join-order-'))
-    return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
   }
   const call = { sessionId: 's', requestId: 'r', tool: 'fs_write', asks: [outside(1)], call: { arguments: { path: '/outside/1', content: 'x' }, cwd: '/workspace', description: 'Write to /outside/1', effects: ['write /outside/1'], complete: true as const } }
 

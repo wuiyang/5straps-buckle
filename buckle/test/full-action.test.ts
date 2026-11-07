@@ -316,7 +316,7 @@ describe('every approval field a person or a relay reads is redacted (owner deci
   it('shows a reason as the free text it is, hides a named key\'s env-style line in it, and keeps each rule\'s subject as its identity', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-relay-'))
     roots.push(root)
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const announced: ApprovalRequest[] = []
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, announce: async (requests) => { announced.push(...requests) } })
     await service.request({ sessionId: 'chat-1', requestId: 'relay', tool: 'web_fetch', wait: { mode: 'none' }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: `Reach https://api.example.com/status\nAPI_TOKEN=${SECRET_B}`, offeredScopes: ['once'] }] })
@@ -359,7 +359,7 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
   it('refuses at the queue an ask whose recorded call passes the budget, writing nothing', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-budget-'))
     roots.push(root)
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const call = { arguments: { content: 'x'.repeat(MAX_ASK_BYTES) } as JsonValue, cwd: root, description: null, effects: [], complete: true as const }
     await expect(registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call })).rejects.toBeInstanceOf(ActionTooLargeError)
     expect(registry.pending()).toEqual([])
@@ -368,7 +368,7 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
   it('refuses a new ask while the asks waiting hold the queue\'s budget, and takes it once one is answered', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-queue-'))
     roots.push(root)
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const each = Math.floor(MAX_PENDING_BYTES / 4) - 4_096
     const ask = (index: number) => registry.ask({ tool: 'fs_write', sessionId: `chat-${index}`, actor: `actor-${index}`, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { content: String(index).repeat(each) }, cwd: root, description: null, effects: [], complete: true } })
     const tokens: string[] = []
@@ -386,7 +386,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
   function queue(): { root: string; registry: ApprovalRegistry } {
     const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-budgets-'))
     roots.push(root)
-    return { root, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root) }
+    return { root, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json')) }
   }
   const write = (subject: string) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })
   const whole = (bytes: number, marker = 'x') => ({ arguments: { content: marker.repeat(bytes) } as JsonValue, cwd: '/workspace', description: null, effects: [], complete: true as const })
@@ -442,7 +442,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
     const timed = async () => { const times: number[] = []; for (let index = 0; index < 5; index++) { const started = performance.now(); expect(await read()).toMatchObject({ outcome: 'ok' }); times.push(performance.now() - started) } return times.sort((a, b) => a - b)[2]! }
     const baseline = await timed()
     // About 60 MiB waiting, from four callers, as the review's 66 MB.
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.workspaceId)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config))
     for (const caller of ['a', 'b', 'c', 'd']) await registry.ask({ tool: 'fs_write', sessionId: `s-${caller}`, actor: caller, asks: [write(`/${caller}`)], call: whole(15 * 1_024 * 1_024, caller) })
     const before = statSync(approvalsPath(config))
     const loaded = await timed()

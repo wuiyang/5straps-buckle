@@ -3,7 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { approvalsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -60,6 +63,18 @@ describe('the ask ledger key', () => {
     expect([...ledger.pending, ...ledger.once, ...ledger.resolved].map(entry => entry.workspace)).toEqual([runtime.workspaceId, runtime.workspaceId, runtime.workspaceId])
   })
 
+  it('takes its key from the grant store, so an ask and its grant are kept under one workspace', async () => {
+    const { root } = setUp()
+    const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'))
+    const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session'] }], call: { arguments: {}, cwd: root, description: null, complete: true } })).requests
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, 'cli')).toMatchObject({ ok: true })
+
+    const ledger = JSON.parse(readFileSync(join(root, 'approvals.json'), 'utf8')) as Ledger
+    expect(ledger.resolved.map(entry => entry.workspace)).toEqual(['workspace-id'])
+    expect(grants.list()).toEqual([expect.objectContaining({ workspace: 'workspace-id', subject: '/outside' })])
+  })
+
   it('answers, after the workspace folder moved, an ask recorded before the move', async () => {
     const { root, workspace, config } = setUp()
     const before = await open(config)
@@ -73,18 +88,23 @@ describe('the ask ledger key', () => {
     expect(after.approvalService.pending()).toEqual([])
   })
 
-  it('reads a ledger whole that also holds an entry under another key, and leaves that entry alone', async () => {
+  it('takes up, as the workspace opens, every entry an earlier build kept under the folder', async () => {
     const { config } = setUp()
-    const runtime = await open(config)
-    tokenOf(await write(runtime, 'one/a.md'))
-    const ledger = ledgerOf(config)
-    const elsewhere = { ...ledger.pending[0]!, workspace: config.cwd, request: { ...ledger.pending[0]!.request, token: '00000000-0000-4000-8000-000000000001' } }
-    writeFileSync(approvalsPath(config), JSON.stringify({ ...ledger, pending: [...ledger.pending, elsewhere] }))
+    const before = await open(config)
+    const waiting = tokenOf(await write(before, 'one/a.md'))
+    const decided = tokenOf(await write(before, 'one/b.md'))
+    expect(await before.approvalService.answer({ decision: { token: decided, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Record<string, unknown>
+    const folderKeyed = (entries: unknown) => (entries as Array<Record<string, unknown>>).map(entry => ({ ...entry, workspace: config.cwd }))
+    const notice = { id: '00000000-0000-4000-8000-000000000002', workspace: config.cwd, expiresAt: new Date(Date.now() + 60_000).toISOString(), notice: { token: decided, event: 'answered', at: new Date().toISOString(), scope: 'once' } }
+    writeFileSync(approvalsPath(config), JSON.stringify({ ...ledger, pending: folderKeyed(ledger.pending), once: folderKeyed(ledger.once), resolved: folderKeyed(ledger.resolved), outbox: [notice] }))
 
-    const own = runtime.approvalService.pending().map(request => request.token)
-    expect(own).toEqual([ledger.pending[0]!.request.token])
-    expect(await runtime.approvalService.answer({ decision: { token: elsewhere.request.token, approved: true, scope: 'once' }, source: 'cli' })).toEqual({ ok: false, reason: 'Approval token is unknown or expired' })
-    expect(await runtime.approvalService.answer({ decision: { token: own[0]!, approved: false, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
-    expect(ledgerOf(config).pending.map(entry => entry.request.token)).toEqual([elsewhere.request.token])
+    const after = await open(config)
+    const keys = (name: string) => (JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Record<string, Array<{ workspace: string }>>)[name]!.map(entry => entry.workspace)
+    expect({ pending: keys('pending'), once: keys('once'), resolved: keys('resolved'), outbox: keys('outbox') }).toEqual({ pending: [after.workspaceId], once: [after.workspaceId], resolved: [after.workspaceId], outbox: [after.workspaceId] })
+    expect(after.approvalService.pending().map(request => request.token)).toEqual([waiting])
+    expect(after.approvals.pendingDeliveries().map(delivery => delivery.id)).toEqual([notice.id])
+    expect(await write(after, 'one/b.md')).toMatchObject({ outcome: 'ok' })
+    expect(await after.approvalService.answer({ decision: { token: waiting, approved: false, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
   })
 })
