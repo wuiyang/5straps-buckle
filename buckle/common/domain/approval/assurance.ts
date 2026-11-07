@@ -1,8 +1,4 @@
-import type { SourceKind } from '../../types/ports/approval-source.js'
-
-/** Ranked low to high. `BUCKLE-D14`: only `local` and above decide for longer than the call. */
-export const ASSURANCE_ORDER = ['relayed', 'local', 'key', 'idp'] as const
-export type Assurance = (typeof ASSURANCE_ORDER)[number]
+import { ASSURANCE_ORDER, type Assurance, type SourceKind } from '../../types/ports/approval-source.js'
 
 export interface SourceRights {
   assurance: Assurance

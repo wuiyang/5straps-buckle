@@ -1,12 +1,17 @@
 import type { ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
-import type { Assurance } from '../../domain/approval/assurance.js'
-import type { FLOOR_WARNING } from '../../domain/approval/floor-note.js'
-import type { ApprovalSource } from './approval-source.js'
+import type { ApprovalSource, Assurance } from './approval-source.js'
 
 // The approval backend contract, as far as this build fills it: core implements ApprovalHost, a backend ApprovalBackend.
 // A backend carries asks out and decisions in, and enforces nothing; the decision guard runs every check.
 
 export type ContractVersion = 1
+
+/**
+ * The one line a floor ask's note carries: the built-in floor (sudo and the destructive commands) or the workspace's
+ * destructive list asked, and no stage of the decision AI ever passes such a call. The ledger records these words, so a
+ * change to them must still read the words recorded before it.
+ */
+export const FLOOR_WARNING = 'a command at the destructive floor always needs a person'
 
 /**
  * How long a gated call is held for an answer:

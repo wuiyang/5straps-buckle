@@ -13,7 +13,7 @@ import type { AskCause, PermissionDecision } from '../../domain/permission/decis
 import { CODE_CHANGED_REASON, type CodeBinding, floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
 import type { QuickRating, RatingNote } from '../../types/ports/approval-backend.js'
-import { FLOOR_WARNING } from '../../domain/approval/floor-note.js'
+import { FLOOR_WARNING } from '../../types/ports/approval-backend.js'
 import { clippedReasoning, clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'

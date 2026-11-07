@@ -1,7 +1,7 @@
 import { JsonValueSchema, type JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
 import type { RatingNote } from '../../types/ports/approval-backend.js'
-import { FLOOR_WARNING } from './floor-note.js'
+import { FLOOR_WARNING } from '../../types/ports/approval-backend.js'
 
 const levelSchema = z.enum(['safe', 'warning', 'danger'])
 const quickNoteSchema = z.union([

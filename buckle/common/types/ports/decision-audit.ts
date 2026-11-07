@@ -1,7 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
-import type { Assurance } from '../../domain/approval/assurance.js'
 import type { ApprovalErrorCode } from './approval-backend.js'
-import type { ApprovalSource } from './approval-source.js'
+import type { ApprovalSource, Assurance } from './approval-source.js'
 
 /** What carried a decision: nothing beyond its route, a device's signed request, or the envelope the paired key sealed. */
 export type DecisionProofKind = 'none' | 'device' | 'envelope'

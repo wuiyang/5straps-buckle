@@ -133,6 +133,12 @@ describe('the approval boundary', () => {
     expect(minters).toEqual([REQUEST_VERIFIER])
   })
 
+  it('keeps the approval ports self-contained: they import nothing of core but each other', () => {
+    const ports = ['common/types/ports/approval-backend.ts', 'common/types/ports/approval-source.ts', 'common/types/ports/decision-audit.ts']
+    const reaching = ports.flatMap(port => importsOf(join(PACKAGE_ROOT, port)).filter(specifier => specifier.startsWith('.') && !specifier.startsWith('./')).map(specifier => `${port}: ${specifier}`))
+    expect(reaching).toEqual([])
+  })
+
   it('keeps every adapter off the approval services', () => {
     expect(importing(['common/adapters'], /services\/approvals\//)).toEqual([])
   })

@@ -1,3 +1,7 @@
+/** Ranked low to high. `BUCKLE-D14`: only `local` and above decide for longer than the call. */
+export const ASSURANCE_ORDER = ['relayed', 'local', 'key', 'idp'] as const
+export type Assurance = (typeof ASSURANCE_ORDER)[number]
+
 /** The routes core holds; each is its own kind, and no configured backend may take its id. */
 export const BUILT_IN_SOURCES = ['terminal', 'cli', 'forms', 'devices', 'judge', 'sealed'] as const
 export type BuiltInSource = (typeof BUILT_IN_SOURCES)[number]
