@@ -1,13 +1,13 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
-import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
+import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait } from '@5straps/protocol'
 import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
-import type { ApprovalBackend, ApprovalErrorCode, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
 import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
@@ -15,10 +15,11 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
-import { listedApprovals, type ListedApproval } from './approval-listing.js'
+import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
+import { answerOf, backendReceipt, decisionOf, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
-import type { ApprovalRegistry, Departure, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -98,6 +99,8 @@ export interface ApprovalAnswer {
   consumeNotAfter?: number
   /** The code an approved `once` binds to, where the decision AI's thorough stage approved it on request (fix brief 9, B31). */
   code?: CodeBinding
+  /** Grant the ask's wider subject in place of its own, as the ledger records it. */
+  widen?: 'below'
 }
 
 /**
@@ -125,13 +128,12 @@ export interface DecidedRecord {
   grantOwed?: true
 }
 
-export interface ApprovalService {
+export interface ApprovalService extends CoreApprovalApi {
   /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
   request(input: ApprovalAskInput): Promise<ApprovalWaitResult>
   /**
-   * The only path that records a verdict: checks it against the ask, then wakes whoever waits on it.
-   * Every route answers here: the terminal, `buckle approve`, `buckle approvals --watch`, MCP
-   * elicitation and the setup face.
+   * Core's one way a verdict is recorded, under any source: checks it against the ask, then wakes whoever waits on it.
+   * A core client decides through `decide` and a backend through its host, each under the source core holds for it.
    */
   answer(input: ApprovalAnswer): Promise<Resolution>
   /**
@@ -140,45 +142,13 @@ export interface ApprovalService {
    * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof, as the `devices` source.
    */
   decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
-  /**
-   * The challenges and each large whole call once, by its signed full-content reference. The device verifies
-   * that reference and the tool/arguments digest before showing the shared directory, summary and effects. A challenge
-   * carries the workspace's name only where `workspaceName` asks for it: a device from before the name existed refuses
-   * a challenge with a field it does not know, so the listing is what it always was unless the device asks.
-   */
-  challengeListing(options?: { workspaceName?: boolean }): ChallengeListing
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
-  /**
-   * The setup face's explicit cancel for one call (owner decision D6): withdraws its asks still
-   * waiting, tells the webhook they were cancelled, and wakes the callers and questions waiting on
-   * them; drops its answered `once` approvals no call spent. Returns both lists of tokens.
-   */
-  withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
-  /** The requests still waiting in this workspace's queue. */
-  pending(): ApprovalRequest[]
-  /** The asks still waiting, each with the whole call it came from, for a terminal that shows them. */
-  waiting(): PendingAsk[]
-  /** One ask still waiting, with its call, read alone: what `buckle approve` shows. */
-  waitingAsk(token: string): PendingAsk | undefined
-  /** The waiting requests as a listing carries them: each group's whole call once, named by `callRef` from each of its asks. */
-  listing(): ListedApproval[]
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
    */
   close(): Promise<void>
-}
-
-/** Every waiting ask's challenge, with each large whole call carried once by its signed reference. */
-export interface ChallengeListing {
-  challenges: Array<{ token: string; challenge: ApprovalChallenge | null }>
-  calls: Record<string, ShownApprovalCall>
-}
-
-/** A withdrawal, with its selector as the registry keeps it (a requestId hashed) for the audit entry (review L14 of B23-B25). */
-export interface CallWithdrawal extends GroupWithdrawal {
-  selector: GroupSelector
 }
 
 /** The ledger reads and writes the service makes. */
@@ -370,12 +340,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
         ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
         ...(input.code === undefined ? {} : { code: input.code }),
+        ...(input.widen === undefined ? {} : { widen: input.widen }),
       })
       await auditOutcome({ decision: audited, result })
       if (!result.ok) return result
       if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })
       wake(input.decision.token)
       return result
+    },
+
+    async decide(input) {
+      const answer = answerOf(input)
+      return receiptOf({ decision: answer.decision, source: answer.source, result: await service.answer(answer) })
     },
 
     async decideSealed(input) {
@@ -580,17 +556,16 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       })
   }
 
-  /** A terminal decision on an ask routed to it, as the decision guard then rates it; one it cannot apply is audited as refused. */
+  /** A terminal decision on an ask routed to it, as the decision guard then rates it; one never routed to it is audited as refused. */
   async function decideRouted(input: DecisionInput): Promise<DecisionReceipt> {
     const { decision: body } = input
-    const source = host.source
-    const asked = routed.get(body.token)
-    const decision = asked === undefined ? undefined : approvalDecisionOf(body, asked)
-    if (decision) return receiptOf({ decision, source, result: await service.answer({ decision, source }) })
-    const result: Resolution = asked === undefined ? { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' } : { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant' }
-    const audited: AuditedDecision = { token: body.token, approved: body.outcome === 'approve', scope: body.scope, source }
+    const { source } = host
+    const decision = decisionOf(body)
+    if (routed.has(body.token)) return backendReceipt(receiptOf({ decision, source, result: await service.answer({ decision, source, ...(body.widen === undefined ? {} : { widen: body.widen }) }) }))
+    const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
+    const audited: AuditedDecision = { token: body.token, approved: decision.approved, scope: body.scope, source }
     if (await auditReceived(audited)) await auditOutcome({ decision: audited, result })
-    return receiptOf({ decision: { token: body.token, approved: audited.approved, scope: body.scope }, source, result })
+    return backendReceipt(receiptOf({ decision, source, result }))
   }
 
   /** Whether the decision may go on: a received entry that cannot be written blocks it only where the node says so. */
@@ -820,27 +795,6 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
 }
 
 const AUDIT_UNAVAILABLE: Resolution = { ok: false, code: 'audit_unavailable', reason: 'The decision could not be audited, so it was not applied; the ask still waits' }
-
-function refused(code: ApprovalErrorCode, message: string): DecisionReceipt {
-  return { status: 'refused', error: { code, message, retryable: code === 'audit_unavailable' } }
-}
-
-/** The decision a backend's body makes on this ask; undefined where it widens an ask that has no wider subject. */
-function approvalDecisionOf(body: DecisionBody, asked: FullAsk): ApprovalDecision | undefined {
-  const decision: ApprovalDecision = { token: body.token, approved: body.outcome === 'approve', scope: body.scope }
-  if (body.widen === undefined) return decision
-  const wider = asked.policy.widerSubject
-  return wider === undefined ? undefined : { ...decision, subject: wider }
-}
-
-/** A decision's receipt, rated as the guard rated the source that sent it. */
-function receiptOf(input: { decision: ApprovalDecision; source: ApprovalSource; result: Resolution }): DecisionReceipt {
-  const { result } = input
-  if (!result.ok) return refused(result.code, result.reason)
-  const state = input.decision.approved ? 'approved' : 'denied'
-  if (result.repeated) return { status: 'repeated', state }
-  return { status: 'applied', state, assurance: rightsOf(input.source.kind).assurance, ...(result.grantOwed ? { grantOwed: true } : {}) }
-}
 
 /** How an ask that left the queue ended; one another process dropped is expired past its stated expiry, else cancelled. */
 function closingEvent(approval: ApprovalRequest, departure: Departure | undefined): LifecycleEvent {

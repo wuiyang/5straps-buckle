@@ -17,7 +17,6 @@ import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { shownCall } from '../common/domain/approval/asked-call.js'
 import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
-import { SOURCES } from '../common/types/ports/approval-source.js'
 import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -633,10 +632,10 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
     process.stdout.write(`${input.approveIfSafe ? 'Not safe at 0.8 or above, so nothing is approved' : 'Nothing is approved'}; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
     return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
   }
-  const decidedBy = `judge:${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`.slice(0, 200)
+  const rater = `${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`
   // The once binds to the code the thorough stage rated: a retry after that code changed does not spend it (fix brief 9, B31).
-  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.judge, decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
-  if (!answered.ok) return { ...fail(`${answered.reason} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
+  const receipt = await runtime.approvalService.decide({ source: 'judge', decision: { token, outcome: 'approve', scope: 'once' }, rater, ...(judged.bound ? { code: judged.bound } : {}) })
+  if (receipt.status === 'refused') return { ...fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
   process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's ${judged.passedBy} stage's safe verdict, as you asked.\n`)
   return { exitCode: 0, detail: `judge ${token} safe, approved once`, judge: auditOf(judged, true) }
 }
@@ -699,7 +698,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   // The named ask alone, and its call file alone, however many asks its call made (review M1 of the slice 5 re-review).
   const ask = runtime.approvalService.waitingAsk(token)
   // --below grants the ask's wider subject (the delete policy brief): a delete's folder and its subfolders, for the session or always.
-  const below = values.below === true ? belowSubject({ ask, token, scope: scope.data, deny: values.deny === true, host: values.host !== undefined }) : null
+  const below = values.below === true ? belowFolder({ ask, token, scope: scope.data, deny: values.deny === true, host: values.host !== undefined }) : null
   if (below !== null && 'refusal' in below) return fail(below.refusal)
   if (ask) process.stdout.write(`${token}\n${describeWaitingAsk({ ask, node: input.config.serverId, runtime }).join('\n')}\n`)
   // A token no longer waiting reaches the queue as it is: it can repeat the decision already recorded, and decide nothing new.
@@ -713,35 +712,36 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
     }
   }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
-  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, source: SOURCES.cli, ...(values.host === undefined ? {} : { widenTo: values.host }) })
-  if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceName()}`)
+  const receipt = await runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }, ...(values.host === undefined ? {} : { hostPattern: values.host }) })
+  if (receipt.status === 'refused') return fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`)
   // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
-  const owed = result.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''
+  const owed = receipt.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''
   const recorded = (line: string, detail?: string): CliResult => {
     process.stdout.write(`${line}${owed}\n`)
-    const noted = [detail, result.grantOwed ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
+    const noted = [detail, receipt.grantOwed ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
     return { exitCode: 0, ...(noted === '' ? {} : { detail: noted }) }
   }
-  if (result.granted !== undefined) return recorded(`Approved ${token} (${scope.data}) for ${printable(result.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}`, `write_scope ${scope.data} approval widened to the folder and its subfolders`)
-  if (result.widened) {
-    const { pattern, askedBy } = result.widened
+  const applied = receipt.status === 'applied' ? receipt : undefined
+  if (applied?.granted !== undefined) return recorded(`Approved ${token} (${scope.data}) for ${printable(applied.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}`, `write_scope ${scope.data} approval widened to the folder and its subfolders`)
+  if (applied?.widened) {
+    const { pattern, askedBy } = applied.widened
     return recorded(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceName()}`, `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}`)
   }
   return recorded(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}`)
 }
 
 /**
- * The subject `--below` grants: the waiting ask's wider one, and the folder it names, or why there is none to grant. It
- * widens an approval, never a denial, and a host pattern is the other widening, which does not combine with it.
+ * The folder `--below` grants, named by the waiting ask's wider subject, or why there is none to grant. It widens an
+ * approval, never a denial, and a host pattern is the other widening, which does not combine with it.
  */
-function belowSubject(input: { ask: PendingAsk | undefined; token: string; scope: GrantScope; deny: boolean; host: boolean }): { subject: string; folder: string } | { refusal: string } {
+function belowFolder(input: { ask: PendingAsk | undefined; token: string; scope: GrantScope; deny: boolean; host: boolean }): { folder: string } | { refusal: string } {
   if (input.deny) return { refusal: '--below widens an approval; deny without it' }
   if (input.scope === 'once') return { refusal: 'A once approval covers the one call that asked; grant the folder and its subfolders with --scope session or --scope always' }
   if (input.host) return { refusal: '--below and --host do not combine: --host widens a network approval, --below a delete outside the workspace\'s folder' }
   if (!input.ask) return { refusal: `Not approved: nothing named ${printable(input.token)} is waiting for a decision, so --below has no folder to grant` }
   const wider = input.ask.request.widerSubject
   if (wider === undefined) return { refusal: `Not approved: ${printable(input.token)} offers no folder and subfolders to grant; --below takes a delete outside the workspace's folder. Approve it without --below` }
-  return { subject: wider, folder: floorSubjectPath(wider) ?? wider }
+  return { folder: floorSubjectPath(wider) ?? wider }
 }
 
 /** The decision AI's line for a waiting ask, where its call carries a note about its command (D91). */

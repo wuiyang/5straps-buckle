@@ -287,6 +287,8 @@ export interface ResolveOptions {
   consumeNotAfter?: number
   /** The code an approved `once` binds to: the decision AI's thorough stage approved it on request (fix brief 9, B31). */
   code?: CodeBinding
+  /** Grant the ask's wider subject, read under the lock from the ask, waiting or resolved, so a repeat names the same one. */
+  widen?: 'below'
 }
 
 /**
@@ -657,11 +659,14 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    * decision that makes a grant, or meets one owed, commits before any grant is written, and `progress` then holds it.
    */
   async function applyDecision(input: { state: State; commit: () => Promise<void>; claim: DecisionClaim; options: ResolveOptions; progress: { applied?: AppliedDecision } }): Promise<Resolution> {
-    const { state, commit, claim, options, progress } = input
-    const { decision } = claim
+    const { state, commit, options, progress } = input
+    const { token } = input.claim.decision
     const now = Date.now()
-    const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
-    const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
+    const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === token)
+    const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === token) : undefined
+    const decision = widened({ decision: input.claim.decision, widen: options.widen, request: (approval ?? previous)?.request })
+    if (decision === null) return { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant' }
+    const claim: DecisionClaim = { ...input.claim, decision }
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
     const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
     const verdict = guardDecision({ claim, ledger, now })
@@ -707,6 +712,13 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
     if (progress.applied) await settleGrants(state, commit)
     return resolution
+  }
+
+  // An ask the ledger does not hold keeps the decision as sent, which the decision guard refuses.
+  function widened(input: { decision: ApprovalDecision; widen: ResolveOptions['widen']; request: ApprovalRequest | undefined }): ApprovalDecision | null {
+    if (input.widen === undefined || input.request === undefined) return input.decision
+    const wider = input.request.widerSubject
+    return wider === undefined ? null : { ...input.decision, subject: wider }
   }
 
   const registry: ApprovalRegistry = {

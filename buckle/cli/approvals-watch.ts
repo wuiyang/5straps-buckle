@@ -1,15 +1,15 @@
 import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
-import type { ApprovalDecision, ApprovalRequest, GrantScope } from '@5straps/protocol'
+import type { ApprovalRequest, GrantScope } from '@5straps/protocol'
 import { describeQuestion, marked } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
-import type { ApprovalService } from '../common/services/approvals/approval-service.js'
+import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
 import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
-import { SOURCES } from '../common/types/ports/approval-source.js'
+import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 
 /**
  * The node has no push channel for approvals: a request is a row in the state directory's
@@ -38,9 +38,9 @@ const WIDER_KEYS: typeof SCOPE_KEYS = [
 export interface WatchSource {
   /**
    * The asks waiting, each with the whole call it came from, the requests alone for the check a question on screen
-   * makes while it waits, and the answer path `buckle approve` uses.
+   * makes while it waits, and the decision `buckle approve` makes.
    */
-  approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>
+  approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide'>
   /** Each answer is audited on its own, in its workspace's log, as the `buckle approve` it stands in for. */
   actions: ActionLog
   workspaceId: string
@@ -223,27 +223,28 @@ async function askOne(context: AskContext): Promise<Ending> {
   }
 }
 
-function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_KEYS): ApprovalDecision | null {
-  if (request.rule === 'sensitive_path' && (answer === 'ds' || answer === 'da')) return { token: request.token, approved: false, scope: answer === 'ds' ? 'session' : 'always' }
-  if (answer === 'd') return { token: request.token, approved: false, scope: 'once' }
+function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_KEYS): DecisionBody | null {
+  if (request.rule === 'sensitive_path' && (answer === 'ds' || answer === 'da')) return { token: request.token, outcome: 'deny', scope: answer === 'ds' ? 'session' : 'always' }
+  if (answer === 'd') return { token: request.token, outcome: 'deny', scope: 'once' }
   const chosen = offered.find(entry => entry.key === answer)
   if (!chosen) return null
-  return { token: request.token, approved: true, scope: chosen.scope, ...(chosen.wider && request.widerSubject !== undefined ? { subject: request.widerSubject } : {}) }
+  return { token: request.token, outcome: 'approve', scope: chosen.scope, ...(chosen.wider && request.widerSubject !== undefined ? { widen: 'below' as const } : {}) }
 }
 
 /**
- * The same call `buckle approve` makes, through the approval service: the owner's own process, so
+ * The same decision `buckle approve` makes, through the core approval API: the owner's own process, so
  * the `cli` source. It is audited the same way too, one entry per answer, so a session that
  * grants several leaves several.
  */
-async function record(context: AskContext, decision: ApprovalDecision): Promise<void> {
-  const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.ok, describe: outcome => (outcome.ok && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.answer({ decision, source: SOURCES.cli }) })
-  if (!result.ok) {
-    context.output.write(`  Not recorded: ${result.reason}.\n`)
+async function record(context: AskContext, decision: DecisionBody): Promise<void> {
+  const receipt = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
+    isSuccessful: outcome => outcome.status !== 'refused', describe: outcome => (outcome.status !== 'refused' && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.decide({ source: 'cli', decision }) })
+  if (receipt.status === 'refused') {
+    context.output.write(`  Not recorded: ${receipt.error.message}.\n`)
     return
   }
-  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${result.granted === undefined ? '' : ` for ${printable(result.granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${result.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
+  const granted = receipt.status === 'applied' ? receipt.granted : undefined
+  context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${receipt.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
 }
 
 /** The workspace a source's commands name: its name where the source carries one, else its id. */

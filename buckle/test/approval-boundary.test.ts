@@ -14,6 +14,8 @@ const INVOKER = 'common/services/invocation/invoker.ts'
 const LEDGER_OR_GRANT_ADAPTER = /from '[^']*(?:approvals\/approval-registry|approvals\/once-store|adapters\/grant-store\/[^']*)\.js'/
 // The decision guard's checks run in the registry, which holds the ledger, and nowhere else.
 const GUARDS = /\b(?:guardDecision|screenDecision)\(/
+// The approval service's own answer, which takes any source; a core client decides through `decide`, naming its own.
+const ANSWERS_ON_SERVICE = /\b(?:approvals|approvalService)\??\.answer\(/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
@@ -76,6 +78,13 @@ describe('the approval boundary', () => {
       .map(file => relative(PACKAGE_ROOT, file))
       .filter(file => file !== GUARD)
     expect(callers).toEqual([REGISTRY])
+  })
+
+  it('lets the CLI approvers decide through the core approval API alone', () => {
+    const callers = sourceFiles('cli')
+      .filter(file => ANSWERS_ON_SERVICE.test(readFileSync(file, 'utf8')))
+      .map(file => relative(PACKAGE_ROOT, file))
+    expect(callers).toEqual([])
   })
 
   it('keeps every adapter off the approval services', () => {

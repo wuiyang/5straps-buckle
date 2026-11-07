@@ -62,7 +62,7 @@ function keyboardTerminal() {
 /** An action log of its own, for a watch whose audit the test does not read. */
 const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
-function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'answer'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
   const done = watchApprovals({ sources: async () => [{ approvals, actions, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
@@ -277,15 +277,15 @@ describe('buckle approvals --watch', () => {
       token: 'expiring', rule: 'read_scope', subject: '/shots', reason: 'outside the sandbox', tool: 'fs_read',
       offeredScopes: ['once'], expiresAt: new Date(Date.now() + 300).toISOString(),
     }
-    const answer = vi.fn()
+    const decide = vi.fn()
     const live = () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now())
-    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, answer })
+    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, decide })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')
     await new Promise(resolve => setTimeout(resolve, 100))
 
-    expect(answer).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
     terminal.type('\x03')
     expect(await done).toEqual({ exitCode: 0 })
   })
