@@ -210,9 +210,16 @@ describe('the terminal backend against the contract kit', () => {
     await tick()
     await backend.close()
     await submitted
-    expect(await backend.submit(asks, live())).toEqual({ kind: 'accepted', refs: [] })
+    expect(await backend.submit(asks, live())).toEqual({ kind: 'declined', reason: 'closed' })
     expect(terminal.asked).toHaveLength(1)
     expect(host.decided).toEqual([])
+  })
+
+  it('declines a submit before it is open', async () => {
+    const terminal = answering(['once'])
+    const backend = createTerminalBackend({ requester: async () => terminal.requestCli })
+    expect(await backend.submit([askFor('a')], live())).toEqual({ kind: 'declined', reason: 'not open' })
+    expect(terminal.asked).toEqual([])
   })
 
   it('asks nobody where the operation has no terminal', async () => {

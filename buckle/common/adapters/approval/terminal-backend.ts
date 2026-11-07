@@ -11,6 +11,9 @@ export interface TerminalBackendOptions {
 
 const CAPABILITIES: BackendCapabilities = { contractVersion: 1, decides: true, scopes: ['once', 'session', 'always'], cancels: true, revokes: false }
 const ACCEPTED: SubmitResult = { kind: 'accepted', refs: [] }
+// Not this backend's to ask, so core may send the asks to a fallback route.
+const NOT_OPEN: SubmitResult = { kind: 'declined', reason: 'not open' }
+const CLOSED: SubmitResult = { kind: 'declined', reason: 'closed' }
 
 /**
  * The serve terminal and the one-shot prompt: one question per ask, in order, each answer decided through the host.
@@ -65,7 +68,8 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
     },
 
     submit(asks, context) {
-      if (!host || closing.signal.aborted) return Promise.resolve(ACCEPTED)
+      if (!host) return Promise.resolve(NOT_OPEN)
+      if (closing.signal.aborted) return Promise.resolve(CLOSED)
       const key = requestKey(asks)
       const repeated = key === undefined ? undefined : inFlight.get(key)
       if (repeated) return repeated
