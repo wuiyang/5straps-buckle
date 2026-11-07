@@ -1,10 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { RequestCli } from '@5straps/runtime'
+import { createOperationScope, runInScope, type RequestCli } from '@5straps/runtime'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { challengeBytes } from '@5straps/protocol/signed-request'
+import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { checkUrlCommand } from '../cli/check-url.js'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/decision-guard.js'
 import { commandMarks, FILE_FLOOR_MARKS, PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import type { PermissionEngine } from '../common/domain/permission/engine.js'
@@ -12,17 +14,19 @@ import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerou
 import { approvalsPath, grantsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createMcpServer } from '../mcp/server.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// Today's approval behaviors, driven through the invoker and the approval service, so each slice of the approval backend
-// design shows what it keeps and what it changes. The stdio form's owner authority is pinned in mcp-elicitation.test.ts.
+// Today's approval behaviors, driven through the invoker, the approval service, and the MCP faces, so each slice of the
+// approval backend design shows what it keeps and what it changes.
 
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
 const closers: Array<() => Promise<unknown>> = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const close of closers.splice(0)) await close()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -41,7 +45,7 @@ function terminal(choices: string[]): Interaction & { asked: string[] } {
   return { requestCli, hold: 'grace', asked }
 }
 
-async function node(input: { interaction?: Interaction; webhook?: boolean } = {}) {
+async function node(input: { interaction?: Interaction; webhook?: boolean; shell?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-current-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -51,7 +55,8 @@ async function node(input: { interaction?: Interaction; webhook?: boolean } = {}
   if (webhook) closers.push(webhook.close)
   const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_AUTH_TOKEN: 'current-agent-token', BUCKLE_ADMIN_TOKEN: 'current-admin-token',
-    BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', BUCKLE_DELETE_IN_WORKSPACE: 'ask',
+    BUCKLE_APPROVAL_TIMEOUT_MS: '60000', BUCKLE_DELETE_IN_WORKSPACE: 'ask',
+    ...(input.shell ? { BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell' } : { BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }),
     ...(webhook ? { BUCKLE_APPROVAL_WEBHOOK: webhook.url } : {}),
   })
   const runtime = await createRuntime({ config, interaction: fixedInteraction(input.interaction ?? NOBODY) })
@@ -65,6 +70,24 @@ async function node(input: { interaction?: Interaction; webhook?: boolean } = {}
 }
 
 const tokensOf = (response: InvokeResponse) => (response.outcome === 'approval_required' ? response.approvals.map(approval => approval.token) : [])
+
+interface ToolResult { isError?: boolean; structuredContent?: { outcome?: string } }
+
+/** A tool the MCP server registered, called as a host that elicits calls it, with the answers a retry carries. */
+function mcpTool(server: McpServer, tool: string) {
+  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<ToolResult> }> })._registeredTools
+  const envelope = { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }
+  return (args: JsonObject, responses?: Record<string, unknown>) => tools[tool]!.handler(args, { mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(responses ? { inputResponses: responses } : {}) } } as unknown as ServerContext)
+}
+
+const accepted = (token: string, content: { approve: boolean; scope: 'once' | 'session' | 'always' }) => ({ [token]: { action: 'accept', content } })
+
+/** A node behind the MCP server a face builds: stdio trusts the answers its host's forms carry, HTTP does not. */
+async function mcpNode(input: { trusted: boolean }) {
+  const context = await node()
+  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { trustedApprovalResponses: true } : {}) })
+  return { ...context, tool: (name: string) => mcpTool(server, name), waiting: () => context.runtime.approvalService.pending().map(request => request.token) }
+}
 
 describe('a serve terminal answer', () => {
   it('grants the folder for the session with no expiry, tells the webhook, and writes no decision entry to the audit log', async () => {
@@ -109,6 +132,43 @@ describe('an ask nobody is at a terminal for', () => {
     expect(await call('fs_write', { path: 'one/a.md', content: 'a' })).toMatchObject({ outcome: 'ok' })
     expect((await call('fs_write', { path: 'one/a.md', content: 'a' })).outcome).toBe('approval_required')
     expect(runtime.grants.list()).toEqual([])
+  })
+
+  it('lets another actor in the same session spend a once answered later, without its token', async () => {
+    const { runtime, call, answer } = await node()
+    const owner = Symbol('current-actors')
+    const as = <T>(actor: string, run: () => Promise<T>) => runInScope(createOperationScope({ owner, context: { actor } }), run)
+    const asked = await as('agent:one', () => call('fs_write', { path: 'one/a.md', content: 'a' }))
+    expect(await answer(tokensOf(asked)[0]!)).toMatchObject({ ok: true })
+    expect(await as('agent:two', () => call('fs_write', { path: 'one/a.md', content: 'a' }))).toMatchObject({ outcome: 'ok' })
+    expect(runtime.approvals.unspent('s')).toEqual([])
+  })
+
+  it('shows check-url an unspent once in the session it names, whichever actor asked', async () => {
+    const { runtime, answer } = await node()
+    const [request] = (await runtime.approvals.ask({
+      tool: 'web_fetch', sessionId: 's', actor: 'agent:one', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true },
+      asks: [{ kind: 'ask', rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'], ...PLAIN_MARKS }],
+    })).requests
+    expect(await answer(request!.token)).toMatchObject({ ok: true })
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
+    expect(await checkUrlCommand({ argv: ['localhost:3000', '--session', 's'], runtime: async () => runtime })).toEqual({ exitCode: 0 })
+    expect(out.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('unspent once approval for web_fetch in session s')
+  })
+
+  it('writes a session grant while its ask still waits on disk, before the resolved entry commits', async () => {
+    const { runtime, config, call, answer } = await node()
+    const [token] = tokensOf(await call('fs_write', { path: 'one/a.md', content: 'a' }))
+    const onDisk = () => {
+      const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { pending: Array<{ request: { token: string } }>; resolved: Array<{ decision: { token: string } }> }
+      return { pending: ledger.pending.some(entry => entry.request.token === token), resolved: ledger.resolved.some(entry => entry.decision.token === token) }
+    }
+    const seen: Array<ReturnType<typeof onDisk>> = []
+    const grant = runtime.grants.grant.bind(runtime.grants)
+    vi.spyOn(runtime.grants, 'grant').mockImplementation(async (input) => { seen.push(onDisk()); return grant(input) })
+    expect(await answer(token!, { scope: 'session' })).toMatchObject({ ok: true })
+    expect(seen).toEqual([{ pending: true, resolved: false }])
+    expect(onDisk()).toEqual({ pending: false, resolved: true })
   })
 
   it('keeps its ask under the workspace folder in the ledger, and its grant under the workspace id', async () => {
@@ -219,7 +279,105 @@ describe('the setup face', () => {
   })
 })
 
+describe('the HTTP MCP face', () => {
+  it('ignores the form answers a call carries, since the agent token reaches it: the ask waits, and nothing is spent or granted', async () => {
+    const { runtime, workspace, tool, waiting } = await mcpNode({ trusted: false })
+    const write = tool('fs_write')
+    const args = { path: 'one/a.md', content: 'a' }
+    expect(await write(args)).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+    const [token] = waiting()
+    for (const scope of ['once', 'session'] as const) {
+      expect(await write(args, accepted(token!, { approve: true, scope }))).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+      expect(waiting()).toEqual([token])
+      expect(runtime.approvals.unspent('mcp')).toEqual([])
+      expect(runtime.grants.list()).toEqual([])
+    }
+    expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
+  })
+})
+
+describe('a stdio MCP form answer', () => {
+  it('counts as the person\'s: a session answer on a first write remembers its folder, and writes no entry beyond the tool\'s own', async () => {
+    const { runtime, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
+    const write = tool('fs_write')
+    await write({ path: 'one/a.md', content: 'a' })
+    const [token] = waiting()
+    expect(await write({ path: 'one/a.md', content: 'a' }, accepted(token!, { approve: true, scope: 'session' }))).not.toHaveProperty('isError')
+    expect(await write({ path: 'one/b.md', content: 'b' })).not.toHaveProperty('isError')
+
+    expect(waiting()).toEqual([])
+    expect(readFileSync(join(workspace, 'one', 'b.md'), 'utf8')).toBe('b')
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 'mcp' })])
+    expect(runtime.actions.read(50).map(entry => [entry.tool, entry.event])).toEqual(Array.from({ length: 3 }, () => [['fs_write', 'attempt'], ['fs_write', 'result']]).flat())
+  })
+
+  it('approves a delete at the file floor, and its always answer lands an always grant that clears the next delete there', async () => {
+    const { runtime, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
+    for (const name of ['a.txt', 'b.txt', 'c.txt']) writeFileSync(join(workspace, 'one', name), name)
+    await runtime.grants.grant({ sessionId: 'mcp', rule: 'write_scope', subject: folder, scope: 'session' })
+    const remove = tool('fs_delete')
+    const answered = async (path: string, scope: 'once' | 'always') => {
+      await remove({ paths: [path] })
+      expect(runtime.approvalService.waiting().map(ask => [ask.request.subject, ask.floor, ask.destructive])).toEqual([[`delete:${join(folder, 'one')}`, true, true]])
+      return remove({ paths: [path] }, accepted(waiting()[0]!, { approve: true, scope }))
+    }
+    expect(await answered('one/a.txt', 'once')).not.toHaveProperty('isError')
+    expect(await answered('one/b.txt', 'always')).not.toHaveProperty('isError')
+    expect(await remove({ paths: ['one/c.txt'] })).not.toHaveProperty('isError')
+
+    expect(['a.txt', 'b.txt', 'c.txt'].map(name => existsSync(join(workspace, 'one', name)))).toEqual([false, false, false])
+    expect(runtime.grants.list().filter(grant => grant.subject.startsWith('delete:'))).toEqual([expect.objectContaining({ subject: `delete:${join(folder, 'one')}`, scope: 'always', sessionId: null })])
+  })
+})
+
+describe('an answer while the action log cannot be written', () => {
+  const full = () => new Error('the action log is full')
+
+  it('still resolves the ask from the serve terminal', async () => {
+    let breakLog = () => {}
+    const asker: Interaction = { hold: 'grace', requestCli: async (request) => { breakLog(); return { status: 'answered', requestId: request.id, answer: { choice: 'session' } } } }
+    const { runtime, call, folder } = await node({ interaction: asker })
+    breakLog = () => { vi.spyOn(runtime.actions, 'record').mockRejectedValue(full()) }
+    const answers = vi.spyOn(runtime.approvalService, 'answer')
+    await call('fs_write', { path: 'one/a.md', content: 'a' })
+
+    expect(answers).toHaveBeenCalledTimes(1)
+    expect(await answers.mock.results[0]!.value).toMatchObject({ ok: true })
+    expect(runtime.approvalService.pending()).toEqual([])
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session' })])
+  })
+
+  it('still resolves the ask from a stdio form, while the call that carried the answer does not run', async () => {
+    const { runtime, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
+    const write = tool('fs_write')
+    await write({ path: 'one/a.md', content: 'a' })
+    const [token] = waiting()
+    vi.spyOn(runtime.actions, 'record').mockRejectedValue(full())
+    const answers = vi.spyOn(runtime.approvalService, 'answer')
+
+    expect(await write({ path: 'one/a.md', content: 'a' }, accepted(token!, { approve: true, scope: 'session' }))).toMatchObject({ isError: true })
+    expect(await answers.mock.results[0]!.value).toMatchObject({ ok: true })
+    expect(waiting()).toEqual([])
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 'mcp' })])
+    expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
+  })
+})
+
 describe('the dangerously-allow switch', () => {
+  it('lifts the floor-marked asks the real rules make, a delete\'s and a recursive delete command\'s', async () => {
+    const { runtime, workspace, call } = await node({ shell: true })
+    writeFileSync(join(workspace, 'one', 'a.txt'), 'a')
+    mkdirSync(join(workspace, 'build'))
+    const calls: Array<[string, JsonObject]> = [['fs_delete', { paths: ['one/a.txt'] }], ['shell_exec', { command: 'rm', args: ['-rf', 'build'] }]]
+    for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'approval_required' })
+    const floor = runtime.approvalService.waiting().filter(ask => ask.floor && ask.destructive).map(ask => ask.request.rule)
+    expect(new Set(floor)).toEqual(new Set(['write_scope', 'destructive_command']))
+
+    await runtime.policy.setDangerouslyAllow(true)
+    for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'ok' })
+    expect([existsSync(join(workspace, 'one', 'a.txt')), existsSync(join(workspace, 'build'))]).toEqual([false, false])
+  })
+
   it('lifts floor asks, a delete\'s and a command\'s, and leaves a restore to a person', () => {
     const asks = [
       { kind: 'ask' as const, rule: 'destructive_command' as const, subject: 'rm -rf build', reason: 'floor', offeredScopes: ['once' as const, 'session' as const], cause: 'floor' as const, ...commandMarks('floor') },
