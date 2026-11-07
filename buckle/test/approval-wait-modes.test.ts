@@ -17,7 +17,8 @@ import { fixedInteraction } from './support/interaction.js'
 import type { ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 
 type Ask = ApprovalAskInput['asks'][number]
-import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
+import { describeExpiry } from '../common/domain/approval-deadline.js'
+import { remainingMs } from '../common/domain/approval/expiry.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 

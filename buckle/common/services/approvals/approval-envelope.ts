@@ -1,4 +1,5 @@
-import { approvalDecisionPath, EnvelopeError, looksSealed, open, seal, type ApprovalKey, type EnvelopeRefusal, type NonceStore } from '@5straps/protocol/envelope'
+import { approvalDecisionPath, createMemoryNonceStore, EnvelopeError, looksSealed, open, type ApprovalKey, type EnvelopeRefusal, type NonceStore } from '@5straps/protocol/envelope'
+import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 
 /** Why a decision body was refused: an envelope that failed, or a plain body once a key is paired. */
 export type DecisionRefusal = EnvelopeRefusal | 'plain_refused'
@@ -22,7 +23,8 @@ export function openApprovalDecision(input: { key: ApprovalKey | undefined; body
   }
 }
 
-/** What a report to Rings carries: sealed for its route once the node holds a key, plain before. */
-export function sealForRings(key: ApprovalKey | undefined, path: string, body: unknown): unknown {
-  return key ? seal(key, { method: 'POST', path, body }) : body
+/** Without a paired key nothing is opened, so nothing needs to outlive the process. */
+export function createMemoryNonceClaims(): NonceClaims {
+  const seen = createMemoryNonceStore()
+  return { withClaims: async use => use(seen) }
 }

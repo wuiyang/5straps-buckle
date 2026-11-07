@@ -1,4 +1,5 @@
 import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
+import { remainingMs } from './approval/expiry.js'
 import { localDate, localTime } from './local-time.js'
 
 /**
@@ -13,13 +14,6 @@ import { localDate, localTime } from './local-time.js'
  *
  * Everything a person is shown about the first is worded here, so the two never read as one.
  */
-export function remainingMs(expiresAt: string): number {
-  if (expiresAt === APPROVAL_NO_DEADLINE) return Infinity
-  const at = Date.parse(expiresAt)
-  // An unparseable expiry is treated as passed: the registry refuses such a token as well.
-  if (Number.isNaN(at)) return 0
-  return Math.max(at - Date.now(), 0)
-}
 
 /** `expires in 9m 58s (2026-09-22T07:41:02.000Z)`, the request expiry in both readings. */
 export function describeExpiry(expiresAt: string): string {

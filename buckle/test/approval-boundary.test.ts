@@ -16,6 +16,16 @@ const LEDGER_OR_GRANT_ADAPTER = /from '[^']*(?:approvals\/approval-registry|appr
 const GUARDS = /\b(?:guardDecision|screenDecision)\(/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
+const IMPORT = /from '([^']+)'/g
+// The approval core: the ledger, the gate, the service, the guard, and their ports.
+const CORE = ['common/services/approvals', 'common/domain/approval', 'common/types/ports/approval-source.ts', 'common/types/ports/nonce-claims.ts']
+// What words an ask for a person: commands, judge lines, expiry phrases, and the terminal's own rendering.
+const DISPLAY = /(?:domain\/(?:approval-instruction|approval-deadline|action-phrase|describe-call|local-time)|runtime\/(?:console|log-render)|\/cli\/[^']*)\.js$/
+
+const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
+const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...paths)
+  .filter(file => importsOf(file).some(specifier => target.test(specifier)))
+  .map(file => relative(PACKAGE_ROOT, file))
 
 // Ruling 4 of 2026-09-28: the approval service is the single answerer (review L8).
 describe('the approval boundary', () => {
@@ -43,5 +53,17 @@ describe('the approval boundary', () => {
       .map(file => relative(PACKAGE_ROOT, file))
       .filter(file => file !== GUARD)
     expect(callers).toEqual([REGISTRY])
+  })
+
+  it('keeps every adapter off the approval services', () => {
+    expect(importing(['common/adapters'], /services\/approvals\//)).toEqual([])
+  })
+
+  it('keeps the approval core off the approval adapters', () => {
+    expect(importing(CORE, /adapters\/approval\//)).toEqual([])
+  })
+
+  it('keeps the approval core off the display modules, but for the terminal question the service still builds', () => {
+    expect(importing(CORE, DISPLAY)).toEqual(['common/services/approvals/approval-service.ts', 'common/services/approvals/interaction.ts'])
   })
 })

@@ -3,14 +3,14 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { dirname, join } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, JsonValueSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantRecord, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantRecord, type GrantSubject, type PermissionRuleId } from '@5straps/protocol'
 import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
-import { FLOOR_WARNING } from '../../domain/approval-instruction.js'
+import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
@@ -64,29 +64,6 @@ const joinKey = { requestId: z.string().optional(), actor: z.string().optional()
 // only with the same one, and a once decided on its ask is spent only by it, whichever route decided it
 // (review H3 of B23-B25; review item 1 of the proof-of-possession fixes).
 const fingerprint = { fingerprint: z.string().optional() }
-// call: the whole call as the node's signed challenge shows it (owner decisions D9 and D17): its redacted
-// arguments, the directory they resolve against, what it does in the node's words and the effects the rules
-// judged. `complete` marks a call recorded whole; an ask recorded before this build (with `truncated`, and
-// perhaps cut arguments) has none, so it is denied or joined by a re-send that records the whole call.
-// judge: what the decision AI's stages said of the call's command asks (D91), shown beside the action and never part of its digest.
-const levelSchema = z.enum(['safe', 'warning', 'danger'])
-const quickNoteSchema = z.union([
-  z.object({ level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), latencyMs: z.number().nonnegative() }).strict(),
-  z.object({ unavailable: z.string() }).strict(),
-])
-// warning: a floor ask's one constant line, which no stage passes (addendum 3 R2); only that constant is kept.
-const warning = { warning: z.literal(FLOOR_WARNING).optional() }
-const judgeNoteSchema = z.union([
-  z.object({ subject: z.string(), level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string(), latencyMs: z.number().nonnegative().optional(), quick: quickNoteSchema.optional(), ...warning }).strict(),
-  z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional(), ...warning }).strict(),
-  z.object({ subject: z.string(), onRequest: z.literal(true), ...warning }).strict(),
-  z.object({ subject: z.string(), quick: quickNoteSchema, ...warning }).strict(),
-])
-const callSchema = z.object({
-  arguments: JsonValueSchema, cwd: z.string(), description: z.string().nullable().default(null),
-  effects: z.array(z.string()).optional(), complete: z.literal(true).optional(), truncated: z.boolean().optional(),
-  judge: z.array(judgeNoteSchema).optional(),
-})
 // decidedBy: key:<fingerprint> when a person's enrolled key signed the decision (review H4 of B23-B25).
 const decidedBy = { decidedBy: z.string().optional() }
 // lapsesAt: when an ask nobody holds lapses before its stated expiry, ten minutes after the last hold on it ended, and
@@ -102,7 +79,7 @@ const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.dateti
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
 // floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
 const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: askedCallSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // owedGrant: the session or always grant a decision makes, under the id it is written with, kept with its resolved entry
 // until the grant store holds it. The entry commits first, so a grant never stands without its decision; one left owed
 // is written when the workspace opens again (recover), or by the next decision recorded or sent again.
@@ -237,7 +214,7 @@ function createCallFiles(directory: string): CallFiles {
     },
     read(id) {
       try {
-        return { call: callSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8'))) }
+        return { call: askedCallSchema.parse(JSON.parse(readFileSync(pathOf(id), 'utf8'))) }
       } catch (error) {
         // Shown as recorded before this build: denied or re-sent, never approved from a part.
         return { failure: error instanceof Error ? error.name : 'Unknown error' }
@@ -293,14 +270,6 @@ export interface AskInput {
    * (ApprovalRequestInput.resends): no lapse, as before the brief.
    */
   holdMs?: number | null
-}
-
-/** A call as its challenge shows it (owner decision D9). */
-export type AskedCall = z.infer<typeof callSchema>
-
-/** A recorded call as a relay or listing is handed it: the whole call when it was kept whole, else nothing (owner decision D17). */
-export function shownCall(call: AskedCall | undefined): { arguments: JsonValue; cwd: string; description: string | null; effects: string[] } | undefined {
-  return call?.complete ? { arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] } : undefined
 }
 
 export interface ResolveOptions {

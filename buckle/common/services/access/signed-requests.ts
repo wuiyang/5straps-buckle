@@ -1,5 +1,5 @@
 import { checkSignedRequest, nonceClaim, withinWindow, type SignedRequestPurpose, type SignedRequestVerdict } from '@5straps/protocol/signed-request'
-import type { NonceClaims } from '../../adapters/approval/file-nonce-store.js'
+import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import type { ClientKeys } from '../../types/ports/client-keys.js'
 import { requestIdKey } from '../invocation/executions.js'
 

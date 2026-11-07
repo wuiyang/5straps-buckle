@@ -1,7 +1,6 @@
 import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
-import { SEALED_REPORT_PATHS, type ApprovalKey } from '@5straps/protocol/envelope'
-import { sealForRings } from '../../services/approvals/approval-envelope.js'
-import { shownCall, type AskedCall } from '../../services/approvals/approval-registry.js'
+import { SEALED_REPORT_PATHS, sealedReport, type ApprovalKey } from '@5straps/protocol/envelope'
+import { shownCall, type AskedCall } from '../../domain/approval/asked-call.js'
 import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel, type JudgeNote } from '../../domain/approval-instruction.js'
 import { logger } from '../../runtime/log.js'
 
@@ -68,7 +67,7 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
       'content-type': 'application/json',
       ...(options.token ? { authorization: `Bearer ${options.token}` } : {}),
     },
-    body: JSON.stringify(sealForRings(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), ...body })),
+    body: JSON.stringify(sealedReport(options.approvalKey, SEALED_REPORT_PATHS.approvals, { serverId: options.serverId, workspaceId: options.workspaceId, ...(options.workspaceName ? { workspaceName: options.workspaceName } : {}), ...body })),
     signal: AbortSignal.timeout(NOTIFY_TIMEOUT_MS),
   })
 }

@@ -1,12 +1,12 @@
 import type { ApprovalRequest, JsonValue } from '@5straps/protocol'
-import type { JudgeNote } from '../../domain/approval-instruction.js'
-import { shownCall, type PendingAsk } from './approval-registry.js'
+import { shownCall, type AskedCall } from '../../domain/approval/asked-call.js'
+import type { PendingAsk } from './approval-registry.js'
 
 /** A waiting request as a listing carries it: `callRef` on every ask of a group, the group's whole call on its first. */
 export type ListedApproval = ApprovalRequest & {
   callRef?: string
   /** `judge`: what the decision AI said of the call's interpreter asks (D91), a listing's field of Buckle's own. */
-  call?: { arguments: JsonValue; cwd: string; description: string | null; effects: string[]; judge?: JudgeNote[] }
+  call?: { arguments: JsonValue; cwd: string; description: string | null; effects: string[]; judge?: AskedCall['judge'] }
 }
 
 /**

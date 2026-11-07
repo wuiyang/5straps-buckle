@@ -1,5 +1,6 @@
-import { createMemoryNonceStore, ENVELOPE_WINDOW_MS, type NonceStore } from '@5straps/protocol/envelope'
+import { ENVELOPE_WINDOW_MS } from '@5straps/protocol/envelope'
 import { z } from 'zod'
+import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
 const NonceFileSchema = z.object({
@@ -7,11 +8,6 @@ const NonceFileSchema = z.object({
   nonces: z.array(z.object({ keyId: z.string(), nonce: z.string(), ts: z.number() })),
 })
 type NonceFile = z.infer<typeof NonceFileSchema>
-
-/** Opening a sealed decision runs inside `withClaims`: the protocol's claim stays synchronous, over locked state. */
-export interface NonceClaims {
-  withClaims<T>(use: (seen: NonceStore) => T): Promise<T>
-}
 
 /**
  * The nonces of sealed approval decisions this node has opened, kept in the state directory so a
@@ -31,12 +27,6 @@ export async function openFileNonceStore(input: { filePath: string; now?: () => 
       },
     })),
   }
-}
-
-/** Without a paired key nothing is opened, so nothing needs to outlive the process. */
-export function createMemoryNonceClaims(): NonceClaims {
-  const seen = createMemoryNonceStore()
-  return { withClaims: async use => use(seen) }
 }
 
 function prune(state: NonceFile, now: number): void {
