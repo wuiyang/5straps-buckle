@@ -11,6 +11,7 @@ import type { ToolContext } from '../common/domain/tool.js'
 import { createForgePack } from '../common/services/packs/forge/index.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Slice D, rollback as an agent option, item 4: git_revert makes a new commit that undoes one (git revert --no-edit, no
 // hard reset ever), under the node's agent identity and the forge pack's isolation, as git_commit commits. A merge commit
@@ -279,7 +280,7 @@ describe('git_revert through the runtime', () => {
     const asked = await revertCall(runtime, 'revert-second', { commit: 'HEAD~1' })
     expect(asked.outcome).toBe('approval_required')
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     const sent = await runtime.invoke({ request: { requestId: 'revert-second', tool: 'git_revert', args: { commit: 'HEAD~1' }, approvalTokens: tokens }, sessionId: 'agent' })
     expect(sent).toMatchObject({ outcome: 'ok', output: { files: ['a.txt'] } })
     expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe('one\n')

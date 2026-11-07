@@ -11,6 +11,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The MCP asks brief, item 5: a call whose caller left before its hold ended did not run, and its audit entry says so in a
 // code of its own; its ask is marked abandoned, stays answerable for the join window, and makes room under the caps.
@@ -104,7 +105,7 @@ describe('an abandoned ask', () => {
 
     clockAt(start + 9 * MINUTE)
     const [token] = runtime.approvalService.pending().map(request => request.token)
-    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     await runtime.history.close()
   })
 
@@ -233,7 +234,7 @@ describe('an ask at wait 0', () => {
     clockAt(start + 3 * 60 * MINUTE)
     const [token] = runtime.approvalService.pending().map(request => request.token)
     expect(token).toBe(response.approvals[0]!.token)
-    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     await runtime.history.close()
   })
 

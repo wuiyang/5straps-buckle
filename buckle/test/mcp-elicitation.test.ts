@@ -11,6 +11,7 @@ import { createToolRegistry } from '../common/domain/tool-registry.js'
 import { createMcpServer } from '../mcp/server.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const approval: ApprovalRequest = {
   token: 'token-1',
@@ -216,7 +217,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     await answered({ action: 'allow_once' })
     expect(answer).not.toHaveBeenCalled()
     await answered({ action: 'deny' })
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: false, scope: 'once' }, source: 'forms' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: false, scope: 'once' }, source: SOURCES.forms })
   })
 })
 
@@ -238,7 +239,7 @@ describe('a secret file ask under the credential-file rule', () => {
     await gatedCall(gatedServer(answer, [asked(secret)]), { ...elicitingContext(),
       mcpReq: { id: 4, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { action } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, source: 'forms' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, source: SOURCES.forms })
   })
 })
 
@@ -249,7 +250,7 @@ describe('elicited answers', () => {
     await gatedCall(server, { ...stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } }),
       mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, source: 'forms' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, source: SOURCES.forms })
   })
 })
 

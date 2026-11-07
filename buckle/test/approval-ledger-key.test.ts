@@ -11,6 +11,7 @@ import { NO_INTERACTION, type Interaction } from '../common/services/approvals/i
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The ask ledger is keyed by the workspace's id, as its grants and its state directory are, so a moved folder keeps its asks.
 
@@ -56,7 +57,7 @@ describe('the ask ledger key', () => {
     const runtime = await open(config)
     const token = tokenOf(await write(runtime, 'one/a.md'))
     tokenOf(await write(runtime, 'one/b.md'))
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
 
     const ledger = ledgerOf(config)
     expect(config.cwd).not.toBe(runtime.workspaceId)
@@ -68,7 +69,7 @@ describe('the ask ledger key', () => {
     const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
     const registry = createApprovalRegistry(grants, join(root, 'approvals.json'))
     const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session'] }], call: { arguments: {}, cwd: root, description: null, complete: true } })).requests
-    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, 'cli')).toMatchObject({ ok: true })
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true })
 
     const ledger = JSON.parse(readFileSync(join(root, 'approvals.json'), 'utf8')) as Ledger
     expect(ledger.resolved.map(entry => entry.workspace)).toEqual(['workspace-id'])
@@ -84,7 +85,7 @@ describe('the ask ledger key', () => {
     renameSync(workspace, moved)
     const after = await open({ ...config, cwd: moved })
     expect(after.approvalService.pending().map(request => request.token)).toEqual([token])
-    expect(await after.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await after.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(after.approvalService.pending()).toEqual([])
   })
 
@@ -93,7 +94,7 @@ describe('the ask ledger key', () => {
     const before = await open(config)
     const waiting = tokenOf(await write(before, 'one/a.md'))
     const decided = tokenOf(await write(before, 'one/b.md'))
-    expect(await before.approvalService.answer({ decision: { token: decided, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await before.approvalService.answer({ decision: { token: decided, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Record<string, unknown>
     const folderKeyed = (entries: unknown) => (entries as Array<Record<string, unknown>>).map(entry => ({ ...entry, workspace: config.cwd }))
     const notice = { id: '00000000-0000-4000-8000-000000000002', workspace: config.cwd, expiresAt: new Date(Date.now() + 60_000).toISOString(), notice: { token: decided, event: 'answered', at: new Date().toISOString(), scope: 'once' } }
@@ -105,6 +106,6 @@ describe('the ask ledger key', () => {
     expect(after.approvalService.pending().map(request => request.token)).toEqual([waiting])
     expect(after.approvals.pendingDeliveries().map(delivery => delivery.id)).toEqual([notice.id])
     expect(await write(after, 'one/b.md')).toMatchObject({ outcome: 'ok' })
-    expect(await after.approvalService.answer({ decision: { token: waiting, approved: false, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await after.approvalService.answer({ decision: { token: waiting, approved: false, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
   })
 })

@@ -7,7 +7,7 @@ import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approv
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { askViewDetails, type AskView } from '../../domain/approval/ask-view.js'
-import type { ApprovalSource } from '../../types/ports/approval-source.js'
+import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -367,15 +367,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return { status: 'invalid' }
         // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
         if (decision.subject !== undefined) return settledDecision({ decision, challenge, result: { ok: false, reason: 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below' } })
-        const result = await service.answer({ decision, source: 'devices', challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
+        const result = await service.answer({ decision, source: SOURCES.devices, challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
         return settledDecision({ decision, challenge, result })
       }
       const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
       if (!opened.ok) return { status: 'refused', reason: opened.reason }
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }
-      if (parsed.data.approved) return settledDecision({ decision: parsed.data, result: { ok: false, reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' } })
-      const result = await service.answer({ decision: parsed.data, source: 'sealed' })
+      // The envelope's source only denies: the decision guard refuses its approvals.
+      const result = await service.answer({ decision: parsed.data, source: SOURCES.sealed })
       return settledDecision({ decision: parsed.data, result })
     },
 
@@ -552,7 +552,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (outcome.status === 'answered' || outcome.status === 'denied') {
         // The owner's own terminal: a person at the node, as at `buckle approve`.
         const decision = decisionFor(approval, outcome)
-        const result = await service.answer({ decision, source: 'terminal' })
+        const result = await service.answer({ decision, source: SOURCES.terminal })
         if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
         if (!decision.approved) return
         continue

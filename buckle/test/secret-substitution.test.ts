@@ -15,6 +15,7 @@ import { PLACES_REASON, SHORT_REASON } from '../common/domain/secret-reference.j
 import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_REASON } from '../common/services/secrets/shell-reading.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The secret-references slice, parts 5 and 6 (docs/user/how-to/secrets.md): the rules judge the reference text as written; each
 // value is read and put in place only as the tool starts, into the argument list, never the child's environment; and
@@ -376,7 +377,7 @@ describe('a web_fetch header', () => {
     const args = { url: `http://127.0.0.1:${ports[0]}${path}`, headers: { 'X-Api-Key': '{{file:.env.local:API_TOKEN}}' } }
     let response = await call(runtime, 'web_fetch', args)
     for (let round = 0; round < 3 && response.outcome === 'approval_required'; round++) {
-      for (const approval of response.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: 'cli' })
+      for (const approval of response.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: SOURCES.cli })
       response = await call(runtime, 'web_fetch', args)
     }
     return response

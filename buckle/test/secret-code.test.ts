@@ -8,6 +8,7 @@ import { SECRETS_OFF_REASON } from '../common/services/secrets/places.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The owner's report of 2026-11-01 (docs/user/how-to/secrets.md): a code_run script could not fill a password through a secret
 // reference, as the whole code_run call was refused for the reference in its script. The script is not read for
@@ -194,7 +195,7 @@ describe('the ask a nested reference makes', () => {
     })
     expect(JSON.stringify([first, runtime.approvalService.waiting(), runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
 
-    expect((await runtime.approvalService.answer({ decision: { token: nested.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: nested.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     const second = await codeRun(runtime, FILL)
     expect(ran(second)).toMatchObject({ ok: true, value: { filled: LABEL, page: LABEL } })
     expect(page()).toBe(TOKEN)
@@ -242,7 +243,7 @@ return { before: before.content, after: after.content }`
     expect(ask).toMatchObject({ tool: 'fs_write' })
     // The record holds the read's result for the resumed run, masked.
     expect(JSON.stringify([first, setup.runtime.actions.read(50), stateText(setup.root)])).not.toContain(TOKEN)
-    expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     return setup
   }
 

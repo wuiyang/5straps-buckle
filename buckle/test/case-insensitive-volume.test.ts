@@ -7,6 +7,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { byName, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review H2 and M1 of the second proof-of-possession re-review, on an emulated macOS volume: the platform
 // reads as darwin, and lstat and the C library's realpath find a path in any case and name it in the
@@ -132,7 +133,7 @@ describe('a remembered deny for a missing sensitive file, met by a case variant'
     const asked = await call(runtime, 'fs_write', { path: '.env', content: 'x' })
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
     const token = asked.approvals.find(approval => approval.rule === 'sensitive_path')!.token
-    expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, source: SOURCES.cli })).ok).toBe(true)
     if (switchOn) await runtime.policy.setDangerouslyAllow(true)
     for (const path of ['.ENV', '.Env', '.env']) {
       const result = await call(runtime, 'fs_write', { path, content: 'planted' })

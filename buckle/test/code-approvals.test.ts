@@ -23,6 +23,7 @@ import { createMcpServer } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
 import { workspaceIdOf } from './support/workspaces.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // An ask inside a script (owner decision D82, points 6 and 7): the script stops, the outer call answers with the
 // nested call's own ask, shown whole (owner decision D17), and the same script sent again replays what already ran.
@@ -101,7 +102,7 @@ function countRuns(runtime: BuckleRuntime, tool: string): Map<string, number> {
 }
 
 async function answer(runtime: BuckleRuntime, token: string, approved = true) {
-  expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+  expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 }
 
 function journals(root: string): string[] {

@@ -10,6 +10,7 @@ import { deletePaths, settleDelete } from '../common/services/packs/fs/delete.js
 import { deleteInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // fs_delete (the fs-verbs brief): every delete asks at the destructive floor, even inside a folder whose writes are
 // granted; a link goes and its target stays; the change history brings every file back. The workspace here sets
@@ -47,7 +48,7 @@ async function approved(runtime: BuckleRuntime, tool: string, args: JsonObject):
   const asked = await call(runtime, tool, args, { requestId })
   expect(asked.outcome).toBe('approval_required')
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return call(runtime, tool, args, { requestId, tokens })
 }
 

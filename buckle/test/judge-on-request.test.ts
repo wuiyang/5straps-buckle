@@ -11,6 +11,8 @@ import { loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import { CREDENTIAL_HIDDEN, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { DecisionClaim } from '../common/domain/approval/decision-guard.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, workspacesOf } from './support/workspaces.js'
 
@@ -19,12 +21,20 @@ import { byName, idOf, workspacesOf } from './support/workspaces.js'
 // BUCKLE_JUDGE_BASE_URL, and the verdict is printed beside the whole action; a safe verdict at 0.8 or above approves the
 // ask once where the owner asked for that, with the judge named as who decided.
 
+// Each decision's source and scope, as the registry hands them to the decision guard.
+const claims = vi.hoisted(() => [] as Array<{ source: unknown; scope: string }>)
+vi.mock('../common/domain/approval/decision-guard.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../common/domain/approval/decision-guard.js')>()
+  return { ...actual, screenDecision: (claim: DecisionClaim) => { claims.push({ source: claim.source, scope: claim.decision.scope }); return actual.screenDecision(claim) } }
+})
+
 const KEY = 'sk-on-request-fixture-0123456789'
 const QUICK_KEY = 'ts-on-request-fixture-0123456789'
 const roots: string[] = []
 const servers: Server[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
+  claims.length = 0
   for (const server of servers.splice(0)) await new Promise(resolve => server.close(resolve))
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -125,6 +135,7 @@ describe('buckle approvals judge', () => {
     expect(approved.exitCode).toBe(0)
     expect(approved.out).toContain(`Approved ${token} once`)
     expect(runtime.approvalService.waitingAsk(token)).toBeUndefined()
+    expect(claims).toEqual([{ source: SOURCES.judge, scope: 'once' }])
     // The command is audited with what the judge said, and the call it approved names the judge as who decided.
     const audited = runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
     expect(audited?.judge).toMatchObject({ provider: 'openai-compatible', model: 'GPT-6-luna', level: 'safe', confidence: 0.91, passed: true })

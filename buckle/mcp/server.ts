@@ -9,6 +9,7 @@ import type { PendingAsk } from '../common/services/approvals/approval-registry.
 import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 import { MCP_HOLD_MS } from './holds.js'
 import { createResendJoin, sameCallKey, type ResendJoin } from './resend-join.js'
 
@@ -389,7 +390,7 @@ async function resolveAnswers(input: {
       token,
       approved,
       scope: answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
-    }, source: 'forms' })
+    }, source: SOURCES.forms })
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })
   }

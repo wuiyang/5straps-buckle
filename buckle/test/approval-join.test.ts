@@ -13,6 +13,7 @@ import { createApprovalService } from '../common/services/approvals/approval-ser
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 /** A node whose gated calls wait a minute, with two directories a write asks for. */
 async function node(interaction = headlessGrace) {
@@ -32,7 +33,7 @@ function results(runtime: BuckleRuntime, requestId: string) {
 }
 
 async function answer(runtime: BuckleRuntime, token: string, scope: 'once' | 'session' = 'once') {
-  expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: 'cli' })).ok).toBe(true)
+  expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })).ok).toBe(true)
 }
 
 /** Resolves once the registry has joined a re-sent call to the ask already waiting. */
@@ -258,7 +259,7 @@ describe('a waiting caller whose re-send ran while it waited (review L6 of B23-B
     const first = runtime.invoke({ sessionId: 'chat-1', request })
     await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
     // Another process (buckle approve) answers: the registry records it, and this process sees it only at its next poll.
-    expect((await runtime.approvals.resolve({ token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, 'cli'))).toMatchObject({ ok: true })
+    expect((await runtime.approvals.resolve({ token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, SOURCES.cli))).toMatchObject({ ok: true })
     // The caller's re-send arrives first, spends the answer and runs.
     const again = await runtime.invoke({ sessionId: 'chat-1', request })
     expect(again).toMatchObject({ outcome: 'ok' })

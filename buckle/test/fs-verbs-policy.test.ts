@@ -10,6 +10,7 @@ import { declare } from '../common/services/packs/code/declarations.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The fs-verbs brief: fs_delete, fs_move, and fs_apply_patch are listed in the fs pack, denied where fs_write is, and
 // reachable from a script with typed declarations (owner decision D82: every listed tool is reachable).
@@ -113,7 +114,7 @@ describe('code mode', () => {
     const asked = await send('outer-1')
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ tool: 'fs_delete', rule: 'write_scope', subject: `delete:${runtime.paths().root}` }] })
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })
     expect(await send('outer-2', tokens)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 1, calls: [{ tool: 'fs_delete', status: 'ok' }] } })
     expect(existsSync(join(workspace, 'old.log'))).toBe(false)
   })

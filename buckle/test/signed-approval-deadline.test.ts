@@ -9,6 +9,7 @@ import { createApprovalNotices } from '../common/services/approvals/approval-not
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -36,7 +37,7 @@ describe('signed once proof consumption deadline', () => {
     let now = Date.now()
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
-    expect(await registry.resolve(decision, 'cli', { decidedBy: DECIDER, consumeNotAfter: now + 60_000 })).toMatchObject({ ok: true })
+    expect(await registry.resolve(decision, SOURCES.cli, { decidedBy: DECIDER, consumeNotAfter: now + 60_000 })).toMatchObject({ ok: true })
     now += elapsed
     const admit = vi.fn(() => true)
     const spent = vi.fn()
@@ -51,7 +52,7 @@ describe('signed once proof consumption deadline', () => {
     const now = Date.now()
     vi.spyOn(Date, 'now').mockReturnValue(now)
     const { registry, token, decision, grants } = await queue()
-    expect(await registry.resolve(decision, 'cli', { consumeNotAfter: now })).toMatchObject({ ok: false, reason: expect.stringContaining('expired') })
+    expect(await registry.resolve(decision, SOURCES.cli, { consumeNotAfter: now })).toMatchObject({ ok: false, reason: expect.stringContaining('expired') })
     expect(registry.pending().map(request => request.token)).toEqual([token])
     expect(registry.unspent('s')).toEqual([])
     expect(grants.list()).toEqual([])
@@ -62,7 +63,7 @@ describe('signed once proof consumption deadline', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
     const deadline = now + 60_000
-    await registry.resolve(decision, 'cli', { consumeNotAfter: deadline })
+    await registry.resolve(decision, SOURCES.cli, { consumeNotAfter: deadline })
     const admit = vi.fn(() => true)
     const spent = vi.fn()
     const outcome = await evaluate({ admit, spent, check: subjects => {
@@ -79,7 +80,7 @@ describe('signed once proof consumption deadline', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
     const deadline = now + 60_000
-    await registry.resolve(decision, 'cli', { consumeNotAfter: deadline })
+    await registry.resolve(decision, SOURCES.cli, { consumeNotAfter: deadline })
     expect((await evaluate({ admit: () => false })).kind).toBe('allow')
     expect(registry.unspent('s')).toHaveLength(1)
     now = deadline
@@ -96,9 +97,9 @@ describe('signed once proof consumption deadline', () => {
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node', graceMs: 1, interaction: async () => undefined, notices: createApprovalNotices(async notices => { sent.push(...notices) }) })
     const deadline = now + 60_000
     try {
-      expect(await service.answer({ decision, source: 'cli', decidedBy: DECIDER, consumeNotAfter: deadline })).toMatchObject({ ok: true })
+      expect(await service.answer({ decision, source: SOURCES.cli, decidedBy: DECIDER, consumeNotAfter: deadline })).toMatchObject({ ok: true })
       now += 30_000
-      expect(await service.answer({ decision, source: 'cli', decidedBy: DECIDER, consumeNotAfter: now + 60_000 })).toMatchObject({ ok: true, repeated: true })
+      expect(await service.answer({ decision, source: SOURCES.cli, decidedBy: DECIDER, consumeNotAfter: now + 60_000 })).toMatchObject({ ok: true, repeated: true })
       const stored = JSON.parse(readFileSync(file, 'utf8')) as { once: Array<{ expiresAt: string }> }
       expect(stored.once).toHaveLength(1)
       expect(Date.parse(stored.once[0]!.expiresAt)).toBe(deadline)
@@ -114,7 +115,7 @@ describe('signed once proof consumption deadline', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
     now += 5 * 60_000
-    await registry.resolve(decision, 'cli', { consumeNotAfter: now + 60_000 })
+    await registry.resolve(decision, SOURCES.cli, { consumeNotAfter: now + 60_000 })
     now += 59_999
     expect((await evaluate()).kind).toBe('allow')
   })
@@ -123,7 +124,7 @@ describe('signed once proof consumption deadline', () => {
     let now = Date.now()
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
-    await registry.resolve(decision, 'cli')
+    await registry.resolve(decision, SOURCES.cli)
     now += 2 * 60_000
     expect((await evaluate()).kind).toBe('allow')
   })
@@ -133,7 +134,7 @@ describe('signed once proof consumption deadline', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, decision, evaluate } = await queue()
     const deadline = now + 60_000
-    await registry.resolve(decision, 'cli', { consumeNotAfter: deadline })
+    await registry.resolve(decision, SOURCES.cli, { consumeNotAfter: deadline })
     let admittedAt: number | undefined
     const outcome: PermissionOutcome = await evaluate({ admit: () => { admittedAt = now; now += 2 * 60_000; return true } })
     expect(admittedAt).toBeLessThan(deadline)

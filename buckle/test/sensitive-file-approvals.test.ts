@@ -16,6 +16,7 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 import { historyObjects } from './support/history-objects.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'buckle-sensitive-')) })
@@ -65,8 +66,8 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
   if (outcome.kind !== 'ask') throw new Error('Expected approval')
   expect(outcome.asks[0]).toMatchObject({ reason: expect.stringContaining('WARNING'), offeredScopes: ['once'] })
   const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: outcome.asks })).requests)[0]!
-  expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'judge')).ok).toBe(false)
-  expect((await approvals.resolve({ token: request.token, approved: false, scope }, 'cli')).ok).toBe(true)
+  expect((await approvals.resolve({ token: request.token, approved: false, scope }, SOURCES.judge)).ok).toBe(false)
+  expect((await approvals.resolve({ token: request.token, approved: false, scope }, SOURCES.cli)).ok).toBe(true)
   expect(check('one').kind).toBe('deny')
   expect(check('two').kind).toBe(scope === 'always' ? 'deny' : 'ask')
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])
@@ -77,7 +78,7 @@ it('does not permit durable sensitive-file approvals or reuse standing allow gra
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
   const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] })).requests)[0]!
-  expect((await approvals.resolve({ token: request.token, approved: true, scope: 'always' }, 'cli')).ok).toBe(false)
+  expect((await approvals.resolve({ token: request.token, approved: true, scope: 'always' }, SOURCES.cli)).ok).toBe(false)
   await grants.grant({ sessionId: 'one', rule: 'sensitive_path', subject: '/workspace/.env', scope: 'always' })
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])
 })
@@ -123,11 +124,11 @@ it('asks again after a once read and enforces a session denial through the invok
   const first = await read('.env.local')
   if (first.outcome !== 'approval_required') throw new Error('Expected approval')
   expect(first.approvals[0]).toMatchObject({ offeredScopes: ['once'], reason: expect.stringContaining('WARNING') })
-  expect((await runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, 'cli')).ok).toBe(true)
+  expect((await runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, SOURCES.cli)).ok).toBe(true)
   expect((await read('.env.local')).outcome).toBe('ok')
   const second = await read('.env.local')
   if (second.outcome !== 'approval_required') throw new Error('Expected a new approval')
-  await runtime.approvals.resolve({ token: second.approvals[0]!.token, approved: false, scope: 'session' }, 'cli')
+  await runtime.approvals.resolve({ token: second.approvals[0]!.token, approved: false, scope: 'session' }, SOURCES.cli)
   expect(await read('.env.local')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   expect((await read('.env.local', 'two')).outcome).toBe('approval_required')
 })

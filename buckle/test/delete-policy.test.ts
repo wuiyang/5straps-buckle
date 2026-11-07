@@ -15,6 +15,7 @@ import { createWriteScopeRule } from '../common/domain/permission/rules/write-sc
 import { createPathView, type PathView } from '../common/domain/path-view.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The delete policy brief, items 1 and 2 (the owner's ruling of 2026-10-28): under files.deleteInWorkspace allow, the
 // default, a delete inside the workspace's own folder runs under the ordinary write gate, as removing old code is part of
@@ -282,7 +283,7 @@ describe('the fs tools under the default delete policy', () => {
     const asked = await call(runtime, 'fs_delete', { paths: ['src/a.ts'] }, [], 'first-delete')
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', subject: join(runtime.paths().root, 'src') }] })
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).ok).toBe(true)
     expect(await call(runtime, 'fs_delete', { paths: ['src/a.ts'] }, [token], 'first-delete')).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
     expect(await call(runtime, 'fs_delete', { paths: ['src/b.ts'] })).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
   })
@@ -326,7 +327,7 @@ describe('the fs tools under the default delete policy', () => {
       expect(existsSync(join(workspace, to))).toBe(false)
       if (asked.outcome !== 'approval_required') throw new Error('Expected the folder move to ask before changing anything')
       const tokens = asked.approvals.map(approval => approval.token)
-      for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+      for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
       expect(await call(runtime, 'fs_move', args, tokens)).toMatchObject({ outcome: 'ok' })
     }
     expect(readFileSync(join(workspace, 'src/old-lib/a.ts'), 'utf8')).toBe('a')

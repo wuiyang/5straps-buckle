@@ -15,6 +15,7 @@ import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
 import { GRANT_OWED_NOTE, shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -632,7 +633,7 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
   }
   const decidedBy = `judge:${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`.slice(0, 200)
   // The once binds to the code the thorough stage rated: a retry after that code changed does not spend it (fix brief 9, B31).
-  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'judge', decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
+  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.judge, decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
   if (!answered.ok) return { ...fail(`${answered.reason} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
   process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's ${judged.passedBy} stage's safe verdict, as you asked.\n`)
   return { exitCode: 0, detail: `judge ${token} safe, approved once`, judge: auditOf(judged, true) }
@@ -710,7 +711,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
     }
   }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
-  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, source: 'cli', ...(values.host === undefined ? {} : { widenTo: values.host }) })
+  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, source: SOURCES.cli, ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceName()}`)
   // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
   const owed = result.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''

@@ -9,6 +9,7 @@ import { moveEntry, settleMove, standingAt, type MoveIo } from '../common/servic
 import { moveInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // fs_move (the fs-verbs brief): safe by default, `replace` to replace a file, into a folder by name, no folder made, a
 // rename beneath parents reached without following a link, and a copy then a removal across devices. The workspace here
@@ -52,7 +53,7 @@ async function approved(runtime: BuckleRuntime, args: JsonObject): Promise<Invok
   const asked = await call(runtime, args, { requestId })
   expect(asked.outcome).toBe('approval_required')
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return call(runtime, args, { requestId, tokens })
 }
 
@@ -135,7 +136,7 @@ describe('fs_move is safe by default', () => {
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `move-tree:${join(runtime.paths().root, 'src')}`, severity: 'warn' }] })
     if (asked.outcome !== 'approval_required') throw new Error('Expected the folder move to ask')
     const tokens = asked.approvals.map(approval => approval.token)
-    for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: 'cli' })).toMatchObject({ ok: true })
+    for (const token of tokens) expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(await call(runtime, args, { tokens })).toMatchObject({ outcome: 'ok' })
     mkdirSync(join(workspace, 'src'))
     writeFileSync(join(workspace, 'src/recreated.ts'), 'kept')
@@ -156,9 +157,9 @@ describe('fs_move is safe by default', () => {
     expect(approval).toMatchObject({ severity: 'warn' })
     expect(approval).not.toHaveProperty('widerSubject')
     if (!approval) throw new Error('Expected an exact approval for the outside move')
-    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session', subject: `delete-below:${outside}` }, source: 'cli' })).toMatchObject({ ok: false })
+    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session', subject: `delete-below:${outside}` }, source: SOURCES.cli })).toMatchObject({ ok: false })
     expect(runtime.grants.list().some(grant => grant.subject === `delete-below:${outside}`)).toBe(false)
-    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(await call(runtime, args, { tokens: [approval.token] })).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'received/kept.ts'), 'utf8')).toBe('kept')
     mkdirSync(join(outside, 'src'))

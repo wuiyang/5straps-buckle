@@ -12,6 +12,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The ledger commits a decision first and its grant after, under the approvals lock, and a grant owed at a crash is
 // written when the workspace opens again, before any call runs.
@@ -76,7 +77,7 @@ const onDisk = (config: BuckleConfig, token: string) => {
   const resolved = ledger.resolved.find(entry => entry.decision.token === token)
   return { pending: ledger.pending.some(entry => entry.request.token === token), resolved: resolved !== undefined, owes: resolved?.owedGrant !== undefined }
 }
-const session = (token: string) => ({ decision: { token, approved: true, scope: 'session' as const }, source: 'cli' as const })
+const session = (token: string) => ({ decision: { token, approved: true, scope: 'session' as const }, source: SOURCES.cli })
 
 async function approvalsLockHeld(config: BuckleConfig): Promise<boolean> {
   try {
@@ -150,7 +151,7 @@ describe('a lasting decision', () => {
     expect(await runtime.approvalService.answer(session(owing))).toMatchObject({ ok: true, grantOwed: true })
 
     const once = tokenOf(await write(runtime, 'two.md'))
-    expect(await runtime.approvalService.answer({ decision: { token: once, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: once, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(onDisk(config, owing).owes).toBe(false)
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', sessionId: 's' })])
   })

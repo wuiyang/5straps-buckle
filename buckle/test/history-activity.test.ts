@@ -10,6 +10,7 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createWorkbenchManager } from '../common/services/workbench/manager.js'
 import { workbenchHash } from '../common/services/workbench/storage.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const roots: string[] = []
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
@@ -158,7 +159,7 @@ it('keeps the original turn while an invocation waits for approval', async () =>
     await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
     const token = runtime.approvalService.pending()[0]!.token
     at += 70_000
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     expect((await waiting).outcome).toBe('ok')
     expect((await runtime.history.list()).at(-1)!.turnId).toBe(first.turnId)
   } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close(); clock.mockRestore(); vi.restoreAllMocks() }

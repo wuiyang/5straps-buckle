@@ -14,6 +14,7 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -67,7 +68,7 @@ describe('the siblings of a denied ask', () => {
       await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(2))
       const [denied, sibling] = runtime.approvalService.pending()
 
-      expect((await runtime.approvalService.answer({ decision: { token: denied!.token, approved: false, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+      expect((await runtime.approvalService.answer({ decision: { token: denied!.token, approved: false, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
       expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Approval was declined') } })
       await runtime.approvalService.close()
 

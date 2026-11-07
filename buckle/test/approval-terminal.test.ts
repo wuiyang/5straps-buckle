@@ -19,6 +19,7 @@ import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The rows that pin cursor control run on a capable terminal whatever shell runs the suite; the TERM=dumb rows say so.
 beforeEach(() => { vi.stubEnv('TERM', 'xterm-256color') })
@@ -191,7 +192,7 @@ describe('the terminal question after the grace period', () => {
     held.answer('session')
     await vi.waitFor(() => expect(registry.pending()).toEqual([]))
     // The terminal's answer is the one on record: the same answer again changes nothing.
-    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' }, 'cli')).toEqual({ ok: true, repeated: true, asked: { rule: 'read_scope', subject: '/shots' } })
+    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' }, SOURCES.cli)).toEqual({ ok: true, repeated: true, asked: { rule: 'read_scope', subject: '/shots' } })
   })
 
   it('closes once the request expires', async () => {

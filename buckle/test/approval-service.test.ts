@@ -22,6 +22,7 @@ import { stdioCallScope } from '../mcp/stdio.js'
 import type { ServerContext } from '@modelcontextprotocol/server'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 function queue(root = mkdtempSync(join(tmpdir(), 'buckle-approval-service-'))) {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
@@ -148,7 +149,7 @@ describe('the approval service, the single answerer', () => {
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
     const started = performance.now()
 
-    expect((await service.answer({ decision: { token: registry.pending()[0]!.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await service.answer({ decision: { token: registry.pending()[0]!.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 
     expect(await waiting).toMatchObject({ settled: true })
     expect(performance.now() - started).toBeLessThan(1_000)
@@ -162,7 +163,7 @@ describe('the approval service, the single answerer', () => {
 
     // A second registry over the same files stands in for `buckle approve` in another process.
     const elsewhere = queue(root).registry
-    expect((await elsewhere.resolve({ token: elsewhere.pending()[0]!.token, approved: true, scope: 'session' }, 'cli')).ok).toBe(true)
+    expect((await elsewhere.resolve({ token: elsewhere.pending()[0]!.token, approved: true, scope: 'session' }, SOURCES.cli)).ok).toBe(true)
 
     expect(await waiting).toMatchObject({ settled: true })
   })
@@ -203,7 +204,7 @@ describe('the approval service, the single answerer', () => {
 
     const resent = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
-    await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })
+    await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })
     expect(await resent).toMatchObject({ settled: true, approvals: [expect.objectContaining({ token })] })
     await service.close()
   })

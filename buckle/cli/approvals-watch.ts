@@ -9,6 +9,7 @@ import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 /**
  * The node has no push channel for approvals: a request is a row in the state directory's
@@ -237,7 +238,7 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
  */
 async function record(context: AskContext, decision: ApprovalDecision): Promise<void> {
   const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.ok, describe: outcome => (outcome.ok && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.answer({ decision, source: 'cli' }) })
+    isSuccessful: outcome => outcome.ok, describe: outcome => (outcome.ok && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.answer({ decision, source: SOURCES.cli }) })
   if (!result.ok) {
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return

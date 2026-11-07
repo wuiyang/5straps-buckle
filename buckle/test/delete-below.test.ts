@@ -17,6 +17,7 @@ import { createApprovalService, questionFor } from '../common/services/approvals
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The delete policy brief, item 3: a delete outside the workspace's own folder (a writable mount, or a path an approval
 // reached) asks at the floor as before, and offers two subjects besides its scopes: the target alone, as before, or its
@@ -151,17 +152,17 @@ describe('the approval queue', () => {
     expect(request).toMatchObject({ subject: `delete:${MOUNT}/reports`, widerSubject: `delete-below:${MOUNT}/reports` })
     expect(registry.pending()[0]).toMatchObject({ widerSubject: `delete-below:${MOUNT}/reports` })
     const decision = { token: request!.token, approved: true, scope: 'session' as const, subject: `delete-below:${MOUNT}/reports` }
-    expect(await registry.resolve(decision, 'cli')).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports` })
+    expect(await registry.resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports` })
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: `delete-below:${MOUNT}/reports`, scope: 'session', sessionId: 's1' }])
-    expect(await registry.resolve(decision, 'cli')).toMatchObject({ ok: true, repeated: true })
-    expect(await registry.resolve({ ...decision, subject: undefined }, 'cli')).toEqual({ ok: false, reason: 'Approval already has a different decision' })
+    expect(await registry.resolve(decision, SOURCES.cli)).toMatchObject({ ok: true, repeated: true })
+    expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, reason: 'Approval already has a different decision' })
   })
 
   it('grants the ask\'s own subject where the decision names none, or names it', async () => {
     const { registry, grants } = queue()
     const requests = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE, { ...WIDE, subject: `delete:${MOUNT}/other`, widerSubject: `delete-below:${MOUNT}/other` }], call: CALL })).requests
-    expect((await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'always' }, 'cli')).ok).toBe(true)
-    expect((await registry.resolve({ token: requests[1]!.token, approved: true, scope: 'always', subject: `delete:${MOUNT}/other` }, 'cli')).ok).toBe(true)
+    expect((await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'always' }, SOURCES.cli)).ok).toBe(true)
+    expect((await registry.resolve({ token: requests[1]!.token, approved: true, scope: 'always', subject: `delete:${MOUNT}/other` }, SOURCES.cli)).ok).toBe(true)
     expect(grants.list().map(grant => grant.subject).sort()).toEqual([`delete:${MOUNT}/other`, `delete:${MOUNT}/reports`])
   })
 
@@ -173,7 +174,7 @@ describe('the approval queue', () => {
   ])('refuses %o, granting nothing', async (decision, reason) => {
     const { registry, grants } = queue()
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    expect(await registry.resolve({ token: request!.token, ...decision }, 'cli')).toEqual({ ok: false, reason })
+    expect(await registry.resolve({ token: request!.token, ...decision }, SOURCES.cli)).toEqual({ ok: false, reason })
     expect(grants.list()).toEqual([])
     expect(registry.pending()).toHaveLength(1)
   })
@@ -183,7 +184,7 @@ describe('the approval queue', () => {
     const { widerSubject: _none, ...narrow } = WIDE
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [narrow], call: CALL })).requests
     expect(request).not.toHaveProperty('widerSubject')
-    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, 'cli')).toEqual({ ok: false, reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports` })
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, SOURCES.cli)).toEqual({ ok: false, reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports` })
   })
 })
 
@@ -251,7 +252,7 @@ describe('fs_delete outside the workspace\'s folder, end to end', () => {
     const asked = await call({ paths: [join(outside, 'a.txt')] }, 'outside-1')
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'write_scope', subject: `delete:${outside}`, widerSubject: `delete-below:${outside}`, offeredScopes: ['once', 'session', 'always'] }] })
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session', subject: `delete-below:${outside}` }, source: 'cli' })).toMatchObject({ ok: true, granted: `delete-below:${outside}` })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session', subject: `delete-below:${outside}` }, source: SOURCES.cli })).toMatchObject({ ok: true, granted: `delete-below:${outside}` })
     expect(await call({ paths: [join(outside, 'a.txt')] }, 'outside-1', [token])).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
     expect(await call({ paths: [join(outside, 'sub/b.txt')] }, 'outside-2')).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
     expect(existsSync(join(outside, 'sub/b.txt'))).toBe(false)
@@ -289,7 +290,7 @@ describe('fs_move of a file out of a folder outside the workspace\'s folder', ()
     const { workspace, outside, runtime, call } = await setup()
     const asked = await call('fs_move', { from: join(outside, 'keep.txt'), to: 'keep.txt' }, 'move-in')
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     expect(await call('fs_move', { from: join(outside, 'keep.txt'), to: 'keep.txt' }, 'move-in', [token])).toMatchObject({ outcome: 'ok' })
     expect(await call('fs_delete', { paths: ['keep.txt'] }, 'delete-in')).toMatchObject({ outcome: 'ok', output: { removed: 1 } })
     expect(existsSync(join(workspace, 'keep.txt'))).toBe(false)

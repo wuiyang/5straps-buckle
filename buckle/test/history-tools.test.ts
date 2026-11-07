@@ -12,6 +12,7 @@ import { declare } from '../common/services/packs/code/declarations.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Slice D, rollback as an agent option: history_list answers the newest checkpoints from the current state back, and
 // history_restore restores the workspace to before one, by id or steps, through the restore path. Every restore asks a
@@ -43,7 +44,7 @@ function call(runtime: BuckleRuntime, requestId: string, tool: string, args: Jso
 
 async function approveAll(runtime: BuckleRuntime, asked: InvokeResponse): Promise<string[]> {
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return tokens
 }
 

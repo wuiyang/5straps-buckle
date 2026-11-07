@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5straps/protocol'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
-import { assuranceOf, atLeast } from './assurance.js'
+import { atLeast, rightsOf } from './assurance.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
@@ -10,7 +10,7 @@ export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept cal
 /** Named as the approval contract's ApprovalErrorCode values, so no mapping layer sits between them. */
 export type GuardRefusalCode =
   | 'unknown_ask' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'
-  | 'statement_invalid' | 'proof_expired' | 'assurance_too_low'
+  | 'statement_invalid' | 'proof_expired' | 'assurance_too_low' | 'capability_exceeded'
 
 export interface GuardRefusal { ok: false; code: GuardRefusalCode; reason: string }
 
@@ -41,7 +41,10 @@ export type GuardVerdict =
 // Needs no ask, so the registry also runs it before it locks the approvals file.
 export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true; widenedTo?: string } {
   const { decision } = claim
-  if (decision.scope !== 'once' && !atLeast(assuranceOf(claim.source), 'local')) return refuse('assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call')
+  const rights = rightsOf(claim.source.kind)
+  if (decision.approved && !rights.approves) return refuse('capability_exceeded', 'Approval requires an enrolled device key: review and confirm with buckle client approve')
+  const lasting = decision.scope !== 'once' && !(rights.deniesLasting && !decision.approved)
+  if (lasting && !atLeast(rights.assurance, 'local')) return refuse('assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call')
   if (claim.widenTo === undefined) return { ok: true }
   return checkWidening({ pattern: claim.widenTo, decision, source: claim.source })
 }
@@ -96,7 +99,7 @@ function widerGrant(input: { decision: ApprovalDecision; request: ApprovalReques
 }
 
 function checkWidening(input: { pattern: string; decision: ApprovalDecision; source: ApprovalSource }): { ok: true; widenedTo: string } | GuardRefusal {
-  if (input.source !== 'cli') return refuse('scope_forbidden', 'Only buckle approve widens an approval to a host pattern')
+  if (input.source.kind !== 'cli') return refuse('scope_forbidden', 'Only buckle approve widens an approval to a host pattern')
   if (!input.decision.approved) return refuse('scope_forbidden', 'A denial names no host pattern; deny without --host')
   if (input.decision.scope === 'once') return refuse('scope_forbidden', 'A once approval covers one call to the host that asked; widen a session or always approval instead')
   const pattern = input.pattern.trim()

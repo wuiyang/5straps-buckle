@@ -6,6 +6,7 @@ import { HarnessManifestSchema, type InvokeResponse, type JsonObject } from '@5s
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Slice F2, item 1: a file tool's checkpoint records only the paths its effects name, before the call and after it. No
 // walk of the workspace and no git: host git is off here, and the folder holds what a walk would trip on (a FIFO, a hard
@@ -93,7 +94,7 @@ describe('a file tool\'s checkpoint', () => {
     writeFileSync(join(workspace, 'from', 'x.txt'), 'x')
     const moved = await call(runtime, 'm-1', 'fs_move', { from: 'from', to: 'to' })
     const tokens = moved.outcome === 'approval_required' ? moved.approvals.map(approval => approval.token) : []
-    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     if (tokens.length) expect(await runtime.invoke({ request: { requestId: 'm-1', tool: 'fs_move', args: { from: 'from', to: 'to' }, approvalTokens: tokens }, sessionId: 'agent' })).toMatchObject({ outcome: 'ok' })
     else expect(moved).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'to', 'x.txt'), 'utf8')).toBe('x')

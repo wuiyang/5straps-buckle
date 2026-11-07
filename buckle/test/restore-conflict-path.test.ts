@@ -8,6 +8,7 @@ import { assertSnapshotMatches, SnapshotConflictError, type Snapshot } from '../
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // A restore refused as a conflict names the path in conflict: the owner's command as it lies in the workspace's folder, an
 // agent's tool as the agent names it, and a path the agent's read rules keep from it not at all. The refusal once said
@@ -92,7 +93,7 @@ function call(runtime: BuckleRuntime, requestId: string, tool: string, args: Jso
 
 async function approveAll(runtime: BuckleRuntime, asked: InvokeResponse): Promise<string[]> {
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return tokens
 }
 

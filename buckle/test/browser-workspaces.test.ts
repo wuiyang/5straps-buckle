@@ -11,6 +11,7 @@ import { runCli } from './support/cli.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import type { WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Phase 2 item 6 of the workspace-model brief (Q10, D84 (2)): the browser's idle timeout and the owner's modes (an
 // attached Chrome, a profile folder, arguments, a window) are each workspace's; a profile folder or an attached Chrome
@@ -293,7 +294,7 @@ describe('a browser call held open across a change of holder', { timeout: 30_000
     // alpha comes online first in the registry and takes it; then the approver says yes.
     await manager.update(idOf(manager, 'alpha'), { online: true })
     expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBe('alpha')
-    expect((await runtime.approvalService.answer({ decision: { token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 
     const result = await pending
     expect(result).toMatchObject({ outcome: 'error', error: { code: 'BROWSER_COMMAND_FAILED' } })

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 // The MCP face over HTTP on the MCP layer (B16): initialize, a tool call relayed through the invoker,
 // 405 with Allow for other methods, a cancelled call, and the workspace twin.
@@ -100,7 +101,7 @@ describe('the MCP face over HTTP', () => {
     expect(buckle.runtime.approvals.pending()).toHaveLength(1)
 
     const [token] = buckle.runtime.approvals.pending().map(request => request.token)
-    expect((await buckle.runtime.approvals.resolve({ token: token!, approved: true, scope: 'once' }, 'cli')).ok).toBe(true)
+    expect((await buckle.runtime.approvals.resolve({ token: token!, approved: true, scope: 'once' }, SOURCES.cli)).ok).toBe(true)
     const ran = await send()
     expect(ran.isError).toBeUndefined()
     expect(ran.structuredContent).toBeUndefined()

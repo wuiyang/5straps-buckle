@@ -13,6 +13,7 @@ import { keysCommand } from '../../cli/keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { workspaceIdOf } from '../support/workspaces.js'
 import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
+import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
 const nodes: BuckleHttp[] = []
@@ -266,11 +267,13 @@ describe('a decision posted to the setup face', () => {
     const token = runtime.approvals.pending()[0]!.token
 
     expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(409)
-    expect(answer).not.toHaveBeenCalled()
+    // The envelope's source only denies, so the decision guard refuses its approval and nothing is decided.
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ source: SOURCES.sealed }))
+    await expect(answer.mock.results[0]!.value).resolves.toEqual({ ok: false, reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' })
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
     expect((await deviceApproval(app, token)).status).toBe(200)
 
-    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ decision: { token, approved: true, scope: 'once' }, source: 'devices', challenge: expect.any(String), decidedBy: expect.stringMatching(/^key:SHA256:/), consumeNotAfter: expect.any(Number) }))
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.devices, challenge: expect.any(String), decidedBy: expect.stringMatching(/^key:SHA256:/), consumeNotAfter: expect.any(Number) }))
     expect(await waiting).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('freed')
   })

@@ -5,6 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 // Review L4 of B13-B14: the body paths of a moved route through the production listener on node:http,
 // not only the in-process Request: a chunked body past the limit, and a body streamed in pieces. Since
@@ -102,7 +103,7 @@ describe('a client that hangs up over node:http', () => {
     await vi.waitFor(() => expect(buckle.runtime.actions.read(50).filter(entry => entry.event === 'attempt' && entry.requestId === 'wire-hang-up')).toHaveLength(2), { timeout: 10_000 })
     // Joined: no second ask was issued.
     expect(buckle.runtime.approvals.pending().map(pending => pending.token)).toEqual([token])
-    expect((await buckle.runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await buckle.runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 
     const reply = await resent
     expect(reply.status).toBe(200)
@@ -131,7 +132,7 @@ describe('a re-send after every ask of the dropped call was answered (review M2 
     const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const body = JSON.stringify({ requestId: 'wire-deny-once', tool: 'fs_write', args: { path: join(root, 'denied.md'), content: 'x' } })
     const token = await dropWhileAsking({ url, buckle, body, requestId: 'wire-deny-once' })
-    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: false, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: false, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 
     const reply = await send(url, body)
     expect(reply.status).toBe(422)
@@ -144,7 +145,7 @@ describe('a re-send after every ask of the dropped call was answered (review M2 
     const { url, root, buckle } = await listening({ BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
     const body = JSON.stringify({ requestId: 'wire-approve-once', tool: 'fs_write', args: { path: join(root, 'approved.md'), content: 'once' } })
     const token = await dropWhileAsking({ url, buckle, body, requestId: 'wire-approve-once' })
-    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await buckle.runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 
     const replies = await Promise.all([send(url, body), send(url, body)])
     const answers = await Promise.all(replies.map(async reply => ({ status: reply.status, body: await reply.json() as { outcome: string } })))

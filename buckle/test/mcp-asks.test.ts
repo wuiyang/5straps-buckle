@@ -11,6 +11,7 @@ import { createMcpHttpHandlers } from '../mcp/http.js'
 import { MCP_HOLD_MS, mcpWait } from '../mcp/holds.js'
 import { sameCallKey } from '../mcp/resend-join.js'
 import { EXECUTION_LIMIT } from '../common/services/invocation/executions.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The MCP asks brief, items 1 to 3, over the HTTP face's own handler (mcp/http.ts) with a real workspace runtime: the
 // hold is capped, an unanswered hold answers structurally and is no error, an identical re-send joins the call that
@@ -63,7 +64,7 @@ function results(runtime: BuckleRuntime, tool = 'fs_write') {
 
 async function approve(runtime: BuckleRuntime, scope: 'once' | 'session' = 'once') {
   const [token] = runtime.approvalService.pending().map(request => request.token)
-  expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, source: 'cli' })).ok).toBe(true)
+  expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, source: SOURCES.cli })).ok).toBe(true)
 }
 
 describe('the HTTP MCP face\'s hold (item 1)', () => {

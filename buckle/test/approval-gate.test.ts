@@ -8,6 +8,7 @@ import { NO_INTERACTION, type Interaction } from '../common/services/approvals/i
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // A once and a session grant serve the actor whose call asked, never another actor's call in the same session.
 
@@ -34,7 +35,7 @@ async function node() {
   // The same call, requestId aside, from the actor the transport authenticated, in the one session `shared`.
   const write = (actor: string, path: string, tokens: string[] = []): Promise<InvokeResponse> =>
     runInScope(createOperationScope({ owner, context: { actor } }), () => runtime.invoke({ request: { requestId: `call-${++sequence}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: tokens }, sessionId: 'shared' }))
-  const answer = (token: string, scope: 'once' | 'session') => runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: 'cli' })
+  const answer = (token: string, scope: 'once' | 'session') => runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })
   return { runtime, write, answer }
 }
 

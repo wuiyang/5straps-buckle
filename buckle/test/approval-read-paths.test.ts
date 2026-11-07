@@ -19,6 +19,7 @@ import { compilePolicy } from '../common/domain/policy.js'
 import { logger } from '../common/runtime/log.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -80,7 +81,7 @@ describe('approval listings carry each whole call once', () => {
       expect(challenge.callDigest).toBe(callDigestOf(shared))
       expect(Buffer.byteLength(JSON.stringify(listing))).toBeLessThan(128 * 1_024)
       for (const changed of [{ ...shared, cwd: '/different' }, { ...shared, description: 'Different summary' }, { ...shared, effects: ['write /different'] }, { ...shared, arguments: { content: 'different' } }]) expect(shownCallDigestOf(changed)).not.toBe(challenge.callRef)
-      const decided = await service.answer({ decision: { token: challenge.token, approved: true, scope: 'once' }, source: 'cli', challenge: signChallenge({ challenge, key: signingKeyFromPem(generateSigningKey().privateKeyPem).privateKey }).digest })
+      const decided = await service.answer({ decision: { token: challenge.token, approved: true, scope: 'once' }, source: SOURCES.cli, challenge: signChallenge({ challenge, key: signingKeyFromPem(generateSigningKey().privateKeyPem).privateKey }).digest })
       expect(decided.ok).toBe(true)
     } finally { await service.close() }
   })
@@ -94,11 +95,11 @@ describe('every decision needs a complete recorded call', () => {
       const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 'mcp', asks: asks(1), ...(call ? { call } : {}) })).requests
       if (kind === 'missing_file') rmSync(join(root, 'approval-calls', readdirSync(join(root, 'approval-calls'))[0]!))
       if (kind === 'unreadable') writeFileSync(join(root, 'approval-calls', readdirSync(join(root, 'approval-calls'))[0]!), 'invalid JSON')
-      for (const scope of ['once', 'session', 'always'] as const) expect(await registry.resolve({ token: request!.token, approved: true, scope }, 'cli')).toMatchObject({ ok: false, reason: expect.stringContaining('recorded before this build') })
+      for (const scope of ['once', 'session', 'always'] as const) expect(await registry.resolve({ token: request!.token, approved: true, scope }, SOURCES.cli)).toMatchObject({ ok: false, reason: expect.stringContaining('recorded before this build') })
       expect(grants.list()).toEqual([])
       expect(registry.unspent('mcp')).toEqual([])
       expect(registry.pending()).toHaveLength(1)
-      expect((await registry.resolve({ token: request!.token, approved: false, scope: 'once' }, 'cli')).ok).toBe(true)
+      expect((await registry.resolve({ token: request!.token, approved: false, scope: 'once' }, SOURCES.cli)).ok).toBe(true)
       expect(registry.pending()).toEqual([])
     } finally { await service.close() }
   })
@@ -116,12 +117,12 @@ describe('a re-send repairs an ask whose kept call is lost', () => {
       const [file] = readdirSync(calls)
       if (kind === 'missing_file') rmSync(join(calls, file!))
       else writeFileSync(join(calls, file!), 'invalid JSON')
-      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, 'cli')).toMatchObject({ ok: false, reason: expect.stringContaining('re-send the call') })
+      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: false, reason: expect.stringContaining('re-send the call') })
       expect(await registry.ask(sent)).toMatchObject({ joined: true, requests: [{ token: request!.token }] })
       expect(readdirSync(calls)).toHaveLength(1)
       expect(readdirSync(calls)).not.toContain(file)
       expect(registry.waitingAsk(request!.token)?.call).toEqual(whole())
-      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
+      expect(await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: true })
     } finally { await service.close() }
   })
 })
@@ -151,7 +152,7 @@ describe('a re-send of a large waiting group stays cheap under the approvals loc
         const [root, token] = process.argv.slice(2);
         const registry = createApprovalRegistry(createFileGrantStore({ filePath: root + '/grants.json', workspace: root }), root + '/approvals.json');
         const started = Date.now();
-        const decided = await registry.resolve({ token, approved: false, scope: 'once' }, 'cli');
+        const decided = await registry.resolve({ token, approved: false, scope: 'once' }, { id: 'cli', kind: 'cli' });
         console.log(JSON.stringify({ ok: decided.ok, ms: Date.now() - started }));
       `)
       const started = Date.now()
@@ -185,7 +186,7 @@ describe('a re-send of a large waiting group stays cheap under the approvals loc
       expect(await registry.ask(sent)).toMatchObject({ joined: true })
       expect(readdirSync(calls)).toHaveLength(1)
       expect(registry.waiting().every(ask => ask.call?.complete === true)).toBe(true)
-      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
+      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: true })
       expect(warn.mock.calls.filter(([message]) => /call files are missing or unreadable/.test(message))).toHaveLength(1)
     } finally {
       warn.mockRestore()
@@ -232,7 +233,7 @@ describe('a re-send of a large nested script approved once', () => {
     `)
     try {
       const { requests } = await registry.ask(sent)
-      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
+      expect(await registry.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: true })
       const other = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, root, marker], { stdio: ['ignore', 'pipe', 'inherit'] })
       let output = ''
       const ready = new Promise<void>(resolve => other.stdout.on('data', (chunk) => { output += String(chunk); if (output.includes('ready')) resolve() }))
@@ -625,7 +626,7 @@ describe('an index unreadable for a while, then repaired in place', () => {
             await twelveSeconds(registry)
             expect([stored(error), index(warn)]).toEqual([episode, episode])
             chmodSync(root, 0o700)
-            expect(await registry.resolve({ token: tokens[episode - 1]!, approved: false, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
+            expect(await registry.resolve({ token: tokens[episode - 1]!, approved: false, scope: 'once' }, SOURCES.cli)).toMatchObject({ ok: true })
           }
         } finally {
           chmodSync(root, 0o700)

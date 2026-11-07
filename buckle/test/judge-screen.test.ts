@@ -10,6 +10,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import type { Judge, JudgeInput, JudgeLevel } from '../common/types/ports/judge.js'
 import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // approval.quickJudge all (D91, addendum 2 B): every command is rated by the quick stage, allowed ones included. An
 // allowed command runs unless Jev rates it danger at 0.8 or above, which turns the run into an ask with the verdict beside
@@ -219,7 +220,7 @@ describe('an allowed command, with the quick stage on for all', () => {
     const first = await call(runtime, 'cat', ['notes.txt'], [], 'screen-approved')
     if (first.response.outcome !== 'approval_required') throw new Error('expected an ask')
     const token = first.response.approvals[0]!.token
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     const again = await call(runtime, 'cat', ['notes.txt'], [token], 'screen-approved')
     expect(again.response).toMatchObject({ outcome: 'ok' })
     expect(again.ran).toBe(true)

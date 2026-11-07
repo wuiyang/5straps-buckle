@@ -12,6 +12,7 @@ import { AuditUnavailableError } from '../common/adapters/action-log/file-action
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
 // (nitro/coordination.md, Completion and queue: "Reconnection must not execute a request twice").
@@ -107,7 +108,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const first = runtime.invoke({ sessionId: 'chat-1', request })
     await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
     const [ask] = runtime.approvalService.pending()
-    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'session' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'session' }, source: SOURCES.cli })).ok).toBe(true)
     expect(await first).toMatchObject({ outcome: 'ok' })
 
     expect(await runtime.invoke({ sessionId: 'chat-1', request })).toMatchObject({ outcome: 'ok' })

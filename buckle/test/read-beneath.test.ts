@@ -10,6 +10,7 @@ import { findNames, listTree, readFileEntry } from '../common/services/packs/fs/
 import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review item 4 of the proof-of-possession fixes: a read was judged at its real path and then opened by
 // name, so a link swapped in between (into Buckle's state, say) was followed. A read now opens the judged
@@ -98,7 +99,7 @@ describe('a read whose target a link replaces during its approval wait', () => {
     unlinkSync(join(workspace, '.env'))
     symlinkSync(join(state, 'client-keys.json'), join(workspace, '.env'))
     const [ask] = runtime.approvalService.pending()
-    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     const result = await call
     expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
     expect(JSON.stringify(result)).not.toContain('owner secret')

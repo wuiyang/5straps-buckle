@@ -351,8 +351,8 @@ export interface ApprovalRegistry {
   /** Issues the asks, or joins the ones a call with the same requestId, session and actor is already waiting on. */
   ask(input: AskInput): Promise<AskResult>
   /**
-   * `BUCKLE-D14`: a decision that outlives the call needs a source the guard rates `local` or above; a relayed one
-   * decides `once`, which expires with the call it unblocks.
+   * `BUCKLE-D14`: a decision that outlives the call needs a source whose kind the guard rates `local` or above; a relayed
+   * one decides `once`, which expires with the call it unblocks, and a backend's only denies.
    */
   resolve(decision: ApprovalDecision, source: ApprovalSource, options?: ResolveOptions): Promise<Resolution>
   /**
@@ -757,7 +757,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       // Refused before the lock, so these come back even when the approvals file cannot be read.
       const screened = screenDecision(claim)
       if (!screened.ok) {
-        if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source })
+        if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source: source.id })
         return { ok: false, reason: screened.reason }
       }
       const progress: { applied?: AppliedDecision } = {}

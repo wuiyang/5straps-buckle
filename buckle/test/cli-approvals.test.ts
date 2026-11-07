@@ -20,6 +20,7 @@ import { describeCall } from '../common/domain/describe-call.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 function node(): BuckleConfig {
   return configFromEnvironment({
@@ -298,7 +299,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     const config = node()
     const token = await networkRequest(config)
 
-    for (const source of ['terminal', 'forms', 'devices', 'sealed', 'judge'] as const) {
+    for (const source of [SOURCES.terminal, SOURCES.forms, SOURCES.devices, SOURCES.sealed, SOURCES.judge]) {
       for (const scope of ['once', 'session', 'always'] as const) {
         expect(await registry(config).resolve({ token, approved: true, scope }, source, { widenTo: '*.localhost' })).toMatchObject({ ok: false })
       }
@@ -312,7 +313,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     const token = await networkRequest(config)
 
     const decision = ApprovalDecisionSchema.parse({ token, approved: true, scope: 'session', host: '*.localhost', widenTo: '*.localhost' })
-    expect(await registry(config).resolve(decision, 'cli')).toEqual({ ok: true, asked: { rule: 'network_egress', subject: 'app.localhost:3000' } })
+    expect(await registry(config).resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'network_egress', subject: 'app.localhost:3000' } })
     expect(networkSubjects(config)).toEqual(['app.localhost:3000'])
   })
 
@@ -351,7 +352,7 @@ describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
   it('keeps a stored grant spelled *.localhost:3000 without the pattern flag to its literal string, whatever approved it', async () => {
     const config = node()
     const token = await networkRequest(config, '*.localhost:3000')
-    expect(await registry(config).resolve({ token, approved: true, scope: 'session' }, 'cli')).toEqual({ ok: true, asked: { rule: 'network_egress', subject: '*.localhost:3000' } })
+    expect(await registry(config).resolve({ token, approved: true, scope: 'session' }, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'network_egress', subject: '*.localhost:3000' } })
     const now = new Date().toISOString()
     writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [
       ...grantStore(config).list(),

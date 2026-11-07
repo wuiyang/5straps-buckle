@@ -9,6 +9,7 @@ import type { PermissionOutcome } from '../common/domain/permission/engine.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const recorded = { arguments: { path: '/outside' }, cwd: '/workspace', description: null, effects: [], complete: true as const }
 const roots: string[] = []
@@ -24,15 +25,15 @@ describe('BUCKLE-D14: a relayed source writes a once and nothing that outlives t
   it.each(['session', 'always'] as const)('refuses a %s decision from a relayed source', async scope => {
     const approvals = registry()
     const request = await ask(approvals)
-    const result = await approvals.resolve({ token: request.token, approved: true, scope }, 'judge')
+    const result = await approvals.resolve({ token: request.token, approved: true, scope }, SOURCES.judge)
     expect(result).toMatchObject({ ok: false })
     expect(approvals.pending().map(entry => entry.token)).toEqual([request.token])
   })
 
   it('lets a relayed source answer once, and a person at the node answer for good', async () => {
     const approvals = registry()
-    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'once' }, 'judge')).ok).toBe(true)
-    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'always' }, 'cli')).ok).toBe(true)
+    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'once' }, SOURCES.judge)).ok).toBe(true)
+    expect((await approvals.resolve({ token: (await ask(approvals)).token, approved: true, scope: 'always' }, SOURCES.cli)).ok).toBe(true)
   })
 })
 
@@ -54,9 +55,9 @@ describe('once approval consumption', () => {
       { kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/outside/credentials.json', reason: 'sensitive', offeredScopes: ['once'] },
     ] })).requests
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length === 2 ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
-    await approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, 'cli')
+    await approvals.resolve({ token: issued[0]!.token, approved: true, scope: 'once' }, SOURCES.cli)
     expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
-    await approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' }, 'cli')
+    await approvals.resolve({ token: issued[1]!.token, approved: true, scope: 'once' }, SOURCES.cli)
     expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('allow')
     expect((await approvals.evaluate({ tokens: issued.map(item => item.token), sessionId: 'reader', tool: 'fs_read', check })).kind).toBe('ask')
   })
@@ -66,8 +67,8 @@ describe('once approval consumption', () => {
     const approvals = registry()
     const [request] = (await approvals.ask({ call: recorded, tool: 'fs_read', sessionId: 'reader', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
     const decision = { token: request!.token, approved: true, scope: 'once' as const }
-    expect((await approvals.resolve(decision, 'cli')).ok).toBe(true)
-    expect((await approvals.resolve(decision, 'cli')).ok).toBe(true)
+    expect((await approvals.resolve(decision, SOURCES.cli)).ok).toBe(true)
+    expect((await approvals.resolve(decision, SOURCES.cli)).ok).toBe(true)
     const check = (subjects: unknown[]): PermissionOutcome => subjects.length ? { kind: 'allow', allowedBy: [] } : { kind: 'ask', asks: [] }
     expect((await approvals.evaluate({ tokens: [request!.token], sessionId: 'other-reader', tool: 'fs_read', check })).kind).toBe('ask')
     expect((await approvals.evaluate({ tokens: [request!.token], sessionId: 'reader', tool: 'fs_write', check })).kind).toBe('ask')
@@ -84,7 +85,7 @@ describe('which late onces a call spends', () => {
       { kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/granted', reason: 'outside', offeredScopes: ['once'] },
       { kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/needed', reason: 'outside', offeredScopes: ['once'] },
     ] })).requests
-    for (const item of issued) await approvals.resolve({ token: item.token, approved: true, scope: 'once' }, 'cli')
+    for (const item of issued) await approvals.resolve({ token: item.token, approved: true, scope: 'once' }, SOURCES.cli)
     // A session grant covers /granted, so the rule reports both subjects but needs only /needed.
     const coveredByGrant = (subjects: { subject: string }[]): PermissionOutcome => subjects.some(item => item.subject === '/needed')
       ? { kind: 'allow', allowedBy: subjects.map(item => `read_scope:${item.subject}`) }
@@ -109,8 +110,8 @@ describe('which late onces a call spends', () => {
   const [request] = (await first.ask({ call: recorded, tool: 'fs_read', sessionId: 'shared', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
   const decision = { token: request!.token, approved: true, scope: 'once' as const }
   expect(second.pending()).toEqual([])
-  expect((await second.resolve(decision, 'cli')).ok).toBe(false)
-  expect((await first.resolve(decision, 'cli')).ok).toBe(true)
+  expect((await second.resolve(decision, SOURCES.cli)).ok).toBe(false)
+  expect((await first.resolve(decision, SOURCES.cli)).ok).toBe(true)
   await second.evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toEqual([]); return { kind: 'allow', allowedBy: [] } } })
   await create('/first').evaluate({ tokens: [request!.token], sessionId: 'shared', tool: 'fs_read', check: subjects => { expect(subjects).toHaveLength(1); return { kind: 'allow', allowedBy: [] } } })
 })
@@ -139,7 +140,7 @@ describe('a once approval answered after the grace period', () => {
   async function answerOnceLate(context: Awaited<ReturnType<typeof setup>>) {
     const first = await context.read(context.file)
     if (first.outcome !== 'approval_required') throw new Error(`expected an approval, got ${first.outcome}`)
-    expect((await context.runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, 'judge')).ok).toBe(true)
+    expect((await context.runtime.approvals.resolve({ token: first.approvals[0]!.token, approved: true, scope: 'once' }, SOURCES.judge)).ok).toBe(true)
   }
 
   it('runs the retried call that carries no token, and is consumed by it', async () => {
@@ -161,7 +162,7 @@ describe('a once approval answered after the grace period', () => {
     const asked = [await context.read(context.file), await context.read(context.file)]
     for (const result of asked) {
       if (result.outcome !== 'approval_required') throw new Error(`expected an approval, got ${result.outcome}`)
-      expect((await context.runtime.approvals.resolve({ token: result.approvals[0]!.token, approved: true, scope: 'once' }, 'judge')).ok).toBe(true)
+      expect((await context.runtime.approvals.resolve({ token: result.approvals[0]!.token, approved: true, scope: 'once' }, SOURCES.judge)).ok).toBe(true)
     }
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
     expect(await context.read(context.file)).toMatchObject({ outcome: 'ok' })
@@ -185,7 +186,7 @@ describe('a withdraw by requestId and session', () => {
     const asked = async (actor: string) => ((await approvals.ask({ call: recorded, tool: 'fs_write', sessionId: 'rpc', requestId: 'hashed-1', actor, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: `/outside/${actor}`, reason: 'outside', offeredScopes: ['once'] }] })).requests)[0]!.token
     const first = await asked('agent:rings')
     const second = await asked('agent:workbench')
-    for (const token of [first, second]) expect((await approvals.resolve({ token, approved: true, scope: 'once' }, 'cli')).ok).toBe(true)
+    for (const token of [first, second]) expect((await approvals.resolve({ token, approved: true, scope: 'once' }, SOURCES.cli)).ok).toBe(true)
     return { approvals, first, second }
   }
 
