@@ -1,6 +1,6 @@
 import { DANGEROUSLY_ALLOW_REACH, type FloorReach, type ModeReach } from '../common/domain/permission/rules/dangerously-allow.js'
 import { wordList } from '../common/domain/word-list.js'
-import type { DangerouslyAllowOnMode } from '../common/types/ports/dangerously-allow-store.js'
+import type { DangerouslyAllowOnMode, DangerouslyAllowReading } from '../common/types/ports/dangerously-allow-store.js'
 
 // What the dangerously-allow switch covers, said once for the help, `buckle policy show`, the switch's warning, and the
 // pages that pin them, each worded from the mode's reach (DANGEROUSLY_ALLOW_REACH).
@@ -17,6 +17,12 @@ const FLOOR_WORDS: Readonly<Record<FloorReach, { reached: string[]; kept: string
   all: { reached: [FLOOR_ASKS], kept: [] },
   unprivileged: { reached: [FLOOR_ASKS], kept: [PRIVILEGE_ASKS] },
   none: { reached: [], kept: [FLOOR_ASKS] },
+}
+
+/** The switch as a sentence names it: its mode in capitals where on, the earlier build's note where one set it, null where it is plainly off. */
+export function switchWords(reading: DangerouslyAllowReading): string | null {
+  if (reading.mode !== 'off') return reading.mode.toUpperCase()
+  return reading.setByEarlierBuild ? EARLIER_BUILD : null
 }
 
 /** What a reach answers beyond the asks every mode covers, and what it leaves to a person. */

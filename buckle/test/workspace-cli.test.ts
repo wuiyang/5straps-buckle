@@ -13,6 +13,7 @@ import { ACTIVE_WORK_FRESH_MS, activeElsewhere, activeWorkDirectory } from '../c
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
+import { EARLIER_BUILD } from '../cli/dangerously-allow-words.js'
 import { workspaceRegistryCommand, type NamePrompt } from '../cli/workspace.js'
 import { settingsCommand } from '../cli/settings.js'
 import { runCli } from './support/cli.js'
@@ -695,6 +696,27 @@ describe('buckle workspace enable, disable and remove', () => {
     const taken = await buckle(['init'], { cwd: alpha })
     expect(taken.exitCode).toBe(0)
     expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
+  })
+
+  it('says a folder registered again had its switch set on by an earlier build, which is read as off, and says nothing where it was off', async () => {
+    const workspaces = await openWorkspaceManager({ config: node() })
+    let id: string
+    try {
+      const { runtime } = await byName(workspaces, 'alpha')
+      id = runtime.workspaceId
+      expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+    } finally { await workspaces.close() }
+    const file = join(state, 'workspaces', id, 'dangerously-allow.json')
+    writeFileSync(file, JSON.stringify({ version: 1, workspaces: { [id]: { on: true, changedAt: '2026-10-25T00:00:00.000Z' } } }))
+    const taken = await buckle(['init'], { cwd: alpha })
+    expect(taken.exitCode).toBe(0)
+    expect(taken.out).toContain(`and history, and its dangerously-allow switch, which is ${EARLIER_BUILD}.`)
+
+    expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
+    writeFileSync(file, JSON.stringify({ version: 1, workspaces: {} }))
+    const quiet = await buckle(['init'], { cwd: alpha })
+    expect(quiet.out).toContain('its settings, grants, and history.')
+    expect(quiet.out).not.toContain('dangerously-allow')
   })
 
   it('names the one name a verb takes', async () => {

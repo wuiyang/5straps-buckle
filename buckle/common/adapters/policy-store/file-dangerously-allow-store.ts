@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { z } from 'zod'
+import { logger } from '../../runtime/log.js'
 import { DANGEROUSLY_ALLOW_ON_MODES, type DangerouslyAllowMode, type DangerouslyAllowReading, type DangerouslyAllowStore } from '../../types/ports/dangerously-allow-store.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
@@ -10,16 +12,22 @@ const currentFileSchema = z.object({
   workspaces: z.record(z.string(), z.object({ mode: z.enum(DANGEROUSLY_ALLOW_ON_MODES), changedAt: z.iso.datetime() }).strict()),
 })
 
-/** A file an earlier build wrote, whose levels this build does not read: every entry in it reads as off (BUILD-02). */
+/** A file an earlier build wrote, whose levels this build does not read: every entry in it reads as off. */
 const earlierFileSchema = z.object({ version: z.literal(1), workspaces: z.record(z.string(), z.unknown()) })
 
 const fileSchema = z.discriminatedUnion('version', [currentFileSchema, earlierFileSchema])
 
 type SwitchFile = z.infer<typeof fileSchema>
 
+type EarlierFile = z.infer<typeof earlierFileSchema>
+
 type CurrentEntries = z.infer<typeof currentFileSchema>['workspaces']
 
 const EMPTY: SwitchFile = { version: CURRENT_VERSION, workspaces: {} }
+
+const EARLIER_COPY = 'dangerously-allow.earlier.json'
+
+const NO_EARLIER_ENTRIES: EarlierFile = { version: 1, workspaces: {} }
 
 function readingIn(file: SwitchFile, key: string): DangerouslyAllowReading {
   if (file.version !== CURRENT_VERSION) return { mode: 'off', setByEarlierBuild: Object.hasOwn(file.workspaces, key) }
@@ -36,8 +44,9 @@ export function createFileDangerouslyAllowStore(input: { filePath: string; works
   return {
     read: () => readingIn(store.read(), input.workspace),
     async set(mode) {
-      await store.update((state) => {
+      await store.update(async (state) => {
         const workspaces: CurrentEntries = state.version === CURRENT_VERSION ? state.workspaces : {}
+        if (state.version !== CURRENT_VERSION) await keepEarlierFile({ ...input, file: state })
         if (mode === 'off') delete workspaces[input.workspace]
         else workspaces[input.workspace] = { mode, changedAt: new Date().toISOString() }
         // An earlier build's file is replaced whole, as none of its entries is read.
@@ -45,6 +54,14 @@ export function createFileDangerouslyAllowStore(input: { filePath: string; works
       })
     },
   }
+}
+
+/** Copies an earlier build's file whole beside the switch file before the first version 2 write replaces it, once: a copy already there is kept. */
+async function keepEarlierFile(input: { filePath: string; lockDeadlineMs?: number; file: EarlierFile }): Promise<void> {
+  const copy = join(dirname(input.filePath), EARLIER_COPY)
+  if (existsSync(copy)) return
+  await createJsonFileStore({ filePath: copy, schema: earlierFileSchema, fallback: NO_EARLIER_ENTRIES, lockDeadlineMs: input.lockDeadlineMs }).write(input.file)
+  logger.info('Kept an earlier build\'s dangerously-allow file beside the switch file, as it holds entries this build does not read', { copy, entries: Object.keys(input.file.workspaces).length })
 }
 
 /**
@@ -70,9 +87,9 @@ export function switchKeys(filePath: string): string[] {
   return Object.keys(readSwitchFile(filePath).workspaces)
 }
 
-/** The mode a switch file holds under a key, off where no file is. Throws StateFileError where it cannot be read. */
-export function switchMode(filePath: string, key: string): DangerouslyAllowMode {
-  return readingIn(readSwitchFile(filePath), key).mode
+/** What a switch file holds under a key, off where no file is. Throws StateFileError where it cannot be read. */
+export function switchReading(filePath: string, key: string): DangerouslyAllowReading {
+  return readingIn(readSwitchFile(filePath), key)
 }
 
 function readSwitchFile(filePath: string): SwitchFile {

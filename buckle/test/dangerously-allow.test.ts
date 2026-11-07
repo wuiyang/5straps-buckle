@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { emptyWorkspacePolicy, type ActionReport, type InvokeResponse, type JsonValue, type PermissionRuleId, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { coversOf } from '../cli/dangerously-allow-words.js'
@@ -692,6 +692,31 @@ describe('the switch\'s modes', () => {
     writeFileSync(dangerouslyAllowPath(setup.config), JSON.stringify({ version: 1, workspaces: {} }))
     expect(runtime.policy.dangerouslyAllow()).toEqual({ mode: 'off', boundTo: setup.workspace, setByEarlierBuild: false })
     expect(await policyOut(runtime, ['show'])).toContain('Dangerously allow  off\n')
+  })
+
+  it('keeps a version 1 file whole beside the version 2 file the first set writes, its other entries among it, and keeps the first copy', async () => {
+    const setup = await node()
+    const { runtime } = setup
+    const entry = { on: true, changedAt: '2026-10-25T00:00:00.000Z' }
+    const earlier = { version: 1, workspaces: { [runtime.workspaceId]: entry, [`${runtime.workspaceId}.earlier-move`]: entry, 'another-workspace': entry } }
+    const aside = join(dirname(dangerouslyAllowPath(setup.config)), 'dangerously-allow.earlier.json')
+    writeFileSync(dangerouslyAllowPath(setup.config), JSON.stringify(earlier))
+    expect((await switchTo(runtime, ['safe'])).exitCode).toBe(0)
+    expect(storedFile(setup)).toEqual({ version: 2, workspaces: { [runtime.workspaceId]: { mode: 'safe', changedAt: expect.any(String) } } })
+    expect(JSON.parse(readFileSync(aside, 'utf8'))).toEqual(earlier)
+
+    expect((await switchTo(runtime, ['off'])).exitCode).toBe(0)
+    writeFileSync(dangerouslyAllowPath(setup.config), JSON.stringify({ version: 1, workspaces: { newer: entry } }))
+    expect((await switchTo(runtime, ['on'])).exitCode).toBe(0)
+    expect(JSON.parse(readFileSync(aside, 'utf8'))).toEqual(earlier)
+  })
+
+  it('writes no copy where the file is already version 2 or there is none', async () => {
+    const setup = await node()
+    const aside = join(dirname(dangerouslyAllowPath(setup.config)), 'dangerously-allow.earlier.json')
+    expect((await switchTo(setup.runtime, ['safe'])).exitCode).toBe(0)
+    expect((await switchTo(setup.runtime, ['on'])).exitCode).toBe(0)
+    expect(existsSync(aside)).toBe(false)
   })
 
   it('reads a version 2 file that names a mode it does not know as off', async () => {

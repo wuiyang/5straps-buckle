@@ -13,6 +13,7 @@ import { canonicalDirectory, checkedMountSource, refuseMountJoining, type MountG
 import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { openSocketCache, socketCachePath } from '../common/services/judge/socket-cache.js'
 import { nullPackageScanner } from '../common/types/ports/package-scan.js'
+import { switchWords } from './dangerously-allow-words.js'
 import { nodeSettingRefusal } from './node-settings.js'
 import { restartRoute, restartSteps, restartSubject } from '../common/services/node-service/installed.js'
 import { SETTING_KEYS, SettingValueError, type SettingKey } from './workspace-keys.js'
@@ -178,8 +179,13 @@ export async function createNamed<T>(prompt: NamePrompt, input: { name?: string;
   }
 }
 
+function switchNote(takenUp: TakenUp): string {
+  const words = switchWords(takenUp.dangerouslyAllow)
+  return words === null ? '' : `, and its dangerously-allow switch, which is ${words}`
+}
+
 function printMinted(workspace: WorkspaceDescriptor, token: MintedToken, takenUp: TakenUp | null): void {
-  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records this folder left when its workspace was removed: its settings, grants, and history${takenUp.dangerouslyAllow === 'off' ? '' : `, and its dangerously-allow switch, which is ${takenUp.dangerouslyAllow.toUpperCase()}`}.` : ''}
+  process.stdout.write(`Workspace ${workspace.name} serves ${workspace.dir}, online.${takenUp ? ` It takes up the records this folder left when its workspace was removed: its settings, grants, and history${switchNote(takenUp)}.` : ''}
 
   agent token   ${token.token}
 
