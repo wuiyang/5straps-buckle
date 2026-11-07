@@ -5,8 +5,8 @@ import type { CodeBinding } from '../../domain/permission/judged.js'
 
 /**
  * A `once` approval, kept in approvals.json beside the asks under the same lock. `fingerprint` and `actor`: the call it
- * was asked for and the identity its transport authenticated, which alone spend it. `decidedBy`: key:<fingerprint> when a person's key signed it. `code`: the code a once the
- * decision AI's thorough stage gave on request binds to.
+ * was asked for and the identity its transport authenticated, which alone spend it. `decidedBy`: key:<fingerprint> when
+ * a person's key signed it. `code`: the code a once the decision AI's thorough stage gave on request binds to.
  */
 export const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
