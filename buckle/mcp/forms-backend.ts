@@ -45,8 +45,12 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       const opened = live()
       if (!opened) break
       const receipt = await opened.decide({ kind: 'plain', decision: decisionOf(token, answer) })
-      if (receipt.status !== 'refused') tokens.push(token)
-      else opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
+      if (receipt.status === 'refused') {
+        opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
+        continue
+      }
+      tokens.push(token)
+      if (receipt.grantOwed) opened.log('warn', 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is', { token })
     }
     return tokens
   }

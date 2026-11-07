@@ -71,6 +71,17 @@ describe('the forms backend', () => {
     ])
   })
 
+  it('says in the node\'s log when an answer was recorded but the lasting grant it makes is not written yet', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b')], receipt: decision => (decision.decision.token === 'a' ? { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true } : { status: 'repeated', state: 'approved', grantOwed: true }) })
+    await backend.open(host)
+    expect(await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ approve: true, scope: 'always' }) })).toEqual(['a', 'b'])
+    expect(host.logged).toEqual([
+      { level: 'warn', message: 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is' },
+      { level: 'warn', message: 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is' },
+    ])
+  })
+
   it('keeps the token of an answer the host already recorded, so the retried call spends it', async () => {
     const backend = forms()
     const host = fakeHost({ routed: [], receipt: () => ({ status: 'repeated', state: 'approved' }) })
