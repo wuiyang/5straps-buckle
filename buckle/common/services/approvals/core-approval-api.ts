@@ -6,6 +6,7 @@ import { redactedSubject } from '../../domain/permission/rules/dangerously-allow
 import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
+import { isDeviceProof, type DeviceProof } from './device-proof.js'
 import type { ListedApproval } from './approval-listing.js'
 import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import type { ApprovalAnswer } from './approval-service.js'
@@ -17,10 +18,11 @@ export type CoreDecisionInput =
   /** `--approve-if-safe`: the thorough stage that passed, as `<stage>:<provider>:<model>`; its once binds to the code it rated. */
   | { source: 'judge'; decision: DecisionBody; rater: string; code?: CodeBinding }
   /**
-   * The setup POST, signed by an enrolled device: the setup guard verified the request and claimed its nonce, and hands
-   * on the key (`key:<fingerprint>`) and the proof's deadline, never the body's. The body is the decision.
+   * The setup POST, signed by an enrolled device: `proof` is what the node's request verifier minted once the signature
+   * checked and its nonce was claimed, which core checks again; the deadline is the proof's, never the body's. The body
+   * is the decision.
    */
-  | { source: 'devices'; body: unknown; signedBy: string; proofDeadline?: number }
+  | { source: 'devices'; body: unknown; proof: DeviceProof }
   /** The setup POST under the admin bearer: a plain body, or the envelope the key paired at setup seals. It only denies. */
   | { source: 'sealed'; body: unknown }
 
@@ -109,15 +111,16 @@ function answerOf(input: Extract<CoreDecisionInput, { source: 'cli' | 'judge' }>
   return { decision, source: SOURCES.judge, ...widen, decidedBy: `judge:${input.rater}`.slice(0, 200), ...(input.code === undefined ? {} : { code: input.code }) }
 }
 
-// B24: a person's key decides on the challenge the node signed, named by its digest, and on nothing else.
+// A person's key decides on the challenge the node signed, named by its digest, and on nothing else.
 function readSigned(input: Extract<CoreDecisionInput, { source: 'devices' }>): ReadInput {
+  const { proof } = input
+  if (!isDeviceProof(proof)) return UNVERIFIED
   const signed = SignedApprovalDecisionSchema.safeParse(input.body)
   if (!signed.success) return INVALID
   const { challenge, ...decision } = signed.data
-  if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return INVALID
   // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
   if (decision.subject !== undefined) return { ok: false, receipt: { status: 'refused', step: 'decision', decision: readOf(decision, challenge), error: { code: 'scope_forbidden', message: DEVICE_SUBJECT, retryable: false } } }
-  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: input.signedBy, ...(input.proofDeadline === undefined ? {} : { consumeNotAfter: input.proofDeadline }) } }
+  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: `key:${proof.keyId}`, consumeNotAfter: proof.deadline } }
 }
 
 async function readSealed(body: unknown, context: ReadContext): Promise<ReadInput> {
@@ -129,6 +132,7 @@ async function readSealed(body: unknown, context: ReadContext): Promise<ReadInpu
   return { ok: true, answer: { decision: parsed.data, source: SOURCES.sealed } }
 }
 
+const UNVERIFIED: ReadInput = { ok: false, receipt: { status: 'refused', step: 'proof', error: { code: 'proof_invalid', message: 'unverified', retryable: false } } }
 const INVALID: ReadInput = { ok: false, receipt: { status: 'refused', step: 'statement', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } } }
 const DEVICE_SUBJECT = 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below'
 const PROOF_CODES: Readonly<Record<DecisionRefusal, ApprovalErrorCode>> = { expired: 'proof_expired', replayed: 'replayed', tampered: 'proof_invalid', unknown_key: 'proof_invalid', plain_refused: 'proof_invalid' }

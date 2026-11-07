@@ -36,6 +36,10 @@ const OWN_MODULES = 'common/adapters/approval/'
 const FORMS_BACKEND = 'mcp/forms-backend.ts'
 const BEYOND_A_FORMS_BACKEND = /(?:domain\/approval\/asked-call|services\/|workspaces\/)/
 
+// A device's proof, minted by the node's request verifier alone once a signature checked.
+const MINTS_A_DEVICE_PROOF = /(?<!function )\bmintDeviceProof\(/
+const REQUEST_VERIFIER = 'common/services/access/signed-requests.ts'
+
 const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
 
 /** Every module a file imports, package-relative, following the imports of the modules beside it in its own folder. */
@@ -95,6 +99,13 @@ describe('the approval boundary', () => {
   it('lets the faces reach the approval service through the core approval API alone, and the stdio face open its forms', () => {
     const reached = new Set(sourceFiles('main.ts', 'cli', 'mcp', 'server', 'layers').flatMap(file => [...readFileSync(file, 'utf8').matchAll(ON_THE_SERVICE)].map(match => match[1]!)))
     expect([...reached].filter(method => !CORE_API.includes(method))).toEqual([])
+  })
+
+  it('lets only the node\'s request verifier mint a device\'s proof', () => {
+    const minters = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
+      .filter(file => MINTS_A_DEVICE_PROOF.test(readFileSync(file, 'utf8')))
+      .map(file => relative(PACKAGE_ROOT, file))
+    expect(minters).toEqual([REQUEST_VERIFIER])
   })
 
   it('keeps every adapter off the approval services', () => {

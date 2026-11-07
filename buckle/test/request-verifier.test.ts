@@ -8,6 +8,7 @@ import { openFileNonceStore } from '../common/adapters/approval/file-nonce-store
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
 import { createFileClientKeys } from '../common/adapters/keys/file-client-keys.js'
 import { createRequestVerifier } from '../common/services/access/signed-requests.js'
+import { isDeviceProof } from '../common/services/approvals/device-proof.js'
 
 // Review item 3 of the proof-of-possession fixes: the window was judged when a request was checked and
 // not again at its nonce claim, so a claim that waited more than 120 s for the lock pruned the original
@@ -70,19 +71,21 @@ describe('node-owned approval proof custody', () => {
   it('takes the deadline only from verified signature metadata, never forged request context', async () => {
     const { verify, clock } = await verifier('both')
     const request = { context: { proofDeadline: clock.now + 999_999, approvalProofDeadline: clock.now + 999_999, actor: `key:${owner.keyId}` } }
-    expect(verify.approvalProofDeadline(request)).toBeUndefined()
+    expect(verify.approvalProof(request)?.deadline).toBeUndefined()
     const authorization = signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: 'node-1', nodeKey, workspace: 'default', method: 'POST', path: '/setup/approvals', body, now: clock.now })
     const signed = { requestIdentity: request, authorization, purpose: 'buckle-approval' as const, workspaceId: 'default', registry: false, method: 'POST', path: '/setup/approvals', body: Buffer.from(body) }
     expect(await verify.verify(signed)).toMatchObject({ ok: true })
-    expect(verify.approvalProofDeadline(request)).toBe(clock.now + SIGNED_REQUEST_MAX_TTL_MS)
+    expect(verify.approvalProof(request)?.deadline).toBe(clock.now + SIGNED_REQUEST_MAX_TTL_MS)
+    expect(isDeviceProof(verify.approvalProof(request))).toBe(true)
+    expect(verify.approvalProof(request)?.keyId).toBe(owner.keyId)
     request.context.proofDeadline += 999_999
     request.context.approvalProofDeadline += 999_999
-    expect(verify.approvalProofDeadline(request)).toBe(clock.now + SIGNED_REQUEST_MAX_TTL_MS)
-    expect(verify.approvalProofDeadline({ context: request.context })).toBeUndefined()
+    expect(verify.approvalProof(request)?.deadline).toBe(clock.now + SIGNED_REQUEST_MAX_TTL_MS)
+    expect(verify.approvalProof({ context: request.context })?.deadline).toBeUndefined()
     const otherNode = await verifier('both')
-    expect(otherNode.verify.approvalProofDeadline(request)).toBeUndefined()
+    expect(otherNode.verify.approvalProof(request)?.deadline).toBeUndefined()
     expect(await verify.verify(signed)).toMatchObject({ ok: false, reason: 'replayed' })
-    expect(verify.approvalProofDeadline(request)).toBeUndefined()
+    expect(verify.approvalProof(request)?.deadline).toBeUndefined()
   })
 
   it('does not create approval authority for invalid signatures or verified setup purpose', async () => {
@@ -90,9 +93,9 @@ describe('node-owned approval proof custody', () => {
     const request = { context: { proofDeadline: clock.now + 999_999 } }
     const input = { requestIdentity: request, authorization: 'forged', purpose: 'buckle-approval' as const, workspaceId: 'default', registry: false, method: 'POST', path: '/setup/approvals', body: Buffer.from(body) }
     expect(await verify.verify(input)).toMatchObject({ ok: false })
-    expect(verify.approvalProofDeadline(request)).toBeUndefined()
+    expect(verify.approvalProof(request)?.deadline).toBeUndefined()
     const authorization = signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-setup', node: 'node-1', nodeKey, workspace: 'default', method: 'POST', path: '/setup/policy', body, now: clock.now })
     expect(await verify.verify({ ...input, authorization, purpose: 'buckle-setup', path: '/setup/policy' })).toMatchObject({ ok: true })
-    expect(verify.approvalProofDeadline(request)).toBeUndefined()
+    expect(verify.approvalProof(request)?.deadline).toBeUndefined()
   })
 })

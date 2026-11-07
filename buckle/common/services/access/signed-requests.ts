@@ -2,6 +2,7 @@ import { checkSignedRequest, nonceClaim, withinWindow, type SignedRequestPurpose
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import type { ClientKeys } from '../../types/ports/client-keys.js'
 import { requestIdKey } from '../invocation/executions.js'
+import { mintDeviceProof, type DeviceProof } from '../approvals/device-proof.js'
 
 export interface SignedRequestInput {
   /** Opaque transport request identity; proof metadata remains private to this node verifier. */
@@ -26,7 +27,8 @@ export interface SignedRequestInput {
 /** Verifies the requests a person's client signed, for the setup and approval guards. */
 export interface RequestVerifier {
   verify(input: SignedRequestInput): Promise<SignedRequestVerdict>
-  approvalProofDeadline(request: object): number | undefined
+  /** The proof a request signed for an approval carries, once it verified and its nonce was claimed; the decision's only key. */
+  approvalProof(request: object): DeviceProof | undefined
 }
 
 /**
@@ -41,11 +43,11 @@ export interface RequestVerifier {
  */
 export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceClaims; serverId: string; nodeKeyId: string; now?: () => number }): RequestVerifier {
   const now = input.now ?? Date.now
-  const approvalProofDeadlines = new WeakMap<object, number>()
+  const approvalProofs = new WeakMap<object, DeviceProof>()
   return {
-    approvalProofDeadline: request => approvalProofDeadlines.get(request),
+    approvalProof: request => approvalProofs.get(request),
     async verify(request) {
-      if (request.requestIdentity) approvalProofDeadlines.delete(request.requestIdentity)
+      if (request.requestIdentity) approvalProofs.delete(request.requestIdentity)
       const check = (workspace: string) => checkSignedRequest({
         authorization: request.authorization,
         expected: { purpose: request.purpose, node: input.serverId, nodeKey: input.nodeKeyId, workspace, method: request.method, path: request.path },
@@ -65,7 +67,7 @@ export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceCl
         return seen.claim({ keyId, nonce: requestIdKey(nonce), ts: keepUntil, now: at }) ? 'claimed' : 'replayed'
       })
       if (claimed !== 'claimed') return { ok: false, reason: claimed, claimedKeyId: keyId }
-      if (request.requestIdentity && request.purpose === 'buckle-approval') approvalProofDeadlines.set(request.requestIdentity, checked.payload.expiresAt)
+      if (request.requestIdentity && request.purpose === 'buckle-approval') approvalProofs.set(request.requestIdentity, mintDeviceProof({ keyId, deadline: checked.payload.expiresAt }))
       return checked
     },
   }

@@ -8,6 +8,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { decisionRecord } from '../common/services/approvals/core-approval-api.js'
+import { mintDeviceProof, type DeviceProof } from '../common/services/approvals/device-proof.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
 
@@ -94,21 +95,31 @@ describe('the core approval API', () => {
     const { service, token, ledger } = await asked(HOST)
     const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
     const deadline = Date.now() + 60_000
-    const receipt = await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, signedBy: 'key:device-1', proofDeadline: deadline })
+    const receipt = await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, proof: mintDeviceProof({ keyId: 'device-1', deadline }) })
     expect(receipt).toMatchObject({ status: 'applied', state: 'approved', assurance: 'key', decision: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest } })
     expect(ledger().once).toMatchObject([{ token, decidedBy: 'key:device-1', expiresAt: new Date(deadline).toISOString() }])
   })
 
-  it('reads a device\'s body as the statement: one that does not parse, or a signed once with no proof deadline, is refused unread', async () => {
+  it('refuses at the proof a device\'s decision whose signature the node\'s request verifier never checked', async () => {
+    const { service, token, registry, grants } = await asked(HOST)
+    const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
+    const forged = { keyId: 'device-1', deadline: Date.now() + 60_000 } as DeviceProof
+    for (const scope of ['once', 'always'] as const) {
+      expect(await service.decide({ source: 'devices', body: { token, approved: true, scope, challenge: challengeBytes(challenge).digest }, proof: forged })).toEqual({ status: 'refused', step: 'proof', error: { code: 'proof_invalid', message: 'unverified', retryable: false } })
+    }
+    expect(registry.pending().map(request => request.token)).toEqual([token])
+    expect(grants.list()).toEqual([])
+  })
+
+  it('reads a device\'s body as the statement: one that does not parse is refused unread', async () => {
     const { service, token, registry } = await asked(HOST)
-    expect(await service.decide({ source: 'devices', body: { token, approved: true }, signedBy: 'key:device-1', proofDeadline: Date.now() + 60_000 })).toEqual({ status: 'refused', step: 'statement', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } })
-    expect(await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: 'a'.repeat(64) }, signedBy: 'key:device-1' })).toMatchObject({ status: 'refused', step: 'statement' })
+    expect(await service.decide({ source: 'devices', body: { token, approved: true }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })).toEqual({ status: 'refused', step: 'statement', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } })
     expect(registry.pending().map(request => request.token)).toEqual([token])
   })
 
   it('takes no subject from a device, whose challenge named the ask\'s own, and names buckle approve --below', async () => {
     const { service, token, grants } = await asked(WIDE)
-    const receipt = await service.decide({ source: 'devices', body: { token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, signedBy: 'key:device-1', proofDeadline: Date.now() + 60_000 })
+    const receipt = await service.decide({ source: 'devices', body: { token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })
     expect(receipt).toMatchObject({ status: 'refused', step: 'decision', decision: { token, approved: true, scope: 'session', challenge: 'a'.repeat(64) }, error: { code: 'scope_forbidden', message: expect.stringContaining('buckle approve --below') } })
     expect(grants.list()).toEqual([])
   })

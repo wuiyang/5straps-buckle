@@ -5,16 +5,14 @@ import { defineSetupHandler } from '../../utils/setup.js'
 
 // The approval guard: a decision, plain or in the envelope the paired key seals, decided through the core approval API.
 // A refused envelope is audited with its reason and never its body. A request an enrolled key signed carries its decision
-// plain: the signature over its exact body is the proof, and the decision is the devices source's.
+// plain: the signature over its exact body is the proof the request verifier minted, and the decision is the devices source's.
 export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals',
-  handler: async ({ event, actor, proofDeadline, workspace, body, audit }) => {
+  handler: async ({ event, proof, workspace, body, audit }) => {
     const { runtime } = workspace
     const sent = (await body()) ?? null
-    const receipt = await runtime.approvalService.decide(actor.startsWith('key:')
-      ? { source: 'devices', body: sent, signedBy: actor, ...(proofDeadline === undefined ? {} : { proofDeadline }) }
-      : { source: 'sealed', body: sent })
+    const receipt = await runtime.approvalService.decide(proof === undefined ? { source: 'sealed', body: sent } : { source: 'devices', body: sent, proof })
     // What a decision the guard checked said, beside the actor that signed or carried it (keys-provisioning.md: every
     // approval and denial is logged with key identity and scope).
     const record = decisionRecord(receipt)

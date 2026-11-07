@@ -1,5 +1,6 @@
 import { getRouterParam, type H3Event } from 'h3'
 import type { JsonValue } from '@5straps/protocol'
+import type { DeviceProof } from '../../../../common/services/approvals/device-proof.js'
 import type { SetupViews } from '../../../../common/services/setup/setup-views.js'
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
 import { withTransportAudit } from '../../../common/server/utils/audit.js'
@@ -16,7 +17,8 @@ interface SetupCall {
   event: H3Event
   /** Who the guard let in: admin:<workspace>, or key:<fingerprint> for a signed request. */
   actor: string
-  proofDeadline?: number
+  /** What the request verifier minted for a request an enrolled key signed for an approval. */
+  proof?: DeviceProof
   workspace: ManagedWorkspace
   /** The id the route serves (D85, Q15): the addressed workspace's, or NODE_LEVEL for a node-level session route. */
   workspaceId: string
@@ -52,14 +54,14 @@ export function defineSetupHandler(definition: { access: AdminAccess | ((event: 
         }
         // The node-scoped setup session: no workspace, so the handler reads workspaceId NODE_LEVEL and the node log.
         const nodeAudited: Record<string, JsonValue> = {}
-        const nodeProofDeadline = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProofDeadline(event) : undefined
-        const nodeCall: SetupCall = { event, actor, proofDeadline: nodeProofDeadline, workspace: undefined as unknown as ManagedWorkspace, workspaceId: NODE_LEVEL, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(nodeAudited, args) } }
+        const nodeProof = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProof(event) : undefined
+        const nodeCall: SetupCall = { event, actor, proof: nodeProof, workspace: undefined as unknown as ManagedWorkspace, workspaceId: NODE_LEVEL, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(nodeAudited, args) } }
         return mapFailures(() => withSetupAudit(event, { actions, workspaceId: NODE_LEVEL, resource, actorId: actor, args: () => nodeAudited }, async () => definition.handler(nodeCall)))
       }
       const workspace = await useSetupTarget(event, { setup: !definition.active })
       const audited: Record<string, JsonValue> = {}
-      const proofDeadline = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProofDeadline(event) : undefined
-      const call: SetupCall = { event, actor, proofDeadline, workspace, workspaceId: workspace.runtime.workspaceId, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
+      const proof = actor.startsWith('key:') ? (await useServices(event).getRequestVerifier()).approvalProof(event) : undefined
+      const call: SetupCall = { event, actor, proof, workspace, workspaceId: workspace.runtime.workspaceId, views: useServices(event).getSetupViews(), body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams), audit: args => { Object.assign(audited, args) } }
       return mapFailures(() => withSetupAudit(event, { actions: workspace.runtime.actions, workspaceId: workspace.runtime.workspaceId, resource, actorId: call.actor, args: () => audited }, async () => definition.handler(call)))
     },
   })
