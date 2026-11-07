@@ -13,7 +13,7 @@ shows what Buckle does today and what is still open.
 ## How-to
 
 - [Approvals](how-to/approvals.md): what asks, the scopes, the destructive floor, where to answer,
-  and the dangerously-allow switch. [The serve terminal](how-to/approvals-02.md) and [calls over
+  and the dangerously-allow switch's `on` and `safe` modes. [The serve terminal](how-to/approvals-02.md) and [calls over
   MCP, and copies](how-to/approvals-03.md) continue it.
 - [Policy](how-to/policy.md): command globs, network lists, files, and when a change applies. [What
   Buckle reads](how-to/policy-02.md), [what stays unread](how-to/policy-03.md), [the file

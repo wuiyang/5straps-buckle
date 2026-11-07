@@ -100,7 +100,7 @@ approved, 1 denied, 3 asks, 4 not listed, or 2 on bad input.
 ## Inspecting and changing it
 
 ```bash
-buckle policy show          # every list, the mount table, and the dangerously-allow switch
+buckle policy show          # every list, the mount table, and the dangerously-allow mode
 buckle policy export > policy.json
 buckle policy import policy.json
 buckle policy remove 'pnpm {build,test} *'

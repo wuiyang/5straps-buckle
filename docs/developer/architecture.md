@@ -67,7 +67,8 @@ security model: `sensitive_path`, the workspace's `command_policy`, `destructive
 `network_egress`, `process_probe`, `filesystem_policy`, `read_scope`, and `write_scope`. Floor
 rules run before scope rules, so a granted directory never unlocks a credential file inside it.
 `rules/dangerously-allow.ts` wraps the engine and turns covered asks into allows while the
-switch is on; it never touches a deny. Each rule lives in `common/domain/permission/rules/`.
+switch is `on` or `safe`, each mode's reach over floor asks and a secret reference's file in
+`DANGEROUSLY_ALLOW_REACH`; it never touches a deny. Each rule lives in `common/domain/permission/rules/`.
 
 ## The command reader
 

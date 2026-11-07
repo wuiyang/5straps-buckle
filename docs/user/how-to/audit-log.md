@@ -33,8 +33,9 @@ work, writes the same two lines, the second `error` with the detail `WORKSPACE_R
 
 Owner commands are logged too, under names such as `cli_policy`, `cli_approve`,
 `cli_approvals`, `cli_settings`, and `cli_init`. So are refused HTTP requests, each use of the
-dangerously-allow switch (`policy_dangerously_allowed`, whose `args.level` names `command` or `all`), and each change of it
-(`policy_dangerously_allow_changed`).
+dangerously-allow switch (`policy_dangerously_allowed`, whose `args.mode` names `on` or `safe`), and each change of it
+(`policy_dangerously_allow_changed`, its detail the mode set). Entries an earlier build wrote keep
+their `args.level`, `command` or `all`, and details such as `on command`.
 
 ## What an entry holds
 

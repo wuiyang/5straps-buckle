@@ -19,7 +19,7 @@ import { readDotenv } from '../common/services/secrets/dotenv.js'
 import { MAX_REFERENCES, MAX_SECRET_FILES, planSecrets } from '../common/services/secrets/places.js'
 import { MAX_SECRET_FILE_BYTES } from '../common/services/secrets/secret-file.js'
 import { BUILT_IN_SETTINGS } from '../common/services/workspaces/workspace-settings.js'
-import { DANGEROUSLY_ALLOW_LEVELS } from '../common/types/ports/dangerously-allow-store.js'
+import { DANGEROUSLY_ALLOW_ON_MODES } from '../common/types/ports/dangerously-allow-store.js'
 
 // The secret references page (docs/user/how-to/secrets.md) and the places that point at it, held to what the code reads and
 // prints, so the page cannot drift from the grammar, the reasons, the limits, or the settings it states.
@@ -118,19 +118,18 @@ describe('the pages that point at docs/user/how-to/secrets.md', () => {
     expect(page(name)).toContain('](secrets.md')
   })
 
-  it('approvals.md gives a secret file\'s ask the scopes it offers, and says the dangerously-allow switch answers it at level all alone', () => {
+  it('approvals.md gives a secret file\'s ask the scopes it offers, and says the dangerously-allow switch answers it at on alone', () => {
     const approvals = page('approvals.md')
     expect(approvals).toContain('| once (a [secret reference](secrets.md)\'s file: once, session, always) |')
-    // Owner ruling of 2026-10-25: the switch's levels, as the CLI takes them.
-    expect(approvals).toContain('buckle policy dangerously-allow on [command|all] [--workspace <name>]')
-    for (const level of DANGEROUSLY_ALLOW_LEVELS) expect(approvals, level).toMatch(new RegExp(`[Ll]evel \`${level}\``))
-    expect(approvals).toContain('At level `command`, the default, every ask about a path inside the workspace')
-    expect(approvals).toContain('commands included, except a secret reference\'s file. Level `all` allows that file too.')
-    expect(approvals).toContain('Each use is logged as `policy_dangerously_allowed` with its level.')
+    // APPROVAL-05: the switch's modes, as the CLI takes them.
+    expect(approvals).toContain('buckle policy dangerously-allow on|safe|off [--workspace <name>]')
+    for (const mode of DANGEROUSLY_ALLOW_ON_MODES) expect(approvals, mode).toMatch(new RegExp(`\`${mode}\` allows`))
+    expect(approvals).toContain('floor asks (sudo, the destructive list, and the file floor) and a secret reference\'s file, which still ask a person')
+    expect(approvals).toContain('each use is logged as `policy_dangerously_allowed` with its mode. An earlier build\'s switch reads as off.')
   })
 
-  it('secrets.md says the dangerously-allow switch answers a secret file\'s ask only at level all', () => {
-    expect(secrets).toContain('The [dangerously-allow switch](approvals.md#dangerously-allow) answers this ask only at level `all`; a bare `on` leaves it to a person.')
+  it('secrets.md says the dangerously-allow switch answers a secret file\'s ask only at on', () => {
+    expect(secrets).toContain('The [dangerously-allow switch](approvals.md#dangerously-allow) answers this ask only at `on`; `safe` leaves it to a person.')
     expect(secrets).not.toContain('never answers this ask')
   })
 

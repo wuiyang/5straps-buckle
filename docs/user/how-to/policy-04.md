@@ -90,8 +90,8 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 
 ## Dangerously allow
 
-Inside the workspace folder, the [dangerously-allow switch](approvals.md#dangerously-allow)
-answers the file floor as it answers `rm -r`. Outside that folder, and in a scratch root, a
-person still decides, and for every restore of the change history.
+Inside the workspace folder, the [dangerously-allow switch](approvals.md#dangerously-allow) at
+`on` answers the file floor as it answers `rm -r`; at `safe` a person decides both. Outside that
+folder, and in a scratch root, a person still decides, and for every restore of the change history.
 
 The [decision AI](judge.md) never rates these asks.

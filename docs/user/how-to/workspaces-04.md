@@ -22,7 +22,8 @@ covers what each workspace then holds.
   workspace's defaults. A workspace with an allow list of its own now uses it alone, where the
   node's list was a ceiling over it, and the move says so.
 - Grants, remembered denials, and the dangerously-allow switch move from the folder they were
-  kept under to the workspace's id; device keys enrolled for it, from its 0.1 id.
+  kept under to the workspace's id; device keys enrolled for it, from its 0.1 id. A 0.1 switch
+  then reads as off, and `buckle policy show` says an earlier build set it.
 - The audit log 0.1 kept holds the node folder's calls, so it becomes that workspace's log, which
   `buckle log --workspace <name>` reads. The node's own log starts fresh. A workspace that has a
   log already keeps it, and the old one stays where it is.

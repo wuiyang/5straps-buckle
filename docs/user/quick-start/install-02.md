@@ -30,7 +30,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `grants.v1.json`, `dangerously-allow.v1.json` | on a moved node only: the 0.1 grants and switch, kept where 0.1 read each, in the state directory and in the old `workspaces/<0.1 id>/` of each workspace registered then |
 | `client-keys.json`, `client-keys.v1.json` | the device keys enrolled with `buckle keys enroll`, each with the workspace it signs for; on a node moved from 0.1 where a key named a workspace, the copy keeps the keys as 0.1 named them |
 | `workspaces/<0.1 id>/policy.json` | a workspace registered under 0.1 keeps its old policy there, read once at the move and unread since |
-| `dangerously-allow.json` | the dangerously-allow switch, where it is on |
+| `dangerously-allow.json` | the dangerously-allow switch's mode, where it is `on` or `safe`; a version 1 file an earlier build wrote reads as off |
 | `grants.json` | session and always grants, and remembered denials |
 | `approvals.json`, `approval-calls/`, `approval-revocations.json` | asks waiting for a person, recent decisions, unspent once approvals, the whole call behind each ask, and revokes made while `approvals.json` could not be read, kept until the next decision; while that last file is damaged, decisions are refused, and removing it forgets those revokes, so check `buckle grants` and revoke again |
 | `actions.jsonl` | the [audit log](../how-to/audit-log.md): in the state directory the node's own commands and refusals, and in each workspace's folder its calls |
