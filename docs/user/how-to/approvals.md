@@ -27,11 +27,11 @@ whatever the [policy](policy.md) denies.
 
 ## Scopes
 
-- `once` covers this call alone: the same session, tool, and arguments. Retrying the identical
+- `once` covers this call alone: the same caller, session, tool, and arguments. Retrying that
   call spends it; unspent, it lapses ten minutes after the decision.
-- `session` lasts until revoked, for the call's session. Every CLI call shares the session
+- `session` lasts until revoked, for the caller's session. Every CLI call shares the session
   `cli`; MCP uses the client's session id, or `mcp`; HTTP uses `context.sessionId`, or `rpc`.
-- `always` lasts until revoked, for every session in the workspace.
+- `always` lasts until revoked, for every caller in the workspace.
 
 Only the owner's authority records a `session` or `always` grant: every local route below,
 `buckle mcp` elicitation included, and over HTTP only the admin face.

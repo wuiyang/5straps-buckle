@@ -78,7 +78,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify(unsigned) })).status).toBe(409)
     expect(buckle.runtime.grants.list()).toEqual([])
     expect((await decide(buckle, { ...unsigned, challenge: item!.digest }).send()).status).toBe(200)
-    expect(buckle.runtime.grants.activeSubjects({ sessionId: 'chat-1', rule: 'write_scope' })).toContain(buckle.root)
+    expect(buckle.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: buckle.root, scope, sessionId: scope === 'session' ? 'chat-1' : null })])
   })
 
   it.each([0, 1])('refuses signed once at or after its deadline even while transport skew accepts the proof, late by %sms', async (lateBy) => {

@@ -73,6 +73,7 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
+import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
@@ -215,6 +216,8 @@ export interface BuckleRuntime {
   approvals: ApprovalRegistry
   /** The single answerer: every ask waits here and every verdict is recorded here. */
   approvalService: ApprovalService
+  /** How a call meets approvals: its last check, the grants it holds, and its asks. */
+  approvalGate: ApprovalGate
   history: ChangeHistory
   shellWorkspaces: ReturnType<typeof createShellWorkspaceRecovery>
   actions: ActionLog
@@ -346,6 +349,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })
   input.onApprovalCleanup(() => approvalService.close())
+  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService })
   // The settings `buckle workspace` writes; until one does, the ones this runtime was built from.
   const settingsFile = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), fallback: () => settingsOf(config), lockDeadlineMs })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
@@ -488,6 +492,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     grants,
     approvals,
     approvalService,
+    approvalGate,
     actions,
     history,
     shellWorkspaces: createShellWorkspaceRecovery({ directory: join(config.stateDirectory, 'isolated-shell', workspaceStateKey(config.cwd)), sourceRoot: config.cwd, maxBytes: config.isolationMaxBytes, retentionDays: config.historyRetentionDays, history }),
@@ -756,10 +761,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         registry: settled.registry,
         permissions: settled.permissions,
         deletes: settled.deletes,
-        approvals,
-        approvalService,
+        approvals: approvalGate,
         executions,
-        grants,
         actions,
         history,
         historyRoots: () => checkpointRoots(config.cwd, settled.paths.mounts, settled.paths.mount),

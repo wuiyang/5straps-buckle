@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type ApprovalRequest, type GrantScope, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { grantLookup } from '../common/services/approvals/approval-gate.js'
 import { summarizeEffect, type SecretFileEffect } from '../common/domain/effect.js'
 import { createFilesystemPolicyRule } from '../common/domain/filesystem-policy.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
@@ -100,7 +101,7 @@ describe('the grant a person gives', () => {
     const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
     const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
     const engine = createPermissionEngine([createSensitivePathRule()])
-    const check = (sessionId: string) => engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: createGrantLookup(grants, sessionId) })
+    const check = (sessionId: string) => engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: grantLookup({ store: grants, holder: { sessionId }, consumed: [] }) })
     const outcome = check('one')
     if (outcome.kind !== 'ask') throw new Error('expected an ask')
     const call = { arguments: {}, cwd: '/w', description: null, effects: [], complete: true as const }

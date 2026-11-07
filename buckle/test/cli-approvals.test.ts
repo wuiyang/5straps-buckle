@@ -6,7 +6,8 @@ import { runsNativeTerminal } from './support/native-terminal.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { describe, expect, it, vi } from 'vitest'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { grantLookup } from '../common/services/approvals/approval-gate.js'
 import { actionsPath, approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
@@ -337,7 +338,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
 describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
   const rule = createNetworkEgressRule({ approved: null })
-  const evaluate = (config: BuckleConfig, url: string) => rule.evaluate({ tool: 'web_fetch', effect: { kind: 'network', url: new URL(url) }, grants: createGrantLookup(grantStore(config), 'chat-1') })
+  const evaluate = (config: BuckleConfig, url: string) => rule.evaluate({ tool: 'web_fetch', effect: { kind: 'network', url: new URL(url) }, grants: grantLookup({ store: grantStore(config), holder: { sessionId: 'chat-1' }, consumed: [] }) })
 
   it('refuses the request for http://*.localhost:3000/ before any approval is asked', () => {
     const config = node()

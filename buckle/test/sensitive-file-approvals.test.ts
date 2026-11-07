@@ -4,7 +4,8 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { createFileGrantStore, createGrantLookup } from '../common/adapters/grant-store/file-grant-store.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { grantLookup } from '../common/services/approvals/approval-gate.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createSensitivePathRule, sensitivePathReason } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
@@ -58,7 +59,7 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
   const engine = createPermissionEngine([createSensitivePathRule()])
   const subject = join(root, '.env.local')
-  const check = (sessionId: string) => engine.evaluate({ tool: 'fs_read', effects: [{ kind: 'read_path', path: subject, directory: root }], grants: createGrantLookup(grants, sessionId) })
+  const check = (sessionId: string) => engine.evaluate({ tool: 'fs_read', effects: [{ kind: 'read_path', path: subject, directory: root }], grants: grantLookup({ store: grants, holder: { sessionId }, consumed: [] }) })
   const outcome = check('one')
   expect(outcome.kind).toBe('ask')
   if (outcome.kind !== 'ask') throw new Error('Expected approval')

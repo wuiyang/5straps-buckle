@@ -88,7 +88,7 @@ function approvalsInEffect(runtime: BuckleRuntime, session?: string): NetworkApp
       ...(grant.pattern ? { pattern: true } : {}),
     }))
   const unspent = session
-    ? runtime.approvals.unspent(session)
+    ? runtime.approvalGate.unspent(session)
       .filter(entry => entry.subject.rule === 'network_egress')
       .map(entry => ({ subject: entry.subject.subject, label: `unspent once approval for ${entry.tool} in session ${session}` }))
     : []

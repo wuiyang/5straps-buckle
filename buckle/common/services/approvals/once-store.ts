@@ -4,22 +4,24 @@ import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 
 /**
- * A `once` approval, kept in approvals.json beside the asks under the same lock. `fingerprint`: the call it was asked for,
- * which alone spends it. `decidedBy`: key:<fingerprint> when a person's key signed it. `code`: the code a once the
+ * A `once` approval, kept in approvals.json beside the asks under the same lock. `fingerprint` and `actor`: the call it
+ * was asked for and the identity its transport authenticated, which alone spend it. `decidedBy`: key:<fingerprint> when a person's key signed it. `code`: the code a once the
  * decision AI's thorough stage gave on request binds to.
  */
 export const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
+  sessionId: z.string(), actor: z.string().optional(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(),
   fingerprint: z.string().optional(), decidedBy: z.string().optional(),
   code: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/), allowed: z.boolean() }).optional(),
 })
 export type OnceEntry = z.infer<typeof onceSchema>
 
-/** One call's last check, and what it may spend: the `once` approvals of its workspace, session and tool. */
+/** One call's last check, and what it may spend: the `once` approvals of its workspace, session, actor and tool. */
 export interface OnceSpend {
   tokens: string[]
   sessionId: string
+  /** The identity the call's transport authenticated; absent for the node's own process. */
+  actor?: string
   tool: string
   /** The call's fingerprint: a `once` is spent only by the call it was asked for. */
   fingerprint?: string
@@ -39,7 +41,7 @@ export interface OnceSpend {
 export function spendOnces(onces: readonly OnceEntry[], input: { workspace: string; spend: OnceSpend }): { outcome: PermissionOutcome; kept: OnceEntry[] } {
   const { spend } = input
   // A once names the call it was asked for; any other call, token or not, cannot spend it.
-  const bound = onces.filter(entry => entry.workspace === input.workspace && entry.sessionId === spend.sessionId && entry.tool === spend.tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === spend.fingerprint) && (entry.code === undefined || (spend.holds?.(entry.subject, entry.code) ?? false)))
+  const bound = onces.filter(entry => entry.workspace === input.workspace && entry.sessionId === spend.sessionId && entry.actor === spend.actor && entry.tool === spend.tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === spend.fingerprint) && (entry.code === undefined || (spend.holds?.(entry.subject, entry.code) ?? false)))
   const usable = bound.filter(entry => spend.tokens.includes(entry.token))
   let used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !spend.tokens.includes(entry.token)), check: spend.check })]
   // The last check is the one the caller acts on, so it sees only the approvals this call uses.
@@ -63,7 +65,7 @@ export function dropOnces(onces: readonly OnceEntry[], input: { workspace: strin
   return { kept: onces.filter(entry => !dropping(entry)), dropped: onces.filter(dropping).map(entry => entry.token) }
 }
 
-/** One session's onces not yet spent nor expired, each with the tool it was asked for. */
+/** One session's onces not yet spent nor expired, whichever actor asked, each with the tool it was asked for. */
 export function unspentOnces(onces: readonly OnceEntry[], input: { workspace: string; sessionId: string }): Array<{ subject: GrantSubject; tool: string }> {
   return onces
     .filter(entry => entry.workspace === input.workspace && entry.sessionId === input.sessionId && Date.parse(entry.expiresAt) > Date.now())

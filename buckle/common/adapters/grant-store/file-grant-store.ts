@@ -2,8 +2,8 @@ import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { z } from 'zod'
 import { GrantRecordSchema, type GrantRecord, type PermissionRuleId } from '@5straps/protocol'
-import type { GrantLookup } from '../../domain/permission/decision.js'
 import { isSecretFileSubject } from '../../domain/permission/rules/sensitive-path-rule.js'
+import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { createJsonFileStore } from '../json-file-store.js'
 
@@ -23,21 +23,21 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 
   const load = (): GrantRecord[] => store.read().grants
 
-  const active = (sessionId: string, rule: PermissionRuleId): GrantRecord[] => {
+  const active = (holder: GrantHolder, rule: PermissionRuleId): GrantRecord[] => {
     const now = Date.now()
     return load()
       .filter(grant => grant.workspace === input.workspace && grant.rule === rule)
-      .filter(grant => grant.sessionId === null || grant.sessionId === sessionId)
+      .filter(grant => servesHolder(grant, holder))
       .filter(grant => !grant.expiresAt || Date.parse(grant.expiresAt) > now)
   }
 
   return {
     // A sensitive file is allowed once at a time; only a secret file's use (docs/user/how-to/secrets.md) is remembered.
-    activeSubjects: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => !grant.pattern && !grant.denied && (rule !== 'sensitive_path' || isSecretFileSubject(grant.subject))).map(grant => grant.subject),
+    activeSubjects: ({ rule, ...holder }) => active(holder, rule).filter(grant => !grant.pattern && !grant.denied && (rule !== 'sensitive_path' || isSecretFileSubject(grant.subject))).map(grant => grant.subject),
 
-    activePatterns: ({ sessionId, rule }) => active(sessionId, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
+    activePatterns: ({ rule, ...holder }) => active(holder, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 
-    async grant({ sessionId, rule, subject, scope, pattern, denied, decidedBy }) {
+    async grant({ sessionId, actor, rule, subject, scope, pattern, denied, decidedBy }) {
       const record: GrantRecord = {
         id: randomUUID(),
         workspace: input.workspace,
@@ -48,6 +48,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
         ...(pattern ? { pattern: true as const } : {}),
         ...(decidedBy ? { decidedBy } : {}),
         sessionId: scope === 'always' ? null : sessionId,
+        ...(scope === 'session' && actor !== undefined ? { actor } : {}),
         createdAt: new Date().toISOString(),
         expiresAt: null,
       }
@@ -93,17 +94,5 @@ export async function rekeyGrants(input: { filePath: string; from: string; to: s
 
 function isSameSubject(left: GrantRecord, right: GrantRecord): boolean {
   return left.workspace === right.workspace && left.rule === right.rule && left.subject === right.subject && left.scope === right.scope
-    && left.sessionId === right.sessionId && Boolean(left.pattern) === Boolean(right.pattern)
-}
-
-export function createGrantLookup(store: GrantStore, sessionId: string): GrantLookup {
-  return {
-    deniedSubjectsFor: rule => deniedSubjects(store, sessionId, rule),
-    subjectsFor: rule => store.activeSubjects({ sessionId, rule }),
-    patternsFor: rule => store.activePatterns({ sessionId, rule }),
-  }
-}
-
-export function deniedSubjects(store: GrantStore, sessionId: string, rule: PermissionRuleId): string[] {
-  return store.list().filter(record => record.denied && record.rule === rule && (record.sessionId === null || record.sessionId === sessionId) && (!record.expiresAt || Date.parse(record.expiresAt) > Date.now())).map(record => record.subject)
+    && left.sessionId === right.sessionId && left.actor === right.actor && Boolean(left.pattern) === Boolean(right.pattern)
 }

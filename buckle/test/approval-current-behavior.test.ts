@@ -134,13 +134,14 @@ describe('an ask nobody is at a terminal for', () => {
     expect(runtime.grants.list()).toEqual([])
   })
 
-  it('lets another actor in the same session spend a once answered later, without its token', async () => {
+  it('keeps a once answered later from another actor in the same session, and spends it on the asker\'s retry', async () => {
     const { runtime, call, answer } = await node()
     const owner = Symbol('current-actors')
     const as = <T>(actor: string, run: () => Promise<T>) => runInScope(createOperationScope({ owner, context: { actor } }), run)
     const asked = await as('agent:one', () => call('fs_write', { path: 'one/a.md', content: 'a' }))
     expect(await answer(tokensOf(asked)[0]!)).toMatchObject({ ok: true })
-    expect(await as('agent:two', () => call('fs_write', { path: 'one/a.md', content: 'a' }))).toMatchObject({ outcome: 'ok' })
+    expect((await as('agent:two', () => call('fs_write', { path: 'one/a.md', content: 'a' }))).outcome).toBe('approval_required')
+    expect(await as('agent:one', () => call('fs_write', { path: 'one/a.md', content: 'a' }))).toMatchObject({ outcome: 'ok' })
     expect(runtime.approvals.unspent('s')).toEqual([])
   })
 

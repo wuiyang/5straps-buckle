@@ -68,6 +68,8 @@ export const GrantRecordSchema = z.object({
   /** Who decided it when a person's enrolled key signed the decision: `key:<fingerprint>` (keys-provisioning.md). */
   decidedBy: z.string().min(1).max(200).optional(),
   sessionId: z.string().nullable(),
+  /** The actor whose session a session grant serves, as its transport authenticated it; absent for always grants and the node's own process. */
+  actor: z.string().min(1).optional(),
   createdAt: z.iso.datetime(),
   expiresAt: z.iso.datetime().nullable(),
 })

@@ -1,4 +1,3 @@
-import { deniedSubjects } from '../../adapters/grant-store/file-grant-store.js'
 import { randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { existsSync, lstatSync, realpathSync } from 'node:fs'
@@ -10,7 +9,7 @@ import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from 
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
-import { commandMarks, type GrantLookup } from '../../domain/permission/decision.js'
+import { commandMarks } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
@@ -20,7 +19,7 @@ import { AUDIT_UNAVAILABLE, AuditUnavailableError } from '../../adapters/action-
 import type { ToolRegistry } from '../../domain/tool-registry.js'
 import { CODE_REPLAY_DIVERGED, LockWaitError, NestedApprovalRequired, ScriptEndedError, ToolExecutionError, ToolInputError, type FileChannel, type NestedCall, type NetworkVerdict, type PreparedCall, type RegisteredTool, type ToolContext } from '../../domain/tool.js'
 import type { ActionLog, ActionLogEntry, GrantUse } from '../../types/ports/action-log.js'
-import type { GrantStore } from '../../types/ports/grant-store.js'
+import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { Reporter } from '../../types/ports/reporter.js'
 import { logger } from '../../runtime/log.js'
 import { destructiveWrites } from './destructive-writes.js'
@@ -29,8 +28,9 @@ import { withOwnerRemediation } from './owner-remediation.js'
 import { resolveEffects, resolveHostRead, resolveHostWrite } from './resolve-effects.js'
 import type { SessionReads } from './session-reads.js'
 import { isStateBusy, STATE_BUSY_MESSAGE } from '../state-busy.js'
-import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, subjectsByRule, type ApprovalRegistry } from '../approvals/approval-registry.js'
-import { shorterWait, type ApprovalService } from '../approvals/approval-service.js'
+import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from '../approvals/approval-errors.js'
+import type { ApprovalGate } from '../approvals/approval-gate.js'
+import { shorterWait } from '../approvals/approval-service.js'
 import { nestedCallKey, requestFingerprint, requestIdKey, REQUEST_ID_REUSED, type Earlier, type ExecutionClaim, type ExecutionKey, type Executions } from './executions.js'
 import { childPath, nativePath, parentDirectory } from '../../domain/paths.js'
 import { secretPlanOf, type SecretSettings } from '../secrets/places.js'
@@ -54,12 +54,10 @@ export const MAX_SESSION_ID = 200
 export interface InvokerOptions {
   registry: ToolRegistry
   permissions: PermissionEngine
-  approvals: ApprovalRegistry
-  /** Issues asks and waits for their answers; the one place a verdict is recorded. */
-  approvalService: ApprovalService
+  /** The call's last check, the grants it holds, and its asks: the one way a call meets approvals. */
+  approvals: ApprovalGate
   /** The workspace's calls that run now or ran lately, so a re-send never runs one twice. */
   executions: Executions
-  grants: GrantStore
   history?: ChangeHistory
   /**
    * The roots a write's checkpoint and the execution lock cover, read just before the call runs (checkpointRoots),
@@ -226,7 +224,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // The caller leaving or the runtime shutting down: either stops a running tool.
         const stop = anySignal(signal, options.shutdown)
         // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
-        const grantUses = grantUseRecorder({ grants: options.grants, sessionId })
+        const grantUses = grantUseRecorder({ gate: options.approvals, holder: holderOf(sessionId) })
         const auditUses = useAuditor({ options, request, sessionId, grantUses })
         const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
           // A script cannot send a new requestId: it is told to change the script (review of the code-mode slice, finding invoker-audit 134).
@@ -555,7 +553,7 @@ interface GrantUseRecorder {
  * scope and deciding key each record holds (review M4 of the second proof-of-possession re-review). A
  * `once` is the registry's and is named by `decidedBy` as it is spent.
  */
-function grantUseRecorder(input: { grants: GrantStore; sessionId: string }): GrantUseRecorder {
+function grantUseRecorder(input: { gate: ApprovalGate; holder: GrantHolder }): GrantUseRecorder {
   const seen = new Set<string>()
   const found = new Map<string, GrantUse>()
   return {
@@ -563,8 +561,7 @@ function grantUseRecorder(input: { grants: GrantStore; sessionId: string }): Gra
       const fresh = allowedBy.filter(key => !seen.has(key))
       if (fresh.length === 0) return
       for (const key of fresh) seen.add(key)
-      const now = Date.now()
-      const standing = input.grants.list().filter(grant => !grant.denied && grant.scope !== 'once' && (grant.sessionId === null || grant.sessionId === input.sessionId) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now))
+      const standing = input.gate.standing(input.holder)
       for (const key of fresh) {
         for (const grant of standing.filter(record => `${record.rule}:${record.subject}` === key)) {
           const use: GrantUse = { rule: grant.rule, scope: grant.scope === 'always' ? 'always' : 'session', ...(grant.decidedBy === undefined ? {} : { decidedBy: grant.decidedBy }) }
@@ -716,32 +713,33 @@ async function clearPermissions(input: {
   let passed: ReadonlySet<string> = new Set()
   // The allowed commands the quick stage rated danger at 0.8 or above (approval.quickJudge all), each an ask at every check.
   let flagged: Array<Extract<PermissionOutcome, { kind: 'ask' }>['asks'][number]> = []
-  const evaluate = (tokens: string[]) => options.approvals.evaluate({
-    tokens, sessionId, tool: request.tool, fingerprint: input.key.fingerprint,
-    spent: (deciders) => { decidedBy = deciders },
-    // A once the thorough stage gave on request is spent only while the code it rated is the code this call would run;
-    // the run reads it again before the program starts (fix brief 9, B31).
-    holds: (subject, code) => {
-      const holds = subject.rule === 'destructive_command' && (options.judge?.holds(code, { effects, tool: request.tool, args: request.args, subject: subject.subject, fromCopy: input.fromCopy }) ?? false)
-      if (!holds) input.judgment.stale.add(subject.subject)
-      else if (!input.judgment.codes.some(item => item.subject === subject.subject && item.binding.key === code.key)) input.judgment.codes.push({ subject: subject.subject, binding: code })
-      return holds
-    },
-    check: subjects => {
-      // The registry's last check carries the approvals the call uses, a superset of earlier ones.
-      consumed = subjects
-      approvedBy.splice(0, approvedBy.length, ...subjects.map(subject => `${subject.rule}:${subject.subject}`))
-      const grants = buildLookup({ grants: options.grants, sessionId, consumed: subjects })
-      return withJudged(withFlagged(options.permissions.evaluate({ tool: request.tool, effects, grants, ...run }), flagged, grants), passed)
-    },
-    // Where a call is cleared and owns its execution, its deletes count toward its script's run, in the same step the last
-    // check was made in, so calls made at once cannot each be checked against the run before any is counted.
-    admit: () => {
-      held.claim = options.executions.claim(input.key)
-      if (held.claim.kind === 'owner' && input.deleteRun && options.deletes) recordRemovals(input.deleteRun, effects, options.paths, options.deletes)
-      return held.claim.kind === 'owner'
-    },
-  })
+  const holder = holderOf(sessionId)
+  const evaluate = async (tokens: string[]): Promise<PermissionOutcome> => {
+    const clearance = await options.approvals.clear({
+      tokens, ...holder, tool: request.tool, fingerprint: input.key.fingerprint,
+      // A once the thorough stage gave on request is spent only while the code it rated is the code this call would run;
+      // the run reads it again before the program starts (fix brief 9, B31).
+      holds: (subject, code) => {
+        const holds = subject.rule === 'destructive_command' && (options.judge?.holds(code, { effects, tool: request.tool, args: request.args, subject: subject.subject, fromCopy: input.fromCopy }) ?? false)
+        if (!holds) input.judgment.stale.add(subject.subject)
+        else if (!input.judgment.codes.some(item => item.subject === subject.subject && item.binding.key === code.key)) input.judgment.codes.push({ subject: subject.subject, binding: code })
+        return holds
+      },
+      check: grants => withJudged(withFlagged(options.permissions.evaluate({ tool: request.tool, effects, grants, ...run }), flagged, grants), passed),
+      // Where a call is cleared and owns its execution, its deletes count toward its script's run, in the same step the last
+      // check was made in, so calls made at once cannot each be checked against the run before any is counted.
+      admit: () => {
+        held.claim = options.executions.claim(input.key)
+        if (held.claim.kind === 'owner' && input.deleteRun && options.deletes) recordRemovals(input.deleteRun, effects, options.paths, options.deletes)
+        return held.claim.kind === 'owner'
+      },
+    })
+    // The last check carries the approvals the call uses, a superset of earlier ones.
+    consumed = clearance.relied
+    approvedBy.splice(0, approvedBy.length, ...clearance.relied.map(subject => `${subject.rule}:${subject.subject}`))
+    if (clearance.decidedBy) decidedBy = clearance.decidedBy
+    return clearance.outcome
+  }
   const cleared = (outcome: Extract<PermissionOutcome, { kind: 'allow' }>, asked: string[]): GateOutcome => held.claim?.kind === 'owner'
     ? { response: null, asked, approvedBy: [...new Set([...approvedBy, ...outcome.allowedBy])], consumed, decidedBy }
     : { response: null, asked, approvedBy: [...new Set(approvedBy)], ...(held.claim ? { earlier: held.claim } : {}) }
@@ -750,7 +748,7 @@ async function clearPermissions(input: {
   // no ask names; a danger at 0.8 or above makes it an ask, and anything else, no verdict included, lets it run as before.
   // Never past a deny; the gate screens nothing while the dangerously-allow switch is on.
   if (judging?.screens) {
-    const before = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }), ...run })
+    const before = options.permissions.evaluate({ tool: request.tool, effects, grants: options.approvals.grants({ ...holder, consumed: [] }), ...run })
     if (before.kind !== 'deny') {
       const asked = new Set(before.kind === 'ask' ? before.asks.filter(item => item.rule === 'destructive_command').map(item => item.subject) : [])
       input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, fromCopy: input.fromCopy, ...(input.signal ? { signal: input.signal } : {}) })
@@ -798,7 +796,7 @@ async function clearPermissions(input: {
   const judge = judgeNotes({ gate: options.judge, asks: outcome.asks, judged: input.judgment.judged })
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}), ...(input.facts ? { facts: input.facts } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   input.onAsked?.()
-  const waited = await options.approvalService.request({
+  const waited = await options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: outcome.asks.map(ask => withStaleReason(withJudgeReason(ask, input.judgment.judged), input.judgment.stale)), signal: input.signal, ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait,
     ...(input.holdUntil === undefined ? {} : { holdUntil: input.holdUntil }), ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call,
   })
@@ -813,7 +811,7 @@ async function clearPermissions(input: {
   const tokens = [...approvals.map(approval => approval.token), ...waited.answered]
   if (options.approvals.wasDenied(tokens)) {
     // The siblings of a denied ask go through the service, so the webhook hears they were cancelled.
-    await options.approvalService.withdraw(tokens)
+    await options.approvals.withdraw(tokens)
     const described = approvals.length > 0 ? approvals : outcome.asks
     return {
       response: denied(request, 'Approval was declined'),
@@ -893,14 +891,14 @@ async function askAfterChange(input: {
     return { ...rest, changed: true as const }
   })
   for (const subject of changed) judgment.stale.add(subject)
-  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: buildLookup({ grants: options.grants, sessionId, consumed: [] }) })
+  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: options.approvals.grants({ ...holderOf(sessionId), consumed: [] }) })
   const asks = outcome.kind === 'ask' ? outcome.asks.filter(ask => ask.rule === 'destructive_command' && changed.has(ask.subject)) : []
   if (asks.length === 0) return { response: failed(request, CODE_CHANGED), asked: [] }
   const cwd = options.paths.displayRoot
   const judge = judgeNotes({ gate: options.judge, asks, judged: judgment.judged })
   const call = { arguments: reviewableArguments(request.args), cwd, description: describeCall({ tool: request.tool, args: request.args, cwd, ...(input.via ? { via: input.via } : {}) }), effects: effects.map(summarizeEffect), complete: true as const, ...(judge.length > 0 ? { judge } : {}) }
   input.onAsked?.()
-  const waited = await options.approvalService.request({
+  const waited = await options.approvals.ask({
     sessionId, requestId: requestIdKey(request.requestId), tool: request.tool, asks: asks.map(ask => withStaleReason(withJudgeReason(ask, judgment.judged), judgment.stale)),
     ...(input.signal ? { signal: input.signal } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), wait: { mode: 'none' }, ...(input.resends ? { resends: true } : {}), fingerprint: input.key.fingerprint, call,
   })
@@ -940,25 +938,15 @@ function denied(request: InvokeRequest, message: string): InvokeResponse {
   }
 }
 
-function buildLookup(input: {
-  grants: GrantStore
-  sessionId: string
-  consumed: GrantSubject[]
-}): GrantLookup {
-  return {
-    deniedSubjectsFor: rule => deniedSubjects(input.grants, input.sessionId, rule),
-    subjectsFor: rule => [
-      ...input.grants.activeSubjects({ sessionId: input.sessionId, rule }),
-      ...subjectsByRule(input.consumed, rule),
-    ],
-    // A `once` stays exact, so only standing grants can hold a pattern.
-    patternsFor: rule => input.grants.activePatterns({ sessionId: input.sessionId, rule }),
-  }
+/** Whose grants a call reads: its session, under the actor its transport authenticated. */
+function holderOf(sessionId: string): GrantHolder {
+  const actor = useScopeSafe()?.context.actor
+  return { sessionId, ...(actor === undefined ? {} : { actor }) }
 }
 
 /** Whether the session may read a real path without asking a person: the rules and the standing grants it holds allow it. */
 function readsFreely(input: { options: InvokerOptions; tool: string; sessionId: string; target: string }): boolean {
-  const grants = buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: [] })
+  const grants = input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: [] })
   return input.options.permissions.evaluate({ tool: input.tool, effects: [{ kind: 'read_path', path: input.target, directory: parentDirectory(input.target) }], grants }).kind === 'allow'
 }
 
@@ -1050,7 +1038,7 @@ async function executeWithTimeout(input: {
     if (effect === null) return false
     const outcome = input.options.permissions.evaluate({
       tool: input.request.tool, effects: [effect],
-      grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
+      grants: input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: input.consumed }),
     })
     if (outcome.kind !== 'allow') return false
     await input.auditUses(outcome.allowedBy)
@@ -1157,7 +1145,7 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
     forgetNested: (ids) => {
       for (const id of ids) input.options.executions.forget({ ...nesting.key, requestId: requestIdKey(requestIdOf(id)) })
     },
-    withdrawNested: tokens => input.options.approvalService.withdraw([...tokens]),
+    withdrawNested: tokens => input.options.approvals.withdraw([...tokens]),
     callerCancelled: () => cancels?.() ?? false,
   }
 }
@@ -1172,7 +1160,7 @@ async function judgeNetwork(input: { options: InvokerOptions; request: InvokeReq
   const outcome = input.options.permissions.evaluate({
     tool: input.request.tool,
     effects: [{ kind: 'network', url: input.url }],
-    grants: buildLookup({ grants: input.options.grants, sessionId: input.sessionId, consumed: input.consumed }),
+    grants: input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: input.consumed }),
   })
   if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
   if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }
