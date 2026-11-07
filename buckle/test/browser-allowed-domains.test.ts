@@ -350,7 +350,7 @@ describe('the allowed domains a real runtime hands a fake agent-browser', () => 
     const { runtime, calls } = await fixture([])
     const asked = await browse(runtime, { command: 'open', args: ['http://localhost:4173'] })
     if (asked.outcome !== 'approval_required') throw new Error(`expected an approval, got ${asked.outcome}`)
-    expect((await runtime.approvals.resolve({ token: asked.approvals[0]!.token, approved: true, scope: 'always' })).ok).toBe(true)
+    expect((await runtime.approvals.resolve({ token: asked.approvals[0]!.token, approved: true, scope: 'always' }, 'cli')).ok).toBe(true)
     expect(await browse(runtime, { command: 'open', args: ['http://localhost:4173'] })).toMatchObject({ outcome: 'ok' })
     expect(await browse(runtime, { command: 'snapshot', args: [] })).toMatchObject({ outcome: 'ok' })
     expect(calls().map(flagOf)).toEqual([null, null])

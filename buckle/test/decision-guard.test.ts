@@ -12,15 +12,15 @@ const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: '
 
 const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<ApprovalDecision> = {}): ApprovalDecision => ({ token: 't-1', approved: true, scope, ...extra })
 const deny = (scope: ApprovalDecision['scope'] = 'once'): ApprovalDecision => ({ token: 't-1', approved: false, scope })
-const claim = (decision: ApprovalDecision, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision, authority: 'admin', ...extra })
+const claim = (decision: ApprovalDecision, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision, source: 'cli', ...extra })
 const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boolean; challenges?: string[] } = {}): LedgerView => ({ waiting: { request: { ...request, ...asked }, complete: input.complete ?? true, challenges: input.challenges ?? [SHOWN] } })
 const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW })
 
 describe('the checks before the approvals file is read', () => {
   it.each<[string, DecisionClaim, GuardRefusalCode, string]>([
-    ['a lasting approval from the agent authority', claim(approve('session'), { authority: 'agent' }), 'assurance_too_low', 'Only the admin credential writes an approval that outlives the call'],
-    ['a lasting denial from the agent authority', claim(deny('always'), { authority: 'agent' }), 'assurance_too_low', 'Only the admin credential writes an approval that outlives the call'],
-    ['a host pattern from the agent authority', claim(approve('once'), { authority: 'agent', widenTo: '*.example.com' }), 'scope_forbidden', 'Only the admin credential widens an approval to a host pattern'],
+    ['a lasting approval from a relayed source', claim(approve('session'), { source: 'judge' }), 'assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call'],
+    ['a lasting denial from a relayed source', claim(deny('always'), { source: 'judge' }), 'assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call'],
+    ['a host pattern from a relayed source', claim(approve('once'), { source: 'judge', widenTo: '*.example.com' }), 'scope_forbidden', 'Only buckle approve widens an approval to a host pattern'],
     ['a host pattern on a denial', claim(deny('session'), { widenTo: '*.example.com' }), 'scope_forbidden', 'A denial names no host pattern; deny without --host'],
     ['a host pattern on a once', claim(approve('once'), { widenTo: '*.example.com' }), 'scope_forbidden', 'A once approval covers one call to the host that asked; widen a session or always approval instead'],
     ['a host pattern that is no wildcard', claim(approve('session'), { widenTo: ' api.example.com ' }), 'statement_invalid', '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked'],
@@ -29,16 +29,16 @@ describe('the checks before the approvals file is read', () => {
     expect(screenDecision(input)).toEqual({ ok: false, code, reason })
   })
 
-  it('passes a once from the agent authority, and gives a host pattern trimmed', () => {
-    expect(screenDecision(claim(approve('once'), { authority: 'agent' }))).toEqual({ ok: true })
+  it('passes a once from a relayed source, and gives a host pattern trimmed', () => {
+    expect(screenDecision(claim(approve('once'), { source: 'judge' }))).toEqual({ ok: true })
     expect(screenDecision(claim(approve('always'), { widenTo: ' *.example.com ' }))).toEqual({ ok: true, widenedTo: '*.example.com' })
   })
 })
 
 describe('the checks against the ask', () => {
-  it('runs the screen itself, so a caller that skips it still meets the authority and host pattern checks', () => {
-    expect(guard({ claim: claim(approve('session'), { authority: 'agent' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'Only the admin credential writes an approval that outlives the call' })
-    expect(guard({ claim: claim(deny('always'), { authority: 'agent' }), ledger: waiting({ rule: 'sensitive_path', subject: '/w/.env' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'Only the admin credential writes an approval that outlives the call' })
+  it('runs the screen itself, so a caller that skips it still meets the assurance and host pattern checks', () => {
+    expect(guard({ claim: claim(approve('session'), { source: 'judge' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
+    expect(guard({ claim: claim(deny('always'), { source: 'judge' }), ledger: waiting({ rule: 'sensitive_path', subject: '/w/.env' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
     expect(guard({ claim: claim(approve('session'), { widenTo: 'api.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: false, code: 'statement_invalid', reason: '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked' })
     expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com ' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
   })

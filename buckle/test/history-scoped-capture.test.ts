@@ -93,7 +93,7 @@ describe('a file tool\'s checkpoint', () => {
     writeFileSync(join(workspace, 'from', 'x.txt'), 'x')
     const moved = await call(runtime, 'm-1', 'fs_move', { from: 'from', to: 'to' })
     const tokens = moved.outcome === 'approval_required' ? moved.approvals.map(approval => approval.token) : []
-    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     if (tokens.length) expect(await runtime.invoke({ request: { requestId: 'm-1', tool: 'fs_move', args: { from: 'from', to: 'to' }, approvalTokens: tokens }, sessionId: 'agent' })).toMatchObject({ outcome: 'ok' })
     else expect(moved).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'to', 'x.txt'), 'utf8')).toBe('x')

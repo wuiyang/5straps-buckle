@@ -45,7 +45,7 @@ describe('a call that uses a standing grant', () => {
     const { root, runtime } = await node()
     const asked = await write(runtime, 'ask-1', join(root, 'outside', 'a.txt'))
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
-    const decided = await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope }, authority: 'admin', decidedBy: KEY })
+    const decided = await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope }, source: 'cli', decidedBy: KEY })
     expect(decided.ok).toBe(true)
     // A later call, another requestId and file, that the grant lets through.
     expect(await write(runtime, 'use-1', join(root, 'outside', 'b.txt'))).toMatchObject({ outcome: 'ok' })
@@ -58,7 +58,7 @@ describe('a call that uses a standing grant', () => {
     const { root, runtime } = await node()
     const asked = await write(runtime, 'ask-2', join(root, 'outside', 'a.txt'))
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
-    expect((await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope: 'session' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope: 'session' }, source: 'cli' })).ok).toBe(true)
     expect(await write(runtime, 'use-2', join(root, 'outside', 'b.txt'))).toMatchObject({ outcome: 'ok' })
     const entry = resultOf(runtime, 'use-2')!
     expect(entry.grantUses).toEqual([{ rule: 'write_scope', scope: 'session' }])
@@ -77,7 +77,7 @@ describe('who a call is attributed to, locally and in its report', () => {
     const { root, runtime, reports } = await node()
     const asked = await asAgent('agent:token-a', () => invoke(runtime, 'ask-3', join(root, 'outside', 'a.txt')))
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
-    expect((await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope: 'session' }, authority: 'admin', decidedBy: KEY })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: asked.approvals[0]!.token, approved: true, scope: 'session' }, source: 'cli', decidedBy: KEY })).ok).toBe(true)
     expect(await asAgent('agent:token-a', () => invoke(runtime, 'forged-3', join(root, 'outside', 'b.txt'), 'agent:someone-else'))).toMatchObject({ outcome: 'ok' })
     expect(resultOf(runtime, 'forged-3')).toMatchObject({ actorId: 'agent:token-a', actorTrust: 'authenticated', claimedActorId: 'agent:someone-else', claimedActorTrust: 'claimed' })
     const reported = reports.find(report => report.requestId === 'forged-3' && report.outcome === 'ok')!

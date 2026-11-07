@@ -53,7 +53,7 @@ describe('the ask ledger key', () => {
     const runtime = await open(config)
     const token = tokenOf(await write(runtime, 'one/a.md'))
     tokenOf(await write(runtime, 'one/b.md'))
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
 
     const ledger = ledgerOf(config)
     expect(config.cwd).not.toBe(runtime.workspaceId)
@@ -69,7 +69,7 @@ describe('the ask ledger key', () => {
     renameSync(workspace, moved)
     const after = await open({ ...config, cwd: moved })
     expect(after.approvalService.pending().map(request => request.token)).toEqual([token])
-    expect(await after.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await after.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
     expect(after.approvalService.pending()).toEqual([])
   })
 
@@ -83,8 +83,8 @@ describe('the ask ledger key', () => {
 
     const own = runtime.approvalService.pending().map(request => request.token)
     expect(own).toEqual([ledger.pending[0]!.request.token])
-    expect(await runtime.approvalService.answer({ decision: { token: elsewhere.request.token, approved: true, scope: 'once' }, authority: 'admin' })).toEqual({ ok: false, reason: 'Approval token is unknown or expired' })
-    expect(await runtime.approvalService.answer({ decision: { token: own[0]!, approved: false, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: elsewhere.request.token, approved: true, scope: 'once' }, source: 'cli' })).toEqual({ ok: false, reason: 'Approval token is unknown or expired' })
+    expect(await runtime.approvalService.answer({ decision: { token: own[0]!, approved: false, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
     expect(ledgerOf(config).pending.map(entry => entry.request.token)).toEqual([elsewhere.request.token])
   })
 })

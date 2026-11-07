@@ -67,7 +67,7 @@ type Outcome = { exitCode: number }
 /**
  * `buckle approvals --watch`: asks about each waiting request in turn, in a terminal of its own,
  * while `buckle serve` runs in another. An answer is resolved exactly as `buckle approve`
- * resolves one, under the owner's authority, so `BUCKLE-D14` holds as it does there.
+ * resolves one, as the `cli` source, so `BUCKLE-D14` holds as it does there.
  *
  * Each request is asked once. A skipped one stays waiting for another route, and a question whose
  * request expires or is answered elsewhere while on screen is dropped with a note. The first
@@ -232,12 +232,12 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
 
 /**
  * The same call `buckle approve` makes, through the approval service: the owner's own process, so
- * the owner's authority. It is audited the same way too, one entry per answer, so a session that
+ * the `cli` source. It is audited the same way too, one entry per answer, so a session that
  * grants several leaves several.
  */
 async function record(context: AskContext, decision: ApprovalDecision): Promise<void> {
   const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.ok, operation: () => context.approvals.answer({ decision, authority: 'admin' }) })
+    isSuccessful: outcome => outcome.ok, operation: () => context.approvals.answer({ decision, source: 'cli' }) })
   if (!result.ok) {
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return

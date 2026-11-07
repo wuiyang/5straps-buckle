@@ -132,7 +132,7 @@ describe('a remembered deny for a missing sensitive file, met by a case variant'
     const asked = await call(runtime, 'fs_write', { path: '.env', content: 'x' })
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
     const token = asked.approvals.find(approval => approval.rule === 'sensitive_path')!.token
-    expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, source: 'cli' })).ok).toBe(true)
     if (switchOn) await runtime.policy.setDangerouslyAllow(true)
     for (const path of ['.ENV', '.Env', '.env']) {
       const result = await call(runtime, 'fs_write', { path, content: 'planted' })

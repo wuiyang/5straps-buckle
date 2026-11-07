@@ -101,7 +101,7 @@ function countRuns(runtime: BuckleRuntime, tool: string): Map<string, number> {
 }
 
 async function answer(runtime: BuckleRuntime, token: string, approved = true) {
-  expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+  expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, source: 'cli' })).ok).toBe(true)
 }
 
 function journals(root: string): string[] {

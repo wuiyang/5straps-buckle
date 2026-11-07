@@ -194,7 +194,7 @@ describe('the ask a nested reference makes', () => {
     })
     expect(JSON.stringify([first, runtime.approvalService.waiting(), runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
 
-    expect((await runtime.approvalService.answer({ decision: { token: nested.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: nested.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     const second = await codeRun(runtime, FILL)
     expect(ran(second)).toMatchObject({ ok: true, value: { filled: LABEL, page: LABEL } })
     expect(page()).toBe(TOKEN)
@@ -242,7 +242,7 @@ return { before: before.content, after: after.content }`
     expect(ask).toMatchObject({ tool: 'fs_write' })
     // The record holds the read's result for the resumed run, masked.
     expect(JSON.stringify([first, setup.runtime.actions.read(50), stateText(setup.root)])).not.toContain(TOKEN)
-    expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     return setup
   }
 

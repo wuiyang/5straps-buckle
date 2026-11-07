@@ -632,7 +632,7 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
   }
   const decidedBy = `judge:${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`.slice(0, 200)
   // The once binds to the code the thorough stage rated: a retry after that code changed does not spend it (fix brief 9, B31).
-  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
+  const answered = await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'judge', decidedBy, ...(judged.bound ? { code: judged.bound } : {}) })
   if (!answered.ok) return { ...fail(`${answered.reason} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
   process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's ${judged.passedBy} stage's safe verdict, as you asked.\n`)
   return { exitCode: 0, detail: `judge ${token} safe, approved once`, judge: auditOf(judged, true) }
@@ -709,8 +709,8 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
       return { exitCode: 1 }
     }
   }
-  // `BUCKLE-D18`: `--host` widens a network approval to a pattern, under the owner's authority alone.
-  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, authority: 'admin', ...(values.host === undefined ? {} : { widenTo: values.host }) })
+  // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
+  const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, source: 'cli', ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceName()}`)
   if (result.granted !== undefined) {
     process.stdout.write(`Approved ${token} (${scope.data}) for ${printable(result.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}\n`)

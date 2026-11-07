@@ -270,7 +270,7 @@ describe('a decision posted to the setup face', () => {
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
     expect((await deviceApproval(app, token)).status).toBe(200)
 
-    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', challenge: expect.any(String), decidedBy: expect.stringMatching(/^key:SHA256:/), consumeNotAfter: expect.any(Number) }))
+    expect(answer).toHaveBeenCalledWith(expect.objectContaining({ decision: { token, approved: true, scope: 'once' }, source: 'devices', challenge: expect.any(String), decidedBy: expect.stringMatching(/^key:SHA256:/), consumeNotAfter: expect.any(Number) }))
     expect(await waiting).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(outside, 'note.md'), 'utf8')).toBe('freed')
   })

@@ -376,7 +376,7 @@ describe('a web_fetch header', () => {
     const args = { url: `http://127.0.0.1:${ports[0]}${path}`, headers: { 'X-Api-Key': '{{file:.env.local:API_TOKEN}}' } }
     let response = await call(runtime, 'web_fetch', args)
     for (let round = 0; round < 3 && response.outcome === 'approval_required'; round++) {
-      for (const approval of response.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, authority: 'admin' })
+      for (const approval of response.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: 'cli' })
       response = await call(runtime, 'web_fetch', args)
     }
     return response

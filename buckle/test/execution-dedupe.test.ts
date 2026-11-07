@@ -107,7 +107,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const first = runtime.invoke({ sessionId: 'chat-1', request })
     await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
     const [ask] = runtime.approvalService.pending()
-    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'session' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: ask!.token, approved: true, scope: 'session' }, source: 'cli' })).ok).toBe(true)
     expect(await first).toMatchObject({ outcome: 'ok' })
 
     expect(await runtime.invoke({ sessionId: 'chat-1', request })).toMatchObject({ outcome: 'ok' })

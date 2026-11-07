@@ -113,7 +113,7 @@ describe('code mode', () => {
     const asked = await send('outer-1')
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ tool: 'fs_delete', rule: 'write_scope', subject: `delete:${runtime.paths().root}` }] })
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })
     expect(await send('outer-2', tokens)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 1, calls: [{ tool: 'fs_delete', status: 'ok' }] } })
     expect(existsSync(join(workspace, 'old.log'))).toBe(false)
   })

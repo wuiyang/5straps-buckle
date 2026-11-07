@@ -279,7 +279,7 @@ describe('git_revert through the runtime', () => {
     const asked = await revertCall(runtime, 'revert-second', { commit: 'HEAD~1' })
     expect(asked.outcome).toBe('approval_required')
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     const sent = await runtime.invoke({ request: { requestId: 'revert-second', tool: 'git_revert', args: { commit: 'HEAD~1' }, approvalTokens: tokens }, sessionId: 'agent' })
     expect(sent).toMatchObject({ outcome: 'ok', output: { files: ['a.txt'] } })
     expect(readFileSync(join(repository, 'a.txt'), 'utf8')).toBe('one\n')

@@ -47,7 +47,7 @@ async function approved(runtime: BuckleRuntime, tool: string, args: JsonObject):
   const asked = await call(runtime, tool, args, { requestId })
   expect(asked.outcome).toBe('approval_required')
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
   return call(runtime, tool, args, { requestId, tokens })
 }
 

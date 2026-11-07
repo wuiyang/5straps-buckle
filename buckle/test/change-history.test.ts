@@ -323,7 +323,7 @@ describe('history beside a pnpm-style hard-linked node_modules', () => {
       const request = { requestId: 'linked-write', tool: 'fs_write', args: { path: 'notes.md', content: 'hello' }, approvalTokens: [] as string[], context: { approvalWait: { mode: 'none' as const } } }
       const asked = await runtime.invoke({ sessionId: 's', request })
       if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
-      for (const approval of asked.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, authority: 'admin' })
+      for (const approval of asked.approvals) await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: 'session' }, source: 'cli' })
       expect(await runtime.invoke({ sessionId: 's', request: { ...request, requestId: 'linked-write-2' } })).toMatchObject({ outcome: 'ok' })
       expect(readFileSync(join(workspace, 'notes.md'), 'utf8')).toBe('hello')
       const [checkpoint] = await runtime.history.list()

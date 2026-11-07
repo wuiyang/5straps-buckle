@@ -71,7 +71,7 @@ const onDisk = (config: BuckleConfig, token: string) => {
   const resolved = ledger.resolved.find(entry => entry.decision.token === token)
   return { pending: ledger.pending.some(entry => entry.request.token === token), resolved: resolved !== undefined, owes: resolved?.owedGrant !== undefined }
 }
-const session = (token: string) => ({ decision: { token, approved: true, scope: 'session' as const }, authority: 'admin' as const })
+const session = (token: string) => ({ decision: { token, approved: true, scope: 'session' as const }, source: 'cli' as const })
 
 async function approvalsLockHeld(config: BuckleConfig): Promise<boolean> {
   try {

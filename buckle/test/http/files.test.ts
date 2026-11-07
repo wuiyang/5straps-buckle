@@ -86,7 +86,7 @@ describe('PUT /v1/files', () => {
     expect(asked).toMatchObject({ requestId, outcome: 'approval_required', approvals: [{ tool: 'fs_receive', rule: 'write_scope' }] })
     expect(entries(workspace)).toEqual([])
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    expect((await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'once' }, 'admin')).ok).toBe(true)
+    expect((await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'once' }, 'cli')).ok).toBe(true)
 
     const again = await put('copied.txt', content, { requestId })
     expect(again.status).toBe(200)
@@ -102,7 +102,7 @@ describe('PUT /v1/files', () => {
     const requestId = randomUUID()
     const asked = await (await put('denied.txt', content, { requestId })).json() as InvokeResponse
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    await buckle.runtime.approvals.resolve({ token, approved: false, scope: 'once' }, 'admin')
+    await buckle.runtime.approvals.resolve({ token, approved: false, scope: 'once' }, 'cli')
     const again = await put('denied.txt', content, { requestId })
     expect(again.status).toBe(422)
     expect(await again.json()).toMatchObject({ requestId, outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Approval was declined') } })
@@ -223,7 +223,7 @@ describe('GET /v1/files', () => {
     const asked = await first.json() as InvokeResponse
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ tool: 'fs_send', rule: 'sensitive_path' }] })
     const token = asked.outcome === 'approval_required' ? asked.approvals[0]!.token : ''
-    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'once' }, 'admin')
+    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'once' }, 'cli')
     const again = await get('.env', { requestId })
     expect(again.status).toBe(200)
     expect(again.headers.get('x-buckle-sha256')).toBe(sha256(Buffer.from('KEY=value\n')))
@@ -267,7 +267,7 @@ describe('buckle cp against this node', () => {
     const token = await Promise.race([waitingToken('fs_receive'), copying.then((result) => { throw new Error(`buckle cp ended before it asked: ${JSON.stringify(result)} ${err}`) })])
     // The ask is registered before the node answers the held PUT with it: approve once the copy has said it is waiting.
     await until(() => err.includes('Waiting for approval of write_scope '))
-    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'always' }, 'admin')
+    await buckle.runtime.approvals.resolve({ token, approved: true, scope: 'always' }, 'cli')
     expect(await copying).toEqual({ exitCode: 0 })
     expect(err).toContain(`then approve with: buckle approve ${token} --scope once --workspace ${workspaceName}`)
     expect(out).toBe(`Copied ${content.byteLength} bytes to ${workspaceName}:app.tgz (sha256 ${sha256(content)})\n`)

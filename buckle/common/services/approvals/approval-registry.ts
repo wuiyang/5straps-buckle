@@ -12,7 +12,7 @@ import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { FLOOR_WARNING } from '../../domain/approval-instruction.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
-import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
+import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceSpend } from './once-store.js'
@@ -343,12 +343,10 @@ export interface ApprovalRegistry {
   /** Issues the asks, or joins the ones a call with the same requestId, session and actor is already waiting on. */
   ask(input: AskInput): Promise<AskResult>
   /**
-   * `BUCKLE-D14`: a decision that outlives the call is written under the admin credential
-   * alone. An `agent` authority may answer `once`, which expires with the call it unblocks.
-   * The default names the owner, because every caller but the agent-facing MCP face reaches
-   * this from the owner's own process or from behind the admin credential.
+   * `BUCKLE-D14`: a decision that outlives the call needs a source the guard rates `local` or above; a relayed one
+   * decides `once`, which expires with the call it unblocks.
    */
-  resolve(decision: ApprovalDecision, authority?: ApprovalAuthority, options?: ResolveOptions): Promise<Resolution>
+  resolve(decision: ApprovalDecision, source: ApprovalSource, options?: ResolveOptions): Promise<Resolution>
   /**
    * The last check clears the call or not. A cleared call's `once` approvals are spent under the
    * queue's lock, and `admit` runs under it first: false (another run of the call holds it) leaves them
@@ -643,15 +641,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       return result
     },
 
-    async resolve(decision, authority = 'admin', options = {}) {
+    async resolve(decision, source, options = {}) {
       const claim: DecisionClaim = {
-        decision, authority, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
+        decision, source, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
         ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
       }
       // Refused before the lock, so these come back even when the approvals file cannot be read.
       const screened = screenDecision(claim)
       if (!screened.ok) {
-        if (screened.code === 'assurance_too_low') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
+        if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source })
         return { ok: false, reason: screened.reason }
       }
       // The decision commits first and its grant after, both under the approvals lock (settleGrants).

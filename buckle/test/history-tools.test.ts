@@ -43,7 +43,7 @@ function call(runtime: BuckleRuntime, requestId: string, tool: string, args: Jso
 
 async function approveAll(runtime: BuckleRuntime, asked: InvokeResponse): Promise<string[]> {
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
-  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+  for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
   return tokens
 }
 

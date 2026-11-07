@@ -266,7 +266,7 @@ describe('buckle approvals --watch', () => {
     await vi.waitFor(() => expect(terminal.shown()).toContain(`Denied ${token}`))
 
     expect(registryOf(config).pending()).toEqual([])
-    expect(await registryOf(config).resolve({ token, approved: true, scope: 'session' })).toMatchObject({ ok: false })
+    expect(await registryOf(config).resolve({ token, approved: true, scope: 'session' }, 'cli')).toMatchObject({ ok: false })
     terminal.type('\x03')
     await done
   })
@@ -295,7 +295,7 @@ describe('buckle approvals --watch', () => {
     const { terminal, done } = watch(serviceOf(config))
     await vi.waitFor(() => expect(terminal.shown()).toContain('needs approval'))
 
-    await registryOf(config).resolve({ token, approved: true, scope: 'once' })
+    await registryOf(config).resolve({ token, approved: true, scope: 'once' }, 'cli')
 
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${token} was answered elsewhere; dropped.`))
     terminal.type('\x03')
@@ -378,7 +378,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     await prompted(terminal)
     expect(terminal.shown()).toContain('subject: 10.0.0.1')
 
-    await registry.resolve({ token: first, approved: false, scope: 'once' })
+    await registry.resolve({ token: first, approved: false, scope: 'once' }, 'cli')
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
     // Reaction time: the owner was answering the first question when it went.
     await sleep(250)
@@ -408,7 +408,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
     const { terminal, done } = watch(serviceOf(config))
     await prompted(terminal)
 
-    await registry.resolve({ token: first, approved: false, scope: 'once' })
+    await registry.resolve({ token: first, approved: false, scope: 'once' }, 'cli')
     await vi.waitFor(() => expect(terminal.shown()).toContain(`${first} was answered elsewhere; dropped.`))
     // The Enter passes the gate, but `always` lands before the next question takes keys.
     terminal.type('\ralways\r')

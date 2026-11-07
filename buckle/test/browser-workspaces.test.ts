@@ -293,7 +293,7 @@ describe('a browser call held open across a change of holder', { timeout: 30_000
     // alpha comes online first in the registry and takes it; then the approver says yes.
     await manager.update(idOf(manager, 'alpha'), { online: true })
     expect(manager.browserHeldBy(idOf(manager, 'beta'))).toBe('alpha')
-    expect((await runtime.approvalService.answer({ decision: { token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: runtime.approvalService.pending()[0]!.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
 
     const result = await pending
     expect(result).toMatchObject({ outcome: 'error', error: { code: 'BROWSER_COMMAND_FAILED' } })

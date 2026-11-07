@@ -67,7 +67,7 @@ describe('the siblings of a denied ask', () => {
       await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(2))
       const [denied, sibling] = runtime.approvalService.pending()
 
-      expect((await runtime.approvalService.answer({ decision: { token: denied!.token, approved: false, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+      expect((await runtime.approvalService.answer({ decision: { token: denied!.token, approved: false, scope: 'once' }, source: 'cli' })).ok).toBe(true)
       expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Approval was declined') } })
       await runtime.approvalService.close()
 

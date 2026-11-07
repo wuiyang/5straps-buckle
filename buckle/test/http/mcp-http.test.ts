@@ -100,7 +100,7 @@ describe('the MCP face over HTTP', () => {
     expect(buckle.runtime.approvals.pending()).toHaveLength(1)
 
     const [token] = buckle.runtime.approvals.pending().map(request => request.token)
-    expect((await buckle.runtime.approvals.resolve({ token: token!, approved: true, scope: 'once' }, 'admin')).ok).toBe(true)
+    expect((await buckle.runtime.approvals.resolve({ token: token!, approved: true, scope: 'once' }, 'cli')).ok).toBe(true)
     const ran = await send()
     expect(ran.isError).toBeUndefined()
     expect(ran.structuredContent).toBeUndefined()

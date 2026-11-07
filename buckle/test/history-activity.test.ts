@@ -158,7 +158,7 @@ it('keeps the original turn while an invocation waits for approval', async () =>
     await vi.waitFor(() => expect(runtime.approvalService.pending()).toHaveLength(1))
     const token = runtime.approvalService.pending()[0]!.token
     at += 70_000
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     expect((await waiting).outcome).toBe('ok')
     expect((await runtime.history.list()).at(-1)!.turnId).toBe(first.turnId)
   } finally { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close(); clock.mockRestore(); vi.restoreAllMocks() }

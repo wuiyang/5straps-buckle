@@ -1,5 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5straps/protocol'
-import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
+import type { ApprovalSource } from '../../types/ports/approval-source.js'
+import { assuranceOf, atLeast } from './assurance.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
@@ -15,7 +16,7 @@ export interface GuardRefusal { ok: false; code: GuardRefusalCode; reason: strin
 
 export interface DecisionClaim {
   decision: ApprovalDecision
-  authority: ApprovalAuthority
+  source: ApprovalSource
   // BUCKLE-D18 host pattern: never a field of the decision, so only `buckle approve --host` can pass one.
   widenTo?: string
   /** The digest of the challenge a person's key signed. */
@@ -40,9 +41,9 @@ export type GuardVerdict =
 // Needs no ask, so the registry also runs it before it locks the approvals file.
 export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true; widenedTo?: string } {
   const { decision } = claim
-  if (decision.scope !== 'once' && claim.authority !== 'admin') return refuse('assurance_too_low', 'Only the admin credential writes an approval that outlives the call')
+  if (decision.scope !== 'once' && !atLeast(assuranceOf(claim.source), 'local')) return refuse('assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call')
   if (claim.widenTo === undefined) return { ok: true }
-  return checkWidening({ pattern: claim.widenTo, decision, authority: claim.authority })
+  return checkWidening({ pattern: claim.widenTo, decision, source: claim.source })
 }
 
 export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number }): GuardVerdict {
@@ -94,8 +95,8 @@ function widerGrant(input: { decision: ApprovalDecision; request: ApprovalReques
   return { subject: named }
 }
 
-function checkWidening(input: { pattern: string; decision: ApprovalDecision; authority: ApprovalAuthority }): { ok: true; widenedTo: string } | GuardRefusal {
-  if (input.authority !== 'admin') return refuse('scope_forbidden', 'Only the admin credential widens an approval to a host pattern')
+function checkWidening(input: { pattern: string; decision: ApprovalDecision; source: ApprovalSource }): { ok: true; widenedTo: string } | GuardRefusal {
+  if (input.source !== 'cli') return refuse('scope_forbidden', 'Only buckle approve widens an approval to a host pattern')
   if (!input.decision.approved) return refuse('scope_forbidden', 'A denial names no host pattern; deny without --host')
   if (input.decision.scope === 'once') return refuse('scope_forbidden', 'A once approval covers one call to the host that asked; widen a session or always approval instead')
   const pattern = input.pattern.trim()

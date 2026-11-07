@@ -122,7 +122,7 @@ describe('buckle check-url', () => {
     const config = node()
     const registry = createApprovalRegistry(grants(config), approvalsPath(config), config.workspaceId)
     const [request] = (await registry.ask({ tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })).requests
-    await registry.resolve({ token: request!.token, approved: true, scope: 'once' })
+    await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, 'cli')
 
     expect((await check(config, 'localhost:3000')).exitCode).toBe(3)
     expect(await check(config, 'localhost:3000', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('unspent once approval for web_fetch in session chat-1') })

@@ -104,7 +104,7 @@ describe('an abandoned ask', () => {
 
     clockAt(start + 9 * MINUTE)
     const [token] = runtime.approvalService.pending().map(request => request.token)
-    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
     await runtime.history.close()
   })
 
@@ -233,7 +233,7 @@ describe('an ask at wait 0', () => {
     clockAt(start + 3 * 60 * MINUTE)
     const [token] = runtime.approvalService.pending().map(request => request.token)
     expect(token).toBe(response.approvals[0]!.token)
-    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
+    expect(await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
     await runtime.history.close()
   })
 

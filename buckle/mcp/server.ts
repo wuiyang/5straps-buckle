@@ -5,7 +5,6 @@ import type { ApprovalRequest, ApprovalWait, GrantScope, InvokeResponse, JsonObj
 import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
-import type { ApprovalAuthority } from '../common/types/ports/approval-authority.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
@@ -96,7 +95,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const hints = callHints(context.mcpReq?._meta)
           if ('refused' in hints) return refusedHint(hints.refused)
           const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
-          const approvalTokens = await resolveAnswers({ runtime, responses, authority: trustedApprovalResponses ? 'admin' : 'agent' })
+          const approvalTokens = await resolveAnswers({ runtime, responses })
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
@@ -370,7 +369,6 @@ function denialForm(input: { approval: ApprovalRequest; message: string }) {
 async function resolveAnswers(input: {
   runtime: BuckleRuntime
   responses: Record<string, unknown> | undefined
-  authority: ApprovalAuthority
 }): Promise<string[]> {
   if (!input.responses) return []
 
@@ -391,7 +389,7 @@ async function resolveAnswers(input: {
       token,
       approved,
       scope: answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
-    }, authority: input.authority })
+    }, source: 'forms' })
     if (result.ok) tokens.push(token)
     else logger.warn('Elicited approval was rejected', { reason: result.reason })
   }

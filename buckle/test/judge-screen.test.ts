@@ -219,7 +219,7 @@ describe('an allowed command, with the quick stage on for all', () => {
     const first = await call(runtime, 'cat', ['notes.txt'], [], 'screen-approved')
     if (first.response.outcome !== 'approval_required') throw new Error('expected an ask')
     const token = first.response.approvals[0]!.token
-    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
     const again = await call(runtime, 'cat', ['notes.txt'], [token], 'screen-approved')
     expect(again.response).toMatchObject({ outcome: 'ok' })
     expect(again.ran).toBe(true)

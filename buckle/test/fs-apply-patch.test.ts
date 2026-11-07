@@ -199,7 +199,7 @@ describe('fs_apply_patch on a node', () => {
     const asked = await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'floor-1' })
     expect(asked).toMatchObject({ outcome: 'approval_required', approvals: [{ subject: `delete:${runtime.paths().root}` }] })
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(item => item.token) : []
-    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })
     expect(await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'floor-1', tokens })).toMatchObject({ outcome: 'ok', output: { files: [{ change: 'created' }, { change: 'deleted' }] } })
     expect(readFileSync(join(workspace, 'new/deep/file.txt'), 'utf8')).toBe('made\n')
     expect(existsSync(join(workspace, 'gone.txt'))).toBe(false)
@@ -218,14 +218,14 @@ describe('fs_apply_patch on a node', () => {
     const patch = 'diff --git a/full.txt b/full.txt\ndeleted file mode 100644\nindex e69de29..0000000\n'
     const asked = await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'full-1' })
     const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(item => item.token) : []
-    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    for (const token of tokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })
     expect(errorOf(await call(runtime, 'fs_apply_patch', { patch }, { requestId: 'full-1', tokens }))).toMatchObject({ code: 'PATCH_DOES_NOT_APPLY', message: 'The patch deletes full.txt but its hunks leave lines in it, so nothing was written' })
     expect(existsSync(join(workspace, 'full.txt'))).toBe(true)
     // An empty file goes the same way and is removed.
     const removed = 'diff --git a/empty-old.txt b/empty-old.txt\ndeleted file mode 100644\nindex e69de29..0000000\n'
     const askedEmpty = await call(runtime, 'fs_apply_patch', { patch: removed }, { requestId: 'empty-1' })
     const emptyTokens = askedEmpty.outcome === 'approval_required' ? askedEmpty.approvals.map(item => item.token) : []
-    for (const token of emptyTokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin' })
+    for (const token of emptyTokens) await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: 'cli' })
     expect(await call(runtime, 'fs_apply_patch', { patch: removed }, { requestId: 'empty-1', tokens: emptyTokens })).toMatchObject({ outcome: 'ok', output: { files: [{ change: 'deleted' }] } })
     expect(existsSync(join(workspace, 'empty-old.txt'))).toBe(false)
   })

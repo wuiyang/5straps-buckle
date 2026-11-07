@@ -148,7 +148,7 @@ describe('the approval service, the single answerer', () => {
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
     const started = performance.now()
 
-    expect((await service.answer({ decision: { token: registry.pending()[0]!.token, approved: true, scope: 'once' }, authority: 'admin' })).ok).toBe(true)
+    expect((await service.answer({ decision: { token: registry.pending()[0]!.token, approved: true, scope: 'once' }, source: 'cli' })).ok).toBe(true)
 
     expect(await waiting).toMatchObject({ settled: true })
     expect(performance.now() - started).toBeLessThan(1_000)
@@ -162,7 +162,7 @@ describe('the approval service, the single answerer', () => {
 
     // A second registry over the same files stands in for `buckle approve` in another process.
     const elsewhere = queue(root).registry
-    expect((await elsewhere.resolve({ token: elsewhere.pending()[0]!.token, approved: true, scope: 'session' })).ok).toBe(true)
+    expect((await elsewhere.resolve({ token: elsewhere.pending()[0]!.token, approved: true, scope: 'session' }, 'cli')).ok).toBe(true)
 
     expect(await waiting).toMatchObject({ settled: true })
   })
@@ -203,7 +203,7 @@ describe('the approval service, the single answerer', () => {
 
     const resent = service.request(call())
     await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
-    await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, authority: 'admin' })
+    await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: 'cli' })
     expect(await resent).toMatchObject({ settled: true, approvals: [expect.objectContaining({ token })] })
     await service.close()
   })

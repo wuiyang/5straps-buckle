@@ -34,7 +34,7 @@ async function node() {
   // The same call, requestId aside, from the actor the transport authenticated, in the one session `shared`.
   const write = (actor: string, path: string, tokens: string[] = []): Promise<InvokeResponse> =>
     runInScope(createOperationScope({ owner, context: { actor } }), () => runtime.invoke({ request: { requestId: `call-${++sequence}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: tokens }, sessionId: 'shared' }))
-  const answer = (token: string, scope: 'once' | 'session') => runtime.approvalService.answer({ decision: { token, approved: true, scope }, authority: 'admin' })
+  const answer = (token: string, scope: 'once' | 'session') => runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: 'cli' })
   return { runtime, write, answer }
 }
 

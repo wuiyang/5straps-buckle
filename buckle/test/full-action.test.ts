@@ -107,7 +107,7 @@ async function approveSession(runtime: BuckleRuntime, response: InvokeResponse):
   if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
   for (const approval of response.approvals) {
     const scope = approval.offeredScopes.includes('session') ? 'session' : 'once'
-    expect((await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope }, authority: 'admin' })).ok).toBe(true)
+    expect((await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope }, source: 'cli' })).ok).toBe(true)
   }
 }
 
@@ -374,7 +374,7 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     const tokens: string[] = []
     for (const index of [1, 2, 3, 4]) tokens.push((await ask(index)).requests[0]!.token)
     await expect(ask(5)).rejects.toThrow(/waiting in this workspace already hold \d+ bytes.*per workspace/)
-    expect(await registry.resolve({ token: tokens[0]!, approved: false, scope: 'once' })).toMatchObject({ ok: true })
+    expect(await registry.resolve({ token: tokens[0]!, approved: false, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
     expect((await ask(5)).requests).toHaveLength(1)
   })
 })
@@ -419,7 +419,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
     // Counted once: 40 asks of a 1 MiB call leave the session room for 14 MiB more.
     expect((await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [write('/next')], call: whole(14 * 1_024 * 1_024) })).requests).toHaveLength(1)
     const [first, ...rest] = asked.requests
-    await registry.resolve({ token: first!.token, approved: false, scope: 'once' })
+    await registry.resolve({ token: first!.token, approved: false, scope: 'once' }, 'cli')
     expect(callFiles(root)).toHaveLength(2)
     await registry.cancel(rest.map(request => request.token))
     expect(callFiles(root)).toHaveLength(1)

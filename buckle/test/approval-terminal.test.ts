@@ -191,7 +191,7 @@ describe('the terminal question after the grace period', () => {
     held.answer('session')
     await vi.waitFor(() => expect(registry.pending()).toEqual([]))
     // The terminal's answer is the one on record: the same answer again changes nothing.
-    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' })).toEqual({ ok: true, repeated: true, asked: { rule: 'read_scope', subject: '/shots' } })
+    expect(await registry.resolve({ token: issued!.token, approved: true, scope: 'session' }, 'cli')).toEqual({ ok: true, repeated: true, asked: { rule: 'read_scope', subject: '/shots' } })
   })
 
   it('closes once the request expires', async () => {

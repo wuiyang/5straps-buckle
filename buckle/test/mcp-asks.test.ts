@@ -63,7 +63,7 @@ function results(runtime: BuckleRuntime, tool = 'fs_write') {
 
 async function approve(runtime: BuckleRuntime, scope: 'once' | 'session' = 'once') {
   const [token] = runtime.approvalService.pending().map(request => request.token)
-  expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, authority: 'admin' })).ok).toBe(true)
+  expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, source: 'cli' })).ok).toBe(true)
 }
 
 describe('the HTTP MCP face\'s hold (item 1)', () => {

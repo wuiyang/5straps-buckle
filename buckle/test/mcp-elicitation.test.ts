@@ -216,7 +216,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     await answered({ action: 'allow_once' })
     expect(answer).not.toHaveBeenCalled()
     await answered({ action: 'deny' })
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: false, scope: 'once' }, authority: 'admin' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: false, scope: 'once' }, source: 'forms' })
   })
 })
 
@@ -238,18 +238,18 @@ describe('a secret file ask under the credential-file rule', () => {
     await gatedCall(gatedServer(answer, [asked(secret)]), { ...elicitingContext(),
       mcpReq: { id: 4, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { action } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, authority: 'admin' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, source: 'forms' })
   })
 })
 
 describe('elicited answers', () => {
-  it('are recorded through the approval service, with the owner\'s authority (ruling 3 of 2026-09-25)', async () => {
+  it('are recorded through the approval service as the forms source, which counts as the person\'s (ruling 3 of 2026-09-25)', async () => {
     const answer = vi.fn(async () => ({ ok: true as const }))
     const server = gatedServer(answer)
     await gatedCall(server, { ...stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } }),
       mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, authority: 'admin' })
+    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, source: 'forms' })
   })
 })
 

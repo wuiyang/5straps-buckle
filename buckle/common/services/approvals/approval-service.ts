@@ -7,7 +7,7 @@ import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approv
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { askViewDetails, type AskView } from '../../domain/approval/ask-view.js'
-import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
+import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -91,7 +91,7 @@ export interface ApprovalWaitResult {
 
 export interface ApprovalAnswer {
   decision: ApprovalDecision
-  authority: ApprovalAuthority
+  source: ApprovalSource
   /** `BUCKLE-D18`: a host pattern, which only `buckle approve --host` passes. */
   widenTo?: string
   /** The digest of the challenge a person's key decided on: it must be the ask's own (B24). */
@@ -137,8 +137,8 @@ export interface ApprovalService {
   answer(input: ApprovalAnswer): Promise<Resolution>
   /**
    * `RINGS-D20`: opens a decision envelope under the nonce store's lock (the claim stays a synchronous
-   * view of the locked state), then answers with the admin authority the setup face was opened with.
-   * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof.
+   * view of the locked state), then answers as the `sealed` source, which only denies.
+   * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof, as the `devices` source.
    */
   decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
   /**
@@ -343,7 +343,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async answer(input) {
       const { challenge } = input
-      const result = await options.registry.resolve(input.decision, input.authority, {
+      const result = await options.registry.resolve(input.decision, input.source, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
         ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
@@ -365,7 +365,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return { status: 'invalid' }
         // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
         if (decision.subject !== undefined) return settledDecision({ decision, challenge, result: { ok: false, reason: 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below' } })
-        const result = await service.answer({ decision, authority: 'admin', challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
+        const result = await service.answer({ decision, source: 'devices', challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
         return settledDecision({ decision, challenge, result })
       }
       const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
@@ -373,7 +373,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const parsed = ApprovalDecisionSchema.safeParse(opened.body)
       if (!parsed.success) return { status: 'invalid' }
       if (parsed.data.approved) return settledDecision({ decision: parsed.data, result: { ok: false, reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' } })
-      const result = await service.answer({ decision: parsed.data, authority: 'admin' })
+      const result = await service.answer({ decision: parsed.data, source: 'sealed' })
       return settledDecision({ decision: parsed.data, result })
     },
 
@@ -548,9 +548,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         ask.questions.delete(approval.token)
       }
       if (outcome.status === 'answered' || outcome.status === 'denied') {
-        // The owner's own terminal: the owner's authority, as `buckle approve` has.
+        // The owner's own terminal: a person at the node, as at `buckle approve`.
         const decision = decisionFor(approval, outcome)
-        const result = await service.answer({ decision, authority: 'admin' })
+        const result = await service.answer({ decision, source: 'terminal' })
         if (!result.ok) logger.warn('Approval decision rejected', { reason: result.reason })
         if (!decision.approved) return
         continue

@@ -39,7 +39,7 @@ describe('durable approval outcome delivery', () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const q = queue()
     const [ask] = await q.ask(1, 's')
-    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'admin', { consumeNotAfter: at + 30_000 })).toMatchObject({ ok: true })
+    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'cli', { consumeNotAfter: at + 30_000 })).toMatchObject({ ok: true })
     const saved = q.registry.pendingDeliveries()
     expect(saved[0]!.notice).toEqual({ token: ask!.token, event: 'answered', at: new Date(at).toISOString(), scope: 'once', consumeNotAfter: new Date(at + 30_000).toISOString() })
     const reopened = q.open()
@@ -86,7 +86,7 @@ describe('durable approval outcome delivery', () => {
     const sent: ApprovalNotice[][] = []
     const notices = createApprovalNotices(async batch => { sent.push(batch); if (sent.length === 1) await blocked.wait }, { registry: q.registry })
     await vi.waitFor(() => expect(sent).toHaveLength(1))
-    await q.registry.resolve({ token: ask!.token, approved: false, scope: 'once' })
+    await q.registry.resolve({ token: ask!.token, approved: false, scope: 'once' }, 'cli')
     void notices.flush()
     blocked.release()
     await notices.flush()
@@ -99,7 +99,7 @@ describe('durable approval outcome delivery', () => {
     const q = queue()
     const [ask] = await q.ask(1, 's')
     const backup = `${q.file}.backup`
-    await expect(q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'admin', {
+    await expect(q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'cli', {
       challenge: { digest: 'shown', shown: () => { renameSync(q.file, backup); mkdirSync(q.file); return ['shown'] } },
     })).rejects.toThrow()
     rmSync(q.file, { recursive: true }); renameSync(backup, q.file)
@@ -120,7 +120,7 @@ describe('durable approval outcome delivery', () => {
     writeFileSync(q.file, JSON.stringify(state))
     const [ask] = await q.ask()
     await q.registry.enqueueSkippedNotices([{ token: ask!.token, event: 'skipped', at: new Date().toISOString(), reason: 'caller_declined_wait' }])
-    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'admin', { consumeNotAfter: Date.now() + 30_000 })).toMatchObject({ ok: true })
+    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'cli', { consumeNotAfter: Date.now() + 30_000 })).toMatchObject({ ok: true })
     expect(q.registry.pendingDeliveries()).toHaveLength(APPROVAL_OUTBOX_COUNT_MAX - 1)
     expect(JSON.stringify(q.registry.pendingDeliveries())).not.toContain('/outside')
     expect(q.registry.pendingDeliveries().at(-1)!.notice).toHaveProperty('consumeNotAfter')
@@ -141,7 +141,7 @@ describe('durable approval outcome delivery', () => {
     writeFileSync(q.file, JSON.stringify(state))
     const [ask] = await q.ask()
     await q.registry.enqueueSkippedNotices([{ token: ask!.token, event: 'skipped', at: new Date().toISOString(), reason: 'caller_declined_wait' }])
-    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'admin', { consumeNotAfter: Date.now() + 30_000 })).toMatchObject({ ok: true })
+    expect(await q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'cli', { consumeNotAfter: Date.now() + 30_000 })).toMatchObject({ ok: true })
     const saved = JSON.parse(readFileSync(q.file, 'utf8')) as typeof state
     const used = Buffer.byteLength(JSON.stringify(saved.outbox))
     expect(used).toBeLessThanOrEqual(APPROVAL_OUTBOX_BYTES_MAX)
@@ -247,7 +247,7 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     ['acknowledge', registry => registry.acknowledgeDeliveries(registry.pendingDeliveries().slice(0, 100).map(item => item.id))],
     ['sweep', registry => registry.sweep()],
     ['cancel', registry => registry.cancel(['none'])],
-    ['resolve', (registry, live) => registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')],
+    ['resolve', (registry, live) => registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'cli')],
   ])('lets %s commit while an unreserved ask expires at the cap, and records that expiry', async (_, act) => {
     const q = queue()
     const { live, legacy } = atCap(q)
@@ -263,7 +263,7 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     await registry.acknowledgeDeliveries(registry.pendingDeliveries().slice(0, 100).map(item => item.id))
     await registry.sweep()
     expect(await registry.cancel(['none'])).toEqual([])
-    expect(await registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+    expect(await registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
     expect(await q.ask()).toHaveLength(1)
     expect(registry.pendingDeliveries().map(item => item.notice)).toEqual(expect.arrayContaining([
       expect.objectContaining({ token: legacy.request.token, event: 'expired' }),
@@ -295,7 +295,7 @@ describe('an ask\'s end is recorded whatever the outbox holds', () => {
     writeFileSync(q.file, JSON.stringify({ version: 1, pending: [live], once: [], resolved: [], outbox: outcomes(q, APPROVAL_OUTBOX_COUNT_MAX - 2) }))
     await expect(q.ask()).rejects.toThrow('delivery is full')
     await q.registry.sweep()
-    expect(await q.registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'admin')).toMatchObject({ ok: true })
+    expect(await q.registry.resolve({ token: live.request.token, approved: false, scope: 'once' }, 'cli')).toMatchObject({ ok: true })
     expect(q.registry.pendingDeliveries()).toHaveLength(APPROVAL_OUTBOX_COUNT_MAX - 1)
   })
 

@@ -64,7 +64,7 @@ it.each([true, false])('waits beyond ten minutes until an owner answers approved
   expect(settled).toBe(false)
   expect(approvals.pending()[0]?.expiresAt).toBe(APPROVAL_NO_DEADLINE)
   // Another route (buckle approve, /setup/approvals in another process) answers the durable queue.
-  expect((await approvals.resolve({ token: approvals.pending()[0]!.token, approved, scope: 'once' })).ok).toBe(true)
+  expect((await approvals.resolve({ token: approvals.pending()[0]!.token, approved, scope: 'once' }, 'cli')).ok).toBe(true)
   await vi.advanceTimersByTimeAsync(400)
   expect(await waiting).toMatchObject({ settled: true })
   expect(vi.getTimerCount()).toBe(0)
@@ -73,7 +73,7 @@ it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
   const { approvals } = await fixture(null)
   const requests = (await approvals.ask({ call: recorded, tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
-  await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
+  await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' }, 'cli')
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)
   expect(approvals.unspent('test')).toHaveLength(0)
@@ -105,7 +105,7 @@ it.each([true, false])('finishes the same MCP call after owner decision approved
   const waiting = call(new AbortController().signal)
   await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
   const request = runtime.approvals.pending()[0]!
-  expect((await runtime.approvals.resolve({ token: request.token, approved, scope: 'once' })).ok).toBe(true)
+  expect((await runtime.approvals.resolve({ token: request.token, approved, scope: 'once' }, 'cli')).ok).toBe(true)
   const result = await waiting
   expect(Boolean(result.isError)).toBe(!approved)
   expect(existsSync(join(runtime.paths().root, 'probe.txt'))).toBe(approved)
@@ -161,7 +161,7 @@ it('ends a wait with no deadline when one of several gates is denied', async () 
     { kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] },
   ])
   await vi.advanceTimersByTimeAsync(10)
-  await approvals.resolve({ token: approvals.pending()[0]!.token, approved: false, scope: 'once' })
+  await approvals.resolve({ token: approvals.pending()[0]!.token, approved: false, scope: 'once' }, 'cli')
   await vi.advanceTimersByTimeAsync(400)
   expect(await waiting).toMatchObject({ settled: true })
   expect(approvals.pending()).toHaveLength(1)

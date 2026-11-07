@@ -106,12 +106,12 @@ describe('the grant a person gives', () => {
     if (outcome.kind !== 'ask') throw new Error('expected an ask')
     const call = { arguments: {}, cwd: '/w', description: null, effects: [], complete: true as const }
     const [request] = (await approvals.ask({ tool: 'shell_exec', sessionId: 'one', asks: outcome.asks, call })).requests
-    expect((await approvals.resolve({ token: request!.token, approved: true, scope })).ok).toBe(true)
+    expect((await approvals.resolve({ token: request!.token, approved: true, scope }, 'cli')).ok).toBe(true)
     expect(check('one').kind).toBe('allow')
     expect(check('two').kind).toBe(scope === 'always' ? 'allow' : 'ask')
     expect(grants.list()).toMatchObject([{ rule: 'sensitive_path', subject: 'secret-file:/w/.env.local', scope }])
     const credential = (await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/w/.env.local', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }], call })).requests[0]!
-    expect(await approvals.resolve({ token: credential.token, approved: true, scope })).toEqual({ ok: false, reason: 'Sensitive files can only be allowed once' })
+    expect(await approvals.resolve({ token: credential.token, approved: true, scope }, 'cli')).toEqual({ ok: false, reason: 'Sensitive files can only be allowed once' })
   })
 })
 
@@ -174,7 +174,7 @@ describe('through the invoker', () => {
     if (response.outcome !== 'approval_required') throw new Error('expected asks')
     for (const approval of response.approvals) {
       const chosen = approval.rule === 'sensitive_path' ? scope : approval.offeredScopes.includes('session') ? 'session' : 'once'
-      expect((await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: chosen }, authority: 'admin' })).ok).toBe(true)
+      expect((await runtime.approvalService.answer({ decision: { token: approval.token, approved: true, scope: chosen }, source: 'cli' })).ok).toBe(true)
     }
   }
 
