@@ -102,13 +102,5 @@ returns `approval_required`, and the agent sends the same call again once decide
 
 ## Dangerously allow
 
-`buckle policy dangerously-allow on|safe|off [--workspace <name>]` removes the person; `true`
-and `false` read as `on` and `off`. `on` allows every ask about a path inside the workspace, and
-every command, host, and process ask. `safe` allows the same but floor asks (sudo, the
-destructive list, and the file floor) and a secret reference's file, which still ask a person.
-Outside the workspace nothing changes; deny rules, the mount, and the state directory still
-refuse.
-
-Only the local CLI sets it, per workspace: `buckle policy import` refuses a file naming it, and
-`buckle policy clear` keeps it. It applies at the next call; each use is logged as
-`policy_dangerously_allowed` with its mode. An earlier build's switch reads as off.
+[The dangerously-allow switch](approvals-04.md) removes the person for the asks its mode covers, `on`
+or `safe`, in one workspace. It is off by default.

@@ -103,7 +103,7 @@ buckle policy allow-command 'pnpm {build,test} *'
 
 Deny wins. `buckle workspace mount add <local>:<sandbox>[:ro]` shares more folders
 ([mounts](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/mounts.md)). `buckle policy dangerously-allow on` removes the person from most
-asks and is off by default ([details](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/approvals.md#dangerously-allow)).
+asks and is off by default ([details](https://github.com/wuiyang/5straps-buckle/blob/main/docs/user/how-to/approvals-04.md)).
 
 ## Roadmap
 

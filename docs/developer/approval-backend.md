@@ -94,7 +94,7 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
   reads `always`. A destructive command never takes `always`.
 - **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's; rated
   `relayed`, they would be held to a non-floor `once`, which the forms do not offer alone.
-- **The dangerously-allow switch:** `on` lifts floor asks; `safe` leaves them to a person.
+- **The dangerously-allow switch:** each mode's reach is a row of `DANGEROUSLY_ALLOW_REACH`.
 - **Decision audit:** it runs on every answer, but the runtime plugs in `NO_DECISION_AUDIT`,
   which writes nothing; `blockOnAuditFailure` is off.
 

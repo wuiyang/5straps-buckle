@@ -39,7 +39,7 @@ Jev's verdict is a rating alone and never runs a call. An ask at the destructive
 built-in floor or the destructive list, always goes to a person whatever either model says, its
 line led by "a command at the destructive floor always needs a person". A deny is never rated and
 never lifted, nothing either model says refuses a call, and a call the dangerously-allow switch lets
-through is not rated.
+through at `on` is not rated; at `safe` it is rated as with the switch off.
 
 ## Routing in automated mode
 

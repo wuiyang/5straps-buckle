@@ -3,11 +3,13 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import type { JsonObject } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
+import { keptBy } from '../cli/dangerously-allow-words.js'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { createPathView } from '../common/domain/path-view.js'
+import { wordList } from '../common/domain/word-list.js'
 import { maskLabel, MIN_SECRET_LENGTH, PLACES_REASON, PLATFORM_REASON, readReferences, SHORT_REASON } from '../common/domain/secret-reference.js'
 import { referenceHint, type ReferenceHintTool } from '../common/domain/secret-reference-hint.js'
 import { codeRunDescription } from '../common/services/packs/code/declarations.js'
@@ -118,18 +120,24 @@ describe('the pages that point at docs/user/how-to/secrets.md', () => {
     expect(page(name)).toContain('](secrets.md')
   })
 
-  it('approvals.md gives a secret file\'s ask the scopes it offers, and says the dangerously-allow switch answers it at on alone', () => {
+  it('approvals.md gives a secret file\'s ask the scopes it offers, and points to the switch\'s page', () => {
     const approvals = page('approvals.md')
     expect(approvals).toContain('| once (a [secret reference](secrets.md)\'s file: once, session, always) |')
-    // APPROVAL-05: the switch's modes, as the CLI takes them.
-    expect(approvals).toContain('buckle policy dangerously-allow on|safe|off [--workspace <name>]')
-    for (const mode of DANGEROUSLY_ALLOW_ON_MODES) expect(approvals, mode).toMatch(new RegExp(`\`${mode}\` allows`))
-    expect(approvals).toContain('floor asks (sudo, the destructive list, and the file floor) and a secret reference\'s file, which still ask a person')
-    expect(approvals).toContain('each use is logged as `policy_dangerously_allowed` with its mode. An earlier build\'s switch reads as off.')
+    expect(approvals).toContain('[The dangerously-allow switch](approvals-04.md) removes the person')
+  })
+
+  it('approvals-04.md says what each mode answers, from the words the CLI prints, and that a restore asks in both', () => {
+    const switchPage = page('approvals-04.md')
+    expect(switchPage).toContain('buckle policy dangerously-allow on|safe|off [--workspace <name>]')
+    for (const mode of DANGEROUSLY_ALLOW_ON_MODES) expect(switchPage, mode).toMatch(new RegExp(`\`${mode}\` allows`))
+    expect(switchPage).toContain(`\`safe\` allows the same but ${wordList(keptBy('safe'))}, which still ask a person`)
+    expect(switchPage).toContain('A [history restore](change-history.md) asks in both modes.')
+    expect(switchPage).toContain('Each use is logged as `policy_dangerously_allowed` with its mode')
+    expect(switchPage).toContain('kept whole as `dangerously-allow.earlier.json`')
   })
 
   it('secrets.md says the dangerously-allow switch answers a secret file\'s ask only at on', () => {
-    expect(secrets).toContain('The [dangerously-allow switch](approvals.md#dangerously-allow) answers this ask only at `on`; `safe` leaves it to a person.')
+    expect(secrets).toContain('The [dangerously-allow switch](approvals-04.md) answers this ask only at `on`; `safe` leaves it to a person.')
     expect(secrets).not.toContain('never answers this ask')
   })
 

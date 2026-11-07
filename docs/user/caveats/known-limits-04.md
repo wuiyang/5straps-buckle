@@ -25,7 +25,7 @@
 - A workbench terminal shows its copy of the folder at `/workspace` whatever the workspace's
   mount, and every mount read-only, the node's scratch roots outside the folder included. It
   sees the workspace's variables, as a shell does.
-- The [dangerously-allow switch](../how-to/approvals.md#dangerously-allow) answers asks about paths inside
+- The [dangerously-allow switch](../how-to/approvals-04.md) answers asks about paths inside
   the workspace's folder, not inside its mounts: a write into a read-write mount still asks.
 
 ## Windows shares

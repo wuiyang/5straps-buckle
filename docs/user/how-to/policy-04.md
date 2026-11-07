@@ -90,7 +90,7 @@ count for this one. The thresholds, half the size, 10 files, and one hour, are f
 
 ## Dangerously allow
 
-Inside the workspace folder, the [dangerously-allow switch](approvals.md#dangerously-allow) at
+Inside the workspace folder, the [dangerously-allow switch](approvals-04.md) at
 `on` answers the file floor as it answers `rm -r`; at `safe` a person decides both. Outside that
 folder, and in a scratch root, a person still decides, and for every restore of the change history.
 

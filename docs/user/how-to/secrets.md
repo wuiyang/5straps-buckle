@@ -71,7 +71,7 @@ the agent's view does not cover its use by a reference, nor the other way round.
 
 The setting `secrets.files` lists files that need no ask, and `secrets.enabled` off refuses a
 reference where it is read, both in the [settings table](workspaces-02.md#settings). The
-[dangerously-allow switch](approvals.md#dangerously-allow) answers this ask only at `on`; `safe`
+[dangerously-allow switch](approvals-04.md) answers this ask only at `on`; `safe`
 leaves it to a person. Buckle's own state, a file the owner denied, and a path a
 filesystem rule denies are refused.
 

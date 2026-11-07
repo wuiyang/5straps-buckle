@@ -39,7 +39,7 @@ offers `once` alone. If the history changes before approval is spent, Buckle ask
 than undoing more than the person saw. The owner's `buckle history restore` command needs no
 second approver.
 
-Neither [dangerously-allow](approvals.md#dangerously-allow) nor the [decision AI](judge.md)
+Neither [dangerously-allow](approvals-04.md) nor the [decision AI](judge.md)
 answers a restore. Every restored path must pass file-policy and mount checks; a deny or conflict
 refuses the whole restore. The history belongs to the workspace, so one session can restore
 another session's changes. Checkpoints name their session.
