@@ -2,8 +2,8 @@ import type { CliRequest, CliWait, PendingInteraction, UnavailableReason } from 
 import { APPROVAL_NO_DEADLINE, type ApprovalRequest } from '@5straps/protocol'
 import { APPROVAL_PENDING } from '../../domain/action-phrase.js'
 import { approveCommand, judgeLine, judgeNoteFor, reviewCommand } from '../../domain/approval-instruction.js'
-import type { AskedCall } from '../../domain/approval/asked-call.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
+import type { FullAction, RatingNote } from '../../types/ports/approval-backend.js'
 import { logger } from '../../runtime/log.js'
 import { askViewDetails, readAskHeadline, type AskHeadline, type AskView } from './ask-view.js'
 
@@ -19,9 +19,11 @@ export interface QuestionContext {
   correlationId: string
   actor?: string
   sessionId: string
-  /** The whole call the asks came from, shown with each question (owner decision D17). */
-  call?: AskedCall
+  /** The whole call the asks came from, shown with each question (owner decision D17), and what the decision AI said of it. */
+  call?: QuestionCall
 }
+
+export type QuestionCall = FullAction & { judge?: readonly RatingNote[] }
 
 export interface QuestionInput { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext; approves?: boolean }
 
@@ -85,7 +87,7 @@ function askViewOf(input: QuestionInput): AskView {
 }
 
 /** The decision AI's line for one question (D91), where the call it came from carries a note about its command. */
-function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string; approves?: boolean }): string | undefined {
+function judgeDetail(input: { approval: ApprovalRequest; call: QuestionCall | undefined; workspaceId: string; workspaceName?: string; approves?: boolean }): string | undefined {
   const note = judgeNoteFor(input.call?.judge, input.approval)
   return note === undefined ? undefined : judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) })
 }

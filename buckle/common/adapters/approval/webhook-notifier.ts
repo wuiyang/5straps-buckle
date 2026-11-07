@@ -1,7 +1,8 @@
 import type { ApprovalNotice, ApprovalRequest } from '@5straps/protocol'
 import { SEALED_REPORT_PATHS, sealedReport, type ApprovalKey } from '@5straps/protocol/envelope'
 import { shownCall, type AskedCall } from '../../domain/approval/asked-call.js'
-import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel, type JudgeNote } from '../../domain/approval-instruction.js'
+import { approveCommand, judgeCommand, judgeNoteFor, reviewCommand, workspaceLabel } from '../../domain/approval-instruction.js'
+import type { RatingNote } from '../../types/ports/approval-backend.js'
 import { logger } from '../../runtime/log.js'
 
 const NOTIFY_TIMEOUT_MS = 5_000
@@ -76,7 +77,7 @@ function postSealed(options: WebhookNotifierOptions, body: { approvals: unknown[
  * One ask as a relay is told of it. `reviewCommand` comes before `approveCommand`: a person reads the whole
  * action with `buckle approvals` first, and `buckle approve` shows it again before it decides (owner decision D17).
  */
-function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions, 'workspaceId' | 'workspaceName'>, notes: readonly JudgeNote[] | undefined) {
+function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions, 'workspaceId' | 'workspaceName'>, notes: readonly RatingNote[] | undefined) {
   const { workspaceId, workspaceName } = options
   const judge = judgeOf({ request, notes, workspaceId, ...(workspaceName ? { workspaceName } : {}) })
   return {
@@ -102,7 +103,7 @@ function describe(request: ApprovalRequest, options: Pick<WebhookNotifierOptions
  * is none, with the quick stage's as `quick` where it rated; the quick stage's alone; or, where the judge rates on
  * request, the command that asks it; and a floor ask's warning line. A field of Buckle's own beside the protocol's request.
  */
-function judgeOf(input: { request: ApprovalRequest; notes: readonly JudgeNote[] | undefined; workspaceId: string; workspaceName?: string }) {
+function judgeOf(input: { request: ApprovalRequest; notes: readonly RatingNote[] | undefined; workspaceId: string; workspaceName?: string }) {
   const note = judgeNoteFor(input.notes, input.request)
   if (note === undefined) return undefined
   // A floor ask's one constant warning line rides beside its ratings (addendum 3 R2).

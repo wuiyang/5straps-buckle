@@ -12,7 +12,7 @@ import { logger } from '../../runtime/log.js'
 import type { AskCause, PermissionDecision } from '../../domain/permission/decision.js'
 import { CODE_CHANGED_REASON, type CodeBinding, floorCause, judgeable, judgePasses, quickCovers, ratedDanger } from '../../domain/permission/judged.js'
 import type { JudgeAudit, QuickAudit } from '../../types/ports/action-log.js'
-import type { JudgeNote, QuickNote } from '../../domain/approval-instruction.js'
+import type { QuickRating, RatingNote } from '../../types/ports/approval-backend.js'
 import { FLOOR_WARNING } from '../../domain/approval/floor-note.js'
 import { clippedReasoning, clippedResult, type Judge, type JudgeInput, type JudgeMode, type JudgeProvider, type JudgeResult } from '../../types/ports/judge.js'
 import type { PackageScanner } from '../../types/ports/package-scan.js'
@@ -507,7 +507,7 @@ const FLOOR_NOTE: { warning: typeof FLOOR_WARNING } = { warning: FLOOR_WARNING }
  * and did not pass, a command the quick stage flagged among them; on request, that each ask a stage covers may be rated;
  * nothing otherwise.
  */
-export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly Ask[]; judged: readonly JudgedAsk[] }): JudgeNote[] {
+export function judgeNotes(input: { gate: JudgeGate | undefined; asks: readonly Ask[]; judged: readonly JudgedAsk[] }): RatingNote[] {
   const { gate } = input
   if (!gate || !gate.ready) return []
   const waiting = new Set(input.asks.filter(ask => gate.covers(ask) || ask.cause === 'judge').map(ask => ask.subject))
@@ -543,7 +543,7 @@ function listed(names: readonly string[]): string {
  * One rating as the note an approver reads beside the action: the thorough stage's verdict where it ran, the quick
  * stage's beside it, and for a floor ask the floor's warning line (addendum 3 R2).
  */
-export function judgeNoteOf(judged: JudgedAsk): JudgeNote {
+export function judgeNoteOf(judged: JudgedAsk): RatingNote {
   const { subject } = judged
   const quick = judged.quick ? quickNoteOf(judged.quick) : undefined
   const warned = floorCause(judged.cause) ? FLOOR_NOTE : {}
@@ -559,7 +559,7 @@ export function judgeNoteOf(judged: JudgedAsk): JudgeNote {
   return quick ? { subject, quick, ...warned } : { subject, unavailable: 'no stage rated it', ...warned }
 }
 
-function quickNoteOf(rating: StageRating<QuickResult>): QuickNote {
+function quickNoteOf(rating: StageRating<QuickResult>): QuickRating {
   const { result } = rating
   return result.kind === 'verdict' ? { level: result.level, confidence: result.confidence, model: result.model, latencyMs: result.latencyMs } : { unavailable: result.reason }
 }

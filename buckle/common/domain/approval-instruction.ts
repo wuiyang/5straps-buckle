@@ -1,7 +1,7 @@
 import type { ApprovalRequest, ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 import { RECORDED_BEFORE_NOTE } from './approval/decision-guard.js'
-import type { FLOOR_WARNING } from './approval/floor-note.js'
+import type { RatingNote } from '../types/ports/approval-backend.js'
 
 /**
  * Controls (C0, DEL, C1), format characters (bidirectional marks and overrides, zero-width
@@ -80,25 +80,9 @@ export function judgeCommand(input: NamedWorkspace & { request: { token: string 
   return `buckle approvals judge ${input.request.token}${workspaceFlag(input)}`
 }
 
-/**
- * What the decision AI said of an ask's command (D91), kept with the call the ask came from: the thorough stage's verdict
- * or why it gave none, with the quick stage's beside it; the quick stage's alone; or, in a workspace whose judge rates on
- * request, that it was not asked yet. The reasoning is the model's, with the
- * credentials the display hides hidden. A floor ask's note carries FLOOR_WARNING (`warning`), a constant, never a
- * reasoning (addendum 3 R2).
- */
-export type JudgeNote = (
-  | { subject: string; level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; reasoning: string; latencyMs?: number; quick?: QuickNote }
-  | { subject: string; unavailable: string; quick?: QuickNote }
-  | { subject: string; onRequest: true }
-  | { subject: string; quick: QuickNote }
-) & { warning?: typeof FLOOR_WARNING }
-
-/** What the quick stage said beside the thorough stage's verdict, or alone (D91, addendum 2 B): Jev writes no reasoning. */
-export type QuickNote = { level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; latencyMs: number } | { unavailable: string }
 
 /** The note about one ask, which only an interpreter ask at the destructive floor carries. */
-export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rule: string; subject: string }): JudgeNote | undefined {
+export function judgeNoteFor(notes: readonly RatingNote[] | undefined, ask: { rule: string; subject: string }): RatingNote | undefined {
   return ask.rule === 'destructive_command' ? notes?.find(note => note.subject === ask.subject) : undefined
 }
 
@@ -107,14 +91,14 @@ export function judgeNoteFor(notes: readonly JudgeNote[] | undefined, ask: { rul
  * there is no verdict, or the command that asks for one; with the quick stage's verdict first where it rated, as
  * `quick: warning (0.90, jev-1.13.0, 120 ms); thorough: danger (0.92, gpt-6-luna, 900 ms): <reasoning>`. Every route passes it through printable() as it does the rest.
  */
-export function judgeLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
+export function judgeLine(note: RatingNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
   const rated = ratingLine(note, input)
   // A floor ask's note leads with its one constant warning line (addendum 3 R2).
   return note.warning === undefined ? rated : rated === '' ? note.warning : `${note.warning}; ${rated}`
 }
 
 /** A note's ratings as one line: judgeLine without the floor warning. */
-function ratingLine(note: JudgeNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
+function ratingLine(note: RatingNote, input: NamedWorkspace & { token?: string | undefined; approves?: boolean }): string {
   if ('onRequest' in note) return note.warning === undefined ? onRequestLine(input) : floorRequestLine(input)
   const quick = 'quick' in note && note.quick ? `quick: ${'level' in note.quick ? `${note.quick.level} (${note.quick.confidence.toFixed(2)}, ${note.quick.model}, ${note.quick.latencyMs} ms)` : `no verdict: ${note.quick.unavailable}`}` : null
   const thorough = 'level' in note ? `${note.level} (${note.confidence.toFixed(2)}, ${note.model}${note.latencyMs === undefined ? '' : `, ${note.latencyMs} ms`}): ${note.reasoning}` : 'unavailable' in note ? `no verdict: ${note.unavailable}` : null
@@ -193,7 +177,7 @@ export interface ShownCall {
   description: string | null
   effects?: readonly string[]
   /** What the decision AI said of the call's interpreter asks (D91). */
-  judge?: readonly JudgeNote[]
+  judge?: readonly RatingNote[]
 }
 
 /** One waiting ask as an approver shows it: the request, and the whole call it recorded when there is one. */

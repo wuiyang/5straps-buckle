@@ -1,6 +1,6 @@
 import type { ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
-import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { Assurance } from '../../domain/approval/assurance.js'
+import type { FLOOR_WARNING } from '../../domain/approval/floor-note.js'
 import type { ApprovalSource } from './approval-source.js'
 
 // The approval backend contract, as far as this build fills it: core implements ApprovalHost, a backend ApprovalBackend.
@@ -24,6 +24,23 @@ export interface FullAction {
   effects?: string[]
 }
 
+export type RiskLevel = 'safe' | 'warning' | 'danger'
+
+/** What the decision AI's quick stage said: its verdict, or why it gave none. */
+export type QuickRating = { level: RiskLevel; confidence: number; model: string; latencyMs: number } | { unavailable: string }
+
+/**
+ * What the decision AI said of one command (D91), as the judge line shows it: the thorough stage's verdict or why it gave
+ * none, with the quick stage's beside it; the quick stage's alone; or that it was not asked yet. The reasoning is the
+ * model's, credentials hidden. A floor ask's note carries the floor's warning, never a reasoning.
+ */
+export type RatingNote = (
+  | { subject: string; level: RiskLevel; confidence: number; model: string; reasoning: string; latencyMs?: number; quick?: QuickRating }
+  | { subject: string; unavailable: string; quick?: QuickRating }
+  | { subject: string; onRequest: true }
+  | { subject: string; quick: QuickRating }
+) & { warning?: typeof FLOOR_WARNING }
+
 /** One ask, whole: every field a person needs to decide on it. */
 export interface FullAsk {
   egress: 'full'
@@ -40,7 +57,7 @@ export interface FullAsk {
   tool: string
   policy: { rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; widerSubject?: string }
   /** `notes`: what the decision AI said of the call's command asks (D91). */
-  risk: { severity?: ApprovalSeverity; notes: NonNullable<AskedCall['judge']> }
+  risk: { severity?: ApprovalSeverity; notes: readonly RatingNote[] }
   deadline: { expiresAt: string; hold: ApprovalHold | null }
   /** Absent where the ask kept no call: it can only be denied. */
   action?: FullAction

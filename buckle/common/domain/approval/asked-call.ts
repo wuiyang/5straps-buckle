@@ -1,5 +1,6 @@
 import { JsonValueSchema, type JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
+import type { RatingNote } from '../../types/ports/approval-backend.js'
 import { FLOOR_WARNING } from './floor-note.js'
 
 const levelSchema = z.enum(['safe', 'warning', 'danger'])
@@ -13,7 +14,7 @@ const judgeNoteSchema = z.union([
   z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional(), ...warning }).strict(),
   z.object({ subject: z.string(), onRequest: z.literal(true), ...warning }).strict(),
   z.object({ subject: z.string(), quick: quickNoteSchema, ...warning }).strict(),
-])
+]) satisfies z.ZodType<RatingNote>
 
 /**
  * The whole call as the node's signed challenge shows it (owner decisions D9 and D17). `complete` marks a call recorded

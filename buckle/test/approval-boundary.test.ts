@@ -1,5 +1,5 @@
 import { readFileSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
@@ -25,8 +25,27 @@ const DISPLAY = /(?:domain\/(?:approval-instruction|approval-deadline|action-phr
 const TERMINAL_BACKEND = 'common/adapters/approval/terminal-backend.ts'
 // The contract, the runtime's CliRequest, and the question the terminal shows.
 const TERMINAL_DEPENDS_ON = ['@5straps/runtime', '../../types/ports/approval-backend.js', './terminal-question.js']
+// What a backend never reaches, through any module of its own: the ledger's schema and the approval services.
+const BEYOND_A_BACKEND = /^common\/(?:domain\/approval\/asked-call|services\/approvals\/)/
+const OWN_MODULES = 'common/adapters/approval/'
 
 const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
+
+/** Every module a file imports, package-relative, following the imports of the modules beside it in its own folder. */
+function reachedFrom(file: string): string[] {
+  const reached = new Set<string>()
+  const visit = (path: string) => {
+    for (const specifier of importsOf(join(PACKAGE_ROOT, path))) {
+      if (!specifier.startsWith('.')) continue
+      const target = relative(PACKAGE_ROOT, resolve(dirname(join(PACKAGE_ROOT, path)), specifier)).replace(/\.js$/, '.ts')
+      if (reached.has(target)) continue
+      reached.add(target)
+      if (target.startsWith(OWN_MODULES)) visit(target)
+    }
+  }
+  visit(file)
+  return [...reached]
+}
 const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...paths)
   .filter(file => importsOf(file).some(specifier => target.test(specifier)))
   .map(file => relative(PACKAGE_ROOT, file))
@@ -73,5 +92,13 @@ describe('the approval boundary', () => {
 
   it('builds the terminal backend on the contract and the CLI requester alone', () => {
     expect(importsOf(join(PACKAGE_ROOT, TERMINAL_BACKEND)).filter(specifier => !TERMINAL_DEPENDS_ON.includes(specifier))).toEqual([])
+  })
+
+  it('keeps the terminal backend\'s own modules off the ledger\'s schema and the approval services', () => {
+    expect(reachedFrom(TERMINAL_BACKEND).filter(path => BEYOND_A_BACKEND.test(path))).toEqual([])
+  })
+
+  it('keeps the backend contract off the ledger\'s schema and the approval services', () => {
+    expect(reachedFrom('common/types/ports/approval-backend.ts').filter(path => BEYOND_A_BACKEND.test(path))).toEqual([])
   })
 })
