@@ -29,8 +29,8 @@ describe('the assurance each source kind carries', () => {
     expect(rightsOf(SOURCES[source].kind).assurance).toBe(assurance)
   })
 
-  it('names the setup route\'s envelope as a backend, whose rights follow its kind and not its id', () => {
-    expect(SOURCES.sealed.kind).toBe('backend')
+  it('holds the setup route\'s envelope as a built-in kind of its own, and rates a source by its kind and not its id', () => {
+    expect(SOURCES.sealed.kind).toBe('sealed')
     expect(screenDecision(claim({ id: 'cli', kind: 'backend' }))).toEqual({ ok: false, code: 'capability_exceeded', reason: DENIES_ONLY })
   })
 
@@ -62,6 +62,13 @@ describe('what a source may decide', () => {
     for (const scope of ['session', 'always'] as const) {
       expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false, scope }), ledger: { waiting: { request: secret, complete: true, challenges: [], marks: PLAIN_MARKS, routes: TODAYS_ROUTES } }, now: NOW })).toEqual({ ok: true, apply: {} })
       expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false, scope }), ledger, now: NOW })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Persistent denials are supported only for sensitive files' })
+    }
+  })
+
+  it('holds a configured backend\'s denials to one call, even one that names itself sealed', () => {
+    for (const source of [{ id: 'pager', kind: 'backend' }, { id: 'sealed', kind: 'backend' }] as const) {
+      for (const scope of ['session', 'always'] as const) expect(screenDecision(claim(source, { approved: false, scope }))).toEqual({ ok: false, code: 'assurance_too_low', reason: RELAYED })
+      expect(screenDecision(claim(source, { approved: false }))).toEqual({ ok: true })
     }
   })
 

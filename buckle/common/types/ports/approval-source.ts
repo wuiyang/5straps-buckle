@@ -1,5 +1,5 @@
-/** The routes core holds; each is its own kind. */
-export const BUILT_IN_SOURCES = ['terminal', 'cli', 'forms', 'devices', 'judge'] as const
+/** The routes core holds; each is its own kind, and no configured backend may take its id. */
+export const BUILT_IN_SOURCES = ['terminal', 'cli', 'forms', 'devices', 'judge', 'sealed'] as const
 export type BuiltInSource = (typeof BUILT_IN_SOURCES)[number]
 /** A configured backend's kind is always `backend`. */
 export type SourceKind = BuiltInSource | 'backend'
@@ -24,6 +24,6 @@ export const SOURCES = {
   devices: { id: 'devices', kind: 'devices' },
   /** `--approve-if-safe`: the decision AI's thorough stage, for one call. */
   judge: { id: 'judge', kind: 'judge' },
-  /** The decision in the envelope the setup route opens: a backend that only denies. */
-  sealed: { id: 'sealed', kind: 'backend' },
+  /** The decision in the envelope the setup route opens: it only denies. */
+  sealed: { id: 'sealed', kind: 'sealed' },
 } as const satisfies Record<string, ApprovalSource>

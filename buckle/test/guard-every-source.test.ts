@@ -50,9 +50,9 @@ describe('routing by the ask\'s recorded routes', () => {
     expect(guard({ claim: claim(SOURCES.judge, approve()), ledger: ledger({ routes: [] }) })).toEqual({ ok: true, apply: {} })
   })
 
-  it('holds a built-in route for its own kind: a backend that names itself terminal is routed nothing', () => {
-    expect(guard({ claim: claim({ id: 'terminal', kind: 'backend' }, deny()) })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
-    expect(guard({ claim: claim({ id: 'terminal', kind: 'backend' }, approve()) })).toMatchObject({ ok: false, code: 'capability_exceeded' })
+  it.each(['terminal', 'sealed'])('holds a built-in route for its own kind: a backend that names itself %s is routed nothing', (id) => {
+    expect(guard({ claim: claim({ id, kind: 'backend' }, deny()) })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(guard({ claim: claim({ id, kind: 'backend' }, approve()) })).toMatchObject({ ok: false, code: 'capability_exceeded' })
   })
 })
 

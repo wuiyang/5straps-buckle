@@ -8,7 +8,7 @@ export interface SourceRights {
   assurance: Assurance
   /** False: its approvals are refused and its denials kept, as a backend's that does not decide. */
   approves: boolean
-  /** A relayed kind whose denials may still outlast the call. */
+  /** A relayed kind whose denials may still outlast the call: the setup route's envelope alone. */
   deniesLasting?: true
   /** Approves as a person, so a floor ask may take its approval at `local` or above; the decision AI never does. */
   person: boolean
@@ -28,9 +28,9 @@ const RIGHTS: Record<SourceKind, SourceRights> = {
   forms: { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
-  // The setup route's sealed envelope keeps today's lasting denials of a sensitive file; dropping `deniesLasting` holds
-  // a backend's denials to one call.
-  backend: { assurance: 'relayed', approves: false, deniesLasting: true, person: false, widens: false, everyAsk: false },
+  // The setup route's envelope keeps today's lasting denials of a sensitive file.
+  sealed: { assurance: 'relayed', approves: false, deniesLasting: true, person: false, widens: false, everyAsk: false },
+  backend: { assurance: 'relayed', approves: false, person: false, widens: false, everyAsk: false },
 }
 
 export function rightsOf(kind: SourceKind): SourceRights {
