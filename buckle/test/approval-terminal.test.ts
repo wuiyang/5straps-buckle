@@ -10,7 +10,8 @@ import { setupCli } from '../cli/setup.js'
 import { describeLocalExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import type { ApprovalLedger } from '../common/services/approvals/approval-service.js'
 
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { approvalBlock, createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
@@ -74,7 +75,10 @@ function stubQueue(requests: ApprovalRequest[]) {
   const registry = {
     ask: async () => ({ requests, joined: false, answered: [] }),
     pending: vi.fn(() => pending.filter(request => remainingMs(request.expiresAt) > 0)),
+    waiting: () => [],
+    waitingAsk: () => undefined,
     wasDenied: (tokens: string[]) => resolved.some(decision => tokens.includes(decision.token) && !decision.approved),
+    outcomes: (tokens: string[]) => new Map(resolved.filter(decision => tokens.includes(decision.token)).map(decision => [decision.token, decision.approved])),
     resolve: async (decision: ApprovalDecision) => {
       resolved.push(decision)
       pending = pending.filter(request => request.token !== decision.token)
@@ -85,15 +89,17 @@ function stubQueue(requests: ApprovalRequest[]) {
       pending = pending.filter(request => !tokens.includes(request.token))
       return withdrawn
     },
+    cancelGroup: async () => ({ withdrawn: [], dropped: [] }),
+    holdEnded: async () => undefined,
     sweep: async () => undefined,
     sweepIfDue: async () => undefined,
-  }
-  return { registry: registry as unknown as ApprovalRegistry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
+  } satisfies ApprovalLedger
+  return { registry, pending: registry.pending, resolved, answerElsewhere: (token: string) => { pending = pending.filter(request => request.token !== token) } }
 }
 
 const nobody: RequestCli = async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' })
 
-function waitingService(input: { registry: ApprovalRegistry; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
+function waitingService(input: { registry: ApprovalLedger; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
   const service = approvalServiceWithTerminal({ registry: input.registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
   return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }

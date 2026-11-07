@@ -152,4 +152,19 @@ describe('the service and the terminal backend together', () => {
     await second
     await service.close()
   })
+
+  it('withdraws a question whose ask another route answered while on screen, and shows the next', async () => {
+    const terminal = heldTerminal()
+    const { service, root } = setUp(createTerminalBackend({ requester: async () => terminal.requestCli }), 5_000)
+    const waiting = service.request(call({ asks: [ask('/outside/a.md'), ask('/outside/b.md')] }))
+    await vi.waitFor(() => expect(terminal.shown).toHaveLength(1))
+    const [first, second] = service.pending()
+    await otherProcess(root).resolve({ token: first!.token, approved: true, scope: 'once' }, SOURCES.cli)
+    await vi.waitFor(() => expect(terminal.shown).toHaveLength(2), { timeout: 1_500 })
+    expect(terminal.withdrawn).toEqual([`approval:w-1:${first!.token}`])
+    expect(terminal.shown[1]).toBe(`approval:w-1:${second!.token}`)
+    await service.answer({ decision: { token: second!.token, approved: false, scope: 'once' }, source: SOURCES.cli })
+    expect((await waiting).settled).toBe(true)
+    await service.close()
+  })
 })

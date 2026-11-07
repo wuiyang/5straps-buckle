@@ -179,8 +179,11 @@ export interface CallWithdrawal extends GroupWithdrawal {
   selector: GroupSelector
 }
 
+/** The ledger reads and writes the service makes. */
+export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'outcomes' | 'sweep' | 'sweepIfDue'>
+
 export interface ApprovalServiceOptions {
-  registry: ApprovalRegistry
+  registry: ApprovalLedger
   workspaceId: string
   /** The workspace's name, which each question names beside its id; read at each ask, so a rename shows at once. */
   workspaceName?: string
