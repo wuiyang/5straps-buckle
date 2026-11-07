@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { approvalKey, createMemoryNonceStore, EnvelopeError, ENVELOPE_WINDOW_MS, mintApprovalKey, open, seal, type EnvelopeRefusal, type SealedEnvelope } from '../src/envelope.js'
+import { approvalKey, createMemoryNonceStore, EnvelopeError, ENVELOPE_WINDOW_MS, mintApprovalKey, open, seal, sealedReport, SEALED_REPORT_PATHS, type EnvelopeRefusal, type SealedEnvelope } from '../src/envelope.js'
 
 const key = approvalKey(mintApprovalKey())
 const route = { method: 'POST', path: '/setup/approvals' }
@@ -79,5 +79,15 @@ describe('memory nonce store', () => {
     expect(store.claim({ keyId: 'k', nonce: 'n', ts: now, now: now + ENVELOPE_WINDOW_MS })).toBe(false)
     expect(store.claim({ keyId: 'k', nonce: 'other', ts: now + ENVELOPE_WINDOW_MS * 2, now: now + ENVELOPE_WINDOW_MS * 2 })).toBe(true)
     expect(store.size()).toBe(1)
+  })
+})
+
+describe('sealed report', () => {
+  it('seals a report for its route once a key is held, and leaves it plain before', () => {
+    const path = SEALED_REPORT_PATHS.reports
+    const report = { reports: [{ id: 'r-1' }] }
+    const envelope = sealedReport(key, path, report)
+    expect(open(key, envelope, { method: 'POST', path, now: Date.now(), seen: createMemoryNonceStore() })).toEqual(report)
+    expect(sealedReport(undefined, path, report)).toBe(report)
   })
 })

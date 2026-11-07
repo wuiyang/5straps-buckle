@@ -72,6 +72,11 @@ export function seal(key: ApprovalKey, input: { method: string; path: string; bo
   return { ...header, ciphertext: encrypted.toString('base64url') }
 }
 
+/** A report's body as it is posted: sealed for its route once the node holds a key, plain before. */
+export function sealedReport(key: ApprovalKey | undefined, path: string, body: unknown): unknown {
+  return key ? seal(key, { method: 'POST', path, body }) : body
+}
+
 /**
  * The window is checked first and costs nothing; the nonce is claimed only after the body
  * verifies, so a forged envelope cannot spend a genuine nonce.
