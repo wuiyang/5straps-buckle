@@ -1,5 +1,4 @@
-import { approvalDecisionPath, createMemoryNonceStore, EnvelopeError, looksSealed, open, type ApprovalKey, type EnvelopeRefusal, type NonceStore } from '@5straps/protocol/envelope'
-import type { NonceClaims } from '../../types/ports/nonce-claims.js'
+import { approvalDecisionPath, EnvelopeError, looksSealed, open, type ApprovalKey, type EnvelopeRefusal, type NonceStore } from '@5straps/protocol/envelope'
 
 /** Why a decision body was refused: an envelope that failed, or a plain body once a key is paired. */
 export type DecisionRefusal = EnvelopeRefusal | 'plain_refused'
@@ -21,10 +20,4 @@ export function openApprovalDecision(input: { key: ApprovalKey | undefined; body
     if (error instanceof EnvelopeError) return { ok: false, reason: error.reason }
     throw error
   }
-}
-
-/** Without a paired key nothing is opened, so nothing needs to outlive the process. */
-export function createMemoryNonceClaims(): NonceClaims {
-  const seen = createMemoryNonceStore()
-  return { withClaims: async use => use(seen) }
 }

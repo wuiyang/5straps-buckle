@@ -13,7 +13,7 @@ import { redactedSubject } from '../../domain/permission/rules/dangerously-allow
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
-import { createMemoryNonceClaims, openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
+import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
@@ -207,8 +207,8 @@ export interface ApprovalServiceOptions {
   notices?: ApprovalNotices
   /** The key Rings minted at pairing; without one a plain decision is accepted and an envelope refused. */
   decisionKey?: ApprovalKey
-  /** Replay protection for opened envelopes; in memory when no key is paired. */
-  nonces?: NonceClaims
+  /** Replay protection for opened envelopes. */
+  nonces: NonceClaims
   pollMs?: number
 }
 
@@ -268,7 +268,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const live = new Set<OpenAsk>()
   const closing = new AbortController()
   const pollMs = options.pollMs ?? POLL_INTERVAL_MS
-  const nonces = options.nonces ?? createMemoryNonceClaims()
+  const { nonces } = options
   const notices = options.notices ?? createApprovalNotices()
   // One sweep per issued ask at its expiry, so an ask nobody answered is reported expired on time.
   const sweeps = new Set<NodeJS.Timeout>()

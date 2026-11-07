@@ -27,7 +27,7 @@ import { actionsPath, approvalNoncesPath, approvalsPath, dangerouslyAllowPath, g
 import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
 import { openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
-import { createMemoryNonceClaims } from '../approvals/approval-envelope.js'
+import { createMemoryNonceClaims } from '../../adapters/approval/memory-nonce-claims.js'
 import { availableSkills, availableTools, packDescriptor, type BrowserCloseCounts, type Pack } from '../../domain/pack.js'
 import type { DeletePolicy } from '../../domain/delete-policy.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'

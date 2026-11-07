@@ -1,3 +1,4 @@
+import { createMemoryNonceClaims } from '../../common/adapters/approval/memory-nonce-claims.js'
 import { createTerminalBackend } from '../../common/adapters/approval/terminal-backend.js'
 import { createApprovalService, type ApprovalService, type ApprovalServiceOptions } from '../../common/services/approvals/approval-service.js'
 import type { Interaction, InteractionSource } from '../../common/services/approvals/interaction.js'
@@ -12,6 +13,6 @@ export function fixedInteraction(interaction: Interaction = headlessGrace): Inte
 }
 
 /** The approval service as a node composes it: its terminal asks over the interaction's requester. */
-export function approvalServiceWithTerminal(options: Omit<ApprovalServiceOptions, 'terminal'>): ApprovalService {
-  return createApprovalService({ ...options, terminal: createTerminalBackend({ requester: async () => (await options.interaction())?.requestCli }) })
+export function approvalServiceWithTerminal(options: Omit<ApprovalServiceOptions, 'terminal' | 'nonces'>): ApprovalService {
+  return createApprovalService({ ...options, nonces: createMemoryNonceClaims(), terminal: createTerminalBackend({ requester: async () => (await options.interaction())?.requestCli }) })
 }
