@@ -1,6 +1,7 @@
 import type { ApprovalRequest, ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
 import { RECORDED_BEFORE_NOTE } from './approval/decision-guard.js'
+import type { FLOOR_WARNING } from './approval/floor-note.js'
 
 /**
  * Controls (C0, DEL, C1), format characters (bidirectional marks and overrides, zero-width
@@ -92,12 +93,6 @@ export type JudgeNote = (
   | { subject: string; onRequest: true }
   | { subject: string; quick: QuickNote }
 ) & { warning?: typeof FLOOR_WARNING }
-
-/**
- * The one line a floor ask's note carries (addendum 3 R2): the built-in floor (sudo and the destructive commands) or the
- * workspace's destructive list asked, and no stage of the decision AI ever passes such a call, whatever it rates it.
- */
-export const FLOOR_WARNING = 'a command at the destructive floor always needs a person'
 
 /** What the quick stage said beside the thorough stage's verdict, or alone (D91, addendum 2 B): Jev writes no reasoning. */
 export type QuickNote = { level: 'safe' | 'warning' | 'danger'; confidence: number; model: string; latencyMs: number } | { unavailable: string }

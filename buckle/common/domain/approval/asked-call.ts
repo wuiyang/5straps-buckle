@@ -1,15 +1,13 @@
 import { JsonValueSchema, type JsonValue } from '@5straps/protocol'
 import { z } from 'zod'
-
-// The ledger's own copy of the floor ask's note line (addendum 3 R2), so its format never follows the display's words.
-const RECORDED_FLOOR_WARNING = 'a command at the destructive floor always needs a person'
+import { FLOOR_WARNING } from './floor-note.js'
 
 const levelSchema = z.enum(['safe', 'warning', 'danger'])
 const quickNoteSchema = z.union([
   z.object({ level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), latencyMs: z.number().nonnegative() }).strict(),
   z.object({ unavailable: z.string() }).strict(),
 ])
-const warning = { warning: z.literal(RECORDED_FLOOR_WARNING).optional() }
+const warning = { warning: z.literal(FLOOR_WARNING).optional() }
 const judgeNoteSchema = z.union([
   z.object({ subject: z.string(), level: levelSchema, confidence: z.number().min(0).max(1), model: z.string(), reasoning: z.string(), latencyMs: z.number().nonnegative().optional(), quick: quickNoteSchema.optional(), ...warning }).strict(),
   z.object({ subject: z.string(), unavailable: z.string(), quick: quickNoteSchema.optional(), ...warning }).strict(),

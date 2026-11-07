@@ -3,10 +3,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { FLOOR_WARNING } from '../common/domain/approval-instruction.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
-// The ledger's format is its own: an approvals file an earlier build wrote reads whole whatever the display words.
+// An approvals file an earlier build wrote reads whole. The recorded words are spelled out: changing FLOOR_WARNING fails
+// this until the ledger also reads the words recorded before.
 
 const roots: string[] = []
 afterEach(() => {
@@ -42,9 +42,5 @@ describe('the ledger format', () => {
     expect(ask?.request.token).toBe('tok-floor')
     expect(ask?.call?.judge).toEqual([{ subject: SUBJECT, onRequest: true, warning: RECORDED_WARNING }])
     expect({ floor: ask?.floor, destructive: ask?.destructive }).toEqual({ floor: true, destructive: true })
-  })
-
-  it('keeps the warning the decision AI writes today readable', () => {
-    expect(FLOOR_WARNING).toBe(RECORDED_WARNING)
   })
 })
