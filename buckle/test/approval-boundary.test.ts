@@ -17,6 +17,9 @@ const GUARDS = /\b(?:guardDecision|screenDecision)\(/
 // The whole approval service, whose `answer` takes any source: a face holds `approvalApi`, typed as the core approval API.
 const NAMES_THE_SERVICE = /\bapprovalService\b/
 const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
+// Opening a host's forms: nothing the agent's token reaches may answer an ask, so only the stdio face opens them.
+const OPENS_FORMS = /(?<!function )\bopenForms\(/
+const OPENS_A_FORMS_BACKEND = /\.openFormsBackend\(/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
@@ -92,6 +95,14 @@ describe('the approval boundary', () => {
       .filter(file => NAMES_THE_SERVICE.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
     expect(naming).toEqual([])
+  })
+
+  it('lets only the stdio face open a host\'s forms, through the one opener the MCP server defines', () => {
+    const calling = (pattern: RegExp) => sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
+      .filter(file => pattern.test(readFileSync(file, 'utf8')))
+      .map(file => relative(PACKAGE_ROOT, file))
+    expect(calling(OPENS_FORMS)).toEqual(['mcp/stdio.ts'])
+    expect(calling(OPENS_A_FORMS_BACKEND)).toEqual([SERVICE, 'mcp/server.ts'])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {

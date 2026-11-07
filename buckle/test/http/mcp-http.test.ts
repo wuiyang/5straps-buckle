@@ -1,8 +1,9 @@
-import { existsSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { InvokeResponseSchema } from '@5straps/protocol'
 import { useHost } from '@5straps/runtime/nitro'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { approvalsPath } from '../../common/runtime/config.js'
 import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
@@ -30,9 +31,9 @@ function headers(token = TOKEN, extra: Record<string, string> = {}): Record<stri
 
 const initialize = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: PROTOCOL, capabilities: {}, clientInfo: { name: 'mcp-http-test', version: '0' } } })
 
-function toolCall(name: string, args: Record<string, unknown>): { body: string; headers: Record<string, string> } {
+function toolCall(name: string, args: Record<string, unknown>, inputResponses?: Record<string, unknown>): { body: string; headers: Record<string, string> } {
   return {
-    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, _meta: { 'io.modelcontextprotocol/protocolVersion': PROTOCOL, 'io.modelcontextprotocol/clientCapabilities': {} } } }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args, ...(inputResponses ? { inputResponses } : {}), _meta: { 'io.modelcontextprotocol/protocolVersion': PROTOCOL, 'io.modelcontextprotocol/clientCapabilities': {} } } }),
     headers: { 'mcp-protocol-version': PROTOCOL, 'mcp-method': 'tools/call', 'mcp-name': name },
   }
 }
@@ -108,6 +109,24 @@ describe('the MCP face over HTTP', () => {
     expect(existsSync(join(buckle.root, 'joined.md'))).toBe(true)
     expect(buckle.runtime.approvals.pending()).toEqual([])
     expect(buckle.runtime.actions.read(50).filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => entry.outcome)).toEqual(['approval_required', 'approval_required', 'ok'])
+  })
+
+  it('reads no form answer the agent\'s token carries: an accepted approval in inputResponses leaves the ask waiting and writes nothing', async () => {
+    const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
+    const args = { path: join(buckle.root, 'answered.md'), content: 'x' }
+    const send = async (call: ReturnType<typeof toolCall>) => InvokeResponseSchema.parse((await toolResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, call.headers), body: call.body }))).structuredContent)
+
+    expect((await send(toolCall('fs_write', args))).outcome).toBe('approval_required')
+    const [token] = buckle.runtime.approvals.pending().map(request => request.token)
+    const answers = { [token!]: { action: 'accept', content: { approve: true, scope: 'session' } } }
+    expect((await send(toolCall('fs_write', args, answers))).outcome).toBe('approval_required')
+
+    expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([token])
+    expect(buckle.runtime.grants.list()).toEqual([])
+    const ledger = JSON.parse(readFileSync(approvalsPath(buckle.config), 'utf8')) as { pending: Array<{ request: { token: string } }>; once: unknown[]; resolved: unknown[] }
+    expect(ledger.pending.map(entry => entry.request.token)).toEqual([token])
+    expect(ledger).toMatchObject({ once: [], resolved: [] })
+    expect(existsSync(args.path)).toBe(false)
   })
 
   it('answers every method but POST with a JSON-RPC 405 and Allow: POST, after the credential', async () => {
