@@ -387,10 +387,7 @@ export interface ApprovalRegistry {
   waitingAsk(token: string): PendingAsk | undefined
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): UnspentOnce[]
-  /**
-   * Run as the workspace opens: takes up the entries an earlier build kept under the workspace's folder, then writes the
-   * grants decisions left owed when a process stopped between the two writes.
-   */
+  /** Run as the workspace opens: writes the grants decisions left owed when a process stopped between the two writes. */
   recover(): Promise<void>
 }
 
@@ -610,11 +607,6 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     assertBytesFor({ waiting: input.state.pending.filter(entry => entry.workspace === workspace && !replaced.has(entry)), group: named, callBytes: callFile.bytes })
     calls.write(callFile.id, text)
     return named
-  }
-
-  /** The entries kept under another key; the file is in this workspace's own state directory, so each is its own. */
-  function foreignEntries(state: State): Array<{ workspace: string }> {
-    return [...state.pending, ...state.once, ...state.resolved, ...state.outbox].filter(entry => entry.workspace !== workspace)
   }
 
   /**
@@ -850,19 +842,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
     async recover() {
       try {
-        const found = read()
-        const owed = found.resolved.some(entry => entry.owedGrant !== undefined)
-        if (foreignEntries(found).length === 0 && !owed) return
-        await update(async (state, commit) => {
-          const adopted = foreignEntries(state)
-          for (const entry of adopted) entry.workspace = workspace
-          if (adopted.length > 0) {
-            await commit()
-            logger.info('Took up the approvals an earlier build kept under the workspace folder', { entries: adopted.length })
-          }
+        if (!owesGrants(read())) return
+        const settled = await update(async (state, commit) => {
           await settleGrants(state, commit)
+          return !owesGrants(state)
         })
-        if (owed) logger.info('Wrote the grants a stopped process left owed')
+        if (settled) logger.info('Wrote the grants a stopped process left owed')
       } catch (error) {
         // Fail closed: the grant stays owed and its calls ask again, while the workspace opens as it did.
         if (!alreadyReported(error)) logger.warn('Could not write the grants decisions left owed; they are written at the next decision', { error: withoutCause(error) })

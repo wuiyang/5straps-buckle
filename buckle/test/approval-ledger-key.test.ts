@@ -89,23 +89,18 @@ describe('the ask ledger key', () => {
     expect(after.approvalService.pending()).toEqual([])
   })
 
-  it('takes up, as the workspace opens, every entry an earlier build kept under the folder', async () => {
+  it('leaves the entries an earlier build kept under the folder where they are, and answers none of them', async () => {
     const { config } = setUp()
     const before = await open(config)
     const waiting = tokenOf(await write(before, 'one/a.md'))
-    const decided = tokenOf(await write(before, 'one/b.md'))
-    expect(await before.approvalService.answer({ decision: { token: decided, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Record<string, unknown>
     const folderKeyed = (entries: unknown) => (entries as Array<Record<string, unknown>>).map(entry => ({ ...entry, workspace: config.cwd }))
-    const notice = { id: '00000000-0000-4000-8000-000000000002', workspace: config.cwd, expiresAt: new Date(Date.now() + 60_000).toISOString(), notice: { token: decided, event: 'answered', at: new Date().toISOString(), scope: 'once' } }
-    writeFileSync(approvalsPath(config), JSON.stringify({ ...ledger, pending: folderKeyed(ledger.pending), once: folderKeyed(ledger.once), resolved: folderKeyed(ledger.resolved), outbox: [notice] }))
+    writeFileSync(approvalsPath(config), JSON.stringify({ ...ledger, pending: folderKeyed(ledger.pending) }))
 
     const after = await open(config)
-    const keys = (name: string) => (JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Record<string, Array<{ workspace: string }>>)[name]!.map(entry => entry.workspace)
-    expect({ pending: keys('pending'), once: keys('once'), resolved: keys('resolved'), outbox: keys('outbox') }).toEqual({ pending: [after.workspaceId], once: [after.workspaceId], resolved: [after.workspaceId], outbox: [after.workspaceId] })
-    expect(after.approvalService.pending().map(request => request.token)).toEqual([waiting])
-    expect(after.approvals.pendingDeliveries().map(delivery => delivery.id)).toEqual([notice.id])
-    expect(await write(after, 'one/b.md')).toMatchObject({ outcome: 'ok' })
-    expect(await after.approvalService.answer({ decision: { token: waiting, approved: false, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
+    const keys = (JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Ledger).pending.map(entry => entry.workspace)
+    expect(keys).toEqual([config.cwd])
+    expect(after.approvalService.pending()).toEqual([])
+    expect(await after.approvalService.answer({ decision: { token: waiting, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: false, code: 'unknown_ask' })
   })
 })
