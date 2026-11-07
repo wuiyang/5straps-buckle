@@ -656,7 +656,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       // Refused before the lock, so these come back even when the approvals file cannot be read.
       const screened = screenDecision(claim)
       if (!screened.ok) {
-        if (screened.check === 'authority') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
+        if (screened.code === 'assurance_too_low') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: screened.reason }
       }
       // The grant is written while the approvals file is still locked, so no reader sees the decision without it.

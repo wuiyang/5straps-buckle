@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { guardDecision, screenDecision, type DecisionClaim, type GuardCheck, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { guardDecision, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
 
 // Today's checks on an answer, held by the pure decision guard (the approval backend design, slice 4), taken from the
@@ -18,16 +18,16 @@ const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boole
 const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW })
 
 describe('the checks before the approvals file is read', () => {
-  it.each<[string, DecisionClaim, GuardCheck, string]>([
-    ['a lasting approval from the agent authority', claim(approve('session'), { authority: 'agent' }), 'authority', 'Only the admin credential writes an approval that outlives the call'],
-    ['a lasting denial from the agent authority', claim(deny('always'), { authority: 'agent' }), 'authority', 'Only the admin credential writes an approval that outlives the call'],
-    ['a host pattern from the agent authority', claim(approve('once'), { authority: 'agent', widenTo: '*.example.com' }), 'widening', 'Only the admin credential widens an approval to a host pattern'],
-    ['a host pattern on a denial', claim(deny('session'), { widenTo: '*.example.com' }), 'widening', 'A denial names no host pattern; deny without --host'],
-    ['a host pattern on a once', claim(approve('once'), { widenTo: '*.example.com' }), 'widening', 'A once approval covers one call to the host that asked; widen a session or always approval instead'],
-    ['a host pattern that is no wildcard', claim(approve('session'), { widenTo: ' api.example.com ' }), 'widening', '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked'],
-    ['a wildcard over an address', claim(approve('session'), { widenTo: '*.10.0.0.1' }), 'widening', 'A wildcard covers a domain, not an address: *.10.0.0.1'],
-  ])('refuses %s', (_name, input, check, reason) => {
-    expect(screenDecision(input)).toEqual({ ok: false, check, reason })
+  it.each<[string, DecisionClaim, GuardRefusalCode, string]>([
+    ['a lasting approval from the agent authority', claim(approve('session'), { authority: 'agent' }), 'assurance_too_low', 'Only the admin credential writes an approval that outlives the call'],
+    ['a lasting denial from the agent authority', claim(deny('always'), { authority: 'agent' }), 'assurance_too_low', 'Only the admin credential writes an approval that outlives the call'],
+    ['a host pattern from the agent authority', claim(approve('once'), { authority: 'agent', widenTo: '*.example.com' }), 'scope_forbidden', 'Only the admin credential widens an approval to a host pattern'],
+    ['a host pattern on a denial', claim(deny('session'), { widenTo: '*.example.com' }), 'scope_forbidden', 'A denial names no host pattern; deny without --host'],
+    ['a host pattern on a once', claim(approve('once'), { widenTo: '*.example.com' }), 'scope_forbidden', 'A once approval covers one call to the host that asked; widen a session or always approval instead'],
+    ['a host pattern that is no wildcard', claim(approve('session'), { widenTo: ' api.example.com ' }), 'statement_invalid', '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked'],
+    ['a wildcard over an address', claim(approve('session'), { widenTo: '*.10.0.0.1' }), 'statement_invalid', 'A wildcard covers a domain, not an address: *.10.0.0.1'],
+  ])('refuses %s', (_name, input, code, reason) => {
+    expect(screenDecision(input)).toEqual({ ok: false, code, reason })
   })
 
   it('passes a once from the agent authority, and gives a host pattern trimmed', () => {
@@ -38,9 +38,9 @@ describe('the checks before the approvals file is read', () => {
 
 describe('the checks against the ask', () => {
   it('runs the screen itself, so a caller that skips it still meets the authority and host pattern checks', () => {
-    expect(guard({ claim: claim(approve('session'), { authority: 'agent' }) })).toEqual({ ok: false, check: 'authority', reason: 'Only the admin credential writes an approval that outlives the call' })
-    expect(guard({ claim: claim(deny('always'), { authority: 'agent' }), ledger: waiting({ rule: 'sensitive_path', subject: '/w/.env' }) })).toEqual({ ok: false, check: 'authority', reason: 'Only the admin credential writes an approval that outlives the call' })
-    expect(guard({ claim: claim(approve('session'), { widenTo: 'api.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: false, check: 'widening', reason: '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked' })
+    expect(guard({ claim: claim(approve('session'), { authority: 'agent' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'Only the admin credential writes an approval that outlives the call' })
+    expect(guard({ claim: claim(deny('always'), { authority: 'agent' }), ledger: waiting({ rule: 'sensitive_path', subject: '/w/.env' }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'Only the admin credential writes an approval that outlives the call' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: 'api.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: false, code: 'statement_invalid', reason: '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked' })
     expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com ' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
   })
 
@@ -49,34 +49,34 @@ describe('the checks against the ask', () => {
     expect(guard({ claim: claim(approve('session')), ledger: resolved })).toEqual({ ok: true, repeated: true, asked: { rule: 'write_scope', subject: '/outside' } })
     expect(guard({ claim: claim(approve('session')), ledger: { resolved: { decision: approve('session') } } })).toEqual({ ok: true, repeated: true })
     for (const other of [approve('always'), deny('session'), approve('session', { subject: 'delete-below:/outside' })]) {
-      expect(guard({ claim: claim(other), ledger: resolved })).toEqual({ ok: false, check: 'repeat', reason: 'Approval already has a different decision' })
+      expect(guard({ claim: claim(other), ledger: resolved })).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })
     }
-    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: resolved })).toEqual({ ok: false, check: 'repeat', reason: 'Approval already has a different decision' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: resolved })).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })
     expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com' }), ledger: { resolved: { decision: approve('session'), widenedTo: '*.example.com' } } })).toEqual({ ok: true, repeated: true })
   })
 
-  it.each<[string, DecisionClaim, LedgerView, GuardCheck, string]>([
-    ['a token nothing waits for', claim(approve()), {}, 'unknown', 'Approval token is unknown or expired'],
-    ['a challenge other than the ask\'s', claim(approve(), { challenge: 'f'.repeat(64) }), waiting(), 'challenge', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
-    ['a challenge for an ask shown under none', claim(deny(), { challenge: SHOWN }), waiting({}, { complete: false, challenges: [] }), 'challenge', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
-    ['an approval of an ask recorded without its whole call', claim(approve()), waiting({}, { complete: false }), 'recorded_whole', `This ask was ${RECORDED_BEFORE_NOTE}`],
-    ['a scope the ask does not offer', claim(approve('always')), waiting({ offeredScopes: ['once', 'session'] }), 'scope_offered', 'Scope always is not offered for this approval'],
-    ['a denial naming a subject', claim({ ...deny(), subject: 'delete-below:/outside' }), waiting(), 'wider_subject', 'A denial names no subject: it denies the ask\'s own'],
-    ['a subject the ask offers none of', claim(approve('session', { subject: '/elsewhere' })), waiting(), 'wider_subject', 'This ask grants /outside, not /elsewhere'],
-    ['a subject other than the ask\'s wider one', claim(approve('session', { subject: '/elsewhere' })), waiting({ widerSubject: 'delete-below:/outside' }), 'wider_subject', 'This ask grants /outside or delete-below:/outside, not /elsewhere'],
-    ['a wider subject for once', claim(approve('once', { subject: 'delete-below:/outside' })), waiting({ widerSubject: 'delete-below:/outside' }), 'wider_subject', 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead'],
-    ['a lasting approval of a sensitive file', claim(approve('session')), waiting({ rule: 'sensitive_path', subject: '/w/.env' }), 'sensitive_file', 'Sensitive files can only be allowed once'],
-    ['a lasting denial of anything but a sensitive file', claim(deny('always')), waiting(), 'sensitive_file', 'Persistent denials are supported only for sensitive files'],
-    ['a signed once at its proof deadline', claim(approve(), { consumeNotAfter: NOW }), waiting(), 'proof_deadline', 'Signed approval expired before tool admission; sign a fresh decision over the current challenge'],
-    ['a signed once whose deadline is no time', claim(approve(), { consumeNotAfter: Number.NaN }), waiting(), 'proof_deadline', 'Signed approval expired before tool admission; sign a fresh decision over the current challenge'],
-  ])('refuses %s', (_name, input, ledger, check, reason) => {
-    expect(guard({ claim: input, ledger })).toEqual({ ok: false, check, reason })
+  it.each<[string, DecisionClaim, LedgerView, GuardRefusalCode, string]>([
+    ['a token nothing waits for', claim(approve()), {}, 'unknown_ask', 'Approval token is unknown or expired'],
+    ['a challenge other than the ask\'s', claim(approve(), { challenge: 'f'.repeat(64) }), waiting(), 'action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
+    ['a challenge for an ask shown under none', claim(deny(), { challenge: SHOWN }), waiting({}, { complete: false, challenges: [] }), 'action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],
+    ['an approval of an ask recorded without its whole call', claim(approve()), waiting({}, { complete: false }), 'incomplete_action', `This ask was ${RECORDED_BEFORE_NOTE}`],
+    ['a scope the ask does not offer', claim(approve('always')), waiting({ offeredScopes: ['once', 'session'] }), 'scope_not_offered', 'Scope always is not offered for this approval'],
+    ['a denial naming a subject', claim({ ...deny(), subject: 'delete-below:/outside' }), waiting(), 'statement_invalid', 'A denial names no subject: it denies the ask\'s own'],
+    ['a subject the ask offers none of', claim(approve('session', { subject: '/elsewhere' })), waiting(), 'scope_not_offered', 'This ask grants /outside, not /elsewhere'],
+    ['a subject other than the ask\'s wider one', claim(approve('session', { subject: '/elsewhere' })), waiting({ widerSubject: 'delete-below:/outside' }), 'scope_not_offered', 'This ask grants /outside or delete-below:/outside, not /elsewhere'],
+    ['a wider subject for once', claim(approve('once', { subject: 'delete-below:/outside' })), waiting({ widerSubject: 'delete-below:/outside' }), 'scope_forbidden', 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead'],
+    ['a lasting approval of a sensitive file', claim(approve('session')), waiting({ rule: 'sensitive_path', subject: '/w/.env' }), 'scope_forbidden', 'Sensitive files can only be allowed once'],
+    ['a lasting denial of anything but a sensitive file', claim(deny('always')), waiting(), 'scope_forbidden', 'Persistent denials are supported only for sensitive files'],
+    ['a signed once at its proof deadline', claim(approve(), { consumeNotAfter: NOW }), waiting(), 'proof_expired', 'Signed approval expired before tool admission; sign a fresh decision over the current challenge'],
+    ['a signed once whose deadline is no time', claim(approve(), { consumeNotAfter: Number.NaN }), waiting(), 'proof_expired', 'Signed approval expired before tool admission; sign a fresh decision over the current challenge'],
+  ])('refuses %s', (_name, input, ledger, code, reason) => {
+    expect(guard({ claim: input, ledger })).toEqual({ ok: false, code, reason })
   })
 
   it('refuses a host pattern on any rule but network egress, and one that does not cover the host that asked', () => {
-    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }) })).toEqual({ ok: false, check: 'widening', reason: '--host widens a network approval only; this one is write_scope for /outside' })
-    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.other.com' }) })).toEqual({ ok: false, check: 'widening', reason: 'The pattern *.example.com does not cover api.other.com, the host that asked' })
-    expect(guard({ claim: claim(approve('session', { subject: 'delete-below:/outside' }), { widenTo: '*.example.com' }), ledger: waiting({ widerSubject: 'delete-below:/outside' }) })).toEqual({ ok: false, check: 'wider_subject', reason: 'A host pattern and a wider subject do not combine' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }) })).toEqual({ ok: false, code: 'scope_forbidden', reason: '--host widens a network approval only; this one is write_scope for /outside' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.other.com' }) })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'The pattern *.example.com does not cover api.other.com, the host that asked' })
+    expect(guard({ claim: claim(approve('session', { subject: 'delete-below:/outside' }), { widenTo: '*.example.com' }), ledger: waiting({ widerSubject: 'delete-below:/outside' }) })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'A host pattern and a wider subject do not combine' })
   })
 
   it.each<[string, DecisionClaim, LedgerView, string | undefined]>([
