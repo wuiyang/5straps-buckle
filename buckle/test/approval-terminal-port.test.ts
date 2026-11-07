@@ -131,6 +131,28 @@ describe('the terminal backend port, core side', () => {
     await service.close()
   })
 
+  it('says a repeated decision\'s grant is still owed when sending it again could not write it either', async () => {
+    const approve = (token: string): DecisionInput => ({ kind: 'plain', decision: { token, outcome: 'approve', scope: 'session' } })
+    const { backend, seen } = recordingBackend(async (host, asks) => [await host.decide(approve(asks[0]!.token)), await host.decide(approve(asks[0]!.token))])
+    const { service, grants } = setUp(backend)
+    vi.spyOn(grants, 'grant').mockRejectedValue(new Error('The grants file was busy'))
+    await service.request(call())
+    await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
+    expect(seen.receipts[1]).toEqual({ status: 'repeated', state: 'approved', grantOwed: true })
+    await service.close()
+  })
+
+  it('refuses a decision that does not read as one before the ledger, and records nothing', async () => {
+    const malformed = [{ outcome: 'maybe', scope: 'once' }, { outcome: 'deny', scope: 'forever' }, { outcome: 'approve', scope: 'once', widen: 'above' }, { outcome: 'deny', scope: 'once', subject: '/elsewhere' }]
+    const { backend, seen } = recordingBackend(async (host, asks) => Promise.all(malformed.map(body => host.decide({ kind: 'plain', decision: { token: asks[0]!.token, ...body } } as unknown as DecisionInput))))
+    const { service, registry, grants } = setUp(backend)
+    await service.request(call())
+    expect(seen.receipts).toEqual(malformed.map(() => ({ status: 'refused', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } })))
+    expect(registry.pending()).toHaveLength(1)
+    expect(grants.list()).toEqual([])
+    await service.close()
+  })
+
   it('refuses with the guard\'s code, and refuses a token it never routed to the terminal', async () => {
     const { backend, seen } = recordingBackend(async (host, asks) => [
       await host.decide({ kind: 'plain', decision: { token: asks[0]!.token, outcome: 'approve', scope: 'always' } }),

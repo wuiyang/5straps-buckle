@@ -1,4 +1,5 @@
-import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalWithdraw, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
+import { z } from 'zod'
+import { ApprovalDecisionSchema, GrantScopeSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalWithdraw, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { rightsOf, type Assurance } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -143,6 +144,20 @@ const INVALID: ReadInput = { ok: false, receipt: { status: 'refused', step: 'sta
 const DEVICE_SUBJECT = 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below'
 const PROOF_CODES: Readonly<Record<DecisionRefusal, ApprovalErrorCode>> = { expired: 'proof_expired', replayed: 'replayed', tampered: 'proof_invalid', unknown_key: 'proof_invalid', plain_refused: 'proof_invalid' }
 
+const DecisionInputSchema = z.object({
+  kind: z.literal('plain'),
+  decision: z.object({ token: z.string().min(1), outcome: z.enum(['approve', 'deny']), scope: GrantScopeSchema, widen: z.literal('below').optional() }).strict(),
+}).strict()
+
+/** A backend's decision as core reads it, checked whole since a backend may be any code; null for one that does not read as one. */
+export function backendDecisionOf(input: unknown): DecisionBody | null {
+  const parsed = DecisionInputSchema.safeParse(input)
+  return parsed.success ? parsed.data.decision : null
+}
+
+/** What a backend gets for a decision that does not read as one: refused before the ledger is read. */
+export const INVALID_BACKEND_DECISION: DecisionReceipt = { status: 'refused', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } }
+
 export function decisionOf(body: DecisionBody): ApprovalDecision {
   return { token: body.token, approved: body.outcome === 'approve', scope: body.scope }
 }
@@ -182,6 +197,6 @@ export function decisionRecord(receipt: CoreDecisionReceipt): (ReadDecision & Pa
 /** The receipt a backend reads: whether its decision applied, never the subject a core client prints. */
 export function backendReceipt(receipt: CoreDecisionReceipt): DecisionReceipt {
   if (receipt.status === 'refused') return { status: 'refused', error: receipt.error }
-  if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state }
+  if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
   return { status: 'applied', state: receipt.state, assurance: receipt.assurance, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
 }

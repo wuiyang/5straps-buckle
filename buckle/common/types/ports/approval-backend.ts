@@ -100,7 +100,7 @@ export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expire
 /** `grantOwed`: the decision is recorded, but its lasting grant is not written yet, so it is not in force. */
 export type DecisionReceipt =
   | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; grantOwed?: true }
-  | { status: 'repeated'; state: AskState }
+  | { status: 'repeated'; state: AskState; grantOwed?: true }
   | { status: 'refused'; error: ApprovalError }
 
 export type EventType =

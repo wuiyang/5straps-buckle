@@ -16,7 +16,7 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { backendReceipt, decisionOf, readInput, receiptOf, type ApprovalFaceApi, type ChallengeListing } from './core-approval-api.js'
+import { backendDecisionOf, backendReceipt, decisionOf, INVALID_BACKEND_DECISION, readInput, receiptOf, type ApprovalFaceApi, type ChallengeListing } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
@@ -232,7 +232,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const log: ApprovalHost['log'] = (level, message, fields) => { logger[level](message, fields) }
   const host: ApprovalHost = {
     source: SOURCES.terminal,
-    decide: input => decideRouted(input),
+    decide: input => readBackendDecision(input, decideRouted),
     pending: () => {
       const state = readQueue([...routed.keys()])
       return state ? [...routed.values()].filter(asked => state.pending.has(asked.token)) : []
@@ -243,7 +243,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   // Today's routes hand a stdio host's forms every waiting ask.
   const formsHost: ApprovalHost = {
     source: SOURCES.forms,
-    decide: input => decideAs(SOURCES.forms, input.decision),
+    decide: input => readBackendDecision(input, body => decideAs(SOURCES.forms, body)),
     pending: () => options.registry.waiting().map(asked => ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })),
     ask: (token) => {
       const asked = options.registry.waitingAsk(token)
@@ -533,8 +533,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   /** A terminal decision on an ask routed to it, as the decision guard then rates it; one never routed to it is audited as refused. */
-  async function decideRouted(input: DecisionInput): Promise<DecisionReceipt> {
-    const { decision: body } = input
+  async function decideRouted(body: DecisionBody): Promise<DecisionReceipt> {
     const { source } = host
     if (routed.has(body.token)) return decideAs(source, body)
     const decision = decisionOf(body)
@@ -678,6 +677,12 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   return service
+}
+
+/** A backend's decision, read whole before anything else sees it. */
+function readBackendDecision(input: DecisionInput, decide: (body: DecisionBody) => Promise<DecisionReceipt>): Promise<DecisionReceipt> {
+  const body = backendDecisionOf(input)
+  return body === null ? Promise.resolve(INVALID_BACKEND_DECISION) : decide(body)
 }
 
 /** Whether the caller's abort is an explicit cancel; without a way to tell, it is a dropped transport. */
