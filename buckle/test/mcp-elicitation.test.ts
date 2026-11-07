@@ -9,8 +9,11 @@ import { summarizeEffect } from '../common/domain/effect.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 import { createToolRegistry } from '../common/domain/tool-registry.js'
 import { createMcpServer } from '../mcp/server.js'
+import { createFormsBackend } from '../mcp/forms-backend.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { ledgerAskOf } from '../common/services/approvals/full-ask.js'
+import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const approval: ApprovalRequest = {
@@ -23,6 +26,8 @@ const approval: ApprovalRequest = {
   expiresAt: new Date(Date.now() + 600_000).toISOString(),
 }
 
+const APPLIED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local' }
+
 const gatedResponse: InvokeResponse = { requestId: 'request-1', outcome: 'approval_required', approvals: [approval] }
 
 /** The whole call the ask recorded, as the approval service keeps it beside the request (owner decision D17). */
@@ -34,7 +39,7 @@ const recorded: PendingAsk = {
   },
 }
 
-function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async () => ({ ok: true }), waiting: PendingAsk[] = [recorded], judgeApproves = true): McpServer {
+function gatedServer(decide: ApprovalHost['decide'] = async () => APPLIED, waiting: PendingAsk[] = [recorded], judgeApproves = true): McpServer {
   const registry = createToolRegistry([{
     capability: {
       name: 'gated_tool',
@@ -53,13 +58,16 @@ function gatedServer(answer: BuckleRuntime['approvalService']['answer'] = async 
     skills: () => [],
     onToolsChanged: () => undefined,
     invoke: async () => ({ ...gatedResponse, approvals: waiting.map(ask => ask.request) }),
-    approvalService: { answer, waiting: () => waiting },
     workspaceId: 'default',
     workspaceName: () => 'Fixture workspace',
     judgeApproves: () => judgeApproves,
   } as unknown as BuckleRuntime
+  // The asks as core hands them to the forms: from the ledger, each whole where its call was kept whole.
+  const asks = () => waiting.map(ask => ledgerAskOf(ask, { workspace: { id: 'default', node: 'node-7' }, idempotencyKey: key => key }))
+  const forms = createFormsBackend({ workspace: () => ({ id: 'default', name: 'Fixture workspace' }), node: 'node-7', approves: () => judgeApproves })
+  void forms.open({ source: SOURCES.forms, decide, pending: asks, ask: token => asks().find(ask => ask.token === token), log: () => undefined })
 
-  return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', trustedApprovalResponses: true })
+  return createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', forms })
 }
 
 /** The handler the server registered, which is where the elicitation branch is chosen. */
@@ -208,16 +216,16 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
   })
 
   it('refuses an approving answer for an ask recorded before this build, and records a denial for it', async () => {
-    const answer = vi.fn(async () => ({ ok: true as const }))
+    const decide = vi.fn(async () => APPLIED)
     const preBuild: PendingAsk = { request: approval, sessionId: 'unit', floor: true, destructive: true, call: { arguments: { path: '/etc/host...' }, cwd: '/workspace', description: null, truncated: true } }
-    const answered = (content: Record<string, unknown>) => gatedCall(gatedServer(answer, [preBuild]), { ...elicitingContext(),
+    const answered = (content: Record<string, unknown>) => gatedCall(gatedServer(decide, [preBuild]), { ...elicitingContext(),
       mcpReq: { id: 3, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content } } },
     } as unknown as ServerContext)
     await answered({ approve: true, scope: 'session' })
     await answered({ action: 'allow_once' })
-    expect(answer).not.toHaveBeenCalled()
+    expect(decide).not.toHaveBeenCalled()
     await answered({ action: 'deny' })
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: false, scope: 'once' }, source: SOURCES.forms })
+    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'deny', scope: 'once' } })
   })
 })
 
@@ -235,22 +243,22 @@ describe('a secret file ask under the credential-file rule', () => {
   })
 
   it.each([['allow_session', 'session'], ['allow_always', 'always'], ['allow_once', 'once']] as const)('records %s as an approval at scope %s', async (action, scope) => {
-    const answer = vi.fn(async () => ({ ok: true as const }))
-    await gatedCall(gatedServer(answer, [asked(secret)]), { ...elicitingContext(),
+    const decide = vi.fn(async () => APPLIED)
+    await gatedCall(gatedServer(decide, [asked(secret)]), { ...elicitingContext(),
       mcpReq: { id: 4, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { action } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope }, source: SOURCES.forms })
+    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope } })
   })
 })
 
 describe('elicited answers', () => {
-  it('are recorded through the approval service as the forms source, which counts as the person\'s (ruling 3 of 2026-09-25)', async () => {
-    const answer = vi.fn(async () => ({ ok: true as const }))
-    const server = gatedServer(answer)
+  it('are decided through the host core opened the forms on, whose source counts as the person\'s (ruling 3 of 2026-09-25)', async () => {
+    const decide = vi.fn(async () => APPLIED)
+    const server = gatedServer(decide)
     await gatedCall(server, { ...stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } }),
       mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
     } as unknown as ServerContext)
-    expect(answer).toHaveBeenCalledWith({ decision: { token: 'token-1', approved: true, scope: 'session' }, source: SOURCES.forms })
+    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope: 'session' } })
   })
 })
 

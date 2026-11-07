@@ -30,6 +30,8 @@ const TERMINAL_DEPENDS_ON = ['@5straps/runtime', '../../types/ports/approval-bac
 // What a backend never reaches, through any module of its own: the ledger's schema and the approval services.
 const BEYOND_A_BACKEND = /^common\/(?:domain\/approval\/asked-call|services\/approvals\/)/
 const OWN_MODULES = 'common/adapters/approval/'
+const FORMS_BACKEND = 'mcp/forms-backend.ts'
+const BEYOND_A_FORMS_BACKEND = /(?:domain\/approval\/asked-call|services\/|workspaces\/)/
 
 const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
 
@@ -80,8 +82,8 @@ describe('the approval boundary', () => {
     expect(callers).toEqual([REGISTRY])
   })
 
-  it('lets the CLI approvers decide through the core approval API alone', () => {
-    const callers = sourceFiles('cli')
+  it('lets the CLI approvers and the MCP faces decide through the core approval API and the forms backend alone', () => {
+    const callers = sourceFiles('cli', 'mcp')
       .filter(file => ANSWERS_ON_SERVICE.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
     expect(callers).toEqual([])
@@ -105,6 +107,10 @@ describe('the approval boundary', () => {
 
   it('keeps the terminal backend\'s own modules off the ledger\'s schema and the approval services', () => {
     expect(reachedFrom(TERMINAL_BACKEND).filter(path => BEYOND_A_BACKEND.test(path))).toEqual([])
+  })
+
+  it('builds the forms backend on the contract and the display modules, never the ledger\'s schema or the approval services', () => {
+    expect(importsOf(join(PACKAGE_ROOT, FORMS_BACKEND)).filter(specifier => BEYOND_A_FORMS_BACKEND.test(specifier))).toEqual([])
   })
 
   it('keeps the backend contract off the ledger\'s schema and the approval services', () => {

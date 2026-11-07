@@ -1,0 +1,141 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { ApprovalRequest } from '@5straps/protocol'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import type { ApprovalService } from '../common/services/approvals/approval-service.js'
+import type { DecisionReceipt } from '../common/types/ports/approval-backend.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
+import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
+import { askFor, fakeHost } from './support/approval-backend-kit.js'
+import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
+
+// The forms backend: a stdio MCP host's forms, drawn in the call's own answer and decided through the host when the
+// retried call carries them back. Owner question 3 keeps its answers a person's, as ruling 3 of 2026-09-25 counts them.
+
+type Form = { message: string; requestedSchema: { properties: Record<string, { enum?: string[] }> } }
+
+const request = (token: string): ApprovalRequest => ({ token, rule: 'write_scope', subject: `/w/${token}`, reason: 'A first write in this folder', tool: 'fs_write', offeredScopes: ['once', 'session', 'always'], expiresAt: new Date(Date.now() + 600_000).toISOString() })
+const accepted = (content: Record<string, unknown>) => ({ action: 'accept', content })
+
+function forms(): FormsBackend {
+  return createFormsBackend({ workspace: () => ({ id: 'w-1', name: 'Site' }), node: 'node-1', approves: () => false })
+}
+
+function formOf(result: unknown, token: string): Form {
+  const shown = (result as { inputRequests: Record<string, { params?: Form } & Partial<Form>> }).inputRequests[token]!
+  return (shown.params ?? shown) as Form
+}
+
+describe('the forms backend', () => {
+  it('names contract version 1, decides every scope, and opens and closes more than once', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [] })
+    const first = await backend.open(host)
+    expect(first).toEqual({ contractVersion: 1, decides: true, scopes: ['once', 'session', 'always'], cancels: false, revokes: false })
+    expect(await backend.open(host)).toEqual(first)
+    await backend.close()
+    await expect(backend.close()).resolves.toBeUndefined()
+  })
+
+  it('declines a submit: its forms reach the host in the call\'s own answer', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [askFor('a')] }))
+    expect(await backend.submit([askFor('a')], { signal: new AbortController().signal, resend: false })).toMatchObject({ kind: 'declined' })
+  })
+
+  it('draws one form per ask with the whole action, and a denial alone for an ask whose whole call it was not given', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [askFor('a'), askFor('b', { action: undefined })] }))
+    const drawn = backend.forms([request('a'), request('b')])
+    expect(formOf(drawn, 'a').message).toContain('"path": "a"')
+    expect(formOf(drawn, 'a').requestedSchema.properties['approve']).toBeDefined()
+    expect(formOf(drawn, 'b').message).toContain('recorded before this build')
+    expect(formOf(drawn, 'b').requestedSchema.properties['action']?.enum).toEqual(['deny'])
+  })
+
+  it('decides each accepted answer through the host as a plain decision, and returns the tokens it recorded', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a'), askFor('b'), askFor('c')], receipt: decision => (decision.decision.token === 'c' ? REFUSED : { status: 'applied', state: 'approved', assurance: 'local' }) })
+    await backend.open(host)
+    const tokens = await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ action: 'deny' }), c: accepted({ approve: true, scope: 'once' }), d: { action: 'decline' } })
+    expect(tokens).toEqual(['a', 'b'])
+    expect(host.decided.map(({ at: _at, ...input }) => input)).toEqual([
+      { kind: 'plain', decision: { token: 'a', outcome: 'approve', scope: 'session' } },
+      { kind: 'plain', decision: { token: 'b', outcome: 'deny', scope: 'once' } },
+      { kind: 'plain', decision: { token: 'c', outcome: 'approve', scope: 'once' } },
+    ])
+  })
+
+  it('keeps the token of an answer the host already recorded, so the retried call spends it', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [], receipt: () => ({ status: 'repeated', state: 'approved' }) })
+    await backend.open(host)
+    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual(['a'])
+  })
+
+  it('sends no approval of an ask whose whole call it was not given, and still sends its denial', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a', { action: undefined })] })
+    await backend.open(host)
+    expect(await backend.answer({ a: accepted({ action: 'allow_once' }) })).toEqual([])
+    expect(host.decided).toEqual([])
+    expect(await backend.answer({ a: accepted({ action: 'deny' }) })).toEqual(['a'])
+  })
+
+  it('sends nothing to the host once it is closed', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a')] })
+    await backend.open(host)
+    await backend.close()
+    expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual([])
+    expect(host.decided).toEqual([])
+  })
+})
+
+const REFUSED: DecisionReceipt = { status: 'refused', error: { code: 'scope_not_offered', message: 'refused', retryable: false } }
+
+type Ask = Extract<PermissionDecision, { kind: 'ask' }>
+const WRITE: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'] }
+
+const roots: string[] = []
+const services: ApprovalService[] = []
+afterEach(async () => {
+  for (const service of services.splice(0)) await service.close()
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+})
+
+async function opened() {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-forms-'))
+  roots.push(root)
+  const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
+  const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
+  const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction() })
+  services.push(service)
+  const backend = forms()
+  service.openFormsBackend(backend)
+  return { registry, grants, service, backend }
+}
+
+describe('the forms host core opens', () => {
+  it('decides as the forms source, which owner question 3 keeps a person\'s: a session answer is remembered', async () => {
+    const { registry, grants, backend } = await opened()
+    const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE], call: { arguments: { path: '/outside/a.md' }, cwd: '/w', description: null, effects: [], complete: true } })).requests
+    expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'session' }) })).toEqual([asked!.token])
+    expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
+    expect(SOURCES.forms).toEqual({ id: 'forms', kind: 'forms' })
+  })
+
+  it('hands the forms each waiting ask whole, grouped by its call, and none whose whole call was not kept', async () => {
+    const { registry, backend } = await opened()
+    const recorded = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, { ...WRITE, subject: '/other' }], call: { arguments: { path: '/outside/a.md' }, cwd: '/w', description: 'Write a.md', effects: ['write /outside/a.md'], complete: true } })).requests
+    const drawn = backend.forms(recorded)
+    const [first, second] = recorded.map(item => formOf(drawn, item.token))
+    expect(first!.message).toContain('"path": "/outside/a.md"')
+    expect(first!.message).toContain('this call makes 2, each decided on its own')
+    expect(second!.message).toContain(`its call is the one shown whole above with ${recorded[0]!.token}`)
+  })
+})

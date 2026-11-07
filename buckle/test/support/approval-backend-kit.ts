@@ -52,6 +52,7 @@ export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: Decisi
       host.decided.push({ ...decision, at: performance.now() })
       return input.receipt?.(decision, host.decided.filter(sent => sent.decision.token === decision.decision.token).length) ?? APPLIED
     },
+    pending: () => [...routed.values()].filter(ask => !host.closedTokens.has(ask.token)),
     ask: token => (host.closedTokens.has(token) ? undefined : routed.get(token)),
     log: (level, message) => { host.logged.push({ level, message }) },
   }

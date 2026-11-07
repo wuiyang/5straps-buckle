@@ -1,23 +1,16 @@
 import { randomUUID } from 'node:crypto'
-import { acceptedContent, CLIENT_CAPABILITIES_META_KEY, inputRequired, McpServer, type ServerContext } from '@modelcontextprotocol/server'
+import { CLIENT_CAPABILITIES_META_KEY, McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { useScopeSafe } from '@5straps/runtime'
-import type { ApprovalRequest, ApprovalWait, GrantScope, InvokeResponse, JsonObject } from '@5straps/protocol'
-import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
+import type { ApprovalWait, InvokeResponse, JsonObject } from '@5straps/protocol'
+import { describeApprovalRequest, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
-import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { SOURCES } from '../common/types/ports/approval-source.js'
+import { createFormsBackend, type FormsBackend } from './forms-backend.js'
 import { MCP_HOLD_MS } from './holds.js'
 import { createResendJoin, sameCallKey, type ResendJoin } from './resend-join.js'
-
-interface ApprovalAnswer extends Record<string, unknown> {
-  approve?: boolean
-  action?: 'allow_once' | 'allow_session' | 'allow_always' | 'deny' | 'deny_session' | 'always_deny'
-  scope?: GrantScope
-}
 
 /** Runs one tool call in an operation of its own; over HTTP the request's operation is already open. */
 export type ToolCallScope = <T>(run: () => Promise<T>, context: { sessionId: string }) => Promise<T>
@@ -28,7 +21,11 @@ export interface McpServerOptions {
   /** The node's serverId, which an elicited action names as the node's terminal names it. */
   serverId?: string
   version: string
-  trustedApprovalResponses?: boolean
+  /**
+   * A stdio host's forms, through which its answers decide as the forms source. Absent over HTTP, where a call's
+   * `inputResponses` are never read, so nothing the agent's token reaches answers an ask.
+   */
+  forms?: FormsBackend
   callScope?: ToolCallScope
   /**
    * Re-register the tools when the runtime's tool list changes. A long-lived server (stdio) does; a
@@ -73,9 +70,15 @@ export function createMcpServer(input: McpServerOptions): McpServer {
   return server
 }
 
+/** A stdio host's forms, opened on the runtime's approvals, where core binds them to the forms source. */
+export function openForms(runtime: BuckleRuntime, node?: string): FormsBackend {
+  const forms = createFormsBackend({ workspace: () => ({ id: runtime.workspaceId, name: runtime.workspaceName() }), ...(node === undefined ? {} : { node }), approves: () => runtime.judgeApproves() })
+  runtime.approvalService.openFormsBackend(forms)
+  return forms
+}
+
 function registerTools(server: McpServer, options: McpServerOptions): Array<ReturnType<McpServer['registerTool']>> {
-  const { runtime, serverName } = options
-  const trustedApprovalResponses = options.trustedApprovalResponses === true
+  const { runtime, serverName, forms } = options
   const inScope = options.callScope ?? (run => run())
   const readers = capabilityReaders(server)
   const registrations: Array<ReturnType<McpServer['registerTool']>> = []
@@ -95,10 +98,9 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           await options.beforeCall?.()
           const hints = callHints(context.mcpReq?._meta)
           if ('refused' in hints) return refusedHint(hints.refused)
-          const responses = trustedApprovalResponses ? context.mcpReq?.inputResponses : undefined
-          const approvalTokens = await resolveAnswers({ runtime, responses })
+          const approvalTokens = forms ? await forms.answer(context.mcpReq?.inputResponses) : []
           // The host asks its user itself, so the call reports back at once instead of waiting.
-          const elicits = trustedApprovalResponses && supportsElicitation(readers, context)
+          const elicits = forms !== undefined && supportsElicitation(readers, context) ? forms : undefined
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({
@@ -108,7 +110,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
 
           if (response.outcome === 'approval_required') {
             return elicits
-              ? askForApproval({ approvals: response.approvals, waiting: runtime.approvalService.waiting(), workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), approves: runtime.judgeApproves(), ...(options.serverId === undefined ? {} : { node: options.serverId }) })
+              ? elicits.forms(response.approvals)
               : relayApproval({ response, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
           }
           return toCallToolResult(response, replay)
@@ -292,109 +294,6 @@ function acceptsFormElicitation(capabilities: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
-}
-
-/**
- * One form per ask, whose message is the whole action as the node's terminal shows it (owner decision D17):
- * the ask, then every argument, the directory, the effects and the node's summary from the call the ask
- * recorded. An ask recorded before this build has no whole call: its form says so and offers denials only.
- * A call that made several asks is shown whole once, in the form of its first ask, which lists the others;
- * each other form names that ask (review M1 of the slice 5 re-review).
- */
-function askForApproval(input: { approvals: ApprovalRequest[]; waiting: PendingAsk[]; workspaceId: string; workspaceName: string; approves: boolean; node?: string }) {
-  const refOf = new Map(input.waiting.map(ask => [ask.request.token, ask.callRef]))
-  const group = (ref: string | undefined) => ref === undefined ? [] : input.approvals.filter(approval => refOf.get(approval.token) === ref)
-  const shownWith = new Map<string, string>()
-  const inputRequests = Object.fromEntries(input.approvals.map((approval) => {
-    const call = recordedCall(input.waiting, approval.token)
-    const ref = refOf.get(approval.token)
-    const shown = { ...approval, workspaceId: input.workspaceId, workspaceName: input.workspaceName, approves: input.approves, ...(input.node === undefined ? {} : { node: input.node }), ...(call ? { call } : {}) }
-    const earlier = ref === undefined ? undefined : shownWith.get(ref)
-    if (call && ref !== undefined && earlier === undefined) shownWith.set(ref, approval.token)
-    const asks = group(ref)
-    const lines = !call ? describeAsk(shown) : earlier !== undefined ? describeAskOfShownCall(shown, earlier) : [...describeAsk(shown), ...(asks.length > 1 ? describeCallAsks(asks) : [])]
-    const message = lines.join('\n')
-    return [approval.token, call ? approvalForm({ approval, message }) : denialForm({ approval, message })]
-  }))
-  return inputRequired({ inputRequests })
-}
-
-/** The whole call an ask recorded, or undefined for one recorded before this build. */
-function recordedCall(waiting: PendingAsk[], token: string): NonNullable<PendingAsk['call']> | undefined {
-  const call = waiting.find(ask => ask.request.token === token)?.call
-  return call?.complete ? call : undefined
-}
-
-function approvalForm(input: { approval: ApprovalRequest; message: string }) {
-  const { approval } = input
-  return inputRequired.elicit({
-    message: input.message,
-    requestedSchema: {
-      type: 'object',
-      // A credential file is allowed once; a secret file's use offers each scope its ask does (docs/user/how-to/secrets.md).
-      properties: approval.rule === 'sensitive_path' ? {
-        action: { type: 'string', enum: [...approval.offeredScopes.map(scope => `allow_${scope}`), 'deny', 'deny_session', 'always_deny'], description: `${approval.offeredScopes.map(scope => ALLOW_LABELS[scope]).join(', ')}, Deny, Deny this session, Always deny` },
-      } : {
-        approve: { type: 'boolean', description: 'Allow this operation' },
-        scope: {
-          type: 'string',
-          enum: approval.offeredScopes,
-          description: 'once, this session, or always for this subject',
-        },
-      },
-      required: [approval.rule === 'sensitive_path' ? 'action' : 'approve'],
-    },
-  })
-}
-
-const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once', session: 'Allow this session', always: 'Always allow' }
-
-/** An ask nobody was shown whole: it may be denied here, never approved. */
-function denialForm(input: { approval: ApprovalRequest; message: string }) {
-  const sensitive = input.approval.rule === 'sensitive_path'
-  return inputRequired.elicit({
-    message: input.message,
-    requestedSchema: {
-      type: 'object',
-      properties: {
-        action: sensitive
-          ? { type: 'string', enum: ['deny', 'deny_session', 'always_deny'], description: 'Deny, Deny this session, Always deny' }
-          : { type: 'string', enum: ['deny'], description: 'Deny' },
-      },
-      required: ['action'],
-    },
-  })
-}
-
-/** Reads elicitation answers keyed by approval token and turns each into a grant. */
-async function resolveAnswers(input: {
-  runtime: BuckleRuntime
-  responses: Record<string, unknown> | undefined
-}): Promise<string[]> {
-  if (!input.responses) return []
-
-  const waiting = input.runtime.approvalService.waiting()
-  const tokens: string[] = []
-  for (const token of Object.keys(input.responses)) {
-    const answer = acceptedContent<ApprovalAnswer>(input.responses, token)
-    if (!answer) continue
-
-    const approved = answer.action ? answer.action.startsWith('allow_') : answer.approve === true
-    // Owner decision D17: an ask whose whole call was never kept was never shown whole, so no answer approves it.
-    if (approved && waiting.some(ask => ask.request.token === token) && !recordedCall(waiting, token)) {
-      logger.warn('Elicited approval refused: the ask was recorded before this build, so its whole action was never shown')
-      continue
-    }
-    // Ruling 3 of 2026-09-25: an answer from the owner's own stdio host counts as a person's.
-    const result = await input.runtime.approvalService.answer({ decision: {
-      token,
-      approved,
-      scope: answer.action === 'deny_session' || answer.action === 'allow_session' ? 'session' : answer.action === 'always_deny' || answer.action === 'allow_always' ? 'always' : answer.action ? 'once' : answer.scope ?? 'once',
-    }, source: SOURCES.forms })
-    if (result.ok) tokens.push(token)
-    else logger.warn('Elicited approval was rejected', { reason: result.reason })
-  }
-  return tokens
 }
 
 function registerSkills(server: McpServer, runtime: BuckleRuntime): void {

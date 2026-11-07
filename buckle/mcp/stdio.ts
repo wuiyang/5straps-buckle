@@ -10,7 +10,7 @@ import { WorkspaceError, WorkspaceRegistryError, type ManagedWorkspace, type Wor
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { workspaceWait } from './holds.js'
-import { createMcpServer, type ToolCallScope } from './server.js'
+import { createMcpServer, openForms, type ToolCallScope } from './server.js'
 import { createStdioWire } from './stdio-wire.js'
 
 /** The workspace `buckle mcp` was asked for: `--workspace <name>` (its name, or its id), or `--dir <path>`, relative to where it starts. */
@@ -51,7 +51,7 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
  */
 export function createStdioServer(input: { runtime: BuckleRuntime; config: Pick<BuckleConfig, 'serverName' | 'serverId' | 'approvalTimeoutMs'>; callScope: ToolCallScope; beforeCall: () => Promise<void> }) {
   const { runtime, config } = input
-  return createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, trustedApprovalResponses: true, callScope: input.callScope, isCancel: isExplicitCancel, beforeCall: input.beforeCall, approvalWait: () => workspaceWait(config.approvalTimeoutMs) })
+  return createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, forms: openForms(runtime, config.serverId), callScope: input.callScope, isCancel: isExplicitCancel, beforeCall: input.beforeCall, approvalWait: () => workspaceWait(config.approvalTimeoutMs) })
 }
 
 /**

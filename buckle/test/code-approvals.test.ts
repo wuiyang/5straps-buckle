@@ -19,7 +19,7 @@ import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, JOURNAL_TTL_M
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { runCli } from './support/cli.js'
-import { createMcpServer } from '../mcp/server.js'
+import { createMcpServer, openForms } from '../mcp/server.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
 import { workspaceIdOf } from './support/workspaces.js'
@@ -167,7 +167,7 @@ describe('a call inside a script that needs a person', () => {
 
   it('shows the nested ask whole in an MCP host\'s form, and runs once the host retries with the answer', async () => {
     const { workspace, runtime } = await node()
-    const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', trustedApprovalResponses: true, followToolChanges: false })
+    const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', forms: openForms(runtime, 'node-7'), followToolChanges: false })
     const call = (responses?: Record<string, unknown>) => {
       const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools
       const envelope = { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }

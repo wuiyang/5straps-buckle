@@ -7,7 +7,7 @@ import type { InvokeRequest, InvokeResponse } from '@5straps/protocol'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli } from './support/cli.js'
-import { createMcpServer } from '../mcp/server.js'
+import { createMcpServer, openForms } from '../mcp/server.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -140,7 +140,7 @@ describe('a once decided through MCP elicitation', () => {
 
   it('S2: answers the ask it names, and a retry carrying that answer with other arguments still asks', async () => {
     const setup = await node()
-    const server = createMcpServer({ runtime: setup.runtime, serverName: 'buckle-test', version: '0.0.0', trustedApprovalResponses: true, followToolChanges: false })
+    const server = createMcpServer({ runtime: setup.runtime, serverName: 'buckle-test', version: '0.0.0', forms: openForms(setup.runtime), followToolChanges: false })
     const token = await asked(setup, approved('A-1'))
 
     // The answer is recorded for the ask it names, and the other arguments it rides with ask again.

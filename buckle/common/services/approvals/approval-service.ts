@@ -7,7 +7,7 @@ import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
-import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
 import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
@@ -18,6 +18,7 @@ import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import { answerOf, backendReceipt, decisionOf, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
+import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
@@ -144,6 +145,8 @@ export interface ApprovalService extends CoreApprovalApi {
   decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
+  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
+  openFormsBackend(backend: ApprovalBackend): void
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
@@ -215,18 +218,6 @@ interface OpenAsk {
 
 type Ending = 'settled' | 'elapsed' | 'prompt_ended' | 'aborted' | 'closed' | 'superseded'
 
-interface AskContext {
-  correlationId: string
-  requestId: string
-  actor?: string
-  sessionId: string
-  /** The call's key as a backend sees it: an HMAC of the join key, which names no session, actor, or requestId. */
-  idempotencyKey: string
-  hold: ApprovalHold
-  /** The whole call the asks came from, shown with each question (owner decision D17). */
-  call?: AskedCall
-}
-
 /**
  * The single answerer (ruling 4 of 2026-09-28; nitro/coordination.md, Completion and queue).
  *
@@ -256,12 +247,31 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const routed = new Map<string, FullAsk>()
   let opening: Promise<unknown> | undefined
   const callKeys = randomBytes(32)
+  const callKeyOf = (key: string) => createHmac('sha256', callKeys).update(JSON.stringify([options.workspaceId, key])).digest('base64url')
+  const workspace: FullAsk['workspace'] = { id: options.workspaceId, node: options.serverId, get name() { return options.workspaceName } }
+  const log: ApprovalHost['log'] = (level, message, fields) => { logger[level](message, fields) }
   const host: ApprovalHost = {
     source: SOURCES.terminal,
     decide: input => decideRouted(input),
+    pending: () => {
+      const state = readQueue([...routed.keys()])
+      return state ? [...routed.values()].filter(asked => state.pending.has(asked.token)) : []
+    },
     ask: token => (readQueue([token])?.pending.has(token) ? routed.get(token) : undefined),
-    log: (level, message, fields) => { logger[level](message, fields) },
+    log,
   }
+  // Today's routes hand a stdio host's forms every waiting ask.
+  const formsHost: ApprovalHost = {
+    source: SOURCES.forms,
+    decide: input => decideAs(SOURCES.forms, input.decision),
+    pending: () => options.registry.waiting().map(asked => ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })),
+    ask: (token) => {
+      const asked = options.registry.waitingAsk(token)
+      return asked === undefined ? undefined : ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })
+    },
+    log,
+  }
+  const formsBackends = new Set<ApprovalBackend>()
   // What expired, or a call file left over, while no process of this node ran is dropped now (review L1 of the slice 5 re-review).
   track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
 
@@ -313,8 +323,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (holdMs === 0 && !keepAsking) return unheld(zeroHold)
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
-      const context: AskContext = { correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId, idempotencyKey: createHmac('sha256', callKeys).update(JSON.stringify([options.workspaceId, key])).digest('base64url'), hold, ...(input.call === undefined ? {} : { call: input.call }) }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, { ...context, group: ask.group })), resend: issued.joined }))
+      const setting: AskSetting = { workspace, group: ask.group, correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, actor: actor ?? null, sessionId: input.sessionId, idempotencyKey: callKeyOf(key), hold, ...(input.call === undefined ? {} : { call: input.call }) }
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, setting)), resend: issued.joined }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
@@ -388,6 +398,11 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     withdraw: tokens => withdraw(tokens),
 
+    openFormsBackend(backend) {
+      formsBackends.add(backend)
+      track(backend.open(formsHost).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
+    },
+
     async withdrawCall(selector) {
       // The registry keeps a call's requestId hashed, as the invoker joins it.
       const hashed = 'token' in selector ? { token: selector.token } : { requestId: requestIdKey(selector.requestId), sessionId: selector.sessionId, ...(selector.actor === undefined ? {} : { actor: selector.actor }) }
@@ -413,6 +428,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       sweeps.clear()
       await Promise.allSettled([...waiting])
       if (opening) await options.terminal.close()
+      await Promise.allSettled([...formsBackends].map(backend => backend.close()))
       await notices.settle()
     },
   }
@@ -560,12 +576,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   async function decideRouted(input: DecisionInput): Promise<DecisionReceipt> {
     const { decision: body } = input
     const { source } = host
+    if (routed.has(body.token)) return decideAs(source, body)
     const decision = decisionOf(body)
-    if (routed.has(body.token)) return backendReceipt(receiptOf({ decision, source, result: await service.answer({ decision, source, ...(body.widen === undefined ? {} : { widen: body.widen }) }) }))
     const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
     const audited: AuditedDecision = { token: body.token, approved: decision.approved, scope: body.scope, source }
     if (await auditReceived(audited)) await auditOutcome({ decision: audited, result })
     return backendReceipt(receiptOf({ decision, source, result }))
+  }
+
+  /** A backend's plain decision, under the source core holds for it. */
+  async function decideAs(source: ApprovalSource, body: DecisionBody): Promise<DecisionReceipt> {
+    const decision = decisionOf(body)
+    return backendReceipt(receiptOf({ decision, source, result: await service.answer({ decision, source, ...(body.widen === undefined ? {} : { widen: body.widen }) }) }))
   }
 
   /** Whether the decision may go on: a received entry that cannot be written blocks it only where the node says so. */
@@ -587,22 +609,6 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       else await options.decisionAudit.refused({ ...decision, code: result.code, reason: result.reason })
     } catch (error) {
       logger.warn('Could not audit how an approval decision ended', { source: decision.source.id, error: withoutCause(error) })
-    }
-  }
-
-  /** One ask whole, as the terminal shows it. The workspace's name is read as each question is shown, so a rename shows. */
-  function fullAskOf(approval: ApprovalRequest, context: AskContext & { group: string }): FullAsk {
-    const { call } = context
-    return {
-      egress: 'full', contractVersion: 1, token: approval.token, group: context.group, idempotencyKey: context.idempotencyKey,
-      correlation: { correlationId: context.correlationId, requestId: context.requestId },
-      workspace: { id: options.workspaceId, node: options.serverId, get name() { return options.workspaceName } },
-      requester: { actor: context.actor ?? null, sessionId: context.sessionId },
-      tool: approval.tool,
-      policy: { rule: approval.rule, subject: approval.subject, reason: approval.reason, offeredScopes: approval.offeredScopes, ...(approval.widerSubject === undefined ? {} : { widerSubject: approval.widerSubject }) },
-      risk: { ...(approval.severity === undefined ? {} : { severity: approval.severity }), notes: call?.judge ?? [] },
-      deadline: { expiresAt: approval.expiresAt, hold: context.hold },
-      ...(call === undefined ? {} : { action: { arguments: call.arguments, cwd: call.cwd, description: call.description, ...(call.effects === undefined ? {} : { effects: call.effects }) } }),
     }
   }
 
@@ -726,11 +732,6 @@ function settledDecision(input: { decision: ApprovalDecision; challenge?: string
 /** Whether the caller's abort is an explicit cancel; without a way to tell, it is a dropped transport. */
 function cancels(signal: AbortSignal | undefined, isCancel: ((reason: unknown) => boolean) | undefined): boolean {
   return signal?.aborted === true && isCancel?.(signal.reason) === true
-}
-
-/** The in-process twin of the registry's join: the same requestId, session and actor. */
-function joinKey(input: { sessionId: string; requestId: string; actor?: string }): string {
-  return JSON.stringify([input.sessionId, input.actor ?? null, input.requestId])
 }
 
 function groupOf(tokens: readonly string[]): string {

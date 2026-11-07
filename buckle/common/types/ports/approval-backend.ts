@@ -144,6 +144,8 @@ export interface ApprovalHost {
   readonly source: ApprovalSource
   /** The one way a decision enters; the decision guard checks it before anything applies. */
   decide(input: DecisionInput): Promise<DecisionReceipt>
+  /** The asks still waiting that were routed to this source. */
+  pending(): Ask[]
   /** The ask while it waits, if it was routed to this source; undefined otherwise. */
   ask(token: string): Ask | undefined
   log(level: 'debug' | 'info' | 'warn', message: string, fields?: Record<string, JsonValue>): void

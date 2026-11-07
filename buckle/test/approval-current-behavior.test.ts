@@ -15,7 +15,7 @@ import { approvalsPath, grantsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createMcpServer } from '../mcp/server.js'
+import { createMcpServer, openForms } from '../mcp/server.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -86,7 +86,7 @@ const accepted = (token: string, content: { approve: boolean; scope: 'once' | 's
 /** A node behind the MCP server a face builds: stdio trusts the answers its host's forms carry, HTTP does not. */
 async function mcpNode(input: { trusted: boolean }) {
   const context = await node()
-  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { trustedApprovalResponses: true } : {}) })
+  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime) } : {}) })
   return { ...context, tool: (name: string) => mcpTool(server, name), waiting: () => context.runtime.approvalService.pending().map(request => request.token) }
 }
 
