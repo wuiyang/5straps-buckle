@@ -95,6 +95,17 @@ describe('a request the enrolled key signed (B23)', () => {
     expect(buckle.runtime.approvals.pending()).toEqual([])
   })
 
+  it('audits a signed decision its device proof does not carry as a proof refusal, not as a refused envelope', async () => {
+    const buckle = await node()
+    const path = '/workspaces/workspace/setup/approvals'
+    const body = 'not a decision'
+    const refused = await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'POST', path, body }), { method: 'POST', path, body })
+    expect(refused.status).toBe(401)
+    const tools = buckle.runtime.actions.read(200).map(entry => entry.tool)
+    expect(tools).toContain('setup_approval_proof_refused')
+    expect(tools).not.toContain('setup_approval_envelope_refused')
+  })
+
   it('refuses every mismatch with a bare 401 and audits its reason for the owner', async () => {
     const buckle = await node()
     const now = Date.now()
