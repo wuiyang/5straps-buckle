@@ -67,7 +67,7 @@ describe('the credential-file rule on a secret file', () => {
     expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: NO_GRANTS })).toMatchObject({ kind: 'ask', asks: [{ subject: 'secret-file:/w/.env.local' }] })
   })
 
-  // APPROVAL-05: on, the switch answers a secret file's ask too, within the root it is bound to.
+  // On, the switch answers a secret file's ask too, within the root it is bound to.
   it('is answered by the switch on for a file inside the workspace root, and still asked about outside it', () => {
     const engine = withDangerouslyAllow(createPermissionEngine([createSensitivePathRule()]), { mode: () => 'on', root: () => '/w' })
     expect(engine.evaluate({ tool: 'shell_exec', effects: [effect('/w/.env.local')], grants: NO_GRANTS })).toEqual({ kind: 'allow', allowedBy: ['dangerously_allow:on:sensitive_path:secret-file:/w/.env.local'] })

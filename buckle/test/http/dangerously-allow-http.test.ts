@@ -35,7 +35,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     await buckle.runtime.policy.setDangerouslyAllow('on')
     expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'on', boundTo, setByEarlierBuild: false })
     expect(await (await buckle.request(buckle.setup('policy'), { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { mode: 'on' } })
-    // At safe, as `buckle policy dangerously-allow safe` sets it (APPROVAL-05).
+    // At safe, as `buckle policy dangerously-allow safe` sets it.
     await buckle.runtime.policy.setDangerouslyAllow('safe')
     expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'safe', boundTo, setByEarlierBuild: false })
     await buckle.runtime.policy.setDangerouslyAllow('on')

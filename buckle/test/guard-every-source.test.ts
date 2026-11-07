@@ -20,7 +20,7 @@ import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-sou
 
 // The decision guard's checks for every source, each a table test against the guard alone. Today's sources pass each
 // one as before. The file floor's always stays as today, behind a floor policy switch that turns the safer default on;
-// the dangerously-allow switch's reach over floor asks is its mode's (APPROVAL-05).
+// the dangerously-allow switch's reach over floor asks is its mode's.
 
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
 const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: 'delete:/outside', reason: 'Deleting asks a person', tool: 'fs_delete', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z', widerSubject: 'delete-below:/outside' }

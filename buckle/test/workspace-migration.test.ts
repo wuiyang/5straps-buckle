@@ -172,7 +172,7 @@ describe('moving a 0.1 node onto the workspace model', () => {
 
   // A registered workspace's switch took effect only while the node's own was on; with that gate gone (Q14) a switch
   // the gate held off would turn on, so it moves only where the node's was on. A 0.1 switch is an earlier build's, read
-  // as off (APPROVAL-05, BUILD-02): what moves is the note that an earlier build set it.
+  // as off: what moves is the note that an earlier build set it.
   it.each([[true, true], [false, false]])('keeps a registered workspace\'s dangerously-allow switch only where the node\'s was on (node on: %s)', async (nodeOn, kept) => {
     const input = scene()
     version1(input)

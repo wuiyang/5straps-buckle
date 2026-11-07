@@ -1,6 +1,6 @@
 /**
- * The modes the switch is on at (APPROVAL-05, owner ruling of 2026-11-08): `on` answers every ask it covers, and `safe`
- * every one but floor asks and a secret reference's file. Off is no entry at all.
+ * The modes the switch is on at: `on` answers every ask it covers, and `safe` every one but floor asks, an unknown
+ * interpreter's code, and a secret reference's file (DANGEROUSLY_ALLOW_REACH). Off is no entry at all.
  */
 export const DANGEROUSLY_ALLOW_ON_MODES = ['on', 'safe'] as const
 
@@ -14,7 +14,7 @@ export function isDangerouslyAllowOnMode(value: unknown): value is DangerouslyAl
 
 /**
  * The switch as its file holds it: its mode, and whether a file an earlier build wrote held it on, which this build
- * reads as off (BUILD-02, a clean break).
+ * reads as off.
  */
 export interface DangerouslyAllowReading {
   mode: DangerouslyAllowMode
