@@ -3,6 +3,7 @@ import { NO_DECISION_AUDIT } from '../../common/adapters/approval/no-decision-au
 import { createTerminalBackend } from '../../common/adapters/approval/terminal-backend.js'
 import { createApprovalService, type ApprovalService, type ApprovalServiceOptions } from '../../common/services/approvals/approval-service.js'
 import type { Interaction, InteractionSource } from '../../common/runtime/interaction.js'
+import type { DecisionAudit } from '../../common/types/ports/decision-audit.js'
 import { NO_INTERACTION } from '../../common/runtime/interaction.js'
 
 /** A node entry point with nobody at a terminal: a gated call is held for the grace period. */
@@ -14,7 +15,7 @@ export function fixedInteraction(interaction: Interaction = headlessGrace): Inte
 }
 
 /** The approval service as a node composes it: its terminal asks over the interaction's requester. */
-export function approvalServiceWithTerminal(input: Omit<ApprovalServiceOptions, 'terminal' | 'nonces' | 'hold' | 'decisionAudit'> & { interaction: InteractionSource }): ApprovalService {
-  const { interaction, ...options } = input
-  return createApprovalService({ ...options, hold: async () => (await interaction())?.hold, nonces: createMemoryNonceClaims(), decisionAudit: NO_DECISION_AUDIT, terminal: createTerminalBackend({ requester: async () => (await interaction())?.requestCli }) })
+export function approvalServiceWithTerminal(input: Omit<ApprovalServiceOptions, 'terminal' | 'nonces' | 'hold' | 'decisionAudit'> & { interaction: InteractionSource; decisionAudit?: DecisionAudit }): ApprovalService {
+  const { interaction, decisionAudit, ...options } = input
+  return createApprovalService({ ...options, hold: async () => (await interaction())?.hold, nonces: createMemoryNonceClaims(), decisionAudit: decisionAudit ?? NO_DECISION_AUDIT, terminal: createTerminalBackend({ requester: async () => (await interaction())?.requestCli }) })
 }

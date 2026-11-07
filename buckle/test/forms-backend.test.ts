@@ -4,17 +4,18 @@ import { join } from 'node:path'
 import type { ApprovalRequest } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
-import { PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
+import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
-import type { DecisionReceipt } from '../common/types/ports/approval-backend.js'
-import { SOURCES } from '../common/types/ports/approval-source.js'
+import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
+import type { ApprovalSource } from '../common/types/ports/approval-source.js'
+import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
 
 // The forms backend: a stdio MCP host's forms, drawn in the call's own answer and decided through the host when the
-// retried call carries them back. Owner question 3 keeps its answers a person's, as ruling 3 of 2026-09-25 counts them.
+// retried call carries them back. Its answers count as a person's, as ruling 3 of 2026-09-25 counts them.
 
 type Form = { message: string; requestedSchema: { properties: Record<string, { enum?: string[] }> } }
 
@@ -100,6 +101,8 @@ const REFUSED: DecisionReceipt = { status: 'refused', error: { code: 'scope_not_
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 const WRITE: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'] }
+const DELETE: Ask = { kind: 'ask', ...FILE_FLOOR_MARKS, rule: 'write_scope', subject: 'delete:/srv/data', reason: 'Deleting asks a person', offeredScopes: ['once', 'session', 'always'], widerSubject: 'delete-below:/srv/data' }
+const CALL = { arguments: { path: '/outside/a.md' }, cwd: '/w', description: null, effects: [], complete: true as const }
 
 const roots: string[] = []
 const services: ApprovalService[] = []
@@ -113,25 +116,39 @@ async function opened() {
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction() })
+  const heard: ApprovalSource[] = []
+  const decisionAudit: DecisionAudit = { received: async (decision) => { heard.push(decision.source) }, applied: async () => {}, refused: async () => {} }
+  const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
   const backend = forms()
-  service.openFormsBackend(backend)
-  return { registry, grants, service, backend }
+  // The host core opens the forms on, caught as the forms backend receives it.
+  let host: ApprovalHost | undefined
+  service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } })
+  return { registry, grants, service, backend, heard, host: () => host! }
 }
 
 describe('the forms host core opens', () => {
-  it('decides as the forms source, which owner question 3 keeps a person\'s: a session answer is remembered', async () => {
-    const { registry, grants, backend } = await opened()
-    const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE], call: { arguments: { path: '/outside/a.md' }, cwd: '/w', description: null, effects: [], complete: true } })).requests
+  it('decides as the forms source, whose answers count as a person\'s: a session answer is remembered', async () => {
+    const { registry, grants, backend, heard, host } = await opened()
+    const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE], call: CALL })).requests
     expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'session' }) })).toEqual([asked!.token])
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
-    expect(SOURCES.forms).toEqual({ id: 'forms', kind: 'forms' })
+    expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
+    expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
+  })
+
+  it('takes no wider subject through the forms host, as buckle approve would grant it', async () => {
+    const { registry, grants, service, host } = await opened()
+    const [asked] = (await registry.ask({ tool: 'fs_delete', sessionId: 's-1', requestId: 'r-1', asks: [DELETE], call: CALL })).requests
+    const decision = { token: asked!.token, outcome: 'approve' as const, scope: 'session' as const, widen: 'below' as const }
+    expect(await host().decide({ kind: 'plain', decision })).toEqual({ status: 'refused', error: { code: 'scope_forbidden', message: 'Only the node\'s terminal and buckle approve grant a folder and its subfolders', retryable: false } })
+    expect(grants.list()).toEqual([])
+    expect(await service.decide({ source: 'cli', decision })).toMatchObject({ status: 'applied', granted: 'delete-below:/srv/data' })
   })
 
   it('hands the forms each waiting ask whole, grouped by its call, and none whose whole call was not kept', async () => {
     const { registry, backend } = await opened()
-    const recorded = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, { ...WRITE, subject: '/other' }], call: { arguments: { path: '/outside/a.md' }, cwd: '/w', description: 'Write a.md', effects: ['write /outside/a.md'], complete: true } })).requests
+    const recorded = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, { ...WRITE, subject: '/other' }], call: { ...CALL, description: 'Write a.md', effects: ['write /outside/a.md'] } })).requests
     const drawn = backend.forms(recorded)
     const [first, second] = recorded.map(item => formOf(drawn, item.token))
     expect(first!.message).toContain('"path": "/outside/a.md"')
