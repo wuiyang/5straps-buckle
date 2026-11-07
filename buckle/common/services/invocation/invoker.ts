@@ -224,7 +224,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // The caller leaving or the runtime shutting down: either stops a running tool.
         const stop = anySignal(signal, options.shutdown)
         // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
-        const grantUses = grantUseRecorder({ gate: options.approvals, holder: holderOf(sessionId) })
+        // Whose grants every check of this call reads, taken once: a tool's mid-call check may run outside the call's context.
+        const holder = holderOf(sessionId)
+        const grantUses = grantUseRecorder({ gate: options.approvals, holder })
         const auditUses = useAuditor({ options, request, sessionId, grantUses })
         const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
           // A script cannot send a new requestId: it is told to change the script (review of the code-mode slice, finding invoker-audit 134).
@@ -261,9 +263,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // before anything is judged; each file the references name is judged where it lands, and its first use asks a
             // person (docs/user/how-to/secrets.md). A code_run script is not read: each call it makes comes back through here.
             const secretPlan = secretPlanOf({ tool: request.tool, pack: tool.capability.pack, args: request.args, enabled: options.secrets?.enabled ?? true })
-            effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, sessionId, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
+            effects = [...await resolveEffects({ effects: prepared.effects, paths: options.paths, history: options.history, readable: path => readsFreely({ options, tool: request.tool, holder, target: path }) }), ...secretPlan ? secretFileEffects(secretPlan, options.paths) : []]
             // A write that empties or halves a file the session never read, or rewrites many at once, asks at the floor (the fs-verbs brief).
-            effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, sessionId, target }) }))
+            effects.push(...destructiveWrites({ written: prepared.written, sessionId, reads: options.reads, paths: options.paths, protectedRoots: options.protectedRoots ?? [], readable: target => readsFreely({ options, tool: request.tool, holder, target }) }))
             // How the command reader reads each reference in a shell call, refused where the rules could not read it as
             // written; the values are read, checked, and put in place only as the tool starts (runWithSecrets).
             const checked = secretPlan ? checkSecrets({ tool: request.tool, args: request.args, plan: secretPlan, effects }) : null
@@ -275,7 +277,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
 
             // A tool that takes the write lock itself runs its program in a copy of the workspace's folder (the isolated shell).
             const fromCopy = prepared.managesHistory === true
-            gate = await clearPermissions({ options, request, sessionId, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
+            gate = await clearPermissions({ options, request, sessionId, holder, effects, fromCopy, signal, isCancel, approvalWait, holdUntil, key, held, judgment, via, ...(deleteRun ? { deleteRun } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}), ...(prepared.facts ? { facts: prepared.facts } : {}) })
             // A script's call whose ask was recorded only as its script ended, behind a slow approvals lock, is still an
             // ask: it answers approval_required, which the pack hands back, never the script's end (re-check of round 2,
             // finding deadline-announce invoker.ts:175).
@@ -313,7 +315,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
               if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
               const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets } : undefined
               try {
-                const output = await executeWithTimeout({ options, request, sessionId, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
+                const output = await executeWithTimeout({ options, request, sessionId, holder, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
                 markStarted()
                 return output
               } catch (error) {
@@ -351,7 +353,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
             // The code a pass rated changed before the program started: nothing ran, so the claim is settled unstarted (a
             // re-send asks again) and the asks the passes lifted go to a person with the reason (fix brief 9, B31).
             if (error instanceof CodeChangedError && !ran && !options.shutdown?.aborted) {
-              const after = await askAfterChange({ options, request, sessionId, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
+              const after = await askAfterChange({ options, request, sessionId, holder, effects, judgment, subjects: error.subjects, key, via, ...(signal ? { signal } : {}), ...(isCancel ? { isCancel } : {}), ...(onAsked ? { onAsked } : {}), ...(resends ? { resends } : {}) })
               const lifted = new Set(error.subjects.map(subject => `${JUDGE}:destructive_command:${subject}`))
               gate = { ...gate, asked: after.asked, approvedBy: gate.approvedBy.filter(item => !lifted.has(item)) }
               return after.response
@@ -685,6 +687,7 @@ async function clearPermissions(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
+  holder: GrantHolder
   /** The call's program runs in a copy of the workspace's folder, which the decision AI is told (judge-gate.ts CallView). */
   fromCopy: boolean
   effects: ResolvedEffect[]
@@ -703,7 +706,7 @@ async function clearPermissions(input: {
   onAsked?: () => void
   resends?: boolean
 }): Promise<GateOutcome> {
-  const { options, request, sessionId, effects, held } = input
+  const { options, request, sessionId, holder, effects, held } = input
   const run = input.deleteRun ? { run: input.deleteRun } : {}
   const approvedBy: string[] = []
   let consumed: GrantSubject[] = []
@@ -713,7 +716,6 @@ async function clearPermissions(input: {
   let passed: ReadonlySet<string> = new Set()
   // The allowed commands the quick stage rated danger at 0.8 or above (approval.quickJudge all), each an ask at every check.
   let flagged: Array<Extract<PermissionOutcome, { kind: 'ask' }>['asks'][number]> = []
-  const holder = holderOf(sessionId)
   const evaluate = async (tokens: string[]): Promise<PermissionOutcome> => {
     const clearance = await options.approvals.clear({
       tokens, ...holder, tool: request.tool, fingerprint: input.key.fingerprint,
@@ -873,6 +875,7 @@ async function askAfterChange(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
+  holder: GrantHolder
   effects: ResolvedEffect[]
   judgment: Judgment
   subjects: readonly string[]
@@ -891,7 +894,7 @@ async function askAfterChange(input: {
     return { ...rest, changed: true as const }
   })
   for (const subject of changed) judgment.stale.add(subject)
-  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: options.approvals.grants({ ...holderOf(sessionId), consumed: [] }) })
+  const outcome = options.permissions.evaluate({ tool: request.tool, effects, grants: options.approvals.grants({ ...input.holder, consumed: [] }) })
   const asks = outcome.kind === 'ask' ? outcome.asks.filter(ask => ask.rule === 'destructive_command' && changed.has(ask.subject)) : []
   if (asks.length === 0) return { response: failed(request, CODE_CHANGED), asked: [] }
   const cwd = options.paths.displayRoot
@@ -945,8 +948,8 @@ function holderOf(sessionId: string): GrantHolder {
 }
 
 /** Whether the session may read a real path without asking a person: the rules and the standing grants it holds allow it. */
-function readsFreely(input: { options: InvokerOptions; tool: string; sessionId: string; target: string }): boolean {
-  const grants = input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: [] })
+function readsFreely(input: { options: InvokerOptions; tool: string; holder: GrantHolder; target: string }): boolean {
+  const grants = input.options.approvals.grants({ ...input.holder, consumed: [] })
   return input.options.permissions.evaluate({ tool: input.tool, effects: [{ kind: 'read_path', path: input.target, directory: parentDirectory(input.target) }], grants }).kind === 'allow'
 }
 
@@ -982,6 +985,7 @@ async function executeWithTimeout(input: {
   options: InvokerOptions
   request: InvokeRequest
   sessionId: string
+  holder: GrantHolder
   consumed: GrantSubject[]
   /** What the permission check judged; a reader or writer may reach only the targets among them. */
   effects: ResolvedEffect[]
@@ -1038,7 +1042,7 @@ async function executeWithTimeout(input: {
     if (effect === null) return false
     const outcome = input.options.permissions.evaluate({
       tool: input.request.tool, effects: [effect],
-      grants: input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: input.consumed }),
+      grants: input.options.approvals.grants({ ...input.holder, consumed: input.consumed }),
     })
     if (outcome.kind !== 'allow') return false
     await input.auditUses(outcome.allowedBy)
@@ -1156,11 +1160,11 @@ function nestedContext(input: { options: InvokerOptions; request: InvokeRequest;
  * its reserved-range check for it. A switch use is audited before the hop, and a use that cannot be
  * recorded refuses it (review M3 of B20-B22).
  */
-async function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; consumed: GrantSubject[]; auditUses: UseAuditor; url: URL }): Promise<NetworkVerdict> {
+async function judgeNetwork(input: { options: InvokerOptions; request: InvokeRequest; holder: GrantHolder; consumed: GrantSubject[]; auditUses: UseAuditor; url: URL }): Promise<NetworkVerdict> {
   const outcome = input.options.permissions.evaluate({
     tool: input.request.tool,
     effects: [{ kind: 'network', url: input.url }],
-    grants: input.options.approvals.grants({ ...holderOf(input.sessionId), consumed: input.consumed }),
+    grants: input.options.approvals.grants({ ...input.holder, consumed: input.consumed }),
   })
   if (outcome.kind === 'deny') return { kind: 'refused', reason: outcome.denial.reason }
   if (outcome.kind === 'ask') return { kind: 'refused', reason: outcome.asks.map(item => item.reason).join('; ') }

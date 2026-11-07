@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createOperationScope, runInScope } from '@5straps/runtime'
+import { createOperationScope, runInScope, runInScopeContext } from '@5straps/runtime'
 import type { InvokeResponse } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -15,6 +15,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -36,7 +37,7 @@ async function node() {
   const write = (actor: string, path: string, tokens: string[] = []): Promise<InvokeResponse> =>
     runInScope(createOperationScope({ owner, context: { actor } }), () => runtime.invoke({ request: { requestId: `call-${++sequence}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: tokens }, sessionId: 'shared' }))
   const answer = (token: string, scope: 'once' | 'session') => runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })
-  return { runtime, write, answer }
+  return { root, runtime, write, answer }
 }
 
 const tokensOf = (response: InvokeResponse): string[] => {
@@ -73,5 +74,26 @@ describe('the approval gate', () => {
 
     expect(await write('agent:one', 'one/a.md')).toMatchObject({ outcome: 'ok' })
     expect(await write('agent:two', 'one/b.md')).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('serves the asking actor\'s session grants to a check a tool makes outside the call\'s context', async () => {
+    const { root, runtime } = await node()
+    const outside = join(root, 'outside')
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'x.txt'), 'x')
+    writeFileSync(join(runtime.paths().root, 'one', 'a.md'), 'a')
+    await runtime.grants.grant({ sessionId: 'shared', actor: 'agent:one', rule: 'read_scope', subject: outside, scope: 'session' })
+    // The tool asks mid-call from a callback that runs in another context, as an event emitter or a native callback may.
+    const elsewhere = createOperationScope({ owner, context: {} })
+    const tools = runtime.registry()
+    const get = tools.get.bind(tools)
+    vi.spyOn(tools, 'get').mockImplementation((name) => {
+      const tool = get(name)
+      if (name !== 'fs_read') return tool
+      return { ...tool, prepare: args => ({ ...tool.prepare(args), execute: async context => ({ reached: await runInScopeContext(elsewhere, () => context.authorizeRead!(join(outside, 'x.txt'))) }) }) }
+    })
+
+    const read = await runInScope(createOperationScope({ owner, context: { actor: 'agent:one' } }), () => runtime.invoke({ request: { requestId: 'read-1', tool: 'fs_read', args: { path: 'one/a.md' }, approvalTokens: [] }, sessionId: 'shared' }))
+    expect(read).toMatchObject({ outcome: 'ok', output: { reached: true } })
   })
 })
