@@ -12,7 +12,7 @@ import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { mintDeviceProof } from '../common/services/approvals/device-proof.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ApprovalBackend } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
@@ -23,7 +23,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // and a failed entry never blocks an answer; a node may later turn both on.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })

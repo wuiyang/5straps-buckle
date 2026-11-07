@@ -11,7 +11,7 @@ import { judgeCacheKey } from '../common/services/judge/judge-cache.js'
 import { clippedReason, UNREAD_REASON_LIMIT } from '../common/services/judge/judge-gate.js'
 import { SHELL_TEXT_REFUSAL } from '../common/services/judge/shell-statement.js'
 import { CODE_REFUSALS } from '../common/services/judge/code-reader.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -21,7 +21,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // as the agent gave it with a secret's hidden, and is part of the cache key, so a verdict never covers a call it did not see.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -53,14 +53,14 @@ function quickSafe(): QuickJudge {
   return { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'safe' as const, confidence: 0.95, probabilities: { safe: 0.95, warning: 0.03, danger: 0.02 }, model: 'jev-1.13.0', latencyMs: 9 })) }
 }
 
-async function runtimeOf(config: BuckleConfig, judges: { judge?: Judge; quickJudge?: QuickJudge }): Promise<BuckleRuntime> {
+async function runtimeOf(config: BuckleConfig, judges: { judge?: Judge; quickJudge?: QuickJudge }): Promise<CoreRuntime> {
   const runtime = await createRuntime({ config, ...judges })
   runtimes.push(runtime)
   return runtime
 }
 
 /** One shell_exec call (`node build.js` unless named) with the arguments given, through the real permission pipeline; nothing runs. */
-async function call(runtime: BuckleRuntime, args: JsonObject = {}, command = ['node', 'build.js']) {
+async function call(runtime: CoreRuntime, args: JsonObject = {}, command = ['node', 'build.js']) {
   const execute = vi.fn(async () => 'executed')
   const [program = '', ...words] = command
   const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: program, args: words }], execute })
@@ -573,7 +573,7 @@ describe('a long variable name in the reason (fix brief 3, F4)', () => {
 
 describe('a call that sets more variables than the stages are sent (fix brief 3, H3)', () => {
   /** One script_run bash call, through the real tool and the real permission pipeline; nothing runs. */
-  async function script(runtime: BuckleRuntime, text: string) {
+  async function script(runtime: CoreRuntime, text: string) {
     const requestId = `script-${Math.random()}`
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'script_run', args: { runtime: 'bash', script: text } }, sessionId: 'env', approvalWait: { mode: 'none' } })
     const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!

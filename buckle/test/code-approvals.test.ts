@@ -16,7 +16,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { logger } from '../common/runtime/log.js'
 import { CODE_CALL_LIMIT, CODE_GLOBAL_LIMIT, CODE_REPLAY_DIVERGED, createCodePack, MAX_GLOBAL_CALLS, MAX_NESTED_CALLS } from '../common/services/packs/code/index.js'
 import { CODE_REPLAY_TOO_LARGE, createJournalStore, JOURNAL_BYTES, JOURNAL_TTL_MS, scriptOfAsk, TEMPORARY_GRACE_MS, type Journal } from '../common/services/packs/code/journal.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { runCli } from './support/cli.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
@@ -49,29 +49,29 @@ async function node(environment: Record<string, string> = {}) {
   return { ...fixture, runtime: await open(fixture.config) }
 }
 
-function open(config: BuckleConfig): Promise<BuckleRuntime> {
+function open(config: BuckleConfig): Promise<CoreRuntime> {
   return createRuntime({ config, interaction: fixedInteraction() })
 }
 
 let sequence = 0
-function run(runtime: BuckleRuntime, script: string, stageId = 'stage-a'): Promise<InvokeResponse> {
+function run(runtime: CoreRuntime, script: string, stageId = 'stage-a'): Promise<InvokeResponse> {
   return runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script }, approvalTokens: [], context: { stageId } } })
 }
 
 /** code_run as HTTP sends it, with no wait hint and no cancel test, or as stdio does, with its cancel test. */
-function send(runtime: BuckleRuntime, script: string, input: { timeoutMs?: number; approvalWait?: ApprovalWait; isCancel?: (reason: unknown) => boolean; signal?: AbortSignal } = {}): Promise<InvokeResponse> {
+function send(runtime: CoreRuntime, script: string, input: { timeoutMs?: number; approvalWait?: ApprovalWait; isCancel?: (reason: unknown) => boolean; signal?: AbortSignal } = {}): Promise<InvokeResponse> {
   return runtime.invoke({
     sessionId: 'chat-1', ...(input.approvalWait ? { approvalWait: input.approvalWait } : {}), ...(input.isCancel ? { isCancel: input.isCancel } : {}), ...(input.signal ? { signal: input.signal } : {}),
     request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script, ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}) }, approvalTokens: [], context: { stageId: 'stage-a' } },
   })
 }
 
-function results(runtime: BuckleRuntime, tool: string) {
+function results(runtime: CoreRuntime, tool: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
 /** fs_read made slow for one path, for `wait` ms or until it settles, its tool ignoring its signal as a slow tool may; every run is counted by path. */
-function slowRead(runtime: BuckleRuntime, slowPath: string, wait: number | Promise<void>): string[] {
+function slowRead(runtime: CoreRuntime, slowPath: string, wait: number | Promise<void>): string[] {
   const runs: string[] = []
   const fsRead = runtime.registry().get('fs_read')
   const prepare = fsRead.prepare.bind(fsRead)
@@ -87,7 +87,7 @@ function slowRead(runtime: BuckleRuntime, slowPath: string, wait: number | Promi
 }
 
 /** Every run of a tool's own code, by its path argument: what actually ran, whatever the audit log says was answered. */
-function countRuns(runtime: BuckleRuntime, tool: string): Map<string, number> {
+function countRuns(runtime: CoreRuntime, tool: string): Map<string, number> {
   const runs = new Map<string, number>()
   const registered = runtime.registry().get(tool)
   const prepare = registered.prepare.bind(registered)
@@ -101,7 +101,7 @@ function countRuns(runtime: BuckleRuntime, tool: string): Map<string, number> {
   return runs
 }
 
-async function answer(runtime: BuckleRuntime, token: string, approved = true) {
+async function answer(runtime: CoreRuntime, token: string, approved = true) {
   expect((await runtime.approvalService.answer({ decision: { token, approved, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
 }
 
@@ -110,7 +110,7 @@ function journals(root: string): string[] {
   return existsSync(directory) ? readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(name => name.endsWith('.json')).map(name => join(directory, name)) : []
 }
 
-function attempts(runtime: BuckleRuntime, tool: string) {
+function attempts(runtime: CoreRuntime, tool: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'attempt' && entry.tool === tool)
 }
 
@@ -645,7 +645,7 @@ describe('the replay journal', () => {
     const { root, workspace, config } = setup()
     writeFileSync(join(workspace, 'slow.md'), 'slow')
     const runs: string[] = []
-    const slowRetryable = (runtime: BuckleRuntime, name: string) => {
+    const slowRetryable = (runtime: CoreRuntime, name: string) => {
       const fsRead = runtime.registry().get('fs_read')
       const prepare = fsRead.prepare.bind(fsRead)
       vi.spyOn(fsRead, 'prepare').mockImplementation((args) => ({ ...prepare(args), execute: async () => {
@@ -710,7 +710,7 @@ describe('the replay journal', () => {
   describe('across a tool policy change between the stop and the re-send', () => {
     const SCRIPT = 'const d = await describeTool("fs_find_names"); if (!d) await describeTool("fs_list"); await tools.fs_write({ path: "logs/deploy.md", content: "deployed" }); await tools.fs_write({ path: "one/out.md", content: "x" }); return "end"'
     const policy = (deny: string[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), tools: { deny }, filesystem: { rules: [{ path: 'logs', write: 'allow' }] } })
-    const writes = (runtime: BuckleRuntime) => attempts(runtime, 'fs_write').map(entry => entry.args)
+    const writes = (runtime: CoreRuntime) => attempts(runtime, 'fs_write').map(entry => entry.args)
 
     it('replays normally when a tool describeTool asked about is allowed since, and the write runs once', async () => {
       const { workspace, runtime } = await node()

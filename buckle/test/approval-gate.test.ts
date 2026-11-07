@@ -5,7 +5,7 @@ import { createOperationScope, runInScope, runInScopeContext } from '@5straps/ru
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -13,7 +13,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // A once and a session grant serve the actor whose call asked, never another actor's call in the same session.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }

@@ -9,7 +9,8 @@ import { configFromEnvironment, nodeConfigOf } from './workspace-config.js'
 import { initializeCommon, type BuckleCommon } from '../../common/runtime/initialize.js'
 import { logger } from '../../common/runtime/log.js'
 import type { BuckleServices } from '../../common/runtime/services.js'
-import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import type { CoreRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import { coreOf } from './workspaces.js'
 import { createHttpServer, setupServer } from '../../server/setup-server.js'
 import { layerRoutes, type ServedRoute } from './routes.js'
 import { idOf } from './workspaces.js'
@@ -19,7 +20,7 @@ export interface BuckleHttp {
   readonly config: BuckleConfig
   readonly common: BuckleCommon
   /** The node folder's workspace: the folder the environment names, as migration makes it of a node set up before the workspace model. */
-  readonly runtime: BuckleRuntime
+  readonly runtime: CoreRuntime
   /** The node's own log, where refusals before a workspace is known and registry changes are recorded. */
   readonly nodeActions: ActionLog
   /** A path of the node folder's workspace's setup face: `/workspaces/<id>/setup/<path>`, since the node level serves no workspace (D85, Q15). */
@@ -78,7 +79,7 @@ export async function createBuckleHttp(input: BuckleHttpInput): Promise<BuckleHt
   holders.set(entryPath, close)
   await common.start()
   const workspaces = await common.services.getWorkspaces()
-  const runtime = (await workspaces.resolve(config.workspaceId)).runtime
+  const runtime = coreOf((await workspaces.resolve(config.workspaceId)).runtime)
   return {
     config, common, runtime, nodeActions: workspaces.nodeActions, services: common.services, nitroApp: server.nitroApp, requestCli: server.requestCli,
     setup: path => `/workspaces/${runtime.workspaceId}/setup/${path}`,

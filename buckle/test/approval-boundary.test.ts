@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
+import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
 // The registry's `resolve` records a verdict; it is reached as `approvals` on the runtime or `registry` in the service.
@@ -19,7 +20,11 @@ const NAMES_THE_SERVICE = /\bapprovalService\b/
 const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
 // Opening a host's forms: nothing the agent's token reaches may answer an ask, so only the stdio face opens them.
 const OPENS_FORMS = /(?<!function )\bopenForms\(/
-const OPENS_A_FORMS_BACKEND = /\.openFormsBackend\(/
+const NAMES_THE_FORMS_OPENER = /\bopenApprovalForms\b/
+const NAMES_THE_SERVICE_FORMS_OPENER = /\bopenFormsBackend\b/
+const RUNTIME = 'common/services/workspaces/workspace-runtime.ts'
+// The runtime as core composes it, with the ledger and the service: a face that named it could widen its view back.
+const NAMES_THE_CORE_RUNTIME = /\bCoreRuntime\b/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
@@ -101,12 +106,24 @@ describe('the approval boundary', () => {
     expect(naming).toEqual([])
   })
 
+  it('types the runtime the faces hold without the ledger or the service, and its approval API without answer or the forms opener', () => {
+    expectTypeOf<BuckleRuntime>().not.toHaveProperty('approvals')
+    expectTypeOf<BuckleRuntime>().not.toHaveProperty('approvalService')
+    expectTypeOf<BuckleRuntime['approvalApi']>().not.toHaveProperty('answer')
+    expectTypeOf<BuckleRuntime['approvalApi']>().not.toHaveProperty('openFormsBackend')
+    const widening = sourceFiles(...FACES)
+      .filter(file => NAMES_THE_CORE_RUNTIME.test(readFileSync(file, 'utf8')))
+      .map(file => relative(PACKAGE_ROOT, file))
+    expect(widening).toEqual([])
+  })
+
   it('lets only the stdio face open a host\'s forms, through the one opener the MCP server defines', () => {
     const calling = (pattern: RegExp) => sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
       .filter(file => pattern.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
     expect(calling(OPENS_FORMS)).toEqual(['mcp/stdio.ts'])
-    expect(calling(OPENS_A_FORMS_BACKEND)).toEqual([SERVICE, 'mcp/server.ts'])
+    expect(calling(NAMES_THE_FORMS_OPENER)).toEqual([RUNTIME, 'mcp/server.ts'])
+    expect(calling(NAMES_THE_SERVICE_FORMS_OPENER)).toEqual([SERVICE, RUNTIME])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {

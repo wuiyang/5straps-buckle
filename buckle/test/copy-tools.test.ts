@@ -10,20 +10,20 @@ import { createPathView } from '../common/domain/path-view.js'
 import type { FileChannel, IncomingFile, OutgoingFile } from '../common/domain/tool.js'
 import { MAX_TRANSFER_BYTES } from '../common/services/packs/browser/file-transfer.js'
 import { refuseLanding } from '../common/services/packs/fs/transfer.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // `buckle cp` on the node (the copy-verb brief): fs_receive and fs_send are judged, approved, and audited as fs_write and
 // fs_read are, run with the bytes beside the call and never in its arguments, and offered to no agent, MCP client, or script.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; state: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; state: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-copy-tools-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -36,7 +36,7 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
 }
 
 /** Writes anywhere in the folder go ahead for the session the copies run in, as a person's session grant would let them. */
-async function grantWrites(runtime: BuckleRuntime, folder: string): Promise<void> {
+async function grantWrites(runtime: CoreRuntime, folder: string): Promise<void> {
   await runtime.grants.grant({ sessionId: 'copy', rule: 'write_scope', subject: folder, scope: 'session' })
 }
 
@@ -74,7 +74,7 @@ function collector(before?: () => void): { file: OutgoingFile; sent: () => { siz
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject, file?: FileChannel, requestId = `copy-${++sequence}`): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject, file?: FileChannel, requestId = `copy-${++sequence}`): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: [] }, sessionId: 'copy', ...(file ? { file } : {}) })
 }
 

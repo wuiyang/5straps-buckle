@@ -10,7 +10,7 @@ import { createApprovalRegistry, GRANT_OWED_NOTE } from '../common/services/appr
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -38,7 +38,7 @@ vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
 })
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   Object.assign(failing, { rename: undefined, skip: 0, count: 1 })
@@ -48,7 +48,7 @@ afterEach(async () => {
 
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 
-async function open(config?: BuckleConfig): Promise<{ config: BuckleConfig; runtime: BuckleRuntime }> {
+async function open(config?: BuckleConfig): Promise<{ config: BuckleConfig; runtime: CoreRuntime }> {
   const settings = config ?? setUp()
   const runtime = await createRuntime({ config: settings, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
@@ -64,7 +64,7 @@ function setUp(): BuckleConfig {
   return configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
 }
 
-const write = (runtime: BuckleRuntime, path: string): Promise<InvokeResponse> =>
+const write = (runtime: CoreRuntime, path: string): Promise<InvokeResponse> =>
   runtime.invoke({ request: { requestId: `write-${path}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: [] }, sessionId: 's' })
 
 const tokenOf = (response: InvokeResponse): string => {
@@ -233,7 +233,7 @@ describe('a lasting decision', () => {
 })
 
 describe('a lasting denial', () => {
-  const secretAsk = async (runtime: BuckleRuntime): Promise<string> => {
+  const secretAsk = async (runtime: CoreRuntime): Promise<string> => {
     const [secret] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'], ...PLAIN_MARKS }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
     return secret!.token
   }

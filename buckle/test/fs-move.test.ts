@@ -7,7 +7,7 @@ import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { moveEntry, settleMove, standingAt, type MoveIo } from '../common/services/packs/fs/move.js'
 import { moveInput } from '../common/services/packs/fs/schemas.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -24,14 +24,14 @@ vi.mock('../common/domain/effect.js', async (importOriginal) => {
 })
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   counting.limit = 10_000
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(): Promise<{ root: string; workspace: string; runtime: BuckleRuntime }> {
+async function node(): Promise<{ root: string; workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-fs-move-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -44,11 +44,11 @@ async function node(): Promise<{ root: string; workspace: string; runtime: Buckl
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: input.requestId ?? `move-${++sequence}`, tool: 'fs_move', args, approvalTokens: input.tokens ?? [] }, sessionId: 'agent' })
 }
 
-async function approved(runtime: BuckleRuntime, args: JsonObject): Promise<InvokeResponse> {
+async function approved(runtime: CoreRuntime, args: JsonObject): Promise<InvokeResponse> {
   const requestId = `approved-${++sequence}`
   const asked = await call(runtime, args, { requestId })
   expect(asked.outcome).toBe('approval_required')

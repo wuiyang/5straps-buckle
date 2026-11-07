@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { isToolAllowed } from '../common/domain/tool-policy.js'
 import { declare } from '../common/services/packs/code/declarations.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -17,13 +17,13 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const NEW_TOOLS = ['fs_delete', 'fs_move', 'fs_apply_patch'] as const
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(packs = 'fs', extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(packs = 'fs', extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-fs-verbs-'))
   roots.push(root)
   const workspace = join(root, 'workspace')

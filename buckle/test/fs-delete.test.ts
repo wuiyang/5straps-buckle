@@ -8,7 +8,7 @@ import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { deletePaths, settleDelete } from '../common/services/packs/fs/delete.js'
 import { deleteInput } from '../common/services/packs/fs/schemas.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -17,13 +17,13 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // files.deleteInWorkspace ask, which keeps the floor inside its own folder (the delete policy brief; delete-policy.test.ts).
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; state: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; state: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-fs-delete-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -38,12 +38,12 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: input.requestId ?? `delete-${++sequence}`, tool, args, approvalTokens: input.tokens ?? [] }, sessionId: 'agent' })
 }
 
 /** The call asks; a person approves every ask once; the same call sent again runs. */
-async function approved(runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
+async function approved(runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
   const requestId = `approved-${++sequence}`
   const asked = await call(runtime, tool, args, { requestId })
   expect(asked.outcome).toBe('approval_required')

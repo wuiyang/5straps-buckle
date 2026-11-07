@@ -16,7 +16,7 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { backendDecisionOf, backendReceipt, decisionOf, INVALID_BACKEND_DECISION, readInput, receiptOf, type ApprovalFaceApi, type ChallengeListing } from './core-approval-api.js'
+import { backendDecisionOf, backendReceipt, decisionOf, INVALID_BACKEND_DECISION, readInput, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
@@ -105,7 +105,7 @@ export interface ApprovalAnswer {
   proof?: Exclude<DecisionProofKind, 'none'>
 }
 
-export interface ApprovalService extends ApprovalFaceApi {
+export interface ApprovalService extends CoreApprovalApi {
   /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
   request(input: ApprovalAskInput): Promise<ApprovalWaitResult>
   /**
@@ -115,6 +115,8 @@ export interface ApprovalService extends ApprovalFaceApi {
   answer(input: ApprovalAnswer): Promise<Resolution>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
+  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
+  openFormsBackend(backend: ApprovalBackend): void
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
@@ -123,7 +125,7 @@ export interface ApprovalService extends ApprovalFaceApi {
 }
 
 /** The service as the faces hold it: the core approval API alone, so no face reaches `answer`, `request`, or `withdraw`. */
-export function approvalFaceOf(service: ApprovalService): ApprovalFaceApi {
+export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
   return {
     decide: input => service.decide(input),
     pending: () => service.pending(),
@@ -132,7 +134,6 @@ export function approvalFaceOf(service: ApprovalService): ApprovalFaceApi {
     listing: () => service.listing(),
     challengeListing: options => service.challengeListing(options),
     withdrawCall: selector => service.withdrawCall(selector),
-    openFormsBackend: backend => service.openFormsBackend(backend),
   }
 }
 

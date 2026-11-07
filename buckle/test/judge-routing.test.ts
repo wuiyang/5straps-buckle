@@ -7,7 +7,7 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { CHANGES_DIRECTORY, NPM_CODE_OPTION } from '../common/services/judge/call-forms.js'
 import { SCRIPT_TEXT_REFUSAL } from '../common/services/judge/code-reader.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -18,7 +18,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // otherwise to a person. A deny is never rated and never lifted.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -57,13 +57,13 @@ function judges(answers: { quick?: QuickResult; thorough?: JudgeResult }) {
   return { quickJudge, judge, shownQuick, shownThorough }
 }
 
-async function runtimeOf(config: BuckleConfig, fakes: { judge: Judge; quickJudge: QuickJudge }): Promise<BuckleRuntime> {
+async function runtimeOf(config: BuckleConfig, fakes: { judge: Judge; quickJudge: QuickJudge }): Promise<CoreRuntime> {
   const runtime = await createRuntime({ config, ...fakes })
   runtimes.push(runtime)
   return runtime
 }
 
-async function call(runtime: BuckleRuntime, command: string, args: string[]) {
+async function call(runtime: CoreRuntime, command: string, args: string[]) {
   const execute = vi.fn(async () => 'executed')
   const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute })
   const requestId = `route-${Math.random()}`
@@ -75,7 +75,7 @@ async function call(runtime: BuckleRuntime, command: string, args: string[]) {
   } finally { prepare.mockRestore() }
 }
 
-async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePolicy['commands']>) {
+async function withPolicy(runtime: CoreRuntime, commands: Partial<WorkspacePolicy['commands']>) {
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 

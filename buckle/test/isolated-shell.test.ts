@@ -7,7 +7,7 @@ import { logger } from '../common/runtime/log.js'
 import { HistoryBusyError, openChangeHistory, type ChangeHistory } from '../common/services/history/journal.js'
 import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/services/shell/isolated-shell.js'
 import { createShellPack } from '../common/services/packs/shell/index.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
@@ -447,7 +447,7 @@ describe('a wait for the write lock that ends before the copy (D91 follow-ups, F
   })
 
   describe('through the invoker', () => {
-    const runtimes: BuckleRuntime[] = []
+    const runtimes: CoreRuntime[] = []
     const histories: ChangeHistory[] = []
     afterEach(async () => {
       vi.restoreAllMocks()

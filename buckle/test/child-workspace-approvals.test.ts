@@ -6,7 +6,7 @@ import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
-import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -35,7 +35,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
   return { config, runtime, manager }
 }
 
-async function pendingIn(runtime: BuckleRuntime): Promise<string> {
+async function pendingIn(runtime: CoreRuntime): Promise<string> {
   const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],

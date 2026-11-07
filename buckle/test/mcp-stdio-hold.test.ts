@@ -29,7 +29,7 @@ function stdioCall(approvalTimeoutMs: number | null) {
   const invoke = vi.fn(async (_input: Record<string, unknown>) => ({ requestId: 'r', outcome: 'ok' as const, output: null, meta: { durationMs: 0, truncated: false } }))
   const runtime = {
     registry: () => registry, manifest: () => ({ tools: registry.capabilities(), version: '0.0.0' }), skills: () => [], onToolsChanged: () => undefined,
-    approvalApi: { openFormsBackend: () => undefined }, invoke,
+    openApprovalForms: () => undefined, invoke,
   } as unknown as BuckleRuntime
   const server = createStdioServer({ runtime, config: { serverName: 'stdio-test', serverId: 'node-1', approvalTimeoutMs }, callScope: run => run(), beforeCall: async () => undefined })
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools

@@ -5,7 +5,7 @@ import { ActionReportSchema, type ActionReport, type InvokeResponse } from '@5st
 import { createOperationScope, runInScope } from '@5straps/runtime'
 import { afterEach, describe, expect, it } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review M4 of the second proof-of-possession re-review (keys-provisioning.md: every grant consumption is
@@ -13,7 +13,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // named only the rule; the key stayed on the grant record, which session end or a revoke removes.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -33,11 +33,11 @@ async function node() {
   return { root, runtime, reports }
 }
 
-function write(runtime: BuckleRuntime, requestId: string, path: string): Promise<InvokeResponse> {
+function write(runtime: CoreRuntime, requestId: string, path: string): Promise<InvokeResponse> {
   return runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
 }
 
-function resultOf(runtime: BuckleRuntime, requestId: string) {
+function resultOf(runtime: CoreRuntime, requestId: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId).at(-1)
 }
 
@@ -72,7 +72,7 @@ describe('a call that uses a standing grant', () => {
 describe('who a call is attributed to, locally and in its report', () => {
   const owner = Symbol('grant-use-audit')
   const asAgent = <T>(actor: string, run: () => Promise<T>) => runInScope(createOperationScope({ owner, context: { actor } }), run)
-  const invoke = (runtime: BuckleRuntime, requestId: string, path: string, actorId?: string) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' }, ...(actorId === undefined ? {} : { actorId }) } } })
+  const invoke = (runtime: CoreRuntime, requestId: string, path: string, actorId?: string) => runtime.invoke({ sessionId: 'chat-1', request: { requestId, tool: 'fs_write', args: { path, content: 'x' }, approvalTokens: [], context: { approvalWait: { mode: 'none' }, ...(actorId === undefined ? {} : { actorId }) } } })
 
   it('keeps the authenticated actor when a caller forges another requester, beside the claim, and forwards both with the grant attribution', async () => {
     const { root, runtime, reports } = await node()

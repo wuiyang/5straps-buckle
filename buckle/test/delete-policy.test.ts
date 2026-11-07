@@ -13,7 +13,7 @@ import { createDestructivePathRule } from '../common/domain/permission/rules/des
 import { createSensitivePathRule } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { createPathView, type PathView } from '../common/domain/path-view.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -237,14 +237,14 @@ describe('what a cleared call adds to its script\'s run', () => {
 })
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 /** `scratch`: a folder inside the workspace's own that the node names a scratch root. */
-async function node(extra: Record<string, string> = {}, scratch?: string): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}, scratch?: string): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-delete-policy-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -257,10 +257,10 @@ async function node(extra: Record<string, string> = {}, scratch?: string): Promi
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject, tokens: string[] = [], requestId = `policy-${++sequence}`): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject, tokens: string[] = [], requestId = `policy-${++sequence}`): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: tokens }, sessionId: 'agent' })
 }
-const grantWrites = (runtime: BuckleRuntime, subject = runtime.paths().root) => runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject, scope: 'session' })
+const grantWrites = (runtime: CoreRuntime, subject = runtime.paths().root) => runtime.grants.grant({ sessionId: 'agent', rule: 'write_scope', subject, scope: 'session' })
 
 describe('the fs tools under the default delete policy', () => {
   it('delete a file where writes are granted without asking, and the checkpoint brings it back', async () => {

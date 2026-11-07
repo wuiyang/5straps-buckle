@@ -66,7 +66,7 @@ function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<Buckl
     const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
     if (failures.length > 0) throw new AggregateError(failures, 'Some workspaces could not close their sessions')
   }
-  input.onClose('waiters', 'approval waits', each(runtime => runtime.approvalService.close()))
+  input.onClose('waiters', 'approval waits', each(runtime => runtime.closeApprovals()))
   input.onClose('jobs', 'tool calls', each(runtime => runtime.cancelInvocations()))
   input.onClose('streams', 'workbench terminals', each(runtime => runtime.workbenches.stopTerminals()))
   input.onClose('streams', 'language servers and browser sessions', all(runtime => runtime.closeSessions()))

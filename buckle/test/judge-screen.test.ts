@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createTypeSafeQuickJudge } from '../common/adapters/judge/typesafe.js'
 import { QUICK_FLAG_REASON } from '../common/domain/permission/judged.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeInput, JudgeLevel } from '../common/types/ports/judge.js'
 import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -18,7 +18,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // is never rated. In on-request mode, all changes nothing for allowed commands.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -49,13 +49,13 @@ function fakes(answer: QuickResult) {
   return { quickJudge, judge }
 }
 
-async function runtimeOf(config: BuckleConfig, judges: { judge: Judge; quickJudge: QuickJudge }): Promise<BuckleRuntime> {
+async function runtimeOf(config: BuckleConfig, judges: { judge: Judge; quickJudge: QuickJudge }): Promise<CoreRuntime> {
   const runtime = await createRuntime({ config, ...judges })
   runtimes.push(runtime)
   return runtime
 }
 
-async function call(runtime: BuckleRuntime, command: string, args: string[], approvalTokens: string[] = [], requestId = `screen-${Math.random()}`) {
+async function call(runtime: CoreRuntime, command: string, args: string[], approvalTokens: string[] = [], requestId = `screen-${Math.random()}`) {
   const execute = vi.fn(async () => 'executed')
   const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute })
   try {
@@ -65,7 +65,7 @@ async function call(runtime: BuckleRuntime, command: string, args: string[], app
   } finally { prepare.mockRestore() }
 }
 
-async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePolicy['commands']>) {
+async function withPolicy(runtime: CoreRuntime, commands: Partial<WorkspacePolicy['commands']>) {
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 

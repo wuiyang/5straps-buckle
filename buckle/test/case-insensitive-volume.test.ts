@@ -6,7 +6,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import { configFromEnvironment } from './support/workspace-config.js'
 import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { byName, workspacesOf } from './support/workspaces.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review H2 and M1 of the second proof-of-possession re-review, on an emulated macOS volume: the platform
@@ -43,7 +43,7 @@ beforeAll(() => { Object.defineProperty(process, 'platform', { ...platform, valu
 afterAll(() => { Object.defineProperty(process, 'platform', platform) })
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.history.close()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -61,7 +61,7 @@ function volume() {
   return { root, workspace, state: join(root, 'state') }
 }
 
-async function runtimeFor(input: { root: string; typed: string; state: string; rules?: unknown[] }): Promise<BuckleRuntime> {
+async function runtimeFor(input: { root: string; typed: string; state: string; rules?: unknown[] }): Promise<CoreRuntime> {
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: input.typed, BUCKLE_STATE_DIR: input.state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
   const runtime = await createRuntime({ config })
   runtimes.push(runtime)
@@ -69,7 +69,7 @@ async function runtimeFor(input: { root: string; typed: string; state: string; r
   return runtime
 }
 
-function call(runtime: BuckleRuntime, tool: string, args: Record<string, JsonValue>): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: Record<string, JsonValue>): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: `case-${Math.random()}`, approvalTokens: [], tool, args }, sessionId: 'case-session', approvalWait: { mode: 'none' } })
 }
 

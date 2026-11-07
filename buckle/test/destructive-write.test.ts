@@ -8,7 +8,7 @@ import { summarizeEffect } from '../common/domain/effect.js'
 import type { FileChannel } from '../common/domain/tool.js'
 import { BATCH_REWRITE_LIMIT, SHRINK_RATIO } from '../common/services/invocation/destructive-writes.js'
 import { createSessionReads, MAX_KNOWN_PATHS, MAX_KNOWN_SESSIONS, READ_WINDOW_MS } from '../common/services/invocation/session-reads.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The destructive-write check (the fs-verbs brief): a write that empties a file, or leaves it under half its size, where
@@ -16,13 +16,13 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // floor whatever the folder's write grant says.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(root = mkdtempSync(join(tmpdir(), 'buckle-destructive-write-'))): Promise<{ root: string; workspace: string; runtime: BuckleRuntime }> {
+async function node(root = mkdtempSync(join(tmpdir(), 'buckle-destructive-write-'))): Promise<{ root: string; workspace: string; runtime: CoreRuntime }> {
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(workspace, { recursive: true })
@@ -34,7 +34,7 @@ async function node(root = mkdtempSync(join(tmpdir(), 'buckle-destructive-write-
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject, input: { sessionId?: string; file?: FileChannel } = {}): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject, input: { sessionId?: string; file?: FileChannel } = {}): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: `write-${++sequence}`, tool, args, approvalTokens: [] }, sessionId: input.sessionId ?? 'agent', ...(input.file ? { file: input.file } : {}) })
 }
 

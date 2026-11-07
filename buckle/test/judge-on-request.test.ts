@@ -10,7 +10,7 @@ import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
 import { approvalsPath, loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
-import { CREDENTIAL_HIDDEN, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { CREDENTIAL_HIDDEN, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { DecisionClaim } from '../common/domain/approval/decision-guard.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { runCli } from './support/cli.js'
@@ -110,7 +110,7 @@ async function node(input: { url: string; judge?: string; quickUrl?: string; qui
   return { buckle, runtime, manager, folder }
 }
 
-async function ask(runtime: BuckleRuntime, requestId = 'on-request-1', call: { command: string; args: string[] } = { command: 'python3', args: ['job.py'] }) {
+async function ask(runtime: CoreRuntime, requestId = 'on-request-1', call: { command: string; args: string[] } = { command: 'python3', args: ['job.py'] }) {
   const request = { requestId, approvalTokens: [] as string[], tool: 'shell_exec', args: call }
   const response = await runtime.invoke({ request, sessionId: 'agent', approvalWait: { mode: 'none' } })
   if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${JSON.stringify(response)}`)

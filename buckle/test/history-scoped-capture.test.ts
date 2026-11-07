@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { HarnessManifestSchema, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -13,13 +13,13 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // link outside node_modules, a dependency tree), yet every write is recorded and restored.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-scoped-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -35,11 +35,11 @@ async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
   return { workspace, runtime }
 }
 
-function call(runtime: BuckleRuntime, requestId: string, tool: string, args: JsonObject): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, requestId: string, tool: string, args: JsonObject): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: [] }, sessionId: 'agent' })
 }
 
-async function newest(runtime: BuckleRuntime) { return (await runtime.history.list()).at(-1)! }
+async function newest(runtime: CoreRuntime) { return (await runtime.history.list()).at(-1)! }
 
 describe('a file tool\'s checkpoint', () => {
   it('records only the file an fs_write writes, and restores it without host git or a walk of the workspace', async () => {

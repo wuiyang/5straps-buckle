@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PLACES_REASON, PLATFORM_REASON } from '../common/domain/secret-reference.js'
 import { MAX_REFERENCES, MAX_SECRET_FILES, planSecrets, SECRETS_OFF_REASON } from '../common/services/secrets/places.js'
 import { resolveSettings, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -131,14 +131,14 @@ describe('bounds and the switch', () => {
 
 describe('through the invoker', () => {
   const roots: string[] = []
-  const runtimes: BuckleRuntime[] = []
+  const runtimes: CoreRuntime[] = []
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
-  async function node(): Promise<{ runtime: BuckleRuntime; ran: JsonObject[] }> {
+  async function node(): Promise<{ runtime: CoreRuntime; ran: JsonObject[] }> {
     const root = mkdtempSync(join(tmpdir(), 'buckle-secret-places-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace'))
@@ -158,7 +158,7 @@ describe('through the invoker', () => {
   }
 
   let sequence = 0
-  const call = (runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> => {
+  const call = (runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> => {
     sequence += 1
     return runtime.invoke({ sessionId: 'chat-1', request: { requestId: `secret-places-${sequence}`, tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
   }

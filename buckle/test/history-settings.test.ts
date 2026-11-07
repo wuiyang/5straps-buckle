@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { isToolAllowed } from '../common/domain/tool-policy.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
@@ -16,7 +16,7 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 // fs_write as one of the history tool that reads or writes as it.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -28,7 +28,7 @@ function scratch(): string {
   return root
 }
 
-async function node(extra: Record<string, string> = {}): Promise<BuckleRuntime> {
+async function node(extra: Record<string, string> = {}): Promise<CoreRuntime> {
   const root = scratch()
   mkdirSync(join(root, 'workspace'))
   const runtime = await createRuntime({ config: configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,history', ...extra }) })
@@ -36,7 +36,7 @@ async function node(extra: Record<string, string> = {}): Promise<BuckleRuntime> 
   return runtime
 }
 
-const call = (runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> => runtime.invoke({ sessionId: 'agent', request: { requestId: `${tool}-${Math.random()}`, tool, args, approvalTokens: [] } })
+const call = (runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> => runtime.invoke({ sessionId: 'agent', request: { requestId: `${tool}-${Math.random()}`, tool, args, approvalTokens: [] } })
 
 describe('packs.history', () => {
   it('is on by Buckle\'s default, the node\'s BUCKLE_ALLOW_HISTORY else, and the workspace\'s own over both, naming its source', () => {

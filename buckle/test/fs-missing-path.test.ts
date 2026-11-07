@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // A path a file tool is sent that stands on nothing answers FILE_NOT_FOUND (a missing folder for a write, PARENT_MISSING),
@@ -11,7 +11,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // the node's log said why (the 0.1.8 publish test, B1).
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -31,7 +31,7 @@ async function node(extra: Record<string, string> = {}) {
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: `missing-${++sequence}`, tool, args, approvalTokens: [] }, sessionId: 'agent' })
 }
 

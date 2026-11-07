@@ -9,7 +9,7 @@ import { approvalsPath } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -27,22 +27,22 @@ const batch = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_writ
 const single = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] })
 const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
-function results(runtime: BuckleRuntime, requestId: string) {
+function results(runtime: CoreRuntime, requestId: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
 }
 
-async function answer(runtime: BuckleRuntime, token: string, scope: 'once' | 'session' = 'once') {
+async function answer(runtime: CoreRuntime, token: string, scope: 'once' | 'session' = 'once') {
   expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope }, source: SOURCES.cli })).ok).toBe(true)
 }
 
 /** Resolves once the registry has joined a re-sent call to the ask already waiting. */
-function joinSeen(runtime: BuckleRuntime) {
+function joinSeen(runtime: CoreRuntime) {
   const ask = vi.spyOn(runtime.approvals, 'ask')
   return () => vi.waitFor(() => expect(ask.mock.settledResults).toContainEqual({ type: 'fulfilled', value: expect.objectContaining({ joined: true }) }))
 }
 
 /** Two callers with one requestId: the second joins once the first is waiting. */
-async function joinedPair(runtime: BuckleRuntime, request: InvokeRequest): Promise<{ first: Promise<InvokeResponse>; second: Promise<InvokeResponse> }> {
+async function joinedPair(runtime: CoreRuntime, request: InvokeRequest): Promise<{ first: Promise<InvokeResponse>; second: Promise<InvokeResponse> }> {
   const first = runtime.invoke({ sessionId: 'chat-1', request })
   await vi.waitFor(() => expect(runtime.approvalService.pending()).not.toHaveLength(0))
   const joined = joinSeen(runtime)

@@ -7,14 +7,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configureRootLogger, flushLogs } from '../common/runtime/log.js'
 import { logCallFeedback } from '../common/services/invocation/call-feedback.js'
 import { renderEvent } from '../common/runtime/log-render.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
 import { shadowGitCheckpoint } from './support/shadow-git-checkpoint.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
-const opened: BuckleRuntime[] = []
+const opened: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of opened.splice(0)) {
     runtime.closeWatchers()
@@ -59,7 +59,7 @@ async function capture<T>(run: () => Promise<T>) {
   }
 }
 
-function invoke(runtime: BuckleRuntime, tool: string, args: JsonObject, requestId = 'private-request-fixture') {
+function invoke(runtime: CoreRuntime, tool: string, args: JsonObject, requestId = 'private-request-fixture') {
   return runtime.invoke({ sessionId: 'private-session-fixture', approvalWait: { mode: 'none' }, request: { requestId, tool, args, approvalTokens: [] } })
 }
 

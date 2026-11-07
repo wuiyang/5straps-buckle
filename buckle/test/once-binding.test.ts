@@ -10,7 +10,7 @@ import { runCli } from './support/cli.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // Review item 1 of the proof-of-possession fixes (S1 and S2 of the B23-B25 review): a `once` decided on
@@ -24,7 +24,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-interface Setup { workspace: string; config: BuckleConfig; runtime: BuckleRuntime; key: string; person: Terminal }
+interface Setup { workspace: string; config: BuckleConfig; runtime: CoreRuntime; key: string; person: Terminal }
 
 /** A person at the node's terminal who answers a question only when the test says so. */
 interface Terminal {

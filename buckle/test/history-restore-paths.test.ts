@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory, RestoreRefusedError, type ChangeHistory } from '../common/services/history/journal.js'
 import { blobId } from '../common/services/history/object-store.js'
 import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // Slice F2, item 2 (A1 of the 2026-11-01 review): a restore touches only the paths its checkpoints recorded, each read
@@ -25,7 +25,7 @@ vi.mock('../common/services/history/object-store.js', async importOriginal => {
 
 const roots: string[] = []
 const histories: ChangeHistory[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   contentRead.hook = undefined
   for (const history of histories.splice(0)) await history.close()
@@ -44,7 +44,7 @@ async function commandHistory() {
   return { workspace, history, run: (change: () => void) => history.run(details, async () => change()) }
 }
 
-async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = scratch()
   const workspace = join(root, 'workspace'); mkdirSync(workspace)
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_PACKS: 'fs,history', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
@@ -54,7 +54,7 @@ async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
   return { workspace, runtime }
 }
 
-function call(runtime: BuckleRuntime, requestId: string, tool: string, args: JsonObject): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, requestId: string, tool: string, args: JsonObject): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: [] }, sessionId: 'agent' })
 }
 

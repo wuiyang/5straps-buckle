@@ -8,7 +8,7 @@ import { describeQuestion } from '../cli/terminal-consumer.js'
 import { describeAsk } from '../common/domain/approval-instruction.js'
 import { FLOOR_WARNING } from '../common/domain/approval/floor-note.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.js'
 import { fixedInteraction } from './support/interaction.js'
@@ -50,7 +50,7 @@ async function asked(input: { answer?: JudgeResult; environment?: NodeJS.Process
   const requestCli = vi.fn(async (request: CliRequest) => { questions.push(request); return { status: 'unavailable' as const, requestId: request.id, reason: 'no_consumer' as const } })
   const judge: Judge = { judge: vi.fn(async () => input.answer ?? verdict('danger', 0.92)) }
   const config = node({ BUCKLE_APPROVAL_WEBHOOK: webhook.url, ...input.environment })
-  const runtime: BuckleRuntime = await createRuntime({ config, ...(input.noThorough ? {} : { judge }), ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+  const runtime: CoreRuntime = await createRuntime({ config, ...(input.noThorough ? {} : { judge }), ...(input.quickJudge ? { quickJudge: input.quickJudge } : {}), interaction: fixedInteraction({ hold: 'grace', requestCli }) })
   closing.push(async () => { await runtime.approvalService.close(); await runtime.history.close() })
   if (input.destructive) await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], destructive: input.destructive } })
   const [command, args] = input.command ?? ['python3', ['job.py']]

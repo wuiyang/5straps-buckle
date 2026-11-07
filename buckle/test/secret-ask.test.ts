@@ -11,7 +11,7 @@ import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createSensitivePathRule, secretFileSubject } from '../common/domain/permission/rules/sensitive-path-rule.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { resolveSettings, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -133,14 +133,14 @@ describe('secrets.files', () => {
 
 describe('through the invoker', () => {
   const roots: string[] = []
-  const runtimes: BuckleRuntime[] = []
+  const runtimes: CoreRuntime[] = []
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
-  async function node(extra: Record<string, string> = {}, secretFiles?: string[]): Promise<{ root: string; workspace: string; runtime: BuckleRuntime; ran: JsonObject[] }> {
+  async function node(extra: Record<string, string> = {}, secretFiles?: string[]): Promise<{ root: string; workspace: string; runtime: CoreRuntime; ran: JsonObject[] }> {
     const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-ask-')))
     roots.push(root)
     const workspace = join(root, 'workspace')
@@ -160,7 +160,7 @@ describe('through the invoker', () => {
   }
 
   let sequence = 0
-  const run = (runtime: BuckleRuntime, args: string[], sessionId = 'chat-1', approvalTokens: string[] = []): Promise<InvokeResponse> => {
+  const run = (runtime: CoreRuntime, args: string[], sessionId = 'chat-1', approvalTokens: string[] = []): Promise<InvokeResponse> => {
     sequence += 1
     return runtime.invoke({ sessionId, request: { requestId: `secret-ask-${sequence}`, tool: 'shell_exec', args: { command: 'curl', args }, approvalTokens, context: { approvalWait: { mode: 'none' } } } })
   }
@@ -171,7 +171,7 @@ describe('through the invoker', () => {
     return ask
   }
   /** Answers each ask: the secret file's at `scope`, every other for the session. */
-  const approve = async (runtime: BuckleRuntime, response: InvokeResponse, scope: GrantScope): Promise<void> => {
+  const approve = async (runtime: CoreRuntime, response: InvokeResponse, scope: GrantScope): Promise<void> => {
     if (response.outcome !== 'approval_required') throw new Error('expected asks')
     for (const approval of response.approvals) {
       const chosen = approval.rule === 'sensitive_path' ? scope : approval.offeredScopes.includes('session') ? 'session' : 'once'

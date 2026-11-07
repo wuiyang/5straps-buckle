@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -10,13 +10,13 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // the rules a direct call meets (owner decision D82: every listed tool is reachable, and judged alike).
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}): Promise<{ root: string; workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-delete-code-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -30,7 +30,7 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
 }
 
 let sequence = 0
-const run = (runtime: BuckleRuntime, script: string) => runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `script-${++sequence}`, tool: 'code_run', args: { script }, approvalTokens: [], context: { stageId: 'stage-a' } } })
+const run = (runtime: CoreRuntime, script: string) => runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `script-${++sequence}`, tool: 'code_run', args: { script }, approvalTokens: [], context: { stageId: 'stage-a' } } })
 
 describe('a script under the default delete policy', () => {
   it('deletes and replaces inside the workspace\'s folder where writes are granted, asking nobody', async () => {

@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 let server: Server
@@ -30,7 +30,7 @@ beforeAll(async () => {
 
 afterAll(() => { server.close() })
 
-async function runtimeWith(environment: Record<string, string> = {}): Promise<BuckleRuntime> {
+async function runtimeWith(environment: Record<string, string> = {}): Promise<CoreRuntime> {
   const config = configFromEnvironment({
     BUCKLE_AUTH_TOKEN: 'agent',
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-fetch-state-')),
@@ -41,7 +41,7 @@ async function runtimeWith(environment: Record<string, string> = {}): Promise<Bu
   return createRuntime({ config })
 }
 
-function fetchLocal(runtime: BuckleRuntime, path = '/', approvalTokens: string[] = []): Promise<InvokeResponse> {
+function fetchLocal(runtime: CoreRuntime, path = '/', approvalTokens: string[] = []): Promise<InvokeResponse> {
   return runtime.invoke({
     request: { requestId: `fetch-${randomUUID()}`, tool: 'web_fetch', args: { url: `http://127.0.0.1:${port}${path}` }, approvalTokens },
     sessionId: 'fetcher',
@@ -84,7 +84,7 @@ describe('web_fetch and the approvals the owner gave', () => {
 })
 
 describe('web_fetch and an approval widened to a host pattern (BUCKLE-D18)', () => {
-  function fetchUrl(runtime: BuckleRuntime, url: string): Promise<InvokeResponse> {
+  function fetchUrl(runtime: CoreRuntime, url: string): Promise<InvokeResponse> {
     return runtime.invoke({ request: { requestId: `fetch-${randomUUID()}`, tool: 'web_fetch', args: { url }, approvalTokens: [] }, sessionId: 'fetcher' })
   }
 

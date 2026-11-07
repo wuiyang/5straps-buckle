@@ -12,14 +12,14 @@ import { searchBuiltin, SCAN_BUDGET_BYTES } from '../common/services/packs/fs/bu
 import { matchesPattern, passesGlob } from '../common/services/packs/fs/ignore-files.js'
 import { searchInput } from '../common/services/packs/fs/schemas.js'
 import { searchContent } from '../common/services/packs/fs/search.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // fs_search_content without ripgrep (the fs-verbs brief): Buckle's own walker, with ripgrep's ignore rules, limits, read
 // judgement, and output shape, offered wherever the fs pack is.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { InvokeResponseSchema, type InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { configFromEnvironment } from './support/workspace-config.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { fixedInteraction } from './support/interaction.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
@@ -19,7 +19,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 
 const PROTOCOL = '2026-07-28'
 const handlers = createMcpHttpHandlers()
-const opened: BuckleRuntime[] = []
+const opened: CoreRuntime[] = []
 afterEach(async () => {
   vi.useRealTimers()
   for (const runtime of opened.splice(0)) {
@@ -41,7 +41,7 @@ async function node(wait: string) {
 interface ToolResult { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: Record<string, unknown>; _meta?: Record<string, unknown> }
 
 /** One tools/call over the face, as an MCP client sends it, and the tool result it answers. */
-async function call(workspace: { config: BuckleConfig; runtime: BuckleRuntime }, input: { tool: string; args: Record<string, unknown>; meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> {
+async function call(workspace: { config: BuckleConfig; runtime: CoreRuntime }, input: { tool: string; args: Record<string, unknown>; meta?: Record<string, unknown>; signal?: AbortSignal }): Promise<ToolResult> {
   const body = JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: input.tool, arguments: input.args, _meta: { 'io.modelcontextprotocol/protocolVersion': PROTOCOL, 'io.modelcontextprotocol/clientCapabilities': {}, ...input.meta } } })
   const request = new Request('http://127.0.0.1/mcp', {
     method: 'POST', body, ...(input.signal ? { signal: input.signal } : {}),
@@ -58,11 +58,11 @@ async function call(workspace: { config: BuckleConfig; runtime: BuckleRuntime },
 
 const writeOutside = (root: string, name = 'note.md') => ({ tool: 'fs_write', args: { path: join(root, 'outside', name), content: 'from the agent' } })
 
-function results(runtime: BuckleRuntime, tool = 'fs_write') {
+function results(runtime: CoreRuntime, tool = 'fs_write') {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
-async function approve(runtime: BuckleRuntime, scope: 'once' | 'session' = 'once') {
+async function approve(runtime: CoreRuntime, scope: 'once' | 'session' = 'once') {
   const [token] = runtime.approvalService.pending().map(request => request.token)
   expect((await runtime.approvalService.answer({ decision: { token: token!, approved: true, scope }, source: SOURCES.cli })).ok).toBe(true)
 }

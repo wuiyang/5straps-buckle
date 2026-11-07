@@ -9,7 +9,7 @@ import { forgeGitHost } from '../common/domain/forge.js'
 import { createPathView } from '../common/domain/path-view.js'
 import type { ToolContext } from '../common/domain/tool.js'
 import { createForgePack } from '../common/services/packs/forge/index.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -242,10 +242,10 @@ describe('git_revert', () => {
 })
 
 describe('git_revert through the runtime', () => {
-  const runtimes: BuckleRuntime[] = []
+  const runtimes: CoreRuntime[] = []
   afterEach(async () => { for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() } })
 
-  async function node(repository: string, options: { grant?: boolean } = {}): Promise<BuckleRuntime> {
+  async function node(repository: string, options: { grant?: boolean } = {}): Promise<CoreRuntime> {
     const state = mkdtempSync('/tmp/buckle-git-revert-node-')
     roots.push(state)
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: repository, BUCKLE_STATE_DIR: state, BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs,git,forge', BUCKLE_ALLOW_HOST_GIT: 'true', BUCKLE_FORGE_GITHUB_TOKEN: 'ghp-git-revert-fixture', BUCKLE_FORGE_GITHUB_API_URL: 'https://api.github.com' })
@@ -255,7 +255,7 @@ describe('git_revert through the runtime', () => {
     return runtime
   }
 
-  const revertCall = (runtime: BuckleRuntime, requestId: string, args: JsonObject) => runtime.invoke({ request: { requestId, tool: 'git_revert', args, approvalTokens: [] }, sessionId: 'agent' })
+  const revertCall = (runtime: CoreRuntime, requestId: string, args: JsonObject) => runtime.invoke({ request: { requestId, tool: 'git_revert', args, approvalTokens: [] }, sessionId: 'agent' })
 
   it('refuses a revert that would rewrite a credential file the workspace\'s rules would ask about, and reverts one that does not', async () => {
     const repository = repositoryWithHistory()

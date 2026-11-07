@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { findExecutable } from '../common/domain/executable.js'
 import { applyHunks, MAX_PLACEMENT_COMPARISONS, parseUnifiedDiff } from '../common/services/packs/fs/unified-diff.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -15,13 +15,13 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // with the whole diff in the ask.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-apply-patch-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -34,7 +34,7 @@ async function node(): Promise<{ workspace: string; runtime: BuckleRuntime }> {
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject, input: { requestId?: string; tokens?: string[] } = {}): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: input.requestId ?? `patch-${++sequence}`, tool, args, approvalTokens: input.tokens ?? [] }, sessionId: 'agent' })
 }
 

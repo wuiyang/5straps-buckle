@@ -17,7 +17,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { ActionTooLargeError, ApprovalLimitError } from '../common/services/approvals/approval-errors.js'
 import { createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { approvalServiceWithTerminal } from './support/interaction.js'
@@ -40,7 +40,7 @@ vi.mock('@5straps/runtime', async (importOriginal) => {
 // showed the URL credentials its arguments redacted, and the shown arguments were cut past 1 KiB and 64 KiB.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -50,7 +50,7 @@ afterEach(async () => {
 const SECRET_A = 'tok-5ecretAlpha'
 const SECRET_B = 'tok-5ecretBravo'
 
-async function node(extra: Record<string, string> = {}): Promise<{ root: string; config: BuckleConfig; runtime: BuckleRuntime; ran: string[][] }> {
+async function node(extra: Record<string, string> = {}): Promise<{ root: string; config: BuckleConfig; runtime: CoreRuntime; ran: string[][] }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-full-action-'))
   roots.push(root)
   mkdirSync(join(root, 'workspace'))
@@ -72,13 +72,13 @@ async function node(extra: Record<string, string> = {}): Promise<{ root: string;
 }
 
 let sequence = 0
-function run(runtime: BuckleRuntime, command: string, args: string[]): Promise<InvokeResponse> {
+function run(runtime: CoreRuntime, command: string, args: string[]): Promise<InvokeResponse> {
   sequence += 1
   return runtime.invoke({ sessionId: 'chat-1', request: { requestId: `full-action-${sequence}`, tool: 'shell_exec', args: { command, args }, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
 }
 
 /** The owner allows `bash -c`, so a script body reaches the destructive gate instead of the wrapper refusal. */
-async function allowShellWrapper(runtime: BuckleRuntime): Promise<void> {
+async function allowShellWrapper(runtime: CoreRuntime): Promise<void> {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = ['bash -c *']
   await runtime.policy.apply(policy)
@@ -106,7 +106,7 @@ function destructiveAsk(response: InvokeResponse): ApprovalRequest {
   return ask
 }
 
-async function approveSession(runtime: BuckleRuntime, response: InvokeResponse): Promise<void> {
+async function approveSession(runtime: CoreRuntime, response: InvokeResponse): Promise<void> {
   if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
   for (const approval of response.approvals) {
     const scope = approval.offeredScopes.includes('session') ? 'session' : 'once'
@@ -462,7 +462,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
 // hid a statement on these routes.
 describe('every approval route shows a call as owner ruling B reads it', () => {
   /** Everything a route shows for one ask: the response, the queue, the challenge, the terminal, MCP and the kept call file. */
-  async function routes(input: { runtime: BuckleRuntime; config: BuckleConfig; response: InvokeResponse; ask?: ApprovalRequest }): Promise<Record<string, string>> {
+  async function routes(input: { runtime: CoreRuntime; config: BuckleConfig; response: InvokeResponse; ask?: ApprovalRequest }): Promise<Record<string, string>> {
     const ask = input.ask ?? destructiveAsk(input.response)
     const waiting = input.runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!
     const challenge = input.runtime.approvalService.challengeListing().challenges.find(entry => entry.token === ask.token)!.challenge!
@@ -476,7 +476,7 @@ describe('every approval route shows a call as owner ruling B reads it', () => {
   }
 
   /** The once fingerprint and the destructive subject's argv sha256 are the raw call's, whatever the display hides (D12, D17). */
-  function expectRawIdentity(runtime: BuckleRuntime, response: InvokeResponse, argv: string[]): void {
+  function expectRawIdentity(runtime: CoreRuntime, response: InvokeResponse, argv: string[]): void {
     const ask = destructiveAsk(response)
     const waiting = runtime.approvalService.waiting().find(entry => entry.request.token === ask.token)!
     expect(waiting.fingerprint).toBe(requestFingerprint({ tool: 'shell_exec', args: { command: argv[0]!, args: argv.slice(1) } }))

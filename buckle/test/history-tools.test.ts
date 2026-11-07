@@ -10,7 +10,7 @@ import { openChangeHistory } from '../common/services/history/journal.js'
 import { createHistoryPack } from '../common/services/packs/history/index.js'
 import { declare } from '../common/services/packs/code/declarations.js'
 import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -19,13 +19,13 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // person; the checkpoints here are real ones, made by fs_write.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(packs = 'fs,history'): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(packs = 'fs,history'): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-history-tools-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -38,18 +38,18 @@ async function node(packs = 'fs,history'): Promise<{ workspace: string; runtime:
   return { workspace, runtime }
 }
 
-function call(runtime: BuckleRuntime, requestId: string, tool: string, args: JsonObject, tokens: string[] = []): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, requestId: string, tool: string, args: JsonObject, tokens: string[] = []): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: tokens }, sessionId: 'agent' })
 }
 
-async function approveAll(runtime: BuckleRuntime, asked: InvokeResponse): Promise<string[]> {
+async function approveAll(runtime: CoreRuntime, asked: InvokeResponse): Promise<string[]> {
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
   for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return tokens
 }
 
 /** Three writes, each its own checkpoint: a.txt made, b.txt made, a.txt changed. */
-async function threeWrites(runtime: BuckleRuntime): Promise<void> {
+async function threeWrites(runtime: CoreRuntime): Promise<void> {
   expect((await call(runtime, 'w-1', 'fs_write', { path: 'a.txt', content: 'one' })).outcome).toBe('ok')
   expect((await call(runtime, 'w-2', 'fs_write', { path: 'b.txt', content: 'two' })).outcome).toBe('ok')
   expect((await call(runtime, 'w-3', 'fs_write', { path: 'a.txt', content: 'three' })).outcome).toBe('ok')

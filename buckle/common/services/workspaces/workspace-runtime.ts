@@ -75,7 +75,8 @@ import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
-import type { ApprovalFaceApi } from '../approvals/core-approval-api.js'
+import type { CoreApprovalApi } from '../approvals/core-approval-api.js'
+import type { ApprovalBackend } from '../../types/ports/approval-backend.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
@@ -217,11 +218,12 @@ export interface BuckleRuntime {
   mountTable(): MountRow[]
   policy: PolicyHandle
   grants: GrantStore
-  approvals: ApprovalRegistry
-  /** The single answerer: every ask waits here and every verdict is recorded here. */
-  approvalService: ApprovalService
   /** What the faces (the CLI, the MCP faces, and the setup routes) hold of the approval service. */
-  approvalApi: ApprovalFaceApi
+  approvalApi: CoreApprovalApi
+  /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
+  closeApprovals(): Promise<void>
+  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; the stdio face's alone. */
+  openApprovalForms(backend: ApprovalBackend): void
   /** How a call meets approvals: its last check, the grants it holds, and its asks. */
   approvalGate: ApprovalGate
   history: ChangeHistory
@@ -290,7 +292,17 @@ interface RuntimeInput {
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
 export const SETTINGS_WATCH_DEBOUNCE_MS = 150
 
-export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime> {
+/**
+ * The runtime as core composes it: the face's view, and the approval ledger and service, which no face is handed. Only
+ * what builds a runtime (the workspace manager, and tests) holds this type.
+ */
+export interface CoreRuntime extends BuckleRuntime {
+  approvals: ApprovalRegistry
+  /** The single answerer: every ask waits here and every verdict is recorded here. */
+  approvalService: ApprovalService
+}
+
+export async function createRuntime(input: RuntimeInput): Promise<CoreRuntime> {
   const { config } = input
   // The sandbox masks this directory by path, so it has to exist before the first command runs.
   mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
@@ -305,7 +317,7 @@ export async function createRuntime(input: RuntimeInput): Promise<BuckleRuntime>
   }
 }
 
-async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<BuckleRuntime> {
+async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; onApprovalCleanup: (close: () => Promise<void>) => void }): Promise<CoreRuntime> {
   const { config, history } = input
   const browserStateDirectory = join(config.stateDirectory, 'browser-sessions', workspaceStateKey(config.cwd))
   mkdirSync(browserStateDirectory, { recursive: true })
@@ -478,7 +490,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
   })
 
-  const runtime: BuckleRuntime = {
+  const runtime: CoreRuntime = {
     workspaceId,
     workspaceName: () => config.serverName,
     takeUpSettings: () => pickUp(),
@@ -502,6 +514,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     approvals,
     approvalService,
     approvalApi: approvalFaceOf(approvalService),
+    closeApprovals: () => approvalService.close(),
+    openApprovalForms: backend => approvalService.openFormsBackend(backend),
     approvalGate,
     actions,
     history,

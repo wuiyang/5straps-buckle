@@ -13,7 +13,7 @@ import { checkSecrets, runWithSecrets } from '../common/services/secrets/call-se
 import { planSecrets } from '../common/services/secrets/places.js'
 import { PLACES_REASON, SHORT_REASON } from '../common/domain/secret-reference.js'
 import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_REASON } from '../common/services/secrets/shell-reading.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -34,14 +34,14 @@ const DOTENV = [
 const LABEL = '[secret:API_TOKEN]'
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(packs = 'fs,shell'): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(packs = 'fs,shell'): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-run-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -60,7 +60,7 @@ async function node(packs = 'fs,shell'): Promise<{ workspace: string; runtime: B
 }
 
 /** The owner allows the commands these rows run, a shell's `-c` among them, then changes what `change` does. */
-async function withPolicy(runtime: BuckleRuntime, change: (policy: ReturnType<typeof emptyWorkspacePolicy>) => void): Promise<void> {
+async function withPolicy(runtime: CoreRuntime, change: (policy: ReturnType<typeof emptyWorkspacePolicy>) => void): Promise<void> {
   const policy = emptyWorkspacePolicy()
   policy.commands.allow = ['bash -c *', 'printf *', 'ls *', 'printenv', 'touch *']
   change(policy)
@@ -68,11 +68,11 @@ async function withPolicy(runtime: BuckleRuntime, change: (policy: ReturnType<ty
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
   sequence += 1
   return runtime.invoke({ sessionId: 'chat-1', request: { requestId: `secret-run-${sequence}`, tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
 }
-const shell = (runtime: BuckleRuntime, command: string, args: string[]) => call(runtime, 'shell_exec', { command, args })
+const shell = (runtime: CoreRuntime, command: string, args: string[]) => call(runtime, 'shell_exec', { command, args })
 const output = (response: InvokeResponse): { stdout: string; stderr: string; exitCode: number; truncated: boolean } => {
   if (response.outcome !== 'ok') throw new Error(`expected a run, got ${JSON.stringify(response)}`)
   return response.output as { stdout: string; stderr: string; exitCode: number; truncated: boolean }
@@ -373,7 +373,7 @@ describe('a web_fetch header', () => {
   })
   afterAll(() => { first.close(); second.close() })
 
-  async function approvedFetch(runtime: BuckleRuntime, path: string): Promise<InvokeResponse> {
+  async function approvedFetch(runtime: CoreRuntime, path: string): Promise<InvokeResponse> {
     const args = { url: `http://127.0.0.1:${ports[0]}${path}`, headers: { 'X-Api-Key': '{{file:.env.local:API_TOKEN}}' } }
     let response = await call(runtime, 'web_fetch', args)
     for (let round = 0; round < 3 && response.outcome === 'approval_required'; round++) {

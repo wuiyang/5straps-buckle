@@ -5,7 +5,7 @@ import type { ApprovalRequest, InvokeResponse, JsonObject, JsonValue } from '@5s
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PLACES_REASON } from '../common/domain/secret-reference.js'
 import { SECRETS_OFF_REASON } from '../common/services/secrets/places.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -35,7 +35,7 @@ const shown = await tools.browser_command({ command: 'snapshot', args: [] })
 return { filled: filled.result.data.filled, page: shown.result.data.page }`
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -68,10 +68,10 @@ async function node(listed = true, enabled = true, saves = false) {
 }
 
 let sequence = 0
-function call(runtime: BuckleRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, tool: string, args: JsonObject): Promise<InvokeResponse> {
   return runtime.invoke({ sessionId: 'chat-1', approvalWait: { mode: 'none' }, request: { requestId: `secret-code-${++sequence}`, tool, args, approvalTokens: [] } })
 }
-const codeRun = (runtime: BuckleRuntime, script: string) => call(runtime, 'code_run', { script })
+const codeRun = (runtime: CoreRuntime, script: string) => call(runtime, 'code_run', { script })
 
 /** What code_run returned, once it ran. */
 function ran(response: InvokeResponse): { ok: boolean; value?: JsonValue; output: string; calls: Array<{ tool: string; status: string }> } {

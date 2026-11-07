@@ -4,7 +4,7 @@ import { nodeConfigOf } from './workspace-config.js'
 import { openWorkspaceManager, type ManagedWorkspace, type WorkspaceManager } from '../../common/services/workspaces/workspace-manager.js'
 import type { InteractionSource } from '../../common/runtime/interaction.js'
 import type { BuckleCommon } from '../../common/runtime/initialize.js'
-import type { BuckleRuntime } from '../../common/services/workspaces/workspace-runtime.js'
+import type { BuckleRuntime, CoreRuntime } from '../../common/services/workspaces/workspace-runtime.js'
 import { realpathSync } from 'node:fs'
 import { nativePath } from '../../common/domain/paths.js'
 import { openRegistry } from '../../common/services/workspaces/registry.js'
@@ -22,9 +22,10 @@ export async function registerWorkspace(manager: WorkspaceManager, input: { id: 
   return token.token
 }
 
-/** The workspace named `name`, opened: what `--workspace <name>` resolves (D85, Q15). */
-export function byName(manager: WorkspaceManager, name: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace> {
-  return manager.resolve(manager.target({ workspace: name, cwd: '/' }), options)
+/** The workspace named `name`, opened: what `--workspace <name>` resolves (D85, Q15), its runtime as core composed it. */
+export async function byName(manager: WorkspaceManager, name: string, options: { setup?: boolean } = {}): Promise<ManagedWorkspace & { runtime: CoreRuntime }> {
+  const workspace = await manager.resolve(manager.target({ workspace: name, cwd: '/' }), options)
+  return { config: workspace.config, runtime: coreOf(workspace.runtime) }
 }
 
 /** The id a folder's workspace has, as the registry derives it from the folder as the disk names it (D85, Q15). */
@@ -38,9 +39,17 @@ export function idOf(manager: WorkspaceManager, name: string): string {
 }
 
 /** The node folder's workspace's runtime on a started node: the folder its environment named, as migration made it, listed first. */
-export async function defaultRuntime(common: BuckleCommon): Promise<BuckleRuntime> {
+export async function defaultRuntime(common: BuckleCommon): Promise<CoreRuntime> {
   const workspaces = await common.services.getWorkspaces()
-  return (await workspaces.resolve(workspaces.list()[0]!.id)).runtime
+  return coreOf((await workspaces.resolve(workspaces.list()[0]!.id)).runtime)
+}
+
+/**
+ * A runtime the manager opened, as core composed it, so a test can read its ledger and service. The manager builds each
+ * runtime with createRuntime and hands the faces the narrower view; only tests widen it back.
+ */
+export function coreOf(runtime: BuckleRuntime): CoreRuntime {
+  return runtime as CoreRuntime
 }
 
 /**

@@ -11,7 +11,7 @@ import { CODE_CALL_LIMIT, CODE_VM_BUSY, createCodePack, ERROR_CHARS, MAX_IN_FLIG
 import type { ScriptVm, ScriptVmResult } from '../common/types/ports/script-vm.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 
 // Code mode (owner decision D82): a script's calls are the workspace's own calls, judged, refused, and audited as
@@ -35,7 +35,7 @@ async function node(environment: Record<string, string> = {}) {
 type Ran = { ok: boolean; value?: JsonValue; output: string; calls: Array<{ id: number; tool: string; status: string }>; callsOmitted?: number; truncated: boolean; error?: { kind: string; name?: string; message: string; stack?: string } }
 
 let sequence = 0
-async function run(runtime: BuckleRuntime, script: string, input: { timeoutMs?: number; stageId?: string } = {}): Promise<InvokeResponse> {
+async function run(runtime: CoreRuntime, script: string, input: { timeoutMs?: number; stageId?: string } = {}): Promise<InvokeResponse> {
   return runtime.invoke({
     sessionId: 'chat-1', approvalWait: { mode: 'none' },
     request: { requestId: `outer-${++sequence}`, tool: 'code_run', args: { script, ...(input.timeoutMs ? { timeoutMs: input.timeoutMs } : {}) }, approvalTokens: [], ...(input.stageId ? { context: { stageId: input.stageId } } : {}) },
@@ -47,7 +47,7 @@ function ran(response: InvokeResponse): Ran {
   return response.output as unknown as Ran
 }
 
-function results(runtime: BuckleRuntime) {
+function results(runtime: CoreRuntime) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result')
 }
 

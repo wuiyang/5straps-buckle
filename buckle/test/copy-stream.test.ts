@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { FILES_HOLD_MS, filesWait, outgoingFile } from '../layers/common/server/utils/files.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -12,13 +12,13 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // reads one, errors rather than ends where the file changed after its hash, and fails the send where the caller left.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function node(extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: BuckleRuntime }> {
+async function node(extra: Record<string, string> = {}): Promise<{ workspace: string; runtime: CoreRuntime }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-copy-stream-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -33,7 +33,7 @@ const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest(
 const errorOf = (response: InvokeResponse) => (response.outcome === 'error' ? response.error : null)
 
 let sequence = 0
-function call(runtime: BuckleRuntime, path: string, file: ReturnType<typeof outgoingFile>['channel']): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, path: string, file: ReturnType<typeof outgoingFile>['channel']): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId: `stream-${++sequence}`, tool: 'fs_send', args: { path }, approvalTokens: [] }, sessionId: 'copy', file })
 }
 

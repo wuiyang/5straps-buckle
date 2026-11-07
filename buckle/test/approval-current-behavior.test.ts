@@ -14,7 +14,7 @@ import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerou
 import { approvalsPath, grantsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
@@ -24,7 +24,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // approval backend design shows what it keeps and what it changes.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 const closers: Array<() => Promise<unknown>> = []
 afterEach(async () => {
   vi.restoreAllMocks()

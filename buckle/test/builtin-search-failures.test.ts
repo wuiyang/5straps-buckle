@@ -7,7 +7,7 @@ import { findExecutable } from '../common/domain/executable.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { searchBuiltin } from '../common/services/packs/fs/builtin-search.js'
 import { searchInput } from '../common/services/packs/fs/schemas.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The built-in search never fails whole for one file (the live failure: a search of a folder that a 95 MiB file was being
@@ -325,7 +325,7 @@ describe('a search that cannot go on says why, with a code', () => {
 
 describe.skipIf(findExecutable('rg') !== null)('fs_search_content on a node, without ripgrep', () => {
   let root = ''
-  let runtime: BuckleRuntime
+  let runtime: CoreRuntime
   beforeAll(async () => {
     root = mkdtempSync(join(tmpdir(), 'buckle-search-node-'))
     roots.push(root)

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 
@@ -29,14 +29,14 @@ esac
 `
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
 /** A node with the stand-in agent-browser; `open` starts another Buckle process on the same workspace and state. */
-async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: BuckleRuntime; open: (changed?: Record<string, string | undefined>) => Promise<BuckleRuntime>; stop: () => void; sessions: string }> {
+async function node(environment: Record<string, string> = {}): Promise<{ bin: string; workspace: string; runtime: CoreRuntime; open: (changed?: Record<string, string | undefined>) => Promise<CoreRuntime>; stop: () => void; sessions: string }> {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-secret-browser-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -67,7 +67,7 @@ async function node(environment: Record<string, string> = {}): Promise<{ bin: st
 }
 
 let sequence = 0
-function browser(runtime: BuckleRuntime, args: JsonObject, sessionId = 'chat-1'): Promise<InvokeResponse> {
+function browser(runtime: CoreRuntime, args: JsonObject, sessionId = 'chat-1'): Promise<InvokeResponse> {
   sequence += 1
   return runtime.invoke({ sessionId, request: { requestId: `secret-browser-${sequence}`, tool: 'browser_command', args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
 }

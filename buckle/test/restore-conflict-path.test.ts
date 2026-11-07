@@ -5,7 +5,7 @@ import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import { assertSnapshotMatches, SnapshotConflictError, type Snapshot } from '../common/services/history/snapshot.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -15,7 +15,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // only "a changed path no longer matches the checkpoint" (the 0.1.8 publish test).
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -75,7 +75,7 @@ describe('the refusal a conflict gives, at the journal', () => {
   })
 })
 
-async function node(): Promise<{ workspace: string; runtime: BuckleRuntime; config: ReturnType<typeof configFromEnvironment> }> {
+async function node(): Promise<{ workspace: string; runtime: CoreRuntime; config: ReturnType<typeof configFromEnvironment> }> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-conflict-path-node-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -87,11 +87,11 @@ async function node(): Promise<{ workspace: string; runtime: BuckleRuntime; conf
   return { workspace, runtime, config }
 }
 
-function call(runtime: BuckleRuntime, requestId: string, tool: string, args: JsonObject, tokens: string[] = []): Promise<InvokeResponse> {
+function call(runtime: CoreRuntime, requestId: string, tool: string, args: JsonObject, tokens: string[] = []): Promise<InvokeResponse> {
   return runtime.invoke({ request: { requestId, tool, args, approvalTokens: tokens }, sessionId: 'agent' })
 }
 
-async function approveAll(runtime: BuckleRuntime, asked: InvokeResponse): Promise<string[]> {
+async function approveAll(runtime: CoreRuntime, asked: InvokeResponse): Promise<string[]> {
   const tokens = asked.outcome === 'approval_required' ? asked.approvals.map(approval => approval.token) : []
   for (const token of tokens) expect((await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
   return tokens

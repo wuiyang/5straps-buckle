@@ -12,7 +12,7 @@ import { CODE_REFUSALS, createCodeView } from '../common/services/judge/code-rea
 import { judgeCachePath, openJudgeCache } from '../common/services/judge/judge-cache.js'
 import { createJudgeGate } from '../common/services/judge/judge-gate.js'
 import { createEnvironmentPack } from '../common/services/packs/environment/index.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -22,7 +22,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // and no deny, built-in floor reason, destructive-list entry, or call the dangerously-allow switch let through is rated.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
@@ -53,14 +53,14 @@ function verdict(level: 'safe' | 'warning' | 'danger', confidence: number): Judg
   return { kind: 'verdict', level, confidence, reasoning: `Rated ${level}.`, model: 'claude-opus-5-5', latencyMs: 40, promptDigest: 'd'.repeat(64) }
 }
 
-async function runtimeOf(config: BuckleConfig, judge?: Judge): Promise<BuckleRuntime> {
+async function runtimeOf(config: BuckleConfig, judge?: Judge): Promise<CoreRuntime> {
   const runtime = await createRuntime({ config, ...(judge ? { judge } : {}) })
   runtimes.push(runtime)
   return runtime
 }
 
 /** One shell_exec call through the real permission pipeline, with a prepared effect standing in for its arguments; nothing runs. */
-async function call(runtime: BuckleRuntime, command: string, args: string[], extra: Array<{ kind: 'write_path'; path: string }> = []) {
+async function call(runtime: CoreRuntime, command: string, args: string[], extra: Array<{ kind: 'write_path'; path: string }> = []) {
   const execute = vi.fn(async () => 'executed')
   const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }, ...extra], execute })
   const requestId = `judge-${Math.random()}`
@@ -71,7 +71,7 @@ async function call(runtime: BuckleRuntime, command: string, args: string[], ext
   } finally { prepare.mockRestore() }
 }
 
-async function withPolicy(runtime: BuckleRuntime, commands: Partial<WorkspacePolicy['commands']>) {
+async function withPolicy(runtime: CoreRuntime, commands: Partial<WorkspacePolicy['commands']>) {
   await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: [], deny: [], ...commands } })
 }
 
@@ -173,7 +173,7 @@ describe('code a mount holds, where the program runs in a copy of the workspace 
   }
 
   // Without bubblewrap the mounts withhold the shell's tools, so a file tool stands in for one, prepared as the shell is.
-  async function send(runtime: BuckleRuntime, fromCopy: boolean) {
+  async function send(runtime: CoreRuntime, fromCopy: boolean) {
     const execute = vi.fn(async (context: { beginRun?: () => void }) => { context.beginRun?.(); return 'executed' })
     vi.spyOn(runtime.registry().get('fs_read'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['/data/job.py'] }], execute, ...(fromCopy ? { managesHistory: true } : {}) })
     const requestId = `mounted-${fromCopy}`

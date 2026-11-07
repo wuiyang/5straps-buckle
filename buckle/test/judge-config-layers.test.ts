@@ -4,7 +4,7 @@ import { basename, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DECISION_AI_FILE_KEYS, legacyWorkspaceRoot, loadConfig, unreadWorkspaceDefaults, workspaceConfig, type BuckleConfig, type EnvironmentLayers } from '../common/runtime/config.js'
 import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { scopeOf, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 
 // The decision AI's keys and addresses (D91, fix brief 1 item 17) come from the node's environment file alone where the
@@ -13,7 +13,7 @@ import { scopeOf, WorkspaceSettingsSchema } from '../common/services/workspaces/
 // did not read, never its value.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }

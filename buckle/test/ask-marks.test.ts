@@ -16,7 +16,7 @@ import { createWriteScopeRule } from '../common/domain/permission/rules/write-sc
 import { approvalsPath } from '../common/runtime/config.js'
 import { ActionTooLargeError } from '../common/services/approvals/approval-errors.js'
 import { createApprovalRegistry, MAX_ASK_BYTES } from '../common/services/approvals/approval-registry.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -153,7 +153,7 @@ describe('the ask record', () => {
 
 describe('an ask the invoker records', () => {
   const roots: string[] = []
-  const runtimes: BuckleRuntime[] = []
+  const runtimes: CoreRuntime[] = []
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }

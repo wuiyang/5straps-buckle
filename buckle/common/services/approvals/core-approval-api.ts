@@ -4,7 +4,7 @@ import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/sig
 import { rightsOf, type Assurance } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import type { ApprovalBackend, ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
+import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import { isDeviceProof, type DeviceProof } from './device-proof.js'
@@ -82,12 +82,6 @@ export interface CoreApprovalApi {
    * its answered `once` approvals no call spent are dropped.
    */
   withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
-}
-
-/** What a face holds of the approvals: the core approval API, and the stdio face's way to open its host's forms. */
-export interface ApprovalFaceApi extends CoreApprovalApi {
-  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
-  openFormsBackend(backend: ApprovalBackend): void
 }
 
 /** How a core client's input reads: the approval service's answer it makes, or why it makes none. */

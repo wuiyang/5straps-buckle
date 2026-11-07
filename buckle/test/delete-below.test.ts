@@ -14,7 +14,7 @@ import { createWriteScopeRule } from '../common/domain/permission/rules/write-sc
 import { createPathView } from '../common/domain/path-view.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { mintDeviceProof } from '../common/services/approvals/device-proof.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -231,7 +231,7 @@ describe('the approval service', () => {
   })
 })
 
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
 })

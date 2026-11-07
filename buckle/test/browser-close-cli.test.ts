@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
-import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { browserCloseCommand } from '../cli/browser.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -12,7 +12,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // left, in any Buckle process, and every hold their fills left, with or without a node running.
 
 const roots: string[] = []
-const runtimes: BuckleRuntime[] = []
+const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
@@ -90,7 +90,7 @@ describe('buckle browser close', () => {
 
   // Codex review L2: a close only disconnects from an attached Chrome, so its hold stays until that Chrome is closed.
   it('says an attached Chrome\'s hold stays until the command finds that Chrome closed, and exits 1', async () => {
-    const runtime = { closeBrowsers: async () => ({ browsers: 0, closed: 0, held: 0, kept: 1, chromes: 1 }), workspaceName: () => 'site' } as unknown as BuckleRuntime
+    const runtime = { closeBrowsers: async () => ({ browsers: 0, closed: 0, held: 0, kept: 1, chromes: 1 }), workspaceName: () => 'site' } as unknown as CoreRuntime
     let out = ''
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
     expect((await browserCloseCommand(runtime, ['close'])).exitCode).toBe(1)
@@ -110,7 +110,7 @@ describe('buckle browser close', () => {
 
   // Codex review L3: a browser a call still runs on is left to that call, which closes it when it ends.
   it('says a browser a call still runs on closes when that call ends, and exits 1', async () => {
-    const runtime = { closeBrowsers: async () => ({ browsers: 2, closed: 1, held: 0, kept: 1, busy: 1 }), workspaceName: () => 'site' } as unknown as BuckleRuntime
+    const runtime = { closeBrowsers: async () => ({ browsers: 2, closed: 1, held: 0, kept: 1, busy: 1 }), workspaceName: () => 'site' } as unknown as CoreRuntime
     let out = ''
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
     expect((await browserCloseCommand(runtime, ['close'])).exitCode).toBe(1)
