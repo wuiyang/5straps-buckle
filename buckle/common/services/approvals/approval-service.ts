@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
 import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
@@ -219,6 +219,8 @@ interface OpenAsk {
   readonly approvals: ApprovalRequest[]
   /** Those plus the ones answered before it opened: a denial among them settles it too. */
   readonly tokens: string[]
+  /** Names the group to a backend: the same tokens are the same group. */
+  readonly group: string
   /** One controller per waiting caller; aborting it supersedes that caller. */
   readonly participants: Set<AbortController>
   /** Ends the questions and the watch. */
@@ -332,7 +334,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const context: AskContext = { correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId, key, hold, ...(input.call === undefined ? {} : { call: input.call }) }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, context)), resend: issued.joined }))
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, { ...context, group: ask.group })), resend: issued.joined }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
@@ -490,8 +492,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     const { key } = input
     const existing = open.get(key)
     if (existing && input.joined && input.approvals.every(approval => existing.tokens.includes(approval.token))) return existing
+    const tokens = [...input.approvals.map(approval => approval.token), ...input.answered]
     const ask: OpenAsk = {
-      key, approvals: input.approvals, tokens: [...input.approvals.map(approval => approval.token), ...input.answered], participants: new Set(),
+      key, approvals: input.approvals, tokens, group: groupOf(tokens), participants: new Set(),
       stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, told: new Set(),
     }
     open.set(key, ask)
@@ -574,10 +577,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   /** One ask whole, as the terminal shows it. The workspace's name is read as each question is shown, so a rename shows. */
-  function fullAskOf(approval: ApprovalRequest, context: AskContext): FullAsk {
+  function fullAskOf(approval: ApprovalRequest, context: AskContext & { group: string }): FullAsk {
     const { call } = context
     return {
-      egress: 'full', contractVersion: 1, token: approval.token, idempotencyKey: context.key,
+      egress: 'full', contractVersion: 1, token: approval.token, group: context.group, idempotencyKey: context.key,
       correlation: { correlationId: context.correlationId, requestId: context.requestId },
       workspace: { id: options.workspaceId, node: options.serverId, get name() { return options.workspaceName } },
       requester: { actor: context.actor ?? null, sessionId: context.sessionId },
@@ -714,6 +717,10 @@ function cancels(signal: AbortSignal | undefined, isCancel: ((reason: unknown) =
 /** The in-process twin of the registry's join: the same requestId, session and actor. */
 function joinKey(input: { sessionId: string; requestId: string; actor?: string }): string {
   return JSON.stringify([input.sessionId, input.actor ?? null, input.requestId])
+}
+
+function groupOf(tokens: readonly string[]): string {
+  return createHash('sha256').update(JSON.stringify([...tokens].sort())).digest('hex')
 }
 
 /** Why a call stopped waiting while its ask stays pending. */

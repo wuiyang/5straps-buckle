@@ -19,7 +19,9 @@ const ACCEPTED: SubmitResult = { kind: 'accepted', refs: [] }
 export function createTerminalBackend(options: TerminalBackendOptions): ApprovalBackend {
   let host: ApprovalHost | undefined
   const closing = new AbortController()
+  // By call and group while the submit still asks; `running` holds every unsettled submit, for close.
   const inFlight = new Map<string, Promise<SubmitResult>>()
+  const running = new Set<Promise<SubmitResult>>()
   const questions = new Map<string, AbortController>()
   // The tokens of the submits still asking, and those among them whose asks closed.
   const asking = new Set<string>()
@@ -64,18 +66,25 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
 
     submit(asks, context) {
       if (!host || closing.signal.aborted) return Promise.resolve(ACCEPTED)
-      const key = asks[0]?.idempotencyKey
-      const running = key === undefined ? undefined : inFlight.get(key)
-      if (running) return running
+      const key = requestKey(asks)
+      const repeated = key === undefined ? undefined : inFlight.get(key)
+      if (repeated) return repeated
       for (const ask of asks) asking.add(ask.token)
+      const forget = () => { if (key !== undefined && inFlight.get(key) === submitted) inFlight.delete(key) }
       const submitted: Promise<SubmitResult> = askInTurn({ host, asks, context }).then(() => ACCEPTED).finally(() => {
         for (const ask of asks) {
           asking.delete(ask.token)
           closed.delete(ask.token)
         }
-        if (key !== undefined && inFlight.get(key) === submitted) inFlight.delete(key)
+        forget()
+        running.delete(submitted)
       })
-      if (key !== undefined) inFlight.set(key, submitted)
+      running.add(submitted)
+      if (key !== undefined) {
+        inFlight.set(key, submitted)
+        // An aborted submit opens nothing more, so the group's next submit is a request of its own.
+        context.signal.addEventListener('abort', forget, { once: true })
+      }
       return submitted
     },
 
@@ -89,9 +98,15 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
 
     async close() {
       closing.abort()
-      await Promise.allSettled([...inFlight.values()])
+      await Promise.allSettled([...running])
     },
   }
+}
+
+/** One request per call and group: a new group under the same call is asked afresh. */
+function requestKey(asks: readonly FullAsk[]): string | undefined {
+  const [first] = asks
+  return first === undefined ? undefined : JSON.stringify([first.idempotencyKey, first.group])
 }
 
 /** The verdict for the asked token alone; anything but a known approving choice denies once. */

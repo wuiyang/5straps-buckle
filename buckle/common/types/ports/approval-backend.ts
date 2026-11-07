@@ -29,7 +29,9 @@ export interface FullAsk {
   egress: 'full'
   contractVersion: ContractVersion
   token: string
-  /** The call's join key: a second submit under it opens no second request. */
+  /** Shared by every ask one call made: its tokens, answered ones included. */
+  group: string
+  /** The call's join key. A new group under it is a new request: the earlier group left the queue unanswered. */
   idempotencyKey: string
   correlation: { correlationId: string; requestId: string }
   /** `name` is read as it is shown, so a rename shows at once. */
@@ -125,7 +127,7 @@ export interface ApprovalHost {
 /** One approval backend. Its methods may fail; core treats every failure as no decision. */
 export interface ApprovalBackend {
   open(host: ApprovalHost): Promise<BackendCapabilities>
-  /** One call's asks together; the same idempotencyKey opens no second request. */
+  /** One call's asks together; the same idempotencyKey and group open no second request while the first still asks. */
   submit(asks: Ask[], context: SubmitContext): Promise<SubmitResult>
   notify(events: LifecycleEvent[]): Promise<void>
   /** Once it resolves, the backend calls nothing on the host. */

@@ -10,7 +10,7 @@ const APPLIED: DecisionReceipt = { status: 'applied', state: 'approved', assuran
 
 function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk {
   return {
-    egress: 'full', contractVersion: 1, token, idempotencyKey: 'key-1',
+    egress: 'full', contractVersion: 1, token, group: 'group-1', idempotencyKey: 'key-1',
     correlation: { correlationId: `c-${token}`, requestId: 'r-1' },
     workspace: { id: 'w-1', node: 'node-1' },
     requester: { actor: 'agent:a', sessionId: 's-1' },
@@ -107,7 +107,7 @@ describe('the terminal backend against the contract kit', () => {
     expect(terminal.asked).toHaveLength(1)
   })
 
-  it('opens one request for two submits under one idempotency key', async () => {
+  it('opens one request for two submits of one group under one idempotency key', async () => {
     const asks = [askFor('a')]
     const host = fakeHost({ routed: asks })
     const terminal = answering(['wait'])
@@ -119,6 +119,24 @@ describe('the terminal backend against the contract kit', () => {
     expect(terminal.asked).toHaveLength(1)
     control.abort()
     expect(await first).toEqual(await second)
+  })
+
+  it('asks a new group under the same idempotency key, and the same group again once its submit was aborted', async () => {
+    const earlier = askFor('a')
+    const newer = askFor('b', { group: 'group-2' })
+    const host = fakeHost({ routed: [earlier, newer] })
+    const terminal = answering(['wait', 'wait', 'wait'])
+    const backend = await opened(terminal.requestCli, host)
+    const first = new AbortController()
+    void backend.submit([earlier], { signal: first.signal, resend: false })
+    void backend.submit([newer], live())
+    await tick()
+    expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'approval:w-1:b'])
+    first.abort()
+    void backend.submit([earlier], { signal: new AbortController().signal, resend: true })
+    await tick()
+    expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'approval:w-1:b', 'approval:w-1:a'])
+    await backend.close()
   })
 
   it('asks and decides nothing the host did not route to it', async () => {

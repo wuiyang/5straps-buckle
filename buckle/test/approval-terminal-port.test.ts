@@ -1,8 +1,10 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import type { CliOutcome, RequestCli } from '@5straps/runtime'
 import type { PermissionRuleId } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createTerminalBackend } from '../common/adapters/approval/terminal-backend.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
@@ -37,13 +39,34 @@ function recordingBackend(decide: (host: ApprovalHost, asks: FullAsk[]) => Promi
   return { backend, seen }
 }
 
-function setUp(backend: ApprovalBackend) {
+function setUp(backend: ApprovalBackend, graceMs = 200) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-terminal-port-'))
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(headlessGrace), terminal: backend })
-  return { registry, grants, service }
+  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, interaction: fixedInteraction(headlessGrace), terminal: backend })
+  return { registry, grants, service, root }
+}
+
+/** The same ledger as a second process opens it. */
+function otherProcess(root: string) {
+  return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
+}
+
+/** A terminal that holds each question until it is withdrawn, recording what it showed and what it withdrew. */
+function heldTerminal() {
+  const shown: string[] = []
+  const withdrawn: string[] = []
+  const requestCli: RequestCli = (request, options) => {
+    shown.push(request.id)
+    return new Promise<CliOutcome>((resolve) => {
+      options?.signal?.addEventListener('abort', () => {
+        withdrawn.push(request.id)
+        resolve({ status: 'cancelled', requestId: request.id, reason: 'withdrawn' })
+      }, { once: true })
+    })
+  }
+  return { requestCli, shown, withdrawn }
 }
 
 const ask = (subject: string, rule: PermissionRuleId = 'write_scope', extra: { widerSubject?: string } = {}) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule, subject, reason: 'outside the workspace', offeredScopes: ['once' as const, 'session' as const], ...extra })
@@ -66,6 +89,7 @@ describe('the terminal backend port, core side', () => {
       action: { arguments: CALL.arguments, cwd: CALL.cwd, description: CALL.description, effects: CALL.effects },
     })
     expect(second?.idempotencyKey).toBe(first?.idempotencyKey)
+    expect(second?.group).toBe(first?.group)
     await service.close()
     expect(seen.closed).toBe(true)
   })
@@ -108,6 +132,24 @@ describe('the terminal backend port, core side', () => {
     await waiting
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(seen.events.map(event => [event.token, event.type])).toEqual([[first!.token, 'answered'], [second!.token, 'denied']])
+    await service.close()
+  })
+})
+
+describe('the service and the terminal backend together', () => {
+  it('asks a new group under the same requestId once the earlier one left the queue in another process while on screen', async () => {
+    const terminal = heldTerminal()
+    const { service, registry, root } = setUp(createTerminalBackend({ requester: async () => terminal.requestCli }), 150)
+    const first = await service.request(call({ fingerprint: 'f' }))
+    expect(first.settled).toBe(false)
+    const [earlier] = first.approvals
+    expect(terminal.shown).toEqual([`approval:w-1:${earlier!.token}`])
+    await otherProcess(root).cancel([earlier!.token])
+    const second = service.request(call({ fingerprint: 'f' }))
+    await vi.waitFor(() => expect(terminal.shown).toHaveLength(2), { timeout: 1_500 })
+    const [newer] = registry.pending()
+    expect(terminal.shown[1]).toBe(`approval:w-1:${newer!.token}`)
+    await second
     await service.close()
   })
 })
