@@ -33,7 +33,7 @@ async function pendingRequest(config: BuckleConfig): Promise<string> {
   const registry = createApprovalRegistry(
     createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }),
     approvalsPath(config),
-    config.cwd,
+    config.workspaceId,
   )
   const [request] = (await registry.ask({
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
@@ -70,7 +70,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 
   it('lists a subject with control characters escaped, so it cannot rewrite the terminal (review M3)', async () => {
     const config = node()
-    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.cwd)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.workspaceId)
     await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/x\u001b[2K\rls', reason: 'outside\u0007', offeredScopes: ['once'] }] })
 
     const listed = await capture({ argv: ['approvals'], config })
@@ -177,7 +177,7 @@ describe('buckle approvals, the queue a person answers from', () => {
 })
 
 function registry(config: BuckleConfig) {
-  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.cwd)
+  return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.workspaceId)
 }
 
 /** A private host a web_fetch asked about, waiting on the node. */

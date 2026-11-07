@@ -171,11 +171,11 @@ describe('an ask nobody is at a terminal for', () => {
     expect(onDisk()).toEqual({ pending: false, resolved: true })
   })
 
-  it('keeps its ask under the workspace folder in the ledger, and its grant under the workspace id', async () => {
+  it('keeps its ask in the ledger and its grant under the workspace id', async () => {
     const { runtime, config, call, answer } = await node()
     const asked = await call('fs_write', { path: 'one/a.md', content: 'a' })
     const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { pending: Array<{ workspace: string }> }
-    expect(ledger.pending.map(entry => entry.workspace)).toEqual([config.cwd])
+    expect(ledger.pending.map(entry => entry.workspace)).toEqual([runtime.workspaceId])
     expect(config.cwd).not.toBe(runtime.workspaceId)
     expect(await answer(tokensOf(asked)[0]!, { scope: 'always' })).toMatchObject({ ok: true })
     const grants = JSON.parse(readFileSync(grantsPath(config), 'utf8')) as { grants: Array<{ workspace: string }> }

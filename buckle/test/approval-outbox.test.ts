@@ -16,10 +16,10 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
-function queue(workspaceRoot?: string, stateDirectory?: string) {
+function queue(workspaceKey?: string, stateDirectory?: string) {
   const root = stateDirectory ?? mkdtempSync(join(tmpdir(), 'buckle-outbox-'))
   const file = join(root, 'approvals.json')
-  const workspace = workspaceRoot ?? root
+  const workspace = workspaceKey ?? root
   const open = () => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), file, workspace, 1, { durableNotices: true })
   const registry = open()
   const ask = async (count = 1, sessionId: string = randomUUID()) => (await registry.ask({ tool: 'fs_write', sessionId,
@@ -193,9 +193,9 @@ describe('durable approval outcome delivery', () => {
     vi.useFakeTimers(); vi.setSystemTime(at)
     const workspace = mkdtempSync(join(tmpdir(), 'buckle-outbox-workspace-'))
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-outbox-')), BUCKLE_AUTH_TOKEN: 'test-agent', BUCKLE_ADMIN_TOKEN: 'test-admin', BUCKLE_PACKS: 'fs', BUCKLE_ALLOW_SHELL: 'false', BUCKLE_APPROVAL_WEBHOOK: 'http://rings.test/approvals' })
-    // The queue the runtime takes over lives in the workspace's own records folder (D85, Q15).
+    // The queue the runtime takes over lives in the workspace's own records folder (D85, Q15), under its id.
     mkdirSync(config.stateDirectory, { recursive: true })
-    const q = queue(workspace, config.stateDirectory)
+    const q = queue(config.workspaceId, config.stateDirectory)
     const [ask] = await q.ask()
     await q.registry.cancel([ask!.token])
     const blocked = paused()

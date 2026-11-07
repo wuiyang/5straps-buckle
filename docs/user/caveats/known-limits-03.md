@@ -48,10 +48,6 @@ the sandbox layout, the URL list, the browser, and the forge pack.
 
 The first release of [workspaces](../how-to/workspaces.md) leaves these open for a later release.
 
-- `approvals.json` is keyed by the workspace's folder path, inside each workspace's own state
-  directory. A workspace's folder is fixed once registered, and its id comes from the folder, so a
-  removed workspace's records are taken up only by adding the same folder again and the key cannot
-  drift; keying it by workspace id is left for a later release.
 - `disable` and `remove` check for running calls, then change the registry: a call that begins in
   another process between the two runs on, and `remove --purge` can delete its records under it.
   A call that begins in the process making the change keeps its runtime open until it ends, and

@@ -313,13 +313,13 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
   const lockDeadlineMs = config.stateLockDeadlineMs
   const workspaceId = input.workspaceId ?? config.workspaceId
-  // Keyed by the workspace's id, so they stay its own whatever its folder is called.
+  // Grants and asks are keyed by the workspace's id, so they stay its own whatever its folder is called or wherever it moves.
   const grants = createFileGrantStore({ filePath: grantsPath(config), workspace: workspaceId, lockDeadlineMs })
   // Every notification names its workspace, whose `buckle approve --workspace` answers it, by id and by its name as it
   // stands at each post, so a rename shows.
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, get workspaceName() { return config.serverName }, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
   let notices: ApprovalNotices | undefined
-  const approvals = createApprovalRegistry(grants, approvalsPath(config), config.cwd, config.approvalTimeoutMs, {
+  const approvals = createApprovalRegistry(grants, approvalsPath(config), workspaceId, config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,
     onExpired: requests => notices?.expired(requests),
     onNoticeQueued: () => { void notices?.flush() },
