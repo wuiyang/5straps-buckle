@@ -1,7 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { guardDecision, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
-import { RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
+import { guardDecision, RECORDED_BEFORE_NOTE, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
 
 // Today's checks on an answer, held by the pure decision guard (the approval backend design, slice 4), taken from the
 // once, CLI, sensitive-file, and signed-deadline suites. guardDecision runs every check, screenDecision's first; the

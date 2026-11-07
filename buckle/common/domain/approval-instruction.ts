@@ -1,5 +1,6 @@
 import type { ApprovalRequest, ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
+import { RECORDED_BEFORE_NOTE } from './approval/decision-guard.js'
 
 /**
  * Controls (C0, DEL, C1), format characters (bidirectional marks and overrides, zero-width
@@ -162,13 +163,6 @@ export function describeApprovalRequest(input: NamedWorkspace & { request: Appro
     `then approve with: ${approveCommand(input)} (it shows the action again and asks to confirm)`,
   ]
 }
-
-/**
- * What every route says of an ask recorded before this build, or whose kept call file is missing or damaged: its
- * whole call cannot be shown, so nobody approves it; it can be denied, or the call re-sent under the same requestId,
- * which records it again (owner decision D17; review L4 of the continuation review).
- */
-export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 /**
  * A workspace as every approver names it (D85, Q15): its name, which the owner chose, knows it by, and types after

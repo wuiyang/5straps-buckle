@@ -7,7 +7,7 @@ import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approv
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { askViewDetails, type AskView } from '../../domain/approval/ask-view.js'
-import type { ApprovalAuthority } from '../../domain/approval/decision-guard.js'
+import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'

@@ -5,7 +5,7 @@ import type { ApprovalRequest, ApprovalWait, GrantScope, InvokeResponse, JsonObj
 import { describeApprovalRequest, describeAsk, describeAskOfShownCall, describeCallAsks, reviewCommand } from '../common/domain/approval-instruction.js'
 import { logger, withoutCause } from '../common/runtime/log.js'
 import { agentFailureMessage } from '../common/services/agent-failure.js'
-import type { ApprovalAuthority } from '../common/domain/approval/decision-guard.js'
+import type { ApprovalAuthority } from '../common/types/ports/approval-authority.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'

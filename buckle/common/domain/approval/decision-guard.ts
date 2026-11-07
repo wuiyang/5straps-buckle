@@ -1,13 +1,14 @@
 import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5straps/protocol'
-import { RECORDED_BEFORE_NOTE } from '../approval-instruction.js'
+import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
 /**
- * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin credential alone: a face reachable
- * with an agent's token answers as `agent`, which the guard admits for `once` and nothing that outlives the call.
+ * What every route says of an ask recorded before this build, or whose kept call file is missing or damaged: its
+ * whole call cannot be shown, so nobody approves it; it can be denied, or the call re-sent under the same requestId,
+ * which records it again (owner decision D17).
  */
-export type ApprovalAuthority = 'admin' | 'agent'
+export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 /** Why the guard refused a decision, named as the approval contract's ApprovalErrorCode names it. */
 export type GuardRefusalCode =
