@@ -16,6 +16,9 @@ const LEDGER_OR_GRANT_ADAPTER = /from '[^']*(?:approvals\/approval-registry|appr
 const GUARDS = /\b(?:guardDecision|screenDecision)\(/
 // The approval service's own answer, which takes any source; a core client decides through `decide`, naming its own.
 const ANSWERS_ON_SERVICE = /\b(?:approvals|approvalService)\??\.answer\(/
+const ON_THE_SERVICE = /\bapprovalService\??\.(\w+)/g
+// CoreApprovalApi's methods, and the forms backend the stdio face opens.
+const CORE_API = ['decide', 'pending', 'waiting', 'waitingAsk', 'listing', 'challengeListing', 'withdrawCall', 'openFormsBackend']
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
@@ -87,6 +90,11 @@ describe('the approval boundary', () => {
       .filter(file => ANSWERS_ON_SERVICE.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
     expect(callers).toEqual([])
+  })
+
+  it('lets the faces reach the approval service through the core approval API alone, and the stdio face open its forms', () => {
+    const reached = new Set(sourceFiles('main.ts', 'cli', 'mcp', 'server', 'layers').flatMap(file => [...readFileSync(file, 'utf8').matchAll(ON_THE_SERVICE)].map(match => match[1]!)))
+    expect([...reached].filter(method => !CORE_API.includes(method))).toEqual([])
   })
 
   it('keeps every adapter off the approval services', () => {

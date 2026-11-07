@@ -223,8 +223,8 @@ describe('the approval service', () => {
     const { registry, grants } = queue()
     const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    const result = await service.decideSealed({ body: { token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, signedBy: 'key:device', proofDeadline: Date.now() + 60_000 })
-    expect(result).toMatchObject({ status: 'rejected', reason: expect.stringContaining('buckle approve --below') })
+    const result = await service.decide({ source: 'devices', body: { token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, signedBy: 'key:device', proofDeadline: Date.now() + 60_000 })
+    expect(result).toMatchObject({ status: 'refused', step: 'decision', error: { message: expect.stringContaining('buckle approve --below') } })
     expect(grants.list()).toEqual([])
     await service.close()
   })

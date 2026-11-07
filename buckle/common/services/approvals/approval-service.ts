@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
-import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait } from '@5straps/protocol'
+import type { ApprovalDecision, ApprovalRequest, ApprovalSkipReason, ApprovalWait } from '@5straps/protocol'
 import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
@@ -10,14 +10,13 @@ import { rightsOf } from '../../domain/approval/assurance.js'
 import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
 import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
-import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
-import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
+import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { answerOf, backendReceipt, decisionOf, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
+import { backendReceipt, decisionOf, readInput, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
@@ -104,31 +103,6 @@ export interface ApprovalAnswer {
   widen?: 'below'
 }
 
-/**
- * What a decision from Rings or a person's key came to; the setup face answers 401, 400, 409 or 200
- * from it, and audits what an opened decision said (review item 6 of the proof-of-possession fixes).
- */
-export type SealedDecisionResult =
-  | { status: 'refused'; reason: DecisionRefusal }
-  | { status: 'invalid' }
-  | { status: 'rejected'; reason: string; decided: DecidedRecord }
-  | { status: 'answered'; decided: DecidedRecord }
-
-/**
- * One decision as its audit entry keeps it: what was decided, the digest of the challenge a key signed,
- * and the rule and subject of the ask it answered (the subject as the audit keeps subjects).
- */
-export interface DecidedRecord {
-  token: string
-  approved: boolean
-  scope: ApprovalDecision['scope']
-  challenge?: string
-  rule?: string
-  subject?: string
-  /** The decision is recorded, but its grant is not written yet (GRANT_OWED_NOTE). */
-  grantOwed?: true
-}
-
 export interface ApprovalService extends CoreApprovalApi {
   /** Issues the asks (or joins the ones the same call already made), then waits as the caller's entry point holds it. */
   request(input: ApprovalAskInput): Promise<ApprovalWaitResult>
@@ -137,12 +111,6 @@ export interface ApprovalService extends CoreApprovalApi {
    * A core client decides through `decide` and a backend through its host, each under the source core holds for it.
    */
   answer(input: ApprovalAnswer): Promise<Resolution>
-  /**
-   * `RINGS-D20`: opens a decision envelope under the nonce store's lock (the claim stays a synchronous
-   * view of the locked state), then answers as the `sealed` source, which only denies.
-   * A decision in a request an enrolled key signed (`signedBy`) is plain: its signature is the proof, as the `devices` source.
-   */
-  decideSealed(input: { body: unknown; signedBy?: string; proofDeadline?: number }): Promise<SealedDecisionResult>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
@@ -360,29 +328,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     async decide(input) {
-      const answer = answerOf(input)
-      return receiptOf({ decision: answer.decision, source: answer.source, result: await service.answer(answer) })
-    },
-
-    async decideSealed(input) {
-      if (input.signedBy) {
-        // B24: a person's key decides on the challenge the node signed, named by its digest, and on nothing else.
-        const signed = SignedApprovalDecisionSchema.safeParse(input.body)
-        if (!signed.success) return { status: 'invalid' }
-        const { challenge, ...decision } = signed.data
-        if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return { status: 'invalid' }
-        // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
-        if (decision.subject !== undefined) return settledDecision({ decision, challenge, result: { ok: false, code: 'scope_forbidden', reason: 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below' } })
-        const result = await service.answer({ decision, source: SOURCES.devices, challenge, decidedBy: input.signedBy, consumeNotAfter: input.proofDeadline })
-        return settledDecision({ decision, challenge, result })
-      }
-      const opened = await nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body: input.body, workspaceId: options.workspaceId, seen }))
-      if (!opened.ok) return { status: 'refused', reason: opened.reason }
-      const parsed = ApprovalDecisionSchema.safeParse(opened.body)
-      if (!parsed.success) return { status: 'invalid' }
-      // The envelope's source only denies: the decision guard refuses its approvals.
-      const result = await service.answer({ decision: parsed.data, source: SOURCES.sealed })
-      return settledDecision({ decision: parsed.data, result })
+      const read = await readInput(input, { open: body => nonces.withClaims(seen => openApprovalDecision({ key: options.decisionKey, body, workspaceId: options.workspaceId, seen })) })
+      if (!read.ok) return read.receipt
+      return receiptOf({ answer: read.answer, result: await service.answer(read.answer) })
     },
 
     challengeListing(listing) {
@@ -581,13 +529,13 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
     const audited: AuditedDecision = { token: body.token, approved: decision.approved, scope: body.scope, source }
     if (await auditReceived(audited)) await auditOutcome({ decision: audited, result })
-    return backendReceipt(receiptOf({ decision, source, result }))
+    return backendReceipt(receiptOf({ answer: { decision, source }, result }))
   }
 
   /** A backend's plain decision, under the source core holds for it. */
   async function decideAs(source: ApprovalSource, body: DecisionBody): Promise<DecisionReceipt> {
-    const decision = decisionOf(body)
-    return backendReceipt(receiptOf({ decision, source, result: await service.answer({ decision, source, ...(body.widen === undefined ? {} : { widen: body.widen }) }) }))
+    const answer: ApprovalAnswer = { decision: decisionOf(body), source, ...(body.widen === undefined ? {} : { widen: body.widen }) }
+    return backendReceipt(receiptOf({ answer, result: await service.answer(answer) }))
   }
 
   /** Whether the decision may go on: a received entry that cannot be written blocks it only where the node says so. */
@@ -718,15 +666,6 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   }
 
   return service
-}
-
-/** A decision the service answered or rejected, with what its audit entry records. */
-function settledDecision(input: { decision: ApprovalDecision; challenge?: string; result: Resolution }): SealedDecisionResult {
-  const { decision, result } = input
-  const asked = result.ok && result.asked ? { rule: result.asked.rule, subject: redactedSubject(result.asked.rule, result.asked.subject) } : {}
-  const owed = result.ok && result.grantOwed ? { grantOwed: true as const } : {}
-  const decided: DecidedRecord = { token: decision.token, approved: decision.approved, scope: decision.scope, ...(input.challenge === undefined ? {} : { challenge: input.challenge }), ...asked, ...owed }
-  return result.ok ? { status: 'answered', decided } : { status: 'rejected', reason: result.reason, decided }
 }
 
 /** Whether the caller's abort is an explicit cancel; without a way to tell, it is a dropped transport. */

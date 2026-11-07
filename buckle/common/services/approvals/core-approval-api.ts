@@ -1,9 +1,11 @@
-import type { ApprovalDecision, ApprovalRequest, ApprovalWithdraw, PermissionRuleId } from '@5straps/protocol'
+import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalWithdraw, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
 import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/signed-request'
 import { rightsOf, type Assurance } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import type { ApprovalError, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
-import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
+import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
+import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
+import { SOURCES } from '../../types/ports/approval-source.js'
+import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import type { ListedApproval } from './approval-listing.js'
 import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import type { ApprovalAnswer } from './approval-service.js'
@@ -14,18 +16,35 @@ export type CoreDecisionInput =
   | { source: 'cli'; decision: DecisionBody; hostPattern?: string }
   /** `--approve-if-safe`: the thorough stage that passed, as `<stage>:<provider>:<model>`; its once binds to the code it rated. */
   | { source: 'judge'; decision: DecisionBody; rater: string; code?: CodeBinding }
+  /**
+   * The setup POST, signed by an enrolled device: the setup guard verified the request and claimed its nonce, and hands
+   * on the key (`key:<fingerprint>`) and the proof's deadline, never the body's. The body is the decision.
+   */
+  | { source: 'devices'; body: unknown; signedBy: string; proofDeadline?: number }
+  /** The setup POST under the admin bearer: a plain body, or the envelope the key paired at setup seals. It only denies. */
+  | { source: 'sealed'; body: unknown }
 
 /** The rule and subject a decision answered. */
 export interface AnsweredAsk { rule: PermissionRuleId; subject: string }
 
+/** The decision as core read it from a client's input; `challenge` is the digest a device's key signed. */
+export interface ReadDecision { token: string; approved: boolean; scope: GrantScope; challenge?: string }
+
 /**
- * A backend's receipt, with what a core client says of it: the ask answered, and the wider subject or host pattern an
- * approval granted in place of the ask's own.
+ * Where a refusal came: the proof that carried the decision, the statement it read as, or the decision itself, which
+ * the decision guard checked.
+ */
+export type RefusalStep = 'proof' | 'statement' | 'decision'
+
+/**
+ * A backend's receipt, with what a core client says of it: the decision as read, the ask answered, and the wider subject
+ * or host pattern an approval granted in place of the ask's own.
  */
 export type CoreDecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; grantOwed?: true }
-  | { status: 'repeated'; state: 'approved' | 'denied'; asked?: AnsweredAsk; grantOwed?: true }
-  | { status: 'refused'; error: ApprovalError }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; decision: ReadDecision; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; grantOwed?: true }
+  | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; grantOwed?: true }
+  | { status: 'refused'; step: 'decision'; decision: ReadDecision; error: ApprovalError }
+  | { status: 'refused'; step: 'proof' | 'statement'; error: ApprovalError }
 
 /** Every waiting ask's challenge, with each large whole call carried once by its signed reference. */
 export interface ChallengeListing {
@@ -62,42 +81,97 @@ export interface CoreApprovalApi {
   withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
 }
 
-/** The approval service's answer a core client's decision makes, under the source core holds for its tag. */
-export function answerOf(input: CoreDecisionInput): ApprovalAnswer {
-  const decision = decisionOf(input.decision)
-  const widen = input.decision.widen === undefined ? {} : { widen: input.decision.widen }
+/** How a core client's input reads: the approval service's answer it makes, or why it makes none. */
+export type ReadInput = { ok: true; answer: ApprovalAnswer } | { ok: false; receipt: CoreDecisionReceipt }
+
+/** What reading an input needs of core: the envelope opener, which claims the envelope's nonce under its store's lock. */
+export interface ReadContext {
+  open(body: unknown): Promise<OpenedDecision>
+}
+
+/** The approval service's answer a core client's input makes, under the source core holds for its tag. */
+export async function readInput(input: CoreDecisionInput, context: ReadContext): Promise<ReadInput> {
   switch (input.source) {
     case 'cli':
-      return { decision, source: SOURCES.cli, ...widen, ...(input.hostPattern === undefined ? {} : { widenTo: input.hostPattern }) }
     case 'judge':
-      return { decision, source: SOURCES.judge, ...widen, decidedBy: `judge:${input.rater}`.slice(0, 200), ...(input.code === undefined ? {} : { code: input.code }) }
+      return { ok: true, answer: answerOf(input) }
+    case 'devices':
+      return readSigned(input)
+    case 'sealed':
+      return readSealed(input.body, context)
   }
 }
+
+function answerOf(input: Extract<CoreDecisionInput, { source: 'cli' | 'judge' }>): ApprovalAnswer {
+  const decision = decisionOf(input.decision)
+  const widen = input.decision.widen === undefined ? {} : { widen: input.decision.widen }
+  if (input.source === 'cli') return { decision, source: SOURCES.cli, ...widen, ...(input.hostPattern === undefined ? {} : { widenTo: input.hostPattern }) }
+  return { decision, source: SOURCES.judge, ...widen, decidedBy: `judge:${input.rater}`.slice(0, 200), ...(input.code === undefined ? {} : { code: input.code }) }
+}
+
+// B24: a person's key decides on the challenge the node signed, named by its digest, and on nothing else.
+function readSigned(input: Extract<CoreDecisionInput, { source: 'devices' }>): ReadInput {
+  const signed = SignedApprovalDecisionSchema.safeParse(input.body)
+  if (!signed.success) return INVALID
+  const { challenge, ...decision } = signed.data
+  if (decision.approved && decision.scope === 'once' && input.proofDeadline === undefined) return INVALID
+  // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
+  if (decision.subject !== undefined) return { ok: false, receipt: { status: 'refused', step: 'decision', decision: readOf(decision, challenge), error: { code: 'scope_forbidden', message: DEVICE_SUBJECT, retryable: false } } }
+  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: input.signedBy, ...(input.proofDeadline === undefined ? {} : { consumeNotAfter: input.proofDeadline }) } }
+}
+
+async function readSealed(body: unknown, context: ReadContext): Promise<ReadInput> {
+  const opened = await context.open(body)
+  if (!opened.ok) return { ok: false, receipt: { status: 'refused', step: 'proof', error: { code: PROOF_CODES[opened.reason], message: opened.reason, retryable: false } } }
+  const parsed = ApprovalDecisionSchema.safeParse(opened.body)
+  if (!parsed.success) return INVALID
+  // The sealed source only denies: the decision guard refuses its approvals.
+  return { ok: true, answer: { decision: parsed.data, source: SOURCES.sealed } }
+}
+
+const INVALID: ReadInput = { ok: false, receipt: { status: 'refused', step: 'statement', error: { code: 'statement_invalid', message: 'Invalid approval decision', retryable: false } } }
+const DEVICE_SUBJECT = 'A device\'s decision grants the subject of the challenge it was shown and names none of its own; grant a folder and its subfolders at the node, with buckle approve --below'
+const PROOF_CODES: Readonly<Record<DecisionRefusal, ApprovalErrorCode>> = { expired: 'proof_expired', replayed: 'replayed', tampered: 'proof_invalid', unknown_key: 'proof_invalid', plain_refused: 'proof_invalid' }
 
 export function decisionOf(body: DecisionBody): ApprovalDecision {
   return { token: body.token, approved: body.outcome === 'approve', scope: body.scope }
 }
 
-/** What a decision came to, rated as the decision guard rated the source that sent it. */
-export function receiptOf(input: { decision: ApprovalDecision; source: ApprovalSource; result: Resolution }): CoreDecisionReceipt {
-  const { result } = input
-  if (!result.ok) return { status: 'refused', error: { code: result.code, message: result.reason, retryable: result.code === 'audit_unavailable' } }
-  const state = input.decision.approved ? 'approved' : 'denied'
+function readOf(decision: ApprovalDecision, challenge: string | undefined): ReadDecision {
+  return { token: decision.token, approved: decision.approved, scope: decision.scope, ...(challenge === undefined ? {} : { challenge }) }
+}
+
+/** What an answer came to, rated as the decision guard rated the source that sent it. */
+export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution }): CoreDecisionReceipt {
+  const { answer, result } = input
+  const decision = readOf(answer.decision, answer.challenge)
+  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.code === 'audit_unavailable' } }
+  const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),
     ...(result.grantOwed ? { grantOwed: true as const } : {}),
   }
-  if (result.repeated) return { status: 'repeated', state, ...said }
+  if (result.repeated) return { status: 'repeated', state, decision, ...said }
   return {
-    status: 'applied', state, assurance: rightsOf(input.source.kind).assurance, ...said,
+    status: 'applied', state, assurance: rightsOf(answer.source.kind).assurance, decision, ...said,
     ...(result.granted === undefined ? {} : { granted: result.granted }),
     ...(result.widened === undefined ? {} : { widened: result.widened }),
   }
 }
 
+/**
+ * What the setup POST's audit entry keeps of a decision the guard checked: the decision as read and, where it answered
+ * an ask, the rule and the subject as the audit keeps subjects. Undefined for one refused before that.
+ */
+export function decisionRecord(receipt: CoreDecisionReceipt): (ReadDecision & Partial<AnsweredAsk> & { grantOwed?: true }) | undefined {
+  if (receipt.status === 'refused') return receipt.step === 'decision' ? receipt.decision : undefined
+  const { decision, asked } = receipt
+  return { ...decision, ...(asked === undefined ? {} : { rule: asked.rule, subject: redactedSubject(asked.rule, asked.subject) }), ...(receipt.grantOwed ? { grantOwed: true } : {}) }
+}
+
 /** The receipt a backend reads: whether its decision applied, never the subject a core client prints. */
 export function backendReceipt(receipt: CoreDecisionReceipt): DecisionReceipt {
-  if (receipt.status === 'refused') return receipt
+  if (receipt.status === 'refused') return { status: 'refused', error: receipt.error }
   if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state }
   return { status: 'applied', state: receipt.state, assurance: receipt.assurance, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
 }

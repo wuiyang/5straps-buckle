@@ -264,10 +264,11 @@ describe('the setup face', () => {
   it('denies through an unsigned decision and never approves through one', async () => {
     const { runtime, call } = await node()
     const [first, second] = [await call('fs_write', { path: 'one/a.md', content: 'a' }), await call('fs_write', { path: 'one/b.md', content: 'b' })].map(response => tokensOf(response)[0]!)
-    expect(await runtime.approvalService.decideSealed({ body: { token: first, approved: true, scope: 'once' } })).toEqual({
-      status: 'rejected', reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve', decided: { token: first, approved: true, scope: 'once' },
+    expect(await runtime.approvalService.decide({ source: 'sealed', body: { token: first, approved: true, scope: 'once' } })).toEqual({
+      status: 'refused', step: 'decision', decision: { token: first, approved: true, scope: 'once' },
+      error: { code: 'capability_exceeded', message: 'Approval requires an enrolled device key: review and confirm with buckle client approve', retryable: false },
     })
-    expect(await runtime.approvalService.decideSealed({ body: { token: second, approved: false, scope: 'once' } })).toMatchObject({ status: 'answered', decided: { token: second, approved: false, scope: 'once', rule: 'write_scope' } })
+    expect(await runtime.approvalService.decide({ source: 'sealed', body: { token: second, approved: false, scope: 'once' } })).toMatchObject({ status: 'applied', decision: { token: second, approved: false, scope: 'once' }, asked: { rule: 'write_scope' } })
     expect(runtime.approvalService.pending().map(request => request.token)).toEqual([first])
   })
 
@@ -275,7 +276,7 @@ describe('the setup face', () => {
     const { runtime, call, workspace } = await node()
     writeFileSync(join(workspace, '.env'), 'TOKEN=fixture\n')
     const [token] = tokensOf(await call('fs_read', { path: '.env' }))
-    expect(await runtime.approvalService.decideSealed({ body: { token, approved: false, scope: 'session' } })).toMatchObject({ status: 'answered', decided: { token, approved: false, scope: 'session', rule: 'sensitive_path' } })
+    expect(await runtime.approvalService.decide({ source: 'sealed', body: { token, approved: false, scope: 'session' } })).toMatchObject({ status: 'applied', decision: { token, approved: false, scope: 'session' }, asked: { rule: 'sensitive_path' } })
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', sessionId: 's', denied: true })])
     expect(await call('fs_read', { path: '.env' })).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
   })

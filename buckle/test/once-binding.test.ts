@@ -163,16 +163,16 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
       const decide = (approved: boolean, scope: 'once' | 'session' | 'always') => {
         const decision = { token, approved, scope }
         const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: approvalDecisionPath(setup.config.workspaceId), body: decision }) : decision
-        return setup.runtime.approvalService.decideSealed({ body })
+        return setup.runtime.approvalService.decide({ source: 'sealed', body })
       }
       for (const scope of ['once', 'session', 'always'] as const) {
-        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('enrolled device key') })
+        expect(await decide(true, scope)).toMatchObject({ status: 'refused', error: { message: expect.stringContaining('enrolled device key') } })
         expect(setup.runtime.approvals.pending().map(item => item.token)).toContain(token)
         expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
         expect(setup.runtime.grants.list()).toEqual([])
       }
       expect(existsSync(join(setup.workspace, 'one', 'notes.md'))).toBe(false)
-      expect((await decide(false, 'once')).status).toBe('answered')
+      expect((await decide(false, 'once')).status).toBe('applied')
       expect(setup.runtime.approvals.pending()).toEqual([])
       expect(existsSync(join(setup.workspace, 'one', 'notes.md'))).toBe(false)
     } finally { await stop(setup) }
@@ -192,15 +192,15 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
       const decide = (approved: boolean, scope: 'once' | 'session') => {
         const decision = { token, approved, scope }
         const body = paired ? seal(approvalKey(setup.key), { method: 'POST', path: approvalDecisionPath(setup.config.workspaceId), body: decision }) : decision
-        return setup.runtime.approvalService.decideSealed({ body })
+        return setup.runtime.approvalService.decide({ source: 'sealed', body })
       }
       for (const scope of ['once', 'session'] as const) {
-        expect(await decide(true, scope)).toMatchObject({ status: 'rejected', reason: expect.stringContaining('enrolled device key') })
+        expect(await decide(true, scope)).toMatchObject({ status: 'refused', error: { message: expect.stringContaining('enrolled device key') } })
         expect(setup.runtime.approvals.pending().map(item => item.token)).toContain(token)
         expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
         expect(setup.runtime.grants.list()).toEqual([])
       }
-      expect((await decide(false, 'once')).status).toBe('answered')
+      expect((await decide(false, 'once')).status).toBe('applied')
       expect(setup.runtime.approvals.pending().map(item => item.token)).not.toContain(token)
       expect(setup.runtime.approvals.unspent(SESSION)).toEqual([])
       expect(setup.runtime.grants.list()).toEqual([])
