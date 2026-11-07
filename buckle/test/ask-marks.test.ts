@@ -1,7 +1,9 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, expectTypeOf, it } from 'vitest'
+import { emptyWorkspacePolicy, type JsonObject } from '@5straps/protocol'
+import { afterEach, describe, expect, expectTypeOf, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { compileCommandGlob } from '../common/domain/command-glob.js'
 import type { DeletePolicy } from '../common/domain/delete-policy.js'
@@ -11,7 +13,12 @@ import { ask, commandMarks, PLAIN_MARKS, type AskMarks, type PermissionDecision 
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { createDestructivePathRule, isFloorSubject } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
+import { approvalsPath } from '../common/runtime/config.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { Judge } from '../common/types/ports/judge.js'
+import type { QuickJudge } from '../common/types/ports/quick-judge.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 // The floor and destructive marks the permission rules set on their asks, kept with each ask in the ledger (the approval
 // backend design, slice 3). Nothing reads them yet: they are stored for the decision guard's later checks.
@@ -125,5 +132,61 @@ describe('the ask record', () => {
     const request = { token: '00000000-0000-4000-8000-000000000001', rule: 'write_scope', subject: '/workspace', reason: 'outside', tool: 'fs_write', offeredScopes: ['once', 'session', 'always'], expiresAt: new Date(Date.now() + 600_000).toISOString() }
     writeFileSync(file, JSON.stringify({ version: 1, pending: [{ request, sessionId: 's', workspace: '/workspace' }], once: [], resolved: [], outbox: [] }))
     expect(registry.waiting().map(ask => [ask.floor, ask.destructive])).toEqual([[true, true]])
+  })
+})
+
+describe('an ask the invoker records', () => {
+  const roots: string[] = []
+  const runtimes: BuckleRuntime[] = []
+  afterEach(async () => {
+    vi.restoreAllMocks()
+    for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  async function node(input: { environment?: Record<string, string>; judges?: { judge: Judge; quickJudge: QuickJudge } } = {}) {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-marks-invoker-'))
+    roots.push(root)
+    const workspace = join(root, 'workspace')
+    mkdirSync(join(workspace, 'one'), { recursive: true })
+    writeFileSync(join(workspace, 'one', 'a.txt'), 'a')
+    const config = configFromEnvironment({
+      BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false',
+      BUCKLE_PACKS: 'fs,shell', BUCKLE_DELETE_IN_WORKSPACE: 'ask', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...input.environment,
+    })
+    const runtime = await createRuntime({ config, ...input.judges })
+    runtimes.push(runtime)
+    // Each ask the call made, as the ledger on disk holds it: rule, subject, and both marks.
+    const recorded = async (tool: string, args: JsonObject) => {
+      const response = await runtime.invoke({ request: { requestId: randomUUID(), tool, args, approvalTokens: [] }, sessionId: 's', approvalWait: { mode: 'none' } })
+      if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
+      const tokens = new Set(response.approvals.map(approval => approval.token))
+      const ledger = JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { pending: Array<{ request: { token: string; rule: string; subject: string }; floor: boolean; destructive: boolean }> }
+      return ledger.pending.filter(entry => tokens.has(entry.request.token)).map(entry => ({ rule: entry.request.rule, subject: entry.request.subject, floor: entry.floor, destructive: entry.destructive }))
+    }
+    return { runtime, recorded, folder: join(runtime.paths().root, 'one') }
+  }
+
+  it('lands a delete at the file floor as floor and destructive', async () => {
+    const { recorded, folder } = await node()
+    expect(await recorded('fs_delete', { paths: ['one/a.txt'] })).toEqual([{ rule: 'write_scope', subject: `delete:${folder}`, floor: true, destructive: true }])
+  })
+
+  it('lands a recursive delete command as floor and destructive beside its plain write ask, and an interpreter the policy does not allow as destructive alone', async () => {
+    const { runtime, recorded } = await node()
+    expect(await recorded('shell_exec', { command: 'rm', args: ['-rf', 'build'] })).toEqual(expect.arrayContaining([
+      { rule: 'destructive_command', subject: expect.stringMatching(/^rm -rf build /), floor: true, destructive: true },
+      { rule: 'write_scope', subject: runtime.paths().root, floor: false, destructive: false },
+    ]))
+    expect(await recorded('shell_exec', { command: 'python3', args: ['job.py'] })).toContainEqual({ rule: 'destructive_command', subject: expect.stringMatching(/^python3 job\.py /), floor: false, destructive: true })
+  })
+
+  it('lands an allowed command the quick stage rated danger as destructive alone', async () => {
+    const quickJudge: QuickJudge = { quick: vi.fn(async () => ({ kind: 'verdict' as const, level: 'danger' as const, confidence: 0.95, probabilities: { safe: 0.025, warning: 0.025, danger: 0.95 }, model: 'jev-test', latencyMs: 1 })) }
+    const judge: Judge = { judge: vi.fn(async () => ({ kind: 'unavailable' as const, reason: 'not asked here' })) }
+    const { runtime, recorded } = await node({ environment: { BUCKLE_APPROVAL_JUDGE: 'automated', BUCKLE_APPROVAL_QUICK_JUDGE: 'all' }, judges: { judge, quickJudge } })
+    await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['cat *'], deny: [] } })
+    vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'cat', args: ['notes.txt'] }], execute: vi.fn(async () => 'executed') })
+    expect(await recorded('shell_exec', {})).toEqual([{ rule: 'destructive_command', subject: expect.stringMatching(/^cat notes\.txt /), floor: false, destructive: true }])
   })
 })
