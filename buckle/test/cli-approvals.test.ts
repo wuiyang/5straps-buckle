@@ -220,6 +220,20 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     expect((await capture({ argv: ['grants', 'list'], config })).stdout).toMatch(/always\s+network_egress\s+\*\.localhost {2}\(host pattern\)/)
   })
 
+  it('lists the session and the caller a session grant serves, so two callers\' grants for one subject read apart', async () => {
+    const config = node()
+    await grantStore(config).grant({ sessionId: 'chat-1', actor: 'agent:one', rule: 'read_scope', subject: '/shots', scope: 'session' })
+    await grantStore(config).grant({ sessionId: 'chat-1', actor: 'agent:two', rule: 'read_scope', subject: '/shots', scope: 'session' })
+    await grantStore(config).grant({ sessionId: 'chat-1', rule: 'read_scope', subject: '/shots', scope: 'always' })
+
+    const listed = (await capture({ argv: ['grants', 'list'], config })).stdout.trim().split('\n')
+    expect(listed).toEqual([
+      expect.stringMatching(/ALLOW session +read_scope +\/shots {2}\(session chat-1, caller agent:one\)$/),
+      expect.stringMatching(/ALLOW session +read_scope +\/shots {2}\(session chat-1, caller agent:two\)$/),
+      expect.stringMatching(/ALLOW always +read_scope +\/shots$/),
+    ])
+  })
+
   it('refuses a pattern that does not cover the host that asked, naming both, and leaves the request waiting', async () => {
     const config = node()
     const token = await networkRequest(config)

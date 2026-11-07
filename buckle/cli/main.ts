@@ -762,7 +762,9 @@ async function grants(runtime: BuckleRuntime, argv: string[]): Promise<CliResult
     return { exitCode: 0 }
   }
   for (const grant of runtime.grants.list()) {
-    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}\n`)
+    // A session grant serves one caller in one session, so two callers' grants for one subject are told apart.
+    const holder = grant.sessionId === null ? '' : `  (session ${printable(grant.sessionId)}, caller ${grant.actor === null ? 'the node\'s own process' : printable(grant.actor)})`
+    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}${holder}\n`)
   }
   return { exitCode: 0 }
 }

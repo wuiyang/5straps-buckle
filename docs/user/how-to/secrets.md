@@ -65,9 +65,9 @@ interpolated, so `${OTHER}` is that text.
 The first use of a file in a workspace asks a person once, under the credential-file rule. The ask
 shows the file as written and the NAMEs, never values, and the approval line reads "secrets
 API_TOKEN from .env.local". The person may allow it once, for the session, or always, remembered per
-workspace and file like other grants. With `BUCKLE_STRICT_WRITES=true`, the answer lasts a session
-at most. A grant to read the file into the agent's view does not cover its use by a reference, nor
-the other way round.
+workspace and file like other grants; once and for the session, for the caller that asked alone.
+With `BUCKLE_STRICT_WRITES=true`, the answer lasts a session at most. A grant to read the file into
+the agent's view does not cover its use by a reference, nor the other way round.
 
 The setting `secrets.files` lists files that need no ask, and `secrets.enabled` off refuses a
 reference where it is read, both in the [settings table](workspaces-02.md#settings). The
