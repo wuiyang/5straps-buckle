@@ -58,7 +58,8 @@ it.each([['host git disabled', false], ['host git allowed', true]] as const)('MC
 
 it('CLI keeps tool JSON on stdout and warns on stderr after a real write over the file cap without host git', async () => {
   const node = await workspace(false, { BUCKLE_ADMIN_TOKEN: 'history-notices-admin-credential' })
-  await node.runtime.grants.grant({ sessionId: 'cli', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'session' })
+  // The grant a person's session approval of a CLI ask writes: every CLI call carries the actor local-owner.
+  await node.runtime.grants.grant({ sessionId: 'cli', actor: 'local-owner', rule: 'write_scope', subject: node.runtime.paths().root, scope: 'session' })
   let out = ''; let err = ''
   vi.spyOn(process.stdout, 'write').mockImplementation(chunk => { out += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
