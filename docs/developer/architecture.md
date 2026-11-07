@@ -29,9 +29,9 @@ inside `buckle/` unless they start with `packages/`.
   `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
   `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `service.ts` implement them.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
-  ask into elicitation forms or relay text; `stdio.ts`, `stdio-wire.ts`, and
-  `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one stateless handler per
-  workspace runtime for `/mcp`.
+  ask into relay text, or on stdio into the forms `forms-backend.ts` draws; `stdio.ts`,
+  `stdio-wire.ts`, and `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one
+  stateless handler per workspace runtime for `/mcp`.
 - `server/` is the HTTP face. `setup-server.ts` imports the built Nitro app from
   `.output/server/index.mjs` and binds it to the process's common runtime; `serve.ts` listens on
   `node:http`, and `roster.ts` lists the online workspaces at start and after each change.
@@ -101,6 +101,7 @@ busybox and toybox shell applets. The optional [decision AI](../user/how-to/judg
 interpreter call before a person has to.
 
 The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
+How an ask reaches a person and their decision comes back is on [Approval backend](approval-backend.md).
 
 See also: [Building and testing](building-and-testing.md), [Releasing](releasing.md), and the
 research records on [command matching](research/command-matching.md) and
