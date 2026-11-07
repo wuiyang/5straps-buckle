@@ -12,7 +12,6 @@ import { remainingMs } from '../common/domain/approval/expiry.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalLedger } from '../common/services/approvals/approval-service.js'
-
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { approvalBlock, createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
 import { actionPhrase } from '../common/domain/action-phrase.js'

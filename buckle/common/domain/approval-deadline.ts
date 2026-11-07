@@ -2,7 +2,7 @@ import { APPROVAL_NO_DEADLINE } from '@5straps/protocol'
 import { remainingMs } from './approval/expiry.js'
 import { localDate, localTime } from './local-time.js'
 
-/**
+/*
  * An approval has two deadlines, and they are not the same one:
  *
  * - The **request expiry**, ten minutes beyond the configured finite wait, after which the token resolves no

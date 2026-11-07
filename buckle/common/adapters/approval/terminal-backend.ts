@@ -5,7 +5,7 @@ import { questionFor, type QuestionInput } from './terminal-question.js'
 export interface TerminalBackendOptions {
   /** The asking operation's requester: this process's terminal, or undefined where nobody sits at one. */
   requester: () => Promise<RequestCli | undefined>
-  /** Whether --approve-if-safe can approve a safe verdict here, read as each question is shown (fix brief 9, B37). */
+  /** Whether --approve-if-safe can approve a safe verdict here, read as each question is shown. */
   judgeApproves?: () => boolean
 }
 
@@ -55,7 +55,7 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
       }
       // Its ask closed while on screen; the next one is still worth asking.
       if (outcome.status === 'cancelled' && question.signal.aborted && !stop.aborted) continue
-      // Nobody can be asked now: each ask still gets its pending line, not only the first (the MCP asks brief, item 4).
+      // Nobody can be asked now: each ask still gets its pending line, not only the first.
       if (outcome.status === 'unavailable' && (outcome.reason === 'no_consumer' || outcome.reason === 'no_listener')) continue
       return
     }

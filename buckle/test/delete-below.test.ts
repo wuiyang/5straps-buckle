@@ -13,7 +13,6 @@ import { createDestructivePathRule, isFloorSubject } from '../common/domain/perm
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'

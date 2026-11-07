@@ -9,7 +9,6 @@ import { approvalsPath } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
-
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'

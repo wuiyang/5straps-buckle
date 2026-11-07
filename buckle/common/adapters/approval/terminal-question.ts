@@ -57,7 +57,7 @@ export async function approvalPending(request: CliRequest): Promise<PendingInter
 
 /**
  * approvalPending for a node (`buckle serve`, `buckle mcp`), which also logs one line where nobody can be asked now: no
- * terminal is attached, or no listener (the CLI display slice, C5). The line names the tool, the rule, the offered scopes,
+ * terminal is attached, or no listener. The line names the tool, the rule, the offered scopes,
  * the workspace, and the command that shows the whole action; never the subject, the description, or a token, which no
  * log line carries (`Approval granted` keeps the same rule). A question dropped as the process stops, or by Ctrl-C, was
  * already on a person's screen or is no news, so it logs none.
