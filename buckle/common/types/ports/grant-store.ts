@@ -9,6 +9,8 @@ export interface GrantStore {
   /** Host patterns granted with `buckle approve --host`, under the same filters. */
   activePatterns(input: GrantHolder & { rule: PermissionRuleId }): string[]
   grant(input: {
+    /** The id an owed decision named for it, so writing it again keeps the record a revoke names; a fresh one otherwise. */
+    id?: string
     sessionId: string
     /** The actor a session grant serves; an always grant serves every actor. */
     actor?: string

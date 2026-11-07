@@ -6,22 +6,27 @@ import { acquireFileLock } from '@5straps/runtime/sqlite'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
+import { GRANT_OWED_NOTE } from '../common/services/approvals/approval-registry.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The ledger commits a decision first and its grant after, under the approvals lock, and a grant owed at a crash is
 // written when the workspace opens again, before any call runs.
 
-const failing = vi.hoisted(() => ({ rename: undefined as string | undefined }))
+// The renames of `rename` to fail: the first `skip` pass, then `count` fail.
+const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, skip: 0, count: 1 }))
 vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
   return {
     ...actual,
     replaceFile: async (from: string, to: string, io?: Parameters<typeof actual.replaceFile>[2]) => {
-      if (failing.rename === to) {
-        failing.rename = undefined
+      if (failing.rename === to && failing.skip > 0) failing.skip -= 1
+      else if (failing.rename === to) {
+        failing.count -= 1
+        if (failing.count === 0) failing.rename = undefined
         throw Object.assign(new Error('Injected write failure'), { code: 'EIO' })
       }
       return actual.replaceFile(from, to, io)
@@ -33,7 +38,7 @@ const roots: string[] = []
 const runtimes: BuckleRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
-  failing.rename = undefined
+  Object.assign(failing, { rename: undefined, skip: 0, count: 1 })
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
@@ -100,12 +105,12 @@ describe('a lasting decision', () => {
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: false })
   })
 
-  it('leaves the grant owed when its write fails after the ledger commits, and the workspace writes it on opening, before any call runs', async () => {
+  it('answers as applied with its grant owed when the grant write fails after the ledger commits, and the workspace writes it on opening, before any call runs', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The process stopped here'))
 
-    await expect(runtime.approvalService.answer(session(token))).rejects.toThrow('The process stopped here')
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
     expect(runtime.grants.list()).toEqual([])
 
@@ -119,9 +124,11 @@ describe('a lasting decision', () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    await expect(runtime.approvalService.answer(session(token))).rejects.toThrow('The grants file was busy')
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
 
-    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, repeated: true })
+    const repeated = await runtime.approvalService.answer(session(token))
+    expect(repeated).toMatchObject({ ok: true, repeated: true })
+    expect(repeated).not.toHaveProperty('grantOwed')
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
     expect(onDisk(config, token).owes).toBe(false)
   })
@@ -135,5 +142,60 @@ describe('a lasting decision', () => {
     expect(runtime.grants.list()).toEqual([])
     expect(existsSync(grantsPath(config))).toBe(false)
     expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })
+  })
+  it('writes a grant another decision left owed when a once decision is recorded', async () => {
+    const { config, runtime } = await open()
+    const owing = tokenOf(await write(runtime, 'one/a.md'))
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    expect(await runtime.approvalService.answer(session(owing))).toMatchObject({ ok: true, grantOwed: true })
+
+    const once = tokenOf(await write(runtime, 'two.md'))
+    expect(await runtime.approvalService.answer({ decision: { token: once, approved: true, scope: 'once' }, source: 'cli' })).toMatchObject({ ok: true })
+    expect(onDisk(config, owing).owes).toBe(false)
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', sessionId: 's' })])
+  })
+
+  it('audits buckle approve as recorded, naming the grant it owes, when the grant cannot be written', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    failing.rename = grantsPath(config)
+    let stdout = ''
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout += String(chunk); return true })
+    const approved = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true }).finally(() => output.mockRestore())
+
+    expect(approved.exitCode).toBe(0)
+    expect(stdout).toContain(`Approved ${token} in workspace`)
+    expect(stdout).toContain(GRANT_OWED_NOTE)
+    expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
+    const result = runtime.actions.read(50).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    expect(result).toMatchObject({ outcome: 'ok', detail: expect.stringContaining(GRANT_OWED_NOTE) })
+  })
+
+  it('keeps a revoked grant revoked when the mark its write cleared never reached the disk', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 1 })
+
+    expect(await runtime.approvalService.answer(session(token))).toEqual(expect.objectContaining({ ok: true }))
+    expect(onDisk(config, token).owes).toBe(true)
+    const [grant] = runtime.grants.list()
+    expect(await runtime.grants.revoke(grant!.id)).toBe(true)
+    expect(onDisk(config, token).owes).toBe(false)
+
+    const { runtime: reopened } = await open(config)
+    expect(reopened.grants.list()).toEqual([])
+    expect((await write(reopened, 'one/b.md')).outcome).toBe('approval_required')
+  })
+
+  it('writes a grant again under its own id when a mark outlived it, so buckle grants revoke still finds it', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 1 })
+    expect(await runtime.approvalService.answer(session(token))).toEqual(expect.objectContaining({ ok: true }))
+    const [grant] = runtime.grants.list()
+
+    const { runtime: reopened } = await open(config)
+    expect(reopened.grants.list().map(record => record.id)).toEqual([grant!.id])
+    expect(onDisk(config, token).owes).toBe(false)
   })
 })

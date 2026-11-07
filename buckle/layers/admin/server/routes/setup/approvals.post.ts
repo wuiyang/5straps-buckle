@@ -21,6 +21,6 @@ export default defineSetupHandler({
     }
     if (decided.status === 'invalid') throw HTTPError.status(400, 'Bad Request', { message: 'Invalid approval decision' })
     if (decided.status === 'rejected') throw HTTPError.status(409, 'Conflict', { message: decided.reason })
-    return { resolved: true }
+    return { resolved: true, ...(decided.decided.grantOwed ? { grantOwed: true } : {}) }
   },
 })

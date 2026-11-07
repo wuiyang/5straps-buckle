@@ -14,7 +14,7 @@ import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/decision-guard.j
 import { auditOf, judgeNoteOf } from '../common/services/judge/judge-gate.js'
 import { floorCause } from '../common/domain/permission/judged.js'
 import type { JudgeAudit } from '../common/types/ports/action-log.js'
-import { shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { GRANT_OWED_NOTE, shownCall, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -712,17 +712,19 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
   const result = await runtime.approvalService.answer({ decision: { token, approved: values.deny !== true, scope: scope.data, ...(below === null ? {} : { subject: below.subject }) }, source: 'cli', ...(values.host === undefined ? {} : { widenTo: values.host }) })
   if (!result.ok) return fail(`${result.reason} in workspace ${runtime.workspaceName()}`)
-  if (result.granted !== undefined) {
-    process.stdout.write(`Approved ${token} (${scope.data}) for ${printable(result.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}\n`)
-    return { exitCode: 0, detail: `write_scope ${scope.data} approval widened to the folder and its subfolders` }
+  // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
+  const owed = result.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''
+  const recorded = (line: string, detail?: string): CliResult => {
+    process.stdout.write(`${line}${owed}\n`)
+    const noted = [detail, result.grantOwed ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
+    return { exitCode: 0, ...(noted === '' ? {} : { detail: noted }) }
   }
+  if (result.granted !== undefined) return recorded(`Approved ${token} (${scope.data}) for ${printable(result.granted)}, every delete in that folder and its subfolders, in workspace ${runtime.workspaceName()}`, `write_scope ${scope.data} approval widened to the folder and its subfolders`)
   if (result.widened) {
     const { pattern, askedBy } = result.widened
-    process.stdout.write(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceName()}\n`)
-    return { exitCode: 0, detail: `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}` }
+    return recorded(`Approved ${token} (${scope.data}) for ${pattern}, asked by ${printable(askedBy)}, in workspace ${runtime.workspaceName()}`, `network_egress ${scope.data} approval widened to ${pattern}, asked by ${askedBy}`)
   }
-  process.stdout.write(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}\n`)
-  return { exitCode: 0 }
+  return recorded(`${values.deny ? 'Denied' : 'Approved'} ${token} in workspace ${runtime.workspaceName()}`)
 }
 
 /**

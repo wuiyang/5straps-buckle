@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { dirname, join } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, JsonValueSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, JsonValueSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantRecord, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
@@ -103,11 +103,11 @@ const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}
 // floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
 const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
-// owedGrant: the session or always grant a decision makes, kept with its resolved entry until the grant store holds it.
-// The entry commits first, so a grant never stands without its decision; one a stopped process left owed is written
-// when the workspace opens again (recover), or by the next decision.
+// owedGrant: the session or always grant a decision makes, under the id it is written with, kept with its resolved entry
+// until the grant store holds it. The entry commits first, so a grant never stands without its decision; one left owed
+// is written when the workspace opens again (recover), or by the next decision recorded or sent again.
 const owedGrantSchema = z.object({
-  sessionId: z.string(), actor: z.string().optional(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
+  id: z.string().uuid(), sessionId: z.string(), actor: z.string().optional(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
   denied: z.literal(true).optional(), pattern: z.literal(true).optional(), ...decidedBy,
 })
 type OwedGrant = z.infer<typeof owedGrantSchema>
@@ -128,6 +128,8 @@ const fileSchema = z.object({
 })
 type State = z.infer<typeof fileSchema>
 type PendingEntry = State['pending'][number]
+/** A decision on disk, with the answer it gives and its resolved entry, whose `owedGrant` stays while its grant is unwritten. */
+interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry: State['resolved'][number] }
 /**
  * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
  * which every ask of one request group shares, so a listing carries the group's call once and each ask names it
@@ -322,8 +324,12 @@ export interface ResolveOptions {
  * `repeated` marks an answer identical to the one already recorded, which changes nothing. `asked`
  * is the rule and subject the decision answered, for the decision's audit entry (review item 6).
  * `granted`: the ask's wider subject, where the decision granted it in place of the ask's own (the delete policy brief).
+ * `grantOwed`: the decision is recorded, but the grant it makes could not be written (GRANT_OWED_NOTE).
  */
-export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string } | { ok: false; reason: string }
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; grantOwed?: true } | { ok: false; reason: string }
+
+/** What a route says of a decision recorded with `grantOwed`: its session or always grant is not in force yet. */
+export const GRANT_OWED_NOTE = 'its grant is not written yet, and is written when the workspace opens again or when the same decision is sent again'
 
 /**
  * A joined call gets the requests still waiting and the tokens of its asks already answered, so its
@@ -340,6 +346,8 @@ export interface AskResult {
 }
 
 export interface ApprovalRegistry {
+  /** The workspace's grants as every caller uses them: a revoke also drops a decision's owed mark for that grant. */
+  grants: GrantStore
   /** Issues the asks, or joins the ones a call with the same requestId, session and actor is already waiting on. */
   ask(input: AskInput): Promise<AskResult>
   /**
@@ -417,8 +425,8 @@ export interface ApprovalRegistryOptions {
 }
 
 /** The ledger is keyed by the grant store's workspace, so its asks and their grants never part. */
-export function createApprovalRegistry(grants: GrantStore, filePath: string, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
-  const { workspace } = grants
+export function createApprovalRegistry(grantStore: GrantStore, filePath: string, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
+  const { workspace } = grantStore
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [] }, lockDeadlineMs: options.lockDeadlineMs })
   const durableNotices = options.durableNotices === true
   const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
@@ -604,23 +612,113 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wai
   }
 
   /**
-   * Writes this workspace's owed grants under the approvals lock (approvals, then grants), each mark cleared once its
-   * grant is held. The first failure stops the pass and is returned, leaving the rest owed for the next one.
+   * Writes this workspace's owed grants under the approvals lock (approvals, then grants), committing each cleared mark,
+   * so a mark outlives its grant on disk only where that commit fails. A failure stops the pass and is thrown, leaving
+   * the rest owed for the next one.
    */
-  async function settleGrants(state: State): Promise<unknown> {
+  async function settleGrants(state: State, commit: () => Promise<void>): Promise<void> {
     for (const entry of state.resolved) {
       if (entry.workspace !== workspace || entry.owedGrant === undefined) continue
-      try {
-        await grants.grant(entry.owedGrant)
-      } catch (error) {
-        return error
-      }
+      await grants.grant(entry.owedGrant)
       delete entry.owedGrant
+      await commit()
     }
-    return undefined
+  }
+
+  const owesGrants = (state: State): boolean => state.resolved.some(entry => entry.workspace === workspace && entry.owedGrant !== undefined)
+
+  /**
+   * Drops, under the approvals lock, every owed mark that would write the revoked grant again (its id, or the same
+   * subject for the same holder), then revokes it. A ledger that cannot be read never blocks a revoke.
+   */
+  async function revoke(id: string): Promise<boolean> {
+    try {
+      return await update(async (state, commit) => {
+        const record = grantStore.list().find(grant => grant.id === id)
+        if (record === undefined) return false
+        const marked = state.resolved.filter(entry => entry.workspace === workspace && entry.owedGrant !== undefined && (entry.owedGrant.id === id || writesAgain(entry.owedGrant, record)))
+        for (const entry of marked) delete entry.owedGrant
+        if (marked.length > 0) await commit()
+        return grantStore.revoke(id)
+      })
+    } catch (error) {
+      if (!(error instanceof StateFileError)) throw error
+      logger.warn('Revoked a grant while the approvals file is unreadable; a decision it records may write that grant again once it is repaired', { error: withoutCause(error) })
+      return grantStore.revoke(id)
+    }
+  }
+
+  // Read through at each call, so the registry's own writes and every caller's meet the same store.
+  const grants: GrantStore = {
+    workspace,
+    activeSubjects: input => grantStore.activeSubjects(input),
+    activePatterns: input => grantStore.activePatterns(input),
+    grant: input => grantStore.grant(input),
+    list: () => grantStore.list(),
+    revoke,
+    endSession: sessionId => grantStore.endSession(sessionId),
+  }
+
+  /**
+   * One decision under the approvals lock: the guard's verdict, then the resolved entry, its notice and its once. A
+   * decision that makes a grant, or meets one owed, commits before any grant is written, and `progress` then holds it.
+   */
+  async function applyDecision(input: { state: State; commit: () => Promise<void>; claim: DecisionClaim; options: ResolveOptions; progress: { applied?: AppliedDecision } }): Promise<Resolution> {
+    const { state, commit, claim, options, progress } = input
+    const { decision } = claim
+    const now = Date.now()
+    const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
+    const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
+    const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
+    const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
+    const verdict = guardDecision({ claim, ledger, now })
+    if (!verdict.ok) return { ok: false, reason: verdict.reason }
+    if ('repeated' in verdict) {
+      const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
+      if (previous === undefined || !owesGrants(state)) return repeated
+      progress.applied = { resolution: repeated, entry: previous }
+      await settleGrants(state, commit)
+      return repeated
+    }
+    if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
+    const { wider, widenedTo } = verdict.apply
+    const { rule, subject, tool } = approval.request
+    const { requestId, actor } = approval
+    const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
+    const coded = options.code === undefined ? {} : { code: options.code }
+    // A once covers the call that asked and no other, whichever route decided it: the terminal,
+    // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
+    // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
+    const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
+    const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
+    const owedGrant = grantOf({ decision, holder: { sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }) }, rule, subject, widenedTo, wider, decider })
+    state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
+    const resolved: State['resolved'][number] = {
+      workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
+      ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
+      ...(owedGrant === undefined ? {} : { owedGrant }),
+    }
+    state.resolved.push(resolved)
+    if (approval.notify || durableNotices) enqueueOutcome(state, workspace, {
+      token: decision.token, event: decision.approved ? 'answered' : 'denied', at: new Date(now).toISOString(), scope: decision.scope,
+      ...(decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(options.consumeNotAfter).toISOString() } : {}),
+    })
+    if (decision.approved && decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }), tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
+    const answered = { rule, subject }
+    const resolution: Extract<Resolution, { ok: true }> = wider ? { ok: true, asked: answered, granted: wider } : widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
+    if (owesGrants(state)) {
+      await commit()
+      progress.applied = { resolution, entry: resolved }
+    }
+    // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
+    if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
+    if (progress.applied) await settleGrants(state, commit)
+    return resolution
   }
 
   const registry: ApprovalRegistry = {
+    grants,
+
     async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs, holdMs }) {
       const evicted: PendingEntry[] = []
       const result = await update((state): AskResult => {
@@ -662,55 +760,16 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wai
         if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source })
         return { ok: false, reason: screened.reason }
       }
-      // The decision commits first and its grant after, both under the approvals lock (settleGrants).
-      let grantFailure: unknown
-      const resolution = await update(async (state, commit): Promise<Resolution> => {
-        const now = Date.now()
-        const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
-        const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
-        const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
-        const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
-        const verdict = guardDecision({ claim, ledger, now })
-        if (!verdict.ok) return { ok: false, reason: verdict.reason }
-        if ('repeated' in verdict) {
-          grantFailure = await settleGrants(state)
-          return { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
-        }
-        if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
-        const { wider, widenedTo } = verdict.apply
-        const { rule, subject, tool } = approval.request
-        const { requestId, actor } = approval
-        const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
-        const coded = options.code === undefined ? {} : { code: options.code }
-        // A once covers the call that asked and no other, whichever route decided it: the terminal,
-        // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
-        // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
-        const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
-        const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
-        const owedGrant = grantOf({ decision, holder: { sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }) }, rule, subject, widenedTo, wider, decider })
-        state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
-        state.resolved.push({
-          workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
-          ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
-          ...(owedGrant === undefined ? {} : { owedGrant }),
-        })
-        if (approval.notify || durableNotices) enqueueOutcome(state, workspace, {
-          token: decision.token, event: decision.approved ? 'answered' : 'denied', at: new Date(now).toISOString(), scope: decision.scope,
-          ...(decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(options.consumeNotAfter).toISOString() } : {}),
-        })
-        if (decision.approved && decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }), tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
-        if (owedGrant !== undefined) {
-          await commit()
-          grantFailure = await settleGrants(state)
-        }
-        // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
-        if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
-        const answered = { rule, subject }
-        if (wider) return { ok: true, asked: answered, granted: wider }
-        return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
-      })
-      if (grantFailure !== undefined) throw grantFailure
-      return resolution
+      const progress: { applied?: AppliedDecision } = {}
+      try {
+        return await update((state, commit) => applyDecision({ state, commit, claim, options, progress }))
+      } catch (error) {
+        // A failure after the decision is on disk leaves it applied: the answer says so, and names a grant it still owes.
+        const { applied } = progress
+        if (applied === undefined) throw error
+        logger.warn('A decision was recorded, but a grant it owes was not confirmed written; it is written when the workspace opens again or the same decision is sent again', { error: withoutCause(error) })
+        return applied.entry.owedGrant === undefined ? applied.resolution : { ...applied.resolution, grantOwed: true }
+      }
     },
 
     evaluate(spend) {
@@ -742,16 +801,15 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wai
         const found = read()
         const owed = found.resolved.some(entry => entry.owedGrant !== undefined)
         if (foreignEntries(found).length === 0 && !owed) return
-        const failure = await update(async (state, commit) => {
+        await update(async (state, commit) => {
           const adopted = foreignEntries(state)
           for (const entry of adopted) entry.workspace = workspace
           if (adopted.length > 0) {
             await commit()
             logger.info('Took up the approvals an earlier build kept under the workspace folder', { entries: adopted.length })
           }
-          return settleGrants(state)
+          await settleGrants(state, commit)
         })
-        if (failure !== undefined) throw failure
         if (owed) logger.info('Wrote the grants a stopped process left owed')
       } catch (error) {
         // Fail closed: the grant stays owed and its calls ask again, while the workspace opens as it did.
@@ -974,8 +1032,15 @@ function sameGroup(input: { waiting: ApprovalRequest[]; answered: ApprovalReques
 function grantOf(input: { decision: ApprovalDecision; holder: GrantHolder; rule: PermissionRuleId; subject: string; widenedTo: string | undefined; wider: string | undefined; decider: { decidedBy?: string } }): OwedGrant | undefined {
   const { decision } = input
   if (decision.scope === 'once') return undefined
-  if (!decision.approved) return { ...input.holder, rule: input.rule, subject: input.subject, scope: decision.scope, denied: true, ...input.decider }
-  return { ...input.holder, rule: input.rule, subject: input.widenedTo ?? input.wider ?? input.subject, scope: decision.scope, ...(input.widenedTo ? { pattern: true as const } : {}), ...input.decider }
+  const id = randomUUID()
+  if (!decision.approved) return { id, ...input.holder, rule: input.rule, subject: input.subject, scope: decision.scope, denied: true, ...input.decider }
+  return { id, ...input.holder, rule: input.rule, subject: input.widenedTo ?? input.wider ?? input.subject, scope: decision.scope, ...(input.widenedTo ? { pattern: true as const } : {}), ...input.decider }
+}
+
+/** Whether an owed grant, once written, would stand as this record does: the grant store keeps one record per subject and holder. */
+function writesAgain(owed: OwedGrant, record: GrantRecord): boolean {
+  const holder = owed.scope === 'always' || (owed.sessionId === record.sessionId && owed.actor === record.actor)
+  return owed.rule === record.rule && owed.subject === record.subject && owed.scope === record.scope && holder && Boolean(owed.pattern) === Boolean(record.pattern)
 }
 
 /** A waiting ask as the decision guard reads it: whether its whole call was kept, and the challenges it was shown under. */

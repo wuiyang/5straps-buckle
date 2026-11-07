@@ -39,9 +39,9 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
 
     activePatterns: ({ rule, ...holder }) => active(holder, rule).filter(grant => grant.pattern && !grant.denied).map(grant => grant.subject),
 
-    async grant({ sessionId, actor, rule, subject, scope, pattern, denied, decidedBy }) {
+    async grant({ id, sessionId, actor, rule, subject, scope, pattern, denied, decidedBy }) {
       const record: GrantRecord = {
-        id: randomUUID(),
+        id: id ?? randomUUID(),
         workspace: input.workspace,
         rule,
         subject,

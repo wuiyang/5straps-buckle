@@ -8,7 +8,7 @@ import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspa
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
-import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
+import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 
 /**
  * The node has no push channel for approvals: a request is a row in the state directory's
@@ -237,12 +237,12 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
  */
 async function record(context: AskContext, decision: ApprovalDecision): Promise<void> {
   const result = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.ok, operation: () => context.approvals.answer({ decision, source: 'cli' }) })
+    isSuccessful: outcome => outcome.ok, describe: outcome => (outcome.ok && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.answer({ decision, source: 'cli' }) })
   if (!result.ok) {
     context.output.write(`  Not recorded: ${result.reason}.\n`)
     return
   }
-  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${result.granted === undefined ? '' : ` for ${printable(result.granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
+  context.output.write(`  ${decision.approved ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${result.granted === undefined ? '' : ` for ${printable(result.granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${result.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
 }
 
 /** The workspace a source's commands name: its name where the source carries one, else its id. */

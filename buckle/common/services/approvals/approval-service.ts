@@ -124,6 +124,8 @@ export interface DecidedRecord {
   challenge?: string
   rule?: string
   subject?: string
+  /** The decision is recorded, but its grant is not written yet (GRANT_OWED_NOTE). */
+  grantOwed?: true
 }
 
 export interface ApprovalService {
@@ -676,7 +678,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 function settledDecision(input: { decision: ApprovalDecision; challenge?: string; result: Resolution }): SealedDecisionResult {
   const { decision, result } = input
   const asked = result.ok && result.asked ? { rule: result.asked.rule, subject: redactedSubject(result.asked.rule, result.asked.subject) } : {}
-  const decided: DecidedRecord = { token: decision.token, approved: decision.approved, scope: decision.scope, ...(input.challenge === undefined ? {} : { challenge: input.challenge }), ...asked }
+  const owed = result.ok && result.grantOwed ? { grantOwed: true as const } : {}
+  const decided: DecidedRecord = { token: decision.token, approved: decision.approved, scope: decision.scope, ...(input.challenge === undefined ? {} : { challenge: input.challenge }), ...asked, ...owed }
   return result.ok ? { status: 'answered', decided } : { status: 'rejected', reason: result.reason, decided }
 }
 
