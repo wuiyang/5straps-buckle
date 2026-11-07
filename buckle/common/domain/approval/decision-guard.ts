@@ -53,7 +53,7 @@ export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true;
   return checkWidening({ pattern: claim.widenTo, decision, source: claim.source })
 }
 
-/** `policy`: owner questions 1 and 4, today's answers unless a caller turns one the safer way. */
+/** `policy`: whether the file floor takes scope always; today's floor policy unless a caller turns it the safer way. */
 export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number; policy?: FloorPolicy }): GuardVerdict {
   const { claim: { decision }, claim, ledger } = input
   const policy = input.policy ?? FLOOR_POLICY

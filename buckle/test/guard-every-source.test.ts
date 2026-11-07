@@ -17,9 +17,9 @@ import { grantLookup } from '../common/services/approvals/approval-gate.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 
-// The decision guard's checks for every source (the approval backend design, slice 15), each a table test against the
-// guard alone. Today's sources pass each one as before; owner questions 1 and 4 keep the file floor's always and the
-// dangerously-allow switch's reach over floor asks, each behind a switch the safer default can be turned on through.
+// The decision guard's checks for every source, each a table test against the guard alone. Today's sources pass each
+// one as before. The file floor's always and the dangerously-allow switch's reach over floor asks stay as today, each
+// behind a floor policy switch that turns the safer default on.
 
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
 const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: 'delete:/outside', reason: 'Deleting asks a person', tool: 'fs_delete', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z', widerSubject: 'delete-below:/outside' }
@@ -68,7 +68,7 @@ describe('a floor ask', () => {
   })
 })
 
-describe('scope always on a destructive ask (owner question 1)', () => {
+describe('scope always on a file floor ask', () => {
   it('stays open where offered, as today, from every person', () => {
     for (const source of ['terminal', 'cli', 'forms'] as const) expect(guard({ claim: claim(SOURCES[source], approve('always')), ledger: ledger({ marks: FILE_FLOOR_MARKS }) })).toEqual({ ok: true, apply: {} })
   })
@@ -131,7 +131,7 @@ const WORKSPACE = '/work/project'
 const removed = (path: string): ResolvedEffect => ({ kind: 'delete_path', path, directory: path.slice(0, path.lastIndexOf('/')) || '/', floor: true })
 const NONE: GrantLookup = { subjectsFor: () => [] }
 
-describe('the file floor\'s offered scopes (owner question 1)', () => {
+describe('the file floor\'s offered scopes', () => {
   const floor = (policy?: FloorPolicy) => createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 }, ...(policy ? { policy } : {}) })])
 
   it('offers always, as today', () => {
@@ -173,7 +173,7 @@ describe('a grant held on the file floor', () => {
   })
 })
 
-describe('the dangerously-allow switch over floor asks (owner question 4)', () => {
+describe('the dangerously-allow switch over floor asks', () => {
   const engine = (policy?: FloorPolicy) => withDangerouslyAllow(createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 } })]), { level: () => 'command', root: () => WORKSPACE, ...(policy ? { policy } : {}) })
 
   it('lifts a floor ask, as today', () => {

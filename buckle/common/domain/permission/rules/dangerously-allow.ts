@@ -30,8 +30,8 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
  * any ask, so an owner's deny rule, the node's policy over the workspace, the mount boundary and the
  * state directory still refuse. `level` and `root` are read at every evaluation, so the local
- * switch takes effect in a running node at once, off (null) as well as on. Owner question 4 keeps
- * it lifting floor asks (`policy`).
+ * switch takes effect in a running node at once, off (null) as well as on. Whether it lifts floor
+ * asks too is the floor policy's `switchLiftsFloor` (`policy`).
  */
 export function withDangerouslyAllow(engine: PermissionEngine, input: { level: () => DangerouslyAllowLevel | null; root: () => string; policy?: FloorPolicy }): PermissionEngine {
   const { switchLiftsFloor } = input.policy ?? FLOOR_POLICY

@@ -63,9 +63,9 @@ export function floorSubjectPath(subject: string): string | null {
  * The destructive floor for files: a delete asks a person, whatever the folder's write grant says, as `rm -r` does on
  * the shell side, and so does each write the destructive-write check marked (DestructiveWriteEffect). No stage of the
  * decision AI ever answers it, as it rates commands alone. A person may grant it once, for the session, or always, as
- * any write ask, where owner question 1 keeps always (`policy`); strict mode offers once alone. A move's source that moves a file and replaces nothing (`floor: false`)
- * is judged by the write scope as a write to its folder instead, unless the file comes from outside the workspace's
- * folder into it (moveEffects).
+ * any write ask, while the floor policy's `alwaysAtFloor` keeps always (`policy`); strict mode offers once alone. A
+ * move's source that moves a file and replaces nothing (`floor: false`) is judged by the write scope as a write to its
+ * folder instead, unless the file comes from outside the workspace's folder into it (moveEffects).
  *
  * The workspace's delete policy (the owner's ruling of 2026-10-28): under `allow`, a delete inside its own folder is the
  * write scope's alone, except where one call deletes past the mass-delete limit or a folder at the top of the folder,
