@@ -3,7 +3,7 @@ import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, 
 import { type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
 import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, typedForm } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
-import { allowedVia, ask } from '../decision.js'
+import { allowedVia, ask, commandMarks } from '../decision.js'
 
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
 const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard', 'shred', 'sgdisk'])
@@ -86,7 +86,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const subject = subjectOf(effect)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
-      return ask('destructive_command', subject, reason, ['once', 'session'], cause, floor !== null || listed !== null ? 'danger' : 'warn')
+      return { ...ask('destructive_command', subject, reason, ['once', 'session'], cause, floor !== null || listed !== null ? 'danger' : 'warn'), ...commandMarks(cause) }
     },
   }
 }

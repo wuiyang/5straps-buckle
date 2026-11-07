@@ -5,8 +5,20 @@ import type { ResolvedEffect } from '../effect.js'
 export type PermissionDecision =
   | { kind: 'allow'; via?: GrantReference }
   /** `widerSubject`: what a person may grant for the session or always in place of `subject` (a delete's folder and subfolders). */
-  | { kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string; severity?: ApprovalSeverity }
+  | ({ kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string; severity?: ApprovalSeverity } & AskMarks)
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
+
+type Ask = Extract<PermissionDecision, { kind: 'ask' }>
+
+/**
+ * The marks the rule that asked sets, kept with the ask in the approvals ledger: `floor`, a person decides it, whatever
+ * else could answer (the built-in command floor, the destructive list, and the file floor); `destructive`, it removes or
+ * rewrites data (every destructive command ask, and the file floor).
+ */
+export interface AskMarks {
+  floor?: true
+  destructive?: true
+}
 
 /**
  * Why the destructive floor asked (D91), set by that rule alone and never sent anywhere: a built-in floor reason or
@@ -54,9 +66,17 @@ export function ask(
   offeredScopes: GrantScope[] = ['once', 'session', 'always'],
   cause?: AskCause,
   severity?: ApprovalSeverity,
-): PermissionDecision {
+): Ask {
   return { kind: 'ask', rule, subject, reason, offeredScopes, ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }) }
 }
+
+/** The marks of a destructive command's ask: every one is destructive, and the built-in floor's and the destructive list's are the floor too. */
+export function commandMarks(cause: AskCause): AskMarks {
+  return cause === 'floor' || cause === 'destructive-list' ? { floor: true, destructive: true } : { destructive: true }
+}
+
+/** The marks of every ask the file floor makes. */
+export const FILE_FLOOR_MARKS: Readonly<AskMarks> = { floor: true, destructive: true }
 
 export function deny(rule: PermissionRuleId, subject: string, reason: string): PermissionDecision {
   return { kind: 'deny', rule, subject, reason }

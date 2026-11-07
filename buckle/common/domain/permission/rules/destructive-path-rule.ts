@@ -4,7 +4,7 @@ import { treeWords, undoneWords, type ResolvedEffect } from '../../effect.js'
 import type { PathView } from '../../path-view.js'
 import { homeDirectory, isInside } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
-import { allowedVia, ask } from '../decision.js'
+import { allowedVia, ask, FILE_FLOOR_MARKS } from '../decision.js'
 
 /**
  * The subjects the file side of the destructive floor asks and grants under (the fs-verbs brief). They ride under the
@@ -92,10 +92,10 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
       const held = grants.subjectsFor('write_scope')
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
-      if (outside === undefined) return ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes, undefined, floor.severity)
+      if (outside === undefined) return { ...ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes, undefined, floor.severity), ...FILE_FLOOR_MARKS }
       const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && grantable(subject.slice(DELETE_BELOW_PREFIX.length)) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
       if (below !== undefined) return allowedVia('write_scope', below)
-      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes, undefined, floor.severity), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
+      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes, undefined, floor.severity), ...FILE_FLOOR_MARKS, ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
     },
   }
 }

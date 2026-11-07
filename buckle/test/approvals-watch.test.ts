@@ -277,7 +277,7 @@ describe('buckle approvals --watch', () => {
     }
     const answer = vi.fn()
     const live = () => [expiring].filter(request => Date.parse(request.expiresAt) > Date.now())
-    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1' })), pending: live, answer })
+    const { terminal, done } = watch({ waiting: () => live().map(request => ({ request, sessionId: 'chat-1', floor: false, destructive: false })), pending: live, answer })
 
     await vi.waitFor(() => expect(terminal.shown()).toContain('expiring expired; dropped.'))
     terminal.type('o\r')

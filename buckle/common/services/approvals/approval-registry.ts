@@ -97,7 +97,9 @@ const lapse = { lapsesAt: z.iso.datetime().optional(), abandonedAt: z.iso.dateti
 // the budgets once per group; `complete` repeats the call's own mark. An ask recorded before this build keeps its
 // call inline, in `call`.
 const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/), bytes: z.number().int().nonnegative(), complete: z.literal(true).optional() })
-const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
+// floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
+const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
+const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
 // code: the code a once the decision AI's thorough stage gave on request binds to (fix brief 9, B31).
 const onceSchema = z.object({
   workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
@@ -644,7 +646,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           // (owner ruling B); a subject is already what its rule asks under, which holds no credential the display redacts.
           // Keep the label in the signed reason so strict older challenges need no new field.
           const requests = asks.map(item => ({ token: randomUUID(), rule: item.rule, subject: item.subject, reason: redactCredentials(item.severity === undefined ? item.reason : `[${item.severity}] ${item.reason}`, 'text'), ...(item.severity === undefined ? {} : { severity: item.severity }), tool, offeredScopes: item.offeredScopes, expiresAt, ...(item.widerSubject === undefined ? {} : { widerSubject: item.widerSubject }) }))
-          const entries: PendingEntry[] = requests.map(request => ({ request, sessionId, workspace, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
+          const entries: PendingEntry[] = requests.map((request, index) => ({ request, sessionId, workspace, floor: asks[index]!.floor === true, destructive: asks[index]!.destructive === true, ...(options.durableNotices ? { notify: true as const } : {}), ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(callFingerprint === undefined ? {} : { fingerprint: callFingerprint }), ...(lapsesAt === undefined ? {} : { lapsesAt }) }))
           assertDeliveryRoom(state, entries, notifies)
           // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
           if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })

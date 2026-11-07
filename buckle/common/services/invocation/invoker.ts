@@ -10,7 +10,7 @@ import { newDeleteRun, recordRemovals, type DeletePolicy, type DeleteRun } from 
 import { summarizeEffect, type ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
-import type { GrantLookup } from '../../domain/permission/decision.js'
+import { commandMarks, type GrantLookup } from '../../domain/permission/decision.js'
 import { redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
@@ -754,7 +754,7 @@ async function clearPermissions(input: {
     if (before.kind !== 'deny') {
       const asked = new Set(before.kind === 'ask' ? before.asks.filter(item => item.rule === 'destructive_command').map(item => item.subject) : [])
       input.judgment.judged = await judging.screen({ asked, effects, tool: request.tool, args: request.args, fromCopy: input.fromCopy, ...(input.signal ? { signal: input.signal } : {}) })
-      flagged = input.judgment.judged.filter(item => item.flagged).map(item => ({ kind: 'ask' as const, rule: 'destructive_command' as const, subject: item.subject, reason: QUICK_FLAG_REASON, offeredScopes: ['once' as const, 'session' as const], cause: 'judge' as const }))
+      flagged = input.judgment.judged.filter(item => item.flagged).map(item => ({ kind: 'ask' as const, rule: 'destructive_command' as const, subject: item.subject, reason: QUICK_FLAG_REASON, offeredScopes: ['once' as const, 'session' as const], cause: 'judge' as const, ...commandMarks('judge') }))
     }
   }
   let outcome = await evaluate(request.approvalTokens)
