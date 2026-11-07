@@ -84,15 +84,20 @@ function approvalsInEffect(runtime: BuckleRuntime, session?: string): NetworkApp
     .filter(grant => !grant.expiresAt || Date.parse(grant.expiresAt) > now)
     .map(grant => ({
       subject: grant.subject,
-      label: grant.sessionId === null ? describeGrantScope(grant.scope) : `${describeGrantScope(grant.scope)} in session ${session}`,
+      label: grant.sessionId === null ? describeGrantScope(grant.scope) : `${describeGrantScope(grant.scope)} of ${callerOf(grant.actor)} in session ${session}`,
       ...(grant.pattern ? { pattern: true } : {}),
     }))
   const unspent = session
     ? runtime.approvalGate.unspent(session)
       .filter(entry => entry.subject.rule === 'network_egress')
-      .map(entry => ({ subject: entry.subject.subject, label: `unspent once approval for ${entry.tool} in session ${session}` }))
+      .map(entry => ({ subject: entry.subject.subject, label: `unspent once approval for ${entry.tool} of ${callerOf(entry.actor)} in session ${session}` }))
     : []
   return [...standing, ...unspent]
+}
+
+/** The caller a session approval serves: another caller in the same session is asked again. */
+function callerOf(actor: string | null | undefined): string {
+  return actor ?? 'the node\'s own process'
 }
 
 /**

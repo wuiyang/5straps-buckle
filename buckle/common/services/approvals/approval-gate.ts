@@ -5,6 +5,7 @@ import type { CodeBinding } from '../../domain/permission/judged.js'
 import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import type { ApprovalRegistry } from './approval-registry.js'
+import type { UnspentOnce } from './once-store.js'
 import type { ApprovalAskInput, ApprovalService, ApprovalWaitResult } from './approval-service.js'
 
 /** One call's check through the gate: who calls, and its rules over the grants the gate hands them. */
@@ -42,8 +43,8 @@ export interface ApprovalGate {
   ask(input: ApprovalAskInput): Promise<ApprovalWaitResult>
   wasDenied(tokens: string[]): boolean
   withdraw(tokens: string[]): Promise<void>
-  /** One session's onces not yet spent, whichever actor asked: what `buckle check-url --session` shows the owner. */
-  unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
+  /** One session's onces not yet spent, whichever actor asked, each naming it: what `buckle check-url --session` shows the owner. */
+  unspent(sessionId: string): UnspentOnce[]
 }
 
 export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: GrantStore; service: ApprovalService }): ApprovalGate {

@@ -15,7 +15,7 @@ import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } fr
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
-import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceSpend } from './once-store.js'
+import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError } from './approval-errors.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
@@ -393,7 +393,7 @@ export interface ApprovalRegistry {
   /** One waiting ask with its call, reading that ask's call file alone; undefined when the token is not waiting. */
   waitingAsk(token: string): PendingAsk | undefined
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
-  unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
+  unspent(sessionId: string): UnspentOnce[]
   /**
    * Run as the workspace opens: takes up the entries an earlier build kept under the workspace's folder, then writes the
    * grants decisions left owed when a process stopped between the two writes.

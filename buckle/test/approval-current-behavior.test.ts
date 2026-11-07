@@ -146,7 +146,7 @@ describe('an ask nobody is at a terminal for', () => {
     expect(runtime.approvals.unspent('s')).toEqual([])
   })
 
-  it('shows check-url an unspent once in the session it names, whichever actor asked', async () => {
+  it('shows check-url an unspent once in the session it names, whichever actor asked, naming that actor', async () => {
     const { runtime, answer } = await node()
     const [request] = (await runtime.approvals.ask({
       tool: 'web_fetch', sessionId: 's', actor: 'agent:one', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true },
@@ -155,7 +155,7 @@ describe('an ask nobody is at a terminal for', () => {
     expect(await answer(request!.token)).toMatchObject({ ok: true })
     const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
     expect(await checkUrlCommand({ argv: ['localhost:3000', '--session', 's'], runtime: async () => runtime })).toEqual({ exitCode: 0 })
-    expect(out.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('unspent once approval for web_fetch in session s')
+    expect(out.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('unspent once approval for web_fetch of agent:one in session s')
   })
 
   it('writes a session grant once its resolved entry is on disk, never while its ask still waits', async () => {

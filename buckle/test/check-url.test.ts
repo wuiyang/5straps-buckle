@@ -111,22 +111,24 @@ describe('buckle check-url', () => {
   it('counts a persisted approval always, and a session approval only for the session named', async () => {
     const config = node()
     await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:3000', scope: 'always' })
-    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:5173', scope: 'session' })
+    await grants(config).grant({ sessionId: 'chat-1', actor: 'agent:one', rule: 'network_egress', subject: 'localhost:5173', scope: 'session' })
+    await grants(config).grant({ sessionId: 'chat-1', rule: 'network_egress', subject: 'localhost:8080', scope: 'session' })
 
     expect(await check(config, 'http://localhost:3000')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(persisted approval for localhost:3000)') })
     expect((await check(config, 'http://localhost:5173')).exitCode).toBe(3)
-    expect(await check(config, 'http://localhost:5173', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(session approval in session chat-1 for localhost:5173)') })
+    expect(await check(config, 'http://localhost:5173', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(session approval of agent:one in session chat-1 for localhost:5173)') })
+    expect(await check(config, 'http://localhost:8080', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('(session approval of the node\'s own process in session chat-1 for localhost:8080)') })
     expect((await check(config, 'http://localhost:5173', '--session', 'chat-2')).exitCode).toBe(3)
   })
 
   it('counts an unspent once approval only for the session named', async () => {
     const config = node()
     const registry = createApprovalRegistry(grants(config), approvalsPath(config))
-    const [request] = (await registry.ask({ tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })).requests
+    const [request] = (await registry.ask({ tool: 'web_fetch', sessionId: 'chat-1', actor: 'agent:two', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })).requests
     await registry.resolve({ token: request!.token, approved: true, scope: 'once' }, SOURCES.cli)
 
     expect((await check(config, 'localhost:3000')).exitCode).toBe(3)
-    expect(await check(config, 'localhost:3000', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('unspent once approval for web_fetch in session chat-1') })
+    expect(await check(config, 'localhost:3000', '--session', 'chat-1')).toMatchObject({ exitCode: 0, stdout: expect.stringContaining('unspent once approval for web_fetch of agent:two in session chat-1') })
   })
 
   it('denies a non-HTTP scheme', async () => {

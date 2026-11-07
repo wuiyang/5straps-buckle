@@ -65,12 +65,15 @@ export function dropOnces(onces: readonly OnceEntry[], input: { workspace: strin
   return { kept: onces.filter(entry => !dropping(entry)), dropped: onces.filter(dropping).map(entry => entry.token) }
 }
 
-/** One session's onces not yet spent nor expired, whichever actor asked, each with the tool it was asked for. */
-export function unspentOnces(onces: readonly OnceEntry[], input: { workspace: string; sessionId: string }): Array<{ subject: GrantSubject; tool: string }> {
+/** One session's onces not yet spent nor expired, whichever actor asked, each with the tool and the actor it was asked for. */
+export function unspentOnces(onces: readonly OnceEntry[], input: { workspace: string; sessionId: string }): UnspentOnce[] {
   return onces
     .filter(entry => entry.workspace === input.workspace && entry.sessionId === input.sessionId && Date.parse(entry.expiresAt) > Date.now())
-    .map(entry => ({ subject: entry.subject, tool: entry.tool }))
+    .map(entry => ({ subject: entry.subject, tool: entry.tool, ...(entry.actor === undefined ? {} : { actor: entry.actor }) }))
 }
+
+/** A once not yet spent; `actor` is absent where the node's own process asked. */
+export interface UnspentOnce { subject: GrantSubject; tool: string; actor?: string }
 
 export function liveOnces(onces: readonly OnceEntry[], now: number): OnceEntry[] {
   return onces.filter(entry => Date.parse(entry.expiresAt) > now)
