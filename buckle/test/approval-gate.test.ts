@@ -68,6 +68,18 @@ describe('the approval gate', () => {
     expect(await write('agent:one', 'one/b.md')).toMatchObject({ outcome: 'ok' })
   })
 
+  it('clears no actor\'s call with a session grant or a once kept without an actor, as an earlier build kept them', async () => {
+    const { runtime, write, answer } = await node()
+    await runtime.grants.grant({ sessionId: 'shared', rule: 'write_scope', subject: join(runtime.paths().root, 'one'), scope: 'session' })
+    expect((await write('agent:x', 'one/a.md')).outcome).toBe('approval_required')
+
+    const unnamed = (tokens: string[] = []) => runtime.invoke({ request: { requestId: `unnamed-${tokens.length}`, tool: 'fs_write', args: { path: 'two.md', content: 'a' }, approvalTokens: tokens }, sessionId: 'shared' })
+    const tokens = tokensOf(await unnamed())
+    expect(await answer(tokens[0]!, 'once')).toMatchObject({ ok: true })
+    expect((await write('agent:x', 'two.md', tokens)).outcome).toBe('approval_required')
+    expect(runtime.approvalGate.unspent('shared')).toHaveLength(1)
+  })
+
   it('keeps an always grant for every actor', async () => {
     const { runtime, write } = await node()
     await runtime.grants.grant({ sessionId: 'shared', rule: 'write_scope', subject: join(runtime.paths().root, 'one'), scope: 'always' })
