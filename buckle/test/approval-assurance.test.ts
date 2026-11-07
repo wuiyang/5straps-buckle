@@ -2,6 +2,8 @@ import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
 import { atLeast, rightsOf } from '../common/domain/approval/assurance.js'
 import { guardDecision, screenDecision, type DecisionClaim } from '../common/domain/approval/decision-guard.js'
+import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 
 // Each answer names its source, and the guard rates it by the source's kind: only `local` and above decide for longer
@@ -10,7 +12,7 @@ import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-sou
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
 const request: ApprovalRequest = { token: 't-1', rule: 'network_egress', subject: 'api.example.com', reason: 'egress', tool: 'web_fetch', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z' }
 const secret: ApprovalRequest = { ...request, rule: 'sensitive_path', subject: '/workspace/.env', tool: 'fs_read', offeredScopes: ['once', 'session', 'always'] }
-const ledger = { waiting: { request, complete: true, challenges: [] } }
+const ledger = { waiting: { request, complete: true, challenges: [], marks: PLAIN_MARKS, routes: TODAYS_ROUTES } }
 const claim = (source: ApprovalSource, decision: Partial<ApprovalDecision> = {}, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision: { token: 't-1', approved: true, scope: 'once', ...decision }, source, ...extra })
 const RELAYED = 'This answer is relayed, so it decides once and nothing that outlives the call'
 const DENIES_ONLY = 'Approval requires an enrolled device key: review and confirm with buckle client approve'
@@ -58,7 +60,7 @@ describe('what a source may decide', () => {
   it('keeps the setup envelope\'s denials, a lasting one of a sensitive file included, as today', () => {
     expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false }), ledger, now: NOW })).toEqual({ ok: true, apply: {} })
     for (const scope of ['session', 'always'] as const) {
-      expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false, scope }), ledger: { waiting: { request: secret, complete: true, challenges: [] } }, now: NOW })).toEqual({ ok: true, apply: {} })
+      expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false, scope }), ledger: { waiting: { request: secret, complete: true, challenges: [], marks: PLAIN_MARKS, routes: TODAYS_ROUTES } }, now: NOW })).toEqual({ ok: true, apply: {} })
       expect(guardDecision({ claim: claim(SOURCES.sealed, { approved: false, scope }), ledger, now: NOW })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Persistent denials are supported only for sensitive files' })
     }
   })

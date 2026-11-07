@@ -1,0 +1,140 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
+import { afterEach, describe, expect, it } from 'vitest'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { guardDecision, type DecisionClaim, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { TODAYS_ROUTES, type RecordedRoute } from '../common/domain/approval/routes.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { FILE_FLOOR_MARKS, PLAIN_MARKS, type AskMarks, type GrantLookup, type PermissionDecision } from '../common/domain/permission/decision.js'
+import { createPermissionEngine } from '../common/domain/permission/engine.js'
+import { FLOOR_POLICY, type FloorPolicy } from '../common/domain/permission/floor-policy.js'
+import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
+import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
+import type { ResolvedEffect } from '../common/domain/effect.js'
+import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
+
+// The decision guard's checks for every source (the approval backend design, slice 15), each a table test against the
+// guard alone. Today's sources pass each one as before; owner questions 1 and 4 keep the file floor's always and the
+// dangerously-allow switch's reach over floor asks, each behind a switch the safer default can be turned on through.
+
+const NOW = Date.parse('2026-11-07T10:00:00.000Z')
+const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: 'delete:/outside', reason: 'Deleting asks a person', tool: 'fs_delete', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z', widerSubject: 'delete-below:/outside' }
+const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<ApprovalDecision> = {}): ApprovalDecision => ({ token: 't-1', approved: true, scope, ...extra })
+const deny = (): ApprovalDecision => ({ token: 't-1', approved: false, scope: 'once' })
+const claim = (source: ApprovalSource, decision: ApprovalDecision): DecisionClaim => ({ decision, source })
+const ledger = (input: { marks?: AskMarks; routes?: readonly RecordedRoute[] } = {}): LedgerView => ({ waiting: { request, complete: true, challenges: [], marks: input.marks ?? PLAIN_MARKS, routes: input.routes ?? TODAYS_ROUTES } })
+const guard = (input: { claim: DecisionClaim; ledger?: LedgerView; policy?: FloorPolicy }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? ledger(), now: NOW, ...(input.policy ? { policy: input.policy } : {}) })
+const PERSONS = ['terminal', 'cli', 'forms', 'devices'] as const
+
+describe('routing by the ask\'s recorded routes', () => {
+  it('reads an ask recorded without routes as today\'s set: the terminal, forms, and devices decide, and the sealed envelope only denies', () => {
+    expect(TODAYS_ROUTES).toEqual([{ id: 'terminal', role: 'decide' }, { id: 'forms', role: 'decide' }, { id: 'devices', role: 'decide' }, { id: 'sealed', role: 'notify' }])
+    for (const source of PERSONS) expect(guard({ claim: claim(SOURCES[source], approve()) })).toEqual({ ok: true, apply: {} })
+    expect(guard({ claim: claim(SOURCES.sealed, deny()) })).toEqual({ ok: true, apply: {} })
+  })
+
+  it('refuses a source no route of the ask names, and lets a notify route\'s source deny alone', () => {
+    const routes: RecordedRoute[] = [{ id: 'terminal', role: 'decide' }, { id: 'forms', role: 'notify' }]
+    expect(guard({ claim: claim(SOURCES.devices, approve()), ledger: ledger({ routes }) })).toEqual({ ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to devices' })
+    expect(guard({ claim: claim(SOURCES.devices, deny()), ledger: ledger({ routes }) })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(guard({ claim: claim(SOURCES.forms, approve()), ledger: ledger({ routes }) })).toEqual({ ok: false, code: 'approver_not_allowed', reason: 'forms is only told of this ask, so it may deny it and never approve it' })
+    expect(guard({ claim: claim(SOURCES.forms, deny()), ledger: ledger({ routes }) })).toEqual({ ok: true, apply: {} })
+  })
+
+  it('counts the person at the node and the judge as routed to every ask, whatever routes it recorded', () => {
+    expect(guard({ claim: claim(SOURCES.cli, approve()), ledger: ledger({ routes: [] }) })).toEqual({ ok: true, apply: {} })
+    expect(guard({ claim: claim(SOURCES.judge, approve()), ledger: ledger({ routes: [] }) })).toEqual({ ok: true, apply: {} })
+  })
+
+  it('holds a built-in route for its own kind: a backend that names itself terminal is routed nothing', () => {
+    expect(guard({ claim: claim({ id: 'terminal', kind: 'backend' }, deny()) })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(guard({ claim: claim({ id: 'terminal', kind: 'backend' }, approve()) })).toMatchObject({ ok: false, code: 'capability_exceeded' })
+  })
+})
+
+describe('a floor ask', () => {
+  it.each(PERSONS)('takes the approval of %s, a person at local or above', (source) => {
+    expect(guard({ claim: claim(SOURCES[source], approve()), ledger: ledger({ marks: FILE_FLOOR_MARKS }) })).toEqual({ ok: true, apply: {} })
+  })
+
+  it('refuses the decision AI\'s approval, which is no person\'s, and keeps its denial', () => {
+    expect(guard({ claim: claim(SOURCES.judge, approve()), ledger: ledger({ marks: FILE_FLOOR_MARKS }) })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'A person decides a floor ask: approve it at the node, or with an enrolled key' })
+    expect(guard({ claim: claim(SOURCES.judge, deny()), ledger: ledger({ marks: FILE_FLOOR_MARKS }) })).toEqual({ ok: true, apply: {} })
+    expect(guard({ claim: claim(SOURCES.judge, approve()), ledger: ledger({ marks: { floor: false, destructive: true } }) })).toEqual({ ok: true, apply: {} })
+  })
+})
+
+describe('scope always on a destructive ask (owner question 1)', () => {
+  it('stays open where offered, as today, from every person', () => {
+    for (const source of ['terminal', 'cli', 'forms'] as const) expect(guard({ claim: claim(SOURCES[source], approve('always')), ledger: ledger({ marks: FILE_FLOOR_MARKS }) })).toEqual({ ok: true, apply: {} })
+  })
+
+  it('is refused from every source with the switch turned the other way, while a session approval still passes', () => {
+    const policy: FloorPolicy = { ...FLOOR_POLICY, alwaysAtFloor: false }
+    for (const source of ['terminal', 'cli', 'forms'] as const) {
+      expect(guard({ claim: claim(SOURCES[source], approve('always')), ledger: ledger({ marks: FILE_FLOOR_MARKS }), policy })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'A destructive ask is approved once or for the session, never always' })
+      expect(guard({ claim: claim(SOURCES[source], approve('session')), ledger: ledger({ marks: FILE_FLOOR_MARKS }), policy })).toEqual({ ok: true, apply: {} })
+    }
+    expect(guard({ claim: claim(SOURCES.cli, approve('always')), policy })).toEqual({ ok: true, apply: {} })
+  })
+})
+
+describe('a wider subject', () => {
+  it.each(['terminal', 'cli'] as const)('is granted to %s, at the node', (source) => {
+    expect(guard({ claim: claim(SOURCES[source], approve('session', { subject: 'delete-below:/outside' })) })).toEqual({ ok: true, apply: { wider: 'delete-below:/outside' } })
+  })
+
+  it.each(['forms', 'devices'] as const)('is refused to %s', (source) => {
+    expect(guard({ claim: claim(SOURCES[source], approve('session', { subject: 'delete-below:/outside' })) })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Only the node\'s terminal and buckle approve grant a folder and its subfolders' })
+  })
+})
+
+const roots: string[] = []
+afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+
+describe('the ledger hands the guard each ask\'s marks and today\'s routes', () => {
+  it('refuses the decision AI\'s once on a floor ask and takes it on a plain one', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-guard-sources-'))
+    roots.push(root)
+    const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
+    const asked = (marks: AskMarks): Extract<PermissionDecision, { kind: 'ask' }> => ({ kind: 'ask', ...marks, rule: 'destructive_command', subject: 'python3 job.py', reason: 'asks', offeredScopes: ['once', 'session'] })
+    const call = { arguments: { command: 'python3' }, cwd: '/w', description: null, effects: [], complete: true as const }
+    const [floor, plain] = (await registry.ask({ tool: 'shell_exec', sessionId: 's', asks: [asked(FILE_FLOOR_MARKS), { ...asked(PLAIN_MARKS), subject: 'python3 other.py' }], call })).requests
+    expect(await registry.resolve({ token: floor!.token, approved: true, scope: 'once' }, SOURCES.judge)).toMatchObject({ ok: false, code: 'assurance_too_low' })
+    expect(await registry.resolve({ token: plain!.token, approved: true, scope: 'once' }, SOURCES.judge)).toMatchObject({ ok: true })
+    expect(await registry.resolve({ token: floor!.token, approved: false, scope: 'once' }, SOURCES.sealed)).toMatchObject({ ok: true })
+  })
+})
+
+const WORKSPACE = '/work/project'
+const removed = (path: string): ResolvedEffect => ({ kind: 'delete_path', path, directory: path.slice(0, path.lastIndexOf('/')) || '/', floor: true })
+const NONE: GrantLookup = { subjectsFor: () => [] }
+
+describe('the file floor\'s offered scopes (owner question 1)', () => {
+  const floor = (policy?: FloorPolicy) => createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 }, ...(policy ? { policy } : {}) })])
+
+  it('offers always, as today', () => {
+    expect(floor().evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask', asks: [{ offeredScopes: ['once', 'session', 'always'] }] })
+  })
+
+  it('offers once and the session alone with the switch turned the other way', () => {
+    expect(floor({ ...FLOOR_POLICY, alwaysAtFloor: false }).evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask', asks: [{ offeredScopes: ['once', 'session'] }] })
+  })
+})
+
+describe('the dangerously-allow switch over floor asks (owner question 4)', () => {
+  const engine = (policy?: FloorPolicy) => withDangerouslyAllow(createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 } })]), { level: () => 'command', root: () => WORKSPACE, ...(policy ? { policy } : {}) })
+
+  it('lifts a floor ask, as today', () => {
+    expect(engine().evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'allow' })
+  })
+
+  it('leaves a floor ask to a person with the switch turned the other way, and still lifts the rest', () => {
+    const spared = withDangerouslyAllow({ evaluate: () => ({ kind: 'ask', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: 'egress', offeredScopes: ['once'] }] }) }, { level: () => 'command', root: () => WORKSPACE, policy: { ...FLOOR_POLICY, switchLiftsFloor: false } })
+    expect(engine({ ...FLOOR_POLICY, switchLiftsFloor: false }).evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask' })
+    expect(spared.evaluate({ tool: 'web_fetch', effects: [], grants: NONE })).toMatchObject({ kind: 'allow' })
+  })
+})

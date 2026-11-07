@@ -1,6 +1,8 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
 import { guardDecision, RECORDED_BEFORE_NOTE, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Today's checks on an answer, held by the pure decision guard (the approval backend design, slice 4), taken from the
@@ -14,7 +16,7 @@ const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: '
 const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<ApprovalDecision> = {}): ApprovalDecision => ({ token: 't-1', approved: true, scope, ...extra })
 const deny = (scope: ApprovalDecision['scope'] = 'once'): ApprovalDecision => ({ token: 't-1', approved: false, scope })
 const claim = (decision: ApprovalDecision, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision, source: SOURCES.cli, ...extra })
-const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boolean; challenges?: string[] } = {}): LedgerView => ({ waiting: { request: { ...request, ...asked }, complete: input.complete ?? true, challenges: input.challenges ?? [SHOWN] } })
+const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boolean; challenges?: string[] } = {}): LedgerView => ({ waiting: { request: { ...request, ...asked }, complete: input.complete ?? true, challenges: input.challenges ?? [SHOWN], marks: PLAIN_MARKS, routes: TODAYS_ROUTES } })
 const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW })
 
 describe('the checks before the approvals file is read', () => {

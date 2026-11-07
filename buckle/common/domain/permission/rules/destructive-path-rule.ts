@@ -5,6 +5,7 @@ import type { PathView } from '../../path-view.js'
 import { homeDirectory, isInside } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, FILE_FLOOR_MARKS } from '../decision.js'
+import { FLOOR_POLICY, type FloorPolicy } from '../floor-policy.js'
 
 /**
  * The subjects the file side of the destructive floor asks and grants under (the fs-verbs brief). They ride under the
@@ -62,7 +63,7 @@ export function floorSubjectPath(subject: string): string | null {
  * The destructive floor for files: a delete asks a person, whatever the folder's write grant says, as `rm -r` does on
  * the shell side, and so does each write the destructive-write check marked (DestructiveWriteEffect). No stage of the
  * decision AI ever answers it, as it rates commands alone. A person may grant it once, for the session, or always, as
- * any write ask; strict mode offers once alone. A move's source that moves a file and replaces nothing (`floor: false`)
+ * any write ask, where owner question 1 keeps always (`policy`); strict mode offers once alone. A move's source that moves a file and replaces nothing (`floor: false`)
  * is judged by the write scope as a write to its folder instead, unless the file comes from outside the workspace's
  * folder into it (moveEffects).
  *
@@ -80,8 +81,8 @@ export function floorSubjectPath(subject: string): string | null {
  * the same checkpoints from the same newest one, so a grant for the session or always would never be used. The paths
  * it puts back are judged beside it as writes, and the write scope asks nothing of them (write-scope-rule.ts).
  */
-export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string }): PermissionRule {
-  const offeredScopes: GrantScope[] = input.strict ? ['once'] : ['once', 'session', 'always']
+export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string; policy?: FloorPolicy }): PermissionRule {
+  const offeredScopes: GrantScope[] = input.strict ? ['once'] : (input.policy ?? FLOOR_POLICY).alwaysAtFloor ? ['once', 'session', 'always'] : ['once', 'session']
   const home = input.home ?? homeDirectory()
   const grantable = (folder: string) => !isInside(folder, home) && !input.paths.reachableRoots.some(root => isInside(folder, root) && !isInside(root, folder))
   return {

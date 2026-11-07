@@ -3,6 +3,7 @@ import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../../../ty
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
+import { FLOOR_POLICY, type FloorPolicy } from '../floor-policy.js'
 import { floorSubjectPath, isFloorSubject, isRestoreSubject } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
 
@@ -29,9 +30,11 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
  * any ask, so an owner's deny rule, the node's policy over the workspace, the mount boundary and the
  * state directory still refuse. `level` and `root` are read at every evaluation, so the local
- * switch takes effect in a running node at once, off (null) as well as on.
+ * switch takes effect in a running node at once, off (null) as well as on. Owner question 4 keeps
+ * it lifting floor asks (`policy`).
  */
-export function withDangerouslyAllow(engine: PermissionEngine, input: { level: () => DangerouslyAllowLevel | null; root: () => string }): PermissionEngine {
+export function withDangerouslyAllow(engine: PermissionEngine, input: { level: () => DangerouslyAllowLevel | null; root: () => string; policy?: FloorPolicy }): PermissionEngine {
+  const { switchLiftsFloor } = input.policy ?? FLOOR_POLICY
   return {
     evaluate(call) {
       const outcome = engine.evaluate(call)
@@ -39,7 +42,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { level: (
       const level = input.level()
       if (level === null) return outcome
       const root = input.root()
-      const outside = outcome.asks.filter(ask => !covers({ ask, root, level }))
+      const outside = outcome.asks.filter(ask => !covers({ ask, root, level }) || (ask.floor && !switchLiftsFloor))
       if (outside.length > 0) return { ...outcome, asks: outside }
       return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${level}:${ask.rule}:${ask.subject}`) }
     },

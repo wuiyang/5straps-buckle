@@ -12,6 +12,7 @@ import { servesHolder, type GrantHolder } from '../../domain/permission/grant-ho
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
+import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
 import type { ApprovalErrorCode, EventReason } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
@@ -1064,8 +1065,12 @@ function writesAgain(owed: OwedGrant, record: GrantRecord): boolean {
 }
 
 /** A waiting ask as the decision guard reads it: whether its whole call was kept, and the challenges it was shown under. */
+// No build records an ask's routes yet, so each reads as sent down today's set.
 function waitingView(asked: PendingAsk, challenge: ResolveOptions['challenge']): NonNullable<LedgerView['waiting']> {
-  return { request: asked.request, complete: asked.call?.complete === true, challenges: challenge === undefined ? [] : challenge.shown(asked) }
+  return {
+    request: asked.request, complete: asked.call?.complete === true, challenges: challenge === undefined ? [] : challenge.shown(asked),
+    marks: { floor: asked.floor, destructive: asked.destructive }, routes: TODAYS_ROUTES,
+  }
 }
 
 /** Drops everything past its expiry, returning the asks that expired unanswered. */
