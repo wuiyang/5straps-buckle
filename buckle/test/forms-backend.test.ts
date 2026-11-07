@@ -149,14 +149,15 @@ async function opened() {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
   const heard: ApprovalSource[] = []
-  const decisionAudit: DecisionAudit = { received: async (decision) => { heard.push(decision.source) }, applied: async () => {}, refused: async () => {} }
+  const refused: Array<{ token: string; code: string }> = []
+  const decisionAudit: DecisionAudit = { received: async (decision) => { heard.push(decision.source) }, applied: async () => {}, refused: async (decision) => { refused.push({ token: decision.token, code: decision.code }) } }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
   const backend = forms()
   // The host core opens the forms on, caught as the forms backend receives it.
   let host: ApprovalHost | undefined
   service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } })
-  return { registry, grants, service, backend, heard, host: () => host! }
+  return { registry, grants, service, backend, heard, refused, host: () => host! }
 }
 
 describe('the forms host core opens', () => {
@@ -179,9 +180,10 @@ describe('the forms host core opens', () => {
   })
 
   it('leaves the whole-action check to core: an approval of an ask kept without its call is refused, and its denial applies', async () => {
-    const { registry, backend } = await opened()
+    const { registry, backend, refused } = await opened()
     const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE] })).requests
     expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'once' }) })).toEqual([])
+    expect(refused).toEqual([{ token: asked!.token, code: 'incomplete_action' }])
     expect(registry.pending().map(request => request.token)).toEqual([asked!.token])
     expect(await backend.answer({ [asked!.token]: accepted({ approve: false }) })).toEqual([asked!.token])
     expect(registry.pending()).toEqual([])
