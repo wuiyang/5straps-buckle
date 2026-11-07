@@ -3,48 +3,33 @@ import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 
-/**
- * What every route says of an ask recorded before this build, or whose kept call file is missing or damaged: its
- * whole call cannot be shown, so nobody approves it; it can be denied, or the call re-sent under the same requestId,
- * which records it again (owner decision D17).
- */
+/** Owner decision D17: every route's words for an ask whose whole call cannot be shown, which nobody approves. */
 export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
-/** Why the guard refused a decision, named as the approval contract's ApprovalErrorCode names it. */
+/** Named as the approval contract's ApprovalErrorCode values, so no mapping layer sits between them. */
 export type GuardRefusalCode =
   | 'unknown_ask' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'
   | 'statement_invalid' | 'proof_expired' | 'assurance_too_low'
 
 export interface GuardRefusal { ok: false; code: GuardRefusalCode; reason: string }
 
-/** A decision as it arrives at the approvals ledger. */
 export interface DecisionClaim {
   decision: ApprovalDecision
   authority: ApprovalAuthority
-  /**
-   * A host pattern recorded in place of the host that asked, per `BUCKLE-D18: A host wildcard covers the apex and every
-   * subdomain, in lists and grants alike`. Never a field of the decision, so no decision an agent or a relay sends can carry
-   * one: `buckle approve --host` alone passes it.
-   */
+  // BUCKLE-D18 host pattern: never a field of the decision, so only `buckle approve --host` can pass one.
   widenTo?: string
-  /** The digest of the challenge a person's key signed, which must be the ask's own. */
+  /** The digest of the challenge a person's key signed. */
   challenge?: string
   /** A signed `once`'s proof deadline, in ms: the authenticated request's, never the body's. */
   consumeNotAfter?: number
 }
 
-/** What the ledger holds for the decision's token, read under its lock. */
 export interface LedgerView {
-  /** The decision already applied to it, with the host pattern it recorded and the request it answered. */
   resolved?: { decision: ApprovalDecision; widenedTo?: string; request?: ApprovalRequest }
-  /**
-   * The ask still waiting under it: whether its whole call was kept, and the digests of the challenges it was shown under,
-   * with the workspace's name and without it (none for a call not kept whole).
-   */
+  /** `challenges`: the digests the ask was shown under, with the workspace's name and without it. */
   waiting?: { request: ApprovalRequest; complete: boolean; challenges: readonly string[] }
 }
 
-/** What an accepted decision records: the host pattern in place of the host that asked, or the ask's wider subject in place of its own. */
 export interface DecisionPlan { widenedTo?: string; wider?: string }
 
 export type GuardVerdict =
@@ -52,7 +37,7 @@ export type GuardVerdict =
   | { ok: true; repeated: true; asked?: { rule: PermissionRuleId; subject: string } }
   | { ok: true; apply: DecisionPlan }
 
-/** The checks that need no ask, which the registry also runs before it locks the approvals file; on a pass, the host pattern to record. */
+// Needs no ask, so the registry also runs it before it locks the approvals file.
 export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true; widenedTo?: string } {
   const { decision } = claim
   if (decision.scope !== 'once' && claim.authority !== 'admin') return refuse('assurance_too_low', 'Only the admin credential writes an approval that outlives the call')
@@ -60,7 +45,6 @@ export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true;
   return checkWidening({ pattern: claim.widenTo, decision, authority: claim.authority })
 }
 
-/** Every check a decision meets, the screen's first, in the order the registry ran them. */
 export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number }): GuardVerdict {
   const { claim: { decision }, claim, ledger } = input
   const screened = screenDecision(claim)
@@ -70,8 +54,7 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   const asked = ledger.waiting
   if (!asked) return refuse('unknown_ask', 'Approval token is unknown or expired')
   if (claim.challenge !== undefined && !asked.challenges.includes(claim.challenge)) return refuse('action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows')
-  // Owner decision D17, on every route: an ask whose whole call was never kept, or whose call file is missing or
-  // unreadable, was never shown whole, so no answer approves it (review M2 of the slice 5 re-review).
+  // Owner decision D17, on every route: an ask never shown whole is never approved.
   if (decision.approved && !asked.complete) return refuse('incomplete_action', `This ask was ${RECORDED_BEFORE_NOTE}`)
   const { request } = asked
   if (decision.approved && !request.offeredScopes.includes(decision.scope)) return refuse('scope_not_offered', `Scope ${decision.scope} is not offered for this approval`)
@@ -92,7 +75,6 @@ function refuse(code: GuardRefusalCode, reason: string): GuardRefusal {
   return { ok: false, code, reason }
 }
 
-/** An answer identical to the one already applied changes nothing; any other is refused. */
 function repeatOf(input: { decision: ApprovalDecision; widenedTo: string | undefined; resolved: NonNullable<LedgerView['resolved']> }): GuardVerdict {
   const { decision, resolved } = input
   const previous = resolved.decision
@@ -101,11 +83,7 @@ function repeatOf(input: { decision: ApprovalDecision; widenedTo: string | undef
   return { ok: true, repeated: true, ...(resolved.request ? { asked: { rule: resolved.request.rule, subject: resolved.request.subject } } : {}) }
 }
 
-/**
- * The subject a decision grants in place of the ask's own, or null where it names none (or the ask's own): only the ask's
- * `widerSubject`, which its rule offered, approved for the session or always, and never beside a host pattern (the
- * delete policy brief). A `once` covers the one call that asked, so it stays the ask's own subject.
- */
+// Only the ask's own widerSubject, approved for the session or always: a once covers the one call that asked.
 function widerGrant(input: { decision: ApprovalDecision; request: ApprovalRequest; widened: boolean }): { subject: string } | GuardRefusal | null {
   const named = input.decision.subject
   if (named === undefined || named === input.request.subject) return null
@@ -116,10 +94,6 @@ function widerGrant(input: { decision: ApprovalDecision; request: ApprovalReques
   return { subject: named }
 }
 
-/**
- * What a widening needs before the request is looked at: the owner's authority, an approval that
- * outlives the call (`once` stays exact, since it covers one call), and a well-formed wildcard.
- */
 function checkWidening(input: { pattern: string; decision: ApprovalDecision; authority: ApprovalAuthority }): { ok: true; widenedTo: string } | GuardRefusal {
   if (input.authority !== 'admin') return refuse('scope_forbidden', 'Only the admin credential widens an approval to a host pattern')
   if (!input.decision.approved) return refuse('scope_forbidden', 'A denial names no host pattern; deny without --host')
@@ -136,11 +110,7 @@ function checkWidening(input: { pattern: string; decision: ApprovalDecision; aut
   return { ok: true, widenedTo: pattern }
 }
 
-/**
- * A pattern widens only a network approval, and only one it covers. The subject carries no scheme,
- * so it is tried as http and as https: a pattern naming port 443 covers `api.example.com` asked
- * over https.
- */
+// The subject carries no scheme, so it is tried as http and as https: a pattern naming port 443 covers one asked over https.
 function patternRefusal(input: { rule: PermissionRuleId; subject: string; pattern: string }): string | null {
   if (input.rule !== 'network_egress') return `--host widens a network approval only; this one is ${input.rule} for ${input.subject}`
   const matcher = compileHostPattern(input.pattern)
