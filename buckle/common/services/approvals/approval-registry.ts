@@ -118,6 +118,8 @@ const revocationsSchema = z.object({ version: z.literal(1), revoked: z.array(rev
 type PendingEntry = State['pending'][number]
 /** A decision on disk, with the answer it gives and its resolved entry, whose `owedGrant` stays while its grant is unwritten. */
 interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry: State['resolved'][number] }
+/** How far a decision got: on disk (`applied`), or a lasting denial written to the grant store before that (`denial`). */
+interface DecisionProgress { applied?: AppliedDecision; denial?: GrantRecord }
 /**
  * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
  * which every ask of one request group shares, so a listing carries the group's call once and each ask names it
@@ -692,7 +694,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    * One decision under the approvals lock: the guard's verdict, then the resolved entry, its notice and its once. A
    * decision that makes a grant, or meets one owed, commits before any grant is written, and `progress` then holds it.
    */
-  async function applyDecision(input: { state: State; commit: () => Promise<void>; claim: DecisionClaim; options: ResolveOptions; progress: { applied?: AppliedDecision } }): Promise<Resolution> {
+  async function applyDecision(input: { state: State; commit: () => Promise<void>; claim: DecisionClaim; options: ResolveOptions; progress: DecisionProgress }): Promise<Resolution> {
     const { state, commit, options, progress } = input
     const { token } = input.claim.decision
     const now = Date.now()
@@ -727,7 +729,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     // A lasting denial stands before its decision commits: one that cannot be written records nothing, and its ask waits.
     if (!decision.approved && decision.scope !== 'once') {
       await dropSuperseded({ state, commit, slot: { rule, subject, scope: decision.scope, sessionId: holder.sessionId, actor: holder.actor ?? null } })
-      await grants.grant({ ...holder, rule, subject, scope: decision.scope, denied: true, ...decider })
+      progress.denial = await grants.grant({ ...holder, rule, subject, scope: decision.scope, denied: true, ...decider })
     }
     const owedGrant = owedGrantOf({ decision, holder, rule, subject, widenedTo, wider, decider })
     state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
@@ -763,6 +765,15 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const superseded = input.state.resolved.filter(entry => entry.workspace === workspace && entry.owedGrant !== undefined && writesAgain(entry.owedGrant, input.slot))
     for (const entry of superseded) delete entry.owedGrant
     if (superseded.length > 0) await input.commit()
+  }
+
+  // A lasting denial whose decision was not recorded is taken back, so its ask waits with nothing in force.
+  async function withdrawDenial(denial: GrantRecord): Promise<void> {
+    try {
+      await grantStore.revoke(denial.id)
+    } catch (error) {
+      logger.warn('A lasting denial was written, but its decision was not recorded and the denial could not be taken back; it stands until revoked with buckle grants revoke', { error: withoutCause(error) })
+    }
   }
 
   // A grant the settling pass could not write is still owed, and the answer says so.
@@ -822,7 +833,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source: source.id })
         return { ok: false, code: screened.code, reason: screened.reason }
       }
-      const progress: { applied?: AppliedDecision } = {}
+      const progress: DecisionProgress = {}
       try {
         return await update(async (state, commit) => {
           await applyRevocations(state, commit)
@@ -830,8 +841,11 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         })
       } catch (error) {
         // A failure after the decision is on disk leaves it applied: the answer says so, and names a grant it still owes.
-        const { applied } = progress
-        if (applied === undefined) throw error
+        const { applied, denial } = progress
+        if (applied === undefined) {
+          if (denial !== undefined) await withdrawDenial(denial)
+          throw error
+        }
         logger.warn('A decision was recorded, but a grant it owes was not confirmed written; it is written when the workspace opens again or the same decision is sent again', { error: withoutCause(error) })
         return owedOf(applied)
       }

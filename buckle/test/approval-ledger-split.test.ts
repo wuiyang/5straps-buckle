@@ -396,6 +396,16 @@ describe('a lasting denial', () => {
     expect(runtime.grants.list()).toEqual([])
   })
 
+  it('takes its denial back when the ledger cannot then record its decision, so its ask waits with nothing in force', async () => {
+    const { config, runtime } = await open()
+    const token = await secretAsk(runtime)
+    failing.rename = approvalsPath(config)
+
+    await expect(runtime.approvalService.answer(denial(token))).rejects.toThrow('Injected write failure')
+    expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })
+    expect(runtime.grants.list()).toEqual([])
+  })
+
   it.each(['session', 'always'] as const)('stands over an earlier %s approval of the same secret file whose grant was left owed, and after reopening', async (scope) => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
     roots.push(root)
