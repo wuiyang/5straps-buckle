@@ -11,9 +11,9 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { watchApprovals } from '../cli/approvals-watch.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, type ApprovalService } from '../common/services/approvals/approval-service.js'
+import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ActionLog } from '../common/types/ports/action-log.js'
-import { fixedInteraction } from './support/interaction.js'
+import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { mkdirSync } from 'node:fs'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -35,7 +35,7 @@ function registryOf(config: BuckleConfig): ApprovalRegistry {
 
 /** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
 function serviceOf(config: BuckleConfig) {
-  return createApprovalService({ registry: registryOf(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
+  return approvalServiceWithTerminal({ registry: registryOf(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
 }
 
 async function issue(registry: ApprovalRegistry): Promise<string> {

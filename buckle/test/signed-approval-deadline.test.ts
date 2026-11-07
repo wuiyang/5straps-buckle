@@ -7,9 +7,10 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import type { PermissionOutcome } from '../common/domain/permission/engine.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService } from '../common/services/approvals/approval-service.js'
+
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -94,7 +95,7 @@ describe('signed once proof consumption deadline', () => {
     vi.spyOn(Date, 'now').mockImplementation(() => now)
     const { registry, file, decision, evaluate } = await queue()
     const sent: ApprovalNotice[] = []
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node', graceMs: 1, interaction: async () => undefined, notices: createApprovalNotices(async notices => { sent.push(...notices) }) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'node', graceMs: 1, interaction: async () => undefined, notices: createApprovalNotices(async notices => { sent.push(...notices) }) })
     const deadline = now + 60_000
     try {
       expect(await service.answer({ decision, source: SOURCES.cli, decidedBy: DECIDER, consumeNotAfter: deadline })).toMatchObject({ ok: true })

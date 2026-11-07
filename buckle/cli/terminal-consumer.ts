@@ -8,11 +8,10 @@ import { actionPhrase } from '../common/domain/action-phrase.js'
 import { describeLocalExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
-import { readAskView } from '../common/domain/approval/ask-view.js'
+import { readAskView } from '../common/adapters/approval/ask-view.js'
 import { localTime } from '../common/domain/local-time.js'
 import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
-import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
-import { APPROVAL_REQUEST_KIND } from '../common/services/approvals/interaction.js'
+import { APPROVAL_REQUEST_KIND, type ApprovalChoice } from '../common/adapters/approval/terminal-question.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
 
 export interface TerminalOptions {

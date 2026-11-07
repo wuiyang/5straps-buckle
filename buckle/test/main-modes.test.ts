@@ -55,7 +55,7 @@ vi.mock('../cli/setup.js', async importOriginal => {
 const { main, selectMode, stopSignals, takeGlobalFlags } = await import('../main.js')
 const { setupCli } = await import('../cli/setup.js')
 const { flushLogs, logger } = await import('../common/runtime/log.js')
-const { questionFor } = await import('../common/services/approvals/approval-service.js')
+const { questionFor } = await import('../common/adapters/approval/terminal-question.js')
 
 beforeEach(() => {
   vi.clearAllMocks()

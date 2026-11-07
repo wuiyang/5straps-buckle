@@ -1,4 +1,5 @@
 import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5straps/protocol'
+import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { atLeast, rightsOf } from './assurance.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
@@ -7,10 +8,9 @@ import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
 /** Owner decision D17: every route's words for an ask whose whole call cannot be shown, which nobody approves. */
 export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
-/** Named as the approval contract's ApprovalErrorCode values, so no mapping layer sits between them. */
-export type GuardRefusalCode =
+export type GuardRefusalCode = Extract<ApprovalErrorCode,
   | 'unknown_ask' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'
-  | 'statement_invalid' | 'proof_expired' | 'assurance_too_low' | 'capability_exceeded'
+  | 'statement_invalid' | 'proof_expired' | 'assurance_too_low' | 'capability_exceeded'>
 
 export interface GuardRefusal { ok: false; code: GuardRefusalCode; reason: string }
 

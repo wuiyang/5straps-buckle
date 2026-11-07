@@ -14,9 +14,11 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+
 import { createTerminalConsumer, describeQuestion } from '../cli/terminal-consumer.js'
 import { FILE_FLOOR_MARKS } from '../common/domain/permission/decision.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 const ROOT = '/work/project'
 const paths = createPathView({ root: ROOT, mount: null })
@@ -98,7 +100,7 @@ describe('approval severity delivery', () => {
     const filePath = join(root, 'approvals.json')
     const grantStore = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
     const registry = createApprovalRegistry(grantStore, filePath)
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
     try {
       const call = { arguments: { from: 'src/lib', to: 'src/old-lib' }, cwd: '/workspace', description: 'Move a folder', effects: ['read /workspace/src/lib', 'write /workspace/src/old-lib'], complete: true as const }
       const issued = await registry.ask({ tool: 'fs_move', sessionId: 's', asks: [{ kind: 'ask', ...FILE_FLOOR_MARKS, rule: 'write_scope', subject: `move-tree:${ROOT}/src/lib`, reason: 'Moving the folder needs approval', offeredScopes: ['once', 'session', 'always'], severity }], call })

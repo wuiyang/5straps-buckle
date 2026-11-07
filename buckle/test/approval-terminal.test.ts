@@ -11,16 +11,18 @@ import { describeLocalExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+
 import { describeApprovalRequest, printable } from '../common/domain/approval-instruction.js'
 import { approvalBlock, createTerminalConsumer, describeQuestion, interruptSelf, type InterruptTarget } from '../cli/terminal-consumer.js'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { createConsoleWriter } from '../common/runtime/console.js'
-import type { ApprovalHold } from '../common/services/approvals/interaction.js'
+import type { ApprovalHold } from '../common/types/ports/approval-backend.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // The rows that pin cursor control run on a capable terminal whatever shell runs the suite; the TERM=dumb rows say so.
 beforeEach(() => { vi.stubEnv('TERM', 'xterm-256color') })
@@ -92,7 +94,7 @@ function stubQueue(requests: ApprovalRequest[]) {
 const nobody: RequestCli = async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' })
 
 function waitingService(input: { registry: ApprovalRegistry; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
-  const service = createApprovalService({ registry: input.registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
+  const service = approvalServiceWithTerminal({ registry: input.registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
   return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }
 
@@ -456,7 +458,7 @@ describe('Ctrl-C at a terminal question', () => {
     const script = join(mkdtempSync(join(tmpdir(), 'buckle-ctrl-c-')), 'serve-like.mts')
     writeFileSync(script, `
       import { setupCli } from ${JSON.stringify(new URL('../cli/setup.ts', import.meta.url).href)};
-      import { questionFor } from ${JSON.stringify(new URL('../common/services/approvals/approval-service.ts', import.meta.url).href)};
+      import { questionFor } from ${JSON.stringify(new URL('../common/adapters/approval/terminal-question.ts', import.meta.url).href)};
       const cli = setupCli({ terminal: { input: process.stdin, output: process.stderr } });
       const approval = (token) => ({ token, rule: 'read_scope', subject: '/outside', reason: 'outside the sandbox', tool: 'fs_read', offeredScopes: ['once'], expiresAt: new Date(Date.now() + 600_000).toISOString() });
       // Like buckle serve, something else keeps the process alive while the questions are open.

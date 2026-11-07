@@ -12,10 +12,12 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { describeAsk } from '../common/domain/approval-instruction.js'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { FILE_FLOOR_MARKS } from '../common/domain/permission/decision.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // The delete policy brief, item 3: the serve terminal shows both choices for a delete outside the workspace's folder,
 // the entry alone and its folder with its subfolders, each for the session or always, and `buckle approve` gains
@@ -150,7 +152,7 @@ describe('buckle approvals --watch', () => {
   it('offers the folder and its subfolders beside the scopes, and grants it for the session with sb', async () => {
     const config = node()
     const token = await waiting(config)
-    const approvals = createApprovalService({ registry: registry(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
+    const approvals = approvalServiceWithTerminal({ registry: registry(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
     const input = new PassThrough()
     const output = new PassThrough()
     Object.assign(output, { isTTY: true, columns: 200, rows: 24 })

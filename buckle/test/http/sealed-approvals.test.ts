@@ -269,7 +269,7 @@ describe('a decision posted to the setup face', () => {
     expect((await decide({ token, approved: true, scope: 'once' })).status).toBe(409)
     // The envelope's source only denies, so the decision guard refuses its approval and nothing is decided.
     expect(answer).toHaveBeenCalledWith(expect.objectContaining({ source: SOURCES.sealed }))
-    await expect(answer.mock.results[0]!.value).resolves.toEqual({ ok: false, reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' })
+    await expect(answer.mock.results[0]!.value).resolves.toEqual({ ok: false, code: 'capability_exceeded', reason: 'Approval requires an enrolled device key: review and confirm with buckle client approve' })
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
     expect((await deviceApproval(app, token)).status).toBe(200)
 

@@ -1,7 +1,7 @@
 import type { ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { askViewDetails, readAskHeadline, readAskView, type AskView } from '../common/domain/approval/ask-view.js'
-import { questionFor } from '../common/services/approvals/approval-service.js'
+import { askViewDetails, readAskHeadline, readAskView, type AskView } from '../common/adapters/approval/ask-view.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // The typed view of one ask that the serve terminal and the pending log line read, carried as flat details because the
 // question may cross to another process (the approval backend design, slice 2).

@@ -12,7 +12,7 @@ import { createJsonFileStore } from '../common/adapters/json-file-store.js'
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import type { AskedCall } from '../common/domain/approval/asked-call.js'
 import { AmbiguousWithdrawError, createApprovalRegistry, MAX_PENDING_BYTES_PER_SESSION, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService } from '../common/services/approvals/approval-service.js'
+
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
@@ -21,6 +21,7 @@ import { logger } from '../common/runtime/log.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -36,7 +37,7 @@ function queue() {
   const filePath = join(root, 'approvals.json')
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const registry = createApprovalRegistry(grants, filePath)
-  const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
+  const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined })
   return { root, filePath, grants, registry, service }
 }
 
@@ -804,7 +805,7 @@ describe('expired approval cleanup runs without another approval event', () => {
     const sent: ApprovalNotice[] = []
     const notices = createApprovalNotices(async batch => { await new Promise(resolve => setTimeout(resolve, 20)); sent.push(...batch) })
     const restarted = createApprovalRegistry(grants, filePath, 0, { onExpired: requests => notices.expired(requests) })
-    const closing = createApprovalService({ registry: restarted, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, notices })
+    const closing = approvalServiceWithTerminal({ registry: restarted, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, notices })
     await closing.close()
     expect(sent).toEqual([expect.objectContaining({ token: request!.token, event: 'expired' })])
     expect(JSON.parse(readFileSync(filePath, 'utf8')).pending).toEqual([])

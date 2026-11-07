@@ -9,9 +9,9 @@ import { approvalsPath } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION, MAX_PENDING_PER_WORKSPACE } from '../common/services/approvals/approval-registry.js'
 import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
-import { createApprovalService } from '../common/services/approvals/approval-service.js'
+
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
@@ -185,7 +185,7 @@ describe('the question a hinted call still puts to the terminal (review L3)', ()
     const root = mkdtempSync(join(tmpdir(), 'buckle-join-nowait-'))
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
 
     for (const [requestId, wait] of [['none', { mode: 'none' }], ['short', { mode: 'finite', ms: 1 }]] as const) {
       expect(await service.request({ sessionId: 's', requestId, tool: 'fs_write', asks: [outside(requestId.length)], wait })).toMatchObject({ settled: false })
@@ -206,7 +206,7 @@ describe('ordering inside a request and at close (review L5)', () => {
     const registry = queue()
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
     const leaving = new AbortController()
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
       announce: async () => { leaving.abort() } })
 
     await expect(service.request({ ...call, signal: leaving.signal, isCancel: () => true })).rejects.toThrow()
@@ -219,7 +219,7 @@ describe('ordering inside a request and at close (review L5)', () => {
     const registry = queue()
     const requestCli = vi.fn<RequestCli>(async request => ({ status: 'unavailable', requestId: request.id, reason: 'no_consumer' }))
     const dropped = new AbortController()
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }),
       announce: async () => { dropped.abort() } })
 
     await expect(service.request({ ...call, signal: dropped.signal })).rejects.toThrow()
@@ -235,7 +235,7 @@ describe('ordering inside a request and at close (review L5)', () => {
     const entered = Promise.withResolvers<void>()
     const slowRegistry = { ...registry, resolve: async (...args: Parameters<typeof registry.resolve>) => { entered.resolve(); await recording.promise; return registry.resolve(...args) } }
     const requestCli: RequestCli = async request => ({ status: 'answered', requestId: request.id, answer: { choice: 'once' } })
-    const service = createApprovalService({ registry: slowRegistry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
+    const service = approvalServiceWithTerminal({ registry: slowRegistry, workspaceId: 'default', serverId: 'test-node', graceMs: 60_000, interaction: fixedInteraction({ hold: 'grace', requestCli }) })
     const waiting = service.request(call)
     await entered.promise
 

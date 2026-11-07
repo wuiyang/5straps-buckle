@@ -11,9 +11,9 @@ import { parseApprovalTimeout } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService } from '../common/services/approvals/approval-service.js'
+
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { fixedInteraction } from './support/interaction.js'
+import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import type { ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 
 type Ask = ApprovalAskInput['asks'][number]
@@ -30,7 +30,7 @@ afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync
 async function fixture(timeoutMs: number | null) {
   const root = directory()
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), timeoutMs)
-  const service = createApprovalService({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
+  const service = approvalServiceWithTerminal({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
   const ask: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
   const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', call: recorded, asks })
   return { approvals, service, request }

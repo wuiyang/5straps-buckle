@@ -8,10 +8,10 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
+import type { ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -108,7 +108,7 @@ function service(input: { graceMs: number | null; interaction?: Interaction; dur
   const sent: ApprovalNotice[] = []
   const notices = createApprovalNotices(async batch => { sent.push(...batch) })
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), input.graceMs, { onExpired: requests => notices.expired(requests), ...(input.durable ? { durableNotices: true } : {}) })
-  const approvals = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
+  const approvals = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
   const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
   return { registry, approvals, sent, ask, notices }
 }

@@ -77,6 +77,7 @@ import { createApprovalService, type ApprovalService } from '../approvals/approv
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../approvals/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
+import { createTerminalBackend } from '../../adapters/approval/terminal-backend.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
 import { createExecutionBudget, createExecutions, requestFingerprint, type ExecutionBudget } from '../invocation/executions.js'
 import { createInvoker, InvocationsClosedError, recordRefusedCall, type InvokeInput } from '../invocation/invoker.js'
@@ -341,13 +342,14 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   await actions.recoverInterrupted()
   // Replay protection for sealed decisions from Rings: on disk once a key is paired.
   const approvalNonces = config.ringsApprovalKey ? await openFileNonceStore({ filePath: approvalNoncesPath(config) }) : createMemoryNonceClaims()
+  const interaction: InteractionSource = input.interaction ?? (async () => undefined)
+  const terminal = createTerminalBackend({ requester: async () => (await interaction())?.requestCli, judgeApproves: () => inForce().judge.thoroughReady })
   const approvalService = createApprovalService({
     registry: approvals, workspaceId, serverId: config.serverId,
     // Read at each ask, so a change to approvalWaitMs applies from the next call (Q2), and a rename shows at once.
     get graceMs() { return config.approvalTimeoutMs },
     get workspaceName() { return config.serverName },
-    interaction: input.interaction ?? (async () => undefined),
-    judgeApproves: () => inForce().judge.thoroughReady,
+    interaction, terminal,
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })

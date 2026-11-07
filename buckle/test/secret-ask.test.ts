@@ -112,7 +112,7 @@ describe('the grant a person gives', () => {
     expect(check('two').kind).toBe(scope === 'always' ? 'allow' : 'ask')
     expect(grants.list()).toMatchObject([{ rule: 'sensitive_path', subject: 'secret-file:/w/.env.local', scope }])
     const credential = (await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/w/.env.local', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }], call })).requests[0]!
-    expect(await approvals.resolve({ token: credential.token, approved: true, scope }, SOURCES.cli)).toEqual({ ok: false, reason: 'Sensitive files can only be allowed once' })
+    expect(await approvals.resolve({ token: credential.token, approved: true, scope }, SOURCES.cli)).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Sensitive files can only be allowed once' })
   })
 })
 

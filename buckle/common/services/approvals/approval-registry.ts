@@ -12,6 +12,7 @@ import { servesHolder, type GrantHolder } from '../../domain/permission/grant-ho
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
+import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
@@ -295,7 +296,7 @@ export interface ResolveOptions {
  * `granted`: the ask's wider subject, where the decision granted it in place of the ask's own (the delete policy brief).
  * `grantOwed`: the decision is recorded, but the grant it makes could not be written (GRANT_OWED_NOTE).
  */
-export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; grantOwed?: true } | { ok: false; reason: string }
+export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; grantOwed?: true } | { ok: false; code: ApprovalErrorCode; reason: string }
 
 /** What a route says of a decision recorded with `grantOwed`: its session or always grant is not in force yet. */
 export const GRANT_OWED_NOTE = 'its grant is not written yet, and is written when the workspace opens again or when the same decision is sent again'
@@ -331,6 +332,8 @@ export interface ApprovalRegistry {
    */
   evaluate(input: OnceSpend): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
+  /** Whether each of these tokens was approved, for those a decision is recorded for. */
+  outcomes(tokens: string[]): Map<string, boolean>
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
   /**
@@ -641,7 +644,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
     const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
     const verdict = guardDecision({ claim, ledger, now })
-    if (!verdict.ok) return { ok: false, reason: verdict.reason }
+    if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     if ('repeated' in verdict) {
       const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
       if (previous === undefined || !owesGrants(state)) return repeated
@@ -727,7 +730,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       const screened = screenDecision(claim)
       if (!screened.ok) {
         if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source: source.id })
-        return { ok: false, reason: screened.reason }
+        return { ok: false, code: screened.code, reason: screened.reason }
       }
       const progress: { applied?: AppliedDecision } = {}
       try {
@@ -787,6 +790,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     },
 
     wasDenied: tokens => read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
+
+    outcomes: tokens => new Map(read().resolved.filter(entry => entry.workspace === workspace && tokens.includes(entry.decision.token)).map(entry => [entry.decision.token, entry.decision.approved])),
 
     cancel(tokens) {
       return update(state => {

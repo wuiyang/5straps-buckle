@@ -16,10 +16,12 @@ import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/
 import { configFromEnvironment } from './support/workspace-config.js'
 import { ActionTooLargeError, ApprovalLimitError } from '../common/services/approvals/approval-errors.js'
 import { createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { approvalServiceWithTerminal } from './support/interaction.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // Owner ruling B and decision D17: hiding is display only. A test turns it off here to show that every approval field
 // then carries the raw call and that the identity a decision binds does not move.
@@ -319,7 +321,7 @@ describe('every approval field a person or a relay reads is redacted (owner deci
     roots.push(root)
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'))
     const announced: ApprovalRequest[] = []
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, announce: async (requests) => { announced.push(...requests) } })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, announce: async (requests) => { announced.push(...requests) } })
     await service.request({ sessionId: 'chat-1', requestId: 'relay', tool: 'web_fetch', wait: { mode: 'none' }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: `Reach https://api.example.com/status\nAPI_TOKEN=${SECRET_B}`, offeredScopes: ['once'] }] })
     expect(announced).toHaveLength(1)
     expect(announced[0]).toMatchObject({ subject: 'api.example.com', reason: 'Reach https://api.example.com/status\nAPI_TOKEN=[redacted]' })

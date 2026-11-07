@@ -13,11 +13,12 @@ import { createDestructivePathRule, isFloorSubject } from '../common/domain/perm
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
+
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { fixedInteraction } from './support/interaction.js'
+import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // The delete policy brief, item 3: a delete outside the workspace's own folder (a writable mount, or a path an approval
 // reached) asks at the floor as before, and offers two subjects besides its scopes: the target alone, as before, or its
@@ -155,7 +156,7 @@ describe('the approval queue', () => {
     expect(await registry.resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports` })
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: `delete-below:${MOUNT}/reports`, scope: 'session', sessionId: 's1' }])
     expect(await registry.resolve(decision, SOURCES.cli)).toMatchObject({ ok: true, repeated: true })
-    expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, reason: 'Approval already has a different decision' })
+    expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })
   })
 
   it('grants the ask\'s own subject where the decision names none, or names it', async () => {
@@ -167,14 +168,14 @@ describe('the approval queue', () => {
   })
 
   it.each([
-    [{ approved: true, scope: 'once' as const, subject: `delete-below:${MOUNT}/reports` }, 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead'],
-    [{ approved: true, scope: 'session' as const, subject: 'delete-below:/' }, `This ask grants delete:${MOUNT}/reports or delete-below:${MOUNT}/reports, not delete-below:/`],
-    [{ approved: true, scope: 'session' as const, subject: MOUNT }, `This ask grants delete:${MOUNT}/reports or delete-below:${MOUNT}/reports, not ${MOUNT}`],
-    [{ approved: false, scope: 'once' as const, subject: `delete-below:${MOUNT}/reports` }, 'A denial names no subject: it denies the ask\'s own'],
-  ])('refuses %o, granting nothing', async (decision, reason) => {
+    [{ approved: true, scope: 'once' as const, subject: `delete-below:${MOUNT}/reports` }, 'scope_forbidden', 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead'],
+    [{ approved: true, scope: 'session' as const, subject: 'delete-below:/' }, 'scope_not_offered', `This ask grants delete:${MOUNT}/reports or delete-below:${MOUNT}/reports, not delete-below:/`],
+    [{ approved: true, scope: 'session' as const, subject: MOUNT }, 'scope_not_offered', `This ask grants delete:${MOUNT}/reports or delete-below:${MOUNT}/reports, not ${MOUNT}`],
+    [{ approved: false, scope: 'once' as const, subject: `delete-below:${MOUNT}/reports` }, 'statement_invalid', 'A denial names no subject: it denies the ask\'s own'],
+  ] as const)('refuses %o, granting nothing', async (decision, code, reason) => {
     const { registry, grants } = queue()
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    expect(await registry.resolve({ token: request!.token, ...decision }, SOURCES.cli)).toEqual({ ok: false, reason })
+    expect(await registry.resolve({ token: request!.token, ...decision }, SOURCES.cli)).toEqual({ ok: false, code, reason })
     expect(grants.list()).toEqual([])
     expect(registry.pending()).toHaveLength(1)
   })
@@ -184,7 +185,7 @@ describe('the approval queue', () => {
     const { widerSubject: _none, ...narrow } = WIDE
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [narrow], call: CALL })).requests
     expect(request).not.toHaveProperty('widerSubject')
-    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, SOURCES.cli)).toEqual({ ok: false, reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports` })
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session', subject: `delete-below:${MOUNT}/reports` }, SOURCES.cli)).toEqual({ ok: false, code: 'scope_not_offered', reason: `This ask grants delete:${MOUNT}/reports, not delete-below:${MOUNT}/reports` })
   })
 })
 
@@ -202,7 +203,7 @@ describe('the approval service', () => {
 
   it.each([['session_below', 'session'], ['always_below', 'always']] as const)('grants the folder and its subfolders for the choice %s', async (choice, scope) => {
     const { registry, grants } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering(choice), hold: 'prompt' }) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering(choice), hold: 'prompt' }) })
     const result = await service.request({ sessionId: 's1', requestId: 'r1', tool: 'fs_delete', asks: [WIDE], call: CALL })
     expect(result.settled).toBe(true)
     expect(grants.list()).toMatchObject([{ subject: `delete-below:${MOUNT}/reports`, scope }])
@@ -212,7 +213,7 @@ describe('the approval service', () => {
   it('denies a wider choice where the ask offers no wider subject', async () => {
     const { registry, grants } = queue()
     const { widerSubject: _none, ...narrow } = WIDE
-    const service = createApprovalService({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('always_below'), hold: 'prompt' }) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('always_below'), hold: 'prompt' }) })
     const result = await service.request({ sessionId: 's1', requestId: 'r1', tool: 'fs_delete', asks: [narrow], call: CALL })
     expect(grants.list()).toEqual([])
     expect(registry.wasDenied(result.approvals.map(request => request.token))).toBe(true)
@@ -221,7 +222,7 @@ describe('the approval service', () => {
 
   it('takes no subject from a device\'s signed decision, whose challenge named none but the ask\'s own', async () => {
     const { registry, grants } = queue()
-    const service = createApprovalService({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
     const result = await service.decideSealed({ body: { token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, signedBy: 'key:device', proofDeadline: Date.now() + 60_000 })
     expect(result).toMatchObject({ status: 'rejected', reason: expect.stringContaining('buckle approve --below') })

@@ -221,16 +221,16 @@ describe('the checks an answer meets', () => {
 
   it('refuses a lasting answer from a relayed source, and a host pattern on a write', async () => {
     const { runtime, token } = await waitingAsk()
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.judge })).toEqual({ ok: false, reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.judge, widenTo: '*.example.com' })).toEqual({ ok: false, reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, widenTo: '*.example.com' })).toEqual({ ok: false, reason: 'A once approval covers one call to the host that asked; widen a session or always approval instead' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.judge })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.judge, widenTo: '*.example.com' })).toEqual({ ok: false, code: 'assurance_too_low', reason: 'This answer is relayed, so it decides once and nothing that outlives the call' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, widenTo: '*.example.com' })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'A once approval covers one call to the host that asked; widen a session or always approval instead' })
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli, widenTo: '*.example.com' })).toMatchObject({ ok: false, reason: expect.stringContaining('--host widens a network approval only; this one is write_scope') })
   })
 
   it('refuses a challenge other than the ask\'s, and a signed once past its proof deadline', async () => {
     const { runtime, token } = await waitingAsk()
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, challenge: 'f'.repeat(64) })).toEqual({ ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' })
-    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, consumeNotAfter: Date.now() - 1 })).toEqual({ ok: false, reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, challenge: 'f'.repeat(64) })).toEqual({ ok: false, code: 'action_mismatch', reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli, consumeNotAfter: Date.now() - 1 })).toEqual({ ok: false, code: 'proof_expired', reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' })
   })
 
   it('accepts the ask\'s own challenge, signed with the workspace\'s name or without it', async () => {
@@ -247,15 +247,15 @@ describe('the checks an answer meets', () => {
     const { runtime, token } = await waitingAsk()
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true, repeated: true, asked: { rule: 'write_scope' } })
-    expect(await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'once' }, source: SOURCES.cli })).toEqual({ ok: false, reason: 'Approval already has a different decision' })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'once' }, source: SOURCES.cli })).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })
   })
 
   it('refuses a scope the ask does not offer, and any approval of an ask recorded without its whole call', async () => {
     const { runtime } = await node()
     const [secret] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once'], ...PLAIN_MARKS }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
-    expect(await runtime.approvalService.answer({ decision: { token: secret!.token, approved: true, scope: 'session' }, source: SOURCES.cli })).toEqual({ ok: false, reason: 'Scope session is not offered for this approval' })
+    expect(await runtime.approvalService.answer({ decision: { token: secret!.token, approved: true, scope: 'session' }, source: SOURCES.cli })).toEqual({ ok: false, code: 'scope_not_offered', reason: 'Scope session is not offered for this approval' })
     const [bare] = (await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'], ...PLAIN_MARKS }] })).requests
-    expect(await runtime.approvalService.answer({ decision: { token: bare!.token, approved: true, scope: 'once' }, source: SOURCES.cli })).toEqual({ ok: false, reason: `This ask was ${RECORDED_BEFORE_NOTE}` })
+    expect(await runtime.approvalService.answer({ decision: { token: bare!.token, approved: true, scope: 'once' }, source: SOURCES.cli })).toEqual({ ok: false, code: 'incomplete_action', reason: `This ask was ${RECORDED_BEFORE_NOTE}` })
     expect(await runtime.approvalService.answer({ decision: { token: bare!.token, approved: false, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
   })
 })

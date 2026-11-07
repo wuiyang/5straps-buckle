@@ -6,10 +6,10 @@ import { createFileActionLog } from '../common/adapters/action-log/file-action-l
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { logger, rootLogger } from '../common/runtime/log.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { createApprovalService } from '../common/services/approvals/approval-service.js'
+
 import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
 import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
-import { fixedInteraction } from './support/interaction.js'
+import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The secret-references slice, part 6 (docs/user/how-to/secrets.md): every resolved value is shown as [secret:NAME] wherever text
@@ -184,7 +184,7 @@ describe('while a call holds values', () => {
     roots.push(root)
     const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
     const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-    const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
+    const service = approvalServiceWithTerminal({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
     const release = holdMasker(masker())
     try {
       await service.request({ sessionId: 'chat-1', requestId: 'request-1', tool: 'shell_exec', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/w/out', reason: `writes ${VALUE}`, offeredScopes: ['once'] }], call: { arguments: { args: [VALUE] }, cwd: '/w', description: `runs ${VALUE}`, effects: [`exec echo ${VALUE}`], complete: true } })
