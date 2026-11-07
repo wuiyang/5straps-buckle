@@ -153,6 +153,22 @@ describe('the terminal backend port, core side', () => {
     await service.close()
   })
 
+  it('closes a backend whose submit settles only once the backend is closed', async () => {
+    const asked = Promise.withResolvers<void>()
+    let release: (() => void) | undefined
+    const backend: ApprovalBackend = {
+      open: async () => ({ contractVersion: 1, decides: true, scopes: ['once'], cancels: true, revokes: false }),
+      submit: () => new Promise((resolve) => { release = () => resolve({ kind: 'accepted', refs: [] }); asked.resolve() }),
+      notify: async () => undefined,
+      close: async () => { release?.() },
+    }
+    const { service } = setUp(backend)
+    await service.request(call({ wait: { mode: 'none' } }))
+    await asked.promise
+    const ended = await Promise.race([service.close().then(() => 'closed'), new Promise(resolve => setTimeout(() => resolve('stuck'), 2_000))])
+    expect(ended).toBe('closed')
+  })
+
   it('refuses with the guard\'s code, and refuses a token it never routed to the terminal', async () => {
     const { backend, seen } = recordingBackend(async (host, asks) => [
       await host.decide({ kind: 'plain', decision: { token: asks[0]!.token, outcome: 'approve', scope: 'always' } }),

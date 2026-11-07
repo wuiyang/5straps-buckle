@@ -386,9 +386,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       for (const ask of [...live]) ask.stop.abort()
       for (const sweep of sweeps) clearTimeout(sweep)
       sweeps.clear()
-      await Promise.allSettled([...waiting])
-      if (opening) await options.terminal.close()
-      await Promise.allSettled([...formsBackends].map(backend => backend.close()))
+      // Every backend is told to close at once, so a submit that settles only as its backend closes holds nothing up.
+      const backends = [...(opening ? [options.terminal] : []), ...formsBackends]
+      await Promise.allSettled([...waiting, ...backends.map(backend => backend.close())])
       await notices.settle()
     },
   }
