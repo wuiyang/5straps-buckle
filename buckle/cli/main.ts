@@ -613,7 +613,8 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
   }
   const levels = results.flatMap(result => (result.kind === 'verdict' ? [result.level] : [])).join(', ')
   // A floor ask always needs a person: --approve-if-safe approves nothing for one, whatever both stages said (addendum 3 R2).
-  if (input.approveIfSafe && floorCause(judged.cause)) {
+  // The ledger's floor mark counts too, so an ask recorded before the marks, which reads as the floor, is told so here.
+  if (input.approveIfSafe && (floorCause(judged.cause) || ask.floor)) {
     process.stdout.write(`${FLOOR_WARNING[0]!.toUpperCase()}${FLOOR_WARNING.slice(1)}, so nothing is approved; ${token} is still waiting in workspace ${runtime.workspaceName()}.\n`)
     return { exitCode: 0, detail: `judge ${token} ${levels}`, judge: auditOf(judged, false) }
   }

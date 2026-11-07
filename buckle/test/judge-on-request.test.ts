@@ -1,13 +1,13 @@
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { FLOOR_WARNING } from '../common/domain/approval/floor-note.js'
 import { CODE_CHANGED_REASON } from '../common/domain/permission/judged.js'
-import { loadConfig } from '../common/runtime/config.js'
+import { approvalsPath, loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import { CREDENTIAL_HIDDEN, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -323,6 +323,24 @@ describe('buckle approvals judge', () => {
     expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
     // No audit entry of a floor ask carries passedBy: a pass recorded for the wrong ask (fix brief 8, B26).
     expect(runtime.actions.read(200).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
+    await manager.close()
+  })
+
+  it('approves nothing for an ask the ledger reads as the floor, one recorded before the marks, and says so as for any floor ask', async () => {
+    const judge = await standIn({ level: 'safe', confidence: 0.99 })
+    const { buckle, runtime, manager } = await node({ url: judge.url })
+    const { token } = await ask(runtime, 'unmarked')
+    const file = approvalsPath((await byName(manager, 'site')).config)
+    const ledger = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ request: { token: string }; floor?: boolean; destructive?: boolean }> }
+    const kept = ledger.pending.find(entry => entry.request.token === token)!
+    delete kept.floor
+    delete kept.destructive
+    writeFileSync(file, JSON.stringify(ledger))
+    const result = await buckle(['approvals', 'judge', token, '--approve-if-safe'])
+    expect(result.exitCode).toBe(0)
+    expect(result.out).toContain(`A command at the destructive floor always needs a person, so nothing is approved; ${token} is still waiting`)
+    expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
+    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
     await manager.close()
   })
 
