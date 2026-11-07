@@ -32,13 +32,14 @@ are in `common/domain/approval/`.
 API, and calls `decide` with a source tag (`cli`, `judge`, `devices`, or `sealed`); core holds
 the source that tag names. Faces get a runtime type without the ledger or service;
 `CoreRuntime` adds them. A `devices` input carries the `DeviceProof` the request verifier
-minted for the body it checked; core spends it on one decision and refuses any other. A
-refusal names its step: proof (401 on the setup POST), statement (400), or decision (409).
+minted for the body it checked; core spends it on one decision. A refusal names its step:
+proof (401 on the setup POST), statement (400), or decision (409).
 
 `test/approval-boundary.test.ts` holds it: only the service records a verdict, the gate
 spends a `once`, the ledger runs the guard, the verifier mints a proof, and the stdio face
-opens forms; no face names the service or `CoreRuntime`, and no backend module reaches the
-permission engine, the guard, the ledger's schema, a service, or the node's logger.
+alone names the forms opener every face's runtime type carries; no face names the service or
+`CoreRuntime`, and no backend module reaches the permission engine, the guard, the ledger's
+schema, a service, or the node's logger.
 
 ## A decision, in order
 
@@ -53,8 +54,8 @@ permission engine, the guard, the ledger's schema, a service, or the node's logg
    forbids it, a wider subject from the terminal or `cli` alone, sensitive files, lasting
    denials for sensitive files alone, a signed `once` inside its deadline, and the host pattern
    covering the host that asked.
-5. An approval commits, then its grant, which if owed is written on next open; a lasting denial
-   is written first.
+5. An approval commits, then its grant, written on next open if owed. A lasting denial drops
+   the owed approvals it replaces, is written, and is withdrawn if its decision cannot commit.
 6. The audit hears it applied or refused, outside the lock.
 
 ## Sources and their rights
@@ -79,8 +80,8 @@ question whose ask left the queue.
 
 **The forms** (`mcp/forms-backend.ts`): a stdio MCP host's elicitation, pulled.
 The MCP face draws one form per ask in the call's answer, and decides each answer the
-retried call carries; `submit` declines. The stdio face opens it through
-`openForms`; the HTTP face has none, so nothing the agent's token reaches answers an ask.
+retried call carries; `submit` declines. Only the stdio face opens it, through `openForms`,
+so nothing the agent's token reaches answers an ask.
 
 Each maps a person's answer to a decision and its scope, and decides through `host.decide`.
 Neither decides which scopes are allowed, rates an answer, writes a grant, or audits.
@@ -91,9 +92,8 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
   is on: the file floor offers and takes `always`, and an earlier `always` grant on a floor
   subject or a `delete-below` folder clears its ask. Off, the floor neither offers, takes, nor
   reads `always`. A destructive command never takes `always`.
-- **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's. Rated
-  `relayed`, the guard would hold them to a non-floor `once`, and the forms would then need to
-  offer `once` alone, which they do not yet.
+- **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's; rated
+  `relayed`, they would be held to a non-floor `once`, which the forms do not offer alone.
 - **The dangerously-allow switch:** `switchLiftsFloor` in the same policy is on: it lifts
   floor asks.
 - **Decision audit:** it runs on every answer, but the runtime plugs in `NO_DECISION_AUDIT`,
