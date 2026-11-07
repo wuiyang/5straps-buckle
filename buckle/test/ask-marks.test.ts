@@ -14,7 +14,7 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { createDestructivePathRule, isFloorSubject } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { approvalsPath } from '../common/runtime/config.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { ActionTooLargeError, createApprovalRegistry, MAX_ASK_BYTES } from '../common/services/approvals/approval-registry.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { Judge } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
@@ -125,6 +125,21 @@ describe('the ask record', () => {
     const stored = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ floor?: boolean; destructive?: boolean }> }
     expect(stored.pending.map(entry => [entry.floor, entry.destructive])).toEqual([[true, true], [false, false]])
     expect(registry.waiting().map(ask => [ask.request.subject, ask.floor, ask.destructive])).toEqual([['delete:/workspace', true, true], ['/workspace', false, false]])
+  })
+
+  it('leaves the marks out of the bytes an ask counts against what a person is shown whole', async () => {
+    const { file, registry } = ledger()
+    const asks = [{ kind: 'ask' as const, rule: 'write_scope' as const, subject: '/workspace', reason: 'outside', offeredScopes: ['once' as const], ...PLAIN_MARKS }]
+    const write = (sessionId: string, content: string) => registry.ask({ tool: 'fs_write', sessionId, asks, call: { arguments: { content }, cwd: '/workspace', description: null, effects: [], complete: true } })
+    await write('one', '')
+    const [probe] = (JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ floor: boolean; destructive: boolean; callFile: { bytes: number } }> }).pending
+    const { floor: _floor, destructive: _destructive, ...counted } = probe!
+    // The ask's record names its call file's size, so its length grows by that number's added digits.
+    const digits = (bytes: number) => String(bytes).length
+    const fixed = Buffer.byteLength(JSON.stringify(counted)) - digits(probe!.callFile.bytes) + probe!.callFile.bytes
+    const fits = MAX_ASK_BYTES - fixed - digits(MAX_ASK_BYTES)
+    await expect(write('two', 'x'.repeat(fits + 1))).rejects.toThrow(ActionTooLargeError)
+    expect((await write('two', 'x'.repeat(fits))).requests).toHaveLength(1)
   })
 
   it('reads an ask recorded before the marks as both floor and destructive', () => {

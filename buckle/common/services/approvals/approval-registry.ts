@@ -152,8 +152,14 @@ function footprints(pending: readonly PendingEntry[]): Array<{ bytes: number; se
   return pending.map((entry) => {
     const file = entry.callFile && !counted.has(entry.callFile.id) ? entry.callFile.bytes : 0
     if (entry.callFile) counted.add(entry.callFile.id)
-    return { bytes: Buffer.byteLength(JSON.stringify(entry)) + file, sessionId: entry.sessionId, actor: entry.actor }
+    return { bytes: recordBytes(entry) + file, sessionId: entry.sessionId, actor: entry.actor }
   })
+}
+
+// The marks are the ledger's own and are never shown, so they count against no budget.
+function recordBytes(entry: PendingEntry): number {
+  const { floor: _floor, destructive: _destructive, ...counted } = entry
+  return Buffer.byteLength(JSON.stringify(counted))
 }
 
 /**
@@ -163,7 +169,7 @@ function footprints(pending: readonly PendingEntry[]): Array<{ bytes: number; se
  * budget refuses until asks are answered, withdrawn or expire.
  */
 function assertBytesFor(input: { waiting: readonly PendingEntry[]; group: readonly PendingEntry[]; callBytes: number }): void {
-  const sizes = input.group.map(entry => Buffer.byteLength(JSON.stringify(entry)))
+  const sizes = input.group.map(recordBytes)
   const largest = Math.max(0, ...sizes) + input.callBytes
   if (largest > MAX_ASK_BYTES) {
     logger.warn('Approval refused: the call is larger than an approval shows whole', { bytes: largest, limit: MAX_ASK_BYTES })
