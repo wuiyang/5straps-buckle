@@ -3,7 +3,7 @@ import { closeSync, fsyncSync, mkdirSync, openSync, readdirSync, readFileSync, r
 import { dirname, join } from 'pathe'
 import { z } from 'zod'
 import { redactCredentials } from '@5straps/runtime'
-import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, GrantSubjectSchema, JsonValueSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
+import { APPROVAL_NO_DEADLINE, ApprovalNoticeSchema, ApprovalDecisionSchema, ApprovalRequestSchema, JsonValueSchema, PermissionRuleIdSchema, type ApprovalDecision, type ApprovalNotice, type ApprovalRequest, type GrantSubject, type JsonValue, type PermissionRuleId } from '@5straps/protocol'
 import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } from '../../adapters/json-file-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
@@ -14,6 +14,7 @@ import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } fr
 import type { ApprovalAuthority } from '../../types/ports/approval-authority.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
+import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceSpend } from './once-store.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -100,15 +101,18 @@ const callFileSchema = z.object({ id: z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}
 // floor and destructive: the marks the rule that asked set (AskMarks); an ask recorded before they were kept reads as both.
 const marks = { floor: z.boolean().default(true), destructive: z.boolean().default(true) }
 const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.string(), workspace: z.string(), ...marks, ...joinKey, ...fingerprint, notify: z.literal(true).optional(), call: callSchema.optional(), callFile: callFileSchema.optional(), ...lapse })
-// code: the code a once the decision AI's thorough stage gave on request binds to (fix brief 9, B31).
-const onceSchema = z.object({
-  workspace: z.string(), token: z.string(), subject: GrantSubjectSchema,
-  sessionId: z.string(), tool: z.string(), expiresAt: z.string(), requestId: z.string().optional(), ...fingerprint, ...decidedBy,
-  code: z.object({ key: z.string().regex(/^[0-9a-f]{64}$/), allowed: z.boolean() }).optional(),
+// owedGrant: the session or always grant a decision makes, kept with its resolved entry until the grant store holds it.
+// The entry commits first, so a grant never stands without its decision; one a stopped process left owed is written
+// when the workspace opens again (recoverGrants), or by the next decision.
+const owedGrantSchema = z.object({
+  sessionId: z.string(), rule: PermissionRuleIdSchema, subject: z.string(), scope: z.enum(['session', 'always']),
+  denied: z.literal(true).optional(), pattern: z.literal(true).optional(), ...decidedBy,
 })
+type OwedGrant = z.infer<typeof owedGrantSchema>
 const resolvedSchema = z.object({
   workspace: z.string(), decision: ApprovalDecisionSchema, widenedTo: z.string().optional(), expiresAt: z.string(),
   request: ApprovalRequestSchema.optional(), sessionId: z.string().optional(), ...joinKey, ...fingerprint, ...decidedBy,
+  owedGrant: owedGrantSchema.optional(),
 })
 const deliverySchema = z.object({ id: z.string().uuid(), workspace: z.string(), notice: ApprovalNoticeSchema, expiresAt: z.iso.datetime() })
 export type ApprovalDelivery = Omit<z.infer<typeof deliverySchema>, 'workspace'>
@@ -121,7 +125,6 @@ const fileSchema = z.object({
   outbox: z.array(deliverySchema).default([]),
 })
 type State = z.infer<typeof fileSchema>
-type OnceEntry = z.infer<typeof onceSchema>
 type PendingEntry = State['pending'][number]
 /**
  * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
@@ -372,20 +375,7 @@ export interface ApprovalRegistry {
    * queue's lock, and `admit` runs under it first: false (another run of the call holds it) leaves them
    * unspent.
    */
-  evaluate(input: {
-    tokens: string[]; sessionId: string; tool: string
-    /** The call's fingerprint: a `once` is spent only by the call it was asked for. */
-    fingerprint?: string
-    check: (subjects: GrantSubject[]) => PermissionOutcome
-    admit?: () => boolean
-    /** Told, when the call clears, who decided each `once` it spent (key:<fingerprint>), for its audit entry. */
-    spent?: (decidedBy: string[]) => void
-    /**
-     * Whether the code a `once` binds to (ResolveOptions.code) is still the code the call would run; a `once` it does not
-     * hold for is left unspent, as is every bound one where none is given (fix brief 9, B31).
-     */
-    holds?: (subject: GrantSubject, code: CodeBinding) => boolean
-  }): Promise<PermissionOutcome>
+  evaluate(input: OnceSpend): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
@@ -419,6 +409,8 @@ export interface ApprovalRegistry {
   waitingAsk(token: string): PendingAsk | undefined
   /** One session's `once` approvals not yet spent, each still bound to the tool it was asked for. */
   unspent(sessionId: string): Array<{ subject: GrantSubject; tool: string }>
+  /** Writes the grants decisions left owed when a process stopped between the two writes; run as the workspace opens. */
+  recoverGrants(): Promise<void>
 }
 
 /** One call to withdraw, with its requestId hashed as the registry keeps it. */
@@ -478,13 +470,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
    * Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once
    * written, and the call files no waiting ask names any longer are removed once the index no longer names them.
    */
-  async function update<R>(change: (state: State) => R | Promise<R>): Promise<R> {
+  async function update<R>(change: (state: State, commit: () => Promise<void>) => R | Promise<R>): Promise<R> {
     let expired: ApprovalRequest[] = []
     let released: string[] = []
     let queued = false
     // Set once the store has read the index whole, before the change runs, so a change that throws still counts it.
     let readable = false
-    const result = await store.update(async (state) => {
+    const result = await store.update(async (state, commit) => {
       readable = true
       const before = namedCalls(state)
       const outboxBefore = new Set(state.outbox.map(entry => entry.id))
@@ -495,7 +487,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
       for (const entry of expiredEntries) {
         if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'expired', at: new Date().toISOString() })
       }
-      const value = await change(state)
+      const value = await change(state, commit)
       const after = namedCalls(state)
       released = [...before].filter(id => !after.has(id))
       const added = state.outbox.filter(entry => !outboxBefore.has(entry.id))
@@ -624,6 +616,23 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     return named
   }
 
+  /**
+   * Writes this workspace's owed grants under the approvals lock (approvals, then grants), each mark cleared once its
+   * grant is held. The first failure stops the pass and is returned, leaving the rest owed for the next one.
+   */
+  async function settleGrants(state: State): Promise<unknown> {
+    for (const entry of state.resolved) {
+      if (entry.workspace !== workspace || entry.owedGrant === undefined) continue
+      try {
+        await grants.grant(entry.owedGrant)
+      } catch (error) {
+        return error
+      }
+      delete entry.owedGrant
+    }
+    return undefined
+  }
+
   const registry: ApprovalRegistry = {
     async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, waitMs: lifetime = waitMs, holdMs }) {
       const evicted: PendingEntry[] = []
@@ -666,8 +675,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (screened.code === 'assurance_too_low') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: screened.reason }
       }
-      // The grant is written while the approvals file is still locked, so no reader sees the decision without it.
-      return update(async (state): Promise<Resolution> => {
+      // The decision commits first and its grant after, both under the approvals lock (settleGrants).
+      let grantFailure: unknown
+      const resolution = await update(async (state, commit): Promise<Resolution> => {
         const now = Date.now()
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
         const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
@@ -675,7 +685,10 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
         const verdict = guardDecision({ claim, ledger, now })
         if (!verdict.ok) return { ok: false, reason: verdict.reason }
-        if ('repeated' in verdict) return { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
+        if ('repeated' in verdict) {
+          grantFailure = await settleGrants(state)
+          return { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
+        }
         if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
         const { wider, widenedTo } = verdict.apply
         const { rule, subject, tool } = approval.request
@@ -687,29 +700,34 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
         const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
         const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
+        const owedGrant = grantOf({ decision, sessionId: approval.sessionId, rule, subject, widenedTo, wider, decider })
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
         state.resolved.push({
           workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
           ...(requestId === undefined ? {} : { requestId }), ...(actor === undefined ? {} : { actor }), ...(approval.fingerprint === undefined ? {} : { fingerprint: approval.fingerprint }), ...decider,
+          ...(owedGrant === undefined ? {} : { owedGrant }),
         })
         if (approval.notify || durableNotices) enqueueOutcome(state, workspace, {
           token: decision.token, event: decision.approved ? 'answered' : 'denied', at: new Date(now).toISOString(), scope: decision.scope,
           ...(decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(options.consumeNotAfter).toISOString() } : {}),
         })
-        if (decision.approved) {
-          if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
-          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? wider ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
-          // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
-          logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
+        if (decision.approved && decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
+        if (owedGrant !== undefined) {
+          await commit()
+          grantFailure = await settleGrants(state)
         }
-        if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true, ...decider })
+        // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
+        if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
         const answered = { rule, subject }
         if (wider) return { ok: true, asked: answered, granted: wider }
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
       })
+      if (grantFailure !== undefined) throw grantFailure
+      return resolution
     },
 
-    evaluate({ tokens, sessionId, tool, fingerprint: callFingerprint, check, admit, spent, holds }) {
+    evaluate(spend) {
+      const { tokens, check, admit } = spend
       // An ordinary call carries no token and the rules settle it without a once, so no once could be spent and the
       // queue is not locked (review M5). It reads the small index only after another process replaced it, to learn
       // when the earliest ask expires, and rewrites it only to drop what expired; a damaged index fails neither the
@@ -722,33 +740,27 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
           return prune ? prune.then(() => settled) : Promise.resolve(settled)
         }
       }
+      // Spent under the same lock as the execution claim `admit` makes.
       return update(state => {
-        // A once names the call it was asked for; any other call, token or not, cannot spend it (review H3 of B23-B25, item 1).
-        // A once bound to code holds only while that code is what the call would run (fix brief 9, B31).
-        const bound = state.once.filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && entry.tool === tool && Date.parse(entry.expiresAt) > Date.now() && (entry.fingerprint === undefined || entry.fingerprint === callFingerprint) && (entry.code === undefined || (holds?.(entry.subject, entry.code) ?? false)))
-        const usable = bound.filter(entry => tokens.includes(entry.token))
-        let used = [...usable, ...unclaimedReliedOn({ usable, unclaimed: bound.filter(entry => !tokens.includes(entry.token)), check })]
-        // The last check is the one the caller acts on, so it sees only the approvals this call uses.
-        let outcome = check(used.map(entry => entry.subject))
-        while (outcome.kind === 'allow') {
-          const live = used.filter(entry => Date.parse(entry.expiresAt) > Date.now())
-          if (live.length === used.length) break
-          used = live
-          outcome = check(used.map(entry => entry.subject))
-        }
-        // Keep partial approvals until every gate clears; consume under the same process lock.
-        if (outcome.kind === 'allow' && (admit?.() ?? true)) {
-          const consumed = new Set(used.map(entry => entry.token))
-          state.once = state.once.filter(entry => !consumed.has(entry.token))
-          spent?.([...new Set(used.flatMap(entry => entry.decidedBy === undefined ? [] : [entry.decidedBy]))])
-        }
+        const { outcome, kept } = spendOnces(state.once, { workspace, spend })
+        state.once = kept
         return outcome
       })
     },
 
-    unspent: sessionId => read().once
-      .filter(entry => entry.workspace === workspace && entry.sessionId === sessionId && Date.parse(entry.expiresAt) > Date.now())
-      .map(entry => ({ subject: entry.subject, tool: entry.tool })),
+    unspent: sessionId => unspentOnces(read().once, { workspace, sessionId }),
+
+    async recoverGrants() {
+      try {
+        if (!read().resolved.some(entry => entry.workspace === workspace && entry.owedGrant !== undefined)) return
+        const failure = await update(state => settleGrants(state))
+        if (failure !== undefined) throw failure
+        logger.info('Wrote the grants a stopped process left owed')
+      } catch (error) {
+        // Fail closed: the grant stays owed and its calls ask again, while the workspace opens as it did.
+        if (!alreadyReported(error)) logger.warn('Could not write the grants decisions left owed; they are written at the next decision', { error: withoutCause(error) })
+      }
+    },
 
     wasDenied: tokens => read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
@@ -757,7 +769,7 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const selected = state.pending.filter(entry => entry.workspace === workspace && tokens.includes(entry.request.token))
         const withdrawn = selected.map(entry => entry.request.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
-        state.once = state.once.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.token))
+        state.once = dropOnces(state.once, { workspace, tokens: new Set(tokens) }).kept
         for (const entry of selected) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return withdrawn
       })
@@ -800,9 +812,9 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         if (new Set(matched.map(member => member.actor)).size > 1) throw new AmbiguousWithdrawError('That requestId and session name calls of more than one actor; send the actor, or a token of the call')
         const group = new Set(matched.map(member => member.token))
         const withdrawn = pending.map(entry => entry.request.token).filter(token => group.has(token))
-        const dropped = state.once.filter(entry => entry.workspace === workspace && group.has(entry.token)).map(entry => entry.token)
+        const { kept, dropped } = dropOnces(state.once, { workspace, tokens: group })
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !group.has(entry.request.token))
-        state.once = state.once.filter(entry => entry.workspace !== workspace || !group.has(entry.token))
+        state.once = kept
         for (const entry of pending.filter(entry => group.has(entry.request.token))) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return { withdrawn, dropped }
       })
@@ -961,37 +973,12 @@ function sameGroup(input: { waiting: ApprovalRequest[]; answered: ApprovalReques
   return sameTool && input.waiting.every(request => asked.has(key(request))) && [...asked].every(item => group.has(item))
 }
 
-/**
- * A `once` answered after the grace period has no call left to carry its token: over MCP the
- * retry arrives without one. When the call would otherwise ask, an unconsumed `once` for this
- * session and tool counts, but only the ones a rule actually relied on for this call's effects,
- * so a `once` still covers one call with that subject and nothing wider.
- *
- * Only the smallest set the call needs is spent: one `once` per subject, the one expiring first,
- * and none whose subject is already covered without it, by a session grant for instance. The
- * others stay for the next call rather than wasting an owner's answer.
- */
-function unclaimedReliedOn(input: {
-  usable: OnceEntry[]
-  unclaimed: OnceEntry[]
-  check: (subjects: GrantSubject[]) => PermissionOutcome
-}): OnceEntry[] {
-  if (input.unclaimed.length === 0) return []
-  if (input.check(input.usable.map(entry => entry.subject)).kind !== 'ask') return []
-  const wider = input.check([...input.usable, ...input.unclaimed].map(entry => entry.subject))
-  if (wider.kind !== 'allow') return []
-  const relied = new Set(wider.allowedBy)
-  const firstPerSubject = new Map<string, OnceEntry>()
-  for (const entry of [...input.unclaimed].sort((a, b) => Date.parse(a.expiresAt) - Date.parse(b.expiresAt))) {
-    const key = `${entry.subject.rule}:${entry.subject.subject}`
-    if (relied.has(key) && !firstPerSubject.has(key)) firstPerSubject.set(key, entry)
-  }
-  let needed = [...firstPerSubject.values()]
-  for (const entry of [...needed]) {
-    const without = needed.filter(other => other !== entry)
-    if (input.check([...input.usable, ...without].map(other => other.subject)).kind === 'allow') needed = without
-  }
-  return needed
+/** The session or always grant a decision makes: an approval's subject (widened where it was), or a lasting denial's. */
+function grantOf(input: { decision: ApprovalDecision; sessionId: string; rule: PermissionRuleId; subject: string; widenedTo: string | undefined; wider: string | undefined; decider: { decidedBy?: string } }): OwedGrant | undefined {
+  const { decision } = input
+  if (decision.scope === 'once') return undefined
+  if (!decision.approved) return { sessionId: input.sessionId, rule: input.rule, subject: input.subject, scope: decision.scope, denied: true, ...input.decider }
+  return { sessionId: input.sessionId, rule: input.rule, subject: input.widenedTo ?? input.wider ?? input.subject, scope: decision.scope, ...(input.widenedTo ? { pattern: true as const } : {}), ...input.decider }
 }
 
 /** A waiting ask as the decision guard reads it: whether its whole call was kept, and the challenges it was shown under. */
@@ -1005,8 +992,9 @@ function prune(state: State): State['pending'] {
   state.outbox = state.outbox.filter(entry => Date.parse(entry.expiresAt) > now)
   const expired = state.pending.filter(entry => lapseOf(entry) <= now)
   state.pending = state.pending.filter(entry => lapseOf(entry) > now)
-  state.once = state.once.filter(entry => Date.parse(entry.expiresAt) > now)
-  state.resolved = state.resolved.filter(entry => Date.parse(entry.expiresAt) > now)
+  state.once = liveOnces(state.once, now)
+  // A decision whose grant is still owed stays until the grant is written.
+  state.resolved = state.resolved.filter(entry => entry.owedGrant !== undefined || Date.parse(entry.expiresAt) > now)
   return expired
 }
 

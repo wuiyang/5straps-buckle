@@ -53,8 +53,11 @@ export interface JsonFileStore<T> {
    */
   read(): T
   write(value: T): Promise<void>
-  /** Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short. */
-  update<R>(change: (state: T) => R | Promise<R>): Promise<R>
+  /**
+   * Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short.
+   * `commit` persists the state as the change has it so far, the lock still held, for work that must follow a write.
+   */
+  update<R>(change: (state: T, commit: () => Promise<void>) => R | Promise<R>): Promise<R>
 }
 
 // One queue per state file in this process: local flows take turns here, and only other processes
@@ -149,7 +152,7 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
     write: value => locked(() => persist(value)),
     update: change => locked(async () => {
       const state = read()
-      const result = await change(state)
+      const result = await change(state, () => persist(state))
       await persist(state)
       return result
     }),

@@ -327,6 +327,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   notices = createApprovalNotices(webhook ? createApprovalNoticeSender(webhook) : undefined, webhook ? { registry: approvals } : {})
   const noticeOwner = notices
   input.onApprovalCleanup(() => noticeOwner.settle())
+  // Before any call runs here, so a grant a stopped process left owed is in force for the first one.
+  await approvals.recoverGrants()
   const auditHealth = input.auditHealth ?? createAuditHealth()
   // Each entry carries the workspace's name as it stands, beside its id (D85, Q15).
   const actions = createFileActionLog(actionsPath(config), { lockDeadlineMs, health: auditHealth, workspaceId, workspaceName: () => config.serverName, ...(input.serving ? { serving: input.serving } : {}) })

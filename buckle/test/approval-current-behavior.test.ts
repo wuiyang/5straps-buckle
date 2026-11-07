@@ -156,7 +156,7 @@ describe('an ask nobody is at a terminal for', () => {
     expect(out.mock.calls.map(([chunk]) => String(chunk)).join('')).toContain('unspent once approval for web_fetch in session s')
   })
 
-  it('writes a session grant while its ask still waits on disk, before the resolved entry commits', async () => {
+  it('writes a session grant once its resolved entry is on disk, never while its ask still waits', async () => {
     const { runtime, config, call, answer } = await node()
     const [token] = tokensOf(await call('fs_write', { path: 'one/a.md', content: 'a' }))
     const onDisk = () => {
@@ -167,7 +167,7 @@ describe('an ask nobody is at a terminal for', () => {
     const grant = runtime.grants.grant.bind(runtime.grants)
     vi.spyOn(runtime.grants, 'grant').mockImplementation(async (input) => { seen.push(onDisk()); return grant(input) })
     expect(await answer(token!, { scope: 'session' })).toMatchObject({ ok: true })
-    expect(seen).toEqual([{ pending: true, resolved: false }])
+    expect(seen).toEqual([{ pending: false, resolved: true }])
     expect(onDisk()).toEqual({ pending: false, resolved: true })
   })
 
