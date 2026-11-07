@@ -42,6 +42,8 @@ const OWN_MODULES = 'common/adapters/approval/'
 const FORMS_BACKEND = 'mcp/forms-backend.ts'
 // What no backend reaches through any module: the permission engine, the guard, the ledger's schema, and the services.
 const BEYOND_ANY_BACKEND = /^common\/(?:domain\/permission\/|domain\/approval\/(?:asked-call|decision-guard)|services\/)/
+// The node's logger and config: a backend logs through its host.
+const NODE_RUNTIME = /^common\/runtime\/(?:log|config)\.ts$/
 
 // A device's proof, minted by the node's request verifier alone once a signature checked.
 const MINTS_A_DEVICE_PROOF = /(?<!function )\bmintDeviceProof\(/
@@ -155,8 +157,8 @@ describe('the approval boundary', () => {
     expect(importsOf(join(PACKAGE_ROOT, TERMINAL_BACKEND)).filter(specifier => !TERMINAL_DEPENDS_ON.includes(specifier))).toEqual([])
   })
 
-  it('keeps the terminal backend\'s own modules off the ledger\'s schema and the approval services', () => {
-    expect(reachedFrom(TERMINAL_BACKEND).filter(path => BEYOND_A_BACKEND.test(path))).toEqual([])
+  it('keeps the terminal backend, through every module it reaches, off the permission engine, the guard, the ledger\'s schema, the services, and the node\'s runtime', () => {
+    expect(reachedFrom(TERMINAL_BACKEND, 'all').filter(path => BEYOND_ANY_BACKEND.test(path) || NODE_RUNTIME.test(path))).toEqual([])
   })
 
   it('builds the forms backend on the contract and the display modules, never reaching the permission engine, the guard, the ledger\'s schema, or the services', () => {

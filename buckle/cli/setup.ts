@@ -1,5 +1,5 @@
 import { createCliConsumerSlot, createCliRequester, type CliConsumerSlot, type RequestCli } from '@5straps/runtime'
-import { approvalPending, nodeApprovalPending } from '../common/adapters/approval/terminal-question.js'
+import { approvalPending, nodeApprovalPending } from '../common/runtime/approval-pending.js'
 import { createTerminalConsumer, interruptSelf, type TerminalConsumer, type TerminalOptions } from './terminal-consumer.js'
 
 export interface CliSetup {

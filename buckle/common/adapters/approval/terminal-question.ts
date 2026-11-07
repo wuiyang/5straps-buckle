@@ -1,11 +1,9 @@
-import type { CliRequest, CliWait, PendingInteraction, UnavailableReason } from '@5straps/runtime'
+import type { CliRequest, CliWait } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, type ApprovalRequest } from '@5straps/protocol'
-import { APPROVAL_PENDING } from '../../domain/action-phrase.js'
-import { approveCommand, judgeLine, judgeNoteFor, reviewCommand } from '../../domain/approval-instruction.js'
+import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import type { FullAction, RatingNote } from '../../types/ports/approval-backend.js'
-import { logger } from '../../runtime/log.js'
-import { askViewDetails, readAskHeadline, type AskHeadline, type AskView } from './ask-view.js'
+import { askViewDetails, type AskView } from './ask-view.js'
 
 export const APPROVAL_REQUEST_KIND = 'approval'
 
@@ -45,29 +43,6 @@ export function questionFor(input: QuestionInput): CliRequest {
   }
 }
 
-/**
- * What the durable owner queue says about a question nobody could take: the ask was issued before it
- * was asked, so it is already waiting, answerable with the command it carries. Never an approval.
- */
-export async function approvalPending(request: CliRequest): Promise<PendingInteraction | undefined> {
-  const { approve } = readAskHeadline(request.action.details ?? {})
-  if (request.kind !== APPROVAL_REQUEST_KIND || approve === undefined) return undefined
-  return { id: request.id, instructions: approve }
-}
-
-/**
- * approvalPending for a node (`buckle serve`, `buckle mcp`), which also logs one line where nobody can be asked now: no
- * terminal is attached, or no listener. The line names the tool, the rule, the offered scopes,
- * the workspace, and the command that shows the whole action; never the subject, the description, or a token, which no
- * log line carries (`Approval granted` keeps the same rule). A question dropped as the process stops, or by Ctrl-C, was
- * already on a person's screen or is no news, so it logs none.
- */
-export async function nodeApprovalPending(request: CliRequest, reason: UnavailableReason): Promise<PendingInteraction | undefined> {
-  const pending = await approvalPending(request)
-  if (pending && (reason === 'no_consumer' || reason === 'no_listener')) logger.info(APPROVAL_PENDING, pendingFields(readAskHeadline(request.action.details ?? {})))
-  return pending
-}
-
 function askViewOf(input: QuestionInput): AskView {
   const { approval, workspaceId, workspaceName } = input
   const { call } = input.context
@@ -96,15 +71,4 @@ function judgeDetail(input: { approval: ApprovalRequest; call: QuestionCall | un
 function questionWait(expiresAt: string): CliWait {
   if (expiresAt === APPROVAL_NO_DEADLINE) return { mode: 'indefinite' }
   return { mode: 'finite', timeoutMs: Math.min(Math.max(remainingMs(expiresAt), 1), MAX_TIMER_MS) }
-}
-
-function pendingFields(headline: AskHeadline): Record<string, unknown> {
-  const { workspaceId, workspaceName } = headline
-  return {
-    tool: headline.tool,
-    rule: headline.rule,
-    scopes: headline.offeredScopes,
-    workspace: workspaceName ?? workspaceId,
-    review: reviewCommand({ ...(workspaceId === undefined ? {} : { workspaceId }), ...(workspaceName === undefined ? {} : { workspaceName }) }),
-  }
 }

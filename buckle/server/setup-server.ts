@@ -7,7 +7,7 @@ import { bindHost, createRequestCli, registerCliListener } from '@5straps/runtim
 import type { NitroApp } from 'nitro/types'
 import type { BuckleCommon } from '../common/runtime/initialize.js'
 import { PACKAGE_ROOT } from '../common/runtime/package-root.js'
-import { nodeApprovalPending } from '../common/adapters/approval/terminal-question.js'
+import { nodeApprovalPending } from '../common/runtime/approval-pending.js'
 import type { BuckleHttpServices } from '../common/types/ports/mcp-http.js'
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import type { BuiltEntry } from './built-entry.js'
