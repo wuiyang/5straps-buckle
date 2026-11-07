@@ -578,7 +578,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (!asked) return refused('approver_not_allowed', 'This ask was not routed to the terminal')
     const decision = approvalDecisionOf(input.decision, asked)
     if (!decision) return refused('scope_not_offered', 'This ask has no wider subject to grant')
-    return receiptOf(decision, await service.answer({ decision, source: host.source }))
+    return receiptOf({ decision, source: host.source, result: await service.answer({ decision, source: host.source }) })
   }
 
   /** One ask whole, as the terminal shows it. The workspace's name is read as each question is shown, so a rename shows. */
@@ -797,10 +797,13 @@ function approvalDecisionOf(body: DecisionBody, asked: FullAsk): ApprovalDecisio
   return wider === undefined ? undefined : { ...decision, subject: wider }
 }
 
-function receiptOf(decision: ApprovalDecision, result: Resolution): DecisionReceipt {
+/** A decision's receipt, rated as the guard rated the source that sent it. */
+function receiptOf(input: { decision: ApprovalDecision; source: ApprovalSource; result: Resolution }): DecisionReceipt {
+  const { result } = input
   if (!result.ok) return refused(result.code, result.reason)
-  const state = decision.approved ? 'approved' : 'denied'
-  return result.repeated ? { status: 'repeated', state } : { status: 'applied', state, assurance: rightsOf(SOURCES.terminal.kind).assurance }
+  const state = input.decision.approved ? 'approved' : 'denied'
+  if (result.repeated) return { status: 'repeated', state }
+  return { status: 'applied', state, assurance: rightsOf(input.source.kind).assurance, ...(result.grantOwed ? { grantOwed: true } : {}) }
 }
 
 /** How an ask that left the queue ended, as far as this process can tell: its decision, else its expiry or a withdraw. */

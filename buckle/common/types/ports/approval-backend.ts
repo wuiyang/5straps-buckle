@@ -97,8 +97,9 @@ export interface ApprovalError {
 
 export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'
 
+/** `grantOwed`: the decision is recorded, but its lasting grant is not written yet, so it is not in force. */
 export type DecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; grantOwed?: true }
   | { status: 'repeated'; state: AskState }
   | { status: 'refused'; error: ApprovalError }
 

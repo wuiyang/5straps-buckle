@@ -10,7 +10,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
-import type { ApprovalBackend, ApprovalHost, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // The core side of the port: what the service hands its terminal backend, and how it takes the backend's decisions.
@@ -112,6 +112,21 @@ describe('the terminal backend port, core side', () => {
     expect(result.settled).toBe(true)
     expect(seen.receipts).toEqual([{ status: 'applied', state: 'approved', assurance: 'local' }])
     expect(grants.list().map(grant => grant.subject)).toEqual(['delete-below:/outside/reports'])
+    await service.close()
+  })
+
+  it('answers a decision sent again as repeated, and says when a decision\'s grant is still owed', async () => {
+    const approve = (token: string): DecisionInput => ({ kind: 'plain', decision: { token, outcome: 'approve', scope: 'session' } })
+    const { backend, seen } = recordingBackend(async (host, asks) => [await host.decide(approve(asks[0]!.token)), await host.decide(approve(asks[0]!.token))])
+    const { service, grants } = setUp(backend)
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    await service.request(call())
+    await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
+    expect(seen.receipts).toEqual([
+      { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true },
+      { status: 'repeated', state: 'approved' },
+    ])
+    expect(grants.list().map(grant => grant.subject)).toEqual(['/outside/a.md'])
     await service.close()
   })
 
