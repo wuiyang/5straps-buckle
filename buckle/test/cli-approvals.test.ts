@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { ApprovalDecisionSchema } from '@5straps/protocol'
@@ -22,11 +22,12 @@ import { reviewableArguments } from '../common/domain/redact.js'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 
-function node(): BuckleConfig {
+function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   return configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: mkdtempSync(join(tmpdir(), 'buckle-cli-approvals-')),
     BUCKLE_STATE_DIR: mkdtempSync(join(tmpdir(), 'buckle-cli-approvals-state-')),
     BUCKLE_ALLOW_SHELL: 'false',
+    ...environment,
   })
 }
 
@@ -580,5 +581,24 @@ describe('buckle approve shows the whole action before it decides (owner decisio
     } finally { out.mockRestore(); error.mockRestore() }
     expect(stderr).toContain('see the whole action with: buckle approvals')
     expect(stderr.indexOf('buckle approvals')).toBeLessThan(stderr.indexOf('buckle approve '))
+  })
+})
+
+// The write gate ruling of 2026-09-07: the first write in a folder asks, and a person's session approval of it keeps
+// clearing that person's next CLI call there, each CLI run a process of its own.
+describe('a person\'s session approval of a CLI write', () => {
+  const write = (config: BuckleConfig, path: string) => captureAll({ argv: ['call', 'fs_write', '--json', JSON.stringify({ path, content: 'x' })], config })
+
+  it('clears the next CLI write in that folder, and a write in another folder asks again', async () => {
+    const config = node({ BUCKLE_SANDBOX: 'none', BUCKLE_PACKS: 'fs' })
+    for (const folder of ['docs', 'notes']) mkdirSync(join(config.cwd, folder))
+
+    expect((await write(config, 'docs/a.md')).exitCode).toBe(3)
+    const [token] = registry(config).pending().map(request => request.token)
+    expect((await captureAll({ argv: ['approve', token!, '--scope', 'session'], config })).exitCode).toBe(0)
+
+    expect((await write(config, 'docs/b.md')).exitCode).toBe(0)
+    expect(readFileSync(join(config.cwd, 'docs', 'b.md'), 'utf8')).toBe('x')
+    expect((await write(config, 'notes/c.md')).exitCode).toBe(3)
   })
 })
