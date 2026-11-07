@@ -13,7 +13,7 @@ import { createDestructivePathRule, isFloorSubject } from '../common/domain/perm
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { mintDeviceProof } from '../common/services/approvals/device-proof.js'
+import { deviceDecision } from './support/device-decision.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -224,7 +224,7 @@ describe('the approval service', () => {
     const { registry, grants } = queue()
     const service = approvalServiceWithTerminal({ registry, workspaceId: 'w1', serverId: 'node', graceMs: 15_000, interaction: fixedInteraction({ requestCli: answering('none'), hold: 'prompt' }) })
     const [request] = (await registry.ask({ tool: 'fs_delete', sessionId: 's1', asks: [WIDE], call: CALL })).requests
-    const result = await service.decide({ source: 'devices', body: { token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, proof: mintDeviceProof({ keyId: 'device', deadline: Date.now() + 60_000 }) })
+    const result = await service.decide(deviceDecision({ token: request!.token, approved: true, scope: 'session', subject: WIDE.widerSubject, challenge: 'a'.repeat(64) }, { keyId: 'device' }))
     expect(result).toMatchObject({ status: 'refused', step: 'decision', error: { message: expect.stringContaining('buckle approve --below') } })
     expect(grants.list()).toEqual([])
     await service.close()

@@ -67,7 +67,7 @@ export function createRequestVerifier(input: { keys: ClientKeys; nonces: NonceCl
         return seen.claim({ keyId, nonce: requestIdKey(nonce), ts: keepUntil, now: at }) ? 'claimed' : 'replayed'
       })
       if (claimed !== 'claimed') return { ok: false, reason: claimed, claimedKeyId: keyId }
-      if (request.requestIdentity && request.purpose === 'buckle-approval') approvalProofs.set(request.requestIdentity, mintDeviceProof({ keyId, deadline: checked.payload.expiresAt }))
+      if (request.requestIdentity && request.purpose === 'buckle-approval') approvalProofs.set(request.requestIdentity, mintDeviceProof({ keyId, deadline: checked.payload.expiresAt, body: request.body }))
       return checked
     },
   }

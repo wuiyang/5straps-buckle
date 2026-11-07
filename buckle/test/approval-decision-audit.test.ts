@@ -11,7 +11,7 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
-import { mintDeviceProof } from '../common/services/approvals/device-proof.js'
+import { deviceDecision } from './support/device-decision.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ApprovalBackend } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -114,7 +114,7 @@ describe('the decision audit seam', () => {
     const { service, token } = await asked({ decisionAudit: audit })
     const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
     await service.decide({ source: 'cli', decision: { token: 'not-asked', outcome: 'deny', scope: 'once' } })
-    await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })
+    await service.decide(deviceDecision({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }))
     await service.decide({ source: 'sealed', body: { token: 'not-asked', approved: false, scope: 'once' } })
     expect(entries.filter(entry => entry.step === 'received').map(entry => entry.fields)).toEqual([
       expect.objectContaining({ source: SOURCES.cli, proof: 'none' }),
@@ -137,7 +137,7 @@ describe('the decision audit seam', () => {
     const { service, token } = await asked({ decisionAudit: BROKEN, blockOnAuditFailure: true })
     const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
     expect(await service.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'once' } })).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: true } })
-    expect(await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: false } })
+    expect(await service.decide(deviceDecision({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }))).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: false } })
     await service.close()
   })
 

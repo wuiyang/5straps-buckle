@@ -7,7 +7,7 @@ import { redactedSubject } from '../../domain/permission/rules/dangerously-allow
 import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES, type Assurance } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
-import { isDeviceProof, type DeviceProof } from './device-proof.js'
+import { isDeviceProof, spendDeviceProof, type DeviceProof } from './device-proof.js'
 import type { ListedApproval } from './approval-listing.js'
 import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import type { ApprovalAnswer } from './approval-service.js'
@@ -118,6 +118,8 @@ function answerOf(input: Extract<CoreDecisionInput, { source: 'cli' | 'judge' }>
 function readSigned(input: Extract<CoreDecisionInput, { source: 'devices' }>): ReadInput {
   const { proof } = input
   if (!isDeviceProof(proof)) return UNVERIFIED
+  const refusal = spendDeviceProof(proof, input.body)
+  if (refusal !== null) return { ok: false, receipt: { status: 'refused', step: 'proof', error: { code: refusal === 'replayed' ? 'replayed' : 'proof_invalid', message: refusal, retryable: false } } }
   const signed = SignedApprovalDecisionSchema.safeParse(input.body)
   if (!signed.success) return INVALID
   const { challenge, ...decision } = signed.data
