@@ -1,5 +1,4 @@
 import { HTTPError } from 'h3'
-import { decisionRecord } from '../../../../../common/services/approvals/core-approval-api.js'
 import { recordRefusal, tolerantLog } from '../../../../common/server/utils/audit.js'
 import { defineSetupHandler } from '../../utils/setup.js'
 
@@ -15,7 +14,7 @@ export default defineSetupHandler({
     const receipt = await runtime.approvalApi.decide(proof === undefined ? { source: 'sealed', body: sent } : { source: 'devices', body: sent, proof })
     // What a decision the guard checked said, beside the actor that signed or carried it (keys-provisioning.md: every
     // approval and denial is logged with key identity and scope).
-    const record = decisionRecord(receipt)
+    const record = runtime.approvalApi.decisionRecord(receipt)
     if (record) audit({ ...record })
     if (receipt.status !== 'refused') return { resolved: true, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
     if (receipt.step === 'proof') {

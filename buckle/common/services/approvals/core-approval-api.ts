@@ -82,6 +82,8 @@ export interface CoreApprovalApi {
    * its answered `once` approvals no call spent are dropped.
    */
   withdrawCall(selector: ApprovalWithdraw): Promise<CallWithdrawal>
+  /** What the setup POST's audit entry keeps of a decision's receipt (decisionRecord). */
+  decisionRecord(receipt: CoreDecisionReceipt): DecisionRecord | undefined
 }
 
 /** How a core client's input reads: the approval service's answer it makes, or why it makes none. */
@@ -183,7 +185,9 @@ export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution })
  * What the setup POST's audit entry keeps of a decision the guard checked: the decision as read and, where it answered
  * an ask, the rule and the subject as the audit keeps subjects. Undefined for one refused before that.
  */
-export function decisionRecord(receipt: CoreDecisionReceipt): (ReadDecision & Partial<AnsweredAsk> & { grantOwed?: true }) | undefined {
+export type DecisionRecord = ReadDecision & Partial<AnsweredAsk> & { grantOwed?: true }
+
+export function decisionRecord(receipt: CoreDecisionReceipt): DecisionRecord | undefined {
   if (receipt.status === 'refused') return receipt.step === 'decision' ? receipt.decision : undefined
   const { decision, asked } = receipt
   return { ...decision, ...(asked === undefined ? {} : { rule: asked.rule, subject: redactedSubject(asked.rule, asked.subject) }), ...(receipt.grantOwed ? { grantOwed: true } : {}) }

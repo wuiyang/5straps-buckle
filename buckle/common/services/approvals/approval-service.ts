@@ -16,7 +16,7 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { backendDecisionOf, backendReceipt, decisionOf, INVALID_BACKEND_DECISION, readInput, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
+import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
@@ -134,6 +134,7 @@ export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
     listing: () => service.listing(),
     challengeListing: options => service.challengeListing(options),
     withdrawCall: selector => service.withdrawCall(selector),
+    decisionRecord: receipt => service.decisionRecord(receipt),
   }
 }
 
@@ -383,6 +384,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     waitingAsk: token => options.registry.waitingAsk(token),
 
     listing: () => listedApprovals(options.registry.waiting()),
+
+    decisionRecord,
 
     async close() {
       closing.abort()
