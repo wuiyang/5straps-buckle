@@ -32,7 +32,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `workspaces/<0.1 id>/policy.json` | a workspace registered under 0.1 keeps its old policy there, read once at the move and unread since |
 | `dangerously-allow.json` | the dangerously-allow switch, where it is on |
 | `grants.json` | session and always grants, and remembered denials |
-| `approvals.json`, `approval-calls/` | asks waiting for a person, recent decisions, unspent once approvals, and the whole call behind each ask |
+| `approvals.json`, `approval-calls/`, `approval-revocations.json` | asks waiting for a person, recent decisions, unspent once approvals, the whole call behind each ask, and revokes made while `approvals.json` could not be read |
 | `actions.jsonl` | the [audit log](../how-to/audit-log.md): in the state directory the node's own commands and refusals, and in each workspace's folder its calls |
 | `plugins.json` | plugins added with `buckle plugin add` |
 | `history/` | checkpoints of file changes, read by `buckle history` |
