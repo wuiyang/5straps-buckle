@@ -228,7 +228,7 @@ describe('an allowed command, with the quick stage on for all', () => {
     expect(judges.quickJudge.quick).toHaveBeenCalledTimes(1)
   })
 
-  it('is never rated past a deny, nor where the dangerously-allow switch let it through, nor in on-request mode', async () => {
+  it('is never rated past a deny, nor where the dangerously-allow switch is on, nor in on-request mode', async () => {
     const denied = fakes(quick('safe', 0.99))
     const runtime = await runtimeOf(node(), denied)
     await withPolicy(runtime, { deny: ['cat *'] })
@@ -239,13 +239,27 @@ describe('an allowed command, with the quick stage on for all', () => {
     expect((await call(await runtimeOf(node({ BUCKLE_APPROVAL_JUDGE: 'on-request' }), requested), 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
     expect(requested.quickJudge.quick).not.toHaveBeenCalled()
 
-    // Neither on nor safe screens an allowed command: both lift the asks a screen would add.
-    for (const mode of ['on', 'safe'] as const) {
-      const switched = fakes(quick('danger', 0.99))
-      const open = await runtimeOf(node(), switched)
-      await open.policy.setDangerouslyAllow(mode)
-      expect((await call(open, 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
-      expect(switched.quickJudge.quick).not.toHaveBeenCalled()
-    }
+    // Only `on` lifts every ask, so only `on` screens nothing: a flagged ask is added after the switch has run, and safe leaves it to a person.
+    const switched = fakes(quick('danger', 0.99))
+    const open = await runtimeOf(node(), switched)
+    await open.policy.setDangerouslyAllow('on')
+    expect((await call(open, 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
+    expect(switched.quickJudge.quick).not.toHaveBeenCalled()
+  })
+
+  it('is still rated where the dangerously-allow switch is safe: a danger rating asks a person, and any other rating lets the command run', async () => {
+    const flagged = fakes(quick('danger', 0.99))
+    const careful = await runtimeOf(node(), flagged)
+    await careful.policy.setDangerouslyAllow('safe')
+    const { response, ran } = await call(careful, 'cat', ['notes.txt'])
+    expect(response).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command', reason: QUICK_FLAG_REASON }] })
+    expect(ran).toBe(false)
+    expect(flagged.quickJudge.quick).toHaveBeenCalledOnce()
+
+    const passed = fakes(quick('safe', 0.99))
+    const rated = await runtimeOf(node(), passed)
+    await rated.policy.setDangerouslyAllow('safe')
+    expect((await call(rated, 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
+    expect(passed.quickJudge.quick).toHaveBeenCalledOnce()
   })
 })

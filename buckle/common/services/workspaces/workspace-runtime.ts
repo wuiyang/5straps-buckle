@@ -174,7 +174,7 @@ export interface PolicyHandle {
   setMount(mount: string | null): Promise<WorkspacePolicy>
   /**
    * The dangerously-allow switch as stored now, read from the store at every call, so the local switch applies in a
-   * running node at once: its mode (APPROVAL-05), the root it is bound to, as the agent names it (owner decision D7), and
+   * running node at once: its mode, the root it is bound to, as the agent names it (owner decision D7), and
    * whether an earlier build's file held it on, which reads as off. It needs no node switch beside it (Q14).
    */
   dangerouslyAllow(): DangerouslyAllowState
@@ -767,7 +767,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       view: createCodeView({ paths: settled.paths, canRead, protectedRoots: protectedStateRoots(config) }),
       cache: settled.cache,
       scanner: packageScanner,
-      screening: dangerouslyAllowMode() === 'off',
+      screening: dangerouslyAllowMode() !== 'on',
     })
   }
 
