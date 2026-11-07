@@ -18,7 +18,7 @@ import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.
 import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
-import type { ApprovalRegistry, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalRegistry, Departure, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -182,7 +182,7 @@ export interface CallWithdrawal extends GroupWithdrawal {
 }
 
 /** The ledger reads and writes the service makes. */
-export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'outcomes' | 'sweep' | 'sweepIfDue'>
+export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'departures' | 'sweep' | 'sweepIfDue'>
 
 export interface ApprovalServiceOptions {
   registry: ApprovalLedger
@@ -532,16 +532,16 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   function tellClosed(ask: OpenAsk, pending: ReadonlySet<string>): void {
     const left = ask.approvals.filter(approval => !pending.has(approval.token) && !ask.told.has(approval.token))
     if (left.length === 0 || opening === undefined) return
-    let outcomes: Map<string, boolean>
+    let departures: Map<string, Departure>
     try {
-      outcomes = options.registry.outcomes(left.map(approval => approval.token))
+      departures = options.registry.departures(left.map(approval => approval.token))
     } catch (error) {
       // Told at the next poll.
       logger.warn('Could not read how an approval ended', { error: withoutCause(error) })
       return
     }
     for (const approval of left) ask.told.add(approval.token)
-    const events = left.map(approval => closingEvent(approval, outcomes.get(approval.token)))
+    const events = left.map(approval => closingEvent(approval, departures.get(approval.token)))
     opening.then(() => options.terminal.notify(events)).catch((error: unknown) => { logger.warn('Could not tell the terminal that an approval left the queue', { error: withoutCause(error) }) })
   }
 
@@ -842,10 +842,11 @@ function receiptOf(input: { decision: ApprovalDecision; source: ApprovalSource; 
   return { status: 'applied', state, assurance: rightsOf(input.source.kind).assurance, ...(result.grantOwed ? { grantOwed: true } : {}) }
 }
 
-/** How an ask that left the queue ended, as far as this process can tell: its decision, else its expiry or a withdraw. */
-function closingEvent(approval: ApprovalRequest, approved: boolean | undefined): LifecycleEvent {
-  const type = approved === undefined ? (remainingMs(approval.expiresAt) === 0 ? 'expired' : 'cancelled') : approved ? 'answered' : 'denied'
-  return { eventId: randomUUID(), type, token: approval.token, at: new Date().toISOString() }
+/** How an ask that left the queue ended; one another process dropped is expired past its stated expiry, else cancelled. */
+function closingEvent(approval: ApprovalRequest, departure: Departure | undefined): LifecycleEvent {
+  const event = { eventId: randomUUID(), token: approval.token, at: new Date().toISOString() }
+  if (departure === undefined) return { ...event, type: remainingMs(approval.expiresAt) === 0 ? 'expired' : 'cancelled' }
+  return { ...event, type: departure.type, ...('reason' in departure ? { reason: departure.reason } : {}) }
 }
 
 // Hash and size each group's whole call once, however many asks share it.

@@ -107,11 +107,15 @@ export type EventType =
   | 'issued' | 'renewed' | 'abandoned' | 'answered' | 'denied'
   | 'expired' | 'cancelled' | 'skipped' | 'spent' | 'revoked'
 
+/** Why an ask was cancelled, where this process saw it go. */
+export type EventReason = 'caller_cancelled' | 'evicted' | 'withdrawn_by_owner'
+
 export interface LifecycleEvent {
   eventId: string
   type: EventType
   token: string
   at: string
+  reason?: EventReason
 }
 
 /** What a backend can do. Core never trusts a capability for safety. */

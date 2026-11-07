@@ -77,7 +77,7 @@ function stubQueue(requests: ApprovalRequest[]) {
     waiting: () => [],
     waitingAsk: () => undefined,
     wasDenied: (tokens: string[]) => resolved.some(decision => tokens.includes(decision.token) && !decision.approved),
-    outcomes: (tokens: string[]) => new Map(resolved.filter(decision => tokens.includes(decision.token)).map(decision => [decision.token, decision.approved])),
+    departures: (tokens: string[]) => new Map(resolved.filter(decision => tokens.includes(decision.token)).map(decision => [decision.token, { type: decision.approved ? 'answered' as const : 'denied' as const }])),
     resolve: async (decision: ApprovalDecision) => {
       resolved.push(decision)
       pending = pending.filter(request => request.token !== decision.token)

@@ -9,7 +9,7 @@ import { NO_DECISION_AUDIT } from '../common/adapters/approval/no-decision-audit
 import { createTerminalBackend } from '../common/adapters/approval/terminal-backend.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
-import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -40,7 +40,7 @@ function recordingBackend(decide: (host: ApprovalHost, asks: FullAsk[]) => Promi
   return { backend, seen }
 }
 
-function setUp(backend: ApprovalBackend, graceMs = 200) {
+function setUp(backend: ApprovalBackend, graceMs: number | null = 200) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-terminal-port-'))
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
@@ -160,6 +160,89 @@ describe('the terminal backend port, core side', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     expect(seen.events.map(event => [event.token, event.type])).toEqual([[first!.token, 'answered'], [second!.token, 'denied']])
     await service.close()
+  })
+})
+
+/** A backend that keeps asking until core stops it, recording each event core sends. */
+function holdingBackend() {
+  const events: LifecycleEvent[] = []
+  const backend: ApprovalBackend = {
+    open: async () => ({ contractVersion: 1, decides: true, scopes: ['once'], cancels: true, revokes: false }),
+    submit: (_asks, context) => new Promise(resolve => context.signal.addEventListener('abort', () => resolve({ kind: 'accepted', refs: [] }), { once: true })),
+    async notify(sent) { events.push(...sent) },
+    close: async () => undefined,
+  }
+  return { backend, events: () => events.map(event => ({ type: event.type, ...(event.reason === undefined ? {} : { reason: event.reason }) })) }
+}
+
+const MINUTE = 60_000
+
+describe('how the service tells the terminal an ask left the queue', () => {
+  afterEach(() => { vi.useRealTimers() })
+
+  it('says the owner withdrew it', async () => {
+    const terminal = holdingBackend()
+    const { service } = setUp(terminal.backend)
+    const [asked] = (await service.request(call())).approvals
+    await service.withdrawCall({ token: asked!.token })
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'cancelled', reason: 'withdrawn_by_owner' }]))
+    await service.close()
+  })
+
+  it('says it expired', async () => {
+    const terminal = holdingBackend()
+    const { service, registry } = setUp(terminal.backend)
+    await service.request(call())
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 11 * MINUTE)
+    await registry.sweep()
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'expired' }]))
+    await service.close()
+  })
+
+  it('says it expired when it lapsed ten minutes after its caller left, though it states no deadline', async () => {
+    const terminal = holdingBackend()
+    const { service, registry } = setUp(terminal.backend, null)
+    const leaving = new AbortController()
+    const waiting = service.request(call({ signal: leaving.signal, resends: true }))
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    leaving.abort()
+    await expect(waiting).rejects.toThrow()
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(Date.now() + 11 * MINUTE)
+    await registry.sweep()
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'expired' }]))
+    await service.close()
+  })
+
+  it('says it was evicted to make room for a newer ask', async () => {
+    const terminal = holdingBackend()
+    const { service, registry } = setUp(terminal.backend)
+    const leaving = new AbortController()
+    const asks = Array.from({ length: MAX_PENDING_PER_SESSION }, (_, index) => ask(`/outside/${index}.md`))
+    const waiting = service.request(call({ asks, signal: leaving.signal, resends: true }))
+    await vi.waitFor(() => expect(registry.pending()).toHaveLength(MAX_PENDING_PER_SESSION))
+    leaving.abort()
+    await expect(waiting).rejects.toThrow()
+    await service.request(call({ requestId: 'request-2', asks: [ask('/outside/newer.md')], wait: { mode: 'none' } }))
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'cancelled', reason: 'evicted' }]))
+    await service.close()
+  })
+
+  it('says only that it was cancelled when another process withdrew it', async () => {
+    const terminal = holdingBackend()
+    const { service, root } = setUp(terminal.backend)
+    const [asked] = (await service.request(call())).approvals
+    await otherProcess(root).cancel([asked!.token])
+    await vi.waitFor(() => expect(terminal.events()).toEqual([{ type: 'cancelled' }]))
+    await service.close()
+  })
+
+  it('records a caller\'s own withdrawal as cancelled by its caller', async () => {
+    const { registry } = setUp(holdingBackend().backend)
+    const { requests } = await registry.ask({ tool: 'fs_write', sessionId: 's', requestId: 'r', asks: [ask('/outside/a.md')] })
+    await registry.cancel([requests[0]!.token])
+    expect(registry.departures([requests[0]!.token])).toEqual(new Map([[requests[0]!.token, { type: 'cancelled', reason: 'caller_cancelled' }]]))
   })
 })
 

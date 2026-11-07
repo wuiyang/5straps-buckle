@@ -12,7 +12,7 @@ import { servesHolder, type GrantHolder } from '../../domain/permission/grant-ho
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
-import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
+import type { ApprovalErrorCode, EventReason } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
@@ -298,6 +298,16 @@ export interface ResolveOptions {
  */
 export type Resolution = { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; grantOwed?: true } | { ok: false; code: ApprovalErrorCode; reason: string }
 
+/**
+ * How an ask left the queue: its recorded decision, else what this process saw. A lapse moves an ask's expiry, so it
+ * reads as expired.
+ */
+export type Departure = { type: 'answered' | 'denied' } | { type: 'expired' } | { type: 'cancelled'; reason: EventReason }
+
+/** How many departures this process remembers, oldest dropped first: a poll reads each within a second. */
+const DEPARTURES_KEPT = 1_024
+const EXPIRED: Departure = { type: 'expired' }
+
 /** What a route says of a decision recorded with `grantOwed`: its session or always grant is not in force yet. */
 export const GRANT_OWED_NOTE = 'its grant is not written yet, and is written when the workspace opens again or when the same decision is sent again'
 
@@ -332,8 +342,8 @@ export interface ApprovalRegistry {
    */
   evaluate(input: OnceSpend): Promise<PermissionOutcome>
   wasDenied(tokens: string[]): boolean
-  /** Whether each of these tokens was approved, for those a decision is recorded for. */
-  outcomes(tokens: string[]): Map<string, boolean>
+  /** How each of these tokens left the queue, for those with a recorded decision or that this process saw go. */
+  departures(tokens: string[]): Map<string, Departure>
   /** Withdraws the asks still waiting among `tokens`, returning those it withdrew. */
   cancel(tokens: string[]): Promise<string[]>
   /**
@@ -413,6 +423,16 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   // the store clears its own report, so a repair seen only by an ask, a decision or the sender still lets the next
   // outage log once (slice 7f review R7F-QV-1).
   let unreadableVersion: string | undefined
+  // How the asks this process dropped or withdrew left the queue, oldest first.
+  const departedHere = new Map<string, Departure>()
+  function departed(tokens: readonly string[], departure: Departure): void {
+    for (const token of tokens) {
+      departedHere.delete(token)
+      departedHere.set(token, departure)
+      const [oldest] = departedHere.keys()
+      if (departedHere.size > DEPARTURES_KEPT && oldest !== undefined) departedHere.delete(oldest)
+    }
+  }
   /** Whether an ask's end is told to the webhook: asked with the flag, or waiting in this durable registry's workspace. */
   const notifies = (entry: PendingEntry): boolean => entry.notify === true || (durableNotices && entry.workspace === workspace)
 
@@ -465,6 +485,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     })
     queueVersion = undefined
     calls.remove(released)
+    departed(expired.map(request => request.token), EXPIRED)
     if (expired.length > 0) options.onExpired?.(expired)
     // Only an update that queued a notice wakes the sender, which otherwise keeps its own retry delay (review L6 of the
     // continuation review): a decision, a cancel or an expiry here, not every write of the index.
@@ -718,6 +739,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         return evicted.length === 0 ? admitted : { ...admitted, evicted: evicted.map(entry => entry.request.token) }
       })
       if (evicted.length > 0) logger.info('Withdrew abandoned approvals to make room for a new ask', { withdrawn: evicted.length })
+      departed(evicted.map(entry => entry.request.token), { type: 'cancelled', reason: 'evicted' })
       return result
     },
 
@@ -791,10 +813,18 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
     wasDenied: tokens => read().resolved.some(entry => entry.workspace === workspace && tokens.includes(entry.decision.token) && !entry.decision.approved),
 
-    outcomes: tokens => new Map(read().resolved.filter(entry => entry.workspace === workspace && tokens.includes(entry.decision.token)).map(entry => [entry.decision.token, entry.decision.approved])),
+    departures(tokens) {
+      const found = new Map<string, Departure>()
+      for (const token of tokens) {
+        const seen = departedHere.get(token)
+        if (seen) found.set(token, seen)
+      }
+      for (const entry of read().resolved) if (entry.workspace === workspace && tokens.includes(entry.decision.token)) found.set(entry.decision.token, { type: entry.decision.approved ? 'answered' : 'denied' })
+      return found
+    },
 
-    cancel(tokens) {
-      return update(state => {
+    async cancel(tokens) {
+      const withdrawn = await update(state => {
         const selected = state.pending.filter(entry => entry.workspace === workspace && tokens.includes(entry.request.token))
         const withdrawn = selected.map(entry => entry.request.token)
         state.pending = state.pending.filter(entry => entry.workspace !== workspace || !tokens.includes(entry.request.token))
@@ -802,6 +832,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         for (const entry of selected) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return withdrawn
       })
+      departed(withdrawn, { type: 'cancelled', reason: 'caller_cancelled' })
+      return withdrawn
     },
 
     holdEnded({ tokens, abandoned }) {
@@ -822,8 +854,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       })
     },
 
-    cancelGroup(selector) {
-      return update((state): GroupWithdrawal => {
+    async cancelGroup(selector) {
+      const withdrawal = await update((state): GroupWithdrawal => {
         const pending = state.pending.filter(entry => entry.workspace === workspace)
         const resolved = state.resolved.filter(entry => entry.workspace === workspace)
         type Member = { token: string; requestId?: string; sessionId?: string; actor?: string }
@@ -847,6 +879,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         for (const entry of pending.filter(entry => group.has(entry.request.token))) if (entry.notify || durableNotices) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date().toISOString() })
         return { withdrawn, dropped }
       })
+      departed(withdrawal.withdrawn, { type: 'cancelled', reason: 'withdrawn_by_owner' })
+      return withdrawal
     },
 
     // Also removes call files no waiting ask names, which a process that stopped between the two writes leaves.
