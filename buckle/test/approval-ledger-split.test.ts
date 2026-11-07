@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
@@ -6,7 +6,9 @@ import { acquireFileLock } from '@5straps/runtime/sqlite'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
-import { GRANT_OWED_NOTE } from '../common/services/approvals/approval-registry.js'
+import { createApprovalRegistry, GRANT_OWED_NOTE } from '../common/services/approvals/approval-registry.js'
+import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
@@ -175,7 +177,7 @@ describe('a lasting decision', () => {
   it('keeps a revoked grant revoked when the mark its write cleared never reached the disk', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
-    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 1 })
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 2 })
 
     expect(await runtime.approvalService.answer(session(token))).toEqual(expect.objectContaining({ ok: true }))
     expect(onDisk(config, token).owes).toBe(true)
@@ -191,12 +193,93 @@ describe('a lasting decision', () => {
   it('writes a grant again under its own id when a mark outlived it, so buckle grants revoke still finds it', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
-    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 1 })
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 2 })
     expect(await runtime.approvalService.answer(session(token))).toEqual(expect.objectContaining({ ok: true }))
     const [grant] = runtime.grants.list()
 
     const { runtime: reopened } = await open(config)
     expect(reopened.grants.list().map(record => record.id)).toEqual([grant!.id])
     expect(onDisk(config, token).owes).toBe(false)
+  })
+
+  it('keeps a grant revoked while approvals.json was unreadable from coming back once the file is repaired', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 2 })
+    expect(await runtime.approvalService.answer(session(token))).toEqual(expect.objectContaining({ ok: true }))
+    expect(onDisk(config, token).owes).toBe(true)
+    const [grant] = runtime.grants.list()
+    const kept = readFileSync(approvalsPath(config), 'utf8')
+    writeFileSync(approvalsPath(config), '{')
+
+    expect(await runtime.grants.revoke(grant!.id)).toBe(true)
+    writeFileSync(approvalsPath(config), kept)
+    const { runtime: reopened } = await open(config)
+    expect(reopened.grants.list()).toEqual([])
+    expect(onDisk(config, token).owes).toBe(false)
+  })
+
+  it('drops the session grants a decision left owed when its session ends', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
+
+    await runtime.grants.endSession('s')
+    expect(onDisk(config, token).owes).toBe(false)
+    const { runtime: reopened } = await open(config)
+    expect(reopened.grants.list()).toEqual([])
+  })
+})
+
+describe('a lasting denial', () => {
+  const secretAsk = async (runtime: BuckleRuntime): Promise<string> => {
+    const [secret] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'], ...PLAIN_MARKS }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
+    return secret!.token
+  }
+  const denial = (token: string) => ({ decision: { token, approved: false, scope: 'session' as const }, source: SOURCES.cli })
+
+  it('writes its denial before its decision commits, so the denial stands for every call from then on', async () => {
+    const { config, runtime } = await open()
+    const token = await secretAsk(runtime)
+    const seen: Array<ReturnType<typeof onDisk>> = []
+    const grant = runtime.grants.grant.bind(runtime.grants)
+    vi.spyOn(runtime.grants, 'grant').mockImplementation(async (input) => {
+      seen.push(onDisk(config, token))
+      return grant(input)
+    })
+
+    expect(await runtime.approvalService.answer(denial(token))).toMatchObject({ ok: true })
+    expect(seen).toEqual([{ pending: true, resolved: false, owes: false }])
+    expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: false })
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
+  })
+
+  it('records nothing when its denial cannot be written, so its ask still waits', async () => {
+    const { config, runtime } = await open()
+    const token = await secretAsk(runtime)
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+
+    await expect(runtime.approvalService.answer(denial(token))).rejects.toThrow('The grants file was busy')
+    expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })
+    expect(runtime.grants.list()).toEqual([])
+  })
+})
+
+describe('a decision whose grant stays owed', () => {
+  it('still releases the answered call\'s file and wakes the webhook sender', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-owed-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    const grants = { ...store, grant: async () => { throw new Error('The grants file was busy') } }
+    const woken = vi.fn()
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 0, { durableNotices: true, onNoticeQueued: woken })
+    const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once', 'session'] }], call: { arguments: {}, cwd: root, description: null, complete: true } })).requests
+    expect(readdirSync(join(root, 'approval-calls'))).toHaveLength(1)
+    woken.mockClear()
+
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true, grantOwed: true })
+    expect(readdirSync(join(root, 'approval-calls'))).toEqual([])
+    expect(woken).toHaveBeenCalledOnce()
   })
 })
