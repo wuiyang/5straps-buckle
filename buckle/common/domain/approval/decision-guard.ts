@@ -73,9 +73,9 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   if (decision.approved && !asked.complete) return refuse('incomplete_action', `This ask was ${RECORDED_BEFORE_NOTE}`)
   // A floor ask always reaches a person: the decision AI rates it and never approves it.
   if (decision.approved && asked.marks.floor && !(rights.person && atLeast(rights.assurance, 'local'))) return refuse('assurance_too_low', 'A person decides a floor ask: approve it at the node, or with an enrolled key')
-  if (decision.approved && decision.scope === 'always' && asked.marks.destructive && !policy.alwaysAtFloor) return refuse('scope_forbidden', 'A destructive ask is approved once or for the session, never always')
   const { request } = asked
   if (decision.approved && !request.offeredScopes.includes(decision.scope)) return refuse('scope_not_offered', `Scope ${decision.scope} is not offered for this approval`)
+  if (decision.approved && decision.scope === 'always' && alwaysForbidden({ request, marks: asked.marks, policy })) return refuse('scope_forbidden', 'A destructive ask is approved once or for the session, never always')
   const wider = widerGrant({ decision, request, widened: widenedTo !== undefined, widens: rights.widens })
   if (wider !== null && 'reason' in wider) return wider
   // A secret file's use (docs/user/how-to/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
@@ -99,6 +99,12 @@ function repeatOf(input: { decision: ApprovalDecision; widenedTo: string | undef
   const same = previous.approved === decision.approved && previous.scope === decision.scope && resolved.widenedTo === input.widenedTo && previous.subject === decision.subject
   if (!same) return refuse('conflicting_decision', 'Approval already has a different decision')
   return { ok: true, repeated: true, ...(resolved.request ? { asked: { rule: resolved.request.rule, subject: resolved.request.subject } } : {}) }
+}
+
+// A destructive command never takes always, whatever an ask offered; the file floor does while the floor policy offers it.
+function alwaysForbidden(input: { request: ApprovalRequest; marks: AskMarks; policy: FloorPolicy }): boolean {
+  if (input.request.rule === 'destructive_command') return true
+  return input.marks.destructive && !input.policy.alwaysAtFloor
 }
 
 // The source's own route; a source routed to every ask, or one that only denies under a notify route.

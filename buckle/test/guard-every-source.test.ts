@@ -82,6 +82,23 @@ describe('scope always on a destructive ask (owner question 1)', () => {
   })
 })
 
+describe('scope always on a destructive command', () => {
+  // A command's ask never offers always; this one does, as a backend or an earlier build might have recorded it.
+  const command: ApprovalRequest = { token: 't-1', rule: 'destructive_command', subject: 'rm -rf build', reason: 'Deletes a folder', tool: 'shell_exec', offeredScopes: ['once', 'session', 'always'], expiresAt: request.expiresAt }
+  const asked = (marks: AskMarks): LedgerView => ({ waiting: { request: command, complete: true, challenges: [], marks, routes: TODAYS_ROUTES } })
+  const SOURCE_REFUSALS = [...PERSONS.map(source => [source, 'scope_forbidden'] as const), ['judge', 'assurance_too_low'], ['sealed', 'capability_exceeded']] as const
+
+  it.each(SOURCE_REFUSALS)('is refused from %s under today\'s floor policy, though the ask offers it', (source, code) => {
+    for (const marks of [{ floor: true, destructive: true }, { floor: false, destructive: true }]) {
+      expect(guard({ claim: claim(SOURCES[source], approve('always')), ledger: asked(marks) })).toMatchObject({ ok: false, code })
+    }
+  })
+
+  it.each(PERSONS)('still takes once and the session from %s', (source) => {
+    for (const scope of ['once', 'session'] as const) expect(guard({ claim: claim(SOURCES[source], approve(scope)), ledger: asked({ floor: false, destructive: true }) })).toEqual({ ok: true, apply: {} })
+  })
+})
+
 describe('a wider subject', () => {
   it.each(['terminal', 'cli'] as const)('is granted to %s, at the node', (source) => {
     expect(guard({ claim: claim(SOURCES[source], approve('session', { subject: 'delete-below:/outside' })) })).toEqual({ ok: true, apply: { wider: 'delete-below:/outside' } })
