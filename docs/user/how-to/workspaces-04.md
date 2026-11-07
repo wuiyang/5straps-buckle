@@ -29,7 +29,8 @@ covers what each workspace then holds.
 - The folder's other records, its plugins, history, pending approvals, and staged shell copies
   among them, move into `workspaces/<id>/` too, as does each registered workspace's
   `workspaces/<0.1 id>/` folder's. Approvals still waiting there are not carried over: their calls
-  ask again.
+  ask again, and [known limits](../caveats/known-limits-03.md#workspaces) say which of them stay
+  in `approvals.json` and how to clear them.
 
 A state directory that served nothing gets no workspace until `buckle init` makes one.
 

@@ -51,8 +51,13 @@ The first release of [workspaces](../how-to/workspaces.md) leaves these open for
 - An earlier Buckle kept approvals under the workspace's folder, and this one keeps them under its
   id. Asks an earlier build left waiting are not carried over, so their calls ask again. Run beside
   this one, an earlier `buckle approve` or `buckle serve` sees none of its asks, nor it theirs.
+  Its entries stay in `approvals.json`: an ask with a deadline lapses at it, but one held until
+  answered stays, with its call file and any room it holds for the approval webhook, and a
+  webhook notice it queued is never sent. To clear them, stop Buckle and delete `approvals.json`
+  and `approval-calls/`: every ask then waiting, and every approval no call used yet, asks again.
 - A `session` grant or a `once` given before this release names no caller, so after the upgrade
-  it clears no agent's call, and those asks come again; an `always` grant keeps working.
+  it clears no call, an agent's or a tool you run from the `buckle` command line, and those asks
+  come again; an `always` grant keeps working.
 - `disable` and `remove` check for running calls, then change the registry: a call that begins in
   another process between the two runs on, and `remove --purge` can delete its records under it.
   A call that begins in the process making the change keeps its runtime open until it ends, and
