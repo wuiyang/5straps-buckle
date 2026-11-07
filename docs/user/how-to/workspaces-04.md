@@ -28,8 +28,8 @@ covers what each workspace then holds.
   log already keeps it, and the old one stays where it is.
 - The folder's other records, its plugins, history, pending approvals, and staged shell copies
   among them, move into `workspaces/<id>/` too, as does each registered workspace's
-  `workspaces/<0.1 id>/` folder's. A workspace takes its pending approvals up under its id as it
-  opens.
+  `workspaces/<0.1 id>/` folder's. Approvals still waiting there are not carried over: their calls
+  ask again.
 
 A state directory that served nothing gets no workspace until `buckle init` makes one.
 

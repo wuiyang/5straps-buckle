@@ -49,8 +49,8 @@ the sandbox layout, the URL list, the browser, and the forge pack.
 The first release of [workspaces](../how-to/workspaces.md) leaves these open for a later release.
 
 - An earlier Buckle kept approvals under the workspace's folder, and this one keeps them under its
-  id. Run beside this one, an earlier `buckle approve` or `buckle serve` sees none of its asks, and
-  this one takes up the earlier one's when it next opens the workspace.
+  id. Asks an earlier build left waiting are not carried over, so their calls ask again. Run beside
+  this one, an earlier `buckle approve` or `buckle serve` sees none of its asks, nor it theirs.
 - A `session` grant or a `once` given before this release names no caller, so after the upgrade
   it clears no agent's call, and those asks come again; an `always` grant keeps working.
 - `disable` and `remove` check for running calls, then change the registry: a call that begins in
