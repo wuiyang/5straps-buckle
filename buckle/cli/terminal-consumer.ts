@@ -2,11 +2,12 @@ import { clearScreenDown, cursorTo, moveCursor } from 'node:readline'
 import { createInterface, type Interface } from 'node:readline/promises'
 import type { Readable, Writable } from 'node:stream'
 import type { CliConsumer, CliConsumerResult, CliRequest } from '@5straps/runtime'
-import { ApprovalSeveritySchema, JsonValueSchema, PermissionRuleIdSchema, GrantScopeSchema, type GrantScope, type PermissionRuleId } from '@5straps/protocol'
+import type { GrantScope, PermissionRuleId } from '@5straps/protocol'
 import { z } from 'zod'
 import { actionPhrase } from '../common/domain/action-phrase.js'
 import { describeLocalExpiry, remainingMs } from '../common/domain/approval-deadline.js'
 import { describeAsk, printable, type ShownAsk } from '../common/domain/approval-instruction.js'
+import { readAskView } from '../common/domain/approval/ask-view.js'
 import { localTime } from '../common/domain/local-time.js'
 import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
 import type { ApprovalChoice } from '../common/services/approvals/approval-service.js'
@@ -58,25 +59,6 @@ export interface ApprovalQuestion extends ShownAsk {
   rule: PermissionRuleId
   offeredScopes: GrantScope[]
 }
-
-/** A JSON text a question carries in one detail, since details hold strings. */
-const jsonText = <T extends z.ZodType>(schema: T) => z.string().transform((value, context) => {
-  try {
-    return JSON.parse(value) as unknown
-  } catch {
-    context.addIssue({ code: 'custom', message: 'not JSON' })
-    return z.NEVER
-  }
-}).pipe(schema)
-
-const QuestionDetailsSchema = z.object({
-  severity: ApprovalSeveritySchema.optional(),
-  tool: z.string(), rule: PermissionRuleIdSchema, subject: z.string(), wider: z.string().optional(), reason: z.string(),
-  scopes: z.string().transform(value => value.split(',')).pipe(z.array(GrantScopeSchema).min(1)),
-  expiresAt: z.string(), workspace: z.string().optional(), workspaceName: z.string().optional(), node: z.string().optional(),
-  arguments: jsonText(JsonValueSchema).optional(), cwd: z.string().optional(), description: z.string().optional(), effects: jsonText(z.array(z.string())).optional(),
-  judge: z.string().optional(),
-})
 
 /**
  * How close to its expiry a question that ends still timed out: the requester's timer is set from the clock, and on a
@@ -313,14 +295,8 @@ function promptRow(input: { question: ApprovalQuestion; output: Writable; readli
 
 function approvalQuestion(request: CliRequest): ApprovalQuestion {
   if (request.kind !== APPROVAL_REQUEST_KIND) throw new Error(`The terminal answers approval questions only, not ${request.kind}`)
-  const details = QuestionDetailsSchema.parse(request.action.details)
-  const call = details.arguments === undefined || details.cwd === undefined ? undefined : { arguments: details.arguments, cwd: details.cwd, description: details.description ?? null, ...(details.effects === undefined ? {} : { effects: details.effects }) }
-  return {
-    tool: details.tool, rule: details.rule, subject: details.subject, ...(details.wider === undefined ? {} : { widerSubject: details.wider }), reason: details.reason, offeredScopes: details.scopes, expiresAt: details.expiresAt,
-    ...(details.workspace ? { workspaceId: details.workspace } : {}), ...(details.workspaceName ? { workspaceName: details.workspaceName } : {}), ...(details.node ? { node: details.node } : {}), ...(call ? { call } : {}),
-    ...(details.severity === undefined ? {} : { severity: details.severity }),
-    ...(details.judge === undefined ? {} : { judge: details.judge }),
-  }
+  const { approve: _approve, ...question } = readAskView(request.action.details)
+  return question
 }
 
 /**

@@ -6,6 +6,7 @@ import type { ApprovalKey } from '@5straps/protocol/envelope'
 import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approval/file-nonce-store.js'
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
+import { askViewDetails, type AskView } from '../../domain/approval/ask-view.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -737,13 +738,14 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
   }
 }
 
+interface QuestionInput { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext; approves?: boolean }
+
 /**
  * The question the terminal shows: what the call wants, the whole call it came from (owner decision D17)
  * and the command that answers it elsewhere.
  */
-export function questionFor(input: { approval: ApprovalRequest; workspaceId: string; workspaceName?: string; node?: string; context: QuestionContext; approves?: boolean }): CliRequest {
+export function questionFor(input: QuestionInput): CliRequest {
   const { approval, workspaceId, context } = input
-  const { call } = context
   return {
     id: `approval:${workspaceId}:${approval.token}`,
     kind: APPROVAL_REQUEST_KIND,
@@ -751,28 +753,33 @@ export function questionFor(input: { approval: ApprovalRequest; workspaceId: str
     ...(context.actor === undefined ? {} : { actor: context.actor }),
     sessionId: context.sessionId,
     target: workspaceId,
-    action: {
-      summary: `${approval.tool} needs approval`,
-      details: {
-        tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
-        ...(approval.severity === undefined ? {} : { severity: approval.severity }),
-        scopes: approval.offeredScopes.join(','), expiresAt: approval.expiresAt, workspace: workspaceId,
-        ...(approval.widerSubject === undefined ? {} : { wider: approval.widerSubject }),
-        ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }),
-        approve: approveCommand({ request: approval, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }) }),
-        ...(input.node === undefined ? {} : { node: input.node }),
-        ...judgeDetail({ approval, call, workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) }),
-        ...(call === undefined ? {} : { arguments: JSON.stringify(call.arguments), cwd: call.cwd, ...(call.description === null ? {} : { description: call.description }), ...(call.effects === undefined ? {} : { effects: JSON.stringify(call.effects) }) }),
-      },
-    },
+    action: { summary: `${approval.tool} needs approval`, details: askViewDetails(askViewOf(input)) },
     wait: questionWait(approval.expiresAt),
   }
 }
 
+function askViewOf(input: QuestionInput): AskView {
+  const { approval, workspaceId, workspaceName } = input
+  const { call } = input.context
+  const named = workspaceName === undefined ? {} : { workspaceName }
+  const judge = judgeDetail({ approval, call, workspaceId, ...named, ...(input.approves === undefined ? {} : { approves: input.approves }) })
+  return {
+    tool: approval.tool, rule: approval.rule, subject: approval.subject, reason: approval.reason,
+    ...(approval.severity === undefined ? {} : { severity: approval.severity }),
+    offeredScopes: approval.offeredScopes, expiresAt: approval.expiresAt, workspaceId,
+    ...(approval.widerSubject === undefined ? {} : { widerSubject: approval.widerSubject }),
+    ...named,
+    approve: approveCommand({ request: approval, workspaceId, ...named }),
+    ...(input.node === undefined ? {} : { node: input.node }),
+    ...(judge === undefined ? {} : { judge }),
+    ...(call === undefined ? {} : { call: { arguments: call.arguments, cwd: call.cwd, description: call.description, ...(call.effects === undefined ? {} : { effects: call.effects }) } }),
+  }
+}
+
 /** The decision AI's line for one question (D91), where the call it came from carries a note about its command. */
-function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string; approves?: boolean }): { judge?: string } {
+function judgeDetail(input: { approval: ApprovalRequest; call: AskedCall | undefined; workspaceId: string; workspaceName?: string; approves?: boolean }): string | undefined {
   const note = judgeNoteFor(input.call?.judge, input.approval)
-  return note === undefined ? {} : { judge: judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) }) }
+  return note === undefined ? undefined : judgeLine(note, { token: input.approval.token, workspaceId: input.workspaceId, ...(input.workspaceName === undefined ? {} : { workspaceName: input.workspaceName }), ...(input.approves === undefined ? {} : { approves: input.approves }) })
 }
 
 /** A question lasts as long as its request: a terminal someone sits at, not the call's grace period. */

@@ -1,6 +1,7 @@
 import { defineScoped, type CliRequest, type PendingInteraction, type RequestCli, type ScopedDefinition, type UnavailableReason } from '@5straps/runtime'
 import { APPROVAL_PENDING } from '../../domain/action-phrase.js'
 import { reviewCommand } from '../../domain/approval-instruction.js'
+import { readAskHeadline, type AskHeadline } from '../../domain/approval/ask-view.js'
 import { logger } from '../../runtime/log.js'
 
 /**
@@ -51,8 +52,8 @@ export const APPROVAL_REQUEST_KIND = 'approval'
  * was asked, so it is already waiting, answerable with the command it carries. Never an approval.
  */
 export async function approvalPending(request: CliRequest): Promise<PendingInteraction | undefined> {
-  const approve = request.action.details?.approve
-  if (request.kind !== APPROVAL_REQUEST_KIND || typeof approve !== 'string') return undefined
+  const { approve } = readAskHeadline(request.action.details ?? {})
+  if (request.kind !== APPROVAL_REQUEST_KIND || approve === undefined) return undefined
   return { id: request.id, instructions: approve }
 }
 
@@ -65,18 +66,16 @@ export async function approvalPending(request: CliRequest): Promise<PendingInter
  */
 export async function nodeApprovalPending(request: CliRequest, reason: UnavailableReason): Promise<PendingInteraction | undefined> {
   const pending = await approvalPending(request)
-  if (pending && (reason === 'no_consumer' || reason === 'no_listener')) logger.info(APPROVAL_PENDING, pendingFields(request.action.details ?? {}))
+  if (pending && (reason === 'no_consumer' || reason === 'no_listener')) logger.info(APPROVAL_PENDING, pendingFields(readAskHeadline(request.action.details ?? {})))
   return pending
 }
 
-function pendingFields(details: Readonly<Record<string, string | number | boolean>>): Record<string, unknown> {
-  const text = (key: string) => (typeof details[key] === 'string' ? details[key] : undefined)
-  const workspaceId = text('workspace')
-  const workspaceName = text('workspaceName')
+function pendingFields(headline: AskHeadline): Record<string, unknown> {
+  const { workspaceId, workspaceName } = headline
   return {
-    tool: text('tool'),
-    rule: text('rule'),
-    scopes: text('scopes')?.split(','),
+    tool: headline.tool,
+    rule: headline.rule,
+    scopes: headline.offeredScopes,
     workspace: workspaceName ?? workspaceId,
     review: reviewCommand({ ...(workspaceId === undefined ? {} : { workspaceId }), ...(workspaceName === undefined ? {} : { workspaceName }) }),
   }
