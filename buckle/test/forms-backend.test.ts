@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ApprovalRequest } from '@5straps/protocol'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
@@ -78,13 +78,34 @@ describe('the forms backend', () => {
     expect(await backend.answer({ a: accepted({ approve: true }) })).toEqual(['a'])
   })
 
-  it('sends no approval of an ask whose whole call it was not given, and still sends its denial', async () => {
+  it('sends every accepted answer to the host, and leaves to core whether an ask kept without its call may be approved', async () => {
     const backend = forms()
     const host = fakeHost({ routed: [askFor('a', { action: undefined })] })
     await backend.open(host)
-    expect(await backend.answer({ a: accepted({ action: 'allow_once' }) })).toEqual([])
-    expect(host.decided).toEqual([])
-    expect(await backend.answer({ a: accepted({ action: 'deny' }) })).toEqual(['a'])
+    await backend.answer({ a: accepted({ action: 'allow_once' }) })
+    expect(host.decided.map(input => input.decision)).toEqual([{ token: 'a', outcome: 'approve', scope: 'once' }])
+  })
+
+  it('waits in close for the answer it is deciding, and sends nothing more once closed', async () => {
+    const backend = forms()
+    const gate = Promise.withResolvers<void>()
+    const sent: string[] = []
+    const host: ApprovalHost = { ...fakeHost({ routed: [askFor('a'), askFor('b')] }), decide: async (input) => {
+      sent.push(input.decision.token)
+      await gate.promise
+      return { status: 'applied', state: 'approved', assurance: 'local' }
+    } }
+    await backend.open(host)
+    const answering = backend.answer({ a: accepted({ approve: true }), b: accepted({ approve: true }) })
+    await vi.waitFor(() => expect(sent).toEqual(['a']))
+    let closed = false
+    const closing = backend.close().then(() => { closed = true })
+    await new Promise(resolve => setTimeout(resolve, 20))
+    expect(closed).toBe(false)
+    gate.resolve()
+    await closing
+    expect(await answering).toEqual(['a'])
+    expect(sent).toEqual(['a'])
   })
 
   it('sends nothing to the host once it is closed', async () => {
@@ -144,6 +165,15 @@ describe('the forms host core opens', () => {
     expect(await host().decide({ kind: 'plain', decision })).toEqual({ status: 'refused', error: { code: 'scope_forbidden', message: 'Only the node\'s terminal and buckle approve grant a folder and its subfolders', retryable: false } })
     expect(grants.list()).toEqual([])
     expect(await service.decide({ source: 'cli', decision })).toMatchObject({ status: 'applied', granted: 'delete-below:/srv/data' })
+  })
+
+  it('leaves the whole-action check to core: an approval of an ask kept without its call is refused, and its denial applies', async () => {
+    const { registry, backend } = await opened()
+    const [asked] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE] })).requests
+    expect(await backend.answer({ [asked!.token]: accepted({ approve: true, scope: 'once' }) })).toEqual([])
+    expect(registry.pending().map(request => request.token)).toEqual([asked!.token])
+    expect(await backend.answer({ [asked!.token]: accepted({ approve: false }) })).toEqual([asked!.token])
+    expect(registry.pending()).toEqual([])
   })
 
   it('hands the forms each waiting ask whole, grouped by its call, and none whose whole call was not kept', async () => {

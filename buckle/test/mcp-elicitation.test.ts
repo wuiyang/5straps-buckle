@@ -27,6 +27,7 @@ const approval: ApprovalRequest = {
 }
 
 const APPLIED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local' }
+const INCOMPLETE: DecisionReceipt = { status: 'refused', error: { code: 'incomplete_action', message: 'This ask was recorded before this build', retryable: false } }
 
 const gatedResponse: InvokeResponse = { requestId: 'request-1', outcome: 'approval_required', approvals: [approval] }
 
@@ -215,17 +216,17 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     expect(form.requestedSchema.properties['action']?.enum).toEqual(['deny'])
   })
 
-  it('refuses an approving answer for an ask recorded before this build, and records a denial for it', async () => {
-    const decide = vi.fn(async () => APPLIED)
+  it('sends core an approving answer for an ask recorded before this build, which core refuses, and records a denial for it', async () => {
+    const decide = vi.fn<ApprovalHost['decide']>(async input => (input.decision.outcome === 'approve' ? INCOMPLETE : APPLIED))
     const preBuild: PendingAsk = { request: approval, sessionId: 'unit', floor: true, destructive: true, call: { arguments: { path: '/etc/host...' }, cwd: '/workspace', description: null, truncated: true } }
     const answered = (content: Record<string, unknown>) => gatedCall(gatedServer(decide, [preBuild]), { ...elicitingContext(),
       mcpReq: { id: 3, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content } } },
     } as unknown as ServerContext)
     await answered({ approve: true, scope: 'session' })
     await answered({ action: 'allow_once' })
-    expect(decide).not.toHaveBeenCalled()
+    expect(decide.mock.calls.map(([input]) => input.decision)).toEqual([{ token: 'token-1', outcome: 'approve', scope: 'session' }, { token: 'token-1', outcome: 'approve', scope: 'once' }])
     await answered({ action: 'deny' })
-    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'deny', scope: 'once' } })
+    expect(decide).toHaveBeenLastCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'deny', scope: 'once' } })
   })
 })
 

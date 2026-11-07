@@ -33,7 +33,23 @@ const ALLOW_LABELS: Readonly<Record<GrantScope, string>> = { once: 'Allow once',
 export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   let host: ApprovalHost | undefined
   let closed = false
+  // The answers still being decided, which close waits for.
+  const answering = new Set<Promise<string[]>>()
   const live = () => (closed ? undefined : host)
+
+  async function decideAnswers(responses: Record<string, unknown>): Promise<string[]> {
+    const tokens: string[] = []
+    for (const token of Object.keys(responses)) {
+      const answer = acceptedContent<FormAnswer>(responses, token)
+      if (!answer) continue
+      const opened = live()
+      if (!opened) break
+      const receipt = await opened.decide({ kind: 'plain', decision: decisionOf(token, answer) })
+      if (receipt.status !== 'refused') tokens.push(token)
+      else opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
+    }
+    return tokens
+  }
 
   return {
     async open(opener) {
@@ -47,32 +63,20 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
     async close() {
       closed = true
+      await Promise.allSettled([...answering])
     },
 
     forms(approvals) {
       return formsFor({ approvals, waiting: live()?.pending() ?? [], options })
     },
 
-    async answer(responses) {
-      const opened = live()
-      if (!opened || !responses) return []
-      const waiting = new Map(opened.pending().map(ask => [ask.token, ask]))
-      const tokens: string[] = []
-      for (const token of Object.keys(responses)) {
-        const answer = acceptedContent<FormAnswer>(responses, token)
-        if (!answer) continue
-        const decision = decisionOf(token, answer)
-        // Owner decision D17: an ask whose whole call was never kept was never shown whole, so no answer approves it.
-        const asked = waiting.get(token)
-        if (decision.outcome === 'approve' && asked !== undefined && asked.action === undefined) {
-          opened.log('warn', 'Elicited approval refused: the ask was recorded before this build, so its whole action was never shown')
-          continue
-        }
-        const receipt = await opened.decide({ kind: 'plain', decision })
-        if (receipt.status !== 'refused') tokens.push(token)
-        else opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
-      }
-      return tokens
+    answer(responses) {
+      if (!live() || !responses) return Promise.resolve([])
+      const run = decideAnswers(responses)
+      answering.add(run)
+      const forget = () => { answering.delete(run) }
+      run.then(forget, forget)
+      return run
     },
   }
 }
