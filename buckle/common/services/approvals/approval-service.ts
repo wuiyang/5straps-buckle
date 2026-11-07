@@ -18,7 +18,6 @@ import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
 import type { ApprovalRegistry, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
-import { NO_INTERACTION, type InteractionSource } from './interaction.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -31,6 +30,8 @@ const POLL_INTERVAL_MS = 400
  */
 export const INLINE_CALL_BYTES = 16 * 1_024
 const SWEEP_MARGIN_MS = 1_000
+/** An operation nobody bound holds its call only while its terminal asks, and it has none. */
+const UNBOUND_HOLD: ApprovalHold = 'prompt'
 
 export interface ApprovalAskInput {
   sessionId: string
@@ -194,8 +195,8 @@ export interface ApprovalServiceOptions {
    * holds it until answered. Read at each ask, so a runtime may pass a getter that follows its workspace.json (Q2).
    */
   graceMs: number | null
-  /** The current operation's interaction, whose hold sets how long a call waits; an unbound operation asks nobody. */
-  interaction: InteractionSource
+  /** The hold the current operation's transport chose, which sets how long a call waits; undefined outside a bound operation. */
+  hold: () => Promise<ApprovalHold | undefined>
   /** Asks a person at this process's terminal, over the operation's requester. */
   terminal: ApprovalBackend
   /**
@@ -294,7 +295,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // grant binds stays as the rule named it.
       const input = masksHeld() ? { ...asked, asks: asked.asks.map(ask => ({ ...ask, reason: maskHeld(ask.reason) })), ...(asked.call === undefined ? {} : { call: maskHeldJson(asked.call) }) } : asked
       input.signal?.throwIfAborted()
-      const { hold } = (await options.interaction()) ?? NO_INTERACTION
+      const hold = (await options.hold()) ?? UNBOUND_HOLD
       const scope = useScopeSafe()
       const actor = scope?.context.actor
       const key = joinKey({ ...input, actor })

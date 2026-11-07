@@ -1,19 +1,20 @@
 import { defineScoped, type RequestCli, type ScopedDefinition } from '@5straps/runtime'
-import type { ApprovalHold } from '../../types/ports/approval-backend.js'
+import type { ApprovalHold } from '../types/ports/approval-backend.js'
 
 /**
- * How an operation reaches a person: the process's requester and the hold its transport chose.
+ * How an operation reaches a person: the process's requester, which the terminal backend asks over, and the hold its
+ * transport chose, which the approval service holds a call to.
  *
  * Only the hold is scoped. The requester is process-level, bound once by main on the common runtime,
  * because the approval service is a per-workspace singleton that keeps asking after a `grace` call
- * returns, and a singleton must not retain a scoped value (nitro/runtime.md, Lifetimes; review L2).
+ * returns, and a singleton must not retain a scoped value (nitro/runtime.md, Lifetimes).
  */
 export interface Interaction {
   readonly requestCli: RequestCli
   readonly hold: ApprovalHold
 }
 
-/** Bound once per operation scope by the transport that opened it; read by the approval service. */
+/** Bound once per operation scope by the transport that opened it. */
 export interface InteractionPort {
   bind(hold: ApprovalHold): void
   current(): ApprovalHold | undefined

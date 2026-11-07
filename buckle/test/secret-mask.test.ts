@@ -7,7 +7,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { logger, rootLogger } from '../common/runtime/log.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 
-import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
+import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'

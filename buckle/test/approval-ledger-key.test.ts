@@ -7,7 +7,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { approvalsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
-import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
+import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'

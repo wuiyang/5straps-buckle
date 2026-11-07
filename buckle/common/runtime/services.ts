@@ -1,5 +1,5 @@
 import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
-import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from '../services/approvals/interaction.js'
+import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from './interaction.js'
 import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
 import { nodeRootsOf, openWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../services/workspaces/workspace-runtime.js'

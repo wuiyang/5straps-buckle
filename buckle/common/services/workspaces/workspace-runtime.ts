@@ -75,7 +75,7 @@ import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
-import type { InteractionSource } from '../approvals/interaction.js'
+import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createTerminalBackend } from '../../adapters/approval/terminal-backend.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
@@ -349,7 +349,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     // Read at each ask, so a change to approvalWaitMs applies from the next call (Q2), and a rename shows at once.
     get graceMs() { return config.approvalTimeoutMs },
     get workspaceName() { return config.serverName },
-    interaction, terminal,
+    hold: async () => (await interaction())?.hold, terminal,
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
   })

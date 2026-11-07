@@ -14,7 +14,7 @@ import { defaultRuntime } from './support/workspaces.js'
 import { ApprovalConflictError } from '../common/services/approvals/approval-errors.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { holdFor, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
-import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
+import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { createMcpServer } from '../mcp/server.js'
@@ -203,8 +203,9 @@ describe('the approval service, the single answerer', () => {
     await expect(first).rejects.toThrow()
     expect(registry.pending().map(request => request.token)).toEqual([token])
 
+    const asked = vi.spyOn(registry, 'ask')
     const resent = service.request(call())
-    await vi.waitFor(() => expect(registry.pending()).toHaveLength(1))
+    await vi.waitFor(() => expect(asked.mock.settledResults).toContainEqual({ type: 'fulfilled', value: expect.objectContaining({ joined: true }) }))
     await service.answer({ decision: { token: token!, approved: true, scope: 'once' }, source: SOURCES.cli })
     expect(await resent).toMatchObject({ settled: true, approvals: [expect.objectContaining({ token })] })
     await service.close()

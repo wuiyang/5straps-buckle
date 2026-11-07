@@ -12,7 +12,6 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import type { ApprovalBackend, ApprovalHost, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { fixedInteraction, headlessGrace } from './support/interaction.js'
 
 // The core side of the port: what the service hands its terminal backend, and how it takes the backend's decisions.
 
@@ -45,7 +44,7 @@ function setUp(backend: ApprovalBackend, graceMs = 200) {
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, interaction: fixedInteraction(headlessGrace), terminal: backend, nonces: createMemoryNonceClaims() })
+  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims() })
   return { registry, grants, service, root }
 }
 

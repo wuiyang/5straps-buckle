@@ -12,7 +12,7 @@ import { commandMarks, FILE_FLOOR_MARKS, PLAIN_MARKS } from '../common/domain/pe
 import type { PermissionEngine } from '../common/domain/permission/engine.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { approvalsPath, grantsPath } from '../common/runtime/config.js'
-import { NO_INTERACTION, type Interaction } from '../common/services/approvals/interaction.js'
+import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { createMcpServer } from '../mcp/server.js'

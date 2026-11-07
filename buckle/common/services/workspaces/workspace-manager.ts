@@ -3,7 +3,7 @@ import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileS
 import { basename, join, resolve } from 'pathe'
 import { z } from 'zod'
 import { isWorkspaceToolAllowed, WorkspacePolicySchema } from '@5straps/protocol'
-import type { InteractionSource } from '../approvals/interaction.js'
+import type { InteractionSource } from '../../runtime/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
 import { switchLevel } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
