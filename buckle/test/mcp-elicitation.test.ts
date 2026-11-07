@@ -173,7 +173,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     const args = { command: 'bash', args: ['-c', body] }
     const request = { ...approval, rule: 'destructive_command' as const, subject: commandSubject('bash', ['-c', body]), reason: 'Recursive delete' }
     const call = { arguments: reviewableArguments(args), cwd: '/workspace', description: describeCall({ tool: 'shell_exec', args, cwd: '/workspace' }), effects: [summarizeEffect({ kind: 'exec', ...args })], complete: true as const }
-    const form = formOf(await gatedCall(gatedServer(undefined, [{ request, sessionId: 'unit', floor: false, destructive: true, requestId: 'request-1', call }]), elicitingContext()))
+    const form = formOf(await gatedCall(gatedServer(undefined, [{ request, sessionId: 'unit', floor: true, destructive: true, requestId: 'request-1', call }]), elicitingContext()))
     expect(form.message).toContain(`subject: bash -c '${body}'`)
     expect(form.message).toContain(`"${body}"`)
     expect(form.message).toContain(`effects:  exec bash -c '${body}'`)
@@ -189,7 +189,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     const args = { command: 'bash', args: ['-c', body] }
     const request = { ...approval, rule: 'destructive_command' as const, subject: commandSubject('bash', ['-c', body]), reason: 'Recursive delete' }
     const call = { arguments: reviewableArguments(args), cwd: '/workspace', description: describeCall({ tool: 'shell_exec', args, cwd: '/workspace' }), effects: [summarizeEffect({ kind: 'exec', ...args })], complete: true as const }
-    const form = formOf(await gatedCall(gatedServer(undefined, [{ request, sessionId: 'unit', floor: false, destructive: true, requestId: 'request-1', call }]), elicitingContext()))
+    const form = formOf(await gatedCall(gatedServer(undefined, [{ request, sessionId: 'unit', floor: true, destructive: true, requestId: 'request-1', call }]), elicitingContext()))
     const quoted = `'${shown.replaceAll("'", `'\\''`)}'`
     expect(form.message).toContain(`subject: bash -c ${quoted}`)
     expect(form.message).toContain(JSON.stringify(shown))
