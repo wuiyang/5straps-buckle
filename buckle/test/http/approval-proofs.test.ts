@@ -52,6 +52,20 @@ async function ask(buckle: Node, request: InvokeRequest): Promise<string> {
   return asked.approvals[0]!.token
 }
 
+/** The call over HTTP under an agent token, in the session `chat-1`. */
+async function invokeAs(buckle: Node, token: string, request: InvokeRequest): Promise<{ outcome: string; approvals?: Array<{ token: string }> }> {
+  const response = await buckle.request('/v1/invoke', { method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify({ ...request, context: { ...request.context, sessionId: 'chat-1' } }) })
+  return await response.json() as { outcome: string; approvals?: Array<{ token: string }> }
+}
+
+/** A second agent token for the workspace, minted through the admin face, with the actor its calls carry. */
+async function mintToken(buckle: Node): Promise<{ token: string; actor: string }> {
+  const minted = await buckle.request(`/setup/workspaces/${buckle.runtime.workspaceId}/tokens`, { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify({ label: 'second agent' }) })
+  expect(minted.status).toBe(201)
+  const { token } = await minted.json() as { token: { id: string; token: string } }
+  return { token: token.token, actor: `agent:${token.id}` }
+}
+
 function signed(buckle: Node, input: { method: string; path: string; body: string; at?: number }): string {
   return signRequest({ key: signingKeyFromPem(owner.privateKeyPem), purpose: 'buckle-approval', node: buckle.config.serverId, nodeKey: buckle.nodeKey, workspace: buckle.runtime.workspaceId, method: input.method, path: input.path, body: input.body, now: input.at ?? Date.now() })
 }
@@ -72,13 +86,30 @@ function decide(buckle: Node, body: object, at?: number): { send: () => Promise<
 describe('an approval decision a person\'s key proves (B24)', () => {
   it.each(['session', 'always'] as const)('allows an enrolled device to create the offered %s grant without reusable admin approval authority', async (scope) => {
     const buckle = await node()
-    const token = await ask(buckle, write(buckle.root, `signed-${scope}`))
+    const asked = await invokeAs(buckle, AGENT, write(buckle.root, `signed-${scope}`))
+    const token = asked.approvals![0]!.token
     const [item] = (await challenges(buckle)).challenges
     const unsigned = { token, approved: true, scope }
     expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: { authorization: `Bearer ${ADMIN}`, 'content-type': 'application/json' }, body: JSON.stringify(unsigned) })).status).toBe(409)
     expect(buckle.runtime.grants.list()).toEqual([])
     expect((await decide(buckle, { ...unsigned, challenge: item!.digest }).send()).status).toBe(200)
-    expect(buckle.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: buckle.root, scope, sessionId: scope === 'session' ? 'chat-1' : null })])
+    // The grant serves the token that asked, in its session; a session one serves no other caller there.
+    const served = (actor: string) => buckle.runtime.approvalGate.grants({ sessionId: 'chat-1', actor, consumed: [] }).subjectsFor('write_scope')
+    expect(served('agent:node')).toContain(buckle.root)
+    expect(served('agent:another')).toEqual(scope === 'session' ? [] : [buckle.root])
+  })
+
+  it('clears the next call of the token whose ask a device approved for the session, and asks another token in that session', async () => {
+    const buckle = await node()
+    const other = await mintToken(buckle)
+    const asked = await invokeAs(buckle, AGENT, write(buckle.root, 'session-first', 'first.md'))
+    expect(asked.outcome).toBe('approval_required')
+    const [item] = (await challenges(buckle)).challenges
+    expect((await decide(buckle, { token: asked.approvals![0]!.token, approved: true, scope: 'session', challenge: item!.digest }).send()).status).toBe(200)
+
+    expect((await invokeAs(buckle, AGENT, write(buckle.root, 'session-second', 'second.md'))).outcome).toBe('ok')
+    expect((await invokeAs(buckle, other.token, write(buckle.root, 'session-other', 'other.md'))).outcome).toBe('approval_required')
+    expect(buckle.runtime.approvalGate.grants({ sessionId: 'chat-1', actor: other.actor, consumed: [] }).subjectsFor('write_scope')).toEqual([])
   })
 
   it.each([0, 1])('refuses signed once at or after its deadline even while transport skew accepts the proof, late by %sms', async (lateBy) => {

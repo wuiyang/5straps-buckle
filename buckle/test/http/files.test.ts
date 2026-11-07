@@ -31,9 +31,9 @@ beforeEach(async () => {
 })
 afterEach(() => buckle.close())
 
-/** Writes in the workspace go ahead for every caller: a session grant would serve only the actor that asked in it. */
+/** Writes in the workspace go ahead in the session the node's token shares when it names none, as a session grant would. */
 async function grantWrites(): Promise<void> {
-  await buckle.runtime.grants.grant({ sessionId: 'rpc', rule: 'write_scope', subject: buckle.runtime.paths().root, scope: 'always' })
+  await buckle.runtime.grants.grant({ sessionId: 'rpc', actor: 'agent:node', rule: 'write_scope', subject: buckle.runtime.paths().root, scope: 'session' })
 }
 
 function put(path: string, content: Buffer<ArrayBuffer>, options: { requestId?: string; digest?: string; prefix?: string } = {}): Promise<Response> {
