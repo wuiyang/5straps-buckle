@@ -9,7 +9,7 @@ const SERVICE = 'common/services/approvals/approval-service.ts'
 // The registry's `evaluate` spends a `once` and claims the execution; it is reached as `approvals` in the invoker's options.
 const EVALUATES_ON_REGISTRY = /\b(?:approvals|registry)\??\.evaluate\(/
 const INVOKER = 'common/services/invocation/invoker.ts'
-// The decision guard's checks run where the ledger is locked, and nowhere else.
+// The decision guard's checks run in the registry, which holds the ledger, and nowhere else.
 const GUARDS = /\b(?:guardDecision|screenDecision)\(/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
@@ -30,7 +30,7 @@ describe('the approval boundary', () => {
     expect(callers).toEqual([INVOKER])
   })
 
-  it('runs the decision guard in the registry alone, under the approvals lock', () => {
+  it('runs the decision guard in the registry alone', () => {
     const callers = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
       .filter(file => GUARDS.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))

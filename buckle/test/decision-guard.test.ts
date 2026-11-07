@@ -4,8 +4,8 @@ import { guardDecision, screenDecision, type DecisionClaim, type GuardCheck, typ
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
 
 // Today's checks on an answer, held by the pure decision guard (the approval backend design, slice 4), taken from the
-// once, CLI, sensitive-file, and signed-deadline suites. The registry runs screenDecision before it locks the approvals
-// file and guardDecision under the lock, with the same messages as before.
+// once, CLI, sensitive-file, and signed-deadline suites. guardDecision runs every check, screenDecision's first; the
+// registry also runs screenDecision before it locks the approvals file, with the same messages as before.
 
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
 const SHOWN = 'a'.repeat(64)
@@ -15,7 +15,7 @@ const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<Appro
 const deny = (scope: ApprovalDecision['scope'] = 'once'): ApprovalDecision => ({ token: 't-1', approved: false, scope })
 const claim = (decision: ApprovalDecision, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision, authority: 'admin', ...extra })
 const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boolean; challenges?: string[] } = {}): LedgerView => ({ waiting: { request: { ...request, ...asked }, complete: input.complete ?? true, challenges: input.challenges ?? [SHOWN] } })
-const guard = (input: { claim: DecisionClaim; ledger?: LedgerView; widenedTo?: string }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW, ...(input.widenedTo === undefined ? {} : { widenedTo: input.widenedTo }) })
+const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW })
 
 describe('the checks before the approvals file is read', () => {
   it.each<[string, DecisionClaim, GuardCheck, string]>([
@@ -37,6 +37,13 @@ describe('the checks before the approvals file is read', () => {
 })
 
 describe('the checks against the ask', () => {
+  it('runs the screen itself, so a caller that skips it still meets the authority and host pattern checks', () => {
+    expect(guard({ claim: claim(approve('session'), { authority: 'agent' }) })).toEqual({ ok: false, check: 'authority', reason: 'Only the admin credential writes an approval that outlives the call' })
+    expect(guard({ claim: claim(deny('always'), { authority: 'agent' }), ledger: waiting({ rule: 'sensitive_path', subject: '/w/.env' }) })).toEqual({ ok: false, check: 'authority', reason: 'Only the admin credential writes an approval that outlives the call' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: 'api.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: false, check: 'widening', reason: '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com ' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
+  })
+
   it('answers the decision already applied as repeated, naming what it answered, and refuses another', () => {
     const resolved: LedgerView = { resolved: { decision: approve('session'), request } }
     expect(guard({ claim: claim(approve('session')), ledger: resolved })).toEqual({ ok: true, repeated: true, asked: { rule: 'write_scope', subject: '/outside' } })
@@ -44,8 +51,8 @@ describe('the checks against the ask', () => {
     for (const other of [approve('always'), deny('session'), approve('session', { subject: 'delete-below:/outside' })]) {
       expect(guard({ claim: claim(other), ledger: resolved })).toEqual({ ok: false, check: 'repeat', reason: 'Approval already has a different decision' })
     }
-    expect(guard({ claim: claim(approve('session')), ledger: resolved, widenedTo: '*.example.com' })).toEqual({ ok: false, check: 'repeat', reason: 'Approval already has a different decision' })
-    expect(guard({ claim: claim(approve('session')), ledger: { resolved: { decision: approve('session'), widenedTo: '*.example.com' } }, widenedTo: '*.example.com' })).toEqual({ ok: true, repeated: true })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: resolved })).toEqual({ ok: false, check: 'repeat', reason: 'Approval already has a different decision' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com' }), ledger: { resolved: { decision: approve('session'), widenedTo: '*.example.com' } } })).toEqual({ ok: true, repeated: true })
   })
 
   it.each<[string, DecisionClaim, LedgerView, GuardCheck, string]>([
@@ -67,9 +74,9 @@ describe('the checks against the ask', () => {
   })
 
   it('refuses a host pattern on any rule but network egress, and one that does not cover the host that asked', () => {
-    expect(guard({ claim: claim(approve('session')), widenedTo: '*.example.com' })).toEqual({ ok: false, check: 'widening', reason: '--host widens a network approval only; this one is write_scope for /outside' })
-    expect(guard({ claim: claim(approve('session')), ledger: waiting({ rule: 'network_egress', subject: 'api.other.com' }), widenedTo: '*.example.com' })).toEqual({ ok: false, check: 'widening', reason: 'The pattern *.example.com does not cover api.other.com, the host that asked' })
-    expect(guard({ claim: claim(approve('session', { subject: 'delete-below:/outside' })), ledger: waiting({ widerSubject: 'delete-below:/outside' }), widenedTo: '*.example.com' })).toEqual({ ok: false, check: 'wider_subject', reason: 'A host pattern and a wider subject do not combine' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }) })).toEqual({ ok: false, check: 'widening', reason: '--host widens a network approval only; this one is write_scope for /outside' })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.other.com' }) })).toEqual({ ok: false, check: 'widening', reason: 'The pattern *.example.com does not cover api.other.com, the host that asked' })
+    expect(guard({ claim: claim(approve('session', { subject: 'delete-below:/outside' }), { widenTo: '*.example.com' }), ledger: waiting({ widerSubject: 'delete-below:/outside' }) })).toEqual({ ok: false, check: 'wider_subject', reason: 'A host pattern and a wider subject do not combine' })
   })
 
   it.each<[string, DecisionClaim, LedgerView, string | undefined]>([
@@ -88,7 +95,7 @@ describe('the checks against the ask', () => {
   })
 
   it('applies a host pattern that covers the host that asked, over http or https', () => {
-    expect(guard({ claim: claim(approve('always')), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }), widenedTo: '*.example.com' })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
-    expect(guard({ claim: claim(approve('session')), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }), widenedTo: '*.example.com:443' })).toEqual({ ok: true, apply: { widenedTo: '*.example.com:443' } })
+    expect(guard({ claim: claim(approve('always'), { widenTo: '*.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
+    expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com:443' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com:443' } })
   })
 })

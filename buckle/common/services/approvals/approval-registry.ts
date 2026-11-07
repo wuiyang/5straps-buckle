@@ -653,12 +653,12 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         decision, authority, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
         ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
       }
+      // Refused before the lock, so these come back even when the approvals file cannot be read.
       const screened = screenDecision(claim)
       if (!screened.ok) {
         if (screened.check === 'authority') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
         return { ok: false, reason: screened.reason }
       }
-      const { widenedTo } = screened
       // The grant is written while the approvals file is still locked, so no reader sees the decision without it.
       return update(async (state): Promise<Resolution> => {
         const now = Date.now()
@@ -666,11 +666,11 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
         const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
         const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
-        const verdict = guardDecision({ claim, ...(widenedTo === undefined ? {} : { widenedTo }), ledger, now })
+        const verdict = guardDecision({ claim, ledger, now })
         if (!verdict.ok) return { ok: false, reason: verdict.reason }
         if ('repeated' in verdict) return { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
         if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
-        const { wider } = verdict.apply
+        const { wider, widenedTo } = verdict.apply
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
         const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }

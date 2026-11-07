@@ -49,7 +49,7 @@ export type GuardVerdict =
   | { ok: true; repeated: true; asked?: { rule: PermissionRuleId; subject: string } }
   | { ok: true; apply: DecisionPlan }
 
-/** The checks that need no ask, run before the approvals file is locked; on a pass, the host pattern to record. */
+/** The checks that need no ask, which the registry also runs before it locks the approvals file; on a pass, the host pattern to record. */
 export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true; widenedTo?: string } {
   const { decision } = claim
   if (decision.scope !== 'once' && claim.authority !== 'admin') return refuse('authority', 'Only the admin credential writes an approval that outlives the call')
@@ -57,9 +57,12 @@ export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true;
   return checkWidening({ pattern: claim.widenTo, decision, authority: claim.authority })
 }
 
-/** Every check against the ask a decision answers, in the order the registry ran them, under the approvals lock. */
-export function guardDecision(input: { claim: DecisionClaim; widenedTo?: string; ledger: LedgerView; now: number }): GuardVerdict {
-  const { claim: { decision }, claim, widenedTo, ledger } = input
+/** Every check a decision meets, the screen's first, in the order the registry ran them. */
+export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number }): GuardVerdict {
+  const { claim: { decision }, claim, ledger } = input
+  const screened = screenDecision(claim)
+  if (!screened.ok) return screened
+  const { widenedTo } = screened
   if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved })
   const asked = ledger.waiting
   if (!asked) return refuse('unknown', 'Approval token is unknown or expired')
