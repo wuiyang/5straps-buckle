@@ -264,6 +264,31 @@ describe('a lasting denial', () => {
     expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })
     expect(runtime.grants.list()).toEqual([])
   })
+
+  it.each(['session', 'always'] as const)('stands over an earlier %s approval of the same secret file whose grant was left owed, and after reopening', async (scope) => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    let failNext = true
+    const grants = { ...store, grant: async (input: Parameters<typeof store.grant>[0]) => {
+      if (!failNext) return store.grant(input)
+      failNext = false
+      throw new Error('The grants file was busy')
+    } }
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'))
+    const subject = 'secret-file:/workspace/.env'
+    const ask = async (requestId: string) => (await registry.ask({ tool: 'shell_exec', sessionId: 's', actor: 'a', requestId, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject, reason: 'secret file', offeredScopes: ['once', 'session', 'always'] }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests[0]!.token
+    const holder = { rule: 'sensitive_path' as const, sessionId: 's', actor: 'a' }
+
+    expect(await registry.resolve({ token: await ask('approved'), approved: true, scope }, SOURCES.cli)).toMatchObject({ ok: true, grantOwed: true })
+    expect(await registry.resolve({ token: await ask('denied'), approved: false, scope }, SOURCES.cli)).toEqual(expect.objectContaining({ ok: true }))
+    expect(store.list()).toEqual([expect.objectContaining({ subject, scope, denied: true })])
+    expect(store.activeSubjects(holder)).toEqual([])
+
+    await createApprovalRegistry(store, join(root, 'approvals.json')).recover()
+    expect(store.list()).toEqual([expect.objectContaining({ subject, scope, denied: true })])
+    expect(store.activeSubjects(holder)).toEqual([])
+  })
 })
 
 describe('a decision whose grant stays owed', () => {

@@ -720,7 +720,10 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
     const holder = { sessionId: approval.sessionId, ...(actor === undefined ? {} : { actor }) }
     // A lasting denial stands before its decision commits: one that cannot be written records nothing, and its ask waits.
-    if (!decision.approved && decision.scope !== 'once') await grants.grant({ ...holder, rule, subject, scope: decision.scope, denied: true, ...decider })
+    if (!decision.approved && decision.scope !== 'once') {
+      await dropSuperseded({ state, commit, slot: { rule, subject, scope: decision.scope, sessionId: holder.sessionId, actor: holder.actor ?? null } })
+      await grants.grant({ ...holder, rule, subject, scope: decision.scope, denied: true, ...decider })
+    }
     const owedGrant = owedGrantOf({ decision, holder, rule, subject, widenedTo, wider, decider, now })
     state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
     const resolved: State['resolved'][number] = {
@@ -745,6 +748,16 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     if (!progress.applied) return resolution
     await settleGrants(state, commit)
     return owedOf(progress.applied)
+  }
+
+  /**
+   * Drops, and commits, the owed approvals a lasting denial takes the place of in the grant store, before the denial is
+   * written: settled after it, one would replace it there.
+   */
+  async function dropSuperseded(input: { state: State; commit: () => Promise<void>; slot: GrantSlot }): Promise<void> {
+    const superseded = input.state.resolved.filter(entry => entry.workspace === workspace && entry.owedGrant !== undefined && writesAgain(entry.owedGrant, input.slot))
+    for (const entry of superseded) delete entry.owedGrant
+    if (superseded.length > 0) await input.commit()
   }
 
   // A grant the settling pass could not write is still owed, and the answer says so.
@@ -1093,8 +1106,11 @@ function undoes(revocation: Revocation, owed: OwedGrant): boolean {
   return owed.id === revocation.grant.id || writesAgain(owed, revocation.grant)
 }
 
-/** Whether an owed grant, once written, would stand as this record does: the grant store keeps one record per subject and holder. */
-function writesAgain(owed: OwedGrant, record: GrantRecord): boolean {
+/** Where the grant store keeps a record: one per rule, subject, scope, and holder, approved or denied. */
+type GrantSlot = Pick<GrantRecord, 'rule' | 'subject' | 'scope' | 'sessionId' | 'actor' | 'pattern'>
+
+/** Whether an owed grant, once written, would stand where this record does. */
+function writesAgain(owed: OwedGrant, record: GrantSlot): boolean {
   const holder = owed.scope === 'always' || servesHolder(record, owed)
   return owed.rule === record.rule && owed.subject === record.subject && owed.scope === record.scope && holder && Boolean(owed.pattern) === Boolean(record.pattern)
 }
