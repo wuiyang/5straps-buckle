@@ -17,24 +17,36 @@ export const DANGEROUSLY_ALLOW_SCOPE = 'bound to the workspace root, or its moun
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
-/** What a mode answers beyond the asks every mode covers: floor asks (sudo, the destructive list, and the file floor), and a secret reference's file. */
+/** The floor asks a mode answers: every one, all but a privilege command (`sudo`, `su`, `doas`, `pkexec`, or a call that may hold one), or none. */
+export type FloorReach = 'all' | 'unprivileged' | 'none'
+
+/** What a mode answers beyond the asks every mode covers. */
 export interface ModeReach {
-  floor: boolean
+  floor: FloorReach
+  /** A secret reference's file. */
   secretFile: boolean
+  /** A call running code through an interpreter the workspace's policy does not allow. */
+  unreadCode: boolean
 }
 
 /**
- * Each mode's reach (APPROVAL-05). `safe` leaving every floor ask and a secret reference's file to a person is the
- * working choice of APPROVAL-13; either is one field to change.
+ * Each mode's reach. `safe` leaves floor asks, unread code, and a secret reference's file to a person (or, for unread
+ * code, to the decision AI where it is set to answer); each is one field of its row to change.
  */
 export const DANGEROUSLY_ALLOW_REACH: Readonly<Record<DangerouslyAllowOnMode, Readonly<ModeReach>>> = {
-  on: { floor: true, secretFile: true },
-  safe: { floor: false, secretFile: false },
+  on: { floor: 'all', secretFile: true, unreadCode: true },
+  safe: { floor: 'none', secretFile: false, unreadCode: false },
+}
+
+const FLOOR_LIFTS: Readonly<Record<FloorReach, (ask: Ask) => boolean>> = {
+  all: () => true,
+  unprivileged: ask => ask.privileged !== true,
+  none: () => false,
 }
 
 /**
  * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28, owner decision D7 of
- * 2026-09-29, APPROVAL-05): every ask it covers becomes an allow, sensitive files and file writes included, reported as
+ * 2026-09-29): every ask it covers becomes an allow, sensitive files and file writes included, reported as
  * `dangerously_allow:<mode>:<rule>:<subject>` so the invoker audits each use at the mode it ran at. What each mode
  * answers beyond that is its reach (DANGEROUSLY_ALLOW_REACH); a call with asks both inside and outside a mode's reach
  * asks those outside it alone. A restore of the change history it leaves to a person in every mode, as every restore
@@ -55,7 +67,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { mode: ()
       if (mode === 'off') return outcome
       const root = input.root()
       const reach = DANGEROUSLY_ALLOW_REACH[mode]
-      const kept = outcome.asks.filter(ask => !covers({ ask, root, reach }))
+      const kept = outcome.asks.filter(ask => !coversAsk({ ask, root, reach }))
       if (kept.length > 0) return { ...outcome, asks: kept }
       return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${mode}:${ask.rule}:${ask.subject}`) }
     },
@@ -63,9 +75,10 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { mode: ()
 }
 
 /** Whether the switch answers this ask: one inside its reach, and about a path only inside the workspace root. */
-function covers(input: { ask: Ask; root: string; reach: Readonly<ModeReach> }): boolean {
+export function coversAsk(input: { ask: Ask; root: string; reach: Readonly<ModeReach> }): boolean {
   const { ask, root, reach } = input
-  if (ask.floor && !reach.floor) return false
+  if (ask.floor && !FLOOR_LIFTS[reach.floor](ask)) return false
+  if (ask.cause === 'interpreter' && !reach.unreadCode) return false
   if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && !reach.secretFile) return false
   if (ask.rule === 'write_scope' && isRestoreSubject(ask.subject)) return false
   const path = askedPath(ask)

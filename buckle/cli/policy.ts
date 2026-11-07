@@ -4,13 +4,13 @@ import { allowedInterpreters, destructivePatterns, emptyWorkspacePolicy, ToolNam
 import { INTERPRETER_NAMES, isInterpreter } from '../common/domain/command-forms.js'
 import { isRestrictive, PolicyError, refuseSwitchIn, type StoredPolicyError } from '../common/domain/policy.js'
 import { scratchOverFolderNote, scratchRootOverFolder } from '../common/domain/sandbox-mounts.js'
-import { DANGEROUSLY_ALLOW_REACH, DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
-import { wordList } from '../common/domain/word-list.js'
+import { DANGEROUSLY_ALLOW_SCOPE } from '../common/domain/permission/rules/dangerously-allow.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime, DangerouslyAllowState } from '../common/services/workspaces/workspace-runtime.js'
-import type { DangerouslyAllowMode, DangerouslyAllowOnMode } from '../common/types/ports/dangerously-allow-store.js'
+import type { DangerouslyAllowMode } from '../common/types/ports/dangerously-allow-store.js'
 import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
+import { coversOf, EARLIER_BUILD, helpLines, MODES_HELP } from './dangerously-allow-words.js'
 import type { CommandTarget } from './target.js'
 import { mountTableText } from './workspace.js'
 
@@ -39,14 +39,7 @@ Acts on the workspace named, or else on the one whose folder holds the current d
   buckle policy export                        Print the workspace's policy as JSON
   buckle policy clear                         Empty every list
   buckle policy dangerously-allow on|safe|off
-                                              DANGEROUS: allow asks in the workspace without a
-                                              person, bound to the workspace root, or its mount
-                                              when one is set; each use is audited and deny rules
-                                              still refuse. on allows every ask there, sudo and a
-                                              secret reference's file included; safe still asks a
-                                              person for floor asks (sudo, the destructive list,
-                                              and the file floor) and a secret reference's file.
-                                              true and false read as on and off
+${helpLines({ text: `DANGEROUS: allow asks in the workspace without a person, bound to the workspace root, or its mount when one is set; ${MODES_HELP}`, indent: 46, width: 98 })}
 
 Exits 0 when done, 1 when the node refuses the change or the input, and 2 when the change conflicts
 with the node's state (the refusals the setup face answers 409): active work, or a policy file that
@@ -159,7 +152,7 @@ function exitCodeOf(error: PolicyError | UsageError): number {
 /**
  * The one switch for a workspace's dangerously-allow flag (rulings 11 and H1 of 2026-09-28), local only (H1e), for
  * the workspace the command targets alone: no node switch stands beside it (Q14). It needs no restart: a running node
- * reads it at every call. It takes a mode (APPROVAL-05), `true` and `false` as the owner wrote them; anything else,
+ * reads it at every call. It takes a mode, `true` and `false` as the owner wrote them; anything else,
  * an earlier build's level among it, is refused in one line before anything changes.
  */
 async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[] }): Promise<CliResult> {
@@ -392,25 +385,6 @@ function show(runtime: BuckleRuntime, argv: string[]): CliResult {
   process.stdout.write(`\n${effective.updatedAt ? `The workspace's own lists were stored at ${effective.updatedAt}` : 'The workspace has stored no list of its own yet'}. A list of its own replaces the node's, and the node's deny lists apply to every workspace.\n`)
   return { exitCode: 0 }
 }
-
-/**
- * What the switch covers in a mode, said the same way wherever it is shown (review L15 of B23-B25; owner decision D7;
- * APPROVAL-05), from the mode's reach: asks about paths inside the boundary, and every ask that names no path, wherever
- * it points; floor asks and a secret reference's file where the mode reaches them.
- */
-const OUTSIDE = 'Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
-const FLOOR_ASKS = 'floor asks (sudo, the destructive list, and the file floor)'
-const SECRET_FILE = 'a secret reference\'s file'
-
-function coversOf(mode: DangerouslyAllowOnMode): string {
-  const reach = DANGEROUSLY_ALLOW_REACH[mode]
-  const reached = [...(reach.floor ? [FLOOR_ASKS] : []), ...(reach.secretFile ? [SECRET_FILE] : [])]
-  const kept = [...(reach.floor ? [] : [FLOOR_ASKS]), ...(reach.secretFile ? [] : [SECRET_FILE])]
-  const exception = kept.length === 0 ? '' : `, except ${wordList(kept)}, which still ${kept.length === 1 ? 'asks' : 'ask'} a person`
-  return `Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, ${wordList(['sensitive files', 'file writes', ...reached])} included${exception}. ${OUTSIDE}`
-}
-
-const EARLIER_BUILD = 'off: an earlier build of Buckle set it on, and this build reads its file as off; buckle policy dangerously-allow on or safe sets it again'
 
 function describeDangerously(state: DangerouslyAllowState): string {
   if (state.mode === 'off') return state.setByEarlierBuild ? EARLIER_BUILD : 'off'

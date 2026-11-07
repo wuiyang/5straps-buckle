@@ -36,6 +36,7 @@ import { badInput, CHECK_URL_BAD_INPUT, checkUrlCommand, checkUrlUnreadable, USA
 import { workspaceRegistryCommand, USAGE as WORKSPACE_USAGE } from './workspace.js'
 import { historyCommand, USAGE as HISTORY_USAGE } from './history.js'
 import { browserCloseCommand, isBrowserClose, USAGE as BROWSER_CLOSE_USAGE } from './browser.js'
+import { helpLines, MODES_HELP } from './dangerously-allow-words.js'
 import { asksForHelp } from './help-request.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
@@ -362,13 +363,7 @@ function printUsage(): CliResult {
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
   buckle policy dangerously-allow on|safe|off
-                                   DANGEROUS: allow asks in the workspace without a person;
-                                   each use is audited and deny rules still refuse. on allows
-                                   every ask there, sudo and a secret reference's file
-                                   included; safe still asks a person for floor asks (sudo,
-                                   the destructive list, and the file floor) and a secret
-                                   reference's file. true and false read as on and off. See
-                                   buckle policy --help
+${helpLines({ text: `DANGEROUS: allow asks in the workspace without a person; ${MODES_HELP}. See buckle policy --help`, indent: 35, width: 92 })}
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
   buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
                                    Client keys trusted for signed setup and approvals, by scope

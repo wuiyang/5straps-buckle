@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
+import { MODES_HELP } from '../cli/dangerously-allow-words.js'
 import { answerWithoutConfiguration } from '../cli/main.js'
 import { runCli } from './support/cli.js'
 import { policyCommand, repairStoredPolicy } from '../cli/policy.js'
@@ -18,8 +19,6 @@ import { workspacesOf } from './support/workspaces.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-/** What both helps say of the switch's modes (APPROVAL-05). */
-const MODES_SAID = "each use is audited and deny rules still refuse. on allows every ask there, sudo and a secret reference's file included; safe still asks a person for floor asks (sudo, the destructive list, and the file floor) and a secret reference's file. true and false read as on and off"
 
 const captured = () => {
   let out = ''
@@ -46,7 +45,7 @@ describe('buckle --help', () => {
     expect(result).toEqual({ exitCode: 0 })
     expect(io.out()).toContain('buckle policy dangerously-allow on|safe|off')
     expect(io.out()).toContain('DANGEROUS')
-    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_SAID)
+    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_HELP)
   })
 
   it('names buckle client approve on the client line, as the settings reference and the approvals page do', () => {
@@ -73,7 +72,7 @@ describe('buckle policy --help', () => {
     const result = await policyCommand(runtime, [flag])
     expect(result.exitCode).toBe(0)
     expect(io.out()).toContain('buckle policy dangerously-allow on|safe|off')
-    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_SAID)
+    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_HELP)
     expect(io.err()).toBe('')
   })
 

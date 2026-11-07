@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { emptyWorkspacePolicy, type ActionReport, type InvokeResponse, type JsonValue, type PermissionRuleId, type WorkspacePolicy } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { coversOf } from '../cli/dangerously-allow-words.js'
 import { policyCommand } from '../cli/policy.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
 import type { ToolEffect } from '../common/domain/effect.js'
@@ -436,14 +437,13 @@ describe('the audit of every use and every change', () => {
     await policyCommand(setup.runtime, ['dangerously-allow', 'on'])
     expect(printed).toContain('WARNING: dangerously allow is now on')
     expect(printed).toContain(`bound to the workspace root, or its mount when one is set (${setup.workspace})`)
-    const covers = "Every ask about a path inside it, and every command, host, and process ask, is allowed without a person, sensitive files, file writes, floor asks (sudo, the destructive list, and the file floor), and a secret reference's file included. Paths outside it keep their normal outcome: they ask, or the mount refuses them."
-    expect(printed).toContain(covers)
+    expect(printed).toContain(coversOf('on'))
     expect(printed).not.toContain('mount boundary still refuse')
     printed = ''
     await policyCommand(setup.runtime, ['show'])
     // The same sentence in show (review L15 of B23-B25).
     expect(printed).toContain('Dangerously allow  ON, bound to the workspace root, or its mount when one is set')
-    expect(printed).toContain(covers)
+    expect(printed).toContain(coversOf('on'))
     expect(printed).not.toContain('every ask there')
     printed = ''
     await policyCommand(setup.runtime, ['show', '--json'])
@@ -500,21 +500,21 @@ describe('only the switch changes the switch (ruling H1e)', () => {
   })
 })
 
-// APPROVAL-05 (owner, 2026-11-08): three modes, `off`, `on` (every ask it covers, floor asks and a secret reference's
-// file included), and `safe`, which lifts every ask but floor asks (sudo, the destructive list, and the file floor) and a
-// secret reference's file (APPROVAL-13's working choice). `true` and `false` read as on and off; the levels of an earlier
-// build are refused, and a switch file an earlier build wrote reads as off (BUILD-02).
-describe('the switch\'s modes (APPROVAL-05)', () => {
+// The switch's three modes: `off`, `on` (every ask it covers, floor asks and a secret reference's file included), and
+// `safe`, which lifts every ask but floor asks, an unknown interpreter's code, and a secret reference's file. `true` and
+// `false` read as on and off; the levels of an earlier build are refused, and a switch file an earlier build wrote reads as off.
+describe('the switch\'s modes', () => {
   const DECOY = 'decoy-value-0123456789'
   const SECRET = { command: 'curl', args: ['-H', 'Authorization: Bearer {{file:.env.local:API_TOKEN}}'] }
   const LISTED = policy(value => { value.commands.destructive = ['terraform destroy *'] })
 
-  /** The floor asks `safe` leaves to a person: sudo, the destructive list, and the file floor. */
+  /** The asks `safe` leaves to a person: the floor (sudo, the destructive list, and the file floor), and an unknown interpreter's code. */
   function floorAsks(setup: Node): Array<{ kind: string; tool: string; effects: ToolEffect[]; rule: PermissionRuleId }> {
     return [
       { kind: 'a sudo command', tool: 'shell_exec', effects: [{ kind: 'exec', command: 'sudo', args: ['ls'] }], rule: 'destructive_command' },
       { kind: 'a destructive-list command', tool: 'shell_exec', effects: [{ kind: 'exec', command: 'terraform', args: ['destroy', 'prod'] }], rule: 'destructive_command' },
       { kind: 'a file floor delete', tool: 'fs_delete', effects: [{ kind: 'delete_path', path: join(setup.workspace, 'doomed.txt'), floor: true }], rule: 'write_scope' },
+      { kind: 'code run by an unknown interpreter', tool: 'shell_exec', effects: [{ kind: 'exec', command: 'python3', args: ['-c', 'import os; os.system("sudo id")'] }], rule: 'destructive_command' },
     ]
   }
 
@@ -565,13 +565,13 @@ describe('the switch\'s modes (APPROVAL-05)', () => {
   const changesOf = (runtime: BuckleRuntime) => runtime.actions.read(200).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result').map(entry => entry.detail)
   const storedFile = (setup: Node) => JSON.parse(readFileSync(dangerouslyAllowPath(setup.config), 'utf8')) as { version: number; workspaces: Record<string, unknown> }
 
-  it('safe keeps a sudo ask, a destructive-list ask, and a file floor delete, and lifts a write ask and a private host ask', async () => {
+  it('safe keeps a sudo ask, a destructive-list ask, a file floor delete, and an unknown interpreter\'s ask, and lifts a write ask and a private host ask', async () => {
     const setup = await moded()
     const { runtime, workspace } = setup
     const switched = await switchTo(runtime, ['safe'])
     expect(switched.exitCode).toBe(0)
     expect(switched.out).toContain(`WARNING: dangerously allow is now safe for workspace ${runtime.workspaceName()}`)
-    expect(switched.out).toContain('except floor asks (sudo, the destructive list, and the file floor) and a secret reference\'s file, which still ask a person')
+    expect(switched.out).toContain(coversOf('safe'))
     expect(runtime.policy.dangerouslyAllow()).toEqual({ mode: 'safe', boundTo: workspace, setByEarlierBuild: false })
     expect(storedFile(setup)).toEqual({ version: 2, workspaces: { [runtime.workspaceId]: { mode: 'safe', changedAt: expect.any(String) } } })
 
@@ -737,11 +737,11 @@ describe('the switch\'s modes (APPROVAL-05)', () => {
     await runtime.policy.setDangerouslyAllow('safe')
     const safe = await policyOut(runtime, ['show'])
     expect(safe).toContain('Dangerously allow  SAFE, bound to the workspace root, or its mount when one is set')
-    expect(safe).toContain('except floor asks (sudo, the destructive list, and the file floor) and a secret reference\'s file, which still ask a person')
+    expect(safe).toContain(coversOf('safe'))
     await runtime.policy.setDangerouslyAllow('on')
     const on = await policyOut(runtime, ['show'])
     expect(on).toContain('Dangerously allow  ON, bound to the workspace root, or its mount when one is set')
-    expect(on).toContain('floor asks (sudo, the destructive list, and the file floor), and a secret reference\'s file included')
+    expect(on).toContain(coversOf('on'))
     expect(JSON.parse(await policyOut(runtime, ['show', '--json'])).dangerouslyAllow).toEqual({ mode: 'on', boundTo: workspace, setByEarlierBuild: false })
   })
 })
