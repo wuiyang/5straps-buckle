@@ -18,8 +18,10 @@ const GUARDS = /\b(?:guardDecision|screenDecision)\(/
 // The whole approval service, whose `answer` takes any source: a face holds `approvalApi`, typed as the core approval API.
 const NAMES_THE_SERVICE = /\bapprovalService\b/
 const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
-// Opening a host's forms: nothing the agent's token reaches may answer an ask, so only the stdio face opens them.
-const OPENS_FORMS = /(?<!function )\bopenForms\(/
+// Opening a host's forms: nothing the agent's token reaches may answer an ask, so only the stdio face opens them. Any
+// mention counts, so an import under another name is caught too: the opener sits on the faces' runtime type, and this
+// scan, not the type, keeps it to the stdio face.
+const OPENS_FORMS = /\bopenForms\b/
 const NAMES_THE_FORMS_OPENER = /\bopenApprovalForms\b/
 const NAMES_THE_SERVICE_FORMS_OPENER = /\bopenFormsBackend\b/
 const RUNTIME = 'common/services/workspaces/workspace-runtime.ts'
@@ -123,7 +125,8 @@ describe('the approval boundary', () => {
     const calling = (pattern: RegExp) => sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
       .filter(file => pattern.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
-    expect(calling(OPENS_FORMS)).toEqual(['mcp/stdio.ts'])
+    expect(OPENS_FORMS.test('import { openForms as hostForms } from \'./server.js\'')).toBe(true)
+    expect(calling(OPENS_FORMS)).toEqual(['mcp/server.ts', 'mcp/stdio.ts'])
     expect(calling(NAMES_THE_FORMS_OPENER)).toEqual([RUNTIME, 'mcp/server.ts'])
     expect(calling(NAMES_THE_SERVICE_FORMS_OPENER)).toEqual([SERVICE, RUNTIME])
   })
