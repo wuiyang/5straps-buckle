@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -70,5 +70,19 @@ describe('a grant made while a server is already running', () => {
     await server.grant({ sessionId: 'mcp', rule: 'write_scope', subject: '/out', scope: 'always' })
 
     expect(approver.list().map(grant => grant.subject).sort()).toEqual(['/out', '/shots'])
+  })
+})
+
+describe('the actor a grant names', () => {
+  it('is null for an always grant and for a grant kept before actors were, and names the caller of a session grant', async () => {
+    const filePath = join(mkdtempSync(join(tmpdir(), 'buckle-grants-')), 'grants.json')
+    writeFileSync(filePath, JSON.stringify({ version: 1, grants: [{ id: 'earlier', workspace: WORKSPACE, rule: 'read_scope', subject: '/earlier', scope: 'session', sessionId: 'mcp', createdAt: new Date().toISOString(), expiresAt: null }] }))
+    const store = createFileGrantStore({ filePath, workspace: WORKSPACE })
+    await store.grant({ sessionId: 'mcp', actor: 'agent:one', rule: 'read_scope', subject: '/always', scope: 'always' })
+    await store.grant({ sessionId: 'mcp', actor: 'agent:one', rule: 'read_scope', subject: '/session', scope: 'session' })
+
+    expect(store.list().map(grant => [grant.subject, grant.actor])).toEqual([['/earlier', null], ['/always', null], ['/session', 'agent:one']])
+    expect(store.activeSubjects({ sessionId: 'mcp', rule: 'read_scope' })).toEqual(['/earlier', '/always'])
+    expect(store.activeSubjects({ sessionId: 'mcp', actor: 'agent:one', rule: 'read_scope' })).toEqual(['/always', '/session'])
   })
 })

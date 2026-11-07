@@ -8,7 +8,7 @@ import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } fro
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import type { GrantHolder } from '../../domain/permission/grant-holder.js'
+import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { FLOOR_WARNING } from '../../domain/approval-instruction.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
@@ -1039,7 +1039,7 @@ function grantOf(input: { decision: ApprovalDecision; holder: GrantHolder; rule:
 
 /** Whether an owed grant, once written, would stand as this record does: the grant store keeps one record per subject and holder. */
 function writesAgain(owed: OwedGrant, record: GrantRecord): boolean {
-  const holder = owed.scope === 'always' || (owed.sessionId === record.sessionId && owed.actor === record.actor)
+  const holder = owed.scope === 'always' || servesHolder(record, owed)
   return owed.rule === record.rule && owed.subject === record.subject && owed.scope === record.scope && holder && Boolean(owed.pattern) === Boolean(record.pattern)
 }
 

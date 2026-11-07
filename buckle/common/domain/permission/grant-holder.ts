@@ -8,5 +8,5 @@ export interface GrantHolder {
 }
 
 export function servesHolder(grant: Pick<GrantRecord, 'sessionId' | 'actor'>, holder: GrantHolder): boolean {
-  return grant.sessionId === null || (grant.sessionId === holder.sessionId && grant.actor === holder.actor)
+  return grant.sessionId === null || (grant.sessionId === holder.sessionId && grant.actor === (holder.actor ?? null))
 }

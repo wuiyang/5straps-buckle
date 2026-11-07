@@ -50,7 +50,7 @@ export function createFileGrantStore(input: { filePath: string; workspace: strin
         ...(pattern ? { pattern: true as const } : {}),
         ...(decidedBy ? { decidedBy } : {}),
         sessionId: scope === 'always' ? null : sessionId,
-        ...(scope === 'session' && actor !== undefined ? { actor } : {}),
+        actor: scope === 'session' ? actor ?? null : null,
         createdAt: new Date().toISOString(),
         expiresAt: null,
       }
