@@ -7,7 +7,7 @@ export default defineSetupHandler({
   access: 'approval',
   resource: 'approvals-withdraw',
   handler: async ({ workspace, views, body, audit }) => {
-    const { selector, withdrawn, dropped } = await workspace.runtime.approvalService.withdrawCall(views.approvalWithdraw((await body()) ?? null))
+    const { selector, withdrawn, dropped } = await workspace.runtime.approvalApi.withdrawCall(views.approvalWithdraw((await body()) ?? null))
     // What was withdrawn, under the selector as the node keeps it: a requestId hashed (review L14 of B23-B25).
     audit({ selector, withdrawn, dropped })
     return { withdrawn, dropped }

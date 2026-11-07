@@ -24,7 +24,7 @@ export default defineSetupHandler({
   resource: 'approvals-challenges',
   handler: async ({ event, workspace, query }) => {
     const signer = await useServices(event).getNodeSigner()
-    const listing = workspace.runtime.approvalService.challengeListing({ workspaceName: (query().fields ?? '').split(',').includes('workspaceName') })
+    const listing = workspace.runtime.approvalApi.challengeListing({ workspaceName: (query().fields ?? '').split(',').includes('workspaceName') })
     return {
       node: { keyId: signer.keyId, publicKey: signer.publicKey },
       calls: listing.calls,

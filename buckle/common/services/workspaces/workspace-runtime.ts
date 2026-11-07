@@ -74,7 +74,8 @@ import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
-import { createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
+import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
+import type { ApprovalFaceApi } from '../approvals/core-approval-api.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
@@ -219,6 +220,8 @@ export interface BuckleRuntime {
   approvals: ApprovalRegistry
   /** The single answerer: every ask waits here and every verdict is recorded here. */
   approvalService: ApprovalService
+  /** What the faces (the CLI, the MCP faces, and the setup routes) hold of the approval service. */
+  approvalApi: ApprovalFaceApi
   /** How a call meets approvals: its last check, the grants it holds, and its asks. */
   approvalGate: ApprovalGate
   history: ChangeHistory
@@ -498,6 +501,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     grants,
     approvals,
     approvalService,
+    approvalApi: approvalFaceOf(approvalService),
     approvalGate,
     actions,
     history,

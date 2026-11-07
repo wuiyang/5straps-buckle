@@ -254,7 +254,7 @@ async function onlineRuntimes(workspaces: WorkspaceManager, told = new Set<strin
 
 /** The workspace whose queue holds `token` waiting, or why none is chosen: none or several hold it. */
 function holderOfAsk(runtimes: BuckleRuntime[], token: string): BuckleRuntime | string {
-  const holding = runtimes.filter(runtime => runtime.approvalService.waitingAsk(token) !== undefined)
+  const holding = runtimes.filter(runtime => runtime.approvalApi.waitingAsk(token) !== undefined)
   if (holding.length === 1) return holding[0]!
   const names = (list: BuckleRuntime[]) => list.map(runtime => runtime.workspaceName()).join(', ')
   if (holding.length > 1) return `${printable(token)} is waiting in workspaces ${names(holding)}; name one with --workspace <name>`
@@ -499,7 +499,7 @@ async function approvals(input: CommandInput): Promise<CliResult> {
   if (token !== undefined) return showAsk({ runtime, token, json: values.json === true, node: input.config.serverId })
   if (values.watch) return watch({ runtimes: async () => [runtime], pinned: runtime.workspaceName() })
   if (values.json) return print(listingOf(runtime))
-  const waiting = runtime.approvalService.waiting()
+  const waiting = runtime.approvalApi.waiting()
   if (waiting.length === 0) process.stdout.write(`Nothing is waiting for a decision in workspace ${runtime.workspaceName()}.\n`)
   else printWaiting({ runtime, waiting, node: input.config.serverId })
   return { exitCode: 0 }
@@ -523,7 +523,7 @@ async function approvalsAcross(input: { runtimes: BuckleRuntime[]; workspaces: W
   if (parsed.values.json) return print(input.runtimes.flatMap(listingOf))
   let any = false
   for (const runtime of input.runtimes) {
-    const waiting = runtime.approvalService.waiting()
+    const waiting = runtime.approvalApi.waiting()
     if (waiting.length === 0) continue
     any = true
     process.stdout.write(`Workspace ${workspaceLabel(runtime.workspaceId, runtime.workspaceName())}:\n`)
@@ -540,7 +540,7 @@ async function approvalsAcross(input: { runtimes: BuckleRuntime[]; workspaces: W
  * that denies it (review L6 of the slice 5 re-review).
  */
 function listingOf(runtime: BuckleRuntime) {
-  return runtime.approvalService.listing().map((entry) => {
+  return runtime.approvalApi.listing().map((entry) => {
     const { callRef, call, ...request } = entry
     // An ask whose whole call is listed, inline or by its group's callRef, is approvable (review L5 of the continuation review).
     const shown = callRef !== undefined || call !== undefined
@@ -581,7 +581,7 @@ function printWaiting(input: { runtime: BuckleRuntime; waiting: PendingAsk[]; no
  */
 function showAsk(input: { runtime: BuckleRuntime; token: string; json: boolean; node: string }): CliResult {
   const { runtime, token } = input
-  const ask = runtime.approvalService.waitingAsk(token)
+  const ask = runtime.approvalApi.waitingAsk(token)
   if (!ask) return fail(`Nothing named ${printable(token)} is waiting for a decision in workspace ${runtime.workspaceName()}`)
   const script = runtime.scriptOfAsk(token)
   if (input.json) return print({ ...ask.request, workspaceId: runtime.workspaceId, ...(ask.call ? { call: ask.call } : {}), ...(script === null ? {} : { script }) })
@@ -634,7 +634,7 @@ async function judgeWaitingAsk(input: { runtime: BuckleRuntime; token: string; a
   }
   const rater = `${judged.passedBy}:${passing.provider}:${passing.result.kind === 'verdict' ? passing.result.model : passing.model}`
   // The once binds to the code the thorough stage rated: a retry after that code changed does not spend it (fix brief 9, B31).
-  const receipt = await runtime.approvalService.decide({ source: 'judge', decision: { token, outcome: 'approve', scope: 'once' }, rater, ...(judged.bound ? { code: judged.bound } : {}) })
+  const receipt = await runtime.approvalApi.decide({ source: 'judge', decision: { token, outcome: 'approve', scope: 'once' }, rater, ...(judged.bound ? { code: judged.bound } : {}) })
   if (receipt.status === 'refused') return { ...fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`), judge: auditOf(judged, false) }
   process.stdout.write(`Approved ${token} once in workspace ${runtime.workspaceName()}, on the decision AI's ${judged.passedBy} stage's safe verdict, as you asked.\n`)
   return { exitCode: 0, detail: `judge ${token} safe, approved once`, judge: auditOf(judged, true) }
@@ -653,7 +653,7 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalService, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), judgeApproves: () => runtime.judgeApproves() }))
+    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalApi, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), judgeApproves: () => runtime.judgeApproves() }))
     return await watchApprovals({ sources, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)
@@ -696,7 +696,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
 
   const { runtime } = input
   // The named ask alone, and its call file alone, however many asks its call made (review M1 of the slice 5 re-review).
-  const ask = runtime.approvalService.waitingAsk(token)
+  const ask = runtime.approvalApi.waitingAsk(token)
   // --below grants the ask's wider subject (the delete policy brief): a delete's folder and its subfolders, for the session or always.
   const below = values.below === true ? belowFolder({ ask, token, scope: scope.data, deny: values.deny === true, host: values.host !== undefined }) : null
   if (below !== null && 'refusal' in below) return fail(below.refusal)
@@ -712,7 +712,7 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
     }
   }
   // `BUCKLE-D18`: `--host` widens a network approval to a pattern, from `buckle approve` alone.
-  const receipt = await runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }, ...(values.host === undefined ? {} : { hostPattern: values.host }) })
+  const receipt = await runtime.approvalApi.decide({ source: 'cli', decision: { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }, ...(values.host === undefined ? {} : { hostPattern: values.host }) })
   if (receipt.status === 'refused') return fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`)
   // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
   const owed = receipt.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''

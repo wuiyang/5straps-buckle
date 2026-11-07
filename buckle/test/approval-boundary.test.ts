@@ -14,11 +14,9 @@ const INVOKER = 'common/services/invocation/invoker.ts'
 const LEDGER_OR_GRANT_ADAPTER = /from '[^']*(?:approvals\/approval-registry|approvals\/once-store|adapters\/grant-store\/[^']*)\.js'/
 // The decision guard's checks run in the registry, which holds the ledger, and nowhere else.
 const GUARDS = /\b(?:guardDecision|screenDecision)\(/
-// The approval service's own answer, which takes any source; a core client decides through `decide`, naming its own.
-const ANSWERS_ON_SERVICE = /\b(?:approvals|approvalService)\??\.answer\(/
-const ON_THE_SERVICE = /\bapprovalService\??\.(\w+)/g
-// CoreApprovalApi's methods, and the forms backend the stdio face opens.
-const CORE_API = ['decide', 'pending', 'waiting', 'waitingAsk', 'listing', 'challengeListing', 'withdrawCall', 'openFormsBackend']
+// The whole approval service, whose `answer` takes any source: a face holds `approvalApi`, typed as the core approval API.
+const NAMES_THE_SERVICE = /\bapprovalService\b/
+const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
@@ -89,16 +87,11 @@ describe('the approval boundary', () => {
     expect(callers).toEqual([REGISTRY])
   })
 
-  it('lets the CLI approvers and the MCP faces decide through the core approval API and the forms backend alone', () => {
-    const callers = sourceFiles('cli', 'mcp')
-      .filter(file => ANSWERS_ON_SERVICE.test(readFileSync(file, 'utf8')))
+  it('hands the faces the core approval API alone: none names the approval service itself', () => {
+    const naming = sourceFiles(...FACES)
+      .filter(file => NAMES_THE_SERVICE.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))
-    expect(callers).toEqual([])
-  })
-
-  it('lets the faces reach the approval service through the core approval API alone, and the stdio face open its forms', () => {
-    const reached = new Set(sourceFiles('main.ts', 'cli', 'mcp', 'server', 'layers').flatMap(file => [...readFileSync(file, 'utf8').matchAll(ON_THE_SERVICE)].map(match => match[1]!)))
-    expect([...reached].filter(method => !CORE_API.includes(method))).toEqual([])
+    expect(naming).toEqual([])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {

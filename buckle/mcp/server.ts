@@ -73,7 +73,7 @@ export function createMcpServer(input: McpServerOptions): McpServer {
 /** A stdio host's forms, opened on the runtime's approvals, where core binds them to the forms source. */
 export function openForms(runtime: BuckleRuntime, node?: string): FormsBackend {
   const forms = createFormsBackend({ workspace: () => ({ id: runtime.workspaceId, name: runtime.workspaceName() }), ...(node === undefined ? {} : { node }), approves: () => runtime.judgeApproves() })
-  runtime.approvalService.openFormsBackend(forms)
+  runtime.approvalApi.openFormsBackend(forms)
   return forms
 }
 

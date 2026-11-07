@@ -12,7 +12,7 @@ export default defineSetupHandler({
   handler: async ({ event, proof, workspace, body, audit }) => {
     const { runtime } = workspace
     const sent = (await body()) ?? null
-    const receipt = await runtime.approvalService.decide(proof === undefined ? { source: 'sealed', body: sent } : { source: 'devices', body: sent, proof })
+    const receipt = await runtime.approvalApi.decide(proof === undefined ? { source: 'sealed', body: sent } : { source: 'devices', body: sent, proof })
     // What a decision the guard checked said, beside the actor that signed or carried it (keys-provisioning.md: every
     // approval and denial is logged with key identity and scope).
     const record = decisionRecord(receipt)
