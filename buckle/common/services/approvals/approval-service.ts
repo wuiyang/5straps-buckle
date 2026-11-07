@@ -7,6 +7,7 @@ import { createMemoryNonceClaims, type NonceClaims } from '../../adapters/approv
 import { remainingMs } from '../../domain/approval-deadline.js'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { askViewDetails, type AskView } from '../../domain/approval/ask-view.js'
+import type { ApprovalAuthority } from '../../domain/approval/decision-guard.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -14,7 +15,7 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision, type DecisionRefusal } from './approval-envelope.js'
 import { listedApprovals, type ListedApproval } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import type { ApprovalAuthority, ApprovalRegistry, AskedCall, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalRegistry, AskedCall, GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
 import { APPROVAL_REQUEST_KIND, NO_INTERACTION, type ApprovalHold, type Interaction, type InteractionSource } from './interaction.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
@@ -344,8 +345,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const { challenge } = input
       const result = await options.registry.resolve(input.decision, input.authority, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-        // The digest a device signed is of the challenge it was shown, with the workspace's name or without it.
-        ...(challenge === undefined ? {} : { expect: (ask: PendingAsk) => [false, true].some((named) => { const shown = challengeOf(ask, createCallShapes(), named); return shown !== null && challengeBytes(shown).digest === challenge }) }),
+        ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
         ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
         ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
         ...(input.code === undefined ? {} : { code: input.code }),
@@ -416,6 +416,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       await Promise.allSettled([...waiting])
       await notices.settle()
     },
+  }
+
+  /** The digests of the challenges a device may have been shown for an ask, with the workspace's name and without it. */
+  function shownDigests(ask: PendingAsk): string[] {
+    const shapes = createCallShapes()
+    return [false, true].flatMap((named) => {
+      const shown = challengeOf(ask, shapes, named)
+      return shown === null ? [] : [challengeBytes(shown).digest]
+    })
   }
 
   // Each challenge signs either the whole inline call or the digest of every shared display field. The workspace's name is

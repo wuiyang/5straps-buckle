@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RequestCli } from '@5straps/runtime'
 import type { InvokeResponse, JsonObject } from '@5straps/protocol'
+import { challengeBytes } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
 import type { PermissionEngine } from '../common/domain/permission/engine.js'
@@ -167,6 +168,16 @@ describe('the checks an answer meets', () => {
     const { runtime, token } = await waitingAsk()
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', challenge: 'f'.repeat(64) })).toEqual({ ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' })
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'once' }, authority: 'admin', consumeNotAfter: Date.now() - 1 })).toEqual({ ok: false, reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' })
+  })
+
+  it('accepts the ask\'s own challenge, signed with the workspace\'s name or without it', async () => {
+    const { runtime, call } = await node()
+    const tokens = [await call('fs_write', { path: 'one/a.md', content: 'a' }), await call('fs_write', { path: 'one/b.md', content: 'b' })].map(response => tokensOf(response)[0]!)
+    for (const [index, workspaceName] of [false, true].entries()) {
+      const challenge = runtime.approvalService.challengeListing({ workspaceName }).challenges.find(entry => entry.token === tokens[index])!.challenge!
+      expect(challenge.workspaceName === undefined).toBe(!workspaceName)
+      expect(await runtime.approvalService.answer({ decision: { token: tokens[index]!, approved: true, scope: 'once' }, authority: 'admin', challenge: challengeBytes(challenge).digest })).toMatchObject({ ok: true })
+    }
   })
 
   it('answers the same decision again as repeated, and refuses a different one', async () => {

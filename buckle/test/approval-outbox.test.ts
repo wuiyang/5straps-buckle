@@ -99,7 +99,7 @@ describe('durable approval outcome delivery', () => {
     const [ask] = await q.ask(1, 's')
     const backup = `${q.file}.backup`
     await expect(q.registry.resolve({ token: ask!.token, approved: true, scope: 'once' }, 'admin', {
-      expect: () => { renameSync(q.file, backup); mkdirSync(q.file); return true },
+      challenge: { digest: 'shown', shown: () => { renameSync(q.file, backup); mkdirSync(q.file); return ['shown'] } },
     })).rejects.toThrow()
     rmSync(q.file, { recursive: true }); renameSync(backup, q.file)
     expect(q.open().pending()).toHaveLength(1)

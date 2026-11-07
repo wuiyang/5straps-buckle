@@ -9,11 +9,10 @@ import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
-import { compileHostPattern, UrlPatternError } from '../../domain/url-pattern.js'
-import { FLOOR_WARNING, RECORDED_BEFORE_NOTE } from '../../domain/approval-instruction.js'
+import { FLOOR_WARNING } from '../../domain/approval-instruction.js'
+import { guardDecision, screenDecision, type ApprovalAuthority, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { isPlainName } from '../../domain/paths.js'
-import { isSecretFileSubject } from '../../domain/permission/rules/sensitive-path-rule.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -129,13 +128,6 @@ type PendingEntry = State['pending'][number]
  * (review M1 of the slice 5 re-review); an ask recorded before this build keeps its call inline and has none.
  */
 export type PendingAsk = Omit<PendingEntry, 'workspace' | 'callFile'> & { callRef?: string }
-
-/**
- * Whose answer a decision carries. `BUCKLE-D14` keeps a persisted approval on the admin
- * credential alone: a face reachable with an agent's token resolves as `agent`, and the
- * registry then admits `once` and nothing durable.
- */
-export type ApprovalAuthority = 'admin' | 'agent'
 
 // Refused before anything is written; the invoker records the refusal in the call's audit entries. A session is
 // its id under the actor that opened it: HTTP callers choose the id, and stdio hosts share `mcp`, so one caller's
@@ -320,19 +312,14 @@ export function shownCall(call: AskedCall | undefined): { arguments: JsonValue; 
   return call?.complete ? { arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] } : undefined
 }
 
-/**
- * `widenTo` records a network approval for a host pattern instead of the host that asked, per
- * `BUCKLE-D18: A host wildcard covers the apex and every subdomain, in lists and grants alike`.
- * It is a separate argument rather than a field of the decision, so no decision an agent or a
- * relay sends can carry one: `buckle approve --host` is the only caller that passes it.
- */
 export interface ResolveOptions {
+  /** `buckle approve --host`: a host pattern recorded in place of the host that asked (DecisionClaim.widenTo). */
   widenTo?: string
   /**
-   * Checked against the ask under the queue's lock: a decision a person's key signed must name the
-   * ask's own challenge. Such a proven `once` is then spent only by a call with the ask's fingerprint.
+   * Checked against the ask under the queue's lock: a decision a person's key signed names `digest`, which must be one of
+   * the ask's own challenges, as `shown` gives them. Such a proven `once` is then spent only by a call with the ask's fingerprint.
    */
-  expect?: (ask: PendingAsk) => boolean
+  challenge?: { digest: string; shown: (ask: PendingAsk) => string[] }
   /** Who decided, recorded with the decision and its grant: key:<fingerprint> for a person's key. */
   decidedBy?: string
   /** Authenticated device proof deadline; the body never supplies it. */
@@ -662,51 +649,37 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
     },
 
     async resolve(decision, authority = 'admin', options = {}) {
-      if (decision.scope !== 'once' && authority !== 'admin') {
-        logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
-        return { ok: false, reason: 'Only the admin credential writes an approval that outlives the call' }
+      const claim: DecisionClaim = {
+        decision, authority, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
+        ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
       }
-      const widening = options.widenTo === undefined ? null : checkWidening({ pattern: options.widenTo, decision, authority })
-      if (widening && !widening.ok) return widening
+      const screened = screenDecision(claim)
+      if (!screened.ok) {
+        if (screened.check === 'authority') logger.warn('Persisted approval refused: only the admin credential writes one', { scope: decision.scope })
+        return { ok: false, reason: screened.reason }
+      }
+      const { widenedTo } = screened
       // The grant is written while the approvals file is still locked, so no reader sees the decision without it.
       return update(async (state): Promise<Resolution> => {
-        const widenedTo = widening?.pattern
+        const now = Date.now()
         const previous = state.resolved.find(entry => entry.workspace === workspace && entry.decision.token === decision.token)
-        if (previous) {
-          return previous.decision.approved === decision.approved && previous.decision.scope === decision.scope && previous.widenedTo === widenedTo && previous.decision.subject === decision.subject
-            ? { ok: true, repeated: true, ...(previous.request ? { asked: { rule: previous.request.rule, subject: previous.request.subject } } : {}) }
-            : { ok: false, reason: 'Approval already has a different decision' }
-        }
-        const approval = state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token)
-        if (!approval) return { ok: false, reason: 'Approval token is unknown or expired' }
-        const asked = withCall(approval)
-        if (options.expect && !options.expect(asked)) return { ok: false, reason: 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows' }
-        // Owner decision D17, on every route: an ask whose whole call was never kept, or whose call file is missing
-        // or unreadable, was never shown whole, so no answer approves it (review M2 of the slice 5 re-review).
-        if (decision.approved && !asked.call?.complete) return { ok: false, reason: `This ask was ${RECORDED_BEFORE_NOTE}` }
-        if (decision.approved && !approval.request.offeredScopes.includes(decision.scope)) {
-          return { ok: false, reason: `Scope ${decision.scope} is not offered for this approval` }
-        }
+        const approval = previous === undefined ? state.pending.find(entry => entry.workspace === workspace && entry.request.token === decision.token) : undefined
+        const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
+        const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
+        const verdict = guardDecision({ claim, ...(widenedTo === undefined ? {} : { widenedTo }), ledger, now })
+        if (!verdict.ok) return { ok: false, reason: verdict.reason }
+        if ('repeated' in verdict) return { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
+        if (approval === undefined) throw new Error('The decision guard applied a decision to an ask the approvals ledger does not hold')
+        const { wider } = verdict.apply
         const { rule, subject, tool } = approval.request
         const { requestId, actor } = approval
-        const wider = widerGrant({ decision, request: approval.request, widened: widenedTo !== undefined })
-        if (wider !== null && 'reason' in wider) return wider
         const decider = options.decidedBy === undefined ? {} : { decidedBy: options.decidedBy }
         const coded = options.code === undefined ? {} : { code: options.code }
         // A once covers the call that asked and no other, whichever route decided it: the terminal,
         // `buckle approve`, MCP elicitation, the admin bearer, a sealed envelope or a person's key
         // (policy.md: "Once binds to the exact invocation"; review item 1 of the proof-of-possession fixes).
         const bound = approval.fingerprint !== undefined ? { fingerprint: approval.fingerprint } : {}
-        // A secret file's use (docs/user/how-to/secrets.md) is remembered as other grants are; any other sensitive file is allowed once.
-        if (rule === 'sensitive_path' && decision.approved && decision.scope !== 'once' && !isSecretFileSubject(subject)) return { ok: false, reason: 'Sensitive files can only be allowed once' }
-        if (!decision.approved && decision.scope !== 'once' && rule !== 'sensitive_path') return { ok: false, reason: 'Persistent denials are supported only for sensitive files' }
-        const now = Date.now()
-        if (decision.approved && decision.scope === 'once' && options.consumeNotAfter !== undefined && (!Number.isFinite(options.consumeNotAfter) || options.consumeNotAfter <= now)) return { ok: false, reason: 'Signed approval expired before tool admission; sign a fresh decision over the current challenge' }
         const expiresAt = new Date(Math.min(now + PENDING_TTL_MS, decision.approved && decision.scope === 'once' ? options.consumeNotAfter ?? Infinity : Infinity)).toISOString()
-        if (widenedTo) {
-          const refusal = patternRefusal({ rule, subject, pattern: widenedTo })
-          if (refusal) return { ok: false, reason: refusal }
-        }
         state.pending = state.pending.filter(entry => entry.request.token !== decision.token)
         state.resolved.push({
           workspace, decision, ...(widenedTo ? { widenedTo } : {}), expiresAt, request: approval.request, sessionId: approval.sessionId,
@@ -718,13 +691,13 @@ export function createApprovalRegistry(grants: GrantStore, filePath: string, wor
         })
         if (decision.approved) {
           if (decision.scope === 'once') state.once.push({ workspace, token: decision.token, subject: { rule, subject }, sessionId: approval.sessionId, tool, expiresAt, ...(requestId === undefined ? {} : { requestId }), ...bound, ...decider, ...coded })
-          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? wider?.subject ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
+          else await grants.grant({ sessionId: approval.sessionId, rule, subject: widenedTo ?? wider ?? subject, scope: decision.scope, ...(widenedTo ? { pattern: true } : {}), ...decider })
           // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
           logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
         }
         if (!decision.approved && decision.scope !== 'once') await grants.grant({ sessionId: approval.sessionId, rule, subject, scope: decision.scope, denied: true, ...decider })
         const answered = { rule, subject }
-        if (wider) return { ok: true, asked: answered, granted: wider.subject }
+        if (wider) return { ok: true, asked: answered, granted: wider }
         return widenedTo ? { ok: true, widened: { pattern: widenedTo, askedBy: subject }, asked: answered } : { ok: true, asked: answered }
       })
     },
@@ -1014,57 +987,9 @@ function unclaimedReliedOn(input: {
   return needed
 }
 
-/**
- * The subject a decision grants in place of the ask's own, or null where it names none (or the ask's own): only the ask's
- * `widerSubject`, which its rule offered, approved for the session or always, and never beside a host pattern (the
- * delete policy brief). A `once` covers the one call that asked, so it stays the ask's own subject.
- */
-function widerGrant(input: { decision: ApprovalDecision; request: ApprovalRequest; widened: boolean }): { subject: string } | { ok: false; reason: string } | null {
-  const named = input.decision.subject
-  if (named === undefined || named === input.request.subject) return null
-  if (!input.decision.approved) return { ok: false, reason: 'A denial names no subject: it denies the ask\'s own' }
-  if (input.request.widerSubject === undefined || named !== input.request.widerSubject) return { ok: false, reason: `This ask grants ${input.request.subject}${input.request.widerSubject === undefined ? '' : ` or ${input.request.widerSubject}`}, not ${named}` }
-  if (input.decision.scope === 'once') return { ok: false, reason: 'A once approval covers the one call that asked; grant the folder and its subfolders for the session or always instead' }
-  if (input.widened) return { ok: false, reason: 'A host pattern and a wider subject do not combine' }
-  return { subject: named }
-}
-
-/**
- * What a widening needs before the request is looked at: the owner's authority, an approval that
- * outlives the call (`once` stays exact, since it covers one call), and a well-formed wildcard.
- */
-function checkWidening(input: { pattern: string; decision: ApprovalDecision; authority: ApprovalAuthority }): { ok: true; pattern: string } | { ok: false; reason: string } {
-  if (input.authority !== 'admin') return { ok: false, reason: 'Only the admin credential widens an approval to a host pattern' }
-  if (!input.decision.approved) return { ok: false, reason: 'A denial names no host pattern; deny without --host' }
-  if (input.decision.scope === 'once') return { ok: false, reason: 'A once approval covers one call to the host that asked; widen a session or always approval instead' }
-  const pattern = input.pattern.trim()
-  let wildcard: boolean
-  try {
-    wildcard = compileHostPattern(pattern).wildcard
-  } catch (error) {
-    if (error instanceof UrlPatternError) return { ok: false, reason: error.message }
-    throw error
-  }
-  if (!wildcard) return { ok: false, reason: `--host takes a wildcard pattern such as *.example.com, got ${pattern}; without --host the approval is for the host that asked` }
-  return { ok: true, pattern }
-}
-
-/**
- * A pattern widens only a network approval, and only one it covers. The subject carries no scheme,
- * so it is tried as http and as https: a pattern naming port 443 covers `api.example.com` asked
- * over https.
- */
-function patternRefusal(input: { rule: PermissionRuleId; subject: string; pattern: string }): string | null {
-  if (input.rule !== 'network_egress') return `--host widens a network approval only; this one is ${input.rule} for ${input.subject}`
-  const matcher = compileHostPattern(input.pattern)
-  const covers = ['http', 'https'].some(scheme => {
-    try {
-      return matcher.matches(new URL(`${scheme}://${input.subject}/`))
-    } catch {
-      return false
-    }
-  })
-  return covers ? null : `The pattern ${input.pattern} does not cover ${input.subject}, the host that asked`
+/** A waiting ask as the decision guard reads it: whether its whole call was kept, and the challenges it was shown under. */
+function waitingView(asked: PendingAsk, challenge: ResolveOptions['challenge']): NonNullable<LedgerView['waiting']> {
+  return { request: asked.request, complete: asked.call?.complete === true, challenges: challenge === undefined ? [] : challenge.shown(asked) }
 }
 
 /** Drops everything past its expiry, returning the asks that expired unanswered. */
