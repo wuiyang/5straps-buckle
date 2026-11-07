@@ -48,7 +48,10 @@ export interface FullAsk {
   token: string
   /** Shared by every ask one call made: its tokens, answered ones included. */
   group: string
-  /** The call's join key. A new group under it is a new request: the earlier group left the queue unanswered. */
+  /**
+   * The call's key: an HMAC of its workspace, session, actor, and requestId under a secret this process holds, so it names
+   * none of them. A new group under it is a new request: the earlier group left the queue unanswered.
+   */
   idempotencyKey: string
   correlation: { correlationId: string; requestId: string }
   /** `name` is read as it is shown, so a rename shows at once. */

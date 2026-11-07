@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto'
 import { useScopeSafe } from '@5straps/runtime'
 import { ApprovalDecisionSchema, SignedApprovalDecisionSchema, type ApprovalDecision, type ApprovalRequest, type ApprovalSkipReason, type ApprovalWait, type ApprovalWithdraw } from '@5straps/protocol'
 import { callDigestOf, canonicalJson, challengeBytes, shownCallDigestOf, SIGNED_REQUEST_VERSION, WORKSPACE_NAME_MAX, type ApprovalChallenge, type ShownApprovalCall } from '@5straps/protocol/signed-request'
@@ -245,8 +245,8 @@ interface AskContext {
   requestId: string
   actor?: string
   sessionId: string
-  /** The join key: the terminal opens one request per call. */
-  key: string
+  /** The call's key as a backend sees it: an HMAC of the join key, which names no session, actor, or requestId. */
+  idempotencyKey: string
   hold: ApprovalHold
   /** The whole call the asks came from, shown with each question (owner decision D17). */
   call?: AskedCall
@@ -280,6 +280,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   // The asks handed to the terminal, by token, while it asks them.
   const routed = new Map<string, FullAsk>()
   let opening: Promise<unknown> | undefined
+  const callKeys = randomBytes(32)
   const host: ApprovalHost = {
     source: SOURCES.terminal,
     decide: input => decideRouted(input),
@@ -337,7 +338,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (holdMs === 0 && !keepAsking) return unheld(zeroHold)
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
-      const context: AskContext = { correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId, key, hold, ...(input.call === undefined ? {} : { call: input.call }) }
+      const context: AskContext = { correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, ...(actor === undefined ? {} : { actor }), sessionId: input.sessionId, idempotencyKey: createHmac('sha256', callKeys).update(JSON.stringify([options.workspaceId, key])).digest('base64url'), hold, ...(input.call === undefined ? {} : { call: input.call }) }
       if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, { ...context, group: ask.group })), resend: issued.joined }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
@@ -584,7 +585,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   function fullAskOf(approval: ApprovalRequest, context: AskContext & { group: string }): FullAsk {
     const { call } = context
     return {
-      egress: 'full', contractVersion: 1, token: approval.token, group: context.group, idempotencyKey: context.key,
+      egress: 'full', contractVersion: 1, token: approval.token, group: context.group, idempotencyKey: context.idempotencyKey,
       correlation: { correlationId: context.correlationId, requestId: context.requestId },
       workspace: { id: options.workspaceId, node: options.serverId, get name() { return options.workspaceName } },
       requester: { actor: context.actor ?? null, sessionId: context.sessionId },

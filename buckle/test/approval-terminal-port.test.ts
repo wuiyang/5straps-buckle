@@ -94,6 +94,17 @@ describe('the terminal backend port, core side', () => {
     expect(seen.closed).toBe(true)
   })
 
+  it('names the call by a key that carries none of its session, actor, or requestId', async () => {
+    const { backend, seen } = recordingBackend(async () => [])
+    const { service } = setUp(backend)
+    await service.request(call({ sessionId: 'chat-secret', requestId: 'request-secret' }))
+    await service.request(call({ sessionId: 'chat-secret', requestId: 'request-other' }))
+    const [first, second] = seen.asks
+    expect(first?.idempotencyKey).not.toMatch(/chat-secret|request-secret/)
+    expect(second?.idempotencyKey).not.toBe(first?.idempotencyKey)
+    await service.close()
+  })
+
   it('applies a terminal approval as the terminal source, and grants a wider subject the ask offers', async () => {
     const { backend, seen } = recordingBackend(async (host, asks) => Promise.all(asks.map(asked => host.decide({ kind: 'plain', decision: { token: asked.token, outcome: 'approve', scope: 'session', ...(asked.policy.widerSubject ? { widen: 'below' as const } : {}) } }))))
     const { service, grants } = setUp(backend)
