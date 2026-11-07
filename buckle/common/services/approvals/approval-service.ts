@@ -9,6 +9,7 @@ import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
 import type { ApprovalBackend, ApprovalErrorCode, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
+import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -210,6 +211,10 @@ export interface ApprovalServiceOptions {
   decisionKey?: ApprovalKey
   /** Replay protection for opened envelopes. */
   nonces: NonceClaims
+  /** Told of each decision as received, then applied or refused. */
+  decisionAudit: DecisionAudit
+  /** Refuses a decision whose received entry cannot be written (audit_unavailable). Off: it applies, and the failure is logged. */
+  blockOnAuditFailure?: boolean
   pollMs?: number
 }
 
@@ -357,6 +362,8 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async answer(input) {
       const { challenge } = input
+      const audited: AuditedDecision = { token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) }
+      if (!await auditReceived(audited)) return AUDIT_UNAVAILABLE
       const result = await options.registry.resolve(input.decision, input.source, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
         ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
@@ -364,6 +371,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
         ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
         ...(input.code === undefined ? {} : { code: input.code }),
       })
+      await auditOutcome({ decision: audited, result })
       if (!result.ok) return result
       if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })
       wake(input.decision.token)
@@ -572,13 +580,39 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       })
   }
 
-  /** A terminal decision on an ask routed to it, as the decision guard then rates it. */
+  /** A terminal decision on an ask routed to it, as the decision guard then rates it; one it cannot apply is audited as refused. */
   async function decideRouted(input: DecisionInput): Promise<DecisionReceipt> {
-    const asked = routed.get(input.decision.token)
-    if (!asked) return refused('approver_not_allowed', 'This ask was not routed to the terminal')
-    const decision = approvalDecisionOf(input.decision, asked)
-    if (!decision) return refused('scope_not_offered', 'This ask has no wider subject to grant')
-    return receiptOf({ decision, source: host.source, result: await service.answer({ decision, source: host.source }) })
+    const { decision: body } = input
+    const source = host.source
+    const asked = routed.get(body.token)
+    const decision = asked === undefined ? undefined : approvalDecisionOf(body, asked)
+    if (decision) return receiptOf({ decision, source, result: await service.answer({ decision, source }) })
+    const result: Resolution = asked === undefined ? { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' } : { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant' }
+    const audited: AuditedDecision = { token: body.token, approved: body.outcome === 'approve', scope: body.scope, source }
+    if (await auditReceived(audited)) await auditOutcome({ decision: audited, result })
+    return receiptOf({ decision: { token: body.token, approved: audited.approved, scope: body.scope }, source, result })
+  }
+
+  /** Whether the decision may go on: a received entry that cannot be written blocks it only where the node says so. */
+  async function auditReceived(decision: AuditedDecision): Promise<boolean> {
+    try {
+      await options.decisionAudit.received(decision)
+      return true
+    } catch (error) {
+      logger.warn('Could not audit a received approval decision', { source: decision.source.id, error: withoutCause(error) })
+      return options.blockOnAuditFailure !== true
+    }
+  }
+
+  /** The decision stands either way: an outcome entry that cannot be written is logged, never the answer's failure. */
+  async function auditOutcome(input: { decision: AuditedDecision; result: Resolution }): Promise<void> {
+    const { decision, result } = input
+    try {
+      if (result.ok) await options.decisionAudit.applied({ ...decision, assurance: rightsOf(decision.source.kind).assurance, repeated: result.repeated === true, grantOwed: result.grantOwed === true })
+      else await options.decisionAudit.refused({ ...decision, code: result.code, reason: result.reason })
+    } catch (error) {
+      logger.warn('Could not audit how an approval decision ended', { source: decision.source.id, error: withoutCause(error) })
+    }
   }
 
   /** One ask whole, as the terminal shows it. The workspace's name is read as each question is shown, so a rename shows. */
@@ -785,8 +819,10 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
   }
 }
 
+const AUDIT_UNAVAILABLE: Resolution = { ok: false, code: 'audit_unavailable', reason: 'The decision could not be audited, so it was not applied; the ask still waits' }
+
 function refused(code: ApprovalErrorCode, message: string): DecisionReceipt {
-  return { status: 'refused', error: { code, message, retryable: false } }
+  return { status: 'refused', error: { code, message, retryable: code === 'audit_unavailable' } }
 }
 
 /** The decision a backend's body makes on this ask; undefined where it widens an ask that has no wider subject. */

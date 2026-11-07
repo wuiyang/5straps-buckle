@@ -5,6 +5,7 @@ import type { CliOutcome, RequestCli } from '@5straps/runtime'
 import type { PermissionRuleId } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonce-claims.js'
+import { NO_DECISION_AUDIT } from '../common/adapters/approval/no-decision-audit.js'
 import { createTerminalBackend } from '../common/adapters/approval/terminal-backend.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -44,7 +45,7 @@ function setUp(backend: ApprovalBackend, graceMs = 200) {
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims() })
+  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims(), decisionAudit: NO_DECISION_AUDIT })
   return { registry, grants, service, root }
 }
 

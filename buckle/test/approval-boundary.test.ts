@@ -18,7 +18,7 @@ const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
 const IMPORT = /from '([^']+)'/g
 // The approval core: the ledger, the gate, the service, the guard, and their ports.
-const CORE = ['common/services/approvals', 'common/domain/approval', 'common/types/ports/approval-source.ts', 'common/types/ports/nonce-claims.ts', 'common/types/ports/approval-backend.ts']
+const CORE = ['common/services/approvals', 'common/domain/approval', 'common/types/ports/approval-source.ts', 'common/types/ports/nonce-claims.ts', 'common/types/ports/approval-backend.ts', 'common/types/ports/decision-audit.ts']
 // What puts an ask into words for a person: commands, judge lines, expiry phrases, and the terminal's rendering.
 const DISPLAY = /(?:domain\/(?:approval-instruction|approval-deadline|action-phrase|describe-call|local-time)|runtime\/(?:console|log-render)|\/cli\/[^']*)\.js$/
 
