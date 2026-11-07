@@ -127,7 +127,7 @@ function readSigned(input: Extract<CoreDecisionInput, { source: 'devices' }>): R
   const { challenge, ...decision } = signed.data
   // The challenge a device was shown names the ask's own subject and no wider one, so its decision grants that alone.
   if (decision.subject !== undefined) return { ok: false, receipt: { status: 'refused', step: 'decision', decision: readOf(decision, challenge), error: { code: 'scope_forbidden', message: DEVICE_SUBJECT, retryable: false } } }
-  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: `key:${proof.keyId}`, consumeNotAfter: proof.deadline } }
+  return { ok: true, answer: { decision, source: SOURCES.devices, challenge, decidedBy: `key:${proof.keyId}`, consumeNotAfter: proof.deadline, proof: 'device' } }
 }
 
 async function readSealed(body: unknown, context: ReadContext): Promise<ReadInput> {
@@ -136,7 +136,7 @@ async function readSealed(body: unknown, context: ReadContext): Promise<ReadInpu
   const parsed = ApprovalDecisionSchema.safeParse(opened.body)
   if (!parsed.success) return INVALID
   // The sealed source only denies: the decision guard refuses its approvals.
-  return { ok: true, answer: { decision: parsed.data, source: SOURCES.sealed } }
+  return { ok: true, answer: { decision: parsed.data, source: SOURCES.sealed, ...(opened.sealed ? { proof: 'envelope' as const } : {}) } }
 }
 
 const UNVERIFIED: ReadInput = { ok: false, receipt: { status: 'refused', step: 'proof', error: { code: 'proof_invalid', message: 'unverified', retryable: false } } }
@@ -170,7 +170,8 @@ function readOf(decision: ApprovalDecision, challenge: string | undefined): Read
 export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution }): CoreDecisionReceipt {
   const { answer, result } = input
   const decision = readOf(answer.decision, answer.challenge)
-  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.code === 'audit_unavailable' } }
+  // A proof's nonce was claimed as it was read, so sending it again is refused as a replay.
+  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.code === 'audit_unavailable' && answer.proof === undefined } }
   const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),

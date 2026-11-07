@@ -9,7 +9,7 @@ import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
 import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
-import type { AuditedDecision, DecisionAudit } from '../../types/ports/decision-audit.js'
+import type { AuditedDecision, DecisionAudit, DecisionProofKind } from '../../types/ports/decision-audit.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
@@ -101,6 +101,8 @@ export interface ApprovalAnswer {
   code?: CodeBinding
   /** Grant the ask's wider subject in place of its own, as the ledger records it. */
   widen?: 'below'
+  /** What carried it beyond its route, whose nonce reading it already claimed; none when absent. */
+  proof?: Exclude<DecisionProofKind, 'none'>
 }
 
 export interface ApprovalService extends ApprovalFaceApi {
@@ -322,7 +324,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async answer(input) {
       const { challenge } = input
-      const audited: AuditedDecision = { token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) }
+      const audited: AuditedDecision = { token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) }
       if (!await auditReceived(audited)) return AUDIT_UNAVAILABLE
       const result = await options.registry.resolve(input.decision, input.source, {
         ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
@@ -538,7 +540,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     if (routed.has(body.token)) return decideAs(source, body)
     const decision = decisionOf(body)
     const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
-    const audited: AuditedDecision = { token: body.token, approved: decision.approved, scope: body.scope, source }
+    const audited: AuditedDecision = { token: body.token, approved: decision.approved, scope: body.scope, source, proof: 'none' }
     if (await auditReceived(audited)) await auditOutcome({ decision: audited, result })
     return backendReceipt(receiptOf({ answer: { decision, source }, result }))
   }

@@ -1,6 +1,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { approvalDecisionPath, approvalKey, mintApprovalKey, seal, type ApprovalKey } from '@5straps/protocol/envelope'
+import { challengeBytes } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonce-claims.js'
 import { NO_DECISION_AUDIT } from '../common/adapters/approval/no-decision-audit.js'
@@ -9,6 +11,7 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
+import { mintDeviceProof } from '../common/services/approvals/device-proof.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ApprovalBackend } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -49,7 +52,7 @@ const BROKEN: DecisionAudit = {
   refused: async () => { throw new Error('The audit log is full') },
 }
 
-async function asked(input: { decisionAudit: DecisionAudit; blockOnAuditFailure?: boolean; terminal?: ApprovalBackend }) {
+async function asked(input: { decisionAudit: DecisionAudit; blockOnAuditFailure?: boolean; terminal?: ApprovalBackend; decisionKey?: ApprovalKey }) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
   roots.push(root)
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
@@ -64,7 +67,7 @@ describe('the decision audit seam', () => {
     const { service, token } = await asked({ decisionAudit: audit })
     expect(await service.answer({ decision: { token, approved: true, scope: 'always' }, source: SOURCES.cli })).toMatchObject({ ok: false, code: 'scope_not_offered' })
     expect(await service.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
-    const decision = { token, approved: true, source: SOURCES.cli }
+    const decision = { token, approved: true, source: SOURCES.cli, proof: 'none' }
     expect(entries).toEqual([
       { step: 'received', fields: { ...decision, scope: 'always' } },
       { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered', reason: 'Scope always is not offered for this approval' } },
@@ -84,7 +87,7 @@ describe('the decision audit seam', () => {
     const { service } = await asked({ decisionAudit: audit, terminal: stray })
     void service.request({ sessionId: 's', requestId: 'other', tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/b.md', reason: 'outside', offeredScopes: ['once'] }], wait: { mode: 'none' } })
     await decided.promise
-    const decision = { token: 'not-routed', approved: false, scope: 'once', source: SOURCES.terminal }
+    const decision = { token: 'not-routed', approved: false, scope: 'once', source: SOURCES.terminal, proof: 'none' }
     expect(entries).toEqual([
       { step: 'received', fields: decision },
       { step: 'refused', fields: { ...decision, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' } },
@@ -106,8 +109,40 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
+  it('names the proof that carried each decision', async () => {
+    const { audit, entries } = recordingAudit()
+    const { service, token } = await asked({ decisionAudit: audit })
+    const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
+    await service.decide({ source: 'cli', decision: { token: 'not-asked', outcome: 'deny', scope: 'once' } })
+    await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })
+    await service.decide({ source: 'sealed', body: { token: 'not-asked', approved: false, scope: 'once' } })
+    expect(entries.filter(entry => entry.step === 'received').map(entry => entry.fields)).toEqual([
+      expect.objectContaining({ source: SOURCES.cli, proof: 'none' }),
+      expect.objectContaining({ source: SOURCES.devices, proof: 'device', decidedBy: 'key:device-1' }),
+      expect.objectContaining({ source: SOURCES.sealed, proof: 'none' }),
+    ])
+    await service.close()
+  })
+
+  it('names an envelope the paired key sealed as its proof', async () => {
+    const { audit, entries } = recordingAudit()
+    const key = approvalKey(mintApprovalKey())
+    const { service, token } = await asked({ decisionAudit: audit, decisionKey: key })
+    await service.decide({ source: 'sealed', body: seal(key, { method: 'POST', path: approvalDecisionPath('w-1'), body: { token, approved: false, scope: 'once' } }) })
+    expect(entries.map(entry => entry.fields)).toEqual([expect.objectContaining({ source: SOURCES.sealed, proof: 'envelope' }), expect.objectContaining({ source: SOURCES.sealed, proof: 'envelope' })])
+    await service.close()
+  })
+
+  it('marks a blocked decision retryable only where sending it again is not refused as a replay', async () => {
+    const { service, token } = await asked({ decisionAudit: BROKEN, blockOnAuditFailure: true })
+    const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
+    expect(await service.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'once' } })).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: true } })
+    expect(await service.decide({ source: 'devices', body: { token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }, proof: mintDeviceProof({ keyId: 'device-1', deadline: Date.now() + 60_000 }) })).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: false } })
+    await service.close()
+  })
+
   it('writes no entry with today\'s audit, which the runtime composes', async () => {
-    expect(await NO_DECISION_AUDIT.received({ token: 't', approved: true, scope: 'once', source: SOURCES.terminal })).toBeUndefined()
+    expect(await NO_DECISION_AUDIT.received({ token: 't', approved: true, scope: 'once', source: SOURCES.terminal, proof: 'none' })).toBeUndefined()
     const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
     roots.push(root)
     mkdirSync(join(root, 'workspace', 'one'), { recursive: true })
