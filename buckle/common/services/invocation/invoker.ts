@@ -577,9 +577,9 @@ function grantUseRecorder(input: { gate: ApprovalGate; holder: GrantHolder }): G
 
 /**
  * Every ask the workspace's dangerously-allow switch let through is audited on its own (ruling 11 of
- * 2026-09-28): an entry per use naming the rule, the redacted subject, and the level the switch was on at (owner
- * ruling of 2026-10-25), a warning in the owner's log, and the same entry in the action report to Rings. The entry is required: a use that cannot be
- * recorded does not go ahead. A rule and subject the call already recorded is not written again.
+ * 2026-09-28): an entry per use naming the rule, the redacted subject, and the mode the switch was on at (APPROVAL-05),
+ * a warning in the owner's log, and the same entry in the action report to Rings. The entry is required: a use that
+ * cannot be recorded does not go ahead. A rule and subject the call already recorded is not written again.
  */
 async function auditDangerousUses(input: { options: InvokerOptions; request: InvokeRequest; sessionId: string; allowedBy: readonly string[]; audited: Set<string> }): Promise<void> {
   const { options, request } = input
@@ -591,11 +591,11 @@ async function auditDangerousUses(input: { options: InvokerOptions; request: Inv
     const at = new Date().toISOString()
     const entry: ActionLogEntry = {
       at, requestId: request.requestId.slice(0, MAX_LOGGED_ID), sessionId: input.sessionId.slice(0, MAX_LOGGED_ID), tool: DANGEROUSLY_ALLOWED_TOOL,
-      outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject, level: use.level }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
+      outcome: 'ok', durationMs: 0, effects: [], args: { tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, subject, mode: use.mode }, approvedBy: [DANGEROUSLY_ALLOW], detail: use.rule,
     }
     await options.actions.record({ ...entry, auditId: randomUUID(), event: 'result', workspaceId, ...auditContext(request) })
     input.audited.add(key)
-    logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, level: use.level })
+    logger.warn('Dangerously allowed without a person', { workspaceId, tool: request.tool.slice(0, MAX_LOGGED_ID), rule: use.rule, mode: use.mode })
     if (!options.reporter.configured) continue
     options.reporter.record({
       workspace: options.paths.root, workspaceId, at, requestId: entry.requestId, sessionId: entry.sessionId, tool: DANGEROUSLY_ALLOWED_TOOL,
@@ -748,7 +748,7 @@ async function clearPermissions(input: {
   const judging = options.judge?.mode === 'automated' && options.judge.ready ? options.judge : undefined
   // Scope all (D91, addendum 2 B): before the first check, which admits an allowed call, the quick stage rates each command
   // no ask names; a danger at 0.8 or above makes it an ask, and anything else, no verdict included, lets it run as before.
-  // Never past a deny; the gate screens nothing while the dangerously-allow switch is on.
+  // Never past a deny; the gate screens nothing while the dangerously-allow switch is on or safe.
   if (judging?.screens) {
     const before = options.permissions.evaluate({ tool: request.tool, effects, grants: options.approvals.grants({ ...holder, consumed: [] }), ...run })
     if (before.kind !== 'deny') {

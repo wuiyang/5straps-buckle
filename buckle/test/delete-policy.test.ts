@@ -169,8 +169,8 @@ describe('the mass-delete guard', () => {
   })
 
   it('is answered by the dangerously-allow switch, as every ask inside the workspace is', () => {
-    const allowed = withDangerouslyAllow(engine(), { level: () => 'command', root: () => WORKSPACE })
-    expect(allowed.evaluate({ tool: 'fs_delete', effects: folders(3, 40), grants: lookup(granted) })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:command:write_scope:delete-batch:${WORKSPACE}`] })
+    const allowed = withDangerouslyAllow(engine(), { mode: () => 'on', root: () => WORKSPACE })
+    expect(allowed.evaluate({ tool: 'fs_delete', effects: folders(3, 40), grants: lookup(granted) })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:on:write_scope:delete-batch:${WORKSPACE}`] })
   })
 })
 

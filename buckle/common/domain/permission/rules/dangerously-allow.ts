@@ -1,13 +1,12 @@
 import type { PermissionRuleId } from '@5straps/protocol'
-import { isDangerouslyAllowLevel, type DangerouslyAllowLevel } from '../../../types/ports/dangerously-allow-store.js'
+import { isDangerouslyAllowOnMode, type DangerouslyAllowMode, type DangerouslyAllowOnMode } from '../../../types/ports/dangerously-allow-store.js'
 import { isInside } from '../../paths.js'
 import type { PermissionDecision } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
-import { FLOOR_POLICY, type FloorPolicy } from '../floor-policy.js'
 import { floorSubjectPath, isFloorSubject, isRestoreSubject } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
 
-/** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<level>:<rule>:<subject>`. */
+/** How an ask the switch let through reads in allowedBy and approvedBy: `dangerously_allow:<mode>:<rule>:<subject>`. */
 export const DANGEROUSLY_ALLOW = 'dangerously_allow'
 
 /** A command subject keeps its executable only: its arguments can carry a credential. */
@@ -18,44 +17,56 @@ export const DANGEROUSLY_ALLOW_SCOPE = 'bound to the workspace root, or its moun
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
+/** What a mode answers beyond the asks every mode covers: floor asks (sudo, the destructive list, and the file floor), and a secret reference's file. */
+export interface ModeReach {
+  floor: boolean
+  secretFile: boolean
+}
+
+/**
+ * Each mode's reach (APPROVAL-05). `safe` leaving every floor ask and a secret reference's file to a person is the
+ * working choice of APPROVAL-13; either is one field to change.
+ */
+export const DANGEROUSLY_ALLOW_REACH: Readonly<Record<DangerouslyAllowOnMode, Readonly<ModeReach>>> = {
+  on: { floor: true, secretFile: true },
+  safe: { floor: false, secretFile: false },
+}
+
 /**
  * The workspace's dangerously-allow switch (rulings 11 and H1 of 2026-09-28, owner decision D7 of
- * 2026-09-29): every ask becomes an allow, sensitive files and file writes included, reported as
- * `dangerously_allow:<level>:<rule>:<subject>` so the invoker audits each use at the level it ran at. At level
- * `command` a secret reference's file is the one ask it leaves to a person (docs/user/how-to/secrets.md); at level `all` it
- * answers that one too (owner ruling of 2026-10-25). A restore of the change history it leaves to a person at either
- * level, as every restore asks one (slice D). It is bound to the workspace at either level:
+ * 2026-09-29, APPROVAL-05): every ask it covers becomes an allow, sensitive files and file writes included, reported as
+ * `dangerously_allow:<mode>:<rule>:<subject>` so the invoker audits each use at the mode it ran at. What each mode
+ * answers beyond that is its reach (DANGEROUSLY_ALLOW_REACH); a call with asks both inside and outside a mode's reach
+ * asks those outside it alone. A restore of the change history it leaves to a person in every mode, as every restore
+ * asks one (slice D). It is bound to the workspace in every mode:
  * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
  * switch never opens the rest of the host. Asks that name no path (commands, hosts, process probes)
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
  * any ask, so an owner's deny rule, the node's policy over the workspace, the mount boundary and the
- * state directory still refuse. `level` and `root` are read at every evaluation, so the local
- * switch takes effect in a running node at once, off (null) as well as on. Whether it lifts floor
- * asks too is the floor policy's `switchLiftsFloor` (`policy`).
+ * state directory still refuse. `mode` and `root` are read at every evaluation, so the local
+ * switch takes effect in a running node at once, off as well as on.
  */
-export function withDangerouslyAllow(engine: PermissionEngine, input: { level: () => DangerouslyAllowLevel | null; root: () => string; policy?: FloorPolicy }): PermissionEngine {
-  const { switchLiftsFloor } = input.policy ?? FLOOR_POLICY
+export function withDangerouslyAllow(engine: PermissionEngine, input: { mode: () => DangerouslyAllowMode; root: () => string }): PermissionEngine {
   return {
     evaluate(call) {
       const outcome = engine.evaluate(call)
       if (outcome.kind !== 'ask') return outcome
-      const level = input.level()
-      if (level === null) return outcome
+      const mode = input.mode()
+      if (mode === 'off') return outcome
       const root = input.root()
-      const outside = outcome.asks.filter(ask => !covers({ ask, root, level }) || (ask.floor && !switchLiftsFloor))
-      if (outside.length > 0) return { ...outcome, asks: outside }
-      return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${level}:${ask.rule}:${ask.subject}`) }
+      const reach = DANGEROUSLY_ALLOW_REACH[mode]
+      const kept = outcome.asks.filter(ask => !covers({ ask, root, reach }))
+      if (kept.length > 0) return { ...outcome, asks: kept }
+      return { kind: 'allow', allowedBy: outcome.asks.map(ask => `${DANGEROUSLY_ALLOW}:${mode}:${ask.rule}:${ask.subject}`) }
     },
   }
 }
 
-/**
- * Whether the switch answers this ask: one about a path only inside the workspace root. A secret file's use is one only
- * at level `all`; at `command` a person allows it (docs/user/how-to/secrets.md).
- */
-function covers(input: { ask: Ask; root: string; level: DangerouslyAllowLevel }): boolean {
-  const { ask, root, level } = input
-  if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && level !== 'all') return false
+/** Whether the switch answers this ask: one inside its reach, and about a path only inside the workspace root. */
+function covers(input: { ask: Ask; root: string; reach: Readonly<ModeReach> }): boolean {
+  const { ask, root, reach } = input
+  if (ask.floor && !reach.floor) return false
+  if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && !reach.secretFile) return false
   if (ask.rule === 'write_scope' && isRestoreSubject(ask.subject)) return false
   const path = askedPath(ask)
   return path === null || isInside(root, path)
@@ -81,11 +92,11 @@ function askedPath(ask: Ask): string | null {
   }
 }
 
-/** The uses an allowedBy list holds, each with the level the switch was on at, the rule it overrode, and the subject it asked about. */
-export function dangerousUses(allowedBy: readonly string[]): Array<{ level: DangerouslyAllowLevel; rule: PermissionRuleId; subject: string }> {
+/** The uses an allowedBy list holds, each with the mode the switch was on at, the rule it overrode, and the subject it asked about. */
+export function dangerousUses(allowedBy: readonly string[]): Array<{ mode: DangerouslyAllowOnMode; rule: PermissionRuleId; subject: string }> {
   return allowedBy.flatMap((key) => {
-    const [prefix, level, rule, ...subject] = key.split(':')
-    return prefix === DANGEROUSLY_ALLOW && isDangerouslyAllowLevel(level) && rule ? [{ level, rule: rule as PermissionRuleId, subject: subject.join(':') }] : []
+    const [prefix, mode, rule, ...subject] = key.split(':')
+    return prefix === DANGEROUSLY_ALLOW && isDangerouslyAllowOnMode(mode) && rule ? [{ mode, rule: rule as PermissionRuleId, subject: subject.join(':') }] : []
   })
 }
 

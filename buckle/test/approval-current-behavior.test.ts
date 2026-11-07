@@ -376,7 +376,7 @@ describe('an answer while the action log cannot be written', () => {
 })
 
 describe('the dangerously-allow switch', () => {
-  it('lifts the floor-marked asks the real rules make, a delete\'s and a recursive delete command\'s', async () => {
+  it('lifts the floor-marked asks the real rules make on, a delete\'s and a recursive delete command\'s, and leaves them to a person at safe', async () => {
     const { runtime, workspace, call } = await node({ shell: true })
     writeFileSync(join(workspace, 'one', 'a.txt'), 'a')
     mkdirSync(join(workspace, 'build'))
@@ -385,21 +385,26 @@ describe('the dangerously-allow switch', () => {
     const floor = runtime.approvalService.waiting().filter(ask => ask.floor && ask.destructive).map(ask => ask.request.rule)
     expect(new Set(floor)).toEqual(new Set(['write_scope', 'destructive_command']))
 
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('safe')
+    for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'approval_required' })
+    expect([existsSync(join(workspace, 'one', 'a.txt')), existsSync(join(workspace, 'build'))]).toEqual([true, true])
+
+    await runtime.policy.setDangerouslyAllow('on')
     for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'ok' })
     expect([existsSync(join(workspace, 'one', 'a.txt')), existsSync(join(workspace, 'build'))]).toEqual([false, false])
   })
 
-  it('lifts floor asks, a delete\'s and a command\'s, and leaves a restore to a person', () => {
+  it('lifts floor asks on, a delete\'s and a command\'s, keeps them at safe, and leaves a restore to a person in both', () => {
     const asks = [
       { kind: 'ask' as const, rule: 'destructive_command' as const, subject: 'rm -rf build', reason: 'floor', offeredScopes: ['once' as const, 'session' as const], cause: 'floor' as const, ...commandMarks('floor') },
       { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'delete:/work/project/src', reason: 'floor', offeredScopes: ['once' as const, 'session' as const, 'always' as const], ...FILE_FLOOR_MARKS },
       { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'restore:change-1', reason: 'floor', offeredScopes: ['once' as const], ...FILE_FLOOR_MARKS },
     ]
     const asking: PermissionEngine = { evaluate: () => ({ kind: 'ask', asks }) }
-    const lifted = withDangerouslyAllow(asking, { level: () => 'command', root: () => '/work/project' }).evaluate({ tool: 'shell_exec', effects: [], grants: { subjectsFor: () => [] } })
-    expect(lifted).toEqual({ kind: 'ask', asks: [asks[2]] })
-    const without = withDangerouslyAllow({ evaluate: () => ({ kind: 'ask', asks: asks.slice(0, 2) }) }, { level: () => 'command', root: () => '/work/project' }).evaluate({ tool: 'shell_exec', effects: [], grants: { subjectsFor: () => [] } })
-    expect(without).toEqual({ kind: 'allow', allowedBy: ['dangerously_allow:command:destructive_command:rm -rf build', 'dangerously_allow:command:write_scope:delete:/work/project/src'] })
+    const evaluate = (engine: PermissionEngine) => engine.evaluate({ tool: 'shell_exec', effects: [], grants: { subjectsFor: () => [] } })
+    expect(evaluate(withDangerouslyAllow(asking, { mode: () => 'on', root: () => '/work/project' }))).toEqual({ kind: 'ask', asks: [asks[2]] })
+    expect(evaluate(withDangerouslyAllow(asking, { mode: () => 'safe', root: () => '/work/project' }))).toEqual({ kind: 'ask', asks })
+    const without: PermissionEngine = { evaluate: () => ({ kind: 'ask', asks: asks.slice(0, 2) }) }
+    expect(evaluate(withDangerouslyAllow(without, { mode: () => 'on', root: () => '/work/project' }))).toEqual({ kind: 'allow', allowedBy: ['dangerously_allow:on:destructive_command:rm -rf build', 'dangerously_allow:on:write_scope:delete:/work/project/src'] })
   })
 })

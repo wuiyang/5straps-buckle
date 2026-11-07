@@ -423,7 +423,7 @@ describe('a call stopped by Buckle\'s own storage while its tool runs (review L1
     mkdirSync(join(workspace, 'private'))
     writeFileSync(join(workspace, 'private', 'notes.md'), 'private')
     await runtime.policy.apply({ ...emptyWorkspacePolicy(), filesystem: { rules: [{ path: 'private', read: 'ask' }] } })
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
     const registered = runtime.registry().get('fs_read')
     const prepare = registered.prepare.bind(registered)
     const counter = { runs: 0 }

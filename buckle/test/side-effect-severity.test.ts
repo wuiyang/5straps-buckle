@@ -60,13 +60,13 @@ describe('file side effect severity', () => {
     expect(engine().evaluate({ tool: 'fs_delete', effects: [removed(`${ROOT}/src/legacy`)], grants }).kind).toBe('allow')
   })
 
-  it('keeps explicit floor grants and the dangerously-allow switch effective for moves', () => {
+  it('keeps explicit floor grants and the dangerously-allow switch on effective for moves, and leaves them to a person at safe', () => {
     const held = { subjectsFor: () => [ROOT, `move-tree:${ROOT}/src/lib`] }
     expect(engine().evaluate({ tool: 'fs_move', effects: [moved], grants: held }).kind).toBe('allow')
-    for (const level of ['command', 'all'] as const) {
-      const allowed = withDangerouslyAllow(engine(), { level: () => level, root: () => ROOT })
-      expect(allowed.evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:${level}:write_scope:move-tree:${ROOT}/src/lib`] })
-    }
+    const on = withDangerouslyAllow(engine(), { mode: () => 'on', root: () => ROOT })
+    expect(on.evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:on:write_scope:move-tree:${ROOT}/src/lib`] })
+    const safe = withDangerouslyAllow(engine(), { mode: () => 'safe', root: () => ROOT })
+    expect(safe.evaluate({ tool: 'fs_move', effects: [moved], grants })).toMatchObject({ kind: 'ask', asks: [{ subject: `move-tree:${ROOT}/src/lib` }] })
   })
 
   it('keeps warned move grants and dangerous recursive-delete grants separate in both directions', () => {

@@ -30,32 +30,32 @@ describe('the dangerously-allow switch on the admin face', () => {
   it('shows it in /setup/status and /setup/policy, refuses a PUT that changes it with 409, and keeps it through other writes and a clear', async () => {
     const buckle = await node()
     const boundTo = buckle.config.cwd
-    expect((await status(buckle)).dangerouslyAllow).toEqual({ on: false, level: null, boundTo })
+    expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'off', boundTo, setByEarlierBuild: false })
     // The owner's local CLI switched it on.
-    await buckle.runtime.policy.setDangerouslyAllow(true)
-    expect((await status(buckle)).dangerouslyAllow).toEqual({ on: true, level: 'command', boundTo })
-    expect(await (await buckle.request(buckle.setup('policy'), { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { on: true, level: 'command' } })
-    // At level all, as `buckle policy dangerously-allow on all` sets it (owner ruling of 2026-10-25).
-    await buckle.runtime.policy.setDangerouslyAllow(true, 'all')
-    expect((await status(buckle)).dangerouslyAllow).toEqual({ on: true, level: 'all', boundTo })
-    await buckle.runtime.policy.setDangerouslyAllow(true)
+    await buckle.runtime.policy.setDangerouslyAllow('on')
+    expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'on', boundTo, setByEarlierBuild: false })
+    expect(await (await buckle.request(buckle.setup('policy'), { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { mode: 'on' } })
+    // At safe, as `buckle policy dangerously-allow safe` sets it (APPROVAL-05).
+    await buckle.runtime.policy.setDangerouslyAllow('safe')
+    expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'safe', boundTo, setByEarlierBuild: false })
+    await buckle.runtime.policy.setDangerouslyAllow('on')
 
     const refused = await put(buckle, { ...policy, dangerouslyAllow: { commands: false, fileReads: false } })
     expect(refused.status).toBe(409)
-    expect(await refused.json()).toEqual({ error: expect.stringContaining('buckle policy dangerously-allow on [command|all] | off') })
-    expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(true)
+    expect(await refused.json()).toEqual({ error: expect.stringContaining('buckle policy dangerously-allow on|safe|off') })
+    expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('on')
     expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
 
     const stored = await put(buckle, policy)
     expect(stored.status).toBe(200)
     expect(Object.keys((await stored.json() as { stored: object }).stored)).not.toContain('dangerouslyAllow')
-    expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(true)
+    expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('on')
     expect((await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers() })).status).toBe(200)
-    expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(true)
+    expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('on')
 
-    await buckle.runtime.policy.setDangerouslyAllow(false)
+    await buckle.runtime.policy.setDangerouslyAllow('off')
     expect((await put(buckle, { ...policy, dangerouslyAllow: { commands: true, fileReads: true } })).status).toBe(409)
-    expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(false)
+    expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('off')
   })
 
   // Q14: no node switch stands beside a workspace's.
@@ -69,8 +69,8 @@ describe('the dangerously-allow switch on the admin face', () => {
     const smuggled = await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(), body: JSON.stringify({ ...child, id: 'other', dir: join(buckle.root, 'other'), policy: { ...policy, dangerouslyAllow: { commands: true, fileReads: true } } }) })
     expect(smuggled.status).toBe(409)
     const childRuntime = (await (await buckle.services.getWorkspaces()).resolve(await buckle.idOf('child'))).runtime
-    await childRuntime.policy.setDangerouslyAllow(true)
-    expect((await status(buckle, '/workspaces/child/setup/status')).dangerouslyAllow).toEqual({ on: true, level: 'command', boundTo: '/workspace' })
-    expect(buckle.runtime.policy.dangerouslyAllow().on).toBe(false)
+    await childRuntime.policy.setDangerouslyAllow('on')
+    expect((await status(buckle, '/workspaces/child/setup/status')).dangerouslyAllow).toEqual({ mode: 'on', boundTo: '/workspace', setByEarlierBuild: false })
+    expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('off')
   })
 })

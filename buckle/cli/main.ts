@@ -361,12 +361,14 @@ function printUsage(): CliResult {
   buckle plugin list | add <id> <specifier> | remove <id>
   buckle policy show | allow-command | deny-command | allow-url | mount | ...
   buckle policy deny-tool <tool> | allow-tool <tool>   Refuse a tool outright, or lift that
-  buckle policy dangerously-allow on [command|all] | off
-                                   DANGEROUS: allow every ask in the workspace without a person,
-                                   sensitive files and file writes included; each use is audited
-                                   and deny rules still refuse. At level command, the default, a
-                                   secret reference's file still asks a person; at level all it
-                                   is allowed too. See buckle policy --help
+  buckle policy dangerously-allow on|safe|off
+                                   DANGEROUS: allow asks in the workspace without a person;
+                                   each use is audited and deny rules still refuse. on allows
+                                   every ask there, sudo and a secret reference's file
+                                   included; safe still asks a person for floor asks (sudo,
+                                   the destructive list, and the file floor) and a secret
+                                   reference's file. true and false read as on and off. See
+                                   buckle policy --help
   buckle settings show | set <key> <value> | unset <key>   Node settings in the environment file
   buckle keys enroll <public-key> --purpose <p> --workspace <w> | list | revoke <key-id>
                                    Client keys trusted for signed setup and approvals, by scope

@@ -136,7 +136,7 @@ export function createJudgeGate(input: {
   view: CodeView
   cache: JudgeCache
   scanner: PackageScanner
-  /** False while the dangerously-allow switch is on: the owner asked for no asks, so no allowed command is screened. */
+  /** False while the dangerously-allow switch is on or safe: the owner asked for fewer asks, so no allowed command is screened. */
   screening?: boolean
 }): JudgeGate {
   const { settings, paths } = input

@@ -18,8 +18,8 @@ import { workspacesOf } from './support/workspaces.js'
 
 afterEach(() => vi.restoreAllMocks())
 
-/** What both helps say of the switch's two levels. */
-const LEVELS_SAID = "each use is audited and deny rules still refuse. At level command, the default, a secret reference's file still asks a person; at level all it is allowed too"
+/** What both helps say of the switch's modes (APPROVAL-05). */
+const MODES_SAID = "each use is audited and deny rules still refuse. on allows every ask there, sudo and a secret reference's file included; safe still asks a person for floor asks (sudo, the destructive list, and the file floor) and a secret reference's file. true and false read as on and off"
 
 const captured = () => {
   let out = ''
@@ -44,11 +44,9 @@ describe('buckle --help', () => {
     const io = captured()
     const result = answerWithoutConfiguration(['--help'])
     expect(result).toEqual({ exitCode: 0 })
-    expect(io.out()).toContain('buckle policy dangerously-allow on [command|all] | off')
+    expect(io.out()).toContain('buckle policy dangerously-allow on|safe|off')
     expect(io.out()).toContain('DANGEROUS')
-    // At level command, the bare on, the switch never answers a secret reference's ask (docs/user/how-to/secrets.md), so its help
-    // says so (review of 6de734c); at level all it does (owner ruling of 2026-10-25).
-    expect(io.out().replace(/\s+/g, ' ')).toContain(LEVELS_SAID)
+    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_SAID)
   })
 
   it('names buckle client approve on the client line, as the settings reference and the approvals page do', () => {
@@ -74,8 +72,8 @@ describe('buckle policy --help', () => {
     const io = captured()
     const result = await policyCommand(runtime, [flag])
     expect(result.exitCode).toBe(0)
-    expect(io.out()).toContain('buckle policy dangerously-allow on [command|all] | off')
-    expect(io.out().replace(/\s+/g, ' ')).toContain(LEVELS_SAID)
+    expect(io.out()).toContain('buckle policy dangerously-allow on|safe|off')
+    expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_SAID)
     expect(io.err()).toBe('')
   })
 

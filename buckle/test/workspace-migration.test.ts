@@ -171,7 +171,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
   })
 
   // A registered workspace's switch took effect only while the node's own was on; with that gate gone (Q14) a switch
-  // the gate held off would turn on, so it moves only where the node's was on.
+  // the gate held off would turn on, so it moves only where the node's was on. A 0.1 switch is an earlier build's, read
+  // as off (APPROVAL-05, BUILD-02): what moves is the note that an earlier build set it.
   it.each([[true, true], [false, false]])('keeps a registered workspace\'s dangerously-allow switch only where the node\'s was on (node on: %s)', async (nodeOn, kept) => {
     const input = scene()
     version1(input)
@@ -181,8 +182,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
     writeFileSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'), JSON.stringify({ version: 1, workspaces: { [input.site]: on } }))
     const manager = await open(input)
 
-    expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow().on).toBe(kept)
-    expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow().on).toBe(nodeOn)
+    expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'off', setByEarlierBuild: kept })
+    expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'off', setByEarlierBuild: nodeOn })
   })
 
   it('moves grants from the folder they were kept under to the workspace\'s id', async () => {
@@ -481,8 +482,8 @@ describe('moving a 0.1 node onto the workspace model', () => {
       writeFileSync(join(input.state, 'moving-onto-workspaces'), '')
       const manager = await open(input)
 
-      expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow().on).toBe(true)
-      expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow().on).toBe(true)
+      expect((await byName(manager, 'site')).runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'off', setByEarlierBuild: true })
+      expect((await byName(manager, 'project')).runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'off', setByEarlierBuild: true })
       // The site's records moved beside its 0.1 folder, which keeps nothing but what stays for going back.
       expect(existsSync(join(input.state, 'workspaces', siteId(input), 'dangerously-allow.json'))).toBe(true)
       expect(existsSync(join(input.state, 'workspaces', 'site', 'dangerously-allow.json'))).toBe(false)

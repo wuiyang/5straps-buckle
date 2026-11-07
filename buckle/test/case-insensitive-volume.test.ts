@@ -83,7 +83,7 @@ describe('a new file under a case variant of an owner-denied directory (review H
   it.each([false, true])('refuses SECRETS/new.json and .GIT/hooks/pre-commit under secrets and .git denies (switch on: %s), and writes nothing', async (switchOn) => {
     const { root, workspace, state } = volume()
     const runtime = await runtimeFor({ root, typed: workspace, state, rules: [{ path: 'secrets', write: 'deny' }, { path: '.git', write: 'deny' }] })
-    if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+    if (switchOn) await runtime.policy.setDangerouslyAllow('on')
     for (const path of ['SECRETS/new.json', 'Secrets/new.json', '.GIT/hooks/pre-commit', '.git/HOOKS/pre-commit']) {
       const result = await call(runtime, 'fs_write', { path, content: 'planted', createParents: true })
       expect({ path, result }).toMatchObject({ path, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Workspace policy denies write access') } } })
@@ -134,7 +134,7 @@ describe('a remembered deny for a missing sensitive file, met by a case variant'
     if (asked.outcome !== 'approval_required') throw new Error(`expected an ask, got ${asked.outcome}`)
     const token = asked.approvals.find(approval => approval.rule === 'sensitive_path')!.token
     expect((await runtime.approvalService.answer({ decision: { token, approved: false, scope: 'always' }, source: SOURCES.cli })).ok).toBe(true)
-    if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+    if (switchOn) await runtime.policy.setDangerouslyAllow('on')
     for (const path of ['.ENV', '.Env', '.env']) {
       const result = await call(runtime, 'fs_write', { path, content: 'planted' })
       expect({ path, result }).toMatchObject({ path, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('The owner denied this sensitive file') } } })

@@ -464,7 +464,7 @@ describe('what the judge never rates', () => {
   it('a call the dangerously-allow switch already lets through', async () => {
     const judge = fakeJudge()
     const runtime = await runtimeOf(node(), judge)
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
     expect((await call(runtime, 'python3', ['job.py'])).response).toMatchObject({ outcome: 'ok' })
     expect(judge.judge).not.toHaveBeenCalled()
   })

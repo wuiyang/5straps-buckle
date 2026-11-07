@@ -439,7 +439,7 @@ describe('a call Buckle cannot read whole', () => {
   }
   const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, body: string, deny = ['git push *']) =>
-    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { level: () => (switched ? 'command' : null), root: () => '/workspace' })
+    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { mode: () => (switched ? 'on' : 'off'), root: () => '/workspace' })
       .evaluate({ tool: 'script_run', effects: [{ kind: 'exec', command: 'bash', args: ['-c', body] }], grants: { subjectsFor: () => [] } })
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)
@@ -874,7 +874,7 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   it.each(cases)('refuses xargs handing items to bash -c as the call itself, %s deny, switch on: %s, naming the limit', (engine, switched) => {
-    const outcome = withDangerouslyAllow(createPermissionEngine(engines[engine](['terraform destroy *'])), { level: () => (switched ? 'command' : null), root: () => '/workspace' })
+    const outcome = withDangerouslyAllow(createPermissionEngine(engines[engine](['terraform destroy *'])), { mode: () => (switched ? 'on' : 'off'), root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: 'xargs', args: ['-0', 'bash', '-c'] }], grants: { subjectsFor: () => [] } })
     expect(refusal(outcome)).toBe(`${scriptData}, so ${named[engine]}'s deny list cannot meet all of it; refused rather than asked`)
   })
@@ -1532,7 +1532,7 @@ describe('a call that runs code with an interpreter', () => {
   }
   const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, call: readonly [string, readonly string[]], setting: Setting) =>
-    withDangerouslyAllow(createPermissionEngine(engines[engine](setting)), { level: () => (switched ? 'command' : null), root: () => '/workspace' })
+    withDangerouslyAllow(createPermissionEngine(engines[engine](setting)), { mode: () => (switched ? 'on' : 'off'), root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0], args: [...call[1]] }], grants: { subjectsFor: () => [] } })
   const unknown = (name: string) => `Runs code Buckle cannot read as shell, with an interpreter the policy does not allow (unknown interpreter): ${name} (allow it with buckle policy allow-interpreter ${name})`
   const engineCases = (['workspace'] as const).flatMap(engine => [false, true].map(switched => [engine, switched] as const))
@@ -1615,7 +1615,7 @@ describe('a call that runs code with an interpreter', () => {
   it.each(forms.map(([command, args]) => [command, args] as const))('lets the dangerously-allow switch answer the floor\'s ask about %s %j when no deny glob exists, as it answers every ask', (command, args) => {
     const outcome = check('workspace', true, [command, args], { deny: [] })
     if (outcome.kind !== 'allow') throw new Error(`expected an allow, got ${outcome.kind}`)
-    expect(outcome.allowedBy).toEqual([expect.stringMatching(/^dangerously_allow:command:destructive_command:/)])
+    expect(outcome.allowedBy).toEqual([expect.stringMatching(/^dangerously_allow:on:destructive_command:/)])
   })
 
   it.each(engineCases.flatMap(([engine, switched]) => forms.map(([command, args, name]) => [engine, switched, command, args, name] as const)))('reads %s, switch on: %s, %s %j as an ordinary command once the policy allows %s', (engine, switched, command, args, name) => {
@@ -1710,7 +1710,7 @@ describe('a command behind a wrapper', () => {
   }
   const named = { workspace: 'the workspace command policy' } as const
   const check = (engine: keyof typeof engines, switched: boolean, call: readonly string[], deny: string[]) =>
-    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { level: () => (switched ? 'command' : null), root: () => '/workspace' })
+    withDangerouslyAllow(createPermissionEngine(engines[engine](deny)), { mode: () => (switched ? 'on' : 'off'), root: () => '/workspace' })
       .evaluate({ tool: 'shell_exec', effects: [{ kind: 'exec', command: call[0]!, args: call.slice(1) }], grants: { subjectsFor: () => [] } })
   const refusal = (outcome: ReturnType<typeof check>) => {
     if (outcome.kind !== 'deny') throw new Error(`expected a deny, got ${outcome.kind}`)

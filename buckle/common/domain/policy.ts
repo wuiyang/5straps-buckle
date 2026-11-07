@@ -43,7 +43,7 @@ export class DangerouslyAllowLocalOnlyError extends PolicyError {
   override readonly code = 'POLICY_DANGEROUSLY_ALLOW_LOCAL_ONLY'
   override readonly status = 409
   constructor() {
-    super('The dangerously-allow switch is not part of a workspace policy and changes only through the owner\'s local CLI: buckle policy dangerously-allow on [command|all] | off')
+    super('The dangerously-allow switch is not part of a workspace policy and changes only through the owner\'s local CLI: buckle policy dangerously-allow on|safe|off')
   }
 }
 

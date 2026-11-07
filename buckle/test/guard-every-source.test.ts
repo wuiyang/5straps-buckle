@@ -11,6 +11,7 @@ import { FILE_FLOOR_MARKS, PLAIN_MARKS, type AskMarks, type GrantLookup, type Pe
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { FLOOR_POLICY, type FloorPolicy } from '../common/domain/permission/floor-policy.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
+import type { DangerouslyAllowMode } from '../common/types/ports/dangerously-allow-store.js'
 import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
 import { grantLookup } from '../common/services/approvals/approval-gate.js'
@@ -18,8 +19,8 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 
 // The decision guard's checks for every source, each a table test against the guard alone. Today's sources pass each
-// one as before. The file floor's always and the dangerously-allow switch's reach over floor asks stay as today, each
-// behind a floor policy switch that turns the safer default on.
+// one as before. The file floor's always stays as today, behind a floor policy switch that turns the safer default on;
+// the dangerously-allow switch's reach over floor asks is its mode's (APPROVAL-05).
 
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
 const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: 'delete:/outside', reason: 'Deleting asks a person', tool: 'fs_delete', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z', widerSubject: 'delete-below:/outside' }
@@ -174,15 +175,23 @@ describe('a grant held on the file floor', () => {
 })
 
 describe('the dangerously-allow switch over floor asks', () => {
-  const engine = (policy?: FloorPolicy) => withDangerouslyAllow(createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 } })]), { level: () => 'command', root: () => WORKSPACE, ...(policy ? { policy } : {}) })
+  const engine = (mode: DangerouslyAllowMode) => withDangerouslyAllow(createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 } })]), { mode: () => mode, root: () => WORKSPACE })
+  const egress: Extract<PermissionDecision, { kind: 'ask' }> = { kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: 'egress', offeredScopes: ['once'] }
 
-  it('lifts a floor ask, as today', () => {
-    expect(engine().evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'allow' })
+  it('lifts a floor ask on, and leaves it to a person at safe', () => {
+    expect(engine('on').evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:on:write_scope:delete:${WORKSPACE}`] })
+    expect(engine('safe').evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask', asks: [{ rule: 'write_scope', floor: true }] })
   })
 
-  it('leaves a floor ask to a person with the switch turned the other way, and still lifts the rest', () => {
-    const spared = withDangerouslyAllow({ evaluate: () => ({ kind: 'ask', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: 'egress', offeredScopes: ['once'] }] }) }, { level: () => 'command', root: () => WORKSPACE, policy: { ...FLOOR_POLICY, switchLiftsFloor: false } })
-    expect(engine({ ...FLOOR_POLICY, switchLiftsFloor: false }).evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask' })
-    expect(spared.evaluate({ tool: 'web_fetch', effects: [], grants: NONE })).toMatchObject({ kind: 'allow' })
+  it('at safe, keeps the floor ask of a call alone and lifts its plain one', () => {
+    const floorAsk: Extract<PermissionDecision, { kind: 'ask' }> = { kind: 'ask', ...FILE_FLOOR_MARKS, rule: 'write_scope', subject: `delete:${WORKSPACE}`, reason: 'floor', offeredScopes: ['once'] }
+    const both = withDangerouslyAllow({ evaluate: () => ({ kind: 'ask', asks: [egress, floorAsk] }) }, { mode: () => 'safe', root: () => WORKSPACE })
+    expect(both.evaluate({ tool: 'fs_delete', effects: [], grants: NONE })).toEqual({ kind: 'ask', asks: [floorAsk] })
+    const plain = withDangerouslyAllow({ evaluate: () => ({ kind: 'ask', asks: [egress] }) }, { mode: () => 'safe', root: () => WORKSPACE })
+    expect(plain.evaluate({ tool: 'web_fetch', effects: [], grants: NONE })).toEqual({ kind: 'allow', allowedBy: ['dangerously_allow:safe:network_egress:api.example.com'] })
+  })
+
+  it('leaves the floor policy one switch, alwaysAtFloor, the mode deciding the rest', () => {
+    expect(Object.keys(FLOOR_POLICY)).toEqual(['alwaysAtFloor'])
   })
 })

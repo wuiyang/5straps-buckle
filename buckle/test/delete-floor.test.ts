@@ -151,7 +151,7 @@ describe('a folder moved whole meets the workspace rules beneath it', () => {
   })
 
   it('is not turned by the dangerously-allow switch, which answers an ask and never a deny', () => {
-    const allowed = withDangerouslyAllow(engine({ rules }), { level: () => 'all', root: () => WORKSPACE })
+    const allowed = withDangerouslyAllow(engine({ rules }), { mode: () => 'on', root: () => WORKSPACE })
     expect(allowed.evaluate({ tool: 'fs_move', effects: [landedFolder(`${WORKSPACE}/.github`)], grants: lookup() }).kind).toBe('deny')
     expect(allowed.evaluate({ tool: 'fs_move', effects: [movedFolder(`${WORKSPACE}/config`)], grants: lookup() }).kind).toBe('deny')
   })
@@ -185,8 +185,8 @@ describe('a folder replaced by a move', () => {
 
 describe('the dangerously-allow switch', () => {
   it('answers a delete inside the workspace and leaves one outside it to a person', () => {
-    const allowed = withDangerouslyAllow(engine(), { level: () => 'command', root: () => WORKSPACE })
-    expect(allowed.evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:command:write_scope:delete:${WORKSPACE}`] })
+    const allowed = withDangerouslyAllow(engine(), { mode: () => 'on', root: () => WORKSPACE })
+    expect(allowed.evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: lookup() })).toMatchObject({ kind: 'allow', allowedBy: [`dangerously_allow:on:write_scope:delete:${WORKSPACE}`] })
     expect(allowed.evaluate({ tool: 'fs_delete', effects: [removed('/tmp/elsewhere/a.txt')], grants: lookup() }).kind).toBe('ask')
   })
 })

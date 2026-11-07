@@ -110,7 +110,7 @@ describe('a dangling link to Buckle\'s absent state (review H1 of B23-B25)', () 
       expect(existsSync(file)).toBe(false)
       plant(workspace, 'settings.json', file)
       // Switching on writes dangerously-allow.json itself; the link then names an existing file the agent must not change.
-      if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+      if (switchOn) await runtime.policy.setDangerouslyAllow('on')
       // What a person's "session" answer to "Writing to <root>" records.
       else await runtime.grants.grant({ sessionId: 'dangling-session', rule: 'write_scope', subject: workspace, scope: 'session' })
       const before = existsSync(file) ? readFileSync(file, 'utf8') : null
@@ -123,7 +123,7 @@ describe('a dangling link to Buckle\'s absent state (review H1 of B23-B25)', () 
         expect(existsSync(file) ? readFileSync(file, 'utf8') : null).toBe(before)
       }
       expect(uses(runtime)).toEqual([])
-      expect(runtime.policy.dangerouslyAllow().on).toBe(switchOn)
+      expect(runtime.policy.dangerouslyAllow().mode).toBe(switchOn ? 'on' : 'off')
       await stop(setup)
     })
   })
@@ -134,7 +134,7 @@ describe('a dangling link to Buckle\'s absent state (review H1 of B23-B25)', () 
     const marker = join(setup.root, 'plugin-ran')
     writeFileSync(join(workspace, 'plugin.mjs'), `import { writeFileSync } from 'node:fs'\nwriteFileSync(${JSON.stringify(marker)}, 'ran')\nexport function createPack() { return { id: 'planted', version: '1.0.0', tools: [], skills: [], unavailableReason: null } }\n`)
     plant(workspace, 'plugins-note.json', pluginsPath(config))
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
 
     const planted = JSON.stringify({ version: 1, plugins: [{ id: 'planted', specifier: pathToFileURL(join(workspace, 'plugin.mjs')).href, enabled: true }] })
     const { result } = await run(runtime, 'fs_write', { path: 'plugins-note.json', content: planted })
@@ -161,7 +161,7 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     const setup = await node()
     const { runtime } = setup
     const { credential, plain } = links(setup)
-    if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+    if (switchOn) await runtime.policy.setDangerouslyAllow('on')
     const calls: Array<[string, Record<string, JsonValue>]> = [['fs_write', { path: 'draft.txt', content: 'x' }], ['fs_write_batch', { files: [{ path: 'draft.txt', content: 'x' }] }]]
     for (const [tool, args] of calls) {
       const { result } = await run(runtime, tool, args)
@@ -180,7 +180,7 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     const { runtime } = setup
     const { credential, plain } = links(setup)
     await runtime.policy.setMount('/workspace')
-    if (switchOn) await runtime.policy.setDangerouslyAllow(true)
+    if (switchOn) await runtime.policy.setDangerouslyAllow('on')
     const calls: Array<[string, Record<string, JsonValue>]> = [
       ['fs_write', { path: '/workspace/draft.txt', content: 'x' }],
       ['fs_write_batch', { files: [{ path: '/workspace/draft.txt', content: 'x' }] }],
@@ -216,7 +216,7 @@ describe('a link that climbs back out of a missing directory (review item 0 of t
     // Written as text: path.join would fold nope/.. away.
     symlinkSync(`nope/../L/${relative(config.stateDirectory, file)}`, join(workspace, 'a'))
     // With the switch on, an ask inside the root is allowed without a person: only the boundary stands.
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
     const before = existsSync(file) ? readFileSync(file, 'utf8') : null
 
     // Review L1 of the second re-review: every tool that takes a path, not the writers alone.
@@ -244,7 +244,7 @@ describe('a link that climbs back out of a missing directory (review item 0 of t
   it('still creates a file beneath a missing directory when nothing climbs back out', async () => {
     const setup = await node()
     const { runtime, workspace } = setup
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
     symlinkSync('drafts/new/note.md', join(workspace, 'b'))
     const { result } = await run(runtime, 'fs_write', { path: 'b', content: 'kept', createParents: true })
     expect(result).toMatchObject({ outcome: 'ok' })
@@ -264,7 +264,7 @@ describe('a `..` after a link whose target is missing or a file (review L2 of th
     const { runtime, workspace } = setup
     plantD(workspace)
     symlinkSync('D/../x.txt', join(workspace, 'E'))
-    await runtime.policy.setDangerouslyAllow(true)
+    await runtime.policy.setDangerouslyAllow('on')
     const calls: Array<[string, Record<string, JsonValue>]> = [['fs_write', { path: 'E', content: 'planted' }], ['fs_write_batch', { files: [{ path: 'E', content: 'planted' }] }], ['fs_read', { path: 'E' }]]
     for (const [tool, args] of calls) {
       const { result } = await run(runtime, tool, args)

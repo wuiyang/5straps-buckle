@@ -1,13 +1,24 @@
 /**
- * The levels the switch is on at (owner ruling of 2026-10-25). `command`, the bare `on`, answers every ask it covers but a
- * secret reference's file, which still asks a person; `all` answers that file's ask too.
+ * The modes the switch is on at (APPROVAL-05, owner ruling of 2026-11-08): `on` answers every ask it covers, and `safe`
+ * every one but floor asks and a secret reference's file. Off is no entry at all.
  */
-export const DANGEROUSLY_ALLOW_LEVELS = ['command', 'all'] as const
+export const DANGEROUSLY_ALLOW_ON_MODES = ['on', 'safe'] as const
 
-export type DangerouslyAllowLevel = typeof DANGEROUSLY_ALLOW_LEVELS[number]
+export type DangerouslyAllowOnMode = typeof DANGEROUSLY_ALLOW_ON_MODES[number]
 
-export function isDangerouslyAllowLevel(value: unknown): value is DangerouslyAllowLevel {
-  return DANGEROUSLY_ALLOW_LEVELS.some(level => level === value)
+export type DangerouslyAllowMode = 'off' | DangerouslyAllowOnMode
+
+export function isDangerouslyAllowOnMode(value: unknown): value is DangerouslyAllowOnMode {
+  return DANGEROUSLY_ALLOW_ON_MODES.some(mode => mode === value)
+}
+
+/**
+ * The switch as its file holds it: its mode, and whether a file an earlier build wrote held it on, which this build
+ * reads as off (BUILD-02, a clean break).
+ */
+export interface DangerouslyAllowReading {
+  mode: DangerouslyAllowMode
+  setByEarlierBuild: boolean
 }
 
 /**
@@ -16,8 +27,7 @@ export function isDangerouslyAllowLevel(value: unknown): value is DangerouslyAll
  * is read from.
  */
 export interface DangerouslyAllowStore {
-  /** The level the switch is on at, null while it is off. Throws when the file cannot be read; the runtime then treats the switch as off. */
-  level(): DangerouslyAllowLevel | null
-  /** Turns the switch on at a level, or off with null. */
-  set(level: DangerouslyAllowLevel | null): Promise<void>
+  /** Throws when the file cannot be read; the runtime then treats the switch as off. */
+  read(): DangerouslyAllowReading
+  set(mode: DangerouslyAllowMode): Promise<void>
 }

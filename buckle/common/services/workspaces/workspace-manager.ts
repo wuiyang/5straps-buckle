@@ -5,8 +5,8 @@ import { z } from 'zod'
 import { isWorkspaceToolAllowed, WorkspacePolicySchema } from '@5straps/protocol'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
-import { switchLevel } from '../../adapters/policy-store/file-dangerously-allow-store.js'
-import type { DangerouslyAllowLevel } from '../../types/ports/dangerously-allow-store.js'
+import { switchMode } from '../../adapters/policy-store/file-dangerously-allow-store.js'
+import type { DangerouslyAllowMode } from '../../types/ports/dangerously-allow-store.js'
 import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
 import { comparablePath, ignoresCase, isInsideComparable, nativePath } from '../../domain/paths.js'
 import { rootsOf, type UntrustedRoot } from '../../domain/executable.js'
@@ -82,8 +82,8 @@ export interface ManagedWorkspace {
   config: BuckleConfig
   runtime: BuckleRuntime
 }
-/** What a registration took up from a workspace removed under its id: its records, and the level its dangerously-allow switch is on at, null while off. */
-export interface TakenUp { dangerouslyAllow: DangerouslyAllowLevel | null }
+/** What a registration took up from a workspace removed under its id: its records, and the mode of its dangerously-allow switch. */
+export interface TakenUp { dangerouslyAllow: DangerouslyAllowMode }
 /** A removed workspace whose records still sit in the state directory, as `buckle workspace prune` lists them. */
 export interface RemovedWorkspace { id: string; dir: string; name: string; removedAt: string }
 /** Who a bearer token is: the workspace it belongs to and its id there. */
@@ -182,7 +182,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      * Registers a folder as a workspace (D83 (2), `buckle workspace init`), online, with one agent token returned here
      * and never again. Its id is derived from the folder (D85, Q15, workspaceIdFor), so a removed workspace's grants and
      * settings, which stay on disk (Q7), are taken up again when the folder is registered again, as the answer says,
-     * with the level its dangerously-allow switch is on at. Its name is `name`, else the folder's, unique on the node. Its
+     * with the mode of its dangerously-allow switch. Its name is `name`, else the folder's, unique on the node. Its
      * settings are the defaults, the folder at /workspace, with `policy` and `settings` over them; naming either over
      * records taken up is refused, as they would be dropped (finding 36 of the Phase 1 review).
      */
@@ -205,7 +205,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         // Every check on the name comes before the first write (fix brief 4, findings 2, 19, and 41).
         const name = chosen ?? checkedName(basename(dir), 'folder')
         if (nameTaken(state, name)) throw new WorkspaceNameTakenError(name)
-        const takenUp = leftover(id) ? { dangerouslyAllow: switchLevel(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) }), id) } : null
+        const takenUp = leftover(id) ? { dangerouslyAllow: switchMode(dangerouslyAllowPath({ stateDirectory: join(node.stateDirectory, 'workspaces', id) }), id) } : null
         if (takenUp && (value.policy || value.settings)) {
           throw new WorkspaceError(`This folder's records from before it was removed stay in the state directory, and registering it takes them up, its settings among them, in place of the policy or settings named here. Register it without them, delete them with buckle workspace remove ${name} --purge, then register it again with them`, 409)
         }

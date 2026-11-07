@@ -239,10 +239,13 @@ describe('an allowed command, with the quick stage on for all', () => {
     expect((await call(await runtimeOf(node({ BUCKLE_APPROVAL_JUDGE: 'on-request' }), requested), 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
     expect(requested.quickJudge.quick).not.toHaveBeenCalled()
 
-    const switched = fakes(quick('danger', 0.99))
-    const open = await runtimeOf(node(), switched)
-    await open.policy.setDangerouslyAllow(true)
-    expect((await call(open, 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
-    expect(switched.quickJudge.quick).not.toHaveBeenCalled()
+    // Neither on nor safe screens an allowed command: both lift the asks a screen would add.
+    for (const mode of ['on', 'safe'] as const) {
+      const switched = fakes(quick('danger', 0.99))
+      const open = await runtimeOf(node(), switched)
+      await open.policy.setDangerouslyAllow(mode)
+      expect((await call(open, 'cat', ['notes.txt'])).response).toMatchObject({ outcome: 'ok' })
+      expect(switched.quickJudge.quick).not.toHaveBeenCalled()
+    }
   })
 })

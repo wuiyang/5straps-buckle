@@ -686,7 +686,7 @@ describe('buckle workspace enable, disable and remove', () => {
     const workspaces = await openWorkspaceManager({ config: node() })
     try {
       const { runtime } = await byName(workspaces, 'alpha')
-      await runtime.policy.setDangerouslyAllow(true)
+      await runtime.policy.setDangerouslyAllow('on')
       expect((await buckle(['remove', 'alpha'])).exitCode).toBe(0)
       const strict = { ...emptyWorkspacePolicy(), commands: { allow: [], deny: ['curl *'] } }
       await expect(workspaces.create({ dir: alpha, policy: strict })).rejects.toMatchObject({ status: 409, message: expect.stringContaining('buckle workspace remove alpha --purge') })
@@ -694,7 +694,7 @@ describe('buckle workspace enable, disable and remove', () => {
     } finally { await workspaces.close() }
     const taken = await buckle(['init'], { cwd: alpha })
     expect(taken.exitCode).toBe(0)
-    expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON at level command.')
+    expect(taken.out).toContain('It takes up the records this folder left when its workspace was removed: its settings, grants, and history, and its dangerously-allow switch, which is ON.')
   })
 
   it('names the one name a verb takes', async () => {

@@ -1,6 +1,6 @@
 /**
- * How the destructive floor meets scope always and the dangerously-allow switch. Both are on, today's behavior; turning
- * one off is the safer default.
+ * How the destructive floor meets scope always. On is today's behavior; off is the safer default. What the
+ * dangerously-allow switch answers at the floor is its mode's (rules/dangerously-allow.ts).
  */
 export interface FloorPolicy {
   /**
@@ -8,8 +8,6 @@ export interface FloorPolicy {
    * earlier on a floor subject or a `delete-below` folder still clears its ask.
    */
   alwaysAtFloor: boolean
-  /** Whether the dangerously-allow switch lifts floor asks too. */
-  switchLiftsFloor: boolean
 }
 
-export const FLOOR_POLICY: Readonly<FloorPolicy> = Object.freeze({ alwaysAtFloor: true, switchLiftsFloor: true })
+export const FLOOR_POLICY: Readonly<FloorPolicy> = Object.freeze({ alwaysAtFloor: true })
