@@ -7,6 +7,7 @@ import { loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
+import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 
 // `buckle approvals --watch --all` through the CLI itself, at a terminal: the watch re-reads the online workspaces at
 // each poll, and closes what a workspace taken offline left open in its process (finding 10 of the Phase 1 review, and
@@ -67,7 +68,7 @@ async function ask(name: string, path: string): Promise<string> {
   const { runtime } = await byName(manager, name)
   const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat', call: { arguments: { path, content: 'x' }, cwd: '/workspace', description: `Write "${path}"`, effects: [`write ${path}`], complete: true },
-    asks: [{ kind: 'ask', rule: 'write_scope', subject: path, reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: path, reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
 }
@@ -101,7 +102,7 @@ describe('buckle approvals --watch --all', () => {
     const subject = 'python3 job.py'
     const [request] = (await runtime.approvals.ask({
       tool: 'shell_exec', sessionId: 'chat', call: { arguments: { command: 'python3', args: ['job.py'] }, cwd: '/workspace', description: 'Run "python3 job.py"', effects: ['exec python3 job.py'], complete: true, judge: [{ subject, onRequest: true }] },
-      asks: [{ kind: 'ask', rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
+      asks: [{ kind: 'ask', ...commandMarks('interpreter'), rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
     })).requests
     expect(runtime.judgeApproves()).toBe(false)
     const stop = await startWatch()

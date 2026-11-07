@@ -10,6 +10,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { setupServer } from '../server/setup-server.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The CLI display slice, C5: a node with nobody at a prompt logs one line for each question it cannot ask, saying what
 // the ask is about and where to see it whole, and carrying no subject, description, or token, which no log line does.
@@ -63,7 +64,7 @@ describe('a pending approval on a node with no terminal', () => {
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, 20)
     const cli = setupCli({ terminal: null, logPending: true })
     const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs: 20, interaction: async () => ({ hold: 'grace', requestCli: cli.requestCli }) })
-    const asks = ['/outside/one', '/outside/two'].map(subject => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] }))
+    const asks = ['/outside/one', '/outside/two'].map(subject => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] }))
     try {
       const lines = await logged(async () => {
         await service.request({ sessionId: 's', requestId: 'r-two', tool: 'fs_delete', asks, call: { ...call, complete: true } })

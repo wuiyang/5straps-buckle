@@ -18,6 +18,7 @@ import { commandSubject } from '../common/domain/argv.js'
 import { describeCall } from '../common/domain/describe-call.js'
 import { summarizeEffect } from '../common/domain/effect.js'
 import { reviewableArguments } from '../common/domain/redact.js'
+import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 
 function node(): BuckleConfig {
   return configFromEnvironment({
@@ -36,7 +37,7 @@ async function pendingRequest(config: BuckleConfig): Promise<string> {
   )
   const [request] = (await registry.ask({
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
-    asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
 }
@@ -70,7 +71,7 @@ describe('buckle approvals, the queue a person answers from', () => {
   it('lists a subject with control characters escaped, so it cannot rewrite the terminal (review M3)', async () => {
     const config = node()
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), config.cwd)
-    await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/x\u001b[2K\rls', reason: 'outside\u0007', offeredScopes: ['once'] }] })
+    await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/x\u001b[2K\rls', reason: 'outside\u0007', offeredScopes: ['once'] }] })
 
     const listed = await capture({ argv: ['approvals'], config })
 
@@ -132,7 +133,7 @@ describe('buckle approvals, the queue a person answers from', () => {
   it('shows a batch call once in text and JSON while every ask names its whole action', async () => {
     const config = node()
     const content = 'whole batch contents'.repeat(1_000)
-    const requests = (await registry(config).ask({ tool: 'fs_write_batch', sessionId: 'mcp', asks: ['/one', '/two', '/three'].map(subject => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })), call: { arguments: { content }, cwd: '/workspace', description: 'Write three files', effects: ['write /one', 'write /two', 'write /three'], complete: true } })).requests
+    const requests = (await registry(config).ask({ tool: 'fs_write_batch', sessionId: 'mcp', asks: ['/one', '/two', '/three'].map(subject => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })), call: { arguments: { content }, cwd: '/workspace', description: 'Write three files', effects: ['write /one', 'write /two', 'write /three'], complete: true } })).requests
     const text = await capture({ argv: ['approvals'], config })
     expect(text.stdout.split(content)).toHaveLength(2)
     for (const request of requests) expect(text.stdout).toContain(request.token)
@@ -153,7 +154,7 @@ describe('buckle approvals, the queue a person answers from', () => {
     await registry(config).ask({
       tool: 'shell_exec', sessionId: 'chat-1',
       call: { arguments: reviewableArguments(args), cwd: '/workspace', description: describeCall({ tool: 'shell_exec', args, cwd: '/workspace' }), effects: [summarizeEffect({ kind: 'exec', ...args })], complete: true },
-      asks: [{ kind: 'ask', rule: 'destructive_command', subject: commandSubject('bash', ['-c', body]), reason: 'Recursive delete', offeredScopes: ['once', 'session'] }],
+      asks: [{ kind: 'ask', ...commandMarks('floor'), rule: 'destructive_command', subject: commandSubject('bash', ['-c', body]), reason: 'Recursive delete', offeredScopes: ['once', 'session'] }],
     })
     const text = (await capture({ argv: ['approvals'], config })).stdout
     const json = (await capture({ argv: ['approvals', '--json'], config })).stdout
@@ -183,7 +184,7 @@ function registry(config: BuckleConfig) {
 async function networkRequest(config: BuckleConfig, subject = 'app.localhost:3000'): Promise<string> {
   const [request] = (await registry(config).ask({
     tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: `http://${subject}/` }, cwd: '/workspace', description: `Fetch "http://${subject}/"`, effects: [`network http://${subject}/`], complete: true },
-    asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
   })).requests
   return request!.token
 }
@@ -368,7 +369,7 @@ describe('a * in a URL host never becomes a pattern grant (BUCKLE-D18)', () => {
 describe('buckle approve shows the whole action before it decides (owner decision D17, review H2)', () => {
   /** An ask as a build before D17 left it: the request without its whole call. */
   async function preBuildRequest(config: BuckleConfig): Promise<string> {
-    const [request] = (await registry(config).ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
+    const [request] = (await registry(config).ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
     return request!.token
   }
   const pendingTokens = (config: BuckleConfig) => registry(config).pending().map(request => request.token)

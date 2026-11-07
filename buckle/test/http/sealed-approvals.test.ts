@@ -12,6 +12,7 @@ import { settingsCommand } from '../../cli/settings.js'
 import { keysCommand } from '../../cli/keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { workspaceIdOf } from '../support/workspaces.js'
+import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
 const nodes: BuckleHttp[] = []
@@ -45,7 +46,7 @@ async function node(input: { key?: string; state?: string; workspace?: string; g
   } })
   nodes.push(app)
   const { config, runtime } = app
-  const ask = async (complete = true) => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...(complete ? { call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true as const } } : {}) })).requests)[0]!
+  const ask = async (complete = true) => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...(complete ? { call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true as const } } : {}) })).requests)[0]!
   const decide = (body: unknown) => app.request(app.setup('approvals'), { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
   const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
   return { state, workspace, config, runtime, app, ask, decide, refusals }

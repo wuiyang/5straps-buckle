@@ -18,6 +18,7 @@ import { createConsoleWriter } from '../common/runtime/console.js'
 import type { ApprovalHold } from '../common/services/approvals/interaction.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { runsNativeTerminal } from './support/native-terminal.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The rows that pin cursor control run on a capable terminal whatever shell runs the suite; the TERM=dumb rows say so.
 beforeEach(() => { vi.stubEnv('TERM', 'xterm-256color') })
@@ -90,7 +91,7 @@ const nobody: RequestCli = async request => ({ status: 'unavailable', requestId:
 
 function waitingService(input: { registry: ApprovalRegistry; graceMs: number | null; requestCli?: RequestCli; hold?: ApprovalHold; announce?: (requests: ApprovalRequest[]) => Promise<void> }) {
   const service = createApprovalService({ registry: input.registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: async () => ({ requestCli: input.requestCli ?? nobody, hold: input.hold ?? 'grace' }), ...(input.announce ? { announce: input.announce } : {}) })
-  return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
+  return (tokens = 1, wait?: ApprovalWait) => service.request({ sessionId: 's', requestId: 'r', tool: 'fs_read', call: recordedCall, asks: Array.from({ length: tokens }, () => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'read_scope' as const, subject: '/shots', reason: 'outside the sandbox', offeredScopes: ['once' as const, 'session' as const, 'always' as const] })), ...(wait ? { wait } : {}) })
 }
 
 /** A question held on screen until the test answers it, recording whether it was withdrawn. */

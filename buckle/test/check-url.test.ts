@@ -11,6 +11,7 @@ import { checkUrlCommand } from '../cli/check-url.js'
 import { runCli } from './support/cli.js'
 import { idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 function node(environment: Record<string, string> = {}): BuckleConfig {
   return configFromEnvironment({
@@ -120,7 +121,7 @@ describe('buckle check-url', () => {
   it('counts an unspent once approval only for the session named', async () => {
     const config = node()
     const registry = createApprovalRegistry(grants(config), approvalsPath(config), config.cwd)
-    const [request] = (await registry.ask({ tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true }, asks: [{ kind: 'ask', rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })).requests
+    const [request] = (await registry.ask({ tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: 'http://localhost:3000/' }, cwd: '/workspace', description: null, effects: ['network http://localhost:3000/'], complete: true }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'localhost:3000', reason: 'local', offeredScopes: ['once'] }] })).requests
     await registry.resolve({ token: request!.token, approved: true, scope: 'once' })
 
     expect((await check(config, 'localhost:3000')).exitCode).toBe(3)

@@ -14,6 +14,7 @@ import { createPathView } from '../common/domain/path-view.js'
 import { openChangeHistory } from '../common/services/history/journal.js'
 import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 import { historyObjects } from './support/history-objects.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'buckle-sensitive-')) })
@@ -74,7 +75,7 @@ it.each(['session', 'always'] as const)('records a %s denial, enforces scope and
 it('does not permit durable sensitive-file approvals or reuse standing allow grants', async () => {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
   const approvals = createApprovalRegistry(grants, join(root, 'approvals.json'))
-  const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] })).requests)[0]!
+  const request = ((await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }] })).requests)[0]!
   expect((await approvals.resolve({ token: request.token, approved: true, scope: 'always' })).ok).toBe(false)
   await grants.grant({ sessionId: 'one', rule: 'sensitive_path', subject: '/workspace/.env', scope: 'always' })
   expect(grants.activeSubjects({ sessionId: 'one', rule: 'sensitive_path' })).toEqual([])

@@ -4,7 +4,7 @@ import { relative } from 'pathe'
 import type { FilesystemPermission, WorkspacePolicy } from '@5straps/protocol'
 import { childPath, comparablePath, isInside, isInsideComparable, nativePath, parentDirectory, resolvePath } from './paths.js'
 import type { PermissionRule } from './permission/decision.js'
-import { allowedVia, ask, deny } from './permission/decision.js'
+import { allowedVia, ask, deny, PLAIN_MARKS } from './permission/decision.js'
 
 export interface FilesystemPolicyInput {
   path: string
@@ -85,7 +85,7 @@ export function createFilesystemPolicyRule(input: { root: string; policy: Worksp
       if (!asked) return null
       const subject = `${asked.operation}:${effect.path}`
       if (grants.subjectsFor('filesystem_policy').includes(subject)) return allowedVia('filesystem_policy', subject)
-      return ask('filesystem_policy', subject, `Workspace policy requires approval for ${asked.operation} access`, ['once'])
+      return ask({ rule: 'filesystem_policy', subject, reason: `Workspace policy requires approval for ${asked.operation} access`, marks: PLAIN_MARKS, offeredScopes: ['once'] })
     },
   }
 }

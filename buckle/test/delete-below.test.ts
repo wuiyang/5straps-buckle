@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import type { DeletePolicy } from '../common/domain/delete-policy.js'
 import type { ResolvedEffect, TreeCount } from '../common/domain/effect.js'
-import type { GrantLookup, PermissionDecision } from '../common/domain/permission/decision.js'
+import { FILE_FLOOR_MARKS, type GrantLookup, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createPermissionEngine } from '../common/domain/permission/engine.js'
 import { createDestructivePathRule, isFloorSubject } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
@@ -136,7 +136,7 @@ function scratch(): string {
 }
 
 const CALL = { arguments: { paths: ['/srv/data/reports/old.csv'] }, cwd: '/workspace', description: 'Delete 1 file', effects: ['delete /srv/data/reports/old.csv'], complete: true as const }
-const WIDE: Extract<PermissionDecision, { kind: 'ask' }> = { kind: 'ask', rule: 'write_scope', subject: `delete:${MOUNT}/reports`, reason: 'Deleting /data/reports/old.csv asks a person', offeredScopes: ['once', 'session', 'always'], widerSubject: `delete-below:${MOUNT}/reports` }
+const WIDE: Extract<PermissionDecision, { kind: 'ask' }> = { kind: 'ask', ...FILE_FLOOR_MARKS, rule: 'write_scope', subject: `delete:${MOUNT}/reports`, reason: 'Deleting /data/reports/old.csv asks a person', offeredScopes: ['once', 'session', 'always'], widerSubject: `delete-below:${MOUNT}/reports` }
 
 function queue() {
   const root = scratch()

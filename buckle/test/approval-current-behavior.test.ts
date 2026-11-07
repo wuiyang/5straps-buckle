@@ -6,6 +6,7 @@ import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { challengeBytes } from '@5straps/protocol/signed-request'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval-instruction.js'
+import { commandMarks, FILE_FLOOR_MARKS, PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import type { PermissionEngine } from '../common/domain/permission/engine.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { approvalsPath, grantsPath } from '../common/runtime/config.js'
@@ -189,9 +190,9 @@ describe('the checks an answer meets', () => {
 
   it('refuses a scope the ask does not offer, and any approval of an ask recorded without its whole call', async () => {
     const { runtime } = await node()
-    const [secret] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once'] }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
+    const [secret] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env', reason: 'WARNING', offeredScopes: ['once'], ...PLAIN_MARKS }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests
     expect(await runtime.approvalService.answer({ decision: { token: secret!.token, approved: true, scope: 'session' }, authority: 'admin' })).toEqual({ ok: false, reason: 'Scope session is not offered for this approval' })
-    const [bare] = (await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }] })).requests
+    const [bare] = (await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'], ...PLAIN_MARKS }] })).requests
     expect(await runtime.approvalService.answer({ decision: { token: bare!.token, approved: true, scope: 'once' }, authority: 'admin' })).toEqual({ ok: false, reason: `This ask was ${RECORDED_BEFORE_NOTE}` })
     expect(await runtime.approvalService.answer({ decision: { token: bare!.token, approved: false, scope: 'once' }, authority: 'admin' })).toMatchObject({ ok: true })
   })
@@ -221,9 +222,9 @@ describe('the setup face', () => {
 describe('the dangerously-allow switch', () => {
   it('lifts floor asks, a delete\'s and a command\'s, and leaves a restore to a person', () => {
     const asks = [
-      { kind: 'ask' as const, rule: 'destructive_command' as const, subject: 'rm -rf build', reason: 'floor', offeredScopes: ['once' as const, 'session' as const], cause: 'floor' as const },
-      { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'delete:/work/project/src', reason: 'floor', offeredScopes: ['once' as const, 'session' as const, 'always' as const] },
-      { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'restore:change-1', reason: 'floor', offeredScopes: ['once' as const] },
+      { kind: 'ask' as const, rule: 'destructive_command' as const, subject: 'rm -rf build', reason: 'floor', offeredScopes: ['once' as const, 'session' as const], cause: 'floor' as const, ...commandMarks('floor') },
+      { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'delete:/work/project/src', reason: 'floor', offeredScopes: ['once' as const, 'session' as const, 'always' as const], ...FILE_FLOOR_MARKS },
+      { kind: 'ask' as const, rule: 'write_scope' as const, subject: 'restore:change-1', reason: 'floor', offeredScopes: ['once' as const], ...FILE_FLOOR_MARKS },
     ]
     const asking: PermissionEngine = { evaluate: () => ({ kind: 'ask', asks }) }
     const lifted = withDangerouslyAllow(asking, { level: () => 'command', root: () => '/work/project' }).evaluate({ tool: 'shell_exec', effects: [], grants: { subjectsFor: () => [] } })

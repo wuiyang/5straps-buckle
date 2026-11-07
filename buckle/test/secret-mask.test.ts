@@ -10,6 +10,7 @@ import { createApprovalService } from '../common/services/approvals/approval-ser
 import { NO_INTERACTION } from '../common/services/approvals/interaction.js'
 import { createMasker, holdMasker, maskForms, maskHeld, masksHeld } from '../common/services/secrets/mask.js'
 import { fixedInteraction } from './support/interaction.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The secret-references slice, part 6 (docs/user/how-to/secrets.md): every resolved value is shown as [secret:NAME] wherever text
 // leaves Buckle, in its common encodings too when they are at least 8 characters, and every log line, audit entry, and
@@ -186,7 +187,7 @@ describe('while a call holds values', () => {
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: 15_000, interaction: fixedInteraction(NO_INTERACTION) })
     const release = holdMasker(masker())
     try {
-      await service.request({ sessionId: 'chat-1', requestId: 'request-1', tool: 'shell_exec', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/w/out', reason: `writes ${VALUE}`, offeredScopes: ['once'] }], call: { arguments: { args: [VALUE] }, cwd: '/w', description: `runs ${VALUE}`, effects: [`exec echo ${VALUE}`], complete: true } })
+      await service.request({ sessionId: 'chat-1', requestId: 'request-1', tool: 'shell_exec', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/w/out', reason: `writes ${VALUE}`, offeredScopes: ['once'] }], call: { arguments: { args: [VALUE] }, cwd: '/w', description: `runs ${VALUE}`, effects: [`exec echo ${VALUE}`], complete: true } })
     } finally { release() }
     const waiting = service.waiting()
     expect(JSON.stringify(waiting)).not.toContain(VALUE)

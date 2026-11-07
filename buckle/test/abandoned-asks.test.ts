@@ -10,6 +10,7 @@ import { createApprovalService } from '../common/services/approvals/approval-ser
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The MCP asks brief, item 5: a call whose caller left before its hold ended did not run, and its audit entry says so in a
 // code of its own; its ask is marked abandoned, stays answerable for the join window, and makes room under the caps.
@@ -39,7 +40,7 @@ function queue() {
   return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, null)
 }
 
-const outside = (index: number) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
+const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
 function results(runtime: BuckleRuntime, requestId: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)

@@ -17,6 +17,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { ActionTooLargeError, ApprovalLimitError, createApprovalRegistry, MAX_ASK_BYTES, MAX_PENDING_BYTES, MAX_PENDING_BYTES_PER_ACTOR, MAX_PENDING_BYTES_PER_SESSION, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // Owner ruling B and decision D17: hiding is display only. A test turns it off here to show that every approval field
 // then carries the raw call and that the identity a decision binds does not move.
@@ -317,7 +318,7 @@ describe('every approval field a person or a relay reads is redacted (owner deci
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
     const announced: ApprovalRequest[] = []
     const service = createApprovalService({ registry, workspaceId: 'default', serverId: 'node-1', graceMs: 1, interaction: async () => undefined, announce: async (requests) => { announced.push(...requests) } })
-    await service.request({ sessionId: 'chat-1', requestId: 'relay', tool: 'web_fetch', wait: { mode: 'none' }, asks: [{ kind: 'ask', rule: 'network_egress', subject: 'api.example.com', reason: `Reach https://api.example.com/status\nAPI_TOKEN=${SECRET_B}`, offeredScopes: ['once'] }] })
+    await service.request({ sessionId: 'chat-1', requestId: 'relay', tool: 'web_fetch', wait: { mode: 'none' }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject: 'api.example.com', reason: `Reach https://api.example.com/status\nAPI_TOKEN=${SECRET_B}`, offeredScopes: ['once'] }] })
     expect(announced).toHaveLength(1)
     expect(announced[0]).toMatchObject({ subject: 'api.example.com', reason: 'Reach https://api.example.com/status\nAPI_TOKEN=[redacted]' })
     expect(JSON.stringify(announced)).not.toMatch(/5ecret/)
@@ -359,7 +360,7 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     roots.push(root)
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
     const call = { arguments: { content: 'x'.repeat(MAX_ASK_BYTES) } as JsonValue, cwd: root, description: null, effects: [], complete: true as const }
-    await expect(registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call })).rejects.toBeInstanceOf(ActionTooLargeError)
+    await expect(registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call })).rejects.toBeInstanceOf(ActionTooLargeError)
     expect(registry.pending()).toEqual([])
   })
 
@@ -368,7 +369,7 @@ describe('an action shown whole, or refused whole (owner decision D17)', () => {
     roots.push(root)
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root)
     const each = Math.floor(MAX_PENDING_BYTES / 4) - 4_096
-    const ask = (index: number) => registry.ask({ tool: 'fs_write', sessionId: `chat-${index}`, actor: `actor-${index}`, asks: [{ kind: 'ask', rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { content: String(index).repeat(each) }, cwd: root, description: null, effects: [], complete: true } })
+    const ask = (index: number) => registry.ask({ tool: 'fs_write', sessionId: `chat-${index}`, actor: `actor-${index}`, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { content: String(index).repeat(each) }, cwd: root, description: null, effects: [], complete: true } })
     const tokens: string[] = []
     for (const index of [1, 2, 3, 4]) tokens.push((await ask(index)).requests[0]!.token)
     await expect(ask(5)).rejects.toThrow(/waiting in this workspace already hold \d+ bytes.*per workspace/)
@@ -386,7 +387,7 @@ describe('the approval budgets, per session, per caller and per workspace (revie
     roots.push(root)
     return { root, registry: createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root) }
   }
-  const write = (subject: string) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })
+  const write = (subject: string) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once' as const] })
   const whole = (bytes: number, marker = 'x') => ({ arguments: { content: marker.repeat(bytes) } as JsonValue, cwd: '/workspace', description: null, effects: [], complete: true as const })
   const callFiles = (root: string) => { try { return readdirSync(join(root, 'approval-calls')) } catch { return [] } }
 

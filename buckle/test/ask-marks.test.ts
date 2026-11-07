@@ -1,13 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, expectTypeOf, it } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { compileCommandGlob } from '../common/domain/command-glob.js'
 import type { DeletePolicy } from '../common/domain/delete-policy.js'
 import type { ResolvedEffect, TreeCount } from '../common/domain/effect.js'
 import { createPathView } from '../common/domain/path-view.js'
-import { commandMarks } from '../common/domain/permission/decision.js'
+import { ask, commandMarks, PLAIN_MARKS, type AskMarks, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { createDestructivePathRule, isFloorSubject } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { createWriteScopeRule } from '../common/domain/permission/rules/write-scope-rule.js'
@@ -15,6 +15,8 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 
 // The floor and destructive marks the permission rules set on their asks, kept with each ask in the ledger (the approval
 // backend design, slice 3). Nothing reads them yet: they are stored for the decision guard's later checks.
+
+type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
 const WORKSPACE = '/work/project'
 const NO_GRANTS = { subjectsFor: () => [] }
@@ -61,9 +63,14 @@ describe('a file floor ask', () => {
 
   it('leaves a write the folder grant does not cover unmarked', () => {
     const decision = createWriteScopeRule({ paths, strict: false, deletes: ASK }).evaluate({ tool: 'fs_write', effect: { kind: 'write_path', path: `${WORKSPACE}/a.md`, directory: WORKSPACE }, grants: NO_GRANTS })
-    expect(decision).toMatchObject({ kind: 'ask', rule: 'write_scope' })
-    expect(decision).not.toHaveProperty('floor')
-    expect(decision).not.toHaveProperty('destructive')
+    expect(decision).toMatchObject({ kind: 'ask', rule: 'write_scope', floor: false, destructive: false })
+  })
+
+  it('cannot be made without both marks', () => {
+    // @ts-expect-error every ask says whether it is the floor and whether it is destructive
+    const unmarked: Ask = { kind: 'ask', rule: 'write_scope', subject: WORKSPACE, reason: 'outside', offeredScopes: ['once'] }
+    expect(unmarked).not.toHaveProperty('floor')
+    expectTypeOf(ask).parameter(0).toHaveProperty('marks').toEqualTypeOf<Readonly<AskMarks>>()
   })
 })
 
@@ -80,15 +87,14 @@ describe('a destructive command ask', () => {
 
   it('about an interpreter the policy does not allow is destructive and not the floor', () => {
     const decision = command('python3', ['job.py'])
-    expect(decision).toMatchObject({ kind: 'ask', rule: 'destructive_command', cause: 'interpreter', destructive: true })
-    expect(decision).not.toHaveProperty('floor')
+    expect(decision).toMatchObject({ kind: 'ask', rule: 'destructive_command', cause: 'interpreter', floor: false, destructive: true })
   })
 
   it('marks every cause destructive, and the built-in floor and the destructive list alone as the floor', () => {
     expect(commandMarks('floor')).toEqual({ floor: true, destructive: true })
     expect(commandMarks('destructive-list')).toEqual({ floor: true, destructive: true })
-    expect(commandMarks('interpreter')).toEqual({ destructive: true })
-    expect(commandMarks('judge')).toEqual({ destructive: true })
+    expect(commandMarks('interpreter')).toEqual({ floor: false, destructive: true })
+    expect(commandMarks('judge')).toEqual({ floor: false, destructive: true })
   })
 })
 
@@ -107,7 +113,7 @@ describe('the ask record', () => {
     const { file, registry } = ledger()
     await registry.ask({ tool: 'fs_delete', sessionId: 's', call, asks: [
       { kind: 'ask', rule: 'write_scope', subject: 'delete:/workspace', reason: 'Deleting /workspace/a.txt asks a person', offeredScopes: ['once', 'session', 'always'], floor: true, destructive: true },
-      { kind: 'ask', rule: 'write_scope', subject: '/workspace', reason: 'outside', offeredScopes: ['once', 'session', 'always'] },
+      { kind: 'ask', rule: 'write_scope', subject: '/workspace', reason: 'outside', offeredScopes: ['once', 'session', 'always'], ...PLAIN_MARKS },
     ] })
     const stored = JSON.parse(readFileSync(file, 'utf8')) as { pending: Array<{ floor?: boolean; destructive?: boolean }> }
     expect(stored.pending.map(entry => [entry.floor, entry.destructive])).toEqual([[true, true], [false, false]])

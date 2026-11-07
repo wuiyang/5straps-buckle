@@ -18,6 +18,7 @@ import { createDestructiveCommandRule } from '../common/domain/permission/rules/
 import { compilePolicy } from '../common/domain/policy.js'
 import { logger } from '../common/runtime/log.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -25,7 +26,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const ask = (subject = '/outside') => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once', 'session', 'always'] as const })
+const ask = (subject = '/outside') => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'outside', offeredScopes: ['once', 'session', 'always'] as const })
 const whole = (bytes = 1_000): AskedCall => ({ arguments: { content: 'x'.repeat(bytes) }, cwd: '/workspace', description: 'Write files', effects: ['write /outside'], complete: true })
 function queue() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-read-paths-'))

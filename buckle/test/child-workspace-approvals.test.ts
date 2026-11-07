@@ -9,6 +9,7 @@ import { runCli } from './support/cli.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const roots: string[] = []
@@ -37,7 +38,7 @@ async function nodeWithChild(environment: Record<string, string> = {}) {
 async function pendingIn(runtime: BuckleRuntime): Promise<string> {
   const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
-    asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
 }

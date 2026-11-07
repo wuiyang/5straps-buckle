@@ -14,6 +14,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { resolveSettings, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The secret-references slice, part 4 (docs/user/how-to/secrets.md): the first use of a file in a workspace asks a person once under
 // the credential-file rule, naming the file and the NAMEs and never a value; the answer is remembered per workspace and
@@ -108,7 +109,7 @@ describe('the grant a person gives', () => {
     expect(check('one').kind).toBe('allow')
     expect(check('two').kind).toBe(scope === 'always' ? 'allow' : 'ask')
     expect(grants.list()).toMatchObject([{ rule: 'sensitive_path', subject: 'secret-file:/w/.env.local', scope }])
-    const credential = (await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/w/.env.local', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }], call })).requests[0]!
+    const credential = (await approvals.ask({ tool: 'fs_read', sessionId: 'one', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/w/.env.local', reason: 'WARNING', offeredScopes: ['once', 'session', 'always'] }], call })).requests[0]!
     expect(await approvals.resolve({ token: credential.token, approved: true, scope })).toEqual({ ok: false, reason: 'Sensitive files can only be allowed once' })
   })
 })

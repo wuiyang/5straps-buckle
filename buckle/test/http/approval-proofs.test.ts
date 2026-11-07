@@ -11,6 +11,7 @@ import { flushLogs } from '../../common/runtime/log.js'
 import { reviewableArguments } from '../../common/domain/redact.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 // B24, approval-proofs.md: the node signs each waiting ask as a challenge with its own key; a person's
 // client verifies it with the node key it pinned, shows the raw action from it, and signs a decision
@@ -321,13 +322,13 @@ describe('a challenge listing with an ask too long to describe whole', () => {
     // An ask recorded before this build: its arguments may have been cut, so no device decides it (owner decision D17).
     const recordedBefore = await buckle.runtime.approvalService.request({
       sessionId: 'chat-1', requestId: 'legacy-ask', tool: 'fs_read', wait: { mode: 'none' },
-      asks: [{ kind: 'ask', rule: 'read_scope', subject: join(buckle.root, 'legacy'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
+      asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: join(buckle.root, 'legacy'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
       call: { arguments: { path: join(buckle.root, 'legacy', 'a.md') }, truncated: false, cwd: buckle.config.cwd, description: 'Read a.md' },
     })
     // A whole call whose description is longer than a challenge holds, which only a damaged queue can carry.
     const damaged = await buckle.runtime.approvalService.request({
       sessionId: 'chat-1', requestId: 'damaged-ask', tool: 'fs_read', wait: { mode: 'none' },
-      asks: [{ kind: 'ask', rule: 'read_scope', subject: join(buckle.root, 'damaged'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
+      asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: join(buckle.root, 'damaged'), reason: 'Reading outside the sandbox', offeredScopes: ['once'] }],
       call: { arguments: { path: join(buckle.root, 'damaged', 'a.md') }, cwd: buckle.config.cwd, description: 'x'.repeat(5_000), effects: [], complete: true },
     })
     const legacy = recordedBefore.approvals[0]!.token
@@ -612,7 +613,7 @@ describe('a device verifies shared calls and asks the person before approving', 
     const content = 'COMPLETE-LARGE-CALL'.repeat(2_000)
     const asked = await buckle.runtime.approvalService.request({
       sessionId: 'shared-device', requestId: 'shared-device', tool: 'fs_write', wait: { mode: 'none' },
-      asks: [buckle.root, join(buckle.root, 'sub')].map(subject => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject, reason: 'Writing needs approval', offeredScopes: ['once' as const] })),
+      asks: [buckle.root, join(buckle.root, 'sub')].map(subject => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject, reason: 'Writing needs approval', offeredScopes: ['once' as const] })),
       call: { arguments: { path: join(buckle.root, 'notes.md'), content }, cwd: buckle.config.cwd, description: 'Write the entire contents', effects: [join(buckle.root, 'notes.md')], complete: true },
     })
     const listed = await challenges(buckle)

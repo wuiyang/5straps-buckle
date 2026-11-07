@@ -2,6 +2,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 const roots: string[] = []
 const nodes: BuckleHttp[] = []
@@ -26,7 +27,7 @@ const headers = (token: string) => ({ authorization: `Bearer ${token}`, 'content
 describe('owner approval authority', () => {
   it('refuses agent decisions and reusable admin approval authority while permitting admin denial', async () => {
     const { runtime, app, config } = await fixture()
-    const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }], call: { arguments: { path: '/synthetic/fixture.txt' }, cwd: config.cwd, description: 'Read fixture.txt', effects: ['read /synthetic/fixture.txt'], complete: true } })).requests
+    const [approval] = (await runtime.approvals.ask({ tool: 'fs_read', sessionId: 'read-session', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'read_scope', subject: '/synthetic', reason: 'outside', offeredScopes: ['session'] }], call: { arguments: { path: '/synthetic/fixture.txt' }, cwd: config.cwd, description: 'Read fixture.txt', effects: ['read /synthetic/fixture.txt'], complete: true } })).requests
     const body = JSON.stringify({ token: approval!.token, approved: true, scope: 'session' })
     expect((await app.request(app.setup('approvals'), { method: 'POST', headers: headers('agent-token'), body })).status).toBe(401)
     expect((await app.request('/v1/approvals', { method: 'POST', headers: headers('agent-token'), body })).status).toBe(404)

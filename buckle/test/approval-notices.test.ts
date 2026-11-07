@@ -13,6 +13,7 @@ import { NO_INTERACTION, type Interaction } from '../common/services/approvals/i
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 afterEach(() => { vi.useRealTimers() })
 
@@ -107,7 +108,7 @@ function service(input: { graceMs: number | null; interaction?: Interaction; dur
   const notices = createApprovalNotices(async batch => { sent.push(...batch) })
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, input.graceMs, { onExpired: requests => notices.expired(requests), ...(input.durable ? { durableNotices: true } : {}) })
   const approvals = createApprovalService({ registry, workspaceId: 'default', serverId: 'test-node', graceMs: input.graceMs, interaction: fixedInteraction(input.interaction ?? headlessGrace), notices })
-  const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
+  const ask = (overrides: Partial<ApprovalAskInput> = {}) => approvals.request({ sessionId: 's', requestId: `r-${Math.random()}`, tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...overrides })
   return { registry, approvals, sent, ask, notices }
 }
 
@@ -203,7 +204,7 @@ describe('an ask that expires unanswered', () => {
 
 // Review of the MCP asks slice, finding minor-2: an abandoned ask withdrawn to make room is an ask that ended, so it is told.
 describe('an abandoned ask withdrawn to make room for a new one', () => {
-  const outside = (index: number) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
+  const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
   it('is told cancelled', async () => {
     const { registry, ask, sent, notices } = service({ graceMs: 60_000 })

@@ -10,6 +10,7 @@ import { describeOnline, watchOnline } from '../server/roster.js'
 import { logger } from '../common/runtime/log.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // The workspace-model brief, item 4, item 6, Q9, and D85, Q15: every ask names its workspace by name; `buckle approvals`,
 // its watch, and `buckle approve` default to the workspace holding the current directory, take --workspace or --dir for
@@ -44,7 +45,7 @@ async function ask(name: string, path: string): Promise<string> {
   const { runtime } = await byName(manager, name)
   const [request] = (await runtime.approvals.ask({
     tool: 'fs_write', sessionId: 'chat', call: { arguments: { path, content: 'x' }, cwd: '/workspace', description: `Write "${path}"`, effects: [`write ${path}`], complete: true },
-    asks: [{ kind: 'ask', rule: 'write_scope', subject: path, reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: path, reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
 }

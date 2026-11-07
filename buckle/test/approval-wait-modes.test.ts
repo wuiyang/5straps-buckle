@@ -18,6 +18,7 @@ import type { ApprovalAskInput } from '../common/services/approvals/approval-ser
 
 type Ask = ApprovalAskInput['asks'][number]
 import { describeExpiry, remainingMs } from '../common/domain/approval-deadline.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const recorded = { arguments: { path: '/synthetic', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /synthetic'], complete: true as const }
 const roots: string[] = []
@@ -28,7 +29,7 @@ async function fixture(timeoutMs: number | null) {
   const root = directory()
   const approvals = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, timeoutMs)
   const service = createApprovalService({ registry: approvals, workspaceId: 'default', serverId: 'test-node', graceMs: timeoutMs, interaction: fixedInteraction() })
-  const ask: Ask = { kind: 'ask', rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
+  const ask: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: root, reason: 'test write', offeredScopes: ['once'] }
   const request = (asks: Ask[] = [ask]) => service.request({ sessionId: 'test', requestId: `request-${asks.length}`, tool: 'fs_write', call: recorded, asks })
   return { approvals, service, request }
 }
@@ -71,7 +72,7 @@ it.each([true, false])('waits beyond ten minutes until an owner answers approved
 it('does not give an answered once grant an indefinite lifetime', async () => {
   vi.useFakeTimers()
   const { approvals } = await fixture(null)
-  const requests = (await approvals.ask({ call: recorded, tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
+  const requests = (await approvals.ask({ call: recorded, tool: 'fs_write', sessionId: 'test', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/synthetic', reason: 'test write', offeredScopes: ['once'] }] })).requests
   await approvals.resolve({ token: requests[0]!.token, approved: true, scope: 'once' })
   expect(approvals.unspent('test')).toHaveLength(1)
   vi.advanceTimersByTime(10 * 60_000 + 1)
@@ -156,8 +157,8 @@ it('ends a wait with no deadline when one of several gates is denied', async () 
   vi.useFakeTimers()
   const { approvals, request } = await fixture(null)
   const waiting = request([
-    { kind: 'ask', rule: 'write_scope', subject: '/synthetic-directory', reason: 'first gate', offeredScopes: ['once'] },
-    { kind: 'ask', rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] },
+    { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/synthetic-directory', reason: 'first gate', offeredScopes: ['once'] },
+    { kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/synthetic', reason: 'second gate', offeredScopes: ['once'] },
   ])
   await vi.advanceTimersByTimeAsync(10)
   await approvals.resolve({ token: approvals.pending()[0]!.token, approved: false, scope: 'once' })

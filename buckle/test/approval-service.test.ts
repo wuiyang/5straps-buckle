@@ -20,6 +20,7 @@ import { createMcpServer } from '../mcp/server.js'
 import { stdioCallScope } from '../mcp/stdio.js'
 import type { ServerContext } from '@modelcontextprotocol/server'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 function queue(root = mkdtempSync(join(tmpdir(), 'buckle-approval-service-'))) {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root })
@@ -27,7 +28,7 @@ function queue(root = mkdtempSync(join(tmpdir(), 'buckle-approval-service-'))) {
 }
 
 function ask(subject: string, rule: PermissionRuleId = 'write_scope') {
-  return { kind: 'ask' as const, rule, subject, reason: 'outside the workspace', offeredScopes: ['once' as const, 'session' as const] }
+  return { kind: 'ask' as const, ...PLAIN_MARKS, rule, subject, reason: 'outside the workspace', offeredScopes: ['once' as const, 'session' as const] }
 }
 
 function call(overrides: Partial<ApprovalAskInput> = {}): ApprovalAskInput {

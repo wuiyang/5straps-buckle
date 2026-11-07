@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { compileCommandGlob } from '../common/domain/command-glob.js'
 import { judgeable, judgePasses, passKey, quickCovers, ratedDanger, withJudged } from '../common/domain/permission/judged.js'
 import { createDestructiveCommandRule } from '../common/domain/permission/rules/destructive-command-rule.js'
-import type { PermissionDecision } from '../common/domain/permission/decision.js'
+import { PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
 import type { JudgeResult } from '../common/types/ports/judge.js'
 
 // Which asks the decision AI may answer, and what passing one does (D91, brief item 2): the destructive floor marks an
@@ -64,7 +64,7 @@ describe('a verdict that passes a call', () => {
 
   it('takes out the asks it passed, keeps every other, and allows naming the judge beside the grants once none is left', () => {
     const interpreter = floorAsk('python3', ['job.py'])
-    const write: Ask = { kind: 'ask', rule: 'write_scope', subject: '/w', reason: 'write', offeredScopes: ['once'] }
+    const write: Ask = { kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/w', reason: 'write', offeredScopes: ['once'] }
     const outcome = { kind: 'ask' as const, asks: [interpreter, write], allowedBy: ['read_scope:/r'] }
     expect(withJudged(outcome, new Set())).toBe(outcome)
     expect(withJudged(outcome, new Set([passKey(interpreter)]))).toEqual({ kind: 'ask', asks: [write], allowedBy: ['read_scope:/r'] })

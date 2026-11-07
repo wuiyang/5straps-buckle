@@ -15,6 +15,7 @@ import { createApprovalRegistry } from '../common/services/approvals/approval-re
 import { createApprovalService, questionFor } from '../common/services/approvals/approval-service.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { FILE_FLOOR_MARKS } from '../common/domain/permission/decision.js'
 
 // The delete policy brief, item 3: the serve terminal shows both choices for a delete outside the workspace's folder,
 // the entry alone and its folder with its subfolders, each for the session or always, and `buckle approve` gains
@@ -87,7 +88,7 @@ const registry = (config: BuckleConfig) => createApprovalRegistry(grants(config)
 
 /** A delete outside the workspace's folder waiting on the node, with or without its wider subject. */
 async function waiting(config: BuckleConfig, wider = true): Promise<string> {
-  const ask = { kind: 'ask' as const, rule: 'write_scope' as const, subject: `delete:${FOLDER}`, reason: 'Deleting /data/reports/old.csv asks a person', offeredScopes: ['once' as const, 'session' as const, 'always' as const], ...(wider ? { widerSubject: `delete-below:${FOLDER}` } : {}) }
+  const ask = { kind: 'ask' as const, ...FILE_FLOOR_MARKS, rule: 'write_scope' as const, subject: `delete:${FOLDER}`, reason: 'Deleting /data/reports/old.csv asks a person', offeredScopes: ['once' as const, 'session' as const, 'always' as const], ...(wider ? { widerSubject: `delete-below:${FOLDER}` } : {}) }
   const [request] = (await registry(config).ask({ tool: 'fs_delete', sessionId: 'chat-1', call: CALL, asks: [ask] })).requests
   return request!.token
 }

@@ -3,7 +3,7 @@ import { relievedDelete, type DeletePolicy } from '../../delete-policy.js'
 import { outsideMountReason, readOnlyMountReason, type PathView } from '../../path-view.js'
 import { isInside, isInsideAny, isInsideComparable } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
-import { allowedVia, ask, deny } from '../decision.js'
+import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
 import { isFloorSubject } from './destructive-path-rule.js'
 
 export interface WriteScopeOptions {
@@ -69,7 +69,7 @@ export function createWriteScopeRule({ paths, strict, pathDecision, caseInsensit
       const granted = grants.subjectsFor('write_scope').filter(subject => !isFloorSubject(subject)).find(root => isInside(root, effect.path))
       if (granted) return allowedVia('write_scope', granted)
       const free = paths.scratchRoots.length > 0 ? `. Writable without asking: ${paths.scratchRoots.join(', ')}` : ''
-      return ask('write_scope', effect.directory, `Writing to ${paths.toVirtual(effect.directory)} is not yet approved${free}`, offeredScopes)
+      return ask({ rule: 'write_scope', subject: effect.directory, reason: `Writing to ${paths.toVirtual(effect.directory)} is not yet approved${free}`, marks: PLAIN_MARKS, offeredScopes })
     },
   }
 }

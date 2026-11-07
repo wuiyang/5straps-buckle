@@ -16,8 +16,8 @@ type Ask = Extract<PermissionDecision, { kind: 'ask' }>
  * rewrites data (every destructive command ask, and the file floor).
  */
 export interface AskMarks {
-  floor?: true
-  destructive?: true
+  floor: boolean
+  destructive: boolean
 }
 
 /**
@@ -59,24 +59,32 @@ export interface PermissionRule {
   evaluate(input: RuleInput): PermissionDecision | null
 }
 
-export function ask(
-  rule: PermissionRuleId,
-  subject: string,
-  reason: string,
-  offeredScopes: GrantScope[] = ['once', 'session', 'always'],
-  cause?: AskCause,
-  severity?: ApprovalSeverity,
-): Ask {
-  return { kind: 'ask', rule, subject, reason, offeredScopes, ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }) }
+export function ask(input: {
+  rule: PermissionRuleId
+  subject: string
+  reason: string
+  marks: Readonly<AskMarks>
+  offeredScopes?: GrantScope[]
+  cause?: AskCause
+  severity?: ApprovalSeverity
+}): Ask {
+  const { rule, subject, reason, marks, cause, severity } = input
+  return {
+    kind: 'ask', rule, subject, reason, offeredScopes: input.offeredScopes ?? ['once', 'session', 'always'], floor: marks.floor, destructive: marks.destructive,
+    ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }),
+  }
 }
 
-/** The marks of a destructive command's ask: every one is destructive, and the built-in floor's and the destructive list's are the floor too. */
-export function commandMarks(cause: AskCause): AskMarks {
-  return cause === 'floor' || cause === 'destructive-list' ? { floor: true, destructive: true } : { destructive: true }
-}
+/** The marks of an ask that is neither the floor nor destructive. */
+export const PLAIN_MARKS: Readonly<AskMarks> = { floor: false, destructive: false }
 
 /** The marks of every ask the file floor makes. */
 export const FILE_FLOOR_MARKS: Readonly<AskMarks> = { floor: true, destructive: true }
+
+/** The marks of a destructive command's ask: every one is destructive, and the built-in floor's and the destructive list's are the floor too. */
+export function commandMarks(cause: AskCause): AskMarks {
+  return { floor: cause === 'floor' || cause === 'destructive-list', destructive: true }
+}
 
 export function deny(rule: PermissionRuleId, subject: string, reason: string): PermissionDecision {
   return { kind: 'deny', rule, subject, reason }

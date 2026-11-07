@@ -11,6 +11,7 @@ import { createMcpServer } from '../mcp/server.js'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // Review item 1 of the proof-of-possession fixes (S1 and S2 of the B23-B25 review): a `once` decided on
 // an ask covers the call that asked and no other, whichever route decided it (policy.md: "Once binds to
@@ -180,7 +181,7 @@ describe.each([['the admin bearer', false], ['a sealed envelope', true]] as cons
     const setup = await node({ paired })
     try {
       const call = state === 'no-call' ? undefined : { arguments: { path: 'one/notes.md', content: 'hello' }, cwd: setup.workspace, description: 'Write hello', ...(state === 'incomplete' ? {} : { complete: true as const }) }
-      const issued = await setup.runtime.approvals.ask({ tool: 'fs_write', sessionId: SESSION, asks: [{ kind: 'ask', rule: 'write_scope', subject: join(setup.workspace, 'one'), reason: 'Write needs approval', offeredScopes: ['once', 'session'] }], ...(call === undefined ? {} : { call }) })
+      const issued = await setup.runtime.approvals.ask({ tool: 'fs_write', sessionId: SESSION, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: join(setup.workspace, 'one'), reason: 'Write needs approval', offeredScopes: ['once', 'session'] }], ...(call === undefined ? {} : { call }) })
       const token = issued.requests[0]!.token
       if (state === 'missing-file' || state === 'unreadable-file') {
         const stored = JSON.parse(readFileSync(join(setup.config.stateDirectory, 'approvals.json'), 'utf8')) as { pending: Array<{ request: { token: string }; callFile: { id: string } }> }

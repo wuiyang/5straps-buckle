@@ -1,7 +1,7 @@
 import { reservedRangeOf } from '../../ip.js'
 import { matchingHostEntry, starredHostRefusal, type UrlMatcher } from '../../url-pattern.js'
 import type { PermissionRule } from '../decision.js'
-import { allowedVia, ask, deny } from '../decision.js'
+import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
 
 const ALLOWED_PROTOCOLS = new Set(['http:', 'https:'])
 const LOCAL_HOSTNAMES = new Set(['localhost', 'localhost.localdomain', 'ip6-localhost', 'ip6-loopback'])
@@ -42,7 +42,7 @@ export function createNetworkEgressRule(options: NetworkEgressOptions = { approv
       if (!reason) return { kind: 'allow' }
       const covering = coveringGrant({ exact: grants.subjectsFor('network_egress'), patterns: grants.patternsFor?.('network_egress') ?? [] }, url)
       if (covering) return allowedVia('network_egress', covering)
-      return ask('network_egress', subject, reason)
+      return ask({ rule: 'network_egress', subject, reason, marks: PLAIN_MARKS })
     },
   }
 }

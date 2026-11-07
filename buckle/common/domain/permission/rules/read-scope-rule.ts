@@ -1,7 +1,7 @@
 import { outsideMountReason, type PathView } from '../../path-view.js'
 import { isInside, isInsideAny } from '../../paths.js'
 import type { PermissionRule } from '../decision.js'
-import { allowedVia, ask, deny } from '../decision.js'
+import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
 
 /**
  * Reads are free inside the workspace and inside each mount the owner shares into it (Phase 2 item 2); anything else
@@ -24,7 +24,7 @@ export function createReadScopeRule({ paths }: { paths: PathView }): PermissionR
       const granted = grants.subjectsFor('read_scope').find(root => isInside(root, effect.path))
       if (granted) return allowedVia('read_scope', granted)
       // Naming the roots turns a refusal into directions, for a caller that cannot read the manifest.
-      return ask('read_scope', effect.directory, `${paths.toVirtual(effect.path)} is outside the sandbox. Readable without asking: ${paths.displayRoot}`)
+      return ask({ rule: 'read_scope', subject: effect.directory, reason: `${paths.toVirtual(effect.path)} is outside the sandbox. Readable without asking: ${paths.displayRoot}`, marks: PLAIN_MARKS })
     },
   }
 }

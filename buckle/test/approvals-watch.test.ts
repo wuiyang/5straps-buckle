@@ -15,6 +15,7 @@ import { createApprovalService, type ApprovalService } from '../common/services/
 import type { ActionLog } from '../common/types/ports/action-log.js'
 import { fixedInteraction } from './support/interaction.js'
 import { mkdirSync } from 'node:fs'
+import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 
 const POLL = { first: 20, idle: 50 }
 
@@ -39,7 +40,7 @@ function serviceOf(config: BuckleConfig) {
 async function issue(registry: ApprovalRegistry): Promise<string> {
   const [request] = (await registry.ask({
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
-    asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
   return request!.token
 }
@@ -77,7 +78,7 @@ async function prompted(terminal: ReturnType<typeof keyboardTerminal>, times = 1
 async function issuePrivate(registry: ApprovalRegistry, subject: string): Promise<string> {
   const [request] = (await registry.ask({
     tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: `http://${subject}/` }, cwd: '/workspace', description: null, effects: [`network http://${subject}/`], complete: true },
-    asks: [{ kind: 'ask', rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
+    asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject, reason: `${subject} is private`, offeredScopes: ['once', 'session', 'always'] }],
   })).requests
   return request!.token
 }
@@ -149,7 +150,7 @@ describe('buckle approvals --watch', () => {
     const content = `WHOLE-WATCH-CONTENT${'x'.repeat(1_024 * 1_024)}`
     const effect = `WHOLE-WATCH-EFFECT${'e'.repeat(64 * 1_024)}`
     const { requests } = await registry.ask({ tool: 'fs_write', sessionId: 'group',
-      asks: Array.from({ length: 3 }, (_, index) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/group-${index}`, reason: 'outside the workspace', offeredScopes: ['once' as const] })),
+      asks: Array.from({ length: 3 }, (_, index) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/group-${index}`, reason: 'outside the workspace', offeredScopes: ['once' as const] })),
       call: { arguments: { content }, cwd: '/workspace', description: 'Write the complete group contents', effects: [effect], complete: true },
     })
     const approvals = serviceOf(config)
@@ -180,7 +181,7 @@ describe('buckle approvals --watch', () => {
   it('offers only the denial command after skipping an ask without a complete recorded call', async () => {
     const config = node()
     const registry = registryOf(config)
-    const { requests: [request] } = await registry.ask({ tool: 'fs_write', sessionId: 'legacy', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside', offeredScopes: ['once'] }] })
+    const { requests: [request] } = await registry.ask({ tool: 'fs_write', sessionId: 'legacy', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/old.md', reason: 'outside', offeredScopes: ['once'] }] })
     const approvals = serviceOf(config)
     const { terminal, done } = watch(approvals)
     try {
@@ -495,7 +496,7 @@ describe('buckle approvals --watch, keys meant for another question', () => {
 it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file warning choices and persists %s denial', async (key, scope) => {
   const config = node()
   const registry = registryOf(config)
-  await registry.ask({ tool: 'fs_read', sessionId: 'chat-1', call: { arguments: { path: '/workspace/.env.local' }, cwd: '/workspace', description: null, effects: ['read /workspace/.env.local'], complete: true }, asks: [{ kind: 'ask', rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
+  await registry.ask({ tool: 'fs_read', sessionId: 'chat-1', call: { arguments: { path: '/workspace/.env.local' }, cwd: '/workspace', description: null, effects: ['read /workspace/.env.local'], complete: true }, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env.local', reason: 'WARNING: exposes credentials', offeredScopes: ['once'] }] })
   const { terminal, done } = watch(serviceOf(config))
   try {
     await prompted(terminal)
@@ -515,7 +516,7 @@ it.each([['ds', 'session'], ['da', 'always']] as const)('offers sensitive-file w
 it('marks an ask recorded before this build, grants nothing for an approving key, and denies it with d', async () => {
   const config = node()
   const registry = registryOf(config)
-  const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
+  const [request] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
   const { terminal, done } = watch(serviceOf(config))
   try {
     await vi.waitFor(() => expect(terminal.shown()).toMatch(/d\) deny {2}n\) skip > /), { timeout: 3_000 })
@@ -545,7 +546,7 @@ describe('the judge line in buckle approvals --watch (follow-up F6)', () => {
     const subject = 'python3 job.py'
     const [request] = (await registry.ask({
       tool: 'shell_exec', sessionId: 'chat-1', call: { arguments: { command: 'python3', args: ['job.py'] }, cwd: '/workspace', description: 'Run "python3 job.py"', effects: ['exec python3 job.py'], complete: true, judge: [{ subject, onRequest: true }] },
-      asks: [{ kind: 'ask', rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
+      asks: [{ kind: 'ask', ...commandMarks('interpreter'), rule: 'destructive_command', subject, reason: 'An interpreter the policy does not allow', offeredScopes: ['once'] }],
     })).requests
     const approvals = serviceOf(config)
     const terminal = keyboardTerminal()

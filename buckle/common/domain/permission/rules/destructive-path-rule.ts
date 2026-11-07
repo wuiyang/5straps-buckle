@@ -92,10 +92,10 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
       const held = grants.subjectsFor('write_scope')
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
-      if (outside === undefined) return { ...ask('write_scope', floor.subject, floor.reason, floor.once ? ['once'] : offeredScopes, undefined, floor.severity), ...FILE_FLOOR_MARKS }
+      if (outside === undefined) return ask({ rule: 'write_scope', subject: floor.subject, reason: floor.reason, marks: FILE_FLOOR_MARKS, offeredScopes: floor.once ? ['once'] : offeredScopes, severity: floor.severity })
       const below = held.find(subject => subject.startsWith(DELETE_BELOW_PREFIX) && grantable(subject.slice(DELETE_BELOW_PREFIX.length)) && isInside(subject.slice(DELETE_BELOW_PREFIX.length), outside.path))
       if (below !== undefined) return allowedVia('write_scope', below)
-      return { ...ask('write_scope', floor.subject, floor.reason, offeredScopes, undefined, floor.severity), ...FILE_FLOOR_MARKS, ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
+      return { ...ask({ rule: 'write_scope', subject: floor.subject, reason: floor.reason, marks: FILE_FLOOR_MARKS, offeredScopes, severity: floor.severity }), ...(input.strict || !grantable(outside.directory) ? {} : { widerSubject: `${DELETE_BELOW_PREFIX}${outside.directory}` }) }
     },
   }
 }

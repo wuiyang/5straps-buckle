@@ -8,6 +8,7 @@ import type { PermissionOutcome } from '../common/domain/permission/engine.js'
 import { createApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const roots: string[] = []
 afterEach(() => {
@@ -15,7 +16,7 @@ afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-const prompt = { kind: 'ask' as const, rule: 'write_scope' as const, subject: '/outside', reason: 'Write outside', offeredScopes: ['once'] as const }
+const prompt = { kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: '/outside', reason: 'Write outside', offeredScopes: ['once'] as const }
 const DECIDER = `key:SHA256:${'A'.repeat(43)}`
 
 async function queue() {

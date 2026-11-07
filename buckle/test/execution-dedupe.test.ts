@@ -11,6 +11,7 @@ import { ToolExecutionError } from '../common/domain/tool.js'
 import { AuditUnavailableError } from '../common/adapters/action-log/file-action-log.js'
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
 // (nitro/coordination.md, Completion and queue: "Reconnection must not execute a request twice").
@@ -254,7 +255,7 @@ describe('shutdown\'s tool calls step (B19)', () => {
     const { runtime, root } = await node()
     await runtime.cancelInvocations()
     // The service's own close settles waits; the jobs step alone reaches no approval wait.
-    const waiting = runtime.approvalService.request({ sessionId: 'chat-1', requestId: requestIdKey('after-jobs'), tool: 'fs_write', asks: [{ kind: 'ask', rule: 'write_scope', subject: join(root, 'outside.md'), reason: 'outside', offeredScopes: ['once'] }] })
+    const waiting = runtime.approvalService.request({ sessionId: 'chat-1', requestId: requestIdKey('after-jobs'), tool: 'fs_write', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: join(root, 'outside.md'), reason: 'outside', offeredScopes: ['once'] }] })
     await vi.waitFor(() => expect(runtime.approvals.pending()).toHaveLength(1))
     await runtime.approvalService.close()
     expect(await waiting).toMatchObject({ settled: false })

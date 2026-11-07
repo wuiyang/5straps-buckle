@@ -3,7 +3,7 @@ import { comparablePath, isInside, isInsideAny, segments } from '../../paths.js'
 import { wordList } from '../../word-list.js'
 import type { GrantScope } from '@5straps/protocol'
 import type { PermissionDecision, PermissionRule, RuleInput } from '../decision.js'
-import { allowedVia, ask, deny } from '../decision.js'
+import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
 
 /** Directory names whose entire subtree holds credentials. */
 const SENSITIVE_DIRECTORIES = new Set([
@@ -102,7 +102,7 @@ export function createSensitivePathRule(options: SensitivePathOptions = { protec
 
       // Matched on the exact path: a granted directory must never unlock a secret inside it.
       if (grants.subjectsFor('sensitive_path').includes(effect.path)) return allowedVia('sensitive_path', effect.path)
-      return ask('sensitive_path', effect.path, `WARNING: This file may contain credentials. Allowing access exposes its contents to the agent or command. ${reason}`, ['once'])
+      return ask({ rule: 'sensitive_path', subject: effect.path, reason: `WARNING: This file may contain credentials. Allowing access exposes its contents to the agent or command. ${reason}`, marks: PLAIN_MARKS, offeredScopes: ['once'] })
     },
   }
 }
@@ -121,7 +121,7 @@ function secretFileDecision(input: { effect: Extract<RuleInput['effect'], { kind
   if (grants.subjectsFor('sensitive_path').includes(subject)) return allowedVia('sensitive_path', subject)
   if (input.options.secretListed?.(effect.path)) return { kind: 'allow' }
   const scopes: GrantScope[] = input.options.strict ? ['once', 'session'] : ['once', 'session', 'always']
-  return ask('sensitive_path', subject, `WARNING: Buckle reads ${effect.names.join(', ')} from ${wordList(effect.written)} for this call and puts each value where its secret reference stands, in the command, the browser fill, or the request header; the agent sees [secret:NAME] in its place, never the value. Allowing this file lets the scope you choose read any NAME in it this way.`, scopes)
+  return ask({ rule: 'sensitive_path', subject, reason: `WARNING: Buckle reads ${effect.names.join(', ')} from ${wordList(effect.written)} for this call and puts each value where its secret reference stands, in the command, the browser fill, or the request header; the agent sees [secret:NAME] in its place, never the value. Allowing this file lets the scope you choose read any NAME in it this way.`, marks: PLAIN_MARKS, offeredScopes: scopes })
 }
 
 export function sensitivePathReason(path: string): string | null {

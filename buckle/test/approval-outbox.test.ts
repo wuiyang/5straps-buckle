@@ -12,6 +12,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { createApprovalNotices, type ApprovalNotices } from '../common/services/approvals/approval-notices.js'
 import { APPROVAL_OUTBOX_BYTES_MAX, APPROVAL_OUTBOX_COUNT_MAX, APPROVAL_OUTBOX_RETENTION_MS, createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { logger } from '../common/runtime/log.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 const at = new Date('2026-10-01T12:00:00.000Z').getTime()
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals() })
@@ -22,7 +23,7 @@ function queue(workspaceRoot?: string, stateDirectory?: string) {
   const open = () => createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace }), file, workspace, 1, { durableNotices: true })
   const registry = open()
   const ask = async (count = 1, sessionId: string = randomUUID()) => (await registry.ask({ tool: 'fs_write', sessionId,
-    asks: Array.from({ length: count }, (_, i) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${i}`, reason: 'outside', offeredScopes: ['once' as const] })),
+    asks: Array.from({ length: count }, (_, i) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${i}`, reason: 'outside', offeredScopes: ['once' as const] })),
     call: { arguments: { path: '/outside', content: 'x' }, cwd: root, description: null, complete: true },
   })).requests
   return { root, workspace, file, registry, open, ask }
@@ -317,7 +318,7 @@ describe('the outcome sender keeps its retry delay while the receiver fails', ()
     const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: root }), join(root, 'approvals.json'), root, 1, { durableNotices: true, onNoticeQueued: () => { void notices?.flush() } })
     const attempts: number[] = []
     notices = createApprovalNotices(async () => { attempts.push(Date.now()); throw new Error('HTTP 503') }, { registry, retryMs: 2_000 })
-    const asked = async () => (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { path: '/outside', content: 'x' }, cwd: root, description: null, complete: true } })).requests
+    const asked = async () => (await registry.ask({ tool: 'fs_write', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call: { arguments: { path: '/outside', content: 'x' }, cwd: root, description: null, complete: true } })).requests
     try {
       await registry.cancel((await asked()).map(request => request.token))
       await vi.waitFor(() => expect(attempts).toHaveLength(1))

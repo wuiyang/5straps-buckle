@@ -12,6 +12,7 @@ import { MAX_SESSION_ID } from '../common/services/invocation/invoker.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 
 /** A node whose gated calls wait a minute, with two directories a write asks for. */
 async function node(interaction = headlessGrace) {
@@ -24,7 +25,7 @@ async function node(interaction = headlessGrace) {
 
 const batch = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_write_batch', args: { files: [{ path: 'one/a.md', content: 'a' }, { path: 'two/b.md', content: 'b' }] }, approvalTokens: [] })
 const single = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] })
-const outside = (index: number) => ({ kind: 'ask' as const, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
+const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
 function results(runtime: BuckleRuntime, requestId: string) {
   return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
