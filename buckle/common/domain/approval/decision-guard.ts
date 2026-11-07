@@ -2,14 +2,12 @@ import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5stra
 import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
 import { atLeast, rightsOf, type SourceRights } from './assurance.js'
+import { RECORDED_BEFORE_NOTE } from './recorded-before-note.js'
 import { routeOf, type RecordedRoute } from './routes.js'
 import type { AskMarks } from '../permission/decision.js'
 import { FLOOR_POLICY, type FloorPolicy } from '../permission/floor-policy.js'
 import { isSecretFileSubject } from '../permission/rules/sensitive-path-rule.js'
 import { compileHostPattern, UrlPatternError } from '../url-pattern.js'
-
-/** Owner decision D17: every route's words for an ask whose whole call cannot be shown, which nobody approves. */
-export const RECORDED_BEFORE_NOTE = 'recorded before this build, or its kept call is missing or damaged: its whole call cannot be shown, so it cannot be approved; deny it, or have the agent re-send the call to ask again'
 
 export type GuardRefusalCode = Extract<ApprovalErrorCode,
   | 'unknown_ask' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action' | 'scope_not_offered' | 'scope_forbidden'

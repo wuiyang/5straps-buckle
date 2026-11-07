@@ -35,7 +35,8 @@ const TERMINAL_DEPENDS_ON = ['@5straps/runtime', '../../types/ports/approval-bac
 const BEYOND_A_BACKEND = /^common\/(?:domain\/approval\/asked-call|services\/approvals\/)/
 const OWN_MODULES = 'common/adapters/approval/'
 const FORMS_BACKEND = 'mcp/forms-backend.ts'
-const BEYOND_A_FORMS_BACKEND = /(?:domain\/approval\/asked-call|services\/|workspaces\/)/
+// What no backend reaches through any module: the permission engine, the guard, the ledger's schema, and the services.
+const BEYOND_ANY_BACKEND = /^common\/(?:domain\/permission\/|domain\/approval\/(?:asked-call|decision-guard)|services\/)/
 
 // A device's proof, minted by the node's request verifier alone once a signature checked.
 const MINTS_A_DEVICE_PROOF = /(?<!function )\bmintDeviceProof\(/
@@ -43,8 +44,11 @@ const REQUEST_VERIFIER = 'common/services/access/signed-requests.ts'
 
 const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
 
-/** Every module a file imports, package-relative, following the imports of the modules beside it in its own folder. */
-function reachedFrom(file: string): string[] {
+/**
+ * Every module a file imports, package-relative, following the imports of the modules beside it in its own folder, or of
+ * every module where `follow` is `all`.
+ */
+function reachedFrom(file: string, follow: 'own' | 'all' = 'own'): string[] {
   const reached = new Set<string>()
   const visit = (path: string) => {
     for (const specifier of importsOf(join(PACKAGE_ROOT, path))) {
@@ -52,7 +56,7 @@ function reachedFrom(file: string): string[] {
       const target = relative(PACKAGE_ROOT, resolve(dirname(join(PACKAGE_ROOT, path)), specifier)).replace(/\.js$/, '.ts')
       if (reached.has(target)) continue
       reached.add(target)
-      if (target.startsWith(OWN_MODULES)) visit(target)
+      if (follow === 'all' || target.startsWith(OWN_MODULES)) visit(target)
     }
   }
   visit(file)
@@ -132,8 +136,8 @@ describe('the approval boundary', () => {
     expect(reachedFrom(TERMINAL_BACKEND).filter(path => BEYOND_A_BACKEND.test(path))).toEqual([])
   })
 
-  it('builds the forms backend on the contract and the display modules, never the ledger\'s schema or the approval services', () => {
-    expect(importsOf(join(PACKAGE_ROOT, FORMS_BACKEND)).filter(specifier => BEYOND_A_FORMS_BACKEND.test(specifier))).toEqual([])
+  it('builds the forms backend on the contract and the display modules, never reaching the permission engine, the guard, the ledger\'s schema, or the services', () => {
+    expect(reachedFrom(FORMS_BACKEND, 'all').filter(path => BEYOND_ANY_BACKEND.test(path))).toEqual([])
   })
 
   it('keeps the backend contract off the ledger\'s schema and the approval services', () => {

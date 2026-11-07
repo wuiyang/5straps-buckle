@@ -1,6 +1,6 @@
 import type { ApprovalRequest, ApprovalSeverity, GrantScope, JsonValue, PermissionRuleId } from '@5straps/protocol'
 import { describeExpiry } from './approval-deadline.js'
-import { RECORDED_BEFORE_NOTE } from './approval/decision-guard.js'
+import { RECORDED_BEFORE_NOTE } from './approval/recorded-before-note.js'
 import type { RatingNote } from '../types/ports/approval-backend.js'
 
 /**

@@ -1,6 +1,7 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { guardDecision, RECORDED_BEFORE_NOTE, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { guardDecision, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-note.js'
 import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
