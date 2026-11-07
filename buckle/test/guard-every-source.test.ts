@@ -13,6 +13,7 @@ import { FLOOR_POLICY, type FloorPolicy } from '../common/domain/permission/floo
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructivePathRule } from '../common/domain/permission/rules/destructive-path-rule.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
+import { grantLookup } from '../common/services/approvals/approval-gate.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 
@@ -139,6 +140,36 @@ describe('the file floor\'s offered scopes (owner question 1)', () => {
 
   it('offers once and the session alone with the switch turned the other way', () => {
     expect(floor({ ...FLOOR_POLICY, alwaysAtFloor: false }).evaluate({ tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)], grants: NONE })).toMatchObject({ kind: 'ask', asks: [{ offeredScopes: ['once', 'session'] }] })
+  })
+})
+
+describe('a grant held on the file floor', () => {
+  const OFF: FloorPolicy = { ...FLOOR_POLICY, alwaysAtFloor: false }
+  const floor = (policy?: FloorPolicy) => createPermissionEngine([createDestructivePathRule({ paths: createPathView({ root: WORKSPACE, mount: null }), strict: false, deletes: { inWorkspace: 'ask', massLimit: 100 }, home: '/home/owner', ...(policy ? { policy } : {}) })])
+  const inside = { tool: 'fs_delete', effects: [removed(`${WORKSPACE}/a.txt`)] }
+  const outside = { tool: 'fs_delete', effects: [removed('/srv/data/old.csv')] }
+
+  async function held(scope: 'session' | 'always') {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-floor-grants-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
+    for (const subject of [`delete:${WORKSPACE}`, 'delete-below:/srv']) await store.grant({ sessionId: 's-1', rule: 'write_scope', subject, scope })
+    return grantLookup({ store, holder: { sessionId: 's-1' }, consumed: [] })
+  }
+
+  it('clears the ask when made always, as today', async () => {
+    const grants = await held('always')
+    for (const call of [inside, outside]) expect(floor().evaluate({ ...call, grants })).toMatchObject({ kind: 'allow' })
+  })
+
+  it('no longer clears the ask when made always, with the switch turned the other way', async () => {
+    const grants = await held('always')
+    for (const call of [inside, outside]) expect(floor(OFF).evaluate({ ...call, grants })).toMatchObject({ kind: 'ask' })
+  })
+
+  it('still clears the ask when made for the session, with the switch turned the other way', async () => {
+    const grants = await held('session')
+    for (const call of [inside, outside]) expect(floor(OFF).evaluate({ ...call, grants })).toMatchObject({ kind: 'allow' })
   })
 })
 

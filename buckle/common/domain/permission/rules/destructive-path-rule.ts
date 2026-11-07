@@ -82,7 +82,8 @@ export function floorSubjectPath(subject: string): string | null {
  * it puts back are judged beside it as writes, and the write scope asks nothing of them (write-scope-rule.ts).
  */
 export function createDestructivePathRule(input: { paths: PathView; strict: boolean; deletes: DeletePolicy; home?: string; policy?: FloorPolicy }): PermissionRule {
-  const offeredScopes: GrantScope[] = input.strict ? ['once'] : (input.policy ?? FLOOR_POLICY).alwaysAtFloor ? ['once', 'session', 'always'] : ['once', 'session']
+  const { alwaysAtFloor } = input.policy ?? FLOOR_POLICY
+  const offeredScopes: GrantScope[] = input.strict ? ['once'] : alwaysAtFloor ? ['once', 'session', 'always'] : ['once', 'session']
   const home = input.home ?? homeDirectory()
   const grantable = (folder: string) => !isInside(folder, home) && !input.paths.reachableRoots.some(root => isInside(folder, root) && !isInside(root, folder))
   return {
@@ -90,7 +91,8 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
     evaluate({ effect, effects, run, grants }) {
       const floor = floorAsk(effect, effects ?? [effect], run, input)
       if (floor === null) return null
-      const held = grants.subjectsFor('write_scope')
+      // Where the floor offers no always, an always grant made before clears nothing either.
+      const held = grants.subjectsFor('write_scope', alwaysAtFloor ? undefined : SHORT_OF_ALWAYS)
       if (held.includes(floor.subject)) return allowedVia('write_scope', floor.subject)
       const { outside } = floor
       if (outside === undefined) return ask({ rule: 'write_scope', subject: floor.subject, reason: floor.reason, marks: FILE_FLOOR_MARKS, offeredScopes: floor.once ? ['once'] : offeredScopes, severity: floor.severity })
@@ -100,6 +102,8 @@ export function createDestructivePathRule(input: { paths: PathView; strict: bool
     },
   }
 }
+
+const SHORT_OF_ALWAYS: readonly GrantScope[] = ['once', 'session']
 
 /** What the floor asks about one effect, and, for a delete outside the workspace's folder, the entry a wider grant may cover. */
 interface FloorAsk { subject: string; reason: string; severity: ApprovalSeverity; outside?: { path: string; directory: string }; once?: true }

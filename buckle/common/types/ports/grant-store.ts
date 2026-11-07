@@ -4,8 +4,8 @@ import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 export interface GrantStore {
   /** The workspace whose grants it holds, by id; the approval ledger is keyed by the same id. */
   readonly workspace: string
-  /** Exact subjects currently granted for a rule, filtered to this holder and to unexpired records. */
-  activeSubjects(input: GrantHolder & { rule: PermissionRuleId }): string[]
+  /** Exact subjects currently granted for a rule, filtered to this holder, to unexpired records, and to `scopes` where named. */
+  activeSubjects(input: GrantHolder & { rule: PermissionRuleId; scopes?: readonly GrantScope[] }): string[]
   /** Host patterns granted with `buckle approve --host`, under the same filters. */
   activePatterns(input: GrantHolder & { rule: PermissionRuleId }): string[]
   grant(input: {

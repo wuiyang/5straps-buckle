@@ -82,7 +82,7 @@ export function grantLookup(input: { store: GrantStore; holder: GrantHolder; con
   return {
     // A lasting denial binds its whole session, whichever actor asked in it.
     deniedSubjectsFor: rule => deniedSubjects(store, holder.sessionId, rule),
-    subjectsFor: rule => [...store.activeSubjects({ ...holder, rule }), ...subjectsByRule(input.consumed, rule)],
+    subjectsFor: (rule, scopes) => [...store.activeSubjects({ ...holder, rule, ...(scopes === undefined ? {} : { scopes }) }), ...(scopes === undefined || scopes.includes('once') ? subjectsByRule(input.consumed, rule) : [])],
     // A `once` stays exact, so only standing grants can hold a pattern.
     patternsFor: rule => store.activePatterns({ ...holder, rule }),
   }

@@ -1,11 +1,14 @@
 /**
- * How the destructive floor meets scope always and the dangerously-allow switch: owner questions 1 and 4 of the approval
- * backend design, both answered "keep today's behavior" on 2026-11-07. Turning a switch off is the safer default.
+ * How the destructive floor meets scope always and the dangerously-allow switch. Both are on, today's behavior; turning
+ * one off is the safer default.
  */
 export interface FloorPolicy {
-  /** Question 1: the file floor offers scope always, and a destructive ask may take it where offered. */
+  /**
+   * Whether the file floor offers scope always, a destructive ask may take it where offered, and an always grant made
+   * earlier on a floor subject or a `delete-below` folder still clears its ask.
+   */
   alwaysAtFloor: boolean
-  /** Question 4: the dangerously-allow switch lifts floor asks too. */
+  /** Whether the dangerously-allow switch lifts floor asks too. */
   switchLiftsFloor: boolean
 }
 

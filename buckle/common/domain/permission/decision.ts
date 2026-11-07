@@ -37,8 +37,8 @@ export interface GrantReference {
 
 export interface GrantLookup {
   deniedSubjectsFor?(rule: PermissionRuleId): string[]
-  /** Exact subjects, each compared as it was recorded. */
-  subjectsFor(rule: PermissionRuleId): string[]
+  /** Exact subjects, each compared as it was recorded; with `scopes`, those granted under one of them alone. */
+  subjectsFor(rule: PermissionRuleId, scopes?: readonly GrantScope[]): string[]
   /** Host patterns the owner widened a network approval to; absent where none can exist. */
   patternsFor?(rule: PermissionRuleId): string[]
 }
