@@ -697,7 +697,7 @@ describe('content keys and logger config (ruling 8)', () => {
     root.logger.debug('patched', { diff: '+ secret line', statusText: 'Not Found' })
     await root.flush()
     expect(sink.events[0]!.fields).toEqual({ diff: '[omitted 13 bytes]', statusText: 'Not Found' })
-    const malformed: unknown[] = [{ omitKeys: 'diff' }, { omitKeys: ['diff', 1] }, { allowKeys: 'body' }, { level: 'verbose' }, { queueLimit: 0 }, { retryDelaysMs: [0] }, { retryDelaysMs: 'fast' }, { maxStringBytes: Number.NaN }, { maxEventBytes: -1 }, { maxObjectKeys: 1.5 }]
+    const malformed: unknown[] = [{ omitKeys: 'diff' }, { omitKeys: ['diff', 1] }, { allowKeys: 'body' }, { level: 'verbose' }, { queueLimit: 0 }, { retryDelaysMs: [0] }, { retryDelaysMs: 'fast' }, { writeDeadlineMs: 0 }, { maxStringBytes: Number.NaN }, { maxEventBytes: -1 }, { maxObjectKeys: 1.5 }]
     for (const value of malformed) expect(() => createLogger({ component: 'test', sinks: [], ...(value as LoggerConfig) })).toThrow(TypeError)
   })
 })

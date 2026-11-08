@@ -1,5 +1,5 @@
 import { runDetached, sinkStorage } from '../internal/async-slots.js'
-import { readTimerList, settleWithin } from '../internal/timeouts.js'
+import { readOptionalTimer, readTimerList, settleWithin } from '../internal/timeouts.js'
 import { useScopeSafe } from '../scope/als.js'
 import { createLogBudget, createLogQueue, DEFAULT_LOG_LIMIT, type LogBudget, type LogDropNotice, type LogDrops, type LogQueue } from './log-queue.js'
 import { DEFAULT_MAX_STRING_BYTES, normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
@@ -12,6 +12,8 @@ export interface LoggerConfig {
   queueLimit?: number
   /** Waits before each further attempt at a failed sink write; none by default, so a failed event drops at once. */
   retryDelaysMs?: readonly number[]
+  /** How long a sink write may take before it counts as failed (LogQueueOptions.writeDeadlineMs); none by default. */
+  writeDeadlineMs?: number
   maxStringBytes?: number
   maxObjectKeys?: number
   // Serialized size of a whole event; an oversized event loses error detail first, then large fields.
@@ -97,6 +99,7 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
       destination: sink.name,
       budget,
       retryDelaysMs: config.retryDelaysMs,
+      ...(config.writeDeadlineMs === undefined ? {} : { writeDeadlineMs: config.writeDeadlineMs }),
       maxBatch: 1,
       write: batch => writeToSink({ sink, written, batch }),
       summarize: drops => (warns ? dropSummary(sink.name, drops) : undefined),
@@ -237,6 +240,7 @@ interface ResolvedLoggerConfig {
   level: LogLevel
   queueLimit: number
   retryDelaysMs: readonly number[]
+  writeDeadlineMs: number | undefined
   maxStringBytes: number
   maxObjectKeys: number
   maxEventBytes: number
@@ -254,6 +258,7 @@ function readLoggerConfig(config: LoggerConfig & { budget?: LogBudget }): Resolv
     level,
     queueLimit: readLimit('queueLimit', config.queueLimit, DEFAULT_LOG_LIMIT),
     retryDelaysMs: readTimerList('Logger retryDelaysMs', config.retryDelaysMs),
+    writeDeadlineMs: readOptionalTimer('Logger writeDeadlineMs', config.writeDeadlineMs),
     maxStringBytes: readLimit('maxStringBytes', config.maxStringBytes, DEFAULT_MAX_STRING_BYTES),
     maxObjectKeys: readLimit('maxObjectKeys', config.maxObjectKeys, DEFAULT_MAX_OBJECT_KEYS),
     maxEventBytes: readLimit('maxEventBytes', config.maxEventBytes, DEFAULT_MAX_EVENT_BYTES),

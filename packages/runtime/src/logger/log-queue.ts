@@ -1,5 +1,5 @@
 import { runDetached } from '../internal/async-slots.js'
-import { readTimerList, settleWithin } from '../internal/timeouts.js'
+import { readOptionalTimer, readTimerList, settleWithin } from '../internal/timeouts.js'
 
 export type LogOverflow = 'drop-newest' | 'drop-oldest'
 const OVERFLOWS: readonly LogOverflow[] = ['drop-newest', 'drop-oldest']
@@ -37,6 +37,11 @@ export interface LogQueueOptions<T> {
   budget?: LogBudget
   /** Waits before each further attempt at a failed batch; once they run out, its entries drop. */
   retryDelaysMs?: readonly number[]
+  /**
+   * A write unanswered by then counts as a failed attempt, and its entries may drop like waiting ones. None is sent again
+   * while it is out, so none is written twice: one that answers late is written, or is tried again. None by default.
+   */
+  writeDeadlineMs?: number
   maxBatch?: number
   /** The entry that reports drops, written ahead of the next batch; undefined writes none. */
   summarize?(drops: LogDrops): T | undefined
@@ -82,6 +87,8 @@ interface Batch<T> {
   summary: T | undefined
   attempts: number
   writing: boolean
+  /** An attempt past its deadline, still out: true once it wrote. */
+  late: Promise<boolean> | undefined
 }
 
 const budgetStates = new WeakMap<LogBudget, BudgetState>()
@@ -99,6 +106,7 @@ export function createLogBudget(options: LogBudgetOptions): LogBudget {
 export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
   const budget = budgetStateOf(options.budget ?? createLogBudget({ limit: DEFAULT_LOG_LIMIT }))
   const retryDelays = readTimerList('Log queue retryDelaysMs', options.retryDelaysMs)
+  const writeDeadline = readOptionalTimer('Log queue writeDeadlineMs', options.writeDeadlineMs)
   const maxBatch = readMaxBatch(options.maxBatch)
   const pending: Held<T>[] = []
   const counts = { written: 0, dropped: 0, failures: 0 }
@@ -110,7 +118,7 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
   let pumping: Promise<void> | undefined
   let wake: (() => void) | undefined
 
-  // A batch waiting for its retry gives up its oldest entries first; one being written keeps them.
+  // A batch waiting for its retry or for a late write gives up its oldest entries first; one being written keeps them.
   function droppable(): Held<T>[] {
     return batch && !batch.writing && batch.entries.length > 0 ? batch.entries : pending
   }
@@ -157,7 +165,7 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     if (pending.length === 0) return undefined
     const summarized = drops
     drops = undefined
-    return { entries: pending.splice(0, maxBatch), drops: summarized, summary: summarized && summarizeSafely(summarized), attempts: 0, writing: false }
+    return { entries: pending.splice(0, maxBatch), drops: summarized, summary: summarized && summarizeSafely(summarized), attempts: 0, writing: false, late: undefined }
   }
 
   async function writeBatch(current: Batch<T>): Promise<boolean> {
@@ -166,14 +174,22 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
     if (lines.length === 0) return true
     current.writing = true
     try {
-      await options.write(lines)
-      return true
-    } catch {
-      // The writer reports its own failure; the batch is retried or dropped and counted.
-      counts.failures += 1
-      return false
+      const attempt = attemptWrite(lines)
+      const answered = writeDeadline === undefined ? await attempt : await answerWithin(attempt, writeDeadline)
+      if (answered === undefined) current.late = attempt
+      if (answered !== true) counts.failures += 1
+      return answered === true
     } finally {
       current.writing = false
+    }
+  }
+
+  // The writer reports its own failure; the batch is retried or dropped and counted.
+  function attemptWrite(lines: readonly T[]): Promise<boolean> {
+    try {
+      return Promise.resolve(options.write(lines)).then(() => true, () => false)
+    } catch {
+      return Promise.resolve(false)
     }
   }
 
@@ -185,10 +201,20 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
   }
 
   async function retryOrDrop(current: Batch<T>): Promise<void> {
+    const wroteLate = await lateAnswer(current)
+    if (stopped) return
+    if (wroteLate) return settleWritten(current)
     current.attempts += 1
     const delay = retryDelays[current.attempts - 1]
     if (delay === undefined) return dropBatch(current)
     await waitOrStop(delay)
+  }
+
+  // Entries the budget dropped while a late write was out stay counted as dropped, though it may have written them.
+  function lateAnswer(current: Batch<T>): Promise<boolean> {
+    const late = current.late ?? Promise.resolve(false)
+    current.late = undefined
+    return late
   }
 
   // The batch's own count goes back unwritten, to be reported with the next one.
@@ -299,6 +325,17 @@ function budgetStateOf(budget: LogBudget): BudgetState {
   const state = budgetStates.get(budget)
   if (!state) throw new TypeError('A log budget must come from createLogBudget')
   return state
+}
+
+// The attempt's answer, or undefined once the deadline passes first.
+async function answerWithin(attempt: Promise<boolean>, deadlineMs: number): Promise<boolean | undefined> {
+  let timer: NodeJS.Timeout | undefined
+  const passed = new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), deadlineMs) })
+  try {
+    return await Promise.race([attempt, passed])
+  } finally {
+    clearTimeout(timer)
+  }
 }
 
 function readMaxBatch(value: number | undefined): number {

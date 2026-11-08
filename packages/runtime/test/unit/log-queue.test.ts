@@ -43,7 +43,7 @@ describe('one log queue under a budget', () => {
     expect(writers.map(({ writer }) => writer.batches.flat().length)).toEqual([0, 0, 10, 10, 10])
   })
 
-  it('keeps what the writer holds and drops the new entry once every held entry is with the writer', async () => {
+  it('with no write deadline, keeps what the writer holds and drops the new entry once every held entry is with the writer', async () => {
     const writer = stuckWriter<number>()
     const budget = createLogBudget({ limit: 3, overflow: 'drop-oldest' })
     const queue = createLogQueue({ destination: 'node', budget, write: writer.write })
@@ -75,6 +75,59 @@ describe('one log queue under a budget', () => {
     await vi.advanceTimersByTimeAsync(250)
     expect(batches).toEqual([['a'], ['dropped 1', 'b', 'c', 'd']])
     expect(queue.stats()).toEqual({ held: 0, written: 3, dropped: 1, failures: 1 })
+  })
+
+  it('counts a write past its deadline as failed, drops its entries oldest first, and sends no second attempt while it is out', async () => {
+    const batches: number[][] = []
+    let answer = () => {}
+    const budget = createLogBudget({ limit: 3, overflow: 'drop-oldest' })
+    const queue = createLogQueue<number>({
+      destination: 'node',
+      budget,
+      writeDeadlineMs: 20,
+      retryDelaysMs: [1],
+      write: (batch) => {
+        batches.push([...batch])
+        return batches.length === 1 ? new Promise<void>((resolve) => { answer = resolve }) : undefined
+      },
+    })
+    for (const entry of range(0, 3)) queue.push(entry)
+    await drained()
+    await new Promise(resolve => setTimeout(resolve, 40))
+    queue.push(3)
+    queue.push(4)
+    await new Promise(resolve => setTimeout(resolve, 40))
+
+    expect(batches).toEqual([[0, 1, 2]])
+    expect(queue.stats()).toEqual({ held: 3, written: 0, dropped: 2, failures: 1 })
+    expect(budget.held()).toBe(3)
+    answer()
+    await queue.flush()
+    expect(batches).toEqual([[0, 1, 2], [3, 4]])
+    expect(queue.stats()).toEqual({ held: 0, written: 3, dropped: 2, failures: 1 })
+  })
+
+  it('takes a write that answers after its deadline as written, and tries it again only when it failed', async () => {
+    const batches: string[][] = []
+    const answers = [{ wrote: true, afterMs: 40 }, { wrote: false, afterMs: 40 }, { wrote: true, afterMs: 0 }]
+    const queue = createLogQueue<string>({
+      destination: 'node',
+      writeDeadlineMs: 10,
+      retryDelaysMs: [1, 1],
+      write: async (batch) => {
+        batches.push([...batch])
+        const answer = answers.shift()
+        await new Promise(resolve => setTimeout(resolve, answer?.afterMs))
+        if (!answer?.wrote) throw new Error('disk full')
+      },
+    })
+    queue.push('late')
+    await queue.flush()
+    queue.push('failed late')
+    await queue.flush()
+
+    expect(batches).toEqual([['late'], ['failed late'], ['failed late']])
+    expect(queue.stats()).toEqual({ held: 0, written: 2, dropped: 0, failures: 2 })
   })
 
   it('keeps today\'s defaults for other users: 1000 entries, the newest dropped, no retry', async () => {
@@ -228,6 +281,7 @@ describe('log queue settings', () => {
     expect(() => createLogBudget({ limit: 1, overflow: 'drop-random' as 'drop-oldest' })).toThrow(TypeError)
     for (const retryDelaysMs of [[0], [-1], [1.5], 'fast' as unknown as number[]] as number[][]) expect(() => createLogQueue({ destination: 'node', retryDelaysMs, write: () => {} })).toThrow(TypeError)
     expect(() => createLogQueue({ destination: 'node', maxBatch: 0, write: () => {} })).toThrow(TypeError)
+    for (const writeDeadlineMs of [0, -1, 1.5]) expect(() => createLogQueue({ destination: 'node', writeDeadlineMs, write: () => {} })).toThrow(TypeError)
   })
 
   it('takes at most maxBatch entries into one write', async () => {
