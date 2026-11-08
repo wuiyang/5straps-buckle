@@ -83,9 +83,9 @@ The node log warns once, naming what it could not read. A store
 another Buckle process holds busy past its wait only skips that check: `activity.sqlite` for more
 than a second, or the approvals files as the check ends the sessions.
 
-Where `activity.sqlite` holds nothing of a session, as after it was lost, the making of that
-session's newest session grant in `grants.json` counts as its last activity, so an old grant still
-ends. Where `grants.json` cannot be read then, Buckle cannot tell, as above.
+Where `activity.sqlite` holds nothing of a session, as after it was lost, or a day after its last
+activity, or once its agent token opened 4,096 newer sessions, the making of that session's newest
+session grant in `grants.json` counts as its last activity, so an old grant still ends. Where `grants.json` cannot be read then, Buckle cannot tell, as above.
 
 ## Limits
 

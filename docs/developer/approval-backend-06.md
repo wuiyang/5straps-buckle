@@ -43,7 +43,9 @@ Its `activity` table holds each session id's newest call start and end, for turn
 invoker's `startCall(holder)` and `finishCall(holder)` move it in the same transactions, whatever
 turn the session moved on to, and so does each ask recorded and decision applied, through the
 registry's `onActivity(session)` (`ChangeHistory.touchActivity`). A checkpoint's own turn update
-moves no session. `latest(session)` reads it; it throws where the store did not open, since the
+moves no session. Each call start drops the rows older than `SESSION_IDLE_BOUNDS.max`, idle under
+any window, and the starting actor's own past its newest 4096 (`SESSIONS_KEPT_PER_ACTOR`), so one
+token's new session ids never push out another token's row. `latest(session)` reads it; it throws where the store did not open, since the
 in-memory fallback knows one process alone, and `ActivityBusyError` where another process held it
 past its 1 s busy wait. Where it holds none of the session, the check takes that session's newest
 session grant's `createdAt` (`newestSessionGrant(grants, session)`), and names `grants.json` where
