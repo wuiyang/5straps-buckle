@@ -6,9 +6,9 @@ import type { ApprovalError, DecisionBody, GrantSave, SkipReceipt } from '../../
 /** A lasting scope as a person reads it beside a failed save. */
 const LASTING_SCOPE_WORDS: Readonly<Record<'session' | 'always', string>> = { session: 'for the session', always: 'for every session' }
 
-/** The refusal of a lasting denial whose grant could not be written: nothing is recorded, and the call still waits. */
-export function unsavedDenial(input: { scope: 'session' | 'always'; reason: string }): string {
-  return `Not denied ${LASTING_SCOPE_WORDS[input.scope]}: saving failed: ${input.reason}; the call still waits`
+/** The warning of a lasting denial whose grant could not be written: nothing is recorded, and the call still waits. */
+export function unsavedDenial(input: { scope: 'session' | 'always'; reason: string | undefined }): string {
+  return `Not denied ${LASTING_SCOPE_WORDS[input.scope]}: saving failed${input.reason === undefined ? '' : `: ${input.reason}`}; the call still waits`
 }
 
 /** The warning of an approval whose lasting grant could not be written: the call that asked runs once on it. */
@@ -71,10 +71,11 @@ const SAVE_STEPS: Readonly<Record<UnsavedKind, Partial<Record<SaveAnswer, SaveSt
 
 /** What did not save of a decision, by its receipt: an approval left owed, or a lasting denial refused `grant_unsaved`. */
 export function unsavedOf(input: { decision: DecisionBody; receipt: SaveReceipt }): Unsaved | undefined {
-  const { decision, receipt } = input
-  if (receipt.status === 'refused') return receipt.error.code === 'grant_unsaved' ? { kind: 'denial', warning: receipt.error.message } : undefined
-  if (receipt.save !== 'owed' || decision.scope === 'once') return undefined
-  return { kind: 'approval', warning: unsavedApproval({ scope: decision.scope, reason: receipt.saveError }) }
+  const { decision: { scope }, receipt } = input
+  if (scope === 'once') return undefined
+  if (receipt.status === 'refused') return receipt.error.code === 'grant_unsaved' ? { kind: 'denial', warning: unsavedDenial({ scope, reason: receipt.error.saveError }) } : undefined
+  if (receipt.save !== 'owed') return undefined
+  return { kind: 'approval', warning: unsavedApproval({ scope, reason: receipt.saveError }) }
 }
 
 export function saveChoices(kind: UnsavedKind): string {

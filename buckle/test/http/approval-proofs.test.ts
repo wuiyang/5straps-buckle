@@ -801,7 +801,7 @@ describe('a device\'s decision whose grant cannot be saved', () => {
     expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--deny', '--scope', 'session'], environment)).exitCode).toBe(5)
     const warning = 'Not denied for the session: saving failed: the file system is read-only; the call still waits'
     expect(output.stderr).toContain('HTTP 409')
-    expect(JSON.parse(lastLine(output.stdout))).toEqual({ error: warning, code: 'grant_unsaved' })
+    expect(JSON.parse(lastLine(output.stdout))).toEqual({ error: 'The denial could not be saved (the file system is read-only), so nothing was recorded and the call still waits', code: 'grant_unsaved', saveError: 'the file system is read-only' })
     expect(output.stderr).toContain(`${warning}.`)
     expect(buckle.runtime.approvals.pending().map(request => request.token)).toContain(token)
     expect(buckle.runtime.grants.list()).toEqual([])

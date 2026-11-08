@@ -12,7 +12,7 @@ import { readAskView } from '../common/adapters/approval/ask-view.js'
 import { localTime } from '../common/domain/local-time.js'
 import { createConsoleWriter, screenKind, type ConsoleWriter, type PromptRelease } from '../common/runtime/console.js'
 import { APPROVAL_REQUEST_KIND, GRANT_SAVE_REQUEST_KIND, type ApprovalChoice } from '../common/adapters/approval/terminal-question.js'
-import { saveAnswerOf, saveChoices, type SaveAnswer, type Unsaved } from '../common/domain/approval/grant-save-question.js'
+import { saveAnswerOf, saveChoices, type SaveAnswer, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import { QUIET_MS, discardTypedLine, watchKeys } from './terminal-keys.js'
 
 export interface TerminalOptions {

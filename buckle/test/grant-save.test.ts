@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { StateBusyError, StateFileError } from '../common/adapters/json-file-store.js'
-import { unsavedDenial } from '../common/domain/approval/grant-save-question.js'
+import { unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { saveFailure } from '../common/services/approvals/grant-save.js'
 
 const PATH = '/home/someone/.5straps/buckle/grants.json'

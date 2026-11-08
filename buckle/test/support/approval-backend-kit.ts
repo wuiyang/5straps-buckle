@@ -29,7 +29,7 @@ export interface FakeHost extends ApprovalHost {
 
 const APPLIED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local' }
 const OWED: DecisionReceipt = { status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'permission denied' }
-const UNSAVED_DENIAL: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true } }
+const UNSAVED_DENIAL: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'The denial could not be saved (permission denied), so nothing was recorded and the call still waits', retryable: true, saveError: 'permission denied' } }
 const SKIPPED: SkipReceipt = { status: 'skipped' }
 const ONCE: KitChoice = { outcome: 'approve', scope: 'once' }
 

@@ -1,5 +1,5 @@
 import type { CliOutcome, RequestCli } from '@5straps/runtime'
-import { saveAnswerOf, saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from '../../domain/approval/grant-save-question.js'
+import { saveAnswerOf, saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved } from './grant-save-question.js'
 import type { ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SubmitContext, SubmitResult } from '../../types/ports/approval-backend.js'
 import { questionFor, saveQuestionFor, type QuestionInput } from './terminal-question.js'
 

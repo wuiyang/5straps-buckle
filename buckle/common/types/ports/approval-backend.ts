@@ -97,11 +97,13 @@ export type ApprovalErrorCode =
   | 'approver_not_allowed' | 'assurance_too_low' | 'capability_exceeded'
   | 'unsupported_version' | 'rate_limited' | 'too_large' | 'grant_unsaved'
 
+/** `saveError`: why a `grant_unsaved` denial was not saved, naming no path, for the route to put into words. */
 export interface ApprovalError {
   code: ApprovalErrorCode
   message: string
   retryable: boolean
   retryAfterMs?: number
+  saveError?: string
 }
 
 export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'

@@ -416,7 +416,7 @@ describe('a lasting denial', () => {
     const receipt = await runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'session' } })
     expect(receipt).toEqual({
       status: 'refused', step: 'decision', decision: { token, approved: false, scope: 'session' },
-      error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true },
+      error: { code: 'grant_unsaved', message: 'The denial could not be saved (permission denied), so nothing was recorded and the call still waits', retryable: true, saveError: 'permission denied' },
     })
     expect(JSON.stringify(receipt)).not.toContain(dirname(grantsPath(config)))
     expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })

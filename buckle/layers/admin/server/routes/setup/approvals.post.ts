@@ -31,7 +31,9 @@ export default defineSetupHandler({
       throw HTTPError.status(401, 'Unauthorized', { message: `Approval decision refused: ${receipt.error.message}` })
     }
     if (receipt.step === 'statement') throw HTTPError.status(400, 'Bad Request', { message: 'Invalid approval decision' })
-    // The code tells a lasting denial that did not save (grant_unsaved), whose ask still waits, from one refused outright.
-    throw HTTPError.status(409, 'Conflict', { message: receipt.error.message, body: { code: receipt.error.code } })
+    // The code tells a lasting denial that did not save (grant_unsaved), whose ask still waits, from one refused outright,
+    // and saveError says why, naming no path, for buckle client approve to warn of.
+    const { code, saveError } = receipt.error
+    throw HTTPError.status(409, 'Conflict', { message: receipt.error.message, body: { code, ...(saveError === undefined ? {} : { saveError }) } })
   },
 })

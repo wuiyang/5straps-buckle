@@ -20,7 +20,6 @@ import { isPlainName } from '../../domain/paths.js'
 import { dropOnces, liveOnces, onceSchema, spendOnces, unspentOnces, type OnceEntry, type OnceSpend, type UnspentOnce } from './once-store.js'
 import { ActionTooLargeError, ApprovalConflictError, ApprovalLimitError, RequestIdReusedError, SkipUnfinishedError } from './approval-errors.js'
 import { saveFailure } from './grant-save.js'
-import { unsavedDenial } from '../../domain/approval/grant-save-question.js'
 
 export const APPROVAL_OUTBOX_COUNT_MAX = 4096
 export const APPROVAL_OUTBOX_BYTES_MAX = 4 * 1024 * 1024
@@ -319,11 +318,11 @@ export interface ResolveOptions {
  * is the rule and subject the decision answered, for the decision's audit entry (review item 6).
  * `granted`: the ask's wider subject, where the decision granted it in place of the ask's own (the delete policy brief).
  * `save`: where the session or always grant an approval made stands; while it is `owed`, `saveError` says why, naming no
- * path. A refusal is `retryable` where the same decision sent again may apply.
+ * path. A refusal is `retryable` where the same decision sent again may apply; a `grant_unsaved` one says why in `saveError`.
  */
 export type Resolution =
   | { ok: true; widened?: { pattern: string; askedBy: string }; repeated?: true; asked?: { rule: PermissionRuleId; subject: string }; granted?: string; save?: GrantSave; saveError?: string }
-  | { ok: false; code: ApprovalErrorCode; reason: string; retryable?: true }
+  | { ok: false; code: ApprovalErrorCode; reason: string; retryable?: true; saveError?: string }
 
 /** What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone. */
 export type SkipResolution =
@@ -815,7 +814,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       return undefined
     } catch (error) {
       logger.warn('A lasting denial was not written, so nothing was recorded and its ask still waits', { error: withoutCause(error) })
-      return { ok: false, code: 'grant_unsaved', reason: unsavedDenial({ scope, reason: saveFailure(error) }), retryable: true }
+      const saveError = saveFailure(error)
+      return { ok: false, code: 'grant_unsaved', reason: `The denial could not be saved (${saveError}), so nothing was recorded and the call still waits`, saveError, retryable: true }
     }
   }
 

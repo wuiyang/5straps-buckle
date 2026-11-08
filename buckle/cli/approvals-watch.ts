@@ -7,7 +7,7 @@ import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
-import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type Unsaved } from '../common/domain/approval/grant-save-question.js'
+import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 
 /**

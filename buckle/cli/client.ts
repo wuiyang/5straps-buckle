@@ -8,7 +8,7 @@ import { describeAction, printable, sameCallNote, workspaceLabel } from '../comm
 import { callDigestOf, ShownApprovalCallSchema, shownCallDigestOf, generateSigningKey, keyIdOf, PublicKeyTextSchema, publicKeyFrom, readChallenge, signingKeyFromPem, signRequest, SIGNED_WORKSPACE_MAX, SmallOrderKeyError, type ApprovalChallenge, type ShownApprovalCall, type SignedRequestPurpose, type SigningKey } from '@5straps/protocol/signed-request'
 import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/domain/paths.js'
 import { realPathOf } from '../common/runtime/config.js'
-import { saveEndingLine, unsavedApproval } from '../common/domain/approval/grant-save-question.js'
+import { saveEndingLine, unsavedApproval, unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { SAVE_FAILED_EXIT } from './exit-codes.js'
 
 export interface CliResult {
@@ -390,7 +390,7 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
 /** What the node answers of a decision whose grant it could not save: an approval left owed, or a lasting denial refused. */
 const UnsavedAnswerSchema = z.union([
   z.object({ resolved: z.literal(true), grantOwed: z.literal(true), saveError: z.string().max(200).optional() }),
-  z.object({ error: z.string().max(2_000), code: z.literal('grant_unsaved') }),
+  z.object({ error: z.string().max(2_000), code: z.literal('grant_unsaved'), saveError: z.string().max(200).optional() }),
 ])
 
 /**
@@ -401,10 +401,10 @@ function unsavedWarning(input: { text: string; scope: 'once' | 'session' | 'alwa
   const parsed = UnsavedAnswerSchema.safeParse(jsonOf(input.text))
   if (!parsed.success) return undefined
   const answer = parsed.data
-  if ('code' in answer) return `${printable(answer.error)}.`
   if (input.scope === 'once') return undefined
-  const warning = unsavedApproval({ scope: input.scope, reason: answer.saveError === undefined ? undefined : printable(answer.saveError) })
-  return `${warning}.\n${saveEndingLine({ ending: 'left', kind: 'approval' })}`
+  const reason = answer.saveError === undefined ? undefined : printable(answer.saveError)
+  if ('code' in answer) return `${unsavedDenial({ scope: input.scope, reason })}.`
+  return `${unsavedApproval({ scope: input.scope, reason })}.\n${saveEndingLine({ ending: 'left', kind: 'approval' })}`
 }
 
 // A body that is not JSON is no answer about a save.

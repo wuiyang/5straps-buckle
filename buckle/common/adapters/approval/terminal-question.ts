@@ -2,7 +2,7 @@ import type { CliRequest, CliWait } from '@5straps/runtime'
 import { APPROVAL_NO_DEADLINE, type ApprovalRequest } from '@5straps/protocol'
 import { approveCommand, judgeLine, judgeNoteFor } from '../../domain/approval-instruction.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
-import { saveChoices, type Unsaved } from '../../domain/approval/grant-save-question.js'
+import { saveChoices, type Unsaved } from './grant-save-question.js'
 import type { FullAction, FullAsk, RatingNote } from '../../types/ports/approval-backend.js'
 import { askViewDetails, type AskView } from './ask-view.js'
 

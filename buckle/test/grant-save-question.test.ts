@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveReceipt, type SaveRoute, type Unsaved } from '../common/domain/approval/grant-save-question.js'
+import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveReceipt, type SaveRoute, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import type { DecisionBody, SkipReceipt } from '../common/types/ports/approval-backend.js'
 
 // What every route does with a decision whose grant did not save: it warns, and its person retries, skips, or leaves it.
@@ -8,7 +8,7 @@ const SESSION: DecisionBody = { token: 't-1', outcome: 'approve', scope: 'sessio
 const DENY_SESSION: DecisionBody = { token: 't-1', outcome: 'deny', scope: 'session' }
 const OWED: SaveReceipt = { status: 'applied', save: 'owed', saveError: 'permission denied' }
 const SAVED: SaveReceipt = { status: 'repeated', save: 'saved' }
-const UNSAVED_DENIAL: SaveReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true } }
+const UNSAVED_DENIAL: SaveReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'The denial could not be saved (permission denied), so nothing was recorded and the call still waits', retryable: true, saveError: 'permission denied' } }
 
 /** A route whose person answers in turn, and whose core answers each retry, skip, and once denial in turn. */
 function scripted(input: { answers: Array<SaveAnswer | undefined>; retries?: SaveReceipt[]; skips?: Array<SkipReceipt | Error>; denials?: SaveReceipt[] }) {
@@ -41,7 +41,7 @@ describe('a decision whose grant did not save', () => {
   it('is an approval left owed, warned of by its scope and reason, or a lasting denial refused grant_unsaved', () => {
     expect(unsavedOf({ decision: SESSION, receipt: OWED })).toEqual({ kind: 'approval', warning: 'Approved for this call; saving it for the session failed: permission denied' })
     expect(unsavedOf({ decision: { ...SESSION, scope: 'always' }, receipt: { status: 'repeated', save: 'owed' } })).toEqual({ kind: 'approval', warning: 'Approved for this call; saving it for every session failed' })
-    expect(unsavedOf({ decision: DENY_SESSION, receipt: UNSAVED_DENIAL })).toEqual({ kind: 'denial', warning: UNSAVED_DENIAL.status === 'refused' ? UNSAVED_DENIAL.error.message : '' })
+    expect(unsavedOf({ decision: DENY_SESSION, receipt: UNSAVED_DENIAL })).toEqual({ kind: 'denial', warning: 'Not denied for the session: saving failed: permission denied; the call still waits' })
   })
 
   it('is nothing for a saved, skipped, or once decision, or another refusal', () => {

@@ -173,7 +173,7 @@ function readOf(decision: ApprovalDecision, challenge: string | undefined): Read
 export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution }): CoreDecisionReceipt {
   const { answer, result } = input
   const decision = readOf(answer.decision, answer.challenge)
-  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.retryable === true } }
+  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.retryable === true, ...(result.saveError === undefined ? {} : { saveError: result.saveError }) } }
   const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),
