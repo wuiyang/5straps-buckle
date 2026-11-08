@@ -236,6 +236,7 @@ function show(context: Context): CliResult {
     ['browser.args', inForce.browser.args ?? '(none)', inForce.sources['browser.args']!],
     ['browser.headed', onOff(inForce.browser.headed), inForce.sources['browser.headed']!],
     ['approval.forms', onOff(inForce.approval.forms), inForce.sources['approval.forms']!],
+    ['approval.sessionIdleMs', String(inForce.approval.sessionIdleMs), inForce.sources['approval.sessionIdleMs']!],
     ['approval.judge', inForce.approval.judge, inForce.sources['approval.judge']!],
     ['approval.judgeProvider', inForce.approval.judgeProvider, inForce.sources['approval.judgeProvider']!],
     ['approval.judgeModel', inForce.approval.judgeModel, inForce.sources['approval.judgeModel']!],

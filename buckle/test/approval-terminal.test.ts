@@ -90,6 +90,7 @@ function stubQueue(requests: ApprovalRequest[]) {
       return withdrawn
     },
     cancelGroup: async () => ({ withdrawn: [], dropped: [] }),
+    endSessions: async () => [],
     holdEnded: async () => undefined,
     sweep: async () => undefined,
     sweepIfDue: async () => undefined,

@@ -7,6 +7,7 @@ import { referencePathRefusal } from '../common/domain/secret-reference.js'
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_PROVIDERS, QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit } from '../common/domain/delete-policy.js'
+import { parseSessionIdle, SESSION_IDLE_BOUNDS } from '../common/domain/approval/session-idle.js'
 
 /**
  * A setting `buckle workspace set` and `unset` change, by its path in workspace.json. `set` gives the workspace a value
@@ -98,6 +99,13 @@ function idleTimeout(raw: string): number {
   return value
 }
 
+/** Milliseconds without activity before the workspace's sessions end: a minute to a day, or 0, which ends none at idle. */
+function sessionIdle(raw: string): number {
+  const value = parseSessionIdle(raw)
+  if (value === null) throw new SettingValueError(`approval.sessionIdleMs is milliseconds, ${SESSION_IDLE_BOUNDS.min} (a minute) to ${SESSION_IDLE_BOUNDS.max} (a day), or 0 to end no session at idle`)
+  return value
+}
+
 /** A shell setting (Phase 2 item 4), on or off, over the node's BUCKLE_SHELL_NETWORK or BUCKLE_SHELL_ISOLATION. */
 const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   key: `shell.${name}`,
@@ -106,7 +114,7 @@ const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   unset: settings => withoutShell(settings, name),
 })
 
-type ApprovalKey = 'forms' | 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts' | 'quickJudge' | 'quickJudgeProvider' | 'quickJudgeModel'
+type ApprovalKey = 'forms' | 'sessionIdleMs' | 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts' | 'quickJudge' | 'quickJudgeProvider' | 'quickJudgeModel'
 
 /** The approval block with `name` taken out: unset, so the node's value stands for it. */
 function withoutApproval(settings: WorkspaceSettings, name: ApprovalKey): WorkspaceSettings {
@@ -186,6 +194,7 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
   approval('forms', `on or off: whether an MCP host's form answers decide this workspace's asks (the node's, else ${BUILT_IN_SETTINGS.approval.forms ? 'on' : 'off'})`, raw => onOff('approval.forms', raw)),
+  approval('sessionIdleMs', `milliseconds without activity before this workspace's sessions end, or 0 for never at idle (the node's, else ${BUILT_IN_SETTINGS.approval.sessionIdleMs})`, sessionIdle),
   // The decision AI (D91): the node's BUCKLE_APPROVAL_JUDGE and its kin stand where these are unset.
   approval('judge', `off, on-request, or automated: whether the decision AI rates an interpreter call, when the owner asks or at each call (the node's, else ${BUILT_IN_SETTINGS.approval.judge})`, raw => oneOf('approval.judge', JUDGE_MODES, raw)),
   approval('judgeProvider', `openai-compatible: who rates it, with the node's key (the node's, else ${BUILT_IN_SETTINGS.approval.judgeProvider})`, raw => oneOf('approval.judgeProvider', JUDGE_PROVIDERS, raw)),

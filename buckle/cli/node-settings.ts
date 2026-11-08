@@ -9,6 +9,7 @@ import { BUILTIN_PACKS, unmetPackPrerequisite } from '../common/services/packs/i
 import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS } from '../common/types/ports/judge.js'
 import { QUICK_JUDGE_SCOPES } from '../common/types/ports/quick-judge.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit } from '../common/domain/delete-policy.js'
+import { DEFAULT_SESSION_IDLE_MS, parseSessionIdle, SESSION_IDLE_BOUNDS } from '../common/domain/approval/session-idle.js'
 
 /**
  * The node settings `BUCKLE-D19` names: what the owner changes with `buckle settings` or answers in
@@ -19,7 +20,7 @@ export interface NodeSetting {
   key: string
   /** The short name `buckle settings set` also accepts. */
   alias: string
-  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope' | 'delete-mode' | 'entry-limit'
+  kind: 'boolean' | 'host-list' | 'directory-list' | 'name' | 'approval-wait' | 'packs' | 'mount' | 'url-list' | 'interpreter-list' | 'command-list' | 'script-list' | 'mounts' | 'browser-cdp' | 'browser-profile' | 'browser-args' | 'judge-mode' | 'judge-provider' | 'judge-model' | 'quick-scope' | 'delete-mode' | 'entry-limit' | 'session-idle'
   /** What the node does when the key is unset, as `buckle settings show` prints it. */
   fallback: string
   /** False when the audit log and the confirmation keep the value out (a DevTools URL can carry a token, arguments a proxy password): the key alone is recorded. */
@@ -43,6 +44,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000', workspace: { key: 'approvalWaitMs', change: 'buckle workspace set approvalWaitMs <milliseconds>' } },
   // MCP form approvals: every workspace's default where its own settings hold none.
   { key: 'BUCKLE_APPROVAL_FORMS', alias: 'approval-forms', kind: 'boolean', fallback: 'false', workspace: { key: 'approval.forms', change: 'buckle workspace set approval.forms on|off' } },
+  // How long a workspace may go without activity before its sessions end, every workspace's where its own settings hold none.
+  { key: 'BUCKLE_APPROVAL_SESSION_IDLE_MS', alias: 'approval-session-idle', kind: 'session-idle', fallback: String(DEFAULT_SESSION_IDLE_MS), workspace: { key: 'approval.sessionIdleMs', change: 'buckle workspace set approval.sessionIdleMs <milliseconds>' } },
   // The decision AI (D91): every workspace's defaults where its own settings hold none. Its key and base URL are the node's
   // alone, left to a hand edit, and never listed here.
   { key: 'BUCKLE_APPROVAL_JUDGE', alias: 'approval-judge', kind: 'judge-mode', fallback: 'off', workspace: { key: 'approval.judge', change: 'buckle workspace set approval.judge off|on-request|automated' } },
@@ -234,6 +237,10 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
     case 'delete-mode': {
       const mode = parseDeleteInWorkspace(raw)
       return mode === null ? refuse(`${input.setting.key} is allow or ask`) : { ok: true, value: mode }
+    }
+    case 'session-idle': {
+      const idle = parseSessionIdle(raw)
+      return idle === null ? refuse(`${input.setting.key} is milliseconds, ${SESSION_IDLE_BOUNDS.min} (a minute) to ${SESSION_IDLE_BOUNDS.max} (a day), or 0 to end no session at idle`) : { ok: true, value: String(idle) }
     }
     case 'entry-limit': {
       const limit = parseMassDeleteLimit(raw)

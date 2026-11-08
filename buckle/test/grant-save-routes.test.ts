@@ -159,7 +159,7 @@ describe('buckle approve, when the grant it decides cannot be saved', () => {
     const { config, runtime } = await open()
     const token = await asked(runtime)
     failing.rename = grantsPath(config)
-    const chooseSave: ChooseSave = async () => { await runtime.grants.endSession('s'); return 'retry' }
+    const chooseSave: ChooseSave = async () => { await runtime.approvalService.endSessions({ ending: { sessionId: 's' }, cause: 'idle' }); return 'retry' }
     const output = captured()
     const result = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true, chooseSave })
     vi.restoreAllMocks()

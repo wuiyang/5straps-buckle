@@ -50,6 +50,8 @@ export interface ExecutingRun {
  */
 export interface ExecutingMark {
   begin(): ExecutingRun
+  /** Whether a tool of this runtime runs now, which its own idle check counts as activity without reading the marks. */
+  running(): boolean
 }
 
 export function createExecutingMark(input: { directory: string; workspaceId: string; instance: string }): ExecutingMark {
@@ -64,6 +66,7 @@ export function createExecutingMark(input: { directory: string; workspaceId: str
   const hold = () => { if (holding++ === 0) guarded(lease.start) }
   const release = () => { if (--holding === 0) guarded(lease.stop) }
   return {
+    running: () => holding > 0,
     begin() {
       let pauses = 0
       let ended = false

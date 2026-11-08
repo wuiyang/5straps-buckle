@@ -17,6 +17,7 @@ import { JUDGE_MODEL_NAME, JUDGE_MODES, JUDGE_PROVIDERS, type JudgeMode, type Ju
 import { QUICK_JUDGE_SCOPES, type QuickJudgeProvider, type QuickJudgeScope } from '../types/ports/quick-judge.js'
 import { MAX_TRANSFER_BYTES } from '../services/packs/browser/file-transfer.js'
 import { MAX_MASS_DELETE_LIMIT, parseDeleteInWorkspace, parseMassDeleteLimit, type DeleteInWorkspace } from '../domain/delete-policy.js'
+import { parseSessionIdle, SESSION_IDLE_BOUNDS } from '../domain/approval/session-idle.js'
 import { recordedEnvironmentFiles } from './environment-files.js'
 
 const DEFAULT_MAX_REQUEST_BYTES = 1_048_576
@@ -163,6 +164,8 @@ export interface BuckleConfig extends NodeConfig {
   allowHistory: boolean
   /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers. */
   approvalTimeoutMs: number | null
+  /** How long the workspace may go without activity before its sessions end (approval.sessionIdleMs); 0 ends none at idle. */
+  approvalSessionIdleMs: number
   /** The plain variables the workspace's settings give its shell commands (Q13); a call's own `env` is set over them. */
   commandEnvironment: Readonly<Record<string, string>>
   /** Whether Buckle reads the workspace's secret references (secrets.enabled, docs/user/how-to/secrets.md); on where absent. */
@@ -321,7 +324,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
-  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_APPROVAL_FORMS', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
+  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_APPROVAL_FORMS', 'BUCKLE_APPROVAL_SESSION_IDLE_MS', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
 ])
 
 /**
@@ -432,7 +435,7 @@ export interface WorkspaceScope {
    */
   browser: { idleTimeoutMs: number; cdp?: string; profile?: string; args?: string; headed: boolean; names?: BrowserSettingNames }
   /** Its decision AI (D91). */
-  approval: { judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
+  approval: { sessionIdleMs: number; judge: JudgeMode; judgeProvider: JudgeProvider; judgeModel: string; judgeStandardScripts: readonly string[]; quickJudge: QuickJudgeScope; quickJudgeProvider: QuickJudgeProvider; quickJudgeModel: string }
   /** Its secret references (docs/user/how-to/secrets.md); on, and no file listed, where absent. */
   secrets?: { enabled: boolean; files: readonly string[] }
   /** Its delete policy (the delete policy brief). */
@@ -467,9 +470,10 @@ export interface NodeDefaults {
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
   /**
    * BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, and BUCKLE_APPROVAL_QUICK_JUDGE and its _MODEL, where
-   * buckle.env names them (D91), and BUCKLE_APPROVAL_FORMS, whether MCP form answers decide.
+   * buckle.env names them (D91), BUCKLE_APPROVAL_FORMS, whether MCP form answers decide, and BUCKLE_APPROVAL_SESSION_IDLE_MS,
+   * the idle window after which sessions end.
    */
-  approval: { forms?: boolean; judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
+  approval: { forms?: boolean; sessionIdleMs?: number; judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
   /** BUCKLE_DELETE_IN_WORKSPACE and BUCKLE_MASS_DELETE_LIMIT, where buckle.env names them (the delete policy brief). */
   files: { deleteInWorkspace?: DeleteInWorkspace; massDeleteLimit?: number }
   env: Readonly<Record<string, string>>
@@ -553,8 +557,11 @@ function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approva
     }
   }
   const forms = environment.BUCKLE_APPROVAL_FORMS ? environment.BUCKLE_APPROVAL_FORMS === 'true' : undefined
+  const idle = environment.BUCKLE_APPROVAL_SESSION_IDLE_MS || undefined
+  const sessionIdleMs = idle === undefined ? undefined : parseSessionIdle(idle)
+  if (sessionIdleMs === null) throw new Error(`Invalid BUCKLE_APPROVAL_SESSION_IDLE_MS: milliseconds, ${SESSION_IDLE_BOUNDS.min} to ${SESSION_IDLE_BOUNDS.max}, or 0 to end no session at idle`)
   return {
-    ...defined('forms', forms),
+    ...defined('forms', forms), ...defined('sessionIdleMs', sessionIdleMs),
     ...defined('judge', judge as JudgeMode | undefined), ...defined('judgeProvider', judgeProvider as JudgeProvider | undefined),
     ...defined('judgeModel', judgeModel), ...defined('judgeStandardScripts', scripts),
     ...defined('quickJudge', quickJudge as QuickJudgeScope | undefined), ...defined('quickJudgeModel', quickJudgeModel),
@@ -617,7 +624,7 @@ export function workspaceConfig(node: NodeConfig, scope: WorkspaceScope): Buckle
 }
 
 /** The fields of a workspace's configuration its workspace.json decides, which a running workspace takes up between calls (Q2). */
-export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment' | 'history'>
+export type WorkspaceFields = Pick<BuckleConfig, 'policy' | 'mounts' | 'shellNetwork' | 'isolateShell' | 'approvalJudge' | 'approvalJudgeProvider' | 'approvalJudgeModel' | 'approvalJudgeStandardScripts' | 'approvalQuickJudge' | 'approvalQuickJudgeProvider' | 'approvalQuickJudgeModel' | 'browserCdp' | 'browserProfile' | 'browserArgs' | 'browserHeaded' | 'browserIdleTimeoutMs' | 'browserSettingNames' | 'enabledPacks' | 'enableShell' | 'allowCode' | 'allowHistory' | 'allowHostGit' | 'allowHostLsp' | 'approvalTimeoutMs' | 'approvalSessionIdleMs' | 'secretsEnabled' | 'secretFiles' | 'deleteInWorkspace' | 'massDeleteLimit' | 'commandEnvironment' | 'history'>
 
 export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' | 'policy' | 'packs' | 'approvalWaitMs' | 'shell' | 'browser' | 'approval' | 'secrets' | 'files' | 'env' | 'history'>): WorkspaceFields {
   return {
@@ -647,6 +654,7 @@ export function workspaceFields(scope: Pick<WorkspaceScope, 'mount' | 'mounts' |
     allowHostGit: scope.packs.hostGit,
     allowHostLsp: scope.packs.hostLsp,
     approvalTimeoutMs: scope.approvalWaitMs === 0 ? null : scope.approvalWaitMs,
+    approvalSessionIdleMs: scope.approval.sessionIdleMs,
     secretsEnabled: scope.secrets?.enabled ?? true,
     secretFiles: [...scope.secrets?.files ?? []],
     deleteInWorkspace: scope.files.deleteInWorkspace,

@@ -71,13 +71,15 @@ import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/brows
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
 import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
-import type { GrantStore } from '../../types/ports/grant-store.js'
+import type { LedgerGrants } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
 import { bindFormsOpener } from './forms-opener.js'
 import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { CoreApprovalApi } from '../approvals/core-approval-api.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
+import { createSessionIdleCheck, SESSION_SWEEP_MS, type SessionIdleCheck } from '../approvals/session-idle-check.js'
+import { newestSessionGrant } from '../../domain/approval/session-idle.js'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
 import { createTerminalBackend } from '../../adapters/approval/terminal-backend.js'
@@ -92,7 +94,7 @@ import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
-import { activeWorkDirectory, createActiveWorkMark, createExecutingMark } from './active-work.js'
+import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingInstances } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
@@ -217,7 +219,7 @@ export interface BuckleRuntime {
    */
   mountTable(): MountRow[]
   policy: PolicyHandle
-  grants: GrantStore
+  grants: LedgerGrants
   /** What the faces (the CLI, the MCP faces, and the setup routes) hold of the approval service. */
   approvalApi: CoreApprovalApi
   /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
@@ -259,7 +261,7 @@ export interface BuckleRuntime {
    */
   closeBrowsers(): Promise<BrowserCloseCounts>
   reload(): Promise<void>
-  /** Shutdown's watcher step: closes the settings-folder watcher (Q2). Idempotent. */
+  /** Shutdown's timers step: closes the settings-folder watcher (Q2) and stops the idle sweep. Idempotent. */
   closeWatchers(): void
   onToolsChanged(listener: () => void): void
 }
@@ -300,6 +302,8 @@ export interface CoreRuntime extends BuckleRuntime {
   approvals: ApprovalRegistry
   /** The single answerer: every ask waits here and every verdict is recorded here. */
   approvalService: ApprovalService
+  /** Ends the workspace's sessions once it idles past its window: before each call, and once a minute while open. */
+  sessionIdle: SessionIdleCheck
 }
 
 export async function createRuntime(input: RuntimeInput): Promise<CoreRuntime> {
@@ -353,11 +357,26 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // A version whose forms setting could not be read, reported once.
   let formsUnreadVersion: string | undefined
   let notices: ApprovalNotices | undefined
+  // This runtime's own id beside the pid: it names the browser sessions it writes and its executing mark, so what a
+  // runtime left is told from a live one's.
+  const instance = randomUUID()
+  // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
+  const marks = activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId)
+  const executing = createExecutingMark({ directory: marks, workspaceId, instance })
+  const sessionIdle = createSessionIdleCheck({
+    workspaceId,
+    idleMs: () => config.approvalSessionIdleMs,
+    lastActivity: () => history.lastActivity() ?? newestSessionGrant(grantFile.list()),
+    executing: () => executingInstances({ directory: marks }),
+    runningHere: () => executing.running(),
+    sessions: { endSessions: end => approvalService.endSessions(end) },
+  })
   const approvals = createApprovalRegistry(grantFile, approvalsPath(config), config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,
     onExpired: requests => notices?.expired(requests),
     onNoticeQueued: () => { void notices?.flush() },
     live: () => ({ forms: formsInForce() }),
+    onActivity: () => { history.touchActivity(); sessionIdle.saw() },
   })
   // Every revoke goes through the ledger, so a decision's owed mark never writes a revoked grant again.
   const { grants } = approvals
@@ -386,7 +405,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
   })
   input.onApprovalCleanup(() => approvalService.close())
-  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService })
+  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionsFrom: () => sessionIdle.sessionsFrom() })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
@@ -435,9 +454,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // decision D82, point 3), and never another workspace's (BUCKLE-D07: a token opens one workspace).
   const manifestTools = (): ToolCapability[] => registry.capabilities().filter(tool => toolDenial(tool.name) === null)
   const browserHeldBy = input.browserHeldBy
-  // This runtime's own id beside the pid: it names the browser sessions it writes and its executing mark, so what a
-  // runtime left is told from a live one's.
-  const instance = randomUUID()
   const workspaceName = () => config.serverName
   const initial = await buildPacks({ config, sandbox, plugins, compiled, paths, browserStateDirectory, history, untrusted, reachableTools: manifestTools, browserHeldBy, browserInstance: instance, workspaceName })
   let packs = initial.packs
@@ -449,10 +465,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   let activeInvocations = 0
   /** Packs a rebuild replaced while calls ran on them, closed when the last of those calls ends. */
   const retiring: Pack[] = []
-  // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
-  const marks = activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId)
   const activity = createActiveWorkMark({ directory: marks, workspaceId })
-  const executing = createExecutingMark({ directory: marks, workspaceId, instance })
   const executionBudget = input.executionBudget ?? createExecutionBudget()
   const executions = createExecutions({ budget: executionBudget })
   // What each session read or wrote lately, in memory alone, for the destructive-write check: a restart forgets it.
@@ -525,6 +538,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     grants,
     approvals,
     approvalService,
+    sessionIdle,
     approvalApi: approvalFaceOf(approvalService),
     closeApprovals: () => approvalService.close(),
     approvalGate,
@@ -621,7 +635,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
         }
         throw error
       }
-      return invokeNow(call, inForce())
+      // Before the call's attempt entry, so a session that idled ends before the call reads its grants.
+      await sessionIdle.check()
+      sessionIdle.saw()
+      try { return await invokeNow(call, inForce()) } finally { sessionIdle.saw() }
     },
 
     async cancelInvocations() {
@@ -644,8 +661,12 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     },
 
     onToolsChanged: listener => void listeners.push(listener),
-    closeWatchers: () => { watcherClosed = true; if (watcherPending) clearTimeout(watcherPending); watcherPending = undefined; settingsWatcher?.close(); settingsWatcher = undefined },
+    closeWatchers: () => { watcherClosed = true; clearInterval(sessionSweep); if (watcherPending) clearTimeout(watcherPending); watcherPending = undefined; settingsWatcher?.close(); settingsWatcher = undefined },
   }
+
+  // A one-shot command does not stay open for it: the next call anywhere checks before it runs.
+  const sessionSweep = setInterval(() => void sessionIdle.check(), SESSION_SWEEP_MS)
+  sessionSweep.unref()
 
   // Q2: a watcher on the settings folder takes a change up at once when the workspace is idle; the per-call pickUp is the
   // fallback, so a watcher that cannot start (unsupported, EMFILE) is logged once and nothing else changes.

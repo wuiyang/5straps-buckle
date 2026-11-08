@@ -2,8 +2,8 @@ import type { GrantRecord, GrantSubject, PermissionRuleId } from '@5straps/proto
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
-import type { GrantStore } from '../../types/ports/grant-store.js'
+import { madeBeforeSessionsFrom, servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
+import type { LedgerGrants } from '../../types/ports/grant-store.js'
 import type { ApprovalRegistry } from './approval-registry.js'
 import type { UnspentOnce } from './once-store.js'
 import type { ApprovalAskInput, ApprovalService, ApprovalWaitResult } from './approval-service.js'
@@ -32,7 +32,8 @@ export interface GateClearance {
 /**
  * The one way a call meets approvals: its last check spends its onces and claims its execution under the ledger's lock,
  * its grants serve the actor that asked, and its asks are recorded and waited on. A once and a session grant serve only
- * the actor whose call asked.
+ * the actor whose call asked. While the workspace's activity cannot be read, `sessionsFrom` names when a session approval
+ * must have been made to clear a call; a denial binds whenever it was made.
  */
 export interface ApprovalGate {
   clear(input: GateCheck): Promise<GateClearance>
@@ -47,8 +48,8 @@ export interface ApprovalGate {
   unspent(sessionId: string): UnspentOnce[]
 }
 
-export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: GrantStore; service: ApprovalService }): ApprovalGate {
-  const { ledger, grants, service } = input
+export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: LedgerGrants; service: ApprovalService; sessionsFrom: () => number | undefined }): ApprovalGate {
+  const { ledger, grants, service, sessionsFrom } = input
   return {
     async clear(call) {
       const holder = holderOf(call)
@@ -61,14 +62,14 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Gr
         ...(call.holds === undefined ? {} : { holds: call.holds }),
         check: (subjects) => {
           relied = subjects
-          return call.check(grantLookup({ store: grants, holder, consumed: subjects }))
+          return call.check(grantLookup({ store: grants, holder, consumed: subjects, sessionsFrom: sessionsFrom() }))
         },
         spent: (deciders) => { decidedBy = deciders },
       })
       return { outcome, relied, ...(decidedBy === undefined ? {} : { decidedBy }) }
     },
-    grants: ({ consumed, ...holder }) => grantLookup({ store: grants, holder: holderOf(holder), consumed }),
-    standing: holder => standingGrants(grants, holderOf(holder)),
+    grants: ({ consumed, ...holder }) => grantLookup({ store: grants, holder: holderOf(holder), consumed, sessionsFrom: sessionsFrom() }),
+    standing: holder => standingGrants(grants, holderOf(holder), sessionsFrom()),
     ask: request => service.request(request),
     wasDenied: tokens => ledger.wasDenied(tokens),
     withdraw: tokens => service.withdraw(tokens),
@@ -76,15 +77,16 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Gr
   }
 }
 
-/** The grants a holder's checks read, with the onces its call counts beside them. */
-export function grantLookup(input: { store: GrantStore; holder: GrantHolder; consumed: readonly GrantSubject[] }): GrantLookup {
+/** The grants a holder's checks read, with the onces its call counts beside them; see ApprovalGate for `sessionsFrom`. */
+export function grantLookup(input: { store: Pick<LedgerGrants, 'activeSubjects' | 'activePatterns' | 'list'>; holder: GrantHolder; consumed: readonly GrantSubject[]; sessionsFrom?: number }): GrantLookup {
   const { store, holder } = input
+  const filter = input.sessionsFrom === undefined ? {} : { sessionsFrom: input.sessionsFrom }
   return {
     // A lasting denial binds its whole session, whichever actor asked in it.
     deniedSubjectsFor: rule => deniedSubjects(store, holder.sessionId, rule),
-    subjectsFor: (rule, scopes) => [...store.activeSubjects({ ...holder, rule, ...(scopes === undefined ? {} : { scopes }) }), ...(scopes === undefined || scopes.includes('once') ? subjectsByRule(input.consumed, rule) : [])],
+    subjectsFor: (rule, scopes) => [...store.activeSubjects({ ...holder, ...filter, rule, ...(scopes === undefined ? {} : { scopes }) }), ...(scopes === undefined || scopes.includes('once') ? subjectsByRule(input.consumed, rule) : [])],
     // A `once` stays exact, so only standing grants can hold a pattern.
-    patternsFor: rule => store.activePatterns({ ...holder, rule }),
+    patternsFor: rule => store.activePatterns({ ...holder, ...filter, rule }),
   }
 }
 
@@ -92,12 +94,12 @@ function holderOf(input: GrantHolder): GrantHolder {
   return { sessionId: input.sessionId, ...(input.actor === undefined ? {} : { actor: input.actor }) }
 }
 
-function standingGrants(store: GrantStore, holder: GrantHolder): GrantRecord[] {
+function standingGrants(store: LedgerGrants, holder: GrantHolder, sessionsFrom: number | undefined): GrantRecord[] {
   const now = Date.now()
-  return store.list().filter(grant => !grant.denied && grant.scope !== 'once' && servesHolder(grant, holder) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now))
+  return store.list().filter(grant => !grant.denied && grant.scope !== 'once' && servesHolder(grant, holder) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now) && !madeBeforeSessionsFrom(grant, sessionsFrom))
 }
 
-function deniedSubjects(store: GrantStore, sessionId: string, rule: PermissionRuleId): string[] {
+function deniedSubjects(store: Pick<LedgerGrants, 'list'>, sessionId: string, rule: PermissionRuleId): string[] {
   const now = Date.now()
   return store.list().filter(record => record.denied && record.rule === rule && (record.sessionId === null || record.sessionId === sessionId) && (!record.expiresAt || Date.parse(record.expiresAt) > now)).map(record => record.subject)
 }

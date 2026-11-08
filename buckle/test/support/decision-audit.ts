@@ -1,9 +1,9 @@
-import type { AuditedDecision, AuditedSkip, DecisionAudit, DecisionEnding, SkipEnding } from '../../common/types/ports/decision-audit.js'
+import type { AuditedDecision, AuditedSessionEnd, AuditedSkip, DecisionAudit, DecisionEnding, SkipEnding } from '../../common/types/ports/decision-audit.js'
 
 const UNHEARD_ENDING = { applied: () => undefined, refused: () => undefined, failed: () => undefined }
 
 /** A decision audit that keeps nothing, for a service whose decisions a test does not read. */
-export const UNHEARD_DECISIONS: DecisionAudit = { received: () => UNHEARD_ENDING, skipReceived: () => UNHEARD_ENDING }
+export const UNHEARD_DECISIONS: DecisionAudit = { received: () => UNHEARD_ENDING, skipReceived: () => UNHEARD_ENDING, sessionEnded: () => undefined }
 
 export type HeardDecision =
   | { step: 'received'; fields: AuditedDecision }
@@ -14,8 +14,9 @@ export type HeardDecision =
   | { step: 'skip_applied'; fields: AuditedSkip & Parameters<SkipEnding['applied']>[0] }
   | { step: 'skip_refused'; fields: AuditedSkip & Parameters<SkipEnding['refused']>[0] }
   | { step: 'skip_failed'; fields: AuditedSkip }
+  | { step: 'session_ended'; fields: AuditedSessionEnd }
 
-/** A decision audit that keeps each step it was told, in order, with the decision or skip it was about. */
+/** A decision audit that keeps each step it was told, in order, with the decision, skip, or session end it was about. */
 export function recordingDecisionAudit(): { audit: DecisionAudit; entries: HeardDecision[] } {
   const entries: HeardDecision[] = []
   const audit: DecisionAudit = {
@@ -35,6 +36,7 @@ export function recordingDecisionAudit(): { audit: DecisionAudit; entries: Heard
         failed: () => { entries.push({ step: 'skip_failed', fields: skip }) },
       }
     },
+    sessionEnded(end) { entries.push({ step: 'session_ended', fields: end }) },
   }
   return { audit, entries }
 }

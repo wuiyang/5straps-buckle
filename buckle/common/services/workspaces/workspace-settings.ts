@@ -18,6 +18,7 @@ import { DEFAULT_IDLE_TIMEOUT_MS } from '../packs/browser/mode.js'
 import { DEFAULT_HISTORY_FILE_BYTES } from '../history/git-store.js'
 import { DEFAULT_HISTORY_KEEP_TURNS, DEFAULT_HISTORY_TURN_IDLE_MS } from '../history/turn-retention.js'
 import { BUILT_IN_DELETE_POLICY, DELETE_IN_WORKSPACE_MODES, MAX_MASS_DELETE_LIMIT, type DeleteInWorkspace } from '../../domain/delete-policy.js'
+import { DEFAULT_SESSION_IDLE_MS, isSessionIdle } from '../../domain/approval/session-idle.js'
 
 /** The browser's idle timeout when a workspace names none, and its bounds (Q10 of the workspace-model brief): 60 s to 24 h. */
 export const DEFAULT_BROWSER_IDLE_MS = DEFAULT_IDLE_TIMEOUT_MS
@@ -97,10 +98,12 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
  * and `judgeModel` which model rates it (Buckle's own: an OpenAI-compatible endpoint and gpt-6-luna), and `judgeStandardScripts` the commands rated on
  * their command line alone; `quickJudge` which calls the optional quick stage rates (off, interpreters, asks, or all),
  * with `quickJudgeProvider` and `quickJudgeModel` (Buckle's own: TypeSafe's jev-latest). None holds a credential: the
- * keys and base URLs are the node's alone. `forms` says whether an MCP host's form answers decide its asks.
+ * keys and base URLs are the node's alone. `forms` says whether an MCP host's form answers decide its asks, and
+ * `sessionIdleMs` how long it may go without activity before its sessions end: a minute to a day, or 0 for never at idle.
  */
 const ApprovalSchema = z.object({
   forms: z.boolean().optional(),
+  sessionIdleMs: z.number().int().refine(isSessionIdle, { message: 'milliseconds, a minute to a day, or 0' }).optional(),
   judge: z.enum(JUDGE_MODES).optional(),
   judgeProvider: z.enum(JUDGE_PROVIDERS).optional(),
   judgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
@@ -308,7 +311,7 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
   // MCP form answers decide only where the owner turns them on, for a workspace or as the node's default.
-  approval: Object.freeze({ forms: false, judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
+  approval: Object.freeze({ forms: false, sessionIdleMs: DEFAULT_SESSION_IDLE_MS, judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
   secrets: Object.freeze({ enabled: true, files: Object.freeze([] as string[]) }),
   files: Object.freeze({ deleteInWorkspace: BUILT_IN_DELETE_POLICY.inWorkspace, massDeleteLimit: BUILT_IN_DELETE_POLICY.massLimit }),
 })
@@ -335,9 +338,13 @@ export interface ResolvedSettings {
   sources: Readonly<Record<string, SettingSource>>
 }
 
-/** A workspace's approval settings in force: whether MCP forms decide, and its decision AI (D91), whose provider and model are Buckle's own where neither the workspace nor the node names one. */
+/**
+ * A workspace's approval settings in force: whether MCP forms decide, its idle window, and its decision AI (D91), whose
+ * provider and model are Buckle's own where neither the workspace nor the node names one.
+ */
 export interface ResolvedApproval {
   forms: boolean
+  sessionIdleMs: number
   judge: JudgeMode
   judgeProvider: JudgeProvider
   judgeModel: string
@@ -428,6 +435,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     browser,
     approval: {
       forms: pick('approval.forms', stored.approval.forms, node.approval.forms, BUILT_IN_SETTINGS.approval.forms),
+      sessionIdleMs: pick('approval.sessionIdleMs', stored.approval.sessionIdleMs, node.approval.sessionIdleMs, BUILT_IN_SETTINGS.approval.sessionIdleMs),
       judge: pick('approval.judge', stored.approval.judge, node.approval.judge, BUILT_IN_SETTINGS.approval.judge),
       judgeProvider: pick('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, BUILT_IN_SETTINGS.approval.judgeProvider),
       judgeModel: pick('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, BUILT_IN_SETTINGS.approval.judgeModel),

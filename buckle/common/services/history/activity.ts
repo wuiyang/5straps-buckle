@@ -5,16 +5,24 @@ import { logger } from '../../runtime/log.js'
 
 interface Activity { at: number; turn: string; stage: string | null }
 
+/** The store's file, which the idle check names where it cannot read it. */
+export const ACTIVITY_STORE = 'activity.sqlite'
+
+/**
+ * Each session's newest call start or end, for turn grouping, and the workspace's own row, which each ask and decision
+ * touches: together the workspace's last activity, which the idle check reads.
+ */
 export async function openHistoryActivity(directory: string) {
   const memory = new Map<string, Activity>()
   const active = new Map<string, Map<string | null, { turn: string; count: number }>>()
   let database: SqliteDatabase | undefined
   let db: Awaited<ReturnType<typeof rawConnection>> | undefined
   try {
-    const file = join(directory, 'activity.sqlite')
+    const file = join(directory, ACTIVITY_STORE)
     database = await openDatabase({ path: file, pragmas: { busy_timeout: 1000, journal_mode: 'DELETE' }, requireOwnerOnlyDirectory: true, logger })
     db = await rawConnection(database)
     db.exec('CREATE TABLE IF NOT EXISTS activity (session TEXT PRIMARY KEY, at INTEGER NOT NULL, turn TEXT NOT NULL, stage TEXT)')
+    db.exec('CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)')
   } catch {
     await database?.dispose(); database = undefined; db = undefined
     logger.warn('History activity could not be persisted; turn grouping may reset after restart')
@@ -69,5 +77,23 @@ export async function openHistoryActivity(directory: string) {
     catch { logger.warn('History activity could not be persisted; turn grouping may reset after restart') }
   }
 
-  return { observe, activeTurn, start, finish, complete, close: () => database?.dispose() ?? Promise.resolve() }
+  /** An ask or a decision in the workspace, at `at`. */
+  function touch(at: number): void {
+    try {
+      if (!db) throw new Error('Activity store unavailable')
+      db.prepare('INSERT INTO workspace (id, at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET at = max(at, excluded.at)').run(at)
+    } catch { logger.warn('Workspace activity could not be recorded; its sessions may end at idle sooner than its window') }
+  }
+
+  /**
+   * The newest activity the store holds, of any session or the workspace's own row; undefined where none was recorded.
+   * Throws where the store cannot be read, its in-memory fallback included, which knows this process's activity alone.
+   */
+  function latest(): number | undefined {
+    if (!db) throw new Error('Activity store unavailable')
+    const row = db.prepare('SELECT max(at) AS at FROM (SELECT at FROM activity UNION ALL SELECT at FROM workspace)').get() as { at: number | null }
+    return row.at ?? undefined
+  }
+
+  return { observe, activeTurn, start, finish, complete, touch, latest, close: () => database?.dispose() ?? Promise.resolve() }
 }

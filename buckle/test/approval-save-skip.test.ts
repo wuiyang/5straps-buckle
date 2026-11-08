@@ -363,7 +363,7 @@ describe('who may skip, and what', () => {
 
   it('has nothing left to skip once a session end dropped the owed grant, and answers a retry dropped', async () => {
     const { approvals, registry, store, token } = await owedApproval()
-    await registry.grants.endSession('s')
+    await registry.endSessions({ ending: { sessionId: 's' } })
     expect(keptGrant(approvals, token)?.save).toBe('dropped')
     expect(await registry.resolve(sessionApproval(token), cli)).toMatchObject({ ok: true, repeated: true, save: 'dropped' })
     expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, repeated: true })

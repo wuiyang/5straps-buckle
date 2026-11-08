@@ -1,10 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonObject } from '@5straps/protocol'
-import { DECISION_TOOL } from '../../domain/record-tools.js'
+import { DECISION_TOOL, SESSION_END_TOOL } from '../../domain/record-tools.js'
 import { MAX_LOGGED_ID } from '../../domain/redact.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 import type { ApprovalSource, SourceKind } from '../../types/ports/approval-source.js'
-import type { AuditedDecision, AuditedSkip, AuditEnding, DecisionAudit } from '../../types/ports/decision-audit.js'
+import type { AuditedDecision, AuditedSessionEnd, AuditedSkip, AuditEnding, DecisionAudit } from '../../types/ports/decision-audit.js'
 
 /** Decisions belong to no agent's session; their entries share this one. */
 const DECISION_SESSION = 'approvals'
@@ -31,6 +31,7 @@ const ACTOR_OF: Readonly<Record<SourceKind, (answer: Answered) => string>> = {
 /**
  * Each decision and each skip in its workspace's own log, through the log service: received as an attempt, then how it
  * ended as its result, under one auditId. A refusal keeps its code and never its reason, which may name the ask's subject.
+ * Each session's end is one result entry under the session it ended.
  */
 export function createLoggedDecisionAudit(input: { actions: Pick<ActionLog, 'append'>; workspaceId: string }): DecisionAudit {
   function received<Applied extends JsonObject>(args: JsonObject, actorId: string): AuditEnding<Applied> {
@@ -48,6 +49,16 @@ export function createLoggedDecisionAudit(input: { actions: Pick<ActionLog, 'app
   return {
     received: decision => received(decisionArgs(decision), actorOf(decision)),
     skipReceived: skip => received(skipArgs(skip), actorOf(skip)),
+    sessionEnded: end => input.actions.append(sessionEndEntry(input.workspaceId, end)),
+  }
+}
+
+function sessionEndEntry(workspaceId: string, end: AuditedSessionEnd): ActionLogEntry {
+  const auditId = randomUUID()
+  const { sessionId, ...counts } = end
+  return {
+    auditId, workspaceId, event: 'result', at: new Date().toISOString(), requestId: auditId, sessionId: sessionId.slice(0, MAX_LOGGED_ID),
+    tool: SESSION_END_TOOL, outcome: 'ok', durationMs: 0, effects: [], args: counts,
   }
 }
 

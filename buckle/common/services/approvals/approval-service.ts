@@ -9,7 +9,8 @@ import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { reachOf, rightsOf } from '../../domain/approval/assurance.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
-import type { DecisionAudit, DecisionEnding, DecisionProofKind } from '../../types/ports/decision-audit.js'
+import type { DecisionAudit, DecisionEnding, DecisionProofKind, SessionEndCause } from '../../types/ports/decision-audit.js'
+import type { SessionEnding } from '../../types/ports/grant-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
@@ -19,7 +20,7 @@ import { createApprovalNotices, type ApprovalNotices } from './approval-notices.
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
-import type { ApprovalRegistry, Departure, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
+import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -119,6 +120,12 @@ export interface ApprovalService extends CoreApprovalApi {
   skip(input: { token: string; source: ApprovalSource; caller?: string }): Promise<SkipResolution>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
+  /**
+   * Ends sessions (the ledger's endSessions): their waiting asks are withdrawn, the webhook told they were cancelled and
+   * each caller waiting on one woken, and each session that ended recorded with its cause. Null where `due`, read again
+   * under the lock, kept them.
+   */
+  endSessions(input: { ending: SessionEnding; cause: SessionEndCause; due?: () => boolean }): Promise<EndedSession[] | null>
   /** Opens an MCP host's forms under its face's forms source, which core holds and rates; closed with the service. */
   openFormsBackend(backend: ApprovalBackend, face: FormsFace): void
   /**
@@ -144,7 +151,7 @@ export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
 }
 
 /** The ledger reads and writes the service makes. */
-export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'skipSave' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'departures' | 'sweep' | 'sweepIfDue'>
+export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'skipSave' | 'cancel' | 'cancelGroup' | 'endSessions' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'departures' | 'sweep' | 'sweepIfDue'>
 
 export interface ApprovalServiceOptions {
   registry: ApprovalLedger
@@ -407,6 +414,17 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     openFormsBackend(backend, face) {
       formsBackends.add(backend)
       track(backend.open(formsHostOf(FORMS_SOURCES[face])).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
+    },
+
+    async endSessions({ ending, cause, due }) {
+      const ended = await options.registry.endSessions({ ending, ...(due === undefined ? {} : { due }) })
+      if (ended === null) return null
+      const withdrawn = ended.flatMap(session => session.withdrawn)
+      notices.cancelled(withdrawn)
+      for (const token of withdrawn) wake(token)
+      for (const session of ended) options.decisionAudit.sessionEnded({ sessionId: session.sessionId, cause, withdrawn: session.withdrawn.length, onces: session.onces, owed: session.owed, grants: session.grants, denials: session.denials })
+      if (ended.length > 0) logger.info('Ended approval sessions', { cause, sessions: ended.length, withdrawn: withdrawn.length, workspaceId: options.workspaceId })
+      return ended
     },
 
     async withdrawCall(selector) {

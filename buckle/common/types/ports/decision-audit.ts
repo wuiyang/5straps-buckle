@@ -40,11 +40,33 @@ export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boole
 export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 
 /**
+ * Why sessions end: the workspace idled past its window, a stdio MCP process ended, or `buckle serve` stopped or started
+ * again after a crash, which ends the HTTP MCP session, as that face keeps no session of its own to close.
+ */
+export type SessionEndCause = 'idle' | 'stdio_closed' | 'serve_stopped' | 'serve_started'
+
+/** One session's end, as its audit entry names it: what it withdrew, dropped, and removed. */
+export interface AuditedSessionEnd {
+  sessionId: string
+  cause: SessionEndCause
+  /** Asks still waiting, withdrawn. */
+  withdrawn: number
+  /** Once approvals no call spent. */
+  onces: number
+  /** Lasting grants decided but not yet written, which are now never written. */
+  owed: number
+  /** Session approvals and session denials removed from the grants. */
+  grants: number
+  denials: number
+}
+
+/**
  * Each decision's audit, and each skip's: received before the ledger reads it, then how it ended, never inside the
- * approvals lock. Every call returns at once and never throws, so a record that cannot be written never holds up or
- * refuses an answer.
+ * approvals lock; and each session's end, once it applied. Every call returns at once and never throws, so a record that
+ * cannot be written never holds up or refuses an answer.
  */
 export interface DecisionAudit {
   received(decision: AuditedDecision): DecisionEnding
   skipReceived(skip: AuditedSkip): SkipEnding
+  sessionEnded(end: AuditedSessionEnd): void
 }

@@ -766,6 +766,10 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     startCall,
     completeCall,
     finishCall,
+    /** An ask or a decision: the workspace's activity, which the idle check reads beside each call's start and end. */
+    touchActivity: () => activity.touch(now()),
+    /** The workspace's newest activity; throws where the store cannot be read. */
+    lastActivity: () => activity.latest(),
     notice: (sessionId: string, requestId: string) => {
       const matches = (record: Checkpoint) => record.sessionId === sessionId && (record.requestId === requestId || record.parentRequestId === requestId)
       let found = [...unsaved.values()].findLast(matches)

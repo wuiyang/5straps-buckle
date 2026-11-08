@@ -46,7 +46,7 @@ describe('cross-process state updates', () => {
     await second.revoke(standing.id)
     expect(first.activeSubjects({ sessionId: 'first-session', rule: 'write_scope' })).toEqual(['/workspace'])
     expect(second.activeSubjects({ sessionId: 'second-session', rule: 'write_scope' })).toEqual(['/workspace'])
-    await first.endSession('first-session')
+    await first.endSessions({ sessionId: 'first-session' })
     expect(second.activeSubjects({ sessionId: 'second-session', rule: 'write_scope' })).toEqual(['/workspace'])
     expect(first.activeSubjects({ sessionId: 'first-session', rule: 'write_scope' })).toEqual([])
   })

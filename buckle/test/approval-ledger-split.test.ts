@@ -258,7 +258,7 @@ describe('a lasting decision', () => {
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
     expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, save: 'owed' })
 
-    await runtime.grants.endSession('s')
+    await runtime.approvalService.endSessions({ ending: { sessionId: 's' }, cause: 'idle' })
     expect(onDisk(config, token).owes).toBe(false)
     const { runtime: reopened } = await open(config)
     expect(reopened.grants.list()).toEqual([])
@@ -272,7 +272,7 @@ describe('a lasting decision', () => {
     const kept = readFileSync(approvalsPath(config), 'utf8')
     writeFileSync(approvalsPath(config), '{')
 
-    await runtime.grants.endSession('s')
+    await runtime.approvalService.endSessions({ ending: { sessionId: 's' }, cause: 'idle' })
     writeFileSync(approvalsPath(config), kept)
     const { runtime: reopened } = await open(config)
     expect(reopened.grants.list()).toEqual([])
@@ -358,7 +358,7 @@ describe('a revoke or a session end, against the decisions around it', () => {
     await first.reached
     const queued = registry.resolve(sessionGrant(later), SOURCES.cli)
     await new Promise(resolve => setTimeout(resolve, 20))
-    const ended = registry.grants.endSession('s')
+    const ended = registry.endSessions({ ending: { sessionId: 's' } })
     await new Promise(resolve => setTimeout(resolve, 20))
     first.open()
     expect(await holdingTheLock).toMatchObject({ ok: true })

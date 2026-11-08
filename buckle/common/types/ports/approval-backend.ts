@@ -149,8 +149,8 @@ export type EventType =
   | 'issued' | 'renewed' | 'abandoned' | 'answered' | 'denied'
   | 'expired' | 'cancelled' | 'skipped' | 'spent' | 'revoked'
 
-/** Why an ask was cancelled, where this process saw it go. */
-export type EventReason = 'caller_cancelled' | 'evicted' | 'withdrawn_by_owner'
+/** Why an ask was cancelled, where this process saw it go; `session_ended`: its session ended, as at idle. */
+export type EventReason = 'caller_cancelled' | 'evicted' | 'withdrawn_by_owner' | 'session_ended'
 
 export interface LifecycleEvent {
   eventId: string

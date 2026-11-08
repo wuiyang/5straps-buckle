@@ -366,6 +366,7 @@ async function opened(face: FormsFace = 'stdio') {
       heard.push(skip.source)
       return { applied: () => undefined, failed: () => undefined, refused: (refusal) => { refused.push({ token: skip.token, code: refusal.code }) } }
     },
+    sessionEnded: () => undefined,
   }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
