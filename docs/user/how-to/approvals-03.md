@@ -7,7 +7,7 @@ asks and where to answer.
 ## An ask over MCP
 
 `/mcp` over HTTP holds a call that needs a person for the workspace's `approvalWaitMs`, 30
-seconds at most; `0`, which elsewhere waits until someone answers, holds it 30 seconds too. An
+seconds at most; `0`, which elsewhere waits until someone answers or the session ends, holds it 30 seconds too. An
 MCP client times out on its own clock, Claude Code's near a minute, and the work after an approval counts against it, so the hold ends well inside it. History capture runs with the call after approval: a file tool's reads only the paths it names, and a command's asks Git what changed. The caller waits for it before receiving the result. `buckle mcp` over stdio holds the
 call for `approvalWaitMs` as before. With [MCP forms](approvals-06.md) on, either face answers at
 once with a form for a host that declares form elicitation, over HTTP one of the 2026-07-28
