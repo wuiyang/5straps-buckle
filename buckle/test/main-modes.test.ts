@@ -1,10 +1,11 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'pathe'
 import type { RequestCli } from '@5straps/runtime'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import type { ConsoleWriter } from '../common/runtime/console.js'
+import { startActionLogWriter } from './support/action-log-writer.js'
 
 const config = { serverId: 'mode-dispatch', stateDirectory: '/nonexistent/buckle-mode-dispatch-state', cwd: process.cwd() } as BuckleConfig
 const entry = vi.hoisted(() => ({
@@ -56,6 +57,7 @@ const { main, selectMode, stopSignals, takeGlobalFlags } = await import('../main
 const { setupCli } = await import('../cli/setup.js')
 const { flushLogs, logger } = await import('../common/runtime/log.js')
 const { questionFor } = await import('../common/adapters/approval/terminal-question.js')
+const { createFileActionLog } = await import('../common/adapters/action-log/file-action-log.js')
 
 beforeEach(() => {
   vi.clearAllMocks()
@@ -182,6 +184,29 @@ describe('main', () => {
     expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'], { skipOwnerOnlyCheck: false })
     expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
     expect(entry.loadConfig).not.toHaveBeenCalled()
+  })
+
+  // init, settings, and service open no owner whose close would write what they queue for the audit log: main does, before
+  // it answers the exit code.
+  describe('for a one-shot command that opens no owner', () => {
+    beforeAll(startActionLogWriter)
+
+    it.each([
+      ['init', entry.runInitCommand, 3],
+      ['settings', entry.runSettingsCommand, 4],
+      ['service', entry.runServiceCommand, 6],
+    ] as const)('writes what buckle %s queued for its audit log before it answers', async (command, run, exitCode) => {
+      const folder = mkdtempSync(join(tmpdir(), 'buckle-main-audit-'))
+      const file = join(folder, 'actions.jsonl')
+      run.mockImplementationOnce(async () => {
+        createFileActionLog(file).append({ event: 'result', at: new Date().toISOString(), requestId: command, sessionId: 'local-owner', tool: `cli_${command}`, outcome: 'ok', durationMs: 0, effects: [], args: {} })
+        return { exitCode }
+      })
+      try {
+        expect(await main([command, 'show'])).toBe(exitCode)
+        expect(readFileSync(file, 'utf8')).toContain(`"tool":"cli_${command}"`)
+      } finally { rmSync(folder, { recursive: true, force: true }) }
+    })
   })
 
   it('starts HTTP for serve on one server-role common runtime, with the config loaded after the environment file, and no CLI', async () => {
