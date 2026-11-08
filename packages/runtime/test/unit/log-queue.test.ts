@@ -130,6 +130,33 @@ describe('one log queue under a budget', () => {
     expect(queue.stats()).toEqual({ held: 0, written: 2, dropped: 0, failures: 2 })
   })
 
+  it('drops an expendable entry first to make room, so a flood of them never pushes out another kind', async () => {
+    const writer = stuckWriter<string>()
+    const budget = createLogBudget({ limit: 3, overflow: 'drop-oldest' })
+    const queue = createLogQueue({ destination: 'workspace-a', budget, write: writer.write })
+    const node = createLogQueue({ destination: 'node', budget, write: stuckWriter<string>().write })
+    queue.push('decision')
+    for (const index of range(0, 100)) queue.push(`refusal ${index}`, { expendable: true })
+    node.push('line')
+    await drained()
+
+    expect(writer.batches).toEqual([['decision', 'refusal 99']])
+    expect(budget.held()).toBe(3)
+    expect([queue.stats().dropped, node.stats().dropped]).toEqual([99, 0])
+  })
+
+  it('drops a new expendable entry when only other kinds are held, and under drop-newest', async () => {
+    for (const overflow of ['drop-oldest', 'drop-newest'] as const) {
+      const writer = stuckWriter<string>()
+      const queue = createLogQueue({ destination: 'node', budget: createLogBudget({ limit: 2, overflow }), write: writer.write })
+      queue.push('a')
+      queue.push('b')
+      queue.push('refusal', { expendable: true })
+      await drained()
+      expect(writer.batches, overflow).toEqual([['a', 'b']])
+    }
+  })
+
   it('keeps today\'s defaults for other users: 1000 entries, the newest dropped, no retry', async () => {
     const writer = memoryWriter<number>()
     const queue = createLogQueue({ destination: 'node', write: writer.write })

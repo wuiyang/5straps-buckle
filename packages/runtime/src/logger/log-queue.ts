@@ -49,6 +49,11 @@ export interface LogQueueOptions<T> {
   onDropping?(notice: LogDropNotice): void
 }
 
+/** `expendable`: gives way to every other held entry, and never pushes one of another kind out of a full budget. */
+export interface LogPushOptions {
+  expendable?: boolean
+}
+
 export interface LogQueueStats {
   held: number
   written: number
@@ -59,16 +64,17 @@ export interface LogQueueStats {
 /** push never throws or waits; a full budget or a write that fails its retries drops entries and counts them. */
 export interface LogQueue<T> {
   readonly destination: string
-  push(entry: T): void
+  push(entry: T, options?: LogPushOptions): void
   flush(): Promise<void>
   /** Writes what is held; at the deadline, what is left is dropped, counted, and returned. */
   close(options?: { deadlineMs?: number }): Promise<{ left: number }>
   stats(): LogQueueStats
 }
 
+/** `onlyExpendable` narrows each to the member's expendable entries. */
 interface BudgetMember {
-  oldest(): number | undefined
-  dropOldest(): void
+  oldest(onlyExpendable: boolean): number | undefined
+  dropOldest(onlyExpendable: boolean): void
 }
 
 interface BudgetState {
@@ -79,7 +85,7 @@ interface BudgetState {
   members: Set<BudgetMember>
 }
 
-interface Held<T> { value: T; sequence: number }
+interface Held<T> { value: T; sequence: number; expendable: boolean }
 
 interface Batch<T> {
   entries: Held<T>[]
@@ -119,28 +125,42 @@ export function createLogQueue<T>(options: LogQueueOptions<T>): LogQueue<T> {
   let wake: (() => void) | undefined
 
   // A batch waiting for its retry or for a late write gives up its oldest entries first; one being written keeps them.
-  function droppable(): Held<T>[] {
-    return batch && !batch.writing && batch.entries.length > 0 ? batch.entries : pending
+  function droppable(): Held<T>[][] {
+    return batch && !batch.writing ? [batch.entries, pending] : [pending]
+  }
+
+  function oldestHeld(onlyExpendable: boolean): { list: Held<T>[]; index: number } | undefined {
+    for (const list of droppable()) {
+      const index = onlyExpendable ? list.findIndex(held => held.expendable) : list.length > 0 ? 0 : -1
+      if (index >= 0) return { list, index }
+    }
+    return undefined
   }
 
   const member: BudgetMember = {
-    oldest: () => droppable()[0]?.sequence,
-    dropOldest() {
-      droppable().shift()
+    oldest(onlyExpendable) {
+      const found = oldestHeld(onlyExpendable)
+      return found?.list[found.index]?.sequence
+    },
+    dropOldest(onlyExpendable) {
+      const found = oldestHeld(onlyExpendable)
+      if (!found) return
+      found.list.splice(found.index, 1)
       budget.held -= 1
       countDrop(1, 'full')
     },
   }
   budget.members.add(member)
 
-  function push(entry: T): void {
+  function push(entry: T, pushOptions: LogPushOptions = {}): void {
+    const expendable = pushOptions.expendable === true
     if (closed) {
       counts.dropped += 1
       return
     }
-    if (!admit(budget)) return countDrop(1, 'full')
+    if (!admit(budget, expendable)) return countDrop(1, 'full')
     budget.held += 1
-    pending.push({ value: entry, sequence: budget.sequence++ })
+    pending.push({ value: entry, sequence: budget.sequence++, expendable })
     pumping ??= runDetached(() => pump())
   }
 
@@ -293,20 +313,26 @@ function guarded<R>(callback: () => R): R | undefined {
   }
 }
 
-// Makes room by the budget's overflow rule; false drops the new entry.
-function admit(budget: BudgetState): boolean {
+// Makes room, the oldest expendable entry giving way first; otherwise by the overflow rule, and an expendable entry never
+// pushes out another kind. False drops the new entry.
+function admit(budget: BudgetState, expendable: boolean): boolean {
   if (budget.held < budget.limit) return true
-  if (budget.overflow === 'drop-newest') return false
-  const victim = oldestMember(budget)
+  const yielding = oldestMember(budget, true)
+  if (yielding && (!expendable || budget.overflow === 'drop-oldest')) {
+    yielding.dropOldest(true)
+    return true
+  }
+  if (expendable || budget.overflow === 'drop-newest') return false
+  const victim = oldestMember(budget, false)
   if (!victim) return false
-  victim.dropOldest()
+  victim.dropOldest(false)
   return true
 }
 
-function oldestMember(budget: BudgetState): BudgetMember | undefined {
+function oldestMember(budget: BudgetState, onlyExpendable: boolean): BudgetMember | undefined {
   let oldest: { member: BudgetMember; sequence: number } | undefined
   for (const member of budget.members) {
-    const sequence = member.oldest()
+    const sequence = member.oldest(onlyExpendable)
     if (sequence !== undefined && (oldest === undefined || sequence < oldest.sequence)) oldest = { member, sequence }
   }
   return oldest?.member
