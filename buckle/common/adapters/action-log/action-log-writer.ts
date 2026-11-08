@@ -35,6 +35,11 @@ export interface ActionLogWriter {
    */
   append(input: { file: LogFile; entries: ActionLogEntry[]; existingFolder?: true }): Promise<void>
   /**
+   * Attempts whose results were dropped unwritten, which would stay pending for recovery to mark interrupted though their
+   * calls answered: the next append to the file that lands stops tracking them, a failed one leaving them for the next.
+   */
+  untrack(file: LogFile, auditIds: readonly string[]): void
+  /**
    * Rejects while the log cannot take a write, when the worker does not answer within PROBE_DEADLINE_MS, or at once while
    * the worker has not answered its last probe of the log.
    */
@@ -78,6 +83,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
   let connection: Connection | undefined
   let nextId = 0
   const places = createPlaces()
+  const untracking = createUntracking()
 
   function connect(): Connection {
     if (connection) return connection
@@ -163,14 +169,16 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
     if (connection && writesWaiting(connection) >= MAX_WAITING_WRITES) throw new StateBusyError('Too many action log writes wait on the disk; retry shortly')
     const ids = input.entries.flatMap(entry => (entry.entryId === undefined ? [] : [entry.entryId]))
     const since = places.earliest(input.file, ids)
+    const untrack = untracking.due(input.file)
     let placedAt: number | undefined
     try {
-      await request({ op: 'append', ...input, ...(since === undefined ? {} : { since }) }, { placed: (offset) => { placedAt = offset } })
+      await request({ op: 'append', ...input, ...(since === undefined ? {} : { since }), ...(untrack.length > 0 ? { untrack } : {}) }, { placed: (offset) => { placedAt = offset } })
     } catch (error) {
       if (placedAt !== undefined) places.remember(input.file, ids, placedAt)
       throw error
     }
     places.forget(input.file, ids)
+    untracking.done(input.file, untrack)
   }
 
   async function probe(file: LogFile): Promise<void> {
@@ -184,7 +192,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
     return (await request({ op: 'recover', ...input })) ?? 0
   }
 
-  return { append, probe, recover, close }
+  return { append, untrack: untracking.add, probe, recover, close }
 }
 
 function writesWaiting(opened: Connection): number {
@@ -222,6 +230,26 @@ function createPlaces() {
     },
     forget(file: LogFile, ids: readonly string[]): void {
       for (const id of ids) places.delete(key(file, id))
+    },
+  }
+}
+
+/** The attempts of dropped results, by file, until an append that carried them lands. */
+function createUntracking() {
+  const byFile = new Map<string, Set<string>>()
+  return {
+    add(file: LogFile, auditIds: readonly string[]): void {
+      if (auditIds.length === 0) return
+      const ids = byFile.get(file.path) ?? new Set<string>()
+      for (const id of auditIds) ids.add(id)
+      byFile.set(file.path, ids)
+    },
+    due: (file: LogFile): string[] => [...(byFile.get(file.path) ?? [])],
+    done(file: LogFile, auditIds: readonly string[]): void {
+      const ids = byFile.get(file.path)
+      if (!ids) return
+      for (const id of auditIds) ids.delete(id)
+      if (ids.size === 0) byFile.delete(file.path)
     },
   }
 }

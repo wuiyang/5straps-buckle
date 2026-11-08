@@ -35,17 +35,19 @@ export function createPendingAudit(input: {
   return {
     /**
      * One update for a batch, each entry with the offset its line is at or after: each attempt is held until its result,
-     * in the batch's order. Made again for the same entries, it leaves the same state.
+     * in the batch's order, and then the `untrack` ones, whose results were dropped, are not. Made again for the same
+     * entries, it leaves the same state.
      */
-    async trackMany(placed: ReadonlyArray<{ entry: ActionLogEntry; offset: number }>): Promise<void> {
+    async trackMany(placed: ReadonlyArray<{ entry: ActionLogEntry; offset: number }>, untrack: readonly string[] = []): Promise<void> {
       const tracked = placed.flatMap(({ entry, offset }) => (entry.auditId && entry.event ? [{ auditId: entry.auditId, entry, offset }] : []))
-      if (tracked.length === 0) return
+      if (tracked.length === 0 && untrack.length === 0) return
       await store.update(state => {
         for (const { auditId, entry, offset } of tracked) {
           if (entry.event === 'attempt') {
             state.pending[auditId] = { offset, processId: process.pid, processInstanceId: input.processInstanceId, entry: { ...entry, auditId } }
           } else { delete state.pending[auditId] }
         }
+        for (const auditId of untrack) delete state.pending[auditId]
       })
     },
     /** Whether an attempt another process left is pending, read without the lock, as recovery's first look is. */

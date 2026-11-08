@@ -82,7 +82,7 @@ function createWriterOperations(input: { processInstanceId: string; io: WriterIo
   }
 }
 
-interface AppendInput { file: LogFile; entries: readonly ActionLogEntry[]; since?: number; placed?: (offset: number) => void }
+interface AppendInput { file: LogFile; entries: readonly ActionLogEntry[]; since?: number; untrack?: readonly string[]; placed?: (offset: number) => void }
 
 /**
  * One batch, in this process's turn for the file and under its lock, so no other Buckle process writes between its tail
@@ -95,7 +95,7 @@ function appendBatch(input: AppendInput & { io: WriterIo; pending: PendingAudit 
     const lines = Buffer.from(entries.filter(entry => !already.has(entry.entryId)).map(serializeEntry).join(''))
     const offset = appendSynced({ filePath: input.file.path, io: input.io, data: (size, tail) => endingTornTail(lines, size, tail), placed: input.placed })
     const earlier = input.since ?? offset
-    await input.pending.trackMany(entries.map(entry => ({ entry, offset: already.has(entry.entryId) ? earlier : offset })))
+    await input.pending.trackMany(entries.map(entry => ({ entry, offset: already.has(entry.entryId) ? earlier : offset })), input.untrack)
   })
 }
 

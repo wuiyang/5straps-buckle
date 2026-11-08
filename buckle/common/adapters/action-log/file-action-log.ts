@@ -76,6 +76,8 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     name: filePath,
     write: entries => write([...entries], { queued: true }),
     dropped: drops => prepared(droppedEntry({ drops, workspaceId: options.workspaceId })),
+    // A result dropped unwritten would leave its attempt for the next process to mark interrupted though the call answered.
+    lost: entries => writer().untrack(file, resultsOf(entries)),
   }
   const log: ActionLog = {
     recoverInterrupted: () => writer().recover({ file, naming: naming() }),
@@ -129,6 +131,10 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     },
   }
   return log
+}
+
+function resultsOf(entries: readonly ActionLogEntry[]): string[] {
+  return entries.flatMap(entry => (entry.event === 'result' && entry.auditId !== undefined ? [entry.auditId] : []))
 }
 
 /** The entry that tells a log how many of its entries were dropped unwritten, and over what time. */

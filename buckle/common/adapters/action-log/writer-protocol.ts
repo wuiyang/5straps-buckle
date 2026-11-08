@@ -26,9 +26,10 @@ export interface WorkspaceNaming {
 /**
  * `since`: where an earlier, failed attempt at some of these entries began writing, so those already there are left out.
  * `existingFolder`: the append fails where the log's folder is gone, and does not make it again.
+ * `untrack`: attempts whose results were dropped unwritten, which the append stops tracking after its own entries.
  */
 export type WriterRequest =
-  | { id: number; op: 'append'; file: LogFile; entries: ActionLogEntry[]; since?: number; existingFolder?: true }
+  | { id: number; op: 'append'; file: LogFile; entries: ActionLogEntry[]; since?: number; existingFolder?: true; untrack?: string[] }
   | { id: number; op: 'probe'; file: LogFile }
   | { id: number; op: 'recover'; file: LogFile; naming?: WorkspaceNaming }
 

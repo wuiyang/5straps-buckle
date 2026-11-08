@@ -7,6 +7,8 @@ export interface LogDestination {
   write(batch: readonly ActionLogEntry[]): Promise<void>
   /** The entry that says how many of this log's entries were dropped, and when; written ahead of its next batch. */
   dropped(drops: LogDrops): ActionLogEntry
+  /** Hears each entry the service drops unwritten, as it drops. */
+  lost(entries: readonly ActionLogEntry[]): void
 }
 
 /**

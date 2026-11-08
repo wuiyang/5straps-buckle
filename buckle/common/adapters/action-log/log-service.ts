@@ -39,6 +39,7 @@ export function createLogService(settings: LogQueueSettings = PROCESS_LOG_QUEUE)
         write: batch => (opened.writing = opened.destination.write(batch)),
         summarize: drops => opened.destination.dropped(drops),
         onDropping: warnDropping,
+        onDropped: entries => opened.destination.lost(entries),
       }),
     }
     logs.set(destination.name, opened)

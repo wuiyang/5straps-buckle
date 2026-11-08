@@ -56,6 +56,7 @@ function stuck(name: string): { destination: LogDestination; batches: string[][]
     name,
     write: (batch) => { batches.push(batch.map(item => item.requestId)); return new Promise<void>(() => {}) },
     dropped: drops => entry('dropped', { tool: LOG_DROPPED_TOOL, args: { dropped: drops.count } }),
+    lost: () => {},
   }
   return { destination, batches }
 }
