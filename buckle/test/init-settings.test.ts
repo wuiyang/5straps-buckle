@@ -6,12 +6,11 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { runInit, serveCommand, type InitPrompt } from '../cli/init.js'
 import type { ProgramSearch } from '../common/domain/executable.js'
 import { createRuntimeOwner } from '@5straps/runtime'
-import { loadConfig } from '../common/runtime/config.js'
+import { defaultEnvironmentFile, loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { holdServe, serviceDirectory, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceIdOf } from './support/workspaces.js'
-import { defaultEnvironmentFile } from '../common/runtime/environment.js'
 import { openSettingsFile, settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 
 let workspace: string

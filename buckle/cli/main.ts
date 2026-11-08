@@ -1,7 +1,6 @@
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
-import { actionsPath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
+import { actionsPath, environmentFilePath, loadConfig, type NodeConfig } from '../common/runtime/config.js'
 import { NODE_SCOPE } from '../common/types/ports/client-keys.js'
-import { environmentFilePath } from '../common/runtime/environment.js'
 import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
 import { askAtTerminal } from './ask.js'

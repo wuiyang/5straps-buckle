@@ -479,15 +479,19 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       // Credentials inside one are masked where it shows them.
       const scratchRoots = scratchSources(config.mounts).filter(root => !isInside(config.cwd, root) && existsSync(root))
       const binds = [...sandboxBinds(config.mounts), ...scratchRoots.map(root => ({ source: root, target: root, readOnly: true }))]
-      const mounts = refusedAsWorkbench(() => validateSandboxMounts(binds.map(mount => ({ ...mount, readOnly: true })), { protectedRoots: protectedStateRoots(config), workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
+      const state = protectedStateRoots(config)
+      const mounts = refusedAsWorkbench(() => validateSandboxMounts(binds.map(mount => ({ ...mount, readOnly: true })), { protectedRoots: state, workspaceRoots: [config.cwd, request.root], workspaceTarget: '/workspace' }))
       const signal = AbortSignal.timeout(15_000)
       const projection = await projectFilesystemSandbox({ root: request.root, policy: compiled.policy, signal })
-      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: [], signal })
+      // The copy lies inside Buckle's state, so the scan takes the protected paths beside it; those holding it are still
+      // masked wherever else the layout shows them.
+      const holdingCopy = state.filter(path => isInside(path, request.root))
+      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
         allowNetwork: config.shellNetwork && !compiled.policy.network.allow.length,
-        hiddenPaths: [...hidden.directories, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
+        hiddenPaths: [...hidden.directories, ...holdingCopy, ...projection.hiddenPaths], hiddenFiles: [...hidden.files, ...projection.hiddenFiles],
         mounts, readOnlyPaths: config.mountReadOnlyPaths, readOnlyWorkspacePaths: projection.readOnlyWorkspacePaths,
       })
       // The variables a shell command gets (Q11): Buckle's, then the workspace's, then a terminal's TERM.

@@ -6,7 +6,8 @@ import { parseEnv } from 'node:util'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
-import { defaultEnvironmentFile, environmentFilePath, loadEnvironmentFile } from '../common/runtime/environment.js'
+import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/config.js'
+import { loadEnvironmentFile } from '../common/runtime/environment.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // Owner ruling (2026-09-28): the node's settings live under ~/.5straps, in buckle.env in its state

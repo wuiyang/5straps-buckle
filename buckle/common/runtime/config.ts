@@ -124,6 +124,11 @@ export interface NodeConfig {
   ringsApprovalKey?: ApprovalKey
   skillDirectories: string[]
   stateDirectory: string
+  /**
+   * The file the node takes its settings from (environmentFilePath), there or not: buckle.env in the state directory, or
+   * the file BUCKLE_ENV_FILE names, which may lie outside it. Protected as the state directory is (protectedStateRoots).
+   */
+  environmentFile: string
   /** How long a state file update waits for another process's lock; the store's default when absent. Never read from the environment. */
   stateLockDeadlineMs?: number
   maxRequestBytes: number
@@ -294,6 +299,7 @@ export function loadConfig(environment: NodeJS.ProcessEnv = process.env, platfor
     ringsApprovalKey: parseRingsApprovalKey(environment.BUCKLE_RINGS_APPROVAL_KEY),
     skillDirectories: parseList(environment.BUCKLE_SKILLS_DIRS),
     stateDirectory,
+    environmentFile: environmentFilePath(environment, platform),
     maxRequestBytes: parsePositiveInteger(environment.BUCKLE_MAX_REQUEST_BYTES, DEFAULT_MAX_REQUEST_BYTES),
     maxTransferBytes: parsePositiveInteger(environment.BUCKLE_MAX_TRANSFER_BYTES, MAX_TRANSFER_BYTES),
     defaultTimeoutMs: parsePositiveInteger(environment.BUCKLE_DEFAULT_TIMEOUT_MS, DEFAULT_TIMEOUT_MS),
@@ -652,20 +658,21 @@ export function sandboxBinds(mounts: readonly TableMount[]): SandboxBind[] {
   return mounts.filter(mount => !mount.scratch).map(mount => ({ source: mount.source, target: mount.target, readOnly: mount.access === 'ro', ...(mount.node ? { node: true as const } : {}) }))
 }
 
-/** A workspace's own state directory, and the node's when they differ. */
-type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory'>>
+/** A workspace's own state directory, the node's when they differ, and the node's environment file. */
+type StateDirectories = Pick<BuckleConfig, 'stateDirectory'> & Partial<Pick<BuckleConfig, 'nodeStateDirectory' | 'environmentFile'>>
 
 /**
- * Node configuration and all workspace maps are owner-only, never tool-accessible, and so is the unit or agent that
- * starts the node at login. Effects are judged at their real paths, so each root is named by its real path too (a
- * symlinked home, macOS /var), in the case the disk stores it (realpathSync.native); the rule folds case where the disk
- * ignores it.
+ * Node configuration and all workspace maps are owner-only, never tool-accessible, and so are the node's environment
+ * file wherever it lies and the unit or agent that starts the node at login. Effects are judged at their real paths, so
+ * each root is named by its real path too (a symlinked home, macOS /var), in the case the disk stores it
+ * (realpathSync.native); the rule folds case where the disk ignores it.
  */
 export function protectedStateRoots(config: StateDirectories, platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string[] {
   // What starts this node at login, so no agent rewrites what runs then: on Linux the unit, its link, and the drop-ins and
   // copy systemd reads beside it (Phase 3, item 6, and fix brief 6, item 4); on macOS the launchd agent's property list.
   const definition = platform === 'linux' ? systemdGuardedPaths(environment, homeDirectory(platform)) : platform === 'darwin' ? launchdGuardedPaths(homeDirectory(platform)) : []
-  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...definition]
+  const settings = config.environmentFile === undefined ? [] : [config.environmentFile]
+  const named = [join(homeDirectory(), '.5straps'), config.nodeStateDirectory ?? config.stateDirectory, ...settings, ...definition]
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
 
@@ -710,6 +717,27 @@ function realFolder(typed: string, setting: string, platform: NodeJS.Platform): 
 function folder(path: string, setting: string, platform: NodeJS.Platform): string {
   if (isDriveRoot(path, platform)) throw new Error(`${setting} is ${path}: ${WHOLE_DRIVE}`)
   return path
+}
+
+/** The node's environment file in its state directory, which `buckle init` and pairing write. */
+export const ENVIRONMENT_FILE_NAME = 'buckle.env'
+
+/**
+ * Where the node's settings live: buckle.env in the state directory (BUCKLE_STATE_DIR from the process environment,
+ * ~/.5straps/buckle by default), or the file BUCKLE_ENV_FILE names. The working directory is never consulted: settings
+ * and credentials stay under the owner's state, away from any project an agent works in.
+ */
+export function environmentFilePath(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  const named = environment.BUCKLE_ENV_FILE
+  if (!named) return defaultEnvironmentFile(environment, platform)
+  // Relative, it would name another file in every directory a command starts in (review L9 of B18-B19).
+  if (!isAbsolute(named)) throw new Error(`BUCKLE_ENV_FILE must be an absolute path, not ${named}: Buckle never resolves its settings against the working directory`)
+  return typedPath(named, platform)
+}
+
+/** buckle.env in the state directory the process environment names. */
+export function defaultEnvironmentFile(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): string {
+  return join(stateDirectoryOf(environment, platform), ENVIRONMENT_FILE_NAME)
 }
 
 /** Where grants, approvals and the action log live, read without loading the rest of the config. */

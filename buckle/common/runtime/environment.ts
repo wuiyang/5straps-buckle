@@ -3,28 +3,11 @@ import { dirname, isAbsolute, join, resolve } from 'pathe'
 import { parseEnv } from 'node:util'
 import { isOpenToOthers } from '../adapters/file-modes.js'
 import { isInside, typedPath } from '../domain/paths.js'
-import { realPathOf, stateDirectoryOf } from './config.js'
+import { defaultEnvironmentFile, environmentFilePath, realPathOf, stateDirectoryOf } from './config.js'
 import type { NodeLocation } from '../types/ports/service-manager.js'
-
-/** The node's environment file in its state directory, which `buckle init` and pairing write. */
-export const ENVIRONMENT_FILE_NAME = 'buckle.env'
 
 // A line that sets a BUCKLE_ variable; matched by name only, so no value is ever read.
 const BUCKLE_ASSIGNMENT = /^[ \t]*(?:export[ \t]+)?BUCKLE_\w*[ \t]*=/m
-
-/**
- * Where the node's settings live: buckle.env in the state directory (BUCKLE_STATE_DIR from the
- * process environment, ~/.5straps/buckle by default), or the file BUCKLE_ENV_FILE names. The working
- * directory is never consulted: settings and credentials stay under the owner's state, away from any
- * project an agent works in.
- */
-export function environmentFilePath(environment: NodeJS.ProcessEnv = process.env): string {
-  const named = environment.BUCKLE_ENV_FILE
-  if (!named) return defaultEnvironmentFile(environment)
-  // Relative, it would name another file in every directory a command starts in (review L9 of B18-B19).
-  if (!isAbsolute(named)) throw new Error(`BUCKLE_ENV_FILE must be an absolute path, not ${named}: Buckle never resolves its settings against the working directory`)
-  return typedPath(named)
-}
 
 /** Why `buckle mcp` refuses a BUCKLE_ENV_FILE: the variable alone, never its value, which is the owner's path. */
 export const FOREIGN_ENVIRONMENT_FILE = 'BUCKLE_ENV_FILE names a file outside the node\'s state directory, or no file: buckle mcp takes the node\'s settings only from its own buckle.env or a file in its state directory, as an MCP config\'s env may be within an agent\'s reach. Remove BUCKLE_ENV_FILE from the MCP config\'s env, or move the file into the state directory.'
@@ -59,14 +42,9 @@ function ownEnvironmentFile(named: string, environment: NodeJS.ProcessEnv): bool
  * and no other value of the file.
  */
 export function nodeLocation(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeLocation {
-  const environmentFile = environment.BUCKLE_ENV_FILE ? environmentFilePath(environment) : null
+  const environmentFile = environment.BUCKLE_ENV_FILE ? environmentFilePath(environment, platform) : null
   const named = environment.BUCKLE_STATE_DIR || (environmentFile !== null && existsSync(environmentFile) ? Object.fromEntries(buckleVariables(readFileSync(environmentFile, 'utf8'))).BUCKLE_STATE_DIR : undefined)
   return { stateDirectory: stateDirectoryOf({ ...environment, BUCKLE_STATE_DIR: named }, platform), environmentFile }
-}
-
-/** buckle.env in the state directory the process environment names. */
-export function defaultEnvironmentFile(environment: NodeJS.ProcessEnv = process.env): string {
-  return join(stateDirectoryOf(environment), ENVIRONMENT_FILE_NAME)
 }
 
 export interface LoadedEnvironmentFile {

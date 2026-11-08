@@ -1,11 +1,12 @@
-import { lstat, readdir } from 'node:fs/promises'
+import { lstat, readdir, stat } from 'node:fs/promises'
 import { sensitivePathReason } from '../../domain/permission/rules/sensitive-path-rule.js'
 import { childPath, entryBelowRoot, isInsideAny, isPlainName } from '../../domain/paths.js'
 import { ToolInputError } from '../../domain/tool.js'
 
 export async function collectShellHiddenPaths(input: { roots: string[]; protectedPaths: string[]; signal: AbortSignal }): Promise<{ directories: string[]; files: string[] }> {
-  const directories = new Set(input.protectedPaths)
+  const directories = new Set<string>()
   const files = new Set<string>()
+  for (const path of input.protectedPaths) (await isFile(path) ? files : directories).add(path)
   let visited = 0
   async function visit(path: string, root: string): Promise<void> {
     input.signal.throwIfAborted()
@@ -26,4 +27,10 @@ export async function collectShellHiddenPaths(input: { roots: string[]; protecte
   }
   for (const root of new Set(input.roots)) await visit(root, root)
   return { directories: [...directories], files: [...files] }
+}
+
+// A file is masked by binding /dev/null over it, never by a folder over it, which the sandbox cannot lay there. A path
+// that is not there, or cannot be read, keeps the folder mask the state directory takes.
+async function isFile(path: string): Promise<boolean> {
+  return stat(path).then(info => info.isFile(), () => false)
 }
