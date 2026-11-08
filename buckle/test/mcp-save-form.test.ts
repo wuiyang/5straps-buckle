@@ -77,6 +77,7 @@ const ARGS = { path: 'one/a.md', content: 'a' }
 const accept = (key: string, content: Record<string, unknown>) => ({ [key]: { action: 'accept', content } })
 const formsOf = (result: HostToolResult) => Object.keys(result.inputRequests ?? {})
 const messageOf = (result: HostToolResult, key: string) => (result.inputRequests?.[key] as { params: { message: string } }).params.message
+const textOf = (result: HostToolResult) => ((result as { content?: Array<{ text: string }> }).content ?? []).map(item => item.text).join('\n')
 
 /** The first two rounds: the approval form, then a session answer whose grant does not save, which draws the save form. */
 async function approvedUnsaved(node: Awaited<ReturnType<typeof stdioNode>>) {
@@ -143,12 +144,13 @@ describe('the MCP save form, over stdio', () => {
     expect(await write({ args: ARGS, actor: STDIO })).toMatchObject({ resultType: 'input_required' })
   })
 
-  it('draws no third form when the retry fails again: the call runs once on its once, its grant still owed', async () => {
+  it('draws no third form when the retry fails again: the call runs once on its once, its grant still owed, and its result says so', async () => {
     const node = await stdioNode(2)
     const { token } = await approvedUnsaved(node)
     const ran = await node.write({ args: ARGS, responses: accept(`save:${token}`, { save: 'retry' }), actor: STDIO })
     expect(ran.resultType).not.toBe('input_required')
     expect(ran.isError).toBeUndefined()
+    expect(textOf(ran)).toContain(`fs_write asked write_scope: ${join(node.workspace, 'one')} (${token})\nApproved for this call; saving it for the session failed: permission denied.\nLeft unsaved:`)
     expect(readFileSync(join(node.workspace, 'one', 'a.md'), 'utf8')).toBe('a')
     expect(node.ledger().resolved.find(entry => entry.request?.token === token)?.grant?.save).toBe('owed')
   })
@@ -168,6 +170,20 @@ describe('the MCP save form, over stdio', () => {
     expect(denied.isError).toBe(true)
     expect(node.waitingTokens()).toEqual([])
     expect(node.runtime.grants.list()).toEqual([])
+  })
+
+  it('shows a lasting denial whose retry fails again at the top of its approval form drawn again, while its ask still waits', async () => {
+    const node = await stdioNode(2)
+    writeFileSync(join(node.workspace, '.env'), 'KEY=value\n')
+    const args = { path: '.env' }
+    expect(await node.read({ args, actor: STDIO })).toMatchObject({ resultType: 'input_required' })
+    const [token] = node.waitingTokens()
+    expect(formsOf(await node.read({ args, responses: accept(token!, { action: 'deny_session' }), actor: STDIO }))).toEqual([`save:${token}`])
+
+    const again = await node.read({ args, responses: accept(`save:${token}`, { save: 'retry' }), actor: STDIO })
+    expect(formsOf(again)).toEqual([token])
+    expect(messageOf(again, token!)).toMatch(/^fs_read asked sensitive_path: .*\nNot denied for the session: saving failed: permission denied; the call still waits\.\nLeft unsaved: nothing was denied\.\n/)
+    expect(node.waitingTokens()).toEqual([token])
   })
 
   it('reads no save answer once forms are off: the call runs once on its once, and the grant stays owed', async () => {

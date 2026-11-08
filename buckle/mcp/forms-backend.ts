@@ -29,17 +29,18 @@ export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved; ask
 /**
  * What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save.
  * `holds`: a form came back dismissed whose ask a person at the node may give more than the form offered, so the face holds
- * the call for their answer, as it would with forms off, before it draws the forms again.
+ * the call for their answer, as it would with forms off, before it draws the forms again. `warnings`: each save whose retry
+ * or skip failed again, which no further save form asks about, for the face to show in whatever the call answers with.
  */
-export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; holds: boolean }
+export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; holds: boolean; warnings?: string[] }
 
 /**
  * An MCP host's forms: drawn in the call's own answer, and decided when the retried call carries them back. Each form
  * offers what its host's source may decide, and no more.
  */
 export interface FormsBackend extends ApprovalBackend {
-  /** One form per ask of the call. */
-  forms(approvals: ApprovalRequest[]): ReturnType<typeof inputRequired>
+  /** One form per ask of the call, the first headed by `warnings`, the saves this call's answers left. */
+  forms(approvals: ApprovalRequest[], warnings?: readonly string[]): ReturnType<typeof inputRequired>
   /**
    * Decides each accepted answer through the host, with the sender the face's transport authenticated: an approval form's
    * under its ask's token, sent only for an ask waiting for that sender, and a save form's under `save:<token>`, settled
@@ -91,7 +92,9 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       if (!opened) break
       if (key.startsWith(SAVE_KEY)) {
         const token = key.slice(SAVE_KEY.length)
-        if (await settleSave({ host: opened, token, answer: saveAnswerIn(responses, key), sender })) answered.tokens.push(token)
+        const settled = await settleSave({ host: opened, token, answer: saveAnswerIn(responses, key), sender })
+        if (settled.spends) answered.tokens.push(token)
+        if (settled.warning !== undefined) (answered.warnings ??= []).push(settled.warning)
         continue
       }
       const ask = waiting.get(key)
@@ -116,16 +119,20 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     return answered
   }
 
-  /** A save form's answer from the caller it was drawn for: settled once, as the shared save question settles it. */
-  async function settleSave(input: { host: ApprovalHost; token: string; answer: SaveAnswer | undefined; sender: AnswerSender | undefined }): Promise<boolean> {
+  /**
+   * A save form's answer from the caller it was drawn for: settled once, as the shared save question settles it. One save
+   * form per call, so a step that fails again is left and asked about no more, and its warning comes back for the face.
+   */
+  async function settleSave(input: { host: ApprovalHost; token: string; answer: SaveAnswer | undefined; sender: AnswerSender | undefined }): Promise<{ spends: boolean; warning?: string }> {
     const question = saveQuestions.get(input.token)
-    if (question === undefined || question.caller !== input.sender?.caller) return skipUnasked(input)
+    if (question === undefined || question.caller !== input.sender?.caller) return { spends: await skipUnasked(input) }
     saveQuestions.delete(input.token)
-    const { decision, unsaved } = question
+    const { decision, unsaved, ask } = question
     let given = input.answer
+    let again: Unsaved | undefined
     const route: SaveRoute = {
-      // One save form per call: a save that fails again is left, and asked about no more.
-      ask: async () => {
+      ask: async (asked) => {
+        if (asked !== unsaved) again = asked
         const answer = given
         given = undefined
         return answer
@@ -136,7 +143,8 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     }
     const ending = await settleUnsaved({ decision, unsaved, route })
     input.host.log(SETTLED.has(ending.ending) ? 'info' : 'warn', saveEndingLine(ending), { token: input.token })
-    return true
+    if (ending.ending !== 'left' || again === undefined) return { spends: true }
+    return { spends: true, warning: [askLine(ask), `${again.warning}.`, saveEndingLine(ending)].join('\n') }
   }
 
   /**
@@ -168,9 +176,9 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       await Promise.allSettled([...answering])
     },
 
-    forms(approvals) {
+    forms(approvals, warnings = []) {
       const opened = live()
-      return formsFor({ approvals, waiting: opened?.pending() ?? [], reach: opened?.reach ?? NO_REACH, options })
+      return formsFor({ approvals, waiting: opened?.pending() ?? [], reach: opened?.reach ?? NO_REACH, options, warnings })
     },
 
     answer(responses, sender) {
@@ -253,13 +261,18 @@ function saveForm(question: UnsavedDecision) {
   const { ask, unsaved } = question
   const { answers, choices } = SAVE_FORMS[unsaved.kind]
   return inputRequired.elicit({
-    message: [`${printable(ask.tool)} asked ${printable(ask.policy.rule)}: ${printable(ask.policy.subject)} (${printable(ask.token)})`, `${unsaved.warning}.`, choices].join('\n'),
+    message: [askLine(ask), `${unsaved.warning}.`, choices].join('\n'),
     requestedSchema: {
       type: 'object',
       properties: { save: { type: 'string', enum: answers, description: answers.join(' or ') } },
       required: ['save'],
     },
   })
+}
+
+/** The ask a save names: its tool, rule, subject, and token. */
+function askLine(ask: FullAsk): string {
+  return `${printable(ask.tool)} asked ${printable(ask.policy.rule)}: ${printable(ask.policy.subject)} (${printable(ask.token)})`
 }
 
 function decisionOf(token: string, answer: FormAnswer): DecisionBody {
@@ -276,13 +289,13 @@ function decisionOf(token: string, answer: FormAnswer): DecisionBody {
  * host's source may decide: a floor ask it may not approve is a denial naming where a person approves it, and a scope
  * past the call it may not grant is left out, naming where it is granted.
  */
-function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; reach: SourceReach; options: FormsBackendOptions }) {
+function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; reach: SourceReach; options: FormsBackendOptions; warnings: readonly string[] }) {
   const { options, reach } = input
   const workspace = options.workspace()
   const asked = new Map(input.waiting.map(ask => [ask.token, ask]))
   const groupOf = (token: string) => asked.get(token)?.group
   const shownWith = new Map<string, string>()
-  const inputRequests = Object.fromEntries(input.approvals.map((approval) => {
+  const inputRequests = Object.fromEntries(input.approvals.map((approval, index) => {
     const ask = asked.get(approval.token)
     const call = ask === undefined ? undefined : shownCallOf(ask)
     const group = groupOf(approval.token)
@@ -295,7 +308,7 @@ function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; rea
     const scopes = reach.lasting ? approval.offeredScopes : approval.offeredScopes.filter(scope => scope === 'once')
     const approvable = call !== undefined && scopes.length > 0 && (reach.floor || ask?.policy.floor !== true)
     const note = call === undefined ? [] : !approvable ? [floorNote(approveCommand(named))] : scopes.length < approval.offeredScopes.length ? [onceNote(approveCommand(named))] : []
-    const message = [...lines, ...note].join('\n')
+    const message = [...(index === 0 ? input.warnings : []), ...lines, ...note].join('\n')
     return [approval.token, approvable ? approvalForm({ approval, message, scopes, reach }) : denialForm({ approval, message, reach })]
   }))
   return inputRequired({ inputRequests })

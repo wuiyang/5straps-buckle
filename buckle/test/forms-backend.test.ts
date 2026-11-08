@@ -211,7 +211,9 @@ describe('the save form', () => {
     const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)
     backend.saveForms(answered.unsaved, SENDER)
     const retried = await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)
-    expect(retried).toEqual({ tokens: ['a'], unsaved: [], holds: false })
+    expect(retried).toEqual({ tokens: ['a'], unsaved: [], holds: false, warnings: [
+      'fs_write asked write_scope: /w/a (a)\nApproved for this call; saving it for the session failed: permission denied.\nLeft unsaved: it is written at the next decision, when the workspace opens again, or when the same decision is sent again.',
+    ] })
     expect(host.decided.map(({ decision, sender }) => ({ decision, sender }))).toEqual([
       { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
       { decision: { token: 'a', outcome: 'approve', scope: 'session' }, sender: SENDER },
@@ -226,6 +228,17 @@ describe('the save form', () => {
     expect(host.skipped).toEqual(['a'])
     expect(host.skippedBy).toEqual([SENDER])
     expect(host.decided).toHaveLength(1)
+  })
+
+  it('names a lasting denial whose retry fails again among the warnings, and none for a save left on a cancel', async () => {
+    const { backend } = await savingBackend([UNSAVED_DENIAL])
+    backend.saveForms((await backend.answer({ a: accepted({ action: 'deny_session' }) }, SENDER)).unsaved, SENDER)
+    const retried = await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)
+    expect(retried.warnings).toEqual(['fs_write asked write_scope: /w/a (a)\nNot denied for the session: saving failed: permission denied; the call still waits.\nLeft unsaved: nothing was denied.'])
+
+    const { backend: other } = await savingBackend([OWED])
+    other.saveForms((await other.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
+    expect((await other.answer({ 'save:a': { action: 'cancel' } }, SENDER)).warnings).toBeUndefined()
   })
 
   it('leaves the save on a cancel: nothing is sent, and the call spends its once', async () => {

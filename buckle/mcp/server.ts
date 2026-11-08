@@ -107,6 +107,8 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           const saving = elicits?.saveForms(answered?.unsaved ?? [], sender)
           if (saving) return saving
           const approvalTokens = answered?.tokens ?? []
+          // A save whose retry or skip failed again is told in whatever the call answers with: its forms, or its result.
+          const warnings = answered?.warnings ?? []
           // A dismissed form a person at the node may answer further holds the call for them, as forms off does.
           const wait = elicits && answered?.holds !== true ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
@@ -117,10 +119,10 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
 
           if (response.outcome === 'approval_required') {
             return elicits
-              ? elicits.forms(response.approvals)
+              ? elicits.forms(response.approvals, warnings)
               : relayApproval({ response, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), ...(options.serverId === undefined ? {} : { nodeName: options.serverId }) })
           }
-          return toCallToolResult(response, replay)
+          return toCallToolResult(response, replay, warnings)
         } catch (error) {
           return failedCall(error)
         }
@@ -338,12 +340,16 @@ function replayNotice(replay: Replay): string {
   return `Replayed: this call already ran${when} for its approval and was not run again, so this is that run's answer. To run it anew, send the call again.`
 }
 
-function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>, replay?: Replay) {
+function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'error' }>, replay: Replay | undefined, warnings: readonly string[]) {
   const text = response.outcome === 'error' ? `${response.error.code}: ${response.error.message}` : JSON.stringify(response.output, null, 2)
   const history = response.outcome === 'ok' ? response.meta.history : undefined
   return {
     ...(response.outcome === 'error' ? { isError: true } : {}),
-    content: [{ type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text }, ...(history ? [{ type: 'text' as const, text: `History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}` }] : [])],
+    content: [
+      { type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text },
+      ...(history ? [{ type: 'text' as const, text: `History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}` }] : []),
+      ...warnings.map(warning => ({ type: 'text' as const, text: warning })),
+    ],
     ...(replay || history ? { _meta: { ...(replay ? { [REPLAYED_META]: true } : {}), ...(history ? { '5straps/history': history } : {}) } } : {}),
   }
 }
