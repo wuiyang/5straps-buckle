@@ -124,6 +124,25 @@ describe('the MCP save form, over stdio', () => {
     expect(node.ledger().resolved.find(entry => entry.request?.token === token)?.grant?.save).toBe('owed')
   })
 
+  it('sends core the skip of a save form a restart lost: the grant the reopened workspace wrote is removed, and the call that asked runs once', async () => {
+    const node = await stdioNode(1)
+    const { token } = await approvedUnsaved(node)
+    runtimes.splice(runtimes.indexOf(node.runtime), 1)
+    node.runtime.closeWatchers()
+    await node.runtime.approvalService.close()
+    await node.runtime.history.close()
+    const reopened = await createRuntime({ config: node.config, interaction: fixedInteraction(NOBODY) })
+    runtimes.push(reopened)
+    expect(reopened.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
+    const server = createMcpServer({ runtime: reopened, serverName: 'save-form-mcp', version: '0', followToolChanges: false, forms: openForms(reopened, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
+    const write = hostTool(server, 'fs_write')
+
+    expect((await write({ args: ARGS, responses: { [`save:${token}`]: { action: 'decline' } }, actor: STDIO })).isError).toBeUndefined()
+    expect(readFileSync(join(node.workspace, 'one', 'a.md'), 'utf8')).toBe('a')
+    expect(reopened.grants.list()).toEqual([])
+    expect(await write({ args: ARGS, actor: STDIO })).toMatchObject({ resultType: 'input_required' })
+  })
+
   it('draws no third form when the retry fails again: the call runs once on its once, its grant still owed', async () => {
     const node = await stdioNode(2)
     const { token } = await approvedUnsaved(node)

@@ -3,7 +3,7 @@ import { GrantScopeSchema, type ApprovalRequest, type GrantScope } from '@5strap
 import { z } from 'zod'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type SaveRoute, type Unsaved, type UnsavedKind } from '../common/adapters/approval/grant-save-question.js'
 import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, type ShownCall } from '../common/domain/approval-instruction.js'
-import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
 
 // An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
 const FormAnswerSchema = z.object({
@@ -109,7 +109,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   /** A save form's answer from the caller it was drawn for: settled once, as the shared save question settles it. */
   async function settleSave(input: { host: ApprovalHost; token: string; answer: SaveAnswer | undefined; sender: AnswerSender | undefined }): Promise<boolean> {
     const question = saveQuestions.get(input.token)
-    if (question === undefined || question.caller !== input.sender?.caller) return false
+    if (question === undefined || question.caller !== input.sender?.caller) return skipUnasked(input)
     saveQuestions.delete(input.token)
     const { decision, unsaved } = question
     let given = input.answer
@@ -127,6 +127,19 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     const ending = await settleUnsaved({ decision, unsaved, route })
     input.host.log(SETTLED.has(ending.ending) ? 'info' : 'warn', saveEndingLine(ending), { token: input.token })
     return true
+  }
+
+  /**
+   * A save answer for no save form drawn for its sender, as after a restart lost the forms drawn: a skip goes to core, which
+   * holds it to the source and the caller that recorded the decision, and nothing else can be sent without the decision.
+   */
+  async function skipUnasked(input: { host: ApprovalHost; token: string; answer: SaveAnswer | undefined; sender: AnswerSender | undefined }): Promise<boolean> {
+    if (input.answer === 'retry') input.host.log('warn', 'A save form\'s retry came for no save form drawn for its caller, as after a restart, so nothing was retried', { token: input.token })
+    if (input.answer !== 'skip') return false
+    const receipt = await input.host.skipSave(input.token, input.sender)
+    const ending = skipEndingOf(receipt)
+    input.host.log(SETTLED.has(ending.ending) ? 'info' : 'warn', saveEndingLine(ending), { token: input.token })
+    return receipt.status !== 'refused'
   }
 
   return {
@@ -187,6 +200,13 @@ function answerableAsks(input: { host: ApprovalHost; sender: AnswerSender | unde
   const unnamed = named.filter(key => !asks.has(key)).length
   if (unnamed > 0) host.log('info', 'MCP form answers named no ask waiting for their caller, so nothing was sent for them', { answers: unnamed })
   return asks
+}
+
+/** How a skip sent without its save form ended: one not confirmed removed is left to the next decision or reopening. */
+function skipEndingOf(receipt: SkipReceipt): SaveEnding {
+  if (receipt.status === 'refused') return { ending: 'refused', error: receipt.error }
+  if (receipt.status === 'unfinished') return { ending: 'left', kind: 'removal' }
+  return { ending: 'skipped', removed: receipt.removed === true }
 }
 
 /** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */

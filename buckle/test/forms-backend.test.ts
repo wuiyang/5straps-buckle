@@ -7,7 +7,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
-import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
+import type { ApprovalHost, DecisionReceipt, SkipReceipt } from '../common/types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource, type FormsFace } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { createFormsBackend, MOST_FORM_ANSWERS, type FormsBackend } from '../mcp/forms-backend.js'
@@ -234,17 +234,39 @@ describe('the save form', () => {
     expect(host.skipped).toEqual([])
   })
 
-  it('tells save answers from approval answers: a save answer it drew no form for, or another caller\'s, sends nothing, nor does an approval answer carrying a save answer', async () => {
+  it('tells save answers from approval answers: a retry it drew no save form for sends nothing, nor does an approval answer carrying a save answer', async () => {
     const { backend, host } = await savingBackend([OWED])
     expect(await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
     expect(await backend.answer({ a: accepted({ save: 'retry' }) }, SENDER)).toEqual({ tokens: [], unsaved: [] })
     expect(host.decided).toEqual([])
+    expect(host.logged).toContainEqual({ level: 'warn', message: 'A save form\'s retry came for no save form drawn for its caller, as after a restart, so nothing was retried' })
+  })
 
+  it.each([['a skip', accepted({ save: 'skip' })], ['a decline', { action: 'decline' }]])('sends %s it drew no save form for to the host, as after a restart, which holds it to the source and caller that recorded the decision', async (_name, answer) => {
+    const { backend, host } = await savingBackend([OWED])
+    expect((await backend.answer({ 'save:a': answer }, SENDER)).tokens).toEqual(['a'])
+    expect(host.skipped).toEqual(['a'])
+    expect(host.skippedBy).toEqual([SENDER])
+    expect(host.decided).toEqual([])
+  })
+
+  it('sends one call\'s worth of such skips at most', async () => {
+    const { backend, host } = await savingBackend([OWED])
+    await backend.answer(Object.fromEntries(Array.from({ length: MOST_FORM_ANSWERS + 5 }, (_, index) => [`save:t${index}`, accepted({ save: 'skip' })])), SENDER)
+    expect(host.skipped).toHaveLength(MOST_FORM_ANSWERS)
+  })
+
+  it('sends another caller\'s skip to the host, and keeps the save form it drew for its own caller', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a')], receipt: () => OWED })
+    const refusal: SkipReceipt = { status: 'refused', error: { code: 'approver_not_allowed', message: 'Only the caller that raised this ask answers it', retryable: false } }
+    const skippedBy: Array<string | undefined> = []
+    await backend.open({ ...host, skipSave: async (_token, sender) => { skippedBy.push(sender?.caller); return refusal } })
     backend.saveForms((await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)).unsaved, SENDER)
     expect(await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, { caller: 'agent:b' })).toEqual({ tokens: [], unsaved: [] })
-    expect(host.skipped).toEqual([])
-    expect((await backend.answer({ 'save:a': accepted({ save: 'skip' }) }, SENDER)).tokens).toEqual(['a'])
-    expect(host.skippedBy).toEqual([SENDER])
+    expect(skippedBy).toEqual(['agent:b'])
+    expect((await backend.answer({ 'save:a': accepted({ save: 'retry' }) }, SENDER)).tokens).toEqual(['a'])
+    expect(host.decided).toHaveLength(2)
   })
 })
 

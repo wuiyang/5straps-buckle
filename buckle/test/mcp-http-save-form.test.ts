@@ -71,7 +71,7 @@ async function httpNode() {
 const accept = (key: string, content: Record<string, unknown>) => ({ [key]: { action: 'accept', content } })
 
 describe('the save form over HTTP, with HTTP forms given stdio\'s rights', () => {
-  it('draws it after an approval whose grant did not save, reads it only from its own caller, and a retry saves the grant before the call runs once', async () => {
+  it('draws it after an approval whose grant did not save, takes it only from its own caller, as core refuses another\'s skip, and a retry saves the grant before the call runs once', async () => {
     const node = await httpNode()
     const args = { path: join(node.root, 'outside', 'note.md'), content: 'saved' }
     const asked = await node.send(claudeCodeCall({ tool: 'fs_write', args }))
@@ -85,7 +85,7 @@ describe('the save form over HTTP, with HTTP forms given stdio\'s rights', () =>
 
     const stranger = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(`save:${token}`, { save: 'skip' }) }), B)
     expect(stranger.resultType).toBe('input_required')
-    expect((await auditEntries(node.runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision' && entry.actorId === B)).toEqual([])
+    expect((await auditEntries(node.runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision' && entry.actorId === B && entry.event === 'result').map(entry => entry.detail)).toEqual(['approver_not_allowed'])
 
     const ran = await node.send(claudeCodeCall({ tool: 'fs_write', args, responses: accept(`save:${token}`, { save: 'retry' }) }))
     expect(ran.isError).toBeUndefined()
