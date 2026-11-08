@@ -7,7 +7,7 @@ import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
 import type { PendingAsk } from '../common/services/approvals/approval-registry.js'
-import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
+import { saveAnswerOf, saveChoices, saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type Unsaved } from '../common/adapters/approval/grant-save-question.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 
 /**
@@ -131,11 +131,18 @@ export async function watchApprovals(options: ApprovalWatchOptions): Promise<Out
         break
       }
       const { source, ask } = next
-      seen.add(askKey(source, ask.request.token))
+      const key = askKey(source, ask.request.token)
+      seen.add(key)
       const group = ask.callRef === undefined ? undefined : askKey(source, ask.callRef)
       const earlier = group === undefined ? undefined : shownWith.get(group)
       if (group !== undefined && earlier === undefined && ask.call?.complete) shownWith.set(group, ask.request.token)
-      afterDrop = await askOne({ ...options, ...source, readline, keys, request: ask.request, call: ask.call, shownWith: earlier, stopped: stopped.signal, recheckMs: poll.first }) === 'dropped'
+      const ending = await askOne({ ...options, ...source, readline, keys, request: ask.request, call: ask.call, shownWith: earlier, stopped: stopped.signal, recheckMs: poll.first })
+      afterDrop = ending === 'dropped'
+      // A lasting denial left unsaved recorded nothing, so its ask is shown again, whole, at the next poll.
+      if (ending === 'left') {
+        seen.delete(key)
+        if (group !== undefined && shownWith.get(group) === ask.request.token) shownWith.delete(group)
+      }
     }
     return { exitCode: 0 }
   } finally {
@@ -160,7 +167,7 @@ async function awaitEnter(readline: Interface, output: Writable, stopped: AbortS
   }
 }
 
-type Ending = 'answered' | 'skipped' | 'dropped' | 'stopped'
+type Ending = 'answered' | 'left' | 'skipped' | 'dropped' | 'stopped'
 
 type AskContext = ApprovalWatchOptions & WatchSource & { readline: Interface; keys: KeyWatch; request: ApprovalRequest; call: PendingAsk['call']; shownWith: string | undefined; stopped: AbortSignal; recheckMs: number }
 
@@ -210,8 +217,8 @@ async function askOne(context: AskContext): Promise<Ending> {
       }
       const decision = decide(request, answer, offered)
       if (decision) {
-        await record(context, decision)
-        return 'answered'
+        const saved = await record(context, decision)
+        return saved?.ending === 'left' && saved.kind === 'denial' ? 'left' : 'answered'
       }
       output.write(`  Nothing granted. Type ${[...offered.map(entry => entry.key), 'd'].join(', ')} or n.\n`)
     }
@@ -233,18 +240,18 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
  * the `cli` source. Core records each one in its workspace's log, so a session that grants several
  * leaves several. One whose grant did not save asks a save question next, as `buckle approve` does.
  */
-async function record(context: AskContext, decision: DecisionBody): Promise<void> {
+async function record(context: AskContext, decision: DecisionBody): Promise<SaveEnding | undefined> {
   const receipt = await context.approvals.decide({ source: 'cli', decision })
   const unsaved = unsavedOf({ decision, receipt })
   if (receipt.status === 'refused' && unsaved === undefined) {
     context.output.write(`  Not recorded: ${receipt.error.message}.\n`)
-    return
+    return undefined
   }
   if (receipt.status !== 'refused') {
     const granted = receipt.status === 'applied' ? receipt.granted : undefined
     context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope}).\n`)
   }
-  if (unsaved === undefined) return
+  if (unsaved === undefined) return undefined
   const { token } = decision
   // The core approval API, as buckle approve holds it.
   const api = context.approvals
@@ -258,6 +265,7 @@ async function record(context: AskContext, decision: DecisionBody): Promise<void
     },
   })
   context.output.write(`  ${saveEndingLine(ending)}\n`)
+  return ending
 }
 
 /** The save question, asked on the watch's own line as its questions are; Ctrl-C leaves it unanswered. */

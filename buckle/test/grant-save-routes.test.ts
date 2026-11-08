@@ -293,6 +293,25 @@ describe('buckle approvals --watch, when the grant it decides cannot be saved', 
     }
   })
 
+  it('asks a lasting denial left unsaved again, since its call still waits', async () => {
+    const { config, runtime } = await open()
+    const token = await askedSensitive(runtime)
+    failing.rename = grantsPath(config)
+    const { terminal, done } = await watching(runtime)
+    try {
+      terminal.type('ds\r')
+      await vi.waitFor(() => expect(count(terminal.shown(), / leaves the call waiting > /g)).toBe(1), { timeout: 3_000 })
+      terminal.type('\r')
+      await vi.waitFor(() => expect(terminal.shown()).toContain('  Left unsaved: nothing was denied.\n'), { timeout: 3_000 })
+      await vi.waitFor(() => expect(count(terminal.shown(), /n\) skip > /g)).toBe(2), { timeout: 3_000 })
+      expect(count(terminal.shown(), new RegExp(`token: ${token}`, 'g'))).toBe(2)
+      expect(waits(config, token)).toBe(true)
+    } finally {
+      terminal.type('\x03')
+      await done
+    }
+  })
+
   it('denies a sensitive file once in place of a lasting denial that did not save, on s', async () => {
     const { config, runtime } = await open()
     const token = await askedSensitive(runtime)

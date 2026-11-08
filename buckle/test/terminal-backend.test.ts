@@ -152,6 +152,15 @@ describe('the terminal backend', () => {
     expect(host.logged).toEqual([{ level: 'warn', message: 'Left unsaved: nothing was denied.' }])
   })
 
+  it('asks a lasting denial left unsaved again, since its call still waits', async () => {
+    const asks = [askFor('a')]
+    const host = fakeHost({ routed: asks, receipt: input => (input.decision.scope === 'once' ? { status: 'applied', state: 'denied', assurance: 'local' } : UNSAVED_DENIAL) })
+    const terminal = answering(['deny_session', 'x', 'deny'])
+    await (await opened(terminal.requestCli, host)).submit(asks, live())
+    expect(terminal.asked.map(request => request.id)).toEqual(['approval:w-1:a', 'grant_save:w-1:a:1', 'approval:w-1:a'])
+    expect(host.decided.map(input => input.decision)).toEqual([{ token: 'a', outcome: 'deny', scope: 'session' }, { token: 'a', outcome: 'deny', scope: 'once' }])
+  })
+
   it('takes a key its save question does not offer as leaving it', async () => {
     const asks = [askFor('a')]
     const host = fakeHost({ routed: asks, receipt: () => OWED })

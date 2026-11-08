@@ -16,6 +16,7 @@ const ACCEPTED: SubmitResult = { kind: 'accepted', refs: [] }
 const NOT_OPEN: SubmitResult = { kind: 'declined', reason: 'not open' }
 const CLOSED: SubmitResult = { kind: 'declined', reason: 'closed' }
 /** How a save question's ending is logged: on the serve terminal, where the question was. */
+type AskStep = 'next' | 'again' | 'stop'
 const SAVE_ENDING_LEVELS: Readonly<Record<SaveEnding['ending'], 'info' | 'warn'>> = { saved: 'info', skipped: 'info', dropped: 'warn', denied_once: 'info', left: 'warn', refused: 'warn' }
 
 /**
@@ -39,35 +40,45 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
     if (!requestCli) return
     const stop = AbortSignal.any([input.context.signal, closing.signal])
     for (const ask of input.asks) {
-      if (stop.aborted) return
-      if (closed.has(ask.token) || input.host.ask(ask.token) === undefined) continue
-      const question = new AbortController()
-      questions.set(ask.token, question)
-      let outcome: CliOutcome
-      try {
-        outcome = await requestCli(questionFor(questionInputOf(ask, options.judgeApproves?.())), { signal: AbortSignal.any([stop, question.signal]) })
-      } finally {
-        questions.delete(ask.token)
-      }
-      if (closing.signal.aborted) return
-      if (outcome.status === 'answered' || outcome.status === 'denied') {
-        const decision = decisionFor(ask, outcome)
-        const receipt = await input.host.decide({ kind: 'plain', decision })
-        const unsaved = unsavedOf({ decision, receipt })
-        if (unsaved !== undefined) await settleSave({ host: input.host, requestCli, ask, decision, unsaved, stop })
-        else if (receipt.status === 'refused') input.host.log('warn', 'Approval decision rejected', { reason: receipt.error.message })
-        if (decision.outcome === 'deny') return
-        continue
-      }
-      // Its ask closed while on screen; the next one is still worth asking.
-      if (outcome.status === 'cancelled' && question.signal.aborted && !stop.aborted) continue
-      // Nobody can be asked now: each ask still gets its pending line, not only the first.
-      if (outcome.status === 'unavailable' && (outcome.reason === 'no_consumer' || outcome.reason === 'no_listener')) continue
-      return
+      let step: AskStep
+      do step = await askOnce({ host: input.host, requestCli, ask, stop })
+      while (step === 'again')
+      if (step === 'stop') return
     }
   }
 
-  async function settleSave(input: { host: ApprovalHost; requestCli: RequestCli; ask: FullAsk; decision: DecisionBody; unsaved: Unsaved; stop: AbortSignal }): Promise<void> {
+  /** One ask's question and its answer: `next` moves on, `again` asks it once more, `stop` ends the submit's questions. */
+  async function askOnce(input: { host: ApprovalHost; requestCli: RequestCli; ask: FullAsk; stop: AbortSignal }): Promise<AskStep> {
+    const { host, requestCli, ask, stop } = input
+    if (stop.aborted) return 'stop'
+    if (closed.has(ask.token) || host.ask(ask.token) === undefined) return 'next'
+    const question = new AbortController()
+    questions.set(ask.token, question)
+    let outcome: CliOutcome
+    try {
+      outcome = await requestCli(questionFor(questionInputOf(ask, options.judgeApproves?.())), { signal: AbortSignal.any([stop, question.signal]) })
+    } finally {
+      questions.delete(ask.token)
+    }
+    if (closing.signal.aborted) return 'stop'
+    if (outcome.status === 'answered' || outcome.status === 'denied') {
+      const decision = decisionFor(ask, outcome)
+      const receipt = await host.decide({ kind: 'plain', decision })
+      const unsaved = unsavedOf({ decision, receipt })
+      const ending = unsaved === undefined ? undefined : await settleSave({ host, requestCli, ask, decision, unsaved, stop })
+      if (unsaved === undefined && receipt.status === 'refused') host.log('warn', 'Approval decision rejected', { reason: receipt.error.message })
+      // A lasting denial left unsaved recorded nothing, so its call still waits for an answer here.
+      if (ending?.ending === 'left' && ending.kind === 'denial') return 'again'
+      return decision.outcome === 'deny' ? 'stop' : 'next'
+    }
+    // Its ask closed while on screen; the next one is still worth asking.
+    if (outcome.status === 'cancelled' && question.signal.aborted && !stop.aborted) return 'next'
+    // Nobody can be asked now: each ask still gets its pending line, not only the first.
+    if (outcome.status === 'unavailable' && (outcome.reason === 'no_consumer' || outcome.reason === 'no_listener')) return 'next'
+    return 'stop'
+  }
+
+  async function settleSave(input: { host: ApprovalHost; requestCli: RequestCli; ask: FullAsk; decision: DecisionBody; unsaved: Unsaved; stop: AbortSignal }): Promise<SaveEnding> {
     const { host, decision } = input
     let attempt = 0
     const ending = await settleUnsaved({
@@ -84,6 +95,7 @@ export function createTerminalBackend(options: TerminalBackendOptions): Approval
       },
     })
     host.log(SAVE_ENDING_LEVELS[ending.ending], saveEndingLine(ending))
+    return ending
   }
 
   // A denial's question ends with its ask, which still waits; any other outlives the ask its decision answered, until the
