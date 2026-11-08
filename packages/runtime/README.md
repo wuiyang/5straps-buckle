@@ -13,7 +13,7 @@ load one shared copy, so both see the same scopes and services.
 
 | Import | What it holds |
 |---|---|
-| `@5straps/runtime` | Services, scopes, lifecycle, interaction, logging, transaction guards, and errors |
+| `@5straps/runtime` | Services, scopes, lifecycle, interaction, logging, bounded log queues, transaction guards, and errors |
 | `@5straps/runtime/sqlite` | SQLite databases, connection ownership, busy handling, and locks on `node:sqlite` |
 | `@5straps/runtime/nitro` | Adapters that run the services inside a Nitro app |
 
