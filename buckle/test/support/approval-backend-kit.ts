@@ -129,7 +129,7 @@ export function runApprovalBackendKit(subject: KitSubject): void {
 
     it('waits out a retryable refusal\'s retryAfterMs before it sends that decision again', async () => {
       const retryAfterMs = 200
-      const { backend, host } = await opened([ONCE], [askFor('a')], (_decision, sent) => (sent === 1 ? { status: 'refused', error: { code: 'audit_unavailable', message: 'refused', retryable: true, retryAfterMs } } : APPLIED))
+      const { backend, host } = await opened([ONCE], [askFor('a')], (_decision, sent) => (sent === 1 ? { status: 'refused', error: { code: 'rate_limited', message: 'refused', retryable: true, retryAfterMs } } : APPLIED))
       await backend.submit([askFor('a')], live())
       await sleep(retryAfterMs + 100)
       const [refusedAt, ...again] = host.decided.map(sent => sent.at)

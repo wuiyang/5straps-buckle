@@ -8,7 +8,8 @@ import { openWorkspaceManager, type WorkspaceManager } from '../common/services/
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
-import { settleAuditLogs } from './support/action-log-writer.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { QUIET_MS } from '../cli/terminal-keys.js'
 
 // `buckle approvals --watch --all` through the CLI itself, at a terminal: the watch re-reads the online workspaces at
 // each poll, and closes what a workspace taken offline left open in its process (finding 10 of the Phase 1 review, and
@@ -35,6 +36,7 @@ let base: string
 let node: NodeConfig
 let manager: WorkspaceManager
 let out: string
+let keyboard: PassThrough
 
 beforeEach(async () => {
   base = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-watch-cli-')))
@@ -77,7 +79,7 @@ async function ask(name: string, path: string): Promise<string> {
 
 /** Starts the watch the way an owner types it, and answers once it has said which workspaces it watches. */
 async function startWatch(): Promise<() => Promise<number>> {
-  terminal()
+  keyboard = terminal()
   opened.phase = 'watch'
   const running = runCli({ argv: ['approvals', '--watch', '--all'], config: node, confirm: null, cwd: join(base, 'outside') })
   await vi.waitFor(() => expect(out).toContain('Watching workspaces Site one, Site two for approvals.'), { timeout: 10_000, interval: 25 })
@@ -126,5 +128,44 @@ describe('buckle approvals --watch --all', () => {
     await vi.waitFor(() => expect(watching('Site two')[0]!.closes).toBe(1), { timeout: 10_000, interval: 25 })
     expect(watching('Site one')[0]!.closes).toBe(0)
     expect(await stop()).toBe(0)
+  }, 30_000)
+})
+
+describe('buckle approvals --watch, decision records', () => {
+  /** Answers the question on screen once, as the owner types it at the keyboard. */
+  async function answer(keys: string): Promise<void> {
+    await vi.waitFor(() => expect(out).toMatch(/n\) skip > /), { timeout: 10_000, interval: 25 })
+    // A question takes keys only once the keyboard rested with it on screen.
+    await new Promise(resolve => setTimeout(resolve, QUIET_MS + 100))
+    keyboard.write(keys)
+  }
+
+  it('records each answer in its workspace\'s log as a decision of the cli source, with no cli_approve of its own', async () => {
+    const stop = await startWatch()
+    const token = await ask('Site one', '/outside/one.md')
+    await answer('o\r')
+    await vi.waitFor(() => expect(out).toContain(`Approved (once) ${token}`), { timeout: 10_000, interval: 25 })
+    expect(await stop()).toBe(0)
+
+    const { runtime } = await byName(manager, 'Site one')
+    const entries = await auditEntries(runtime.actions, 50)
+    expect(entries.some(entry => entry.tool === 'cli_approve')).toBe(false)
+    expect(entries.filter(entry => entry.tool === 'approval_decision').map(entry => [entry.event, entry.outcome, entry.args])).toEqual([
+      ['attempt', 'started', expect.objectContaining({ token, outcome: 'approve', scope: 'once', source: { id: 'cli', kind: 'cli' } })],
+      ['result', 'ok', expect.objectContaining({ token, assurance: 'local' })],
+    ])
+  }, 30_000)
+
+  it('still decides while the workspace\'s log will not take a write', async () => {
+    const { runtime } = await byName(manager, 'Site one')
+    const token = await ask('Site one', '/outside/one.md')
+    const log = join(node.stateDirectory, 'workspaces', idOf(manager, 'Site one'), 'actions.jsonl')
+    rmSync(log, { force: true })
+    mkdirSync(log)
+    const stop = await startWatch()
+    await answer('o\r')
+    await vi.waitFor(() => expect(out).toContain(`Approved (once) ${token}`), { timeout: 10_000, interval: 25 })
+    expect(await stop()).toBe(0)
+    expect(runtime.approvals.pending()).toEqual([])
   }, 30_000)
 })

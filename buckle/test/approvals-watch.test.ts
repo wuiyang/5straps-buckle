@@ -18,8 +18,12 @@ import { mkdirSync } from 'node:fs'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { auditEntries } from './support/action-log-writer.js'
+import { createLoggedDecisionAudit } from '../common/adapters/approval/logged-decision-audit.js'
 
 const POLL = { first: 20, idle: 50 }
+
+/** An action log of its own, for a watch whose audit the test does not read. */
+const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
 
 function node(): BuckleConfig {
   return configFromEnvironment({
@@ -34,9 +38,9 @@ function registryOf(config: BuckleConfig): ApprovalRegistry {
   return createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config))
 }
 
-/** The approval service a `buckle approvals --watch` process answers through, over the same state files. */
-function serviceOf(config: BuckleConfig) {
-  return approvalServiceWithTerminal({ registry: registryOf(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined })
+/** The approval service a `buckle approvals --watch` process answers through, over the same state files, recording each decision in `actions`. */
+function serviceOf(config: BuckleConfig, actions: ActionLog = scratchLog()) {
+  return approvalServiceWithTerminal({ registry: registryOf(config), workspaceId: 'default', serverId: 'test-node', graceMs: config.approvalTimeoutMs, interaction: async () => undefined, decisionAudit: createLoggedDecisionAudit({ actions, workspaceId: 'default' }) })
 }
 
 async function issue(registry: ApprovalRegistry): Promise<string> {
@@ -60,11 +64,8 @@ function keyboardTerminal() {
   return { input, output, errors, shown: () => shown, refused: () => refused, type: (keys: string) => input.write(keys) }
 }
 
-/** An action log of its own, for a watch whose audit the test does not read. */
-const scratchLog = () => createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-watch-log-')), 'actions.jsonl'))
-
-function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide'>, terminal = keyboardTerminal(), actions: ActionLog = scratchLog()) {
-  const done = watchApprovals({ sources: async () => [{ approvals, actions, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+function watch(approvals: Pick<ApprovalService, 'waiting' | 'pending' | 'decide'>, terminal = keyboardTerminal()) {
+  const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
   return { terminal, done }
 }
 
@@ -94,8 +95,8 @@ describe('buckle approvals --watch over several workspaces', () => {
     const [firstLog, secondLog] = [scratchLog(), scratchLog()]
     const token = await issue(registryOf(second))
     const sources = [
-      { approvals: serviceOf(first), actions: firstLog, workspaceId: 'one', workspaceName: 'Site one' },
-      { approvals: serviceOf(second), actions: secondLog, workspaceId: 'two', workspaceName: 'Site two' },
+      { approvals: serviceOf(first, firstLog), workspaceId: 'one', workspaceName: 'Site one' },
+      { approvals: serviceOf(second, secondLog), workspaceId: 'two', workspaceName: 'Site two' },
     ]
     const terminal = keyboardTerminal()
     const done = watchApprovals({ sources: async () => sources, input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
@@ -107,7 +108,7 @@ describe('buckle approvals --watch over several workspaces', () => {
       terminal.type('o\r')
       await vi.waitFor(() => expect(terminal.shown()).toContain(`Approved (once) ${token} in workspace Site two`))
       expect(registryOf(second).pending()).toEqual([])
-      expect((await auditEntries(secondLog, 10)).map(entry => entry.tool)).toContain('cli_approve')
+      expect((await auditEntries(secondLog, 10)).map(entry => entry.tool)).toEqual(['approval_decision', 'approval_decision'])
       expect(firstLog.read(10)).toEqual([])
     } finally {
       terminal.type('\x03')
@@ -120,8 +121,8 @@ describe('buckle approvals --watch over several workspaces', () => {
   it('asks in a workspace that comes online after it starts, and says when it starts and stops watching one', async () => {
     const [first, second] = [node(), node()]
     const sources = [
-      { approvals: serviceOf(first), actions: scratchLog(), workspaceId: 'one', workspaceName: 'Site one' },
-      { approvals: serviceOf(second), actions: scratchLog(), workspaceId: 'two', workspaceName: 'Site two' },
+      { approvals: serviceOf(first), workspaceId: 'one', workspaceName: 'Site one' },
+      { approvals: serviceOf(second), workspaceId: 'two', workspaceName: 'Site two' },
     ]
     let online = [sources[0]!]
     const terminal = keyboardTerminal()
@@ -322,7 +323,7 @@ describe('buckle approvals --watch', () => {
   it('stops on an interrupt signal while nothing is waiting', async () => {
     const terminal = keyboardTerminal()
     const interrupted = new AbortController()
-    const done = watchApprovals({ sources: async () => [{ approvals: serviceOf(node()), actions: scratchLog(), workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
+    const done = watchApprovals({ sources: async () => [{ approvals: serviceOf(node()), workspaceId: 'default' }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL, signal: interrupted.signal })
 
     interrupted.abort()
 
@@ -344,14 +345,14 @@ describe('buckle approvals --watch', () => {
 })
 
 describe('buckle approvals --watch, audit', () => {
-  it('audits each answer on its own, as buckle approve does', async () => {
+  it('records each answer as a decision of the cli source, with no command record of its own', async () => {
     const config = node()
     const registry = registryOf(config)
     await issuePrivate(registry, '10.0.0.1')
     await sleep(5)
     const second = await issuePrivate(registry, '10.0.0.2')
     const actions = createFileActionLog(actionsPath(config))
-    const { terminal, done } = watch(serviceOf(config), keyboardTerminal(), actions)
+    const { terminal, done } = watch(serviceOf(config, actions))
 
     await prompted(terminal)
     terminal.type('always\r')
@@ -361,10 +362,14 @@ describe('buckle approvals --watch, audit', () => {
     terminal.type('\x03')
     await done
 
-    const results = (await auditEntries(actions, 50)).filter(entry => entry.tool === 'cli_approve' && entry.event === 'result')
-    expect(results).toHaveLength(2)
-    expect(results.map(entry => [entry.workspaceId, entry.sessionId, entry.outcome])).toEqual([['default', 'local-owner', 'ok'], ['default', 'local-owner', 'ok']])
-    expect((await auditEntries(actions, 50)).filter(entry => entry.tool === 'cli_approve' && entry.event === 'attempt')).toHaveLength(2)
+    const entries = await auditEntries(actions, 50)
+    expect(entries.some(entry => entry.tool === 'cli_approve')).toBe(false)
+    const results = entries.filter(entry => entry.tool === 'approval_decision' && entry.event === 'result')
+    expect(results.map(entry => [entry.workspaceId, entry.outcome, entry.args])).toEqual([
+      ['default', 'ok', expect.objectContaining({ outcome: 'approve', scope: 'always', source: SOURCES.cli })],
+      ['default', 'ok', expect.objectContaining({ token: second, outcome: 'deny', scope: 'once', source: SOURCES.cli })],
+    ])
+    expect(entries.filter(entry => entry.tool === 'approval_decision' && entry.event === 'attempt')).toHaveLength(2)
     expect(grantsOf(config).map(grant => [grant.subject, grant.scope])).toEqual([['10.0.0.1', 'always']])
   })
 })
@@ -552,7 +557,7 @@ describe('the judge line in buckle approvals --watch (follow-up F6)', () => {
     })).requests
     const approvals = serviceOf(config)
     const terminal = keyboardTerminal()
-    const done = watchApprovals({ sources: async () => [{ approvals, actions: scratchLog(), workspaceId: 'default', judgeApproves }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
+    const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'default', judgeApproves }], input: terminal.input, output: terminal.output, errors: terminal.errors, pollMs: POLL })
     try {
       await prompted(terminal)
       return { token: request!.token, shown: terminal.shown() }

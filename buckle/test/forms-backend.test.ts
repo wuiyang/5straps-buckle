@@ -150,7 +150,10 @@ async function opened() {
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
   const heard: ApprovalSource[] = []
   const refused: Array<{ token: string; code: string }> = []
-  const decisionAudit: DecisionAudit = { received: async (decision) => { heard.push(decision.source) }, applied: async () => {}, refused: async (decision) => { refused.push({ token: decision.token, code: decision.code }) } }
+  const decisionAudit: DecisionAudit = { received: (decision) => {
+    heard.push(decision.source)
+    return { applied: () => undefined, failed: () => undefined, refused: (refusal) => { refused.push({ token: decision.token, code: refusal.code }) } }
+  } }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
   const backend = forms()

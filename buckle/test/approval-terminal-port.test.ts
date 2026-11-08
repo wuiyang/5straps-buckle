@@ -5,7 +5,6 @@ import type { CliOutcome, RequestCli } from '@5straps/runtime'
 import type { PermissionRuleId } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonce-claims.js'
-import { NO_DECISION_AUDIT } from '../common/adapters/approval/no-decision-audit.js'
 import { createTerminalBackend } from '../common/adapters/approval/terminal-backend.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -13,6 +12,7 @@ import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/servi
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
 import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { UNHEARD_DECISIONS } from './support/decision-audit.js'
 
 // The core side of the port: what the service hands its terminal backend, and how it takes the backend's decisions.
 
@@ -45,7 +45,7 @@ function setUp(backend: ApprovalBackend, graceMs: number | null = 200) {
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims(), decisionAudit: NO_DECISION_AUDIT })
+  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS })
   return { registry, grants, service, root }
 }
 

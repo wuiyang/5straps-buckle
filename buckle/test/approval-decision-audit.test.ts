@@ -3,11 +3,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { approvalDecisionPath, approvalKey, mintApprovalKey, seal, type ApprovalKey } from '@5straps/protocol/envelope'
 import { challengeBytes } from '@5straps/protocol/signed-request'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonce-claims.js'
-import { NO_DECISION_AUDIT } from '../common/adapters/approval/no-decision-audit.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { actionsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService } from '../common/services/approvals/approval-service.js'
@@ -19,13 +19,15 @@ import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { recordingDecisionAudit } from './support/decision-audit.js'
 
-// The decision audit's seam: told of each decision as received, then applied or refused. Today's adapter writes no entry
-// and a failed entry never blocks an answer; a node may later turn both on.
+// The decision audit's seam: told of each decision as received, then applied, refused, or failed. The runtime records each
+// one in the workspace's own log through the log service, so a record that cannot be written never blocks an answer.
 
 const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
+  vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -38,23 +40,7 @@ const IDLE: ApprovalBackend = {
   close: async () => undefined,
 }
 
-function recordingAudit() {
-  const entries: Array<{ step: string; fields: object }> = []
-  const audit: DecisionAudit = {
-    received: async (fields) => { entries.push({ step: 'received', fields }) },
-    applied: async (fields) => { entries.push({ step: 'applied', fields }) },
-    refused: async (fields) => { entries.push({ step: 'refused', fields }) },
-  }
-  return { audit, entries }
-}
-
-const BROKEN: DecisionAudit = {
-  received: async () => { throw new Error('The audit log is full') },
-  applied: async () => { throw new Error('The audit log is full') },
-  refused: async () => { throw new Error('The audit log is full') },
-}
-
-async function asked(input: { decisionAudit: DecisionAudit; blockOnAuditFailure?: boolean; terminal?: ApprovalBackend; decisionKey?: ApprovalKey }) {
+async function asked(input: { decisionAudit: DecisionAudit; terminal?: ApprovalBackend; decisionKey?: ApprovalKey }) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
   roots.push(root)
   const registry = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' }), join(root, 'approvals.json'), 15_000)
@@ -65,14 +51,14 @@ async function asked(input: { decisionAudit: DecisionAudit; blockOnAuditFailure?
 
 describe('the decision audit seam', () => {
   it('tells the audit of each decision as received, then applied or refused', async () => {
-    const { audit, entries } = recordingAudit()
+    const { audit, entries } = recordingDecisionAudit()
     const { service, token } = await asked({ decisionAudit: audit })
     expect(await service.answer({ decision: { token, approved: true, scope: 'always' }, source: SOURCES.cli })).toMatchObject({ ok: false, code: 'scope_not_offered' })
     expect(await service.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
     const decision = { token, approved: true, source: SOURCES.cli, proof: 'none' }
     expect(entries).toEqual([
       { step: 'received', fields: { ...decision, scope: 'always' } },
-      { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered', reason: 'Scope always is not offered for this approval' } },
+      { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered' } },
       { step: 'received', fields: { ...decision, scope: 'session' } },
       { step: 'applied', fields: { ...decision, scope: 'session', assurance: 'local', repeated: false, grantOwed: false } },
     ])
@@ -80,7 +66,7 @@ describe('the decision audit seam', () => {
   })
 
   it('audits a terminal decision the host refuses before the guard, as received and refused', async () => {
-    const { audit, entries } = recordingAudit()
+    const { audit, entries } = recordingDecisionAudit()
     const decided = Promise.withResolvers<void>()
     const stray: ApprovalBackend = { ...IDLE, async open(host) {
       void Promise.resolve().then(async () => { await host.decide({ kind: 'plain', decision: { token: 'not-routed', outcome: 'deny', scope: 'once' } }); decided.resolve() })
@@ -92,27 +78,22 @@ describe('the decision audit seam', () => {
     const decision = { token: 'not-routed', approved: false, scope: 'once', source: SOURCES.terminal, proof: 'none' }
     expect(entries).toEqual([
       { step: 'received', fields: decision },
-      { step: 'refused', fields: { ...decision, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' } },
+      { step: 'refused', fields: { ...decision, code: 'approver_not_allowed' } },
     ])
     await service.close()
   })
 
-  it('answers as today when the audit cannot be written', async () => {
-    const { registry, service, token } = await asked({ decisionAudit: BROKEN })
-    expect(await service.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
-    expect(registry.pending()).toEqual([])
-    await service.close()
-  })
-
-  it('leaves the ask waiting when a node blocks a decision whose received entry cannot be written', async () => {
-    const { registry, service, token } = await asked({ decisionAudit: BROKEN, blockOnAuditFailure: true })
-    expect(await service.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: false, code: 'audit_unavailable' })
-    expect(registry.pending().map(request => request.token)).toEqual([token])
+  it('records a decision the ledger could not take as failed, and the route still hears the error', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const { registry, service, token } = await asked({ decisionAudit: audit })
+    vi.spyOn(registry, 'resolve').mockRejectedValue(new Error('The approvals file is busy'))
+    await expect(service.answer({ decision: { token, approved: true, scope: 'once' }, source: SOURCES.cli })).rejects.toThrow('busy')
+    expect(entries.map(entry => entry.step)).toEqual(['received', 'failed'])
     await service.close()
   })
 
   it('names the proof that carried each decision', async () => {
-    const { audit, entries } = recordingAudit()
+    const { audit, entries } = recordingDecisionAudit()
     const { service, token } = await asked({ decisionAudit: audit })
     const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
     await service.decide({ source: 'cli', decision: { token: 'not-asked', outcome: 'deny', scope: 'once' } })
@@ -127,7 +108,7 @@ describe('the decision audit seam', () => {
   })
 
   it('names an envelope the paired key sealed as its proof', async () => {
-    const { audit, entries } = recordingAudit()
+    const { audit, entries } = recordingDecisionAudit()
     const key = approvalKey(mintApprovalKey())
     const { service, token } = await asked({ decisionAudit: audit, decisionKey: key })
     await service.decide({ source: 'sealed', body: seal(key, { method: 'POST', path: approvalDecisionPath('w-1'), body: { token, approved: false, scope: 'once' } }) })
@@ -135,27 +116,52 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
-  it('marks a blocked decision retryable only where sending it again is not refused as a replay', async () => {
-    const { service, token } = await asked({ decisionAudit: BROKEN, blockOnAuditFailure: true })
-    const challenge = service.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
-    expect(await service.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'once' } })).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: true } })
-    expect(await service.decide(deviceDecision({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }))).toMatchObject({ status: 'refused', error: { code: 'audit_unavailable', retryable: false } })
-    await service.close()
+  it('records each decision in the workspace\'s own log, as the runtime composes it', async () => {
+    const { runtime, token } = await askedInRuntime()
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.terminal })).toMatchObject({ ok: true })
+
+    const decisions = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision')
+    const decision = { token, outcome: 'approve', scope: 'session', source: { id: 'terminal', kind: 'terminal' }, proof: 'none' }
+    expect(decisions).toEqual([
+      expect.objectContaining({ event: 'attempt', outcome: 'started', workspaceId: runtime.workspaceId, args: decision }),
+      expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, grantOwed: false } }),
+    ])
   })
 
-  it('writes no entry with today\'s audit, which the runtime composes', async () => {
-    expect(await NO_DECISION_AUDIT.received({ token: 't', approved: true, scope: 'once', source: SOURCES.terminal, proof: 'none' })).toBeUndefined()
-    const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
-    roots.push(root)
-    mkdirSync(join(root, 'workspace', 'one'), { recursive: true })
-    mkdirSync(join(root, 'state'), { mode: 0o700 })
-    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
-    const runtime = await createRuntime({ config, interaction: fixedInteraction(NO_INTERACTION) })
-    runtimes.push(runtime)
-    const response = await runtime.invoke({ request: { requestId: 'write-1', tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] }, sessionId: 's' })
-    if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
-    const before = await auditEntries(runtime.actions, 200)
-    expect(await runtime.approvalService.answer({ decision: { token: response.approvals[0]!.token, approved: true, scope: 'session' }, source: SOURCES.terminal })).toMatchObject({ ok: true })
-    expect(await auditEntries(runtime.actions, 200)).toEqual(before)
+  it('records a device\'s decision with its key, and the setup face\'s plain denial, in the workspace\'s log', async () => {
+    const { runtime, token } = await askedInRuntime()
+    const challenge = runtime.approvalService.challengeListing().challenges.find(entry => entry.token === token)!.challenge!
+    expect(await runtime.approvalApi.decide({ source: 'sealed', body: { token, approved: true, scope: 'once' } })).toMatchObject({ status: 'refused', error: { code: 'capability_exceeded' } })
+    expect(await runtime.approvalApi.decide(deviceDecision({ token, approved: true, scope: 'once', challenge: challengeBytes(challenge).digest }))).toMatchObject({ status: 'applied' })
+
+    const results = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision' && entry.event === 'result')
+    expect(results.map(entry => [entry.outcome, entry.detail, entry.args])).toEqual([
+      ['error', 'capability_exceeded', expect.objectContaining({ source: { id: 'sealed', kind: 'sealed' }, proof: 'none', code: 'capability_exceeded' })],
+      ['ok', undefined, expect.objectContaining({ source: { id: 'devices', kind: 'devices' }, proof: 'device', decidedBy: 'key:device-1', assurance: 'key' })],
+    ])
+  })
+
+  it('applies a decision while the workspace\'s log will not take a write', async () => {
+    const { runtime, config, token } = await askedInRuntime()
+    rmSync(actionsPath(config), { force: true })
+    mkdirSync(actionsPath(config))
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.terminal })).toMatchObject({ ok: true })
+    expect(runtime.approvalService.pending()).toEqual([])
   })
 })
+
+/** A runtime as a node composes it, with one write waiting for a person. */
+async function askedInRuntime() {
+  const root = mkdtempSync(join(tmpdir(), 'buckle-decision-audit-'))
+  roots.push(root)
+  mkdirSync(join(root, 'workspace', 'one'), { recursive: true })
+  mkdirSync(join(root, 'state'), { mode: 0o700 })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+  const runtime = await createRuntime({ config, interaction: fixedInteraction(NO_INTERACTION) })
+  runtimes.push(runtime)
+  const response = await runtime.invoke({ request: { requestId: 'write-1', tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] }, sessionId: 's' })
+  if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
+  return { runtime, config, token: response.approvals[0]!.token }
+}

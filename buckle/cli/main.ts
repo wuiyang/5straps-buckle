@@ -651,7 +651,7 @@ async function watch(input: { runtimes: () => Promise<BuckleRuntime[]>; pinned?:
   const interrupt = () => interrupted.abort()
   process.once('SIGINT', interrupt)
   try {
-    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalApi, actions: runtime.actions, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), judgeApproves: () => runtime.judgeApproves() }))
+    const sources = async () => (await input.runtimes()).map(runtime => ({ approvals: runtime.approvalApi, workspaceId: runtime.workspaceId, workspaceName: runtime.workspaceName(), judgeApproves: () => runtime.judgeApproves() }))
     return await watchApprovals({ sources, input: process.stdin, output: process.stdout, errors: process.stderr, signal: interrupted.signal })
   } finally {
     process.off('SIGINT', interrupt)

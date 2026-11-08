@@ -5,8 +5,6 @@ import { describeQuestion, marked } from './terminal-consumer.js'
 import { QUIET_MS, discardTypedLine, pause, watchKeys, type KeyWatch } from './terminal-keys.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { approveCommand, denyCommand, describeAskOfShownCall, printable, workspaceLabel } from '../common/domain/approval-instruction.js'
-import type { ActionLog } from '../common/types/ports/action-log.js'
-import { auditOperation } from '../common/services/audit/audit-operation.js'
 import type { CoreApprovalApi } from '../common/services/approvals/core-approval-api.js'
 import { GRANT_OWED_NOTE, type PendingAsk } from '../common/services/approvals/approval-registry.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
@@ -41,8 +39,6 @@ export interface WatchSource {
    * makes while it waits, and the decision `buckle approve` makes.
    */
   approvals: Pick<CoreApprovalApi, 'waiting' | 'pending' | 'decide'>
-  /** Each answer is audited on its own, in its workspace's log, as the `buckle approve` it stands in for. */
-  actions: ActionLog
   workspaceId: string
   workspaceName?: string
   /** Whether the workspace's thorough stage can approve, which an unrated ask's judge line says (D91 follow-up F6). */
@@ -233,12 +229,11 @@ function decide(request: ApprovalRequest, answer: string, offered: typeof SCOPE_
 
 /**
  * The same decision `buckle approve` makes, through the core approval API: the owner's own process, so
- * the `cli` source. It is audited the same way too, one entry per answer, so a session that
- * grants several leaves several.
+ * the `cli` source. Core records each one in its workspace's log, so a session that grants several
+ * leaves several.
  */
 async function record(context: AskContext, decision: DecisionBody): Promise<void> {
-  const receipt = await auditOperation({ actions: context.actions, workspaceId: context.workspaceId, tool: 'cli_approve', sessionId: 'local-owner',
-    isSuccessful: outcome => outcome.status !== 'refused', describe: outcome => (outcome.status !== 'refused' && outcome.grantOwed ? GRANT_OWED_NOTE : undefined), operation: () => context.approvals.decide({ source: 'cli', decision }) })
+  const receipt = await context.approvals.decide({ source: 'cli', decision })
   if (receipt.status === 'refused') {
     context.output.write(`  Not recorded: ${receipt.error.message}.\n`)
     return

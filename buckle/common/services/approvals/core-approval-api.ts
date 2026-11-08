@@ -168,8 +168,7 @@ function readOf(decision: ApprovalDecision, challenge: string | undefined): Read
 export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution }): CoreDecisionReceipt {
   const { answer, result } = input
   const decision = readOf(answer.decision, answer.challenge)
-  // A proof's nonce was claimed as it was read, so sending it again is refused as a replay.
-  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.code === 'audit_unavailable' && answer.proof === undefined } }
+  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: false } }
   const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),

@@ -7,7 +7,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { watchApprovals } from '../cli/approvals-watch.js'
 import { setupCli } from '../cli/setup.js'
 import { createTerminalConsumer } from '../cli/terminal-consumer.js'
-import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { describeAsk } from '../common/domain/approval-instruction.js'
 import { approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
@@ -158,8 +157,7 @@ describe('buckle approvals --watch', () => {
     Object.assign(output, { isTTY: true, columns: 200, rows: 24 })
     let screen = ''
     output.on('data', (chunk: Buffer) => { screen += chunk.toString('utf8') })
-    const actions = createFileActionLog(join(mkdtempSync(join(tmpdir(), 'buckle-below-watch-log-')), 'actions.jsonl'))
-    const done = watchApprovals({ sources: async () => [{ approvals, actions, workspaceId: 'default' }], input, output, errors: new PassThrough(), pollMs: { first: 20, idle: 50 } })
+    const done = watchApprovals({ sources: async () => [{ approvals, workspaceId: 'default' }], input, output, errors: new PassThrough(), pollMs: { first: 20, idle: 50 } })
     await vi.waitFor(() => expect(screen).toMatch(/n\) skip > /), { timeout: 3_000 })
     expect(screen).toContain('o) once  s) session  always) always  sb) session, folder and below  always-below) always, folder and below  d) deny  n) skip > ')
     input.write('sb\r')

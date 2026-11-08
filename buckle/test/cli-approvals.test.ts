@@ -339,8 +339,11 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
     await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost:3000'], config })
 
-    const result = (await auditEntries(createFileActionLog(actionsPath(config)), 10)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    const entries = await auditEntries(createFileActionLog(actionsPath(config)), 10)
+    const result = entries.find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
     expect(result).toMatchObject({ outcome: 'ok', detail: 'network_egress session approval widened to *.localhost:3000, asked by app.localhost:3000' })
+    // The command keeps its record, and the decision has its own beside it.
+    expect(entries.find(entry => entry.tool === 'approval_decision' && entry.event === 'result')).toMatchObject({ outcome: 'ok', args: { token, outcome: 'approve', scope: 'session', source: SOURCES.cli, assurance: 'local' } })
   })
 
   it('answers a repeat of the same widening as done, and a different one as a conflict', async () => {

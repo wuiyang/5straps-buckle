@@ -91,7 +91,7 @@ export type ApprovalErrorCode =
   | 'unknown_ask' | 'ask_closed' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action'
   | 'scope_not_offered' | 'scope_forbidden' | 'statement_invalid' | 'proof_invalid' | 'proof_expired' | 'replayed'
   | 'approver_not_allowed' | 'assurance_too_low' | 'capability_exceeded'
-  | 'unsupported_version' | 'audit_unavailable' | 'rate_limited' | 'too_large'
+  | 'unsupported_version' | 'rate_limited' | 'too_large'
 
 export interface ApprovalError {
   code: ApprovalErrorCode

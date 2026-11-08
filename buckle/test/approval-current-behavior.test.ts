@@ -11,7 +11,7 @@ import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-
 import { commandMarks, FILE_FLOOR_MARKS, PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import type { PermissionEngine } from '../common/domain/permission/engine.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
-import { approvalsPath, grantsPath } from '../common/runtime/config.js'
+import { actionsPath, approvalsPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -93,7 +93,7 @@ async function mcpNode(input: { trusted: boolean }) {
 }
 
 describe('a serve terminal answer', () => {
-  it('grants the folder for the session with no expiry, tells the webhook, and writes no decision entry to the audit log', async () => {
+  it('grants the folder for the session with no expiry, tells the webhook, and records the decision in the workspace\'s audit log', async () => {
     const asker = terminal(['session'])
     const { runtime, webhook, call, folder } = await node({ interaction: asker, webhook: true })
 
@@ -104,10 +104,14 @@ describe('a serve terminal answer', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 's', expiresAt: null })])
     await vi.waitFor(() => expect(webhook!.notices.filter(notice => notice.event === 'answered')).toEqual([expect.objectContaining({ event: 'answered', scope: 'session' })]))
     const entries = await auditEntries(runtime.actions, 50)
-    expect(new Set(entries.map(entry => entry.tool))).toEqual(new Set(['fs_write']))
-    expect(entries.filter(entry => entry.event === 'result').map(entry => [entry.outcome, entry.asked, entry.approvedBy])).toEqual([
+    expect(new Set(entries.map(entry => entry.tool))).toEqual(new Set(['fs_write', 'approval_decision']))
+    expect(entries.filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => [entry.outcome, entry.asked, entry.approvedBy])).toEqual([
       ['ok', ['write_scope'], ['write_scope']],
       ['ok', undefined, ['write_scope']],
+    ])
+    expect(entries.filter(entry => entry.tool === 'approval_decision').map(entry => [entry.event, entry.outcome, entry.args])).toEqual([
+      ['attempt', 'started', expect.objectContaining({ outcome: 'approve', scope: 'session', source: SOURCES.terminal, proof: 'none' })],
+      ['result', 'ok', expect.objectContaining({ outcome: 'approve', scope: 'session', source: SOURCES.terminal, assurance: 'local' })],
     ])
   })
 
@@ -311,7 +315,7 @@ describe('the HTTP MCP face', () => {
 })
 
 describe('a stdio MCP form answer', () => {
-  it('counts as the person\'s: a session answer on a first write remembers its folder, and writes no entry beyond the tool\'s own', async () => {
+  it('counts as the person\'s: a session answer on a first write remembers its folder, and is recorded as the forms\' decision', async () => {
     const { runtime, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
     const write = tool('fs_write')
     await write({ path: 'one/a.md', content: 'a' })
@@ -322,7 +326,12 @@ describe('a stdio MCP form answer', () => {
     expect(waiting()).toEqual([])
     expect(readFileSync(join(workspace, 'one', 'b.md'), 'utf8')).toBe('b')
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 'mcp' })])
-    expect((await auditEntries(runtime.actions, 50)).map(entry => [entry.tool, entry.event])).toEqual(Array.from({ length: 3 }, () => [['fs_write', 'attempt'], ['fs_write', 'result']]).flat())
+    const entries = await auditEntries(runtime.actions, 50)
+    expect(entries.filter(entry => entry.tool === 'fs_write').map(entry => entry.event)).toEqual(Array.from({ length: 3 }, () => ['attempt', 'result']).flat())
+    expect(entries.filter(entry => entry.tool === 'approval_decision').map(entry => [entry.event, entry.outcome, entry.args])).toEqual([
+      ['attempt', 'started', expect.objectContaining({ token, outcome: 'approve', scope: 'session', source: SOURCES.forms })],
+      ['result', 'ok', expect.objectContaining({ token, source: SOURCES.forms, assurance: 'local', grantOwed: false })],
+    ])
   })
 
   it('approves a delete at the file floor, and its always answer lands an always grant that clears the next delete there', async () => {
@@ -345,13 +354,18 @@ describe('a stdio MCP form answer', () => {
 })
 
 describe('an answer while the action log cannot be written', () => {
-  const full = () => new Error('the action log is full')
+  /** The workspace's log becomes a directory: every write fails, its own decision records included. */
+  const breakLog = (config: BuckleConfig) => {
+    vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    rmSync(actionsPath(config), { force: true })
+    mkdirSync(actionsPath(config))
+  }
 
   it('still resolves the ask from the serve terminal', async () => {
-    let breakLog = () => {}
-    const asker: Interaction = { hold: 'grace', requestCli: async (request) => { breakLog(); return { status: 'answered', requestId: request.id, answer: { choice: 'session' } } } }
-    const { runtime, call, folder } = await node({ interaction: asker })
-    breakLog = () => { vi.spyOn(runtime.actions, 'record').mockRejectedValue(full()) }
+    let broken = () => {}
+    const asker: Interaction = { hold: 'grace', requestCli: async (request) => { broken(); return { status: 'answered', requestId: request.id, answer: { choice: 'session' } } } }
+    const { runtime, config, call, folder } = await node({ interaction: asker })
+    broken = () => breakLog(config)
     const answers = vi.spyOn(runtime.approvalService, 'answer')
     await call('fs_write', { path: 'one/a.md', content: 'a' })
 
@@ -362,11 +376,11 @@ describe('an answer while the action log cannot be written', () => {
   })
 
   it('still resolves the ask from a stdio form, while the call that carried the answer does not run', async () => {
-    const { runtime, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
+    const { runtime, config, workspace, folder, tool, waiting } = await mcpNode({ trusted: true })
     const write = tool('fs_write')
     await write({ path: 'one/a.md', content: 'a' })
     const [token] = waiting()
-    vi.spyOn(runtime.actions, 'record').mockRejectedValue(full())
+    breakLog(config)
     const answers = vi.spyOn(runtime.approvalService, 'answer')
 
     expect(await write({ path: 'one/a.md', content: 'a' }, accepted(token!, { approve: true, scope: 'session' }))).toMatchObject({ isError: true })

@@ -140,6 +140,8 @@ describe('buckle approvals judge', () => {
     // The command is audited with what the judge said, and the call it approved names the judge as who decided.
     const audited = (await auditEntries(runtime.actions, 100)).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
     expect(audited?.judge).toMatchObject({ provider: 'openai-compatible', model: 'GPT-6-luna', level: 'safe', confidence: 0.91, passed: true })
+    const decided = (await auditEntries(runtime.actions, 100)).find(entry => entry.tool === 'approval_decision' && entry.event === 'result')
+    expect(decided).toMatchObject({ outcome: 'ok', args: { token, outcome: 'approve', scope: 'once', source: SOURCES.judge, decidedBy: 'judge:thorough:openai-compatible:GPT-6-luna', assurance: 'relayed' } })
     const ran = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
     expect(ran.outcome).not.toBe('approval_required')
     const result = (await auditEntries(runtime.actions, 100)).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')

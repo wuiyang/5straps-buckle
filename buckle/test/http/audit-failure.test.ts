@@ -5,6 +5,7 @@ import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckl
 import { nodeEnvironment } from '../support/node-environment.js'
 import { actionsPath } from '../../common/runtime/config.js'
 import { auditEntries } from '../support/action-log-writer.js'
+import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 // B19: an audit log that will not take writes refuses the agent's calls it would have to record, with a 503 an
 // agent may read, makes readiness 503, and still lets the owner inspect and change the node and refusals answer.
@@ -143,5 +144,16 @@ describe('an audit log that will not take writes', () => {
     expect(change.status).toBe(200)
     expect((await buckle.request('/v1/manifest', { headers: headers('not-the-agent-token') })).status).toBe(401)
     expect((await buckle.request(buckle.setup('status'), { headers: headers('not-the-admin-token') })).status).toBe(401)
+  })
+
+  it('still decides on the setup approvals POST, whose decision record goes through the log service', async () => {
+    const { buckle } = await brokenAudit()
+    const [request] = (await buckle.runtime.approvals.ask({
+      tool: 'fs_write', sessionId: 's1', call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: buckle.config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true },
+      asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }],
+    })).requests
+    const denied = await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ token: request!.token, approved: false, scope: 'once' }) })
+    expect(denied.status).toBe(200)
+    expect(buckle.runtime.approvalService.pending()).toEqual([])
   })
 })

@@ -28,7 +28,7 @@ import { createFileDangerouslyAllowStore } from '../../adapters/policy-store/fil
 import type { DangerouslyAllowMode, DangerouslyAllowReading } from '../../types/ports/dangerously-allow-store.js'
 import { openFileNonceStore } from '../../adapters/approval/file-nonce-store.js'
 import { createMemoryNonceClaims } from '../../adapters/approval/memory-nonce-claims.js'
-import { NO_DECISION_AUDIT } from '../../adapters/approval/no-decision-audit.js'
+import { createLoggedDecisionAudit } from '../../adapters/approval/logged-decision-audit.js'
 import { availableSkills, availableTools, packDescriptor, type BrowserCloseCounts, type Pack } from '../../domain/pack.js'
 import type { DeletePolicy } from '../../domain/delete-policy.js'
 import { createPathView, type PathView, type ViewMount } from '../../domain/path-view.js'
@@ -367,7 +367,9 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     get workspaceName() { return config.serverName },
     hold: async () => (await interaction())?.hold, terminal,
     announce: webhook ? createWebhookNotifier(webhook) : undefined,
-    notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces, decisionAudit: NO_DECISION_AUDIT,
+    notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
+    // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
+    decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
   })
   input.onApprovalCleanup(() => approvalService.close())
   const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService })
