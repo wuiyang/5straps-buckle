@@ -10,15 +10,16 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
 - **`ApprovalBackend`:** core calls `open(host)`, which answers with the backend's
   capabilities, then `submit(asks, context)` for one call's asks, `notify(events)` when an ask
   leaves the queue, and `close()`. A submit is `accepted` or `declined`, never a decision.
-- **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters;
-  `pending` and `ask` give the asks routed to the backend; `log` writes to the node's log. Core
-  binds `host.source`, so a backend never names its own.
+- **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
+  `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
+  backend; `log` writes the node's log. Core binds `host.source`, so a backend never names its
+  own.
 - **`FullAsk`:** the whole ask, never cut, as an approver sees the full raw action: token,
   group, an HMAC idempotency key, the requester, the rule's subject and offered scopes, the
   decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
 - **Receipts:** `applied` with the assurance core rated, `repeated`, or `refused` with an
-  `ApprovalErrorCode`; a grant still owed is flagged, with a `saveError` that names no path. Core
-  checks each decision's shape first. A failure is no decision.
+  `ApprovalErrorCode`; one for a lasting approval names its grant's `save` state, and a pathless
+  `saveError` while owed. Core checks each decision's shape first. A failure is no decision.
 
 ## The module boundary
 
@@ -95,7 +96,7 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
   subject or a `delete-below` folder clears its ask. Off, the floor neither offers, takes, nor
   reads `always`. A destructive command never takes `always`.
 - **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's; rated
-  `relayed`, they would be held to a non-floor `once`, which the forms do not offer alone.
+  `relayed`, they would be held to a non-floor `once`.
 - **The dangerously-allow switch:** each mode's reach is a row of `DANGEROUSLY_ALLOW_REACH`.
 
 ## What remote backends will need

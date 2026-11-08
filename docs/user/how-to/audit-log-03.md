@@ -22,6 +22,12 @@ enrolled key or the decision AI decided. A result adds the `assurance`, `repeate
 Each names who answered as its `actorId`: the key or judge that decided, else `local-owner` for the
 terminal and the CLI, the route's name (`forms`, `sealed`), or `backend:<id>`.
 
+Skipping the save of an approval whose grant could not be written
+([when a grant cannot be saved](approvals-05.md)) writes two `approval_decision` entries too. Their
+`args` hold the `token`, the `outcome` `skip_save`, and the `source`; a result adds `repeated`
+(the save was skipped already) and `removed` (its grant had saved and is gone), or the refusal's
+`code`, such as `approver_not_allowed` for a route that did not record the decision.
+
 No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`, and
 those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused
 as an unknown tool, and leaves no entry.
