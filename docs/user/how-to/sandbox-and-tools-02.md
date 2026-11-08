@@ -54,8 +54,8 @@ one, unless a CIDR range in `network.privateRanges` holds it: the workspace's ow
 buckle workspace set network.privateRanges 10.0.0.0/8,fd00::/8
 ```
 
-A host name, a wildcard, a bare address, and a range with bits past its prefix (`10.0.0.5/8`) are
-refused, so a range reaches exactly the addresses it names; `/32` or `/128` names one. An
+A host name, a wildcard, a bare address, a range with bits past its prefix (`10.0.0.5/8`), and one
+wider than `/8` (`0.0.0.0/0`) are refused, so a range reaches exactly the addresses it names; `/32` or `/128` names one. An
 IPv4-mapped address counts as the IPv4 address it carries. `localhost` still asks: write
 `127.0.0.1`. Browser navigation and forge pushes take a range for an address written in the URL.
 An [approved list](policy.md#network) still refuses what it does not name.

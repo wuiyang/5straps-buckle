@@ -57,8 +57,9 @@ own records under (`isRecordTool` in `common/domain/record-tools.ts`): `approval
 log names the tool.
 
 The `network_egress` rule and `web_fetch`'s hop check (`services/packs/web/egress.ts`) both take
-the workspace's `network.privateRanges`, parsed by `parseCidr` in `common/domain/ip.ts`: an address
-`rangeCovering` finds in one is reached without asking. The ranges are a swap input, so a change
+the workspace's `network.privateRanges`, parsed by `parseCidr` in `common/domain/ip.ts`, which
+refuses a prefix shorter than `LEAST_PREFIX` (`/8` in each family): an address `rangeCovering`
+finds in one is reached without asking. The ranges are a swap input, so a change
 rebuilds the packs for the next call.
 
 [Code mode](architecture-03.md), the pack that runs an agent's script, continues on part three.
