@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ServerContext } from '@modelcontextprotocol/server'
@@ -6,16 +6,17 @@ import type { InvokeResponse } from '@5straps/protocol'
 import { z } from 'zod'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createToolRegistry } from '../common/domain/tool-registry.js'
-import type { BuckleConfig } from '../common/runtime/config.js'
+import { grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { initializeCommon, type BuckleCommon, type RuntimeRole } from '../common/runtime/initialize.js'
-import { HTTP_MCP_SESSION, stdioSession } from '../common/services/workspaces/face-session.js'
+import { HTTP_MCP_SESSION, SERVE_SESSION, stdioSession } from '../common/services/workspaces/face-session.js'
 import { bindFormsOpener } from '../common/services/workspaces/forms-opener.js'
-import type { BuckleRuntime, CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { createRuntime, type BuckleRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { createStdioServer } from '../mcp/stdio.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
-import { defaultRuntime } from './support/workspaces.js'
+import { coreOf, defaultRuntime } from './support/workspaces.js'
 
 // The faces' own sessions: each stdio MCP process holds one of its own, which ends as it exits, and HTTP MCP, served
 // stateless, holds `mcp`, which ends as `buckle serve` stops and as it opens a workspace again, as after a crash.
@@ -56,6 +57,12 @@ async function approvedForSession(runtime: CoreRuntime, sessionId: string, path:
   const token = asking.outcome === 'approval_required' ? asking.approvals[0]!.token : ''
   expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
   expect(await write(runtime, sessionId, path)).toMatchObject({ outcome: 'ok' })
+}
+
+async function closed(runtime: CoreRuntime): Promise<void> {
+  runtime.closeWatchers()
+  await runtime.approvalService.close()
+  await runtime.history.close()
 }
 
 const sessionEnds = async (runtime: CoreRuntime) => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_session_ended').map(entry => ({ sessionId: entry.sessionId, args: entry.args }))
@@ -147,6 +154,35 @@ describe('the HTTP MCP session', () => {
     expect(await write(serve.runtime, HTTP_MCP_SESSION, 'one/b.md')).toMatchObject({ outcome: 'approval_required' })
     expect(await write(serve.runtime, 'rpc', 'one/b.md')).toMatchObject({ outcome: 'ok' })
     expect(await sessionEnds(serve.runtime)).toEqual([{ sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { withdrawn: 1, grants: 1 }) }])
+  })
+
+  it('ends as serve opens a workspace taken offline and back online while it runs, and every other session stays', async () => {
+    const config = node()
+    const serve = await started(config, 'server')
+    await approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md')
+    await approvedForSession(serve.runtime, 'rpc', 'one/a.md')
+    const workspaces = await serve.common.services.getWorkspaces()
+    const id = serve.runtime.workspaceId
+    await workspaces.update(id, { online: false })
+    await workspaces.update(id, { online: true })
+
+    const reopened = coreOf((await workspaces.resolve(id)).runtime)
+    expect(sessionsOf(reopened)).toEqual(['rpc'])
+    expect(await sessionEnds(reopened)).toEqual([{ sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { grants: 1 }) }])
+  })
+
+  it('fails the open where the end at open cannot be made, so no call is served on what the earlier serve left', async () => {
+    const config = node()
+    mkdirSync(config.stateDirectory, { recursive: true, mode: 0o700 })
+    writeFileSync(grantsPath(config), '{', { mode: 0o600 })
+    const cli = await createRuntime({ config, interaction: fixedInteraction() })
+    await closed(cli)
+    await expect(createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION })).rejects.toThrow('grants.json')
+
+    writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [] }), { mode: 0o600 })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION })
+    expect(runtime.grants.list()).toEqual([])
+    await closed(runtime)
   })
 
   it('ends as serve stops, withdrawing its asks, and every other session stays', async () => {
