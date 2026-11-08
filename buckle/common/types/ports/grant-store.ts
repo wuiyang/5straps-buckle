@@ -6,9 +6,10 @@ export type SessionEnding = { sessionId: string } | { allSessions: true }
 
 /**
  * `sessionApprovalsSuspended`: where true, a session approval clears nothing, as while the workspace's activity cannot be
- * read; an always grant and every denial still stand.
+ * read; an always grant and every denial still stand. `withheld`: an approval it holds for clears nothing, as one a revoke
+ * or a session end removed and the grants file still holds.
  */
-interface StandingFilter { sessionApprovalsSuspended?: boolean }
+interface StandingFilter { sessionApprovalsSuspended?: boolean; withheld?: (grant: GrantRecord) => boolean }
 
 export interface GrantStore {
   /** The workspace whose grants it holds, by id; the approval ledger is keyed by the same id. */
@@ -33,8 +34,11 @@ export interface GrantStore {
   }): Promise<GrantRecord>
   list(): GrantRecord[]
   revoke(id: string): Promise<boolean>
-  /** Removes the session grants, approvals and denials alike, of the sessions that end, returning what it removed. */
-  endSessions(ending: SessionEnding): Promise<GrantRecord[]>
+  /**
+   * Removes the session grants, approvals and denials alike, of the sessions that end, returning what it removed; with
+   * `endedAt`, only those made by then, so an end done late never reaches a grant made after it.
+   */
+  endSessions(ending: SessionEnding, endedAt?: string): Promise<GrantRecord[]>
 }
 
 /** The grants as every caller holds them: a session ends through the approval service alone, which ends its asks with it. */
