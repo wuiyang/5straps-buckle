@@ -252,6 +252,16 @@ describe('the save form', () => {
     expect(host.decided).toEqual([])
   })
 
+  it('reads no save answer where the host\'s source decides nothing past the call, as an HTTP host\'s, for which no save form is drawn', async () => {
+    const backend = forms()
+    const host = fakeHost({ routed: [askFor('a')], reach: { ...ONCE_ALONE, sameCaller: true } })
+    await backend.open(host)
+    const declined = Object.fromEntries(Array.from({ length: MOST_FORM_ANSWERS }, (_, index) => [`save:t${index}`, { action: 'decline' }]))
+    expect(await backend.answer(declined, SENDER)).toEqual({ tokens: [], unsaved: [], holds: false })
+    expect(host.skipped).toEqual([])
+    expect(host.logged).toEqual([{ level: 'info', message: 'MCP save form answers came where no save form is drawn, so nothing was sent for them' }])
+  })
+
   it('sends one call\'s worth of such skips at most', async () => {
     const { backend, host } = await savingBackend([OWED])
     await backend.answer(Object.fromEntries(Array.from({ length: MOST_FORM_ANSWERS + 5 }, (_, index) => [`save:t${index}`, accepted({ save: 'skip' })])), SENDER)

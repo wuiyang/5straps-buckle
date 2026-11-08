@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { JsonObject } from '@5straps/protocol'
+import { rightsOf } from '../../domain/approval/assurance.js'
 import { DECISION_TOOL, SESSION_END_TOOL } from '../../domain/record-tools.js'
 import { MAX_LOGGED_ID } from '../../domain/redact.js'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
@@ -31,24 +32,27 @@ const ACTOR_OF: Readonly<Record<SourceKind, (answer: Answered) => string>> = {
 /**
  * Each decision and each skip in its workspace's own log, through the log service: received as an attempt, then how it
  * ended as its result, under one auditId. A refusal keeps its code and never its reason, which may name the ask's subject.
- * Each session's end is one result entry under the session it ended.
+ * Each session's end is one result entry under the session it ended. An answer from a route anything holding the agent's
+ * token can send (an HTTP form) gives way first, attempt and refusal alike, so a flood of them pushes out no person's
+ * record; what it applied is kept.
  */
 export function createLoggedDecisionAudit(input: { actions: Pick<ActionLog, 'append'>; workspaceId: string }): DecisionAudit {
-  function received<Applied extends JsonObject>(args: JsonObject, actorId: string): AuditEnding<Applied> {
+  function received<Applied extends JsonObject>(args: JsonObject, answer: Answered & { decidedBy?: string }): AuditEnding<Applied> {
     const auditId = randomUUID()
     const start = performance.now()
-    const entry = { auditId, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: DECISION_SESSION, tool: DECISION_TOOL, effects: [], actorId, actorTrust: 'authenticated' as const }
-    input.actions.append({ ...entry, event: 'attempt', outcome: 'started', durationMs: 0, args })
-    const ended = (result: Pick<ActionLogEntry, 'outcome' | 'args' | 'detail'>) => input.actions.append({ ...entry, event: 'result', durationMs: Math.round(performance.now() - start), ...result })
+    const untrusted = { untrusted: rightsOf(answer.source.kind).sameCaller === true }
+    const entry = { auditId, workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: DECISION_SESSION, tool: DECISION_TOOL, effects: [], actorId: actorOf(answer), actorTrust: 'authenticated' as const }
+    input.actions.append({ ...entry, event: 'attempt', outcome: 'started', durationMs: 0, args }, untrusted)
+    const ended = (result: Pick<ActionLogEntry, 'outcome' | 'args' | 'detail'>, options?: { untrusted: boolean }) => input.actions.append({ ...entry, event: 'result', durationMs: Math.round(performance.now() - start), ...result }, options)
     return {
       applied: outcome => ended({ outcome: 'ok', args: { ...args, ...outcome } }),
-      refused: ({ code }) => ended({ outcome: 'error', args: { ...args, code }, detail: code }),
-      failed: () => ended({ outcome: 'error', args }),
+      refused: ({ code }) => ended({ outcome: 'error', args: { ...args, code }, detail: code }, untrusted),
+      failed: () => ended({ outcome: 'error', args }, untrusted),
     }
   }
   return {
-    received: decision => received(decisionArgs(decision), actorOf(decision)),
-    skipReceived: skip => received(skipArgs(skip), actorOf(skip)),
+    received: decision => received(decisionArgs(decision), decision),
+    skipReceived: skip => received(skipArgs(skip), skip),
     sessionEnded: end => input.actions.append(sessionEndEntry(input.workspaceId, end)),
   }
 }

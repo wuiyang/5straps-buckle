@@ -127,6 +127,24 @@ describe('the logged decision audit', () => {
     ])
   })
 
+  it('lets an HTTP form answer\'s attempt and refusal give way first, as records anyone holding the agent\'s token can make, and keeps what it applied', () => {
+    const appended: Array<{ event: string; outcome: string; untrusted: boolean }> = []
+    const audit = createLoggedDecisionAudit({ actions: { append: (entry, options) => { appended.push({ event: entry.event ?? 'none', outcome: entry.outcome ?? 'none', untrusted: options?.untrusted === true }) } }, workspaceId: 'w-1' })
+    const http = SOURCES['http-forms']
+    audit.received({ token: 't-1', approved: true, scope: 'always', source: http, proof: 'none', caller: 'agent:tok-a' }).refused({ code: 'assurance_too_low' })
+    audit.skipReceived({ token: 't-2', source: http, caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-3', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a' }).applied({ assurance: 'relayed', repeated: false })
+    audit.received({ token: 't-4', approved: false, scope: 'session', source: SOURCES.cli, proof: 'none' }).refused({ code: 'scope_not_offered' })
+
+    const given = (event: string, outcome: string, untrusted: boolean) => ({ event, outcome, untrusted })
+    expect(appended).toEqual([
+      given('attempt', 'started', true), given('result', 'error', true),
+      given('attempt', 'started', true), given('result', 'error', true),
+      given('attempt', 'started', true), given('result', 'ok', false),
+      given('attempt', 'started', false), given('result', 'error', false),
+    ])
+  })
+
   it('returns at once and never throws while the log will not take a write', () => {
     const { filePath, audit } = workspaceLog()
     mkdirSync(filePath)

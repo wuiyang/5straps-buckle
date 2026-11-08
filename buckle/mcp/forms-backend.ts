@@ -84,7 +84,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     const answered: FormsAnswered = { tokens: [], unsaved: [], holds: false }
     const reading = live()
     if (!reading) return answered
-    const keys = roundKeys({ host: reading, responses })
+    const keys = answerableKeys({ host: reading, keys: roundKeys({ host: reading, responses }) })
     const waiting = answerableAsks({ host: reading, sender, keys })
     for (const key of keys) {
       const opened = live()
@@ -196,6 +196,17 @@ function roundKeys(input: { host: ApprovalHost; responses: Record<string, unknow
   if (keys.length <= MOST_FORM_ANSWERS) return keys
   input.host.log('warn', 'An MCP form round carried more answers than one call has forms, so the rest were not read', { answers: keys.length, read: MOST_FORM_ANSWERS })
   return keys.slice(0, MOST_FORM_ANSWERS)
+}
+
+/**
+ * A round's keys this host's forms may answer: a save form's only where its source decides past the call, since no save
+ * form is drawn otherwise (an HTTP host's, under today's rights), so an answer under one costs no lock and no record.
+ */
+function answerableKeys(input: { host: ApprovalHost; keys: string[] }): string[] {
+  if (input.host.reach.lasting) return input.keys
+  const read = input.keys.filter(key => !key.startsWith(SAVE_KEY))
+  if (read.length < input.keys.length) input.host.log('info', 'MCP save form answers came where no save form is drawn, so nothing was sent for them', { answers: input.keys.length - read.length })
+  return read
 }
 
 /**
