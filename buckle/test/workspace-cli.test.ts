@@ -1042,6 +1042,10 @@ describe('buckle workspace set and unset', () => {
     expect((await set('packs.shell', 'off')).exitCode).toBe(0)
     expect(settings(alpha)).toMatchObject({ revision: before + 1, packs: { shell: false } })
     expect((await set('approvalWaitMs', '0')).exitCode).toBe(0)
+    // A hold of 0 still ends with its session, at idle or as its MCP server closes, so show and the keys say so.
+    const shown = (await buckle(['show'], { cwd: alpha })).out
+    expect(shown).toMatch(/\n {2}approvalWaitMs {10}0 \(until answered or session ends\) +workspace\n/)
+    expect(shown).toContain('0 until someone answers or its session ends')
     expect((await set('packs.enabled', 'fs, web')).exitCode).toBe(0)
     expect((await set('packs.hostGit', 'on')).exitCode).toBe(0)
     expect((await set('mount', '/alpha')).exitCode).toBe(0)

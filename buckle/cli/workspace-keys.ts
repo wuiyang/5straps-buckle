@@ -176,10 +176,10 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   historySetting('keepTurns', 100), historySetting('turnIdleMs', 86_400_000), historySetting('maxFileBytes', 1_073_741_824),
   {
     key: 'approvalWaitMs',
-    takes: `milliseconds a gated call waits for an answer, 0 until someone answers (the node's, else ${BUILT_IN_SETTINGS.approvalWaitMs})`,
+    takes: `milliseconds a gated call waits for an answer, 0 until someone answers or its session ends (the node's, else ${BUILT_IN_SETTINGS.approvalWaitMs})`,
     set: (settings, raw) => {
       let wait: number | null
-      try { wait = parseApprovalTimeout(raw.trim(), BUILT_IN_SETTINGS.approvalWaitMs) } catch { throw new SettingValueError('approvalWaitMs is milliseconds, 1 to 2147483647, or 0 to wait until someone answers') }
+      try { wait = parseApprovalTimeout(raw.trim(), BUILT_IN_SETTINGS.approvalWaitMs) } catch { throw new SettingValueError('approvalWaitMs is milliseconds, 1 to 2147483647, or 0 to wait until someone answers or the session ends') }
       return { ...settings, approvalWaitMs: wait ?? 0 }
     },
     unset: ({ approvalWaitMs: _dropped, ...settings }) => settings,

@@ -863,7 +863,7 @@ function parseSandboxMode(value: string | undefined): NodeConfig['sandboxMode'] 
  */
 export function parseApprovalTimeout(value: string | undefined, fallback: number): number | null {
   if (value === undefined || value === '') return fallback
-  if (value === 'forever') throw new Error('Invalid BUCKLE_APPROVAL_TIMEOUT_MS: forever; use 0 to wait until someone answers')
+  if (value === 'forever') throw new Error('Invalid BUCKLE_APPROVAL_TIMEOUT_MS: forever; use 0 to wait until someone answers or the session ends')
   const parsed = /^\d+$/.test(value) ? Number(value) : NaN
   if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 2_147_483_647) throw new Error(`Invalid BUCKLE_APPROVAL_TIMEOUT_MS: ${value}`)
   return parsed === 0 ? null : parsed

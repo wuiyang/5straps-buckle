@@ -181,7 +181,7 @@ function normaliseValue(input: { setting: NodeSetting; raw: string; cwd: string;
     case 'approval-wait':
       try {
         return { ok: true, value: String(parseApprovalTimeout(raw, 15_000) ?? 0) }
-      } catch { return refuse('Approval wait must be milliseconds, 1 to 2147483647, or 0 to wait until someone answers') }
+      } catch { return refuse('Approval wait must be milliseconds, 1 to 2147483647, or 0 to wait until someone answers or the session ends') }
     case 'packs': {
       const ids = list(raw)
       if (ids.length === 0) return refuse(`${input.setting.key} needs at least one pack; unset it to offer every pack`)
