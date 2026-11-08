@@ -1,7 +1,7 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { describe, expect, it } from 'vitest'
 import { createCliConsumerSlot, createCliRequester, createRuntimeOwner, isRuntimeError, RuntimeErrorCode } from '../../src/index.js'
@@ -84,6 +84,18 @@ describe('cross-process SQLite coordination', () => {
     expect(performance.now() - exitedAt).toBeLessThan(1_000)
     await lock.release()
   }, 20_000)
+
+  it('takes a lock in a folder that exists with existingDirectory, and fails with ENOENT where the folder is gone without making it', async () => {
+    const path = lockPath()
+    const folder = dirname(path)
+    await expect(acquireFileLock({ path, wait: 'none', existingDirectory: true })).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(existsSync(folder)).toBe(false)
+    mkdirSync(folder)
+    await withFileLock({ path, wait: 'none', existingDirectory: true }, async () => undefined)
+    rmSync(folder, { recursive: true })
+    await expect(withFileLock({ path, wait: 'none', existingDirectory: true }, async () => undefined)).rejects.toMatchObject({ code: 'ENOENT' })
+    expect(existsSync(folder)).toBe(false)
+  })
 
   it('F38 gives every acquisition its own connection, so locks on different paths are independent', async () => {
     const first = lockPath('a.lock.sqlite')

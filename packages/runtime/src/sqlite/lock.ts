@@ -20,6 +20,8 @@ export interface FileLockOptions {
   wait: LockWait
   signal?: AbortSignal
   logger?: Logger
+  // Fail with ENOENT where the lock's folder is gone instead of making it.
+  existingDirectory?: boolean
 }
 
 export interface FileLock {
@@ -33,7 +35,7 @@ export interface FileLock {
 // A bare handle sets no transaction marker: never wait for a human while holding it; prefer withFileLock.
 export async function acquireFileLock(options: FileLockOptions): Promise<FileLock> {
   if (options.signal?.aborted) throw lockAborted(options.path, options.signal.reason)
-  const db = await openSqlite({ path: options.path, logger: options.logger }, { defaults: LOCK_PRAGMAS })
+  const db = await openSqlite({ path: options.path, logger: options.logger, existingDirectory: options.existingDirectory }, { defaults: LOCK_PRAGMAS })
   const connection = await rawConnection(db)
   try {
     await beginLock(connection, options)

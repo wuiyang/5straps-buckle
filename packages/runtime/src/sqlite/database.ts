@@ -19,6 +19,8 @@ export interface OpenDatabaseOptions {
   logger?: Logger
   // Refuse instead of warn when the parent directory is accessible to other users (it holds credentials).
   requireOwnerOnlyDirectory?: boolean
+  // Fail with ENOENT where the parent directory is gone instead of making it, so a folder another process deleted stays gone.
+  existingDirectory?: boolean
 }
 
 export const DEFAULT_BUSY_TIMEOUT_MS = 5_000
@@ -54,7 +56,7 @@ export function withReadOnlyDatabase<T>(input: { path: string; read: (connection
 // Shared by openDatabase and the lock connections, which keep the file's own journal mode.
 export async function openSqlite(options: OpenDatabaseOptions, pragmas: SqlitePragmaDefaults): Promise<SqliteDatabase> {
   const path = requireExplicitPath(options.path)
-  const isNew = prepareDatabaseFile({ path, logger: options.logger, requireOwnerOnlyDirectory: options.requireOwnerOnlyDirectory === true })
+  const isNew = prepareDatabaseFile({ path, logger: options.logger, requireOwnerOnlyDirectory: options.requireOwnerOnlyDirectory === true, existingDirectory: options.existingDirectory === true })
   const db = createDatabase(nodeSqliteConnector({ path }))
   try {
     applyPragmas({ connection: await rawConnection(db), pragmas: { ...pragmas.defaults, ...(isNew ? pragmas.newDatabase : {}), ...options.pragmas }, logger: options.logger })
@@ -88,6 +90,7 @@ interface PrepareFileInput {
   path: string
   logger: Logger | undefined
   requireOwnerOnlyDirectory: boolean
+  existingDirectory: boolean
 }
 
 // Returns whether the database is new: this call created the file, or it is still empty.
@@ -114,10 +117,13 @@ function restrictSidecars(path: string, logger: Logger | undefined): void {
   }
 }
 
-// Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone.
+// Only directories this call created get 0700; an existing (possibly shared or mounted) one is left alone. With
+// `existingDirectory` none is made, so a missing one fails the file's create with ENOENT.
 function prepareDirectory(input: Omit<PrepareFileInput, 'path'> & { directory: string }): void {
-  const firstCreated = mkdirSync(input.directory, { recursive: true, mode: 0o700 })
-  if (firstCreated !== undefined) restrictCreatedDirectories({ ...input, firstCreated })
+  if (!input.existingDirectory) {
+    const firstCreated = mkdirSync(input.directory, { recursive: true, mode: 0o700 })
+    if (firstCreated !== undefined) restrictCreatedDirectories({ ...input, firstCreated })
+  }
   checkDirectoryAccess(input)
 }
 
