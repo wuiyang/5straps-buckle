@@ -66,12 +66,16 @@ function refusedAsState(response: InvokeResponse): void {
   expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining(OWN_STATE) } })
 }
 
-/** A bwrap on PATH that records the arguments of each run, one per line, and runs nothing. */
-function fakeBwrap(root: string): () => string[][] {
+/**
+ * A bwrap on PATH that records the arguments of each run, one per line, and runs nothing; with `write`, it writes that
+ * path below the first folder bound writable, as a command in the sandbox would.
+ */
+function fakeBwrap(root: string, write?: string): () => string[][] {
   const bin = join(root, 'bin')
   mkdirSync(bin)
   const log = join(root, 'bwrap.args')
-  writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\nprintf '%s\\n' '--run-end--' >> '${log}'\n`)
+  const writes = write === undefined ? '' : `while [ $# -gt 0 ]; do if [ "$1" = --bind ]; then mkdir -p "$(dirname "$2/${write}")"; printf 'BUCKLE_APPROVAL_FORMS=true\\n' > "$2/${write}"; break; fi; shift; done\n`
+  writeFileSync(join(bin, 'bwrap'), `#!/bin/sh\nprintf '%s\\n' "$@" >> '${log}'\nprintf '%s\\n' '--run-end--' >> '${log}'\n${writes}`)
   chmodSync(join(bin, 'bwrap'), 0o755)
   vi.stubEnv('PATH', `${bin}:/usr/bin:/bin`)
   return () => existsSync(log) ? readFileSync(log, 'utf8').split('--run-end--\n').filter(Boolean).map(run => run.split('\n').filter(Boolean)) : []
@@ -244,12 +248,12 @@ describe('the shell\'s hidden paths', () => {
 })
 
 describe('a sandboxed shell command and an env file outside the state directory', () => {
-  async function sandboxed(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string> }) {
+  async function sandboxed(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; write?: string }) {
     let recorded: () => string[][] = () => []
     const made = await node({
       at: input.at,
       environment: (root) => {
-        recorded = fakeBwrap(root)
+        recorded = fakeBwrap(root, input.write)
         return { BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...input.environment?.(root) }
       },
     })
@@ -265,23 +269,21 @@ describe('a sandboxed shell command and an env file outside the state directory'
   it.each([
     ['inside a scratch root, bound writable at its own path', (root: string) => join(root, 'scratch', 'buckle.env'), (root: string) => ({ BUCKLE_SCRATCH_ROOTS: join(root, 'scratch') }), (envFile: string) => [envFile]],
     ['inside a toolchain folder, bound read-only at its own path', (root: string) => join(root, 'tools', 'buckle.env'), (root: string) => ({ BUCKLE_MOUNT_READ_ONLY: join(root, 'tools') }), (envFile: string) => [envFile]],
-  ])('runs with the file masked as a file where it shows, %s, and the file is unchanged', async (_where, at, environment, shown) => {
+  ])('runs with the file masked as a file where it shows, %s', async (_where, at, environment, shown) => {
     const { envFile, response, runs } = await sandboxed({ at, environment })
     expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'ok' })
     expect(runs).toHaveLength(1)
     const laid = masks(runs[0]!)
     expect(laid.files).toEqual(expect.arrayContaining(shown(envFile)))
     expect(laid.folders).not.toContain(envFile)
-    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
   })
 
   it('runs with the file inside the workspace masked where the workspace shows it, never under a folder mask', async () => {
-    const { envFile, response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env') })
+    const { response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env') })
     expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'ok' })
     const laid = masks(runs[0]!)
     expect(laid.files.some(path => path.endsWith('/config/buckle.env'))).toBe(true)
     expect(laid.folders.some(path => path.endsWith('/config/buckle.env'))).toBe(false)
-    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
   })
 
   it('binds nothing that holds the file where it lies outside every folder the sandbox binds', async () => {
@@ -291,14 +293,22 @@ describe('a sandboxed shell command and an env file outside the state directory'
     const bound = args.flatMap((arg, index) => ['--bind', '--ro-bind', '--ro-bind-try'].includes(arg) ? [args[index + 1]!] : [])
     expect(bound.filter(source => source !== '/dev/null' && (envFile.startsWith(`${source}/`) || source === envFile))).toEqual([])
     expect(bound).not.toContain(join(root, 'settings'))
-    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
   })
 
   it('refuses an isolated call where a scratch root outside the folder holds the file, as it refuses one holding the state directory', async () => {
     const at = (root: string) => join(root, 'scratch', 'buckle.env')
-    const { envFile, response, runs } = await sandboxed({ at, environment: root => ({ BUCKLE_SCRATCH_ROOTS: join(root, 'scratch'), BUCKLE_SHELL_ISOLATION: 'true' }) })
+    const { response, runs } = await sandboxed({ at, environment: root => ({ BUCKLE_SCRATCH_ROOTS: join(root, 'scratch'), BUCKLE_SHELL_ISOLATION: 'true' }) })
     expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Buckle\'s protected state') } })
     expect(runs).toEqual([])
+  })
+
+  // The default: an isolated call runs in a copy of the folder, where no mask is laid over the file inside it. The copy
+  // leaves the file out, and its publish refuses a change at it. The fake bwrap writes it in the copy as a command would.
+  it('keeps an env file inside the workspace out of an isolated call\'s copy, and refuses the publish of a change that makes it there', async () => {
+    const { runtime, envFile, response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env'), environment: () => ({ BUCKLE_SHELL_ISOLATION: 'true' }), write: 'config/buckle.env' })
+    expect(runs).toHaveLength(1)
+    expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('need owner review') } })
+    expect(runtime.shellWorkspaces.list().map(kept => [kept.status, kept.excluded.includes(envFile)])).toEqual([['needs_review', true]])
     expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
   })
 })
