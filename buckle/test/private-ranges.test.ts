@@ -51,7 +51,7 @@ function scratch(): string {
 const ranges = (...texts: string[]) => texts.map(parseCidr)
 
 describe('a private range', () => {
-  it.each(['10.0.0.0/8', '192.168.1.0/24', '127.0.0.1/32', '0.0.0.0/0', 'fd00::/8', '::1/128', 'fe80::/10'])('takes %s', (text) => {
+  it.each(['10.0.0.0/8', '192.168.1.0/24', '127.0.0.1/32', 'fd00::/8', '::1/128', 'fe80::/10'])('takes %s', (text) => {
     expect(cidrRefusal(text)).toBeNull()
     expect(parseCidr(text).text).toBe(text)
   })
@@ -62,6 +62,10 @@ describe('a private range', () => {
     ['db.internal/24', /CIDR/],
     ['*.internal', /CIDR/],
     ['10.0.0.*/24', /CIDR/],
+    ['0.0.0.0/0', /at least \/8/],
+    ['0.0.0.0/7', /at least \/8/],
+    ['::/0', /at least \/8/],
+    ['fc00::/7', /at least \/8/],
     ['10.0.0.0/33', /prefix/],
     ['fd00::/129', /prefix/],
     ['10.0.0.0/-1', /prefix/],

@@ -120,6 +120,8 @@ export interface AddressRange {
 export class CidrError extends Error {}
 
 const DECIMAL = /^(?:0|[1-9]\d{0,2})$/
+/** The widest range each family takes: a wider one would cover every private, loopback, and link-local block at once. */
+const LEAST_PREFIX: Readonly<Record<4 | 6, number>> = { 4: 8, 6: 8 }
 const CIDR_FORM = 'not CIDR notation: write an address, a slash, and a prefix length, such as 10.0.0.0/8 or fd00::/8; a hostname or a wildcard is never taken'
 
 /** Why `text` is not a range Buckle takes, worded to follow the entry it names, or null. */
@@ -139,6 +141,8 @@ export function parseCidr(text: string): AddressRange {
   const width = parsed.bytes.length * 8
   const prefix = DECIMAL.test(prefixText) ? Number(prefixText) : NaN
   if (!(prefix <= width)) throw new CidrError(`the prefix length is a whole number, 0 to ${width}`)
+  const least = LEAST_PREFIX[parsed.family]
+  if (prefix < least) throw new CidrError(`the prefix length is at least /${least}, so a range never covers every private, loopback, and link-local address at once; list each range you mean`)
   if (parsed.family === 6 && prefix >= 96 && mappedIpv4(parsed.hextets)) throw new CidrError('an IPv4-mapped range is read as the IPv4 addresses it carries; write the IPv4 range')
   if (!matchesBytes(parsed.bytes, networkBytes(parsed.bytes, prefix), width)) throw new CidrError(`it sets bits past its prefix; write ${networkText(parsed, prefix)}, or the one address with /${width}`)
   return { text, family: parsed.family, bytes: parsed.bytes, prefix }
