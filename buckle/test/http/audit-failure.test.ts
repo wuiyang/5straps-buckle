@@ -4,9 +4,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { actionsPath } from '../../common/runtime/config.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
-// B19: an audit log that will not take writes refuses what it would have to record, with a 503 an agent
-// may read, makes readiness 503, and still lets the owner inspect the node and refusals answer.
+// B19: an audit log that will not take writes refuses the agent's calls it would have to record, with a 503 an
+// agent may read, makes readiness 503, and still lets the owner inspect and change the node and refusals answer.
 
 const AGENT = 'audit-failure-agent-token'
 const ADMIN = 'audit-failure-admin-token'
@@ -56,10 +57,10 @@ describe('an audit log that will not take writes', () => {
     expect((await buckle.request('/health/ready')).status).toBe(503)
 
     repair()
-    const entries = buckle.runtime.actions.read(200).length
+    const entries = (await auditEntries(buckle.runtime.actions, 200)).length
     // No traffic but readiness polls: each may probe the log again, a few seconds apart.
     await vi.waitFor(async () => expect((await buckle.request('/health/ready')).status).toBe(200), { timeout: 10_000, interval: 250 })
-    expect(buckle.runtime.actions.read(200)).toHaveLength(entries)
+    expect(await auditEntries(buckle.runtime.actions, 200)).toHaveLength(entries)
     const again = await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('after-repair') })
     expect(await again.json()).toMatchObject({ outcome: 'ok', output: { content: 'audited read' } })
   })
@@ -129,7 +130,7 @@ describe('an audit log that will not take writes', () => {
     expect(await response.json()).toMatchObject({ error: { code: 'AUDIT_UNAVAILABLE' } })
   })
 
-  it('lets the owner inspect the node, refuses the owner\'s changes, and still answers refusals', async () => {
+  it('lets the owner inspect the node, applies the owner\'s changes, and still answers refusals', async () => {
     const { buckle } = await brokenAudit()
     await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('marks-it') })
 
@@ -137,8 +138,9 @@ describe('an audit log that will not take writes', () => {
     expect(status.status).toBe(200)
     expect(await status.json()).toMatchObject({ audit: 'unavailable' })
     expect((await buckle.request('/setup/workspaces', { headers: headers(ADMIN) })).status).toBe(200)
+    // The owner's change is recorded through the log service, which never makes it wait.
     const change = await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers(ADMIN) })
-    expect(change.status).toBe(503)
+    expect(change.status).toBe(200)
     expect((await buckle.request('/v1/manifest', { headers: headers('not-the-agent-token') })).status).toBe(401)
     expect((await buckle.request(buckle.setup('status'), { headers: headers('not-the-admin-token') })).status).toBe(401)
   })

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 
+/** An owner's operation between its attempt and its result entry, both through the log service: a broken log never stops it. */
 export async function auditOperation<T>(input: {
   actions: ActionLog
   workspaceId: string
@@ -18,14 +19,14 @@ export async function auditOperation<T>(input: {
   const entry = { auditId, workspaceId: input.workspaceId, tool: input.tool, sessionId: input.sessionId,
     requestId: auditId, at: new Date().toISOString(), effects: [], args: {}, durationMs: 0,
   }
-  await input.actions.record({ ...entry, event: 'attempt', outcome: 'started' })
+  input.actions.append({ ...entry, event: 'attempt', outcome: 'started' })
   let value: T
   try { value = await input.operation() }
   catch (error) {
-    await input.actions.record({ ...entry, event: 'result', outcome: 'error', durationMs: Math.round(performance.now() - start) })
+    input.actions.append({ ...entry, event: 'result', outcome: 'error', durationMs: Math.round(performance.now() - start) })
     throw error
   }
   const detail = input.describe?.(value)
-  await input.actions.record({ ...entry, event: 'result', outcome: input.isSuccessful && !input.isSuccessful(value) ? 'error' : 'ok', durationMs: Math.round(performance.now() - start), ...(detail ? { detail } : {}), ...input.annotate?.(value) })
+  input.actions.append({ ...entry, event: 'result', outcome: input.isSuccessful && !input.isSuccessful(value) ? 'error' : 'ok', durationMs: Math.round(performance.now() - start), ...(detail ? { detail } : {}), ...input.annotate?.(value) })
   return value
 }

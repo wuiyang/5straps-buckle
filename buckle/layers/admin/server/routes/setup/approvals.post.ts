@@ -1,5 +1,5 @@
 import { HTTPError } from 'h3'
-import { recordRefusal, tolerantLog } from '../../../../common/server/utils/audit.js'
+import { recordRefusal } from '../../../../common/server/utils/audit.js'
 import { defineSetupHandler } from '../../utils/setup.js'
 
 // The approval guard: a decision, plain or in the envelope the paired key seals, decided through the core approval API.
@@ -25,7 +25,7 @@ export default defineSetupHandler({
     if (receipt.status !== 'refused') return { resolved: true, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
     if (receipt.step === 'proof') {
       const refusal = PROOF_REFUSALS[proof === undefined ? 'envelope' : 'device']
-      await recordRefusal(tolerantLog(event, runtime.actions), { tool: refusal.tool, workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: receipt.error.message })
+      recordRefusal(runtime.actions, { tool: refusal.tool, workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: receipt.error.message })
       event.context.logger?.warn(refusal.line, { reason: receipt.error.message, workspaceId: runtime.workspaceId })
       throw HTTPError.status(401, 'Unauthorized', { message: `Approval decision refused: ${receipt.error.message}` })
     }

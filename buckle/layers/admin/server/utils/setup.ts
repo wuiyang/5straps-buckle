@@ -4,7 +4,6 @@ import type { DeviceProof } from '../../../../common/services/approvals/device-p
 import type { SetupViews } from '../../../../common/services/setup/setup-views.js'
 import type { ManagedWorkspace, WorkspaceManager } from '../../../../common/services/workspaces/workspace-manager.js'
 import { withTransportAudit } from '../../../common/server/utils/audit.js'
-import { isMutation } from '../../../common/server/utils/guards.js'
 import { readJson, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
 import { mapFailures, notFound } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
@@ -115,7 +114,8 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
         audited: (input, run) => withRegistryAudit(actions, { ...input, actorId }, run),
         body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams),
       }
-      return mapFailures(() => withTransportAudit(event, actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, required: isMutation(event), actorId }, async () => definition.handler(call)))
+      // The owner's change: its transport attempt goes through the log service too, so a broken log never stops it.
+      return mapFailures(() => withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, required: false, actorId }, async () => definition.handler(call)))
     },
   })
 }

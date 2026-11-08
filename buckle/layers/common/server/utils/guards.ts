@@ -1,7 +1,7 @@
 import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import type { ActionLog } from '../../../../common/types/ports/action-log.js'
-import { nodeActions, recordRefusal, recordTransportRefusal, tolerantLog } from './audit.js'
+import { nodeActions, recordRefusal, recordTransportRefusal } from './audit.js'
 import { beforeCredential, isRegistryFailure, unauthorized } from './errors.js'
 import { useServices } from './services.js'
 import { canonicalTargetId, NODE_LEVEL, namedWorkspace } from './target.js'
@@ -14,7 +14,7 @@ const UNRESOLVED = 'unresolved'
  * the face's name, with the workspace id only when that workspace exists.
  */
 export interface RefusalAudit {
-  node(input: { event: H3Event; actions: ActionLog; status: number }): Promise<void>
+  node(input: { event: H3Event; actions: ActionLog; status: number }): void
   named: string
 }
 
@@ -79,9 +79,9 @@ export function requireAgent(refusal?: RefusalAudit): Guard {
  * log under the face's name, as every other twin records its refusals.
  */
 const WORKBENCH_REFUSED: RefusalAudit = {
-  node: async ({ event, actions, status }) => {
-    await recordRefusal(actions, { tool: 'workbench_auth_rejected', workspaceId: NODE_LEVEL, sessionId: 'workbench-untrusted', status, detail: `HTTP ${status}` })
-    if (isMutation(event)) await recordTransportRefusal(actions, { tool: workbenchTransportTool(event), workspaceId: NODE_LEVEL, status })
+  node: ({ event, actions, status }) => {
+    recordRefusal(actions, { tool: 'workbench_auth_rejected', workspaceId: NODE_LEVEL, sessionId: 'workbench-untrusted', status, detail: `HTTP ${status}` })
+    if (isMutation(event)) recordTransportRefusal(actions, { tool: workbenchTransportTool(event), workspaceId: NODE_LEVEL, status })
   },
   named: 'workbench_auth_rejected',
 }
@@ -120,11 +120,11 @@ async function audit(event: H3Event, refusal: RefusalAudit | undefined, input: {
 
 async function auditRefusal(event: H3Event, refusal: RefusalAudit | undefined, input: { status: number; registryReadable: boolean }): Promise<void> {
   if (!refusal) return
-  const actions = tolerantLog(event, await nodeActions(event))
+  const actions = await nodeActions(event)
   if (!namedWorkspace(event)) return refusal.node({ event, actions, status: input.status })
   const known = input.registryReadable ? await knownWorkspace(event) : undefined
   // Refused before anyone was authenticated, the registry's 503 included.
-  await recordRefusal(actions, { tool: refusal.named, workspaceId: known ?? UNRESOLVED, sessionId: 'http-untrusted', status: input.status, outcome: 'denied', detail: `HTTP ${input.status}` })
+  recordRefusal(actions, { tool: refusal.named, workspaceId: known ?? UNRESOLVED, sessionId: 'http-untrusted', status: input.status, outcome: 'denied', detail: `HTTP ${input.status}` })
 }
 
 /** The id of the workspace the path names, by id or by name; undefined where none does, or the registry will not read. */

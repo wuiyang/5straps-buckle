@@ -1,13 +1,6 @@
 import type { H3Event } from 'h3'
-import type { AUDIT_UNAVAILABLE } from '../../../../common/adapters/action-log/file-action-log.js'
-import type { STATE_BUSY } from '../../../../common/adapters/json-file-store.js'
 import type { ActionLog, ActionLogEntry } from '../../../../common/types/ports/action-log.js'
-import { hasCode } from './errors.js'
 import { useServices } from './services.js'
-
-// Checked against the common constants at compile time; the layers take common code as types only.
-const AUDIT_UNAVAILABLE_CODE: typeof AUDIT_UNAVAILABLE = 'AUDIT_UNAVAILABLE'
-const STATE_BUSY_CODE: typeof STATE_BUSY = 'STATE_BUSY'
 
 type Outcome = ActionLogEntry['outcome']
 
@@ -30,58 +23,43 @@ export async function nodeActions(event: H3Event): Promise<ActionLog> {
 }
 
 /**
- * One refusal: which face refused whom with what status, and nothing the caller sent but what `args`
- * names (a signed request's claimed key fingerprint, which is public).
+ * One refusal, through the log service, since it stands whether or not its entry is written: which face refused whom
+ * with what status, and nothing the caller sent but what `args` names (a signed request's claimed key fingerprint,
+ * which is public).
  */
-export async function recordRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; sessionId: string; status: number; outcome?: Outcome; detail?: string; args?: Record<string, string> }): Promise<void> {
+export function recordRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; sessionId: string; status: number; outcome?: Outcome; detail?: string; args?: Record<string, string> }): void {
   const auditId = crypto.randomUUID()
-  await actions.record({ auditId, event: 'result', workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: input.sessionId,
+  actions.append({ auditId, event: 'result', workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: input.sessionId,
     tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: input.args ?? {}, ...(input.detail === undefined ? {} : { detail: input.detail }) })
 }
 
 /**
- * The log for an entry the answer does not depend on: a refusal, which stands anyway, an owner's read,
- * and the result of work already done. When the audit storage will not take it, or another process
- * holds its pending state past the wait, the owner's log records that, readiness reports a failing
- * log (B19), and the answer still goes out (review L7 of B20-B22). Nothing an agent can run goes
- * through this: a tool call's attempt, and any change's, must be written first.
+ * Transport status beside tool completion (an attempt, then the result with the HTTP status), for faces whose request
+ * is not itself one tool call. A `required` attempt is durable before the work runs, so an agent's change does not run
+ * without it; any other attempt, and every result, goes through the log service.
  */
-export function tolerantLog(event: H3Event, actions: ActionLog): ActionLog {
-  return {
-    ...actions,
-    record: entry => actions.record(entry).catch((error: unknown) => {
-      if (!hasCode(error, AUDIT_UNAVAILABLE_CODE) && !hasCode(error, STATE_BUSY_CODE)) throw error
-      event.context.logger?.error('Answering without an audit entry the storage would not take', { tool: entry.tool, event: entry.event ?? 'result', code: hasCode(error, STATE_BUSY_CODE) ? STATE_BUSY_CODE : AUDIT_UNAVAILABLE_CODE })
-    }),
-  }
-}
-
-/**
- * Transport status beside tool completion (an attempt, then the result with the HTTP status), for
- * faces whose request is not itself one tool call. A change's attempt is durable before the work runs;
- * a read's, and every result, are written if the storage takes them (tolerantLog).
- */
-export async function withTransportAudit<T>(event: H3Event, actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean; actorId?: string }, run: () => Promise<T>): Promise<T> {
+export async function withTransportAudit<T>(actions: ActionLog, input: { tool: string; workspaceId: string; required: boolean; actorId?: string }, run: () => Promise<T>): Promise<T> {
   const entry = transportEntry(input)
   const started = performance.now()
-  const tolerant = tolerantLog(event, actions)
-  await (input.required ? actions : tolerant).record({ ...entry, event: 'attempt', outcome: 'started' })
+  const attempt: ActionLogEntry = { ...entry, event: 'attempt', outcome: 'started' }
+  if (input.required) await actions.record(attempt)
+  else actions.append(attempt)
   let result: T
   try {
     result = await run()
   } catch (error) {
-    await tolerant.record(transportResult(entry, statusOf(error), started))
+    actions.append(transportResult(entry, statusOf(error), started))
     throw error
   }
-  await tolerant.record(transportResult(entry, statusOf(result), started))
+  actions.append(transportResult(entry, statusOf(result), started))
   return result
 }
 
-/** The pair a transport audit leaves for a request refused before its work began. */
-export async function recordTransportRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; status: number }): Promise<void> {
+/** The pair a transport audit leaves for a request refused before its work began, through the log service. */
+export function recordTransportRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; status: number }): void {
   const entry = transportEntry(input)
-  await actions.record({ ...entry, event: 'attempt', outcome: 'started' })
-  await actions.record(transportResult(entry, input.status, performance.now()))
+  actions.append({ ...entry, event: 'attempt', outcome: 'started' })
+  actions.append(transportResult(entry, input.status, performance.now()))
 }
 
 function transportEntry(input: { tool: string; workspaceId: string; actorId?: string }): ActionLogEntry {

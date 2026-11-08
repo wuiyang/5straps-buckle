@@ -32,7 +32,7 @@ export function defineWorkbenchHandler(operation: (call: WorkbenchCall) => Promi
       const param = (name: string) => getRouterParam(event, name, { decode: true }) ?? ''
       const call: WorkbenchCall = { event, workbenches: runtime.workbenches, workbenchId: param('workbenchId'), param, body: schema => readWorkbenchBody(event, schema) }
       const answer = () => workbenchAnswer(event, () => operation(call))
-      return mapAgentFailures(() => isMutation(event) ? withTransportAudit(event, runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId, required: true }, answer) : answer())
+      return mapAgentFailures(() => isMutation(event) ? withTransportAudit(runtime.actions, { tool: workbenchTransportTool(event), workspaceId: runtime.workspaceId, required: true }, answer) : answer())
     },
   })
 }

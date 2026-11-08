@@ -408,10 +408,10 @@ export function createInvoker(options: InvokerOptions): Invoker {
           ...(audited ? { audited: audited(response.outcome === 'ok' && !replayed ? response.output : undefined) } : {}),
         })
         const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
-        // A call that ran answers with what it did even when its result cannot be written: refusing it
-        // would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19). The
-        // attempt is already in the log, and recovery marks it interrupted.
-        if (ran) await options.actions.record(result).catch((error: unknown) => { logger.error('Could not record the result of a call that ran', { auditId, outcome: entry.outcome, ...safeErrorDetails(error) }) })
+        // A call that ran answers with what it did whatever becomes of its result, which the log service writes:
+        // refusing it would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19).
+        // The attempt is already in the log, and recovery marks it interrupted where its result never lands.
+        if (ran) options.actions.append(result)
         else await options.actions.record(result)
         if (gate.denial) announceDenial({ options, entry, denial: gate.denial })
         reportEntry({ options, entry: result, denial: gate.denial })

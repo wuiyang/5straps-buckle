@@ -1,4 +1,4 @@
-import { nodeActions, tolerantLog } from '../../utils/audit.js'
+import { nodeActions } from '../../utils/audit.js'
 import { notFound } from '../../utils/errors.js'
 import { requireAgent } from '../../utils/guards.js'
 import { INVOKE_REFUSED, isInvokePath, recordInvokeRefusal } from '../../utils/invoke.js'
@@ -15,8 +15,8 @@ export default defineOperationHandler({
       // The guard has let the credential in, so the workspace is known on this route and on its /workspaces/ twin alike: the
       // refusal is that workspace's, in its own log. A workspace that will not open leaves it to the node's (fix brief 4, finding 39).
       const target = await useTarget(event).catch(() => null)
-      if (target) await recordInvokeRefusal(tolerantLog(event, target.runtime.actions), target.runtime.workspaceId, 404)
-      else await recordInvokeRefusal(tolerantLog(event, await nodeActions(event)), NODE_LEVEL, 404)
+      if (target) recordInvokeRefusal(target.runtime.actions, target.runtime.workspaceId, 404)
+      else recordInvokeRefusal(await nodeActions(event), NODE_LEVEL, 404)
     }
     throw notFound()
   },

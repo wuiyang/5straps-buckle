@@ -2,7 +2,7 @@ import { getRouterParam, type H3Event } from 'h3'
 import type { Guard } from '@5straps/runtime/nitro'
 import { isSignedRequest, type SignedRequestPayload, type SignedRequestPurpose } from '@5straps/protocol/signed-request'
 import type { SetupSessions } from '../../../../common/services/access/setup-sessions.js'
-import { recordRefusal, recordTransportRefusal, tolerantLog, nodeActions } from '../../../common/server/utils/audit.js'
+import { recordRefusal, recordTransportRefusal, nodeActions } from '../../../common/server/utils/audit.js'
 import { readBody, SETUP_BODY_LIMIT } from '../../../common/server/utils/body.js'
 import { notFound } from '../../../common/server/utils/errors.js'
 import { authorization, checkCredential, isMutation, type RefusalAudit } from '../../../common/server/utils/guards.js'
@@ -109,7 +109,7 @@ async function verifySigned(event: H3Event, input: { access: AdminAccess; purpos
     return `key:${verdict.payload.keyId}`
   }
   const claimedKeyId = verdict.ok ? verdict.payload.keyId : verdict.claimedKeyId
-  await recordRefusal(tolerantLog(event, await nodeActions(event)), {
+  recordRefusal(await nodeActions(event), {
     tool: 'setup_signed_request_refused', workspaceId: NODE_LEVEL, sessionId: 'http-untrusted', status: 401, detail: refused ?? 'refused',
     ...(claimedKeyId === undefined ? {} : { args: { claimedKeyId } }),
   })

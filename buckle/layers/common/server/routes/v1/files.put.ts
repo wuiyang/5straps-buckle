@@ -1,4 +1,3 @@
-import { tolerantLog } from '../../utils/audit.js'
 import { mapAgentFailures } from '../../utils/errors.js'
 import { FILES_REFUSED, FILES_STATUS, filesWait, receiveRequest, recordFilesRefusal } from '../../utils/files.js'
 import { requireAgent } from '../../utils/guards.js'
@@ -21,8 +20,7 @@ export default defineOperationHandler({
     const { config, runtime } = await useTarget(event)
     const parsed = receiveRequest(event, config.maxTransferBytes)
     if (!parsed.ok) {
-      // A refusal stands whether or not its entry can be written (B19).
-      await recordFilesRefusal(tolerantLog(event, runtime.actions), runtime.workspaceId, parsed.status)
+      recordFilesRefusal(runtime.actions, runtime.workspaceId, parsed.status)
       return json({ error: parsed.error }, { status: parsed.status })
     }
     const response = await mapAgentFailures(() => runtime.invoke({

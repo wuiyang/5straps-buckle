@@ -1,4 +1,3 @@
-import { tolerantLog } from '../../utils/audit.js'
 import { mapAgentFailures } from '../../utils/errors.js'
 import { alreadySent, FILES_REFUSED, FILES_STATUS, filesWait, outgoingFile, recordFilesRefusal, sendRequest } from '../../utils/files.js'
 import { requireAgent } from '../../utils/guards.js'
@@ -18,7 +17,7 @@ export default defineOperationHandler({
     const { config, runtime } = await useTarget(event)
     const parsed = sendRequest(event)
     if (!parsed.ok) {
-      await recordFilesRefusal(tolerantLog(event, runtime.actions), runtime.workspaceId, parsed.status)
+      recordFilesRefusal(runtime.actions, runtime.workspaceId, parsed.status)
       return json({ error: parsed.error }, { status: parsed.status })
     }
     const outgoing = outgoingFile()

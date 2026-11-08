@@ -15,8 +15,8 @@ export const INVOKE_REFUSED: RefusalAudit = {
 }
 
 /** Records who was refused and the status, never the payload or the credential. */
-export function recordInvokeRefusal(actions: ActionLog, workspaceId: string, status: number): Promise<void> {
-  return recordRefusal(actions, { tool: 'rpc_invoke_rejected', workspaceId, sessionId: 'rpc-untrusted', status, detail: `HTTP ${status}` })
+export function recordInvokeRefusal(actions: ActionLog, workspaceId: string, status: number): void {
+  recordRefusal(actions, { tool: 'rpc_invoke_rejected', workspaceId, sessionId: 'rpc-untrusted', status, detail: `HTTP ${status}` })
 }
 
 /** Whether a /v1 catch-all request names /v1/invoke: every method but POST lands there (review L2 of B15-B17). */

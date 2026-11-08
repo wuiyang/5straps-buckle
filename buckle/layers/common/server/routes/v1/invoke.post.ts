@@ -1,6 +1,6 @@
 import { InvokeRequestSchema } from '@5straps/protocol'
 import type { H3Event } from 'h3'
-import { statusOf, tolerantLog } from '../../utils/audit.js'
+import { statusOf } from '../../utils/audit.js'
 import { readJson } from '../../utils/body.js'
 import { mapAgentFailures } from '../../utils/errors.js'
 import { requireAgent } from '../../utils/guards.js'
@@ -13,14 +13,12 @@ export default defineOperationHandler({
   guards: [requireAgent(INVOKE_REFUSED)],
   handler: async (event) => {
     const { config, runtime } = await useTarget(event)
-    // A refusal stands whether or not its entry can be written (B19).
-    const refusals = tolerantLog(event, runtime.actions)
-    const parsed = await readInvokeRequest(event, config.maxRequestBytes).catch(async (error: unknown) => {
-      await recordInvokeRefusal(refusals, runtime.workspaceId, statusOf(error))
+    const parsed = await readInvokeRequest(event, config.maxRequestBytes).catch((error: unknown) => {
+      recordInvokeRefusal(runtime.actions, runtime.workspaceId, statusOf(error))
       throw error
     })
     if (!parsed.success) {
-      await recordInvokeRefusal(refusals, runtime.workspaceId, 400)
+      recordInvokeRefusal(runtime.actions, runtime.workspaceId, 400)
       return json({ error: 'Invalid invoke request', issues: parsed.error.issues }, { status: 400 })
     }
     // A caller that supplies no session shares one with its own later calls, so a grant it was just given still

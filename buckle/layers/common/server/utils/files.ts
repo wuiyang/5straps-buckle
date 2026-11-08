@@ -37,8 +37,8 @@ export const FILES_REFUSED: RefusalAudit = {
 }
 
 /** Records who was refused and the status, never the path, the body, or the credential. */
-export function recordFilesRefusal(actions: ActionLog, workspaceId: string, status: number): Promise<void> {
-  return recordRefusal(actions, { tool: 'rpc_files_rejected', workspaceId, sessionId: 'rpc-untrusted', status, detail: `HTTP ${status}` })
+export function recordFilesRefusal(actions: ActionLog, workspaceId: string, status: number): void {
+  recordRefusal(actions, { tool: 'rpc_files_rejected', workspaceId, sessionId: 'rpc-untrusted', status, detail: `HTTP ${status}` })
 }
 
 /** A files request as the route reads it, or why it is refused before any call: a status and words for the caller. */
