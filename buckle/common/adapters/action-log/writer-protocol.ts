@@ -23,9 +23,12 @@ export interface WorkspaceNaming {
   workspaceName: string
 }
 
-/** `since`: where an earlier, failed attempt at some of these entries began writing, so those already there are left out. */
+/**
+ * `since`: where an earlier, failed attempt at some of these entries began writing, so those already there are left out.
+ * `existingFolder`: the append fails where the log's folder is gone, and does not make it again.
+ */
 export type WriterRequest =
-  | { id: number; op: 'append'; file: LogFile; entries: ActionLogEntry[]; since?: number }
+  | { id: number; op: 'append'; file: LogFile; entries: ActionLogEntry[]; since?: number; existingFolder?: true }
   | { id: number; op: 'probe'; file: LogFile }
   | { id: number; op: 'recover'; file: LogFile; naming?: WorkspaceNaming }
 

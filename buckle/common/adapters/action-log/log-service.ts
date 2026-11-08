@@ -1,4 +1,4 @@
-import { createLogQueue, type LogDropNotice, type LogFields, type LogQueue, type LogQueueOptions } from '@5straps/runtime'
+import { createLogQueue, settleWithin, type LogDropNotice, type LogFields, type LogQueue, type LogQueueOptions } from '@5straps/runtime'
 import { PROCESS_LOG_QUEUE } from '../../runtime/log-budget.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import type { LogDestination, LogService } from '../../types/ports/log-service.js'
@@ -9,7 +9,8 @@ export const LOG_DROPPED_TOOL = 'log_dropped'
 /** How each log's queue holds and retries its entries: under the process's one budget unless a test hands in its own. */
 export type LogQueueSettings = Pick<LogQueueOptions<ActionLogEntry>, 'retryDelaysMs' | 'writeDeadlineMs' | 'maxBatch'> & Required<Pick<LogQueueOptions<ActionLogEntry>, 'budget'>>
 
-interface HeldLog { queue: LogQueue<ActionLogEntry>; destination: LogDestination }
+/** `writing`: the log's last write handed to its destination. */
+interface HeldLog { queue: LogQueue<ActionLogEntry>; destination: LogDestination; writing?: Promise<void> }
 
 let processService: LogService | undefined
 
@@ -38,7 +39,7 @@ export function createLogService(settings: LogQueueSettings = PROCESS_LOG_QUEUE)
       queue: createLogQueue<ActionLogEntry>({
         ...settings,
         destination: destination.name,
-        write: batch => opened.destination.write(batch),
+        write: batch => (opened.writing = opened.destination.write(batch)),
         summarize: drops => opened.destination.dropped(drops),
         onDropping: warnDropping,
       }),
@@ -60,6 +61,13 @@ export function createLogService(settings: LogQueueSettings = PROCESS_LOG_QUEUE)
       const left = results.reduce((sum, result) => sum + result.left, 0)
       if (left > 0) warnOnStderr('Audit log entries left unwritten at close', { left })
       return { left }
+    },
+    async discard(name) {
+      const held = logs.get(name)
+      if (!held) return
+      logs.delete(name)
+      await held.queue.close({ deadlineMs: 0 })
+      if (held.writing) await settleWithin([held.writing], settings.writeDeadlineMs ?? 0)
     },
     stats: () => ({ held: settings.budget.held(), logs: Object.fromEntries([...logs].map(([name, { queue }]) => [name, queue.stats()])) }),
   }

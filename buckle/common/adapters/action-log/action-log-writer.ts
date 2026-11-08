@@ -31,9 +31,9 @@ export interface ActionLogWriter {
    * Resolves once every entry is synced to disk and each attempt among them is tracked until its result. Refused as busy
    * while MAX_WAITING_WRITES wait. Entries with an `entryId` that an earlier append to the file failed on are looked for
    * first, from where it began writing, and not written twice; best effort, for a writer that may lose an entry: after a
-   * failed sync, a line read back may sit in the page cache alone.
+   * failed sync, a line read back may sit in the page cache alone. `existingFolder` fails it where the log's folder is gone.
    */
-  append(input: { file: LogFile; entries: ActionLogEntry[] }): Promise<void>
+  append(input: { file: LogFile; entries: ActionLogEntry[]; existingFolder?: true }): Promise<void>
   /**
    * Rejects while the log cannot take a write, when the worker does not answer within PROBE_DEADLINE_MS, or at once while
    * the worker has not answered its last probe of the log.
@@ -159,7 +159,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
     })
   }
 
-  async function append(input: { file: LogFile; entries: ActionLogEntry[] }): Promise<void> {
+  async function append(input: { file: LogFile; entries: ActionLogEntry[]; existingFolder?: true }): Promise<void> {
     if (connection && writesWaiting(connection) >= MAX_WAITING_WRITES) throw new StateBusyError('Too many action log writes wait on the disk; retry shortly')
     const ids = input.entries.flatMap(entry => (entry.entryId === undefined ? [] : [entry.entryId]))
     const since = places.earliest(input.file, ids)

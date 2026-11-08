@@ -34,5 +34,10 @@ export interface LogService {
   flush(): Promise<void>
   /** Writes what is held until the deadline; what is left is dropped, counted on stderr, and returned. A later append starts again. */
   close(options: { deadlineMs: number }): Promise<{ left: number }>
+  /**
+   * Drops what one log holds, unwritten and unreported, since its records are being deleted, and resolves once a write
+   * already with the writer answers, or its deadline passes. A later append starts the log again.
+   */
+  discard(name: string): Promise<void>
   stats(): LogServiceStats
 }

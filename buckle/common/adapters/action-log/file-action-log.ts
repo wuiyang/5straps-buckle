@@ -37,9 +37,11 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
 /**
  * `workspaceName`: the name of the log's own workspace, read as each entry is handed in, so a rename shows: every entry
  * of that workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
+ * `purgeable`: the log's folder holds its workspace's records, which a purge deletes, so a queued entry is not written
+ * once the folder is gone, and none makes it again.
  * `writer` and `service`: the process's writer worker and log service unless a test hands in its own.
  */
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean; writer?: ActionLogWriter; service?: LogService } = {}): ActionLog {
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean; purgeable?: boolean; writer?: ActionLogWriter; service?: LogService } = {}): ActionLog {
   const file: LogFile = { path: filePath, ...(options.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: options.lockDeadlineMs }) }
   const writer = () => options.writer ?? actionLogWriter()
   const service = () => options.service ?? logService()
@@ -47,9 +49,9 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
   // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md), and named, before the
   // entry leaves this thread or waits in a queue: a value never reaches the file.
   const prepared = (entry: ActionLogEntry): ActionLogEntry => nameEntry(masksHeld() ? maskHeldJson(entry) : entry, naming())
-  async function write(entries: ActionLogEntry[]): Promise<void> {
+  async function write(entries: ActionLogEntry[], mode: { queued: boolean }): Promise<void> {
     try {
-      await writer().append({ file, entries })
+      await writer().append({ file, entries, ...(mode.queued && options.purgeable ? { existingFolder: true as const } : {}) })
       options.health?.succeeded(filePath)
     } catch (error) {
       logger.error('Could not durably write the action log', { filePath, error })
@@ -64,7 +66,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
   }
   const destination: LogDestination = {
     name: filePath,
-    write: entries => write([...entries]),
+    write: entries => write([...entries], { queued: true }),
     dropped: drops => prepared(droppedEntry({ drops, workspaceId: options.workspaceId })),
   }
   const log: ActionLog = {
@@ -74,7 +76,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     append: (entry, appendOptions) => service().append(destination, withinSizeLimit(withEntryId(prepared(entry))), appendOptions),
     async recordMany(entries) {
       if (entries.length === 0) return
-      await write(entries.map(prepared))
+      await write(entries.map(prepared), { queued: false })
     },
     read(limit) { return log.page({ limit: Math.min(limit, 200) }).entries.reverse() },
     page({ limit, before }) {

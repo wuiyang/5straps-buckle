@@ -269,7 +269,7 @@ describe('the log service', () => {
     expect(logs.stats().logs[path]).toMatchObject({ failures: 0, dropped: 0 })
   })
 
-  it('writes what a workspace\'s log holds before its records are purged, so no late entry makes its folder again', async () => {
+  it('drops what a workspace\'s log holds when its records are purged, so a write held past the close deadline does not make the folder again', async () => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-log-service-purge-'))
     for (const folder of ['node', 'site']) mkdirSync(join(root, folder))
     mkdirSync(join(root, 'state'), { mode: 0o700 })
@@ -283,17 +283,35 @@ describe('the log service', () => {
       let release = () => {}
       const held = new Promise<void>((resolve) => { release = resolve })
       vi.spyOn(writer, 'append').mockImplementation(async (input) => { await held; return append(input) })
+      captureStderr()
       runtime.actions.append(entry('queued', { workspaceId: runtime.workspaceId }))
+      runtime.actions.append(entry('waiting', { workspaceId: runtime.workspaceId }))
       await tick()
 
       const removing = manager.remove(runtime.workspaceId, { purge: true })
-      await delay(100)
+      await delay(2_500)
       release()
       await removing
       await logService().flush()
+      await delay(100)
       expect(existsSync(records)).toBe(false)
     } finally {
       await manager.close()
     }
+  })
+
+  it('writes no queued entry of a workspace\'s log once its folder is gone, as when another process purged its records', async () => {
+    const folder = mkdtempSync(join(tmpdir(), 'buckle-log-service-gone-'))
+    const path = join(folder, 'actions.jsonl')
+    const logs = service({ retryDelaysMs: [1] })
+    const log = createFileActionLog(path, { service: logs, purgeable: true })
+    await log.record(entry('first'))
+    rmSync(folder, { recursive: true })
+    captureStderr()
+    log.append(entry('late'))
+    await logs.flush()
+
+    expect(existsSync(folder)).toBe(false)
+    expect(logs.stats().logs[path]).toMatchObject({ written: 0, dropped: 1 })
   })
 })

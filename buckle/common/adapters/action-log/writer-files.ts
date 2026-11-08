@@ -72,7 +72,11 @@ function createWriterOperations(input: { processInstanceId: string; io: WriterIo
   }
   const append = (request: AppendInput) => appendBatch({ ...request, io: input.io, pending: pendingOf(request.file) })
   return {
-    append: request => append({ ...request, placed: offset => input.tell({ type: 'placed', id: request.id, offset }) }),
+    append: async (request) => {
+      // Before the lock, whose file would make the folder again.
+      if (request.existingFolder && !existsSync(dirname(request.file.path))) throw new Error('The log\'s folder is gone, so its entries are not written')
+      return append({ ...request, placed: offset => input.tell({ type: 'placed', id: request.id, offset }) })
+    },
     probe: request => withFileTurn(lockOf(request.file), () => probe({ filePath: request.file.path, io: input.io, pending: pendingOf(request.file) })),
     recover: request => pendingOf(request.file).recover(entry => append({ file: request.file, entries: [nameEntry(entry, request.naming)] })),
   }
