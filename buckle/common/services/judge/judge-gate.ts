@@ -3,7 +3,7 @@ import { redactCredentials } from '@5straps/runtime'
 import { relative } from 'pathe'
 import { baseCommand, commandSubject, parseArgv, shownCommand, shownWords } from '../../domain/argv.js'
 import { compileCommandGlob } from '../../domain/command-glob.js'
-import { allForms, type CommandForms, commandFormsOf, scriptForms, scriptRunOf } from '../../domain/command-forms.js'
+import { allForms, type CommandForms, commandFormsOf, scriptForms, scriptRunOf, typedForm } from '../../domain/command-forms.js'
 import { describeCall } from '../../domain/describe-call.js'
 import type { ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -19,7 +19,7 @@ import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile, NPM_CODE_OPTION, setsNpmCodeOption } from './call-forms.js'
-import { CODE_REFUSALS, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, readsShellScript, valueOptionsOf, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, isSystemProgram, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, readsShellScript, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -202,6 +202,7 @@ export function createJudgeGate(input: {
     // text too, so a runner named by a path inside the workspace or a mount is never a standard script (fix brief 7, B12).
     const placed = planRefusal({ forms: running, chain: forms.chain, typed: typedWords, pieces: forms.pieces, cwd, view })
     if (placed !== null) return placed
+    if (unreadProgram(forms, interpreting)) return CODE_REFUSALS.scriptFile
     // A standard script is matched as the allow list matches a call, on the words as typed, so `npm run dev` is one though
     // npm runs no interpreter Buckle names; or, inside shell text or behind a wrapper, where every interpreter form it runs
     // is one. Never `bun run <file>`, which runs the workspace's own file and is read as `bun <file>` is, and never a call
@@ -236,7 +237,7 @@ export function createJudgeGate(input: {
   /**
    * The script forms the stages are shown: sh, bash, or dash given a script as the call itself. Null where the call runs
    * any other script file, which a person decides. A program the call itself names by a path, or an interpreter form the
-   * reader reads, is left to planRefusal, which refuses one the agent may have placed.
+   * reader reads, is left to planRefusal, which refuses one the agent may have placed, and then to unreadProgram.
    */
   function shownScripts(forms: CommandForms, interpreting: readonly string[][]): string[][] | null {
     const shown: string[][] = []
@@ -247,6 +248,15 @@ export function createJudgeGate(input: {
       else if (run !== 'path' || !(itself || interpreting.includes(form))) return null
     }
     return shown
+  }
+
+  /**
+   * Whether the call itself runs a program named by its path, outside the workspace and every mount, that is no host
+   * program in a system folder: the agent's own shell may have written it there (`/tmp`, or anywhere with no sandbox), and
+   * no stage reads it.
+   */
+  function unreadProgram(forms: CommandForms, interpreting: readonly string[][]): boolean {
+    return scriptForms(forms).some(form => scriptRunOf(form) === 'path' && !interpreting.includes(form) && !isSystemProgram(typedForm(form)[0]!, input.view))
   }
 
   /**

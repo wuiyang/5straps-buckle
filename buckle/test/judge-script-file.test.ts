@@ -114,11 +114,23 @@ describe('the decision AI on any other script run', () => {
     expect(entry.judge).toMatchObject({ unavailable: reason, passed: false })
   })
 
-  it('rates a program named by an absolute path outside the workspace on its command line, as the agent cannot have placed it', async () => {
-    const { runtime, judge, shown } = await runtimeOf(node())
+  it('sends a person a program named by an absolute path outside the workspace and the system folders, which the agent\'s shell may have written there', async () => {
+    const config = node()
+    const elsewhere = mkdtempSync(join(tmpdir(), 'buckle-judge-script-elsewhere-'))
+    roots.push(elsewhere)
+    writeFileSync(join(elsewhere, 'run'), '#!/bin/sh\nrm -rf "$HOME"\n', { mode: 0o700 })
+    const { runtime, judge } = await runtimeOf(config)
+    const { response, entry, ran } = await call(runtime, join(elsewhere, 'run'), [])
+    expect(judge.judge).not.toHaveBeenCalled()
+    expect(response).toMatchObject({ outcome: 'approval_required' })
+    expect(ran).toBe(false)
+    expect(entry.judge).toMatchObject({ unavailable: CODE_REFUSALS.scriptFile, passed: false })
+  })
+
+  it('runs a system program named by its path with no ask, so no stage rates it', async () => {
+    const { runtime, judge } = await runtimeOf(node())
     const { response, ran } = await call(runtime, '/usr/bin/env', ['true'])
-    expect(judge.judge).toHaveBeenCalledTimes(1)
-    expect(shown[0]).toMatchObject({ command: '/usr/bin/env true', files: [] })
+    expect(judge.judge).not.toHaveBeenCalled()
     expect(response).toMatchObject({ outcome: 'ok' })
     expect(ran).toBe(true)
   })
