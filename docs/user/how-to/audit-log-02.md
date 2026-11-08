@@ -63,8 +63,8 @@ and its detail says so. A command that ends, and a node that stops, wait up to 2
 queue, then print `Audit log entries left unwritten at close` with the count. Removing a workspace
 with `--purge`, and `buckle workspace prune --yes`, drop what the queue holds for it, since its
 records go, after up to 1 second for a write under way. A workspace's queued entry is written only
-while its records' folder exists, so one queued in another Buckle process is dropped and does not
-make the folder again, unless its write had begun as the folder went.
+while its records' folder exists, so one queued in another Buckle process, or still waiting for the
+disk as the folder goes, is dropped and never makes the folder again.
 
 ## Sending it elsewhere
 
