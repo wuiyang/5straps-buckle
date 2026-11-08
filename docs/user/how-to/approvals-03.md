@@ -32,8 +32,9 @@ that show and answer it, and says to send the same call again once it is decided
 
 Relay the ask to the person, wait for them to decide it, then send the same call again. An
 identical call is the same tool, the same arguments byte for byte once their keys are put in
-order, from the same session (the MCP session id, or `mcp`) and the same actor (over HTTP, the
-token it came with). It runs under the requestId the first call was given, so it:
+order, from the same session (a `buckle mcp` process's own, or `mcp` over HTTP) and the same
+actor (over HTTP, the token it came with). It runs under the requestId the first call was given,
+so it:
 
 - joins the ask still waiting, and makes no second ask;
 - carries on the wait of a call still held, which ends `REQUEST_SUPERSEDED` without running;
@@ -76,9 +77,10 @@ anything is asked or run.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
   minutes after its hold ended. The same call sent again joins it and starts the ten minutes
   over. An ask on `/v1/invoke` waits until it is answered or its session ends.
-- When the workspace's sessions end at idle ([session end](approvals-07.md)), each ask still
-  waiting is withdrawn: a call held on it answers `APPROVAL_UNANSWERED`, and the same call sent
-  again asks anew.
+- When a session ends ([session end](approvals-07.md)), at idle, as its `buckle mcp` process
+  exits, or as `buckle serve` stops or opens the workspace, each ask of it still waiting is
+  withdrawn: a call held on it answers `APPROVAL_UNANSWERED`, and the same call sent again asks
+  anew.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.

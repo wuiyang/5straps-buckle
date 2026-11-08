@@ -1,9 +1,8 @@
 # Approval backend: session activity
 
-What tells a process that a workspace is still in use, and how its sessions end once it is not:
-as the owner ruled, a session ends once the workspace has had no activity for more than its
-window. The [approval backend](approval-backend.md) page covers the port. Paths are in
-`buckle/`.
+What tells a process that a workspace is still in use, and how its sessions end once it is not,
+or once the MCP server they came through closes, as the owner ruled. The [approval
+backend](approval-backend.md) page covers the port. Paths are in `buckle/`.
 
 ## The executing mark
 
@@ -79,8 +78,30 @@ Always grants stay. A read without the lock first skips the lock where nothing w
 or `{ sessionId }`) and the grants go. The service then tells the webhook, wakes each caller held
 on a withdrawn ask, and records each session through `DecisionAudit.sessionEnded`, one
 `approval_session_ended` entry through the log service. The registry's own `grants`
-(`LedgerGrants`) has no session end of its own. The causes are `SessionEndCause`; only `idle` is
-used so far.
+(`LedgerGrants`) has no session end of its own. The causes are `SessionEndCause`: `idle`, and the
+face sessions' below.
+
+## Face sessions
+
+`FaceSession` (`common/services/workspaces/face-session.ts`) is the session a process's own face
+holds in each workspace it opens. `initializeCommon` picks it by role (`FACE_SESSIONS` in
+`common/runtime/initialize.ts`), exposes it as `BuckleCommon.faceSession`, and hands it through
+the workspace manager to `createRuntime`:
+
+- **`server`:** `SERVE_SESSION`, `mcp` (`HTTP_MCP_SESSION`), which `mcp/http.ts` names every call
+  by, as `/mcp` is served stateless. Ended at each open, `serve_started`, once the approval
+  service is built and before any call is served, so what a serve killed before its close left
+  clears nothing; an end that throws fails the open, which the next resolve tries again. Ended at
+  close, `serve_stopped`.
+- **`mcp`:** `stdioSession()`, `stdio:<uuid>`, minted per process, which `serveMcpStdio` passes to
+  `createStdioServer`. Ended at close, `stdio_closed`.
+- **`cli`:** none; `cli` ends at idle alone.
+
+The close end is the runtime's `endFaceSession()`, which `closeWithOwner`
+(`common/runtime/services.ts`) runs for every open runtime at once at the `timers` stage, before
+the `waiters` stage settles the other waits, so held callers hear their asks withdrawn. A runtime
+dropped while the process runs ends none; serve's next open does. `McpServerOptions.sessionId` is
+required, as neither transport names a session.
 
 ## Settings
 
@@ -90,9 +111,12 @@ used so far.
 
 ## Tests
 
-`test/executing-mark.test.ts` covers the mark. `test/session-idle.test.ts` covers the verdict, the
-setting at each layer, the store, and the end through the service: every face's grants, onces,
-owed marks, withdrawn asks, the record, a tool that starts between the first read and the lock, a
-second process's long tool, and unknown activity. `test/session-idle-runtime.test.ts` steps a
+`test/executing-mark.test.ts` covers the mark. `test/face-sessions.test.ts` covers the face
+sessions: a stdio process's own id on each call, two stdio processes each ending its own alone,
+the CLI ending none, and serve ending `mcp` at its start after a crash and at its stop.
+`test/session-idle.test.ts` covers the verdict, the setting at each layer, the store, and the end
+through the service: every face's grants, onces, owed marks, withdrawn asks, the record, a tool
+that starts between the first read and the lock, a second process's long tool, and unknown
+activity. `test/session-idle-runtime.test.ts` steps a
 faked clock through a runtime: a CLI call after idle, a held ask, a dropped result, a decision read
 by another process, what is not activity, the grant fallback, window 0, and an unreadable store.

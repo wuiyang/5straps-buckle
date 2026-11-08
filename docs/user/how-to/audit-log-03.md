@@ -34,9 +34,10 @@ grant is not confirmed removed ends `ok` with `removed: false` and `unfinished: 
 the same decision sent again, recorded as any decision is, with `repeated`.
 
 Each session that [ends](approvals-07.md) writes one `approval_session_ended` result entry under
-that session's id. Its `args` hold the `cause` (`idle`), and how many asks it `withdrawn`, unspent
-`onces` it dropped, `owed` grants it kept from being written, and session `grants` and `denials`
-it removed. A session with none of these writes none.
+that session's id. Its `args` hold the `cause` (`idle`; `stdio_closed` as a `buckle mcp`
+process exits; `serve_stopped`, or `serve_started` as serve opens the workspace), and how many
+asks it `withdrawn`, unspent `onces` it dropped, `owed` grants it kept from being written, and
+session `grants` and `denials` it removed. A session with none of these writes none.
 
 No tool takes a name Buckle writes its own records under: `approval_decision`, `log_dropped`,
 `approval_session_ended`, and those starting `cli_`, `setup_`, `workspace_`, or `policy_`. An agent's call naming one is refused

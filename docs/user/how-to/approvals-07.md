@@ -1,15 +1,27 @@
 # Approvals: session end
 
 Buckle, the local permission node that runs an AI agent's tool calls, ends a session's approvals
-once the workspace goes quiet. This page covers when that happens, what ends, and how to change
-the window. [Approvals](approvals.md) covers the scopes.
+once the workspace goes quiet, or once the MCP server they were given through closes. This page
+covers when that happens, what ends, and how to change the window. [Approvals](approvals.md)
+covers the scopes.
 
 ## When a session ends
 
-A `session` grant lasts until you revoke it with `buckle grants revoke <id>`, or until the
-workspace has had no activity for longer than its idle window, 15 minutes unless you set one. An
-idle end ends every session of the workspace, on every face: the CLI's `cli`, the MCP session or
-`mcp`, and the HTTP `context.sessionId` or `rpc`. An `always` grant never ends with a session.
+A `session` grant lasts until you revoke it with `buckle grants revoke <id>`, or until its
+session ends:
+
+- **`buckle mcp`:** each process has a session of its own, `stdio:<id>`, which ends as the process
+  exits, whether its client closed it or the node stopped it. Other `buckle mcp` processes on the
+  workspace keep theirs, and a restarted MCP server starts a fresh one.
+- **HTTP MCP:** `/mcp` keeps no session per client, so its clients share `mcp`. It ends as `buckle
+  serve` stops, and again as serve opens the workspace: at its start, so a serve killed before it
+  could stop leaves nothing that clears a call, and when you bring the workspace back online.
+- **Idle:** once the workspace has had no activity for longer than its idle window, 15 minutes
+  unless you set one, every session of the workspace ends, on every face: the CLI's `cli`, each
+  `buckle mcp` session, `mcp`, and the HTTP `context.sessionId` or `rpc`.
+
+The CLI's `cli` and the HTTP API's sessions end at idle alone. An `always` grant never ends with a
+session.
 
 Activity is:
 
@@ -36,8 +48,9 @@ that saw activity itself within the window reads nothing.
   terminal drops its question, and the approval webhook is told it was `cancelled`. The same call
   sent again asks anew.
 
-Each session that ends writes one `approval_session_ended` entry in the workspace's audit log
-([decision records](audit-log-03.md)).
+Each session that ends writes one `approval_session_ended` entry in the workspace's audit log,
+naming its cause ([decision records](audit-log-03.md)). A session that held none of these writes
+none.
 
 ## The idle window
 
@@ -67,6 +80,9 @@ making counts as the last activity, so an old grant still ends.
 
 - A process killed while its tool runs records no end: its tool stops counting as activity 10
   seconds later, so its session can end soon after.
+- A `buckle mcp` process killed outright ends no session: its approvals clear no other process's
+  calls, and end when the workspace idles. A serve killed outright leaves `mcp` until it opens
+  the workspace again.
 - With no call coming, an idle session can outlast its window by up to the minute between checks.
 - A session end in one process can meet a call another process is clearing at that moment: the
   call may run on the grant it read just before, or ask again.
