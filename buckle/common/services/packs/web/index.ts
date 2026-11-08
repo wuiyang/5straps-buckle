@@ -4,7 +4,7 @@ import type { Pack } from '../../../domain/pack.js'
 import { referenceHint } from '../../../domain/secret-reference-hint.js'
 import { defineTool, ToolExecutionError } from '../../../domain/tool.js'
 import type { UrlMatcher } from '../../../domain/url-pattern.js'
-import type { AddressRange } from '../../../domain/ip.js'
+import type { AddressRange, NodeListener } from '../../../domain/ip.js'
 import { loadPackSkill } from '../pack-skill.js'
 import { guardedFetch } from './egress.js'
 
@@ -38,6 +38,8 @@ export interface WebPackOptions {
   approved: UrlMatcher | null
   /** The owner's CIDR ranges: a private address one holds is reached on a hop the rules let through. */
   privateRanges: readonly AddressRange[]
+  /** The node's own serve listener, which no range clears. */
+  listener?: NodeListener
 }
 
 export function createWebPack(options: WebPackOptions): Pack {
@@ -58,6 +60,7 @@ export function createWebPack(options: WebPackOptions): Pack {
           signal: context.signal,
           approved: options.approved,
           privateRanges: options.privateRanges,
+          ...(options.listener === undefined ? {} : { listener: options.listener }),
           judge: context.judgeNetwork,
           ...(context.secretHeaders ? { secretHeaders: context.secretHeaders } : {}),
         })

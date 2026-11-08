@@ -1,4 +1,4 @@
-import { rangeCovering, reservedRangeOf, type AddressRange } from '../../ip.js'
+import { portOf, rangeCovering, reachesListener, reservedRangeOf, type AddressRange, type NodeListener } from '../../ip.js'
 import { matchingHostEntry, starredHostRefusal, type UrlMatcher } from '../../url-pattern.js'
 import type { PermissionRule } from '../decision.js'
 import { allowedVia, ask, deny, PLAIN_MARKS } from '../decision.js'
@@ -14,6 +14,8 @@ export interface NetworkEgressOptions {
   approved: UrlMatcher | null
   /** The owner's CIDR ranges (network.privateRanges): a private address a range holds is reached without asking. */
   privateRanges: readonly AddressRange[]
+  /** The node's own serve listener, which a range never clears, so the agent's token never reaches it unasked. */
+  listener?: NodeListener
 }
 
 /**
@@ -42,12 +44,16 @@ export function createNetworkEgressRule(options: NetworkEgressOptions = { approv
 
       const reason = localReason(url.hostname)
       // A range holds addresses alone, so a name such as localhost still asks.
-      if (!reason || rangeCovering(url.hostname, options.privateRanges)) return { kind: 'allow' }
+      if (!reason || (rangeCovering(url.hostname, options.privateRanges) && !ownListener(url, options.listener))) return { kind: 'allow' }
       const covering = coveringGrant({ exact: grants.subjectsFor('network_egress'), patterns: grants.patternsFor?.('network_egress') ?? [] }, url)
       if (covering) return allowedVia('network_egress', covering)
       return ask({ rule: 'network_egress', subject, reason, marks: PLAIN_MARKS })
     },
   }
+}
+
+function ownListener(url: URL, listener: NodeListener | undefined): boolean {
+  return listener !== undefined && reachesListener({ address: url.hostname, port: portOf(url), listener })
 }
 
 /** The subject the rule asks about and an exact grant names: the host, with a port when written. */

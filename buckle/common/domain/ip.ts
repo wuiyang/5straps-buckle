@@ -148,6 +148,30 @@ export function parseCidr(text: string): AddressRange {
   return { text, family: parsed.family, bytes: parsed.bytes, prefix }
 }
 
+/** Where the node's own serve listens (BUCKLE_HOST, BUCKLE_PORT), which no private range clears. */
+export interface NodeListener { host: string; port: number }
+
+/** Reserved blocks a connection to which reaches this machine. */
+const THIS_MACHINE = new Set(['loopback', 'unspecified', 'this-network'])
+
+/**
+ * Whether `address` on `port` may reach the node's own listener: its port, at the address it listens on or one of this
+ * machine's own blocks, or at any address where it listens on every one or under a name.
+ */
+export function reachesListener(input: { address: string; port: number; listener: NodeListener }): boolean {
+  const { listener } = input
+  if (input.port !== listener.port) return false
+  const bare = input.address.replace(/^\[|\]$/g, '').toLowerCase()
+  const host = listener.host.replace(/^\[|\]$/g, '').toLowerCase()
+  const everywhere = !(isIPv4(host) || isIPv6(host)) || host === '0.0.0.0' || reservedRangeOf(host) === 'unspecified'
+  return everywhere || bare === host || THIS_MACHINE.has(reservedRangeOf(bare) ?? '')
+}
+
+/** The port a URL reaches, its scheme's own where it names none. */
+export function portOf(url: URL): number {
+  return url.port === '' ? (url.protocol === 'https:' ? 443 : 80) : Number(url.port)
+}
+
 /** The listed range that holds `address`, or null; an IPv4-mapped address is judged as the IPv4 address it carries. */
 export function rangeCovering(address: string, ranges: readonly AddressRange[]): AddressRange | null {
   const bare = address.replace(/^\[|\]$/g, '')

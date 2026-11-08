@@ -1,5 +1,5 @@
 import { lookup } from 'node:dns/promises'
-import { rangeCovering, reservedRangeOf, type AddressRange } from '../../../domain/ip.js'
+import { portOf, rangeCovering, reachesListener, reservedRangeOf, type AddressRange, type NodeListener } from '../../../domain/ip.js'
 import { ToolExecutionError, type NetworkVerdict } from '../../../domain/tool.js'
 import { starredHostRefusal, type UrlMatcher } from '../../../domain/url-pattern.js'
 
@@ -34,6 +34,8 @@ export async function guardedFetch(input: {
   secretHeaders?: readonly string[]
   /** The owner's CIDR ranges (network.privateRanges): a reserved address one holds is reached on any hop the rules let through. */
   privateRanges: readonly AddressRange[]
+  /** The node's own serve listener, which no range clears on any hop. */
+  listener?: NodeListener
 }): Promise<Response> {
   let current = input.url
   let method = input.method
@@ -41,7 +43,7 @@ export async function guardedFetch(input: {
   const headers = new Headers(input.headers)
 
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    await assertReachable({ url: current, approved: input.approved, judge: input.judge, privateRanges: input.privateRanges })
+    await assertReachable({ url: current, approved: input.approved, judge: input.judge, privateRanges: input.privateRanges, listener: input.listener })
     const response = await fetch(current, { method, headers, body, redirect: 'manual', signal: input.signal })
 
     const location = response.headers.get('location')
@@ -67,7 +69,7 @@ export async function guardedFetch(input: {
   throw new ToolExecutionError(`Exceeded ${MAX_REDIRECTS} redirects`, { code: 'TOO_MANY_REDIRECTS' })
 }
 
-async function assertReachable(input: { url: URL; approved: UrlMatcher | null; judge?: ((url: URL) => Promise<NetworkVerdict>) | undefined; privateRanges: readonly AddressRange[] }): Promise<void> {
+async function assertReachable(input: { url: URL; approved: UrlMatcher | null; judge?: ((url: URL) => Promise<NetworkVerdict>) | undefined; privateRanges: readonly AddressRange[]; listener: NodeListener | undefined }): Promise<void> {
   const { url, approved, judge } = input
   const starred = starredHostRefusal(url)
   if (starred) throw new ToolExecutionError(starred, { code: 'EGRESS_BLOCKED' })
@@ -83,7 +85,9 @@ async function assertReachable(input: { url: URL; approved: UrlMatcher | null; j
   }
 
   const host = url.hostname.replace(/^\[|\]$/g, '')
-  const reserved = (address: string) => (rangeCovering(address, input.privateRanges) ? null : reservedRangeOf(address))
+  const { listener } = input
+  const cleared = (address: string) => rangeCovering(address, input.privateRanges) !== null && !(listener && reachesListener({ address, port: portOf(url), listener }))
+  const reserved = (address: string) => (cleared(address) ? null : reservedRangeOf(address))
   const literal = reserved(host)
   if (literal) throw blocked(host, literal)
 

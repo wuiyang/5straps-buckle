@@ -27,7 +27,7 @@ import { createHistoryPack } from './history/index.js'
 import type { ChangeHistory } from '../history/journal.js'
 import { createShellPack } from './shell/index.js'
 import { createWebPack } from './web/index.js'
-import type { AddressRange } from '../../domain/ip.js'
+import type { AddressRange, NodeListener } from '../../domain/ip.js'
 
 export interface BuiltinPackOptions {
   /** The workspace's mounts as the shell binds them (sandboxBinds). */
@@ -48,6 +48,8 @@ export interface BuiltinPackOptions {
   approvedUrls: UrlMatcher | null
   /** The owner's CIDR ranges web_fetch reaches on private addresses without asking (network.privateRanges). */
   privateRanges: readonly AddressRange[]
+  /** The node's own serve listener, which no range clears. */
+  listener?: NodeListener
   /** Each approved list `approvedUrls` intersects, named, which the browser pack passes on. */
   approvedLists: ApprovedList[]
   braveSearchApiKey?: string
@@ -157,7 +159,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
       ...(options.maxTimeoutMs === undefined ? {} : { maxTimeoutMs: options.maxTimeoutMs }),
     }),
     createHistoryPack({ paths: options.paths, history: options.history ?? null, unavailableReason: options.allowHistory === false ? HISTORY_OFF : null }),
-    createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls, privateRanges: options.privateRanges }),
+    createWebPack({ braveSearchApiKey: options.braveSearchApiKey, approved: options.approvedUrls, privateRanges: options.privateRanges, ...(options.listener === undefined ? {} : { listener: options.listener }) }),
     createGitPack({ paths: options.paths, runProcess: options.runProcess, stateDirectory: options.stateDirectory, git, environment, ...(options.programSearch?.platform ? { platform: options.programSearch.platform } : {}) }),
     createForgePack({
       paths: options.paths,

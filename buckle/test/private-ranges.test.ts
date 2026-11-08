@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { settingsCommand } from '../cli/settings.js'
-import { cidrRefusal, parseCidr, rangeCovering } from '../common/domain/ip.js'
+import { cidrRefusal, parseCidr, rangeCovering, type NodeListener } from '../common/domain/ip.js'
 import { createNetworkEgressRule } from '../common/domain/permission/rules/network-egress-rule.js'
 import { compileUrlPatterns } from '../common/domain/url-pattern.js'
 import { judgeUrl } from '../common/domain/url-verdict.js'
@@ -107,20 +107,41 @@ describe('the egress rule with private ranges', () => {
     expect(judge('http://localhost:3000/', { approved: null, privateRanges: ranges('127.0.0.0/8', '::1/128') })).toMatchObject({ kind: 'ask' })
   })
 
+  it('keeps asking for the node\'s own listener whatever a range holds, at its own address, a loopback one, and any where it listens on every one', () => {
+    const own = { host: '127.0.0.1', port: 4320 }
+    expect(judge('http://127.0.0.1:4320/mcp', { approved: null, privateRanges: ranges('127.0.0.1/32'), listener: own })).toMatchObject({ kind: 'ask', rule: 'network_egress' })
+    expect(judge('http://[::1]:4320/mcp', { approved: null, privateRanges: ranges('::1/128'), listener: own })).toMatchObject({ kind: 'ask' })
+    expect(judge('http://[::ffff:127.0.0.1]:4320/mcp', { approved: null, privateRanges: ranges('127.0.0.0/8'), listener: own })).toMatchObject({ kind: 'ask' })
+    expect(judge('http://127.0.0.1:3000/', { approved: null, privateRanges: ranges('127.0.0.1/32'), listener: own })).toEqual({ kind: 'allow' })
+    const everywhere = { host: '0.0.0.0', port: 4320 }
+    expect(judge('http://10.0.0.5:4320/mcp', { approved: null, privateRanges: ranges('10.0.0.0/8'), listener: everywhere })).toMatchObject({ kind: 'ask' })
+    expect(judge('http://10.0.0.5:8080/', { approved: null, privateRanges: ranges('10.0.0.0/8'), listener: everywhere })).toEqual({ kind: 'allow' })
+    expect(judge('http://10.0.0.5:4320/', { approved: null, privateRanges: ranges('10.0.0.0/8'), listener: own })).toEqual({ kind: 'allow' })
+  })
+
   it('never lifts the approved list: an address in a range but off the list is refused', () => {
     expect(judge('http://10.0.0.5/', { approved: compileUrlPatterns(['api.example.test']), privateRanges: ranges('10.0.0.0/8') })).toMatchObject({ kind: 'deny' })
   })
 })
 
 describe('guardedFetch with private ranges', () => {
-  const fetchFrom = (url: string, input: { approved?: ReturnType<typeof compileUrlPatterns> | null; privateRanges: ReturnType<typeof ranges> }) => guardedFetch({
+  const fetchFrom = (url: string, input: { approved?: ReturnType<typeof compileUrlPatterns> | null; privateRanges: ReturnType<typeof ranges>; listener?: NodeListener }) => guardedFetch({
     url: new URL(url), method: 'GET', headers: {}, signal: AbortSignal.timeout(5_000),
     approved: input.approved ?? null, judge: async () => ({ kind: 'allowed' }), privateRanges: input.privateRanges,
+    ...(input.listener === undefined ? {} : { listener: input.listener }),
   })
 
   it('reaches an address a range covers, which no approval cleared', async () => {
     expect(await (await fetchFrom(`http://127.0.0.1:${port}/`, { privateRanges: ranges('127.0.0.1/32') })).text()).toBe('arrived')
     await expect(fetchFrom(`http://127.0.0.1:${port}/`, { privateRanges: ranges('10.0.0.0/8') })).rejects.toThrow(/loopback/)
+  })
+
+  it('refuses the node\'s own listener on every hop, a name that resolves to it included, whatever a range holds', async () => {
+    const listener = { host: '127.0.0.1', port }
+    await expect(fetchFrom(`http://127.0.0.1:${port}/mcp`, { privateRanges: ranges('127.0.0.1/32'), listener })).rejects.toThrow(/loopback/)
+    const approved = compileUrlPatterns([`*.localhost:${port}`])
+    await expect(fetchFrom(`http://localhost:${port}/mcp`, { approved, privateRanges: ranges('127.0.0.0/8', '::1/128'), listener })).rejects.toThrow(/loopback/)
+    expect(await (await fetchFrom(`http://127.0.0.1:${port}/`, { privateRanges: ranges('127.0.0.1/32'), listener: { host: '127.0.0.1', port: port + 1 } })).text()).toBe('arrived')
   })
 
   it('lets a wildcard list entry reach a host that resolves into the ranges alone', async () => {
@@ -210,6 +231,12 @@ describe('a workspace with private ranges', () => {
   it('fetches an address the node\'s ranges cover without asking, and asks without them', async () => {
     expect(await fetchLocal(await runtimeWith({ BUCKLE_NETWORK_PRIVATE_RANGES: '127.0.0.1/32' }))).toMatchObject({ outcome: 'ok', output: { body: 'arrived' } })
     expect(await fetchLocal(await runtimeWith({}))).toMatchObject({ outcome: 'approval_required' })
+  })
+
+  it('asks before web_fetch reaches the node\'s own serve listener, though a range covers its address', async () => {
+    const runtime = await runtimeWith({ BUCKLE_NETWORK_PRIVATE_RANGES: '127.0.0.1/32', BUCKLE_HOST: '127.0.0.1', BUCKLE_PORT: String(port) })
+    const own = await runtime.invoke({ request: { requestId: `fetch-${randomUUID()}`, tool: 'web_fetch', args: { url: `http://127.0.0.1:${port}/mcp`, method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }, approvalTokens: [] }, sessionId: 'fetcher' })
+    expect(own).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'network_egress', subject: `127.0.0.1:${port}` }] })
   })
 
   it('takes a range the workspace sets while it runs up at the next call, in the rule and in web_fetch alike', async () => {

@@ -101,7 +101,7 @@ import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
 import { listedSecretFile } from '../secrets/secret-file.js'
-import { parseCidr, type AddressRange } from '../../domain/ip.js'
+import { parseCidr, type AddressRange, type NodeListener } from '../../domain/ip.js'
 
 const TOOL_DISABLED = 'Disabled by workspace tool policy'
 
@@ -1027,6 +1027,7 @@ async function buildPacks(input: {
     sandboxMounts: sandboxBinds(input.config.mounts),
     approvedUrls: input.compiled.network,
     privateRanges: privateRangesOf(input.config),
+    listener: listenerOf(input.config),
     approvedLists: input.compiled.network ? [{ name: 'workspace' as const, entries: input.compiled.network.patterns }] : [],
     braveSearchApiKey: input.config.braveSearchApiKey,
     forge: { token: input.config.forgeGithubToken, apiUrl: input.config.forgeApiUrl, author: input.config.forgeGitAuthor },
@@ -1153,7 +1154,11 @@ function secretFileListed(listed: readonly string[], paths: PathView, real: stri
 
 /** One construction for the engine and `buckle check-url`, so the check cannot drift from the rule. */
 function networkEgressRule(compiled: CompiledPolicy, config: BuckleConfig): PermissionRule {
-  return createNetworkEgressRule({ approved: compiled.network, privateRanges: privateRangesOf(config) })
+  return createNetworkEgressRule({ approved: compiled.network, privateRanges: privateRangesOf(config), listener: listenerOf(config) })
+}
+
+function listenerOf(config: BuckleConfig): NodeListener {
+  return { host: config.host, port: config.port }
 }
 
 /** The ranges in force, each checked when its setting was written or read, so parsing cannot fail here. */
