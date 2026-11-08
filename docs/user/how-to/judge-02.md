@@ -37,7 +37,8 @@ For an ask, it reads the interpreters the policy does not allow; for an allowed 
 `approval.quickJudge all` in automated mode, every interpreter it runs. For a
 [script file](policy-03.md#script-files), it reads the script `sh`, `bash`, or `dash` runs as the
 call itself, and what that sources, past options that load nothing else; a login or interactive
-shell, any other shell, `source`, and a script shell text runs go to a person. A standard development
+shell, any other shell, `source`, a script shell text runs, and a program named by its path
+outside the system folders go to a person. A standard development
 script's own code is not read, only what bun preloads; where it names a `package.json` script, that
 script's text is shown as context.
 

@@ -102,8 +102,9 @@ other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-in
 The list is `INTERPRETERS` in `common/domain/command-forms.ts`
 ([which programs](../user/how-to/policy-02.md#interpreters)). A
 [script file](../user/how-to/policy-03.md#script-files) run directly (the reading's `scripts`) asks
-at the floor too, though it is no reading limit, so a deny glob does not refuse it. The optional
-[decision AI](../user/how-to/judge.md) rates either before a person has to.
+at the floor too, though it is no reading limit, so a deny glob does not refuse it; a host program
+in a system folder named by its path does not (`isSystemProgram`, `EVERY_PATH_RUN_ASKS`). The
+[decision AI](../user/how-to/judge.md) may rate either first.
 
 The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
 How an ask reaches a person and their decision comes back is on [Approval backend](approval-backend.md).

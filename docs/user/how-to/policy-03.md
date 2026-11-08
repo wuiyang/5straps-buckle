@@ -46,14 +46,16 @@ interpreter (script file):
 - a shell given a script: `bash deploy.sh`, `sh -e x.sh`, `zsh x.sh`;
 - `source ./env.sh` and `. venv/bin/activate`;
 - a command word written as a path, which runs the file at that path whatever its name says:
-  `./deploy.sh`, `bin/tool`, `/tmp/x`, and `/usr/bin/git`. Write the bare name (`git`) to have it
-  judged by its words.
+  `./deploy.sh`, `bin/tool`, `./node_modules/.bin/vitest`, `/tmp/x`, and `/opt/tool`. A host
+  program in `/usr`, `/bin`, `/sbin`, `/lib`, or `/lib64` (`/usr/bin/git status`), which no agent
+  places there, is judged by its words as its bare name is.
 
 It asks under a deny list too, rather than being refused, and offers `once` and `session`. An allow
 glob that spells the path (`buckle policy allow-command './deploy.sh *'`) runs that file without
 asking; one naming a shell (`bash *`) does not. The [dangerously-allow switch](approvals-04.md)
 answers it only at `on`, and the [decision AI](judge.md) may where it is set to: it is shown the
-script that `sh`, `bash`, or `dash` runs as the call itself, and leaves any other to a person.
+script that `sh`, `bash`, or `dash` runs as the call itself, and leaves any other to a person, a
+program named by its path among them.
 
 `npm run`, `npm test`, `pnpm dev`, `make`, and other package scripts and task runners are judged by
 their own words, so they do not ask, and what they run is not read: a `package.json` or `Makefile`
