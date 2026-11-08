@@ -92,10 +92,11 @@ These lines never hold up a call. An approval question waits at most half a seco
 logged before it, and a command that ends waits at most 2 seconds for its own. Each Buckle process
 holds at most 30 of them, waiting or being written, together with the audit entries it queues
 ([the audit log](audit-log-02.md#what-waits-and-what-is-queued)), and when another arrives, a
-queued refusal gives way first, then the oldest waiting one is dropped; a line whose write has not
-answered within 1 second counts as waiting, and one dropped that way but then written counts as
-written. A write that
-fails is tried again after 250 ms, 1 s, and 4 s, and then its line is dropped too. The first drop prints one
+queued refusal or the `request finished` line each HTTP request leaves gives way first, then the
+oldest waiting one is dropped; a line whose write has not answered within 1 second counts as
+waiting, though it stays in memory until the write answers, and one dropped that way but then
+written counts as written. A write that fails is tried again after 250 ms, 1 s, and 4 s, and then
+its line is dropped too. The first drop prints one
 `Log events dropped` warning on stderr, as JSON. Once writing works again, a `log events dropped`
 line goes first, with the count and the time span (`dropped`, `firstAt`, `lastAt`). A node that
 stops waits 2 seconds for its last lines, then prints on stderr how many it left unwritten.

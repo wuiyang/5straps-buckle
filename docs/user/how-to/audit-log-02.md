@@ -43,16 +43,20 @@ A queued entry may land after a later one that waited, so read entries by `at`.
 The queue shares the 30 entries each Buckle process holds with its log lines
 ([lines that cannot be written](approvals-02.md#lines-that-cannot-be-written)). When another
 arrives, the oldest waiting entry is dropped, whichever log it is for; a refusal, which anyone can
-make Buckle write, gives way first and never pushes out another entry, as does an answer from an
-MCP form over HTTP, which anything holding the agent's token can send, unless it was applied. A write that fails is tried
+make Buckle write, gives way first and never pushes out another entry, as do the `request finished`
+line each HTTP request leaves and an answer from an MCP form over HTTP, which anything holding the
+agent's token can send, unless it was applied. While a disk stalls, a write unanswered after 1 s
+gives its entries up to newer ones, though they stay in memory until the disk answers: up to 10
+entries and a count for each log. A write that fails is tried
 again after 250 ms, 1 s, and 4 s, and then its entries are dropped. A failing log logs
 `Could not durably write the action log` once, until it takes writes again. The first drop prints
 one `Audit log entries dropped` warning on stderr, as JSON. Once the log takes writes again, a
 `log_dropped` entry goes first, its `args` holding the count and the time span (`dropped`,
-`firstAt`, `lastAt`). A result dropped this way leaves its attempt, which the next process to open
-the log marks `interrupted`: a call's effects are then unknown, while a decision's or your own
-change's detail names what holds its outcome (the approvals ledger, or the grants, settings, or
-registry).
+`firstAt`, `lastAt`). A result dropped this way leaves its attempt with no result, and the next
+write to the log stops tracking it, so it is never marked `interrupted`. A result still queued when
+its process stops is: the next process to open the log marks its attempt `interrupted`, and a
+call's effects are then unknown, while a decision's or your own change's detail names what holds
+its outcome (the approvals ledger, or the grants, settings, or registry).
 
 An entry past the 64 KiB limit is queued without its arguments, effects, rules, judge, and detail,
 and its detail says so. A command that ends, and a node that stops, wait up to 2 seconds for the
