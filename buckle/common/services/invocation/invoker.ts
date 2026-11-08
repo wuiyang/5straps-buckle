@@ -320,25 +320,22 @@ export function createInvoker(options: InvokerOptions): Invoker {
               executing = options.executing.begin()
             }
             const execute = async () => {
-              // The run ends here, before its result entry is written or dropped.
+              if (!prepared.managesHistory) beginRun()
+              // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
+              const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
+              if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
+              const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets, ...(executing ? { scriptRun: executing } : {}) } : undefined
               try {
-                if (!prepared.managesHistory) beginRun()
-                // A script's calls are named by what its tool says names it (code_run: the script), not every argument.
-                const nestingKey = prepared.replayKey ? { ...key, fingerprint: requestFingerprint({ tool: request.tool, args: prepared.replayKey }) } : key
-                if (prepared.reachesTools) ownSecrets = createScriptSecrets({ protectedRoots: options.protectedRoots ?? [], roots: [options.paths.root] })
-                const nesting = ownSecrets ? { run: options.nested ?? invoker.invoke, key: nestingKey, callerSignal: signal, isCancel, approvalWait, resends, secrets: ownSecrets, ...(executing ? { scriptRun: executing } : {}) } : undefined
-                try {
-                  const output = await executeWithTimeout({ options, request, sessionId, holder, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
-                  markStarted()
-                  return output
-                } catch (error) {
-                  // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
-                  // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
-                  // (D91 follow-ups, F4 residue).
-                  if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
-                  throw error
-                }
-              } finally { executing?.end() }
+                const output = await executeWithTimeout({ options, request, sessionId, holder, signal: stop, consumed: gate.consumed ?? [], effects, auditUses, execute: run, timeoutMs: prepared.timeoutMs, nesting, via, ...(prepared.managesHistory ? { beginRun } : {}), ...(file ? { file } : {}) })
+                markStarted()
+                return output
+              } catch (error) {
+                // A tool that failed past the check, or never reached it, counts as run, as every tool did before the check;
+                // one whose own wait for the write lock ended before the check ran nothing, as when the invoker's wait ends
+                // (D91 follow-ups, F4 residue).
+                if (!(error instanceof CodeChangedError || error instanceof LockWaitError)) markStarted()
+                throw error
+              }
             }
             // A delete is checkpointed as a write is, from the folder it removes the entry from: a link there is never followed.
             const writes = effects.filter(effect => effect.kind === 'write_path' || effect.kind === 'delete_path')
@@ -349,9 +346,13 @@ export function createInvoker(options: InvokerOptions): Invoker {
             const scope = prepared.scopedHistory && !runsProgram ? historyScope(writes) : undefined
             // A write is checkpointed under the workspace's write lock; an exclusive call that writes nothing history
             // keeps runs under the same lock without a checkpoint, so no write lands while it runs (review H3).
-            const output = options.history && tracksChanges && !prepared.managesHistory
-              ? await options.history.run({ sessionId, stageId: historyStage(request, via), turnStageId: request.context?.stageId ?? null, ...(via ? { parentRequestId: via.parentRequestId } : {}), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)], ...(scope ? { scope } : {}) }, execute, stop)
-              : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
+            let output: JsonValue
+            // The run ends once the checkpoint after the tool is taken, and before its result entry is written or dropped.
+            try {
+              output = options.history && tracksChanges && !prepared.managesHistory
+                ? await options.history.run({ sessionId, stageId: historyStage(request, via), turnStageId: request.context?.stageId ?? null, ...(via ? { parentRequestId: via.parentRequestId } : {}), tool: request.tool, requestId: request.requestId, roots: [...new Set(roots)], ...(scope ? { scope } : {}) }, execute, stop)
+                : options.history && prepared.exclusive ? await options.history.exclusive(execute, stop) : await execute()
+            } finally { executing?.end() }
             // A tool that returns what its killed process left (a shell) ran into the shutdown all the same:
             // it answers as a tool that throws does, effects unknown (review L12 of B18-B19).
             if (options.shutdown?.aborted) throw options.shutdown.reason

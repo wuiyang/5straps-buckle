@@ -123,6 +123,25 @@ describe('the executing mark', () => {
     warned.mockRestore()
   })
 
+  it('writes its mark at a later refresh where the first write failed, for as long as the run lasts', () => {
+    vi.useFakeTimers()
+    const directory = join(temporary(), 'late')
+    writeFileSync(directory, '')
+    const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'late' }).begin()
+    expect(warned).toHaveBeenCalledOnce()
+    vi.advanceTimersByTime(ACTIVE_WORK_REFRESH_MS * 3)
+    expect(warned).toHaveBeenCalledTimes(2)
+
+    rmSync(directory)
+    mkdirSync(directory, { mode: 0o700 })
+    vi.advanceTimersByTime(ACTIVE_WORK_REFRESH_MS)
+    expect(executingInstances({ directory, now: Date.now() })).toEqual(['late'])
+    run.end()
+    expect(executingFiles(directory)).toEqual([])
+    warned.mockRestore()
+  })
+
   it('stops holding the workspace within 10 s of its process being killed while a run holds it', async () => {
     const directory = marks()
     const killedAt = await killedWhileRunning(directory, 'killed')
@@ -170,6 +189,25 @@ describe('a workspace runtime', () => {
     expect(executingInstances({ directory })).toEqual([])
     await answer(runtime, runtime.approvalService.waiting()[0]!.request.token)
     expect(await writing).toMatchObject({ outcome: 'ok' })
+    expect(executingFiles(directory)).toEqual([])
+    await runtime.history.close()
+  }, 30_000)
+
+  it('holds the mark until the checkpoint after the tool is taken, not only while the tool runs', async () => {
+    const { runtime, directory } = await workspace()
+    const run = runtime.history.run.bind(runtime.history)
+    const afterTool: string[][] = []
+    vi.spyOn(runtime.history, 'run').mockImplementation((details, execute, signal) => run(details, async () => {
+      const output = await execute()
+      afterTool.push(executingInstances({ directory }))
+      return output
+    }, signal))
+    const writing = write(runtime, { mode: 'finite', ms: 10_000 })
+    await vi.waitFor(() => expect(runtime.approvalService.waiting()).toHaveLength(1))
+    await answer(runtime, runtime.approvalService.waiting()[0]!.request.token)
+
+    expect(await writing).toMatchObject({ outcome: 'ok' })
+    expect(afterTool).toEqual([[expect.any(String)]])
     expect(executingFiles(directory)).toEqual([])
     await runtime.history.close()
   }, 30_000)

@@ -108,25 +108,32 @@ export function executingInstances(input: { directory: string; now?: number }): 
 
 function markLease(input: { directory: string; file: string; workspaceId: string }): ActiveWorkMark {
   let timer: NodeJS.Timeout | undefined
+  // Said once until a refresh lands again, not every ACTIVE_WORK_REFRESH_MS.
+  let failing = false
   const write = () => writeFileSync(input.file, '', { mode: 0o600 })
   const touch = () => {
     try { utimesSync(input.file, new Date(), new Date()) } catch (error) {
-      // Written again where a reader removed it as stale while this process stalled.
+      // Written again where a reader removed it as stale while this process stalled, or where the first write failed.
       if (!isMissing(error)) throw error
       write()
     }
   }
   const refresh = () => {
-    try { touch() } catch (error) {
-      logger.warn('Could not refresh the mark another process reads for this workspace\'s running calls', { workspaceId: input.workspaceId, error })
+    try {
+      touch()
+      failing = false
+    } catch (error) {
+      if (!failing) logger.warn('Could not refresh the mark another process reads for this workspace\'s running calls', { workspaceId: input.workspaceId, error })
+      failing = true
     }
   }
   return {
     start() {
-      mkdirSync(input.directory, { recursive: true, mode: 0o700 })
-      write()
+      // Set before the first write, so one that fails is written at a later refresh while the work lasts.
       timer = setInterval(refresh, ACTIVE_WORK_REFRESH_MS)
       timer.unref()
+      mkdirSync(input.directory, { recursive: true, mode: 0o700 })
+      write()
     },
     stop() {
       clearInterval(timer)
