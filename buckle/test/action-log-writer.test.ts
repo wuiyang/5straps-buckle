@@ -5,21 +5,18 @@ import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createActionLogWriter, PROBE_DEADLINE_MS, type ActionLogWriter } from '../common/adapters/action-log/action-log-writer.js'
+import { PROBE_DEADLINE_MS } from '../common/adapters/action-log/action-log-writer.js'
 import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { logger } from '../common/runtime/log.js'
 import { createAuditHealth } from '../common/services/audit/audit-health.js'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
-import type { WriterFaults } from './support/writer-worker-faults.js'
-
-const FAULTS = new URL('./support/writer-worker-faults.ts', import.meta.url)
-const writers: ActionLogWriter[] = []
+import { closeFaultyWriters, faultyWriter } from './support/writer-faults.js'
 
 afterEach(async () => {
   vi.restoreAllMocks()
-  await Promise.all(writers.splice(0).map(writer => writer.close({ deadlineMs: 0 })))
+  await closeFaultyWriters()
 })
 
 function logPath(): string {
@@ -28,28 +25,6 @@ function logPath(): string {
 
 function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
   return { event: 'result', at: '2026-11-08T00:00:00.000Z', requestId: 'r1', sessionId: 's1', tool: 'fs_read', outcome: 'ok', durationMs: 1, effects: [], args: {}, ...overrides }
-}
-
-/** A writer on the fault worker, its disk answering until `stall`. */
-function faultyWriter() {
-  const shared = (value: number) => {
-    const cell = new Int32Array(new SharedArrayBuffer(4))
-    cell[0] = value
-    return cell
-  }
-  const faults: WriterFaults = { gate: shared(1), exits: shared(0), syncs: shared(0) }
-  const writer = createActionLogWriter({ entry: { url: FAULTS, workerData: { ...faults } } })
-  writers.push(writer)
-  return {
-    writer,
-    stall: () => Atomics.store(faults.gate, 0, 0),
-    release: () => {
-      Atomics.store(faults.gate, 0, 1)
-      Atomics.notify(faults.gate, 0)
-    },
-    exitAtSync: (exits: boolean) => Atomics.store(faults.exits, 0, exits ? 1 : 0),
-    syncs: () => Atomics.load(faults.syncs, 0),
-  }
 }
 
 function settled(promise: Promise<unknown>, withinMs: number): Promise<'resolved' | 'rejected' | 'pending'> {
@@ -151,11 +126,10 @@ describe('the action log writer worker', () => {
     const health = createAuditHealth()
     const path = logPath()
     const log = createFileActionLog(path, { health, writer: faults.writer })
-    faults.exitAtSync(true)
+    faults.endAtSync(1)
     await expect(log.record(entry({ requestId: 'lost' }))).rejects.toBeInstanceOf(AuditUnavailableError)
     expect(health.failing(path)).toBe(true)
 
-    faults.exitAtSync(false)
     await log.record(entry({ requestId: 'again' }))
     expect(health.available).toBe(true)
   })

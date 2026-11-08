@@ -9,6 +9,9 @@ import type { LogFile, WorkspaceNaming, WriterFailure, WriterReply, WriterReques
 /** How long readiness waits for the worker to probe a failing log; one that does not answer in time still fails. */
 export const PROBE_DEADLINE_MS = 1_000
 
+/** How many entries of failed writes the writer remembers the place of; past it, the oldest is forgotten. */
+const PLACES_KEPT = 1_000
+
 /** Ties the attempts this process leaves pending to it, across the worker threads it starts. */
 const PROCESS_INSTANCE_ID = randomUUID()
 
@@ -17,7 +20,10 @@ const PROCESS_INSTANCE_ID = randomUUID()
  * so a stalled disk holds the callers waiting on their entries and not the node.
  */
 export interface ActionLogWriter {
-  /** Resolves once every entry is synced to disk and each attempt among them is tracked until its result. */
+  /**
+   * Resolves once every entry is synced to disk and each attempt among them is tracked until its result. Entries with an
+   * `entryId` that an earlier append failed on are looked for first, from where it began writing, and not written twice.
+   */
   append(input: { file: LogFile; entries: ActionLogEntry[] }): Promise<void>
   /** Rejects while the log cannot take a write, or when the worker does not answer within PROBE_DEADLINE_MS. */
   probe(file: LogFile): Promise<void>
@@ -33,7 +39,7 @@ export interface WriterEntry {
   workerData?: Record<string, unknown>
 }
 
-interface Waiting { resolve: (value: number | undefined) => void; reject: (error: Error) => void }
+interface Waiting { resolve: (value: number | undefined) => void; reject: (error: Error) => void; placed?: (offset: number) => void }
 interface Connection { worker: Worker; waiting: Map<number, Waiting>; idle: Array<() => void> }
 
 type Operation = { [Op in WriterRequest['op']]: Omit<Extract<WriterRequest, { op: Op }>, 'id'> }[WriterRequest['op']]
@@ -55,6 +61,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
   const entry = options.entry ?? defaultEntry()
   let connection: Connection | undefined
   let nextId = 0
+  const places = createPlaces()
 
   function connect(): Connection {
     if (connection) return connection
@@ -70,13 +77,14 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
     return opened
   }
 
-  function request(operation: Operation, deadlineMs?: number): Promise<number | undefined> {
+  function request(operation: Operation, options: { deadlineMs?: number; placed?: (offset: number) => void } = {}): Promise<number | undefined> {
     const opened = connect()
     const id = ++nextId
+    const { deadlineMs, placed } = options
     return new Promise((resolve, reject) => {
       const timer = deadlineMs === undefined ? undefined : setTimeout(() => settle(opened, id)?.reject(new Error('The action log writer did not answer in time')), deadlineMs)
       const clear = () => clearTimeout(timer)
-      opened.waiting.set(id, { resolve: value => { clear(); resolve(value) }, reject: error => { clear(); reject(error) } })
+      opened.waiting.set(id, { resolve: value => { clear(); resolve(value) }, reject: error => { clear(); reject(error) }, ...(placed ? { placed } : {}) })
       opened.worker.ref()
       try {
         opened.worker.postMessage({ ...operation, id } satisfies WriterRequest)
@@ -88,6 +96,7 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
 
   function receive(opened: Connection, reply: WriterReply): void {
     if (reply.type === 'log') return relayLog(reply.event)
+    if (reply.type === 'placed') return opened.waiting.get(reply.id)?.placed?.(reply.offset)
     const waiting = settle(opened, reply.id)
     if (reply.type === 'done') waiting?.resolve(reply.value)
     else waiting?.reject(failureError(reply.failure))
@@ -129,11 +138,56 @@ export function createActionLogWriter(options: { entry?: WriterEntry } = {}): Ac
     })
   }
 
+  async function append(input: { file: LogFile; entries: ActionLogEntry[] }): Promise<void> {
+    const ids = input.entries.flatMap(entry => (entry.entryId === undefined ? [] : [entry.entryId]))
+    const since = places.earliest(ids)
+    let placedAt: number | undefined
+    try {
+      await request({ op: 'append', ...input, ...(since === undefined ? {} : { since }) }, { placed: (offset) => { placedAt = offset } })
+    } catch (error) {
+      if (placedAt !== undefined) places.remember(ids, placedAt)
+      throw error
+    }
+    places.forget(ids)
+  }
+
   return {
-    append: async input => { await request({ op: 'append', ...input }) },
-    probe: async file => { await request({ op: 'probe', file }, PROBE_DEADLINE_MS) },
+    append,
+    probe: async file => { await request({ op: 'probe', file }, { deadlineMs: PROBE_DEADLINE_MS }) },
     recover: async input => (await request({ op: 'recover', ...input })) ?? 0,
     close,
+  }
+}
+
+/**
+ * Where the entries of failed writes may already sit, by entry id: a write that failed after it began may have left
+ * some of its lines, so a retry reads back from the earliest place first.
+ */
+function createPlaces() {
+  const places = new Map<string, number>()
+  return {
+    earliest(ids: readonly string[]): number | undefined {
+      let earliest: number | undefined
+      for (const id of ids) {
+        const at = places.get(id)
+        if (at !== undefined && (earliest === undefined || at < earliest)) earliest = at
+      }
+      return earliest
+    },
+    remember(ids: readonly string[], offset: number): void {
+      for (const id of ids) {
+        const at = Math.min(places.get(id) ?? offset, offset)
+        places.delete(id)
+        places.set(id, at)
+      }
+      for (const id of places.keys()) {
+        if (places.size <= PLACES_KEPT) break
+        places.delete(id)
+      }
+    },
+    forget(ids: readonly string[]): void {
+      for (const id of ids) places.delete(id)
+    },
   }
 }
 

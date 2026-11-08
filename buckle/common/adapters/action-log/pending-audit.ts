@@ -1,10 +1,9 @@
-import { createReadStream } from 'node:fs'
-import { createInterface } from 'node:readline'
 import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { acquireFileLock, type FileLock } from '@5straps/runtime/sqlite'
 import { z } from 'zod'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import { createJsonFileStore } from '../json-file-store.js'
+import { entriesFrom, stringField } from './log-lines.js'
 
 const pendingSchema = z.object({
   version: z.literal(1),
@@ -32,12 +31,15 @@ export function createPendingAudit(input: {
 }) {
   const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} }, lockDeadlineMs: input.lockDeadlineMs })
   return {
-    /** One update for a batch appended at `offset`: each attempt is held until its result, in the batch's order. */
-    async trackMany(entries: readonly ActionLogEntry[], offset: number): Promise<void> {
-      const tracked = entries.flatMap(entry => (entry.auditId && entry.event ? [{ auditId: entry.auditId, entry }] : []))
+    /**
+     * One update for a batch, each entry with the offset its line is at or after: each attempt is held until its result,
+     * in the batch's order. Made again for the same entries, it leaves the same state.
+     */
+    async trackMany(placed: ReadonlyArray<{ entry: ActionLogEntry; offset: number }>): Promise<void> {
+      const tracked = placed.flatMap(({ entry, offset }) => (entry.auditId && entry.event ? [{ auditId: entry.auditId, entry, offset }] : []))
       if (tracked.length === 0) return
       await store.update(state => {
-        for (const { auditId, entry } of tracked) {
+        for (const { auditId, entry, offset } of tracked) {
           if (entry.event === 'attempt') {
             state.pending[auditId] = { offset, processId: process.pid, processInstanceId: input.processInstanceId, entry: { ...entry, auditId } }
           } else { delete state.pending[auditId] }
@@ -88,17 +90,10 @@ async function tryRecoveryLock(path: string): Promise<FileLock | null> {
 }
 
 async function hasTerminalRecord(filePath: string, auditId: string, offset: number): Promise<boolean> {
-  const stream = createReadStream(filePath, { start: offset })
-  const lines = createInterface({ input: stream, crlfDelay: Infinity })
-  try {
-    for await (const line of lines) {
-      try {
-        const value: unknown = JSON.parse(line)
-        if (value && typeof value === 'object' && 'auditId' in value && value.auditId === auditId && 'event' in value && value.event === 'result') return true
-      } catch { /* Torn records are retained in JSONL; only a complete result resolves an attempt. */ }
-    }
-    return false
-  } finally { lines.close(); stream.destroy() }
+  for await (const value of entriesFrom(filePath, offset)) {
+    if (stringField(value, 'auditId') === auditId && stringField(value, 'event') === 'result') return true
+  }
+  return false
 }
 
 /** Whether a process is running, as the kernel answers a signal 0: one that cannot be signalled for want of permission is. */

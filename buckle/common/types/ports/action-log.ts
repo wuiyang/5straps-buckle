@@ -33,6 +33,11 @@ export type JudgeAudit =
 
 /** One attempted tool call, recorded whether it ran, was gated, or failed. */
 export interface ActionLogEntry {
+  /**
+   * This line's own id, kept across every attempt at writing it, so a write tried again leaves out a line already in the
+   * file. Whoever holds an entry across attempts gives it before the first; the writer gives one to an entry without.
+   */
+  entryId?: string
   auditId?: string
   event?: 'attempt' | 'result'
   workspaceId?: string
