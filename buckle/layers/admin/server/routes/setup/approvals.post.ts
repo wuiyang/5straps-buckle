@@ -22,7 +22,8 @@ export default defineSetupHandler({
     // approval and denial is logged with key identity and scope).
     const record = runtime.approvalApi.decisionRecord(receipt)
     if (record) audit({ ...record })
-    if (receipt.status !== 'refused') return { resolved: true, ...(receipt.save === 'owed' ? { grantOwed: true } : {}) }
+    // A grant left owed says why, naming no path: buckle client approve warns of it.
+    if (receipt.status !== 'refused') return { resolved: true, ...(receipt.save === 'owed' ? { grantOwed: true, ...(receipt.saveError === undefined ? {} : { saveError: receipt.saveError }) } : {}) }
     if (receipt.step === 'proof') {
       const refusal = PROOF_REFUSALS[proof === undefined ? 'envelope' : 'device']
       recordRefusal(runtime.actions, { tool: refusal.tool, workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: receipt.error.message })
@@ -30,6 +31,7 @@ export default defineSetupHandler({
       throw HTTPError.status(401, 'Unauthorized', { message: `Approval decision refused: ${receipt.error.message}` })
     }
     if (receipt.step === 'statement') throw HTTPError.status(400, 'Bad Request', { message: 'Invalid approval decision' })
-    throw HTTPError.status(409, 'Conflict', { message: receipt.error.message })
+    // The code tells a lasting denial that did not save (grant_unsaved), whose ask still waits, from one refused outright.
+    throw HTTPError.status(409, 'Conflict', { message: receipt.error.message, body: { code: receipt.error.code } })
   },
 })

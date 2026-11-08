@@ -4,14 +4,15 @@ import { runInScopeContext } from '@5straps/runtime'
 
 const UNHANDLED = 'Internal Buckle error'
 
-// Every error leaves as JSON {error}; internals stay in the server log.
+// Every error leaves as JSON {error}, and {code} where a route named one; internals stay in the server log.
 export default defineErrorHandler((error, event) => {
   const handled = HTTPError.isError(error) && !error.unhandled
   const status = handled ? error.status : 500
   if (!handled) logFailure({ context: getEventContext<H3EventContext>(event), path: new URL(event.req.url).pathname, error })
   const headers = new Headers(handled ? error.headers : undefined)
   headers.set('content-type', 'application/json; charset=utf-8')
-  return new Response(JSON.stringify({ error: publicMessage({ handled, status, error: error as { message: string; statusText?: string } }) }), { status, headers })
+  const code = handled ? error.body?.code : undefined
+  return new Response(JSON.stringify({ error: publicMessage({ handled, status, error: error as { message: string; statusText?: string } }), ...(typeof code === 'string' ? { code } : {}) }), { status, headers })
 })
 
 // The router's own 404 message echoes the full request URL, host and port included, and it is the one

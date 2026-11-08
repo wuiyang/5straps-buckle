@@ -762,3 +762,48 @@ describe('a damaged approvals index behind the admin routes', () => {
     expect(logged).not.toMatch(/MARKERSUBJ|psql|DROP|accounts/)
   })
 })
+
+// The owner's ruling on a grant that fails to save: the device route warns of it now; its retry and skip wait for the
+// remote round. A node error's message names the file, so the warning never carries it.
+describe('a device\'s decision whose grant cannot be saved', () => {
+  const failure = (buckle: Node, code: string) => vi.spyOn(buckle.runtime.grants, 'grant').mockRejectedValueOnce(Object.assign(new Error(`${code}: failed, open '${join(buckle.root, 'grants.json')}'`), { code }))
+  const lastLine = (text: string) => text.trimEnd().split('\n').at(-1)!
+
+  it('answers an approval left owed with its reason beside grantOwed, which buckle client approve warns of, exiting 5', async () => {
+    const buckle = await node()
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    const token = await ask(buckle, write(buckle.root, 'unsaved-approval'))
+    failure(buckle, 'EACCES')
+    const output = capture()
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--scope', 'session'], environment, { confirm: async () => true })).exitCode).toBe(5)
+    expect(JSON.parse(lastLine(output.stdout))).toEqual({ resolved: true, grantOwed: true, saveError: 'permission denied' })
+    expect(output.stderr).toContain('Approved for this call; saving it for the session failed: permission denied.')
+    expect(output.stderr).toContain('Left unsaved: it is written at the next decision')
+    // What the person reads, apart from the node's own JSON log lines, names no path.
+    expect(`${output.stdout}${output.stderr}`.split('\n').filter(line => !line.startsWith('{')).join('\n')).not.toContain(join(buckle.root, 'grants.json'))
+  })
+
+  it('answers a lasting denial that did not save 409 with its code, which buckle client approve warns of, exiting 5, while the call waits', async () => {
+    const buckle = await node()
+    const url = await buckle.listen()
+    const environment = await pinnedDevice(buckle, url)
+    // A credential file: the one ask a denial may outlast its call for.
+    const secret = join(buckle.root, '.env')
+    const { approvals: [asked] } = await buckle.runtime.approvalService.request({
+      sessionId: 'chat-1', requestId: 'unsaved-denial', tool: 'fs_read', wait: { mode: 'none' },
+      asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: secret, reason: 'a credential file', offeredScopes: ['once', 'session', 'always'] }],
+      call: { arguments: { path: secret }, cwd: buckle.config.cwd, description: 'Read .env', effects: [`read ${secret}`], complete: true },
+    })
+    const token = asked!.token
+    failure(buckle, 'EROFS')
+    const output = capture()
+    expect((await clientCommand(['approve', url, '--workspace', 'workspace', token, '--deny', '--scope', 'session'], environment)).exitCode).toBe(5)
+    const warning = 'Not denied for the session: saving failed: the file system is read-only; the call still waits'
+    expect(output.stderr).toContain('HTTP 409')
+    expect(JSON.parse(lastLine(output.stdout))).toEqual({ error: warning, code: 'grant_unsaved' })
+    expect(output.stderr).toContain(`${warning}.`)
+    expect(buckle.runtime.approvals.pending().map(request => request.token)).toContain(token)
+    expect(buckle.runtime.grants.list()).toEqual([])
+  })
+})
