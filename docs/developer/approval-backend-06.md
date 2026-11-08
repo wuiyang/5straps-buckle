@@ -39,7 +39,8 @@ the session moved on to, and at each ask recorded and decision applied, through 
 `onActivity` (`ChangeHistory.touchActivity`). `latest()` reads the newest `at` of both. It throws
 where the store did not open, since the in-memory fallback knows one process alone, and
 `ActivityBusyError` where another process held it past its 1 s busy wait. Where it holds nothing,
-the runtime takes the newest session grant's `createdAt` (`newestSessionGrant`).
+the check takes the newest session grant's `createdAt` (`sessionGrantMade`, which the runtime reads
+with `newestSessionGrant`), and names `grants.json` where that read throws.
 
 ## The verdict
 
@@ -70,7 +71,8 @@ state:
   `createApprovalGate` passes to the grant reads: no session approval clears a call, one given
   meanwhile included, and a denial binds (`suspendedSessionApproval`).
   `SESSION_APPROVALS_CLEAR_WHILE_UNKNOWN` turns the suspension off. The node log warns once per
-  store. An end that throws counts as unknown too.
+  store. An end that throws counts as unknown too, but for a lock another process held past its
+  wait (`isStateBusy`), which counts as busy.
 - **Busy:** the end is skipped this time, and nothing is suspended.
 
 ## What ends

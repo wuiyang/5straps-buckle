@@ -75,10 +75,12 @@ marks in its `active-work/` folder. Where either cannot be read, as on a disk er
 ends and nothing is deleted. Until it can be read again, no session approval clears a call: each
 asks you again, and one you give meanwhile does too, so answer `once` to let the call run. A
 remembered denial still binds. The node log warns once, naming what it could not read. A store
-another Buckle process holds busy for more than a second only skips that check.
+another Buckle process holds busy past its wait only skips that check: `activity.sqlite` for more
+than a second, or the approvals files as the check ends the sessions.
 
 Where `activity.sqlite` holds nothing at all, as after it was lost, the newest session grant's
-making counts as the last activity, so an old grant still ends.
+making in `grants.json` counts as the last activity, so an old grant still ends. Where
+`grants.json` cannot be read then, Buckle cannot tell, as above.
 
 ## Limits
 
