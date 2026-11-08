@@ -48,7 +48,7 @@ function terminal(choices: string[]): Interaction & { asked: string[] } {
   return { requestCli, hold: 'grace', asked }
 }
 
-async function node(input: { interaction?: Interaction; webhook?: boolean; shell?: boolean } = {}) {
+async function node(input: { interaction?: Interaction; webhook?: boolean; shell?: boolean; forms?: boolean } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-current-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
@@ -61,6 +61,7 @@ async function node(input: { interaction?: Interaction; webhook?: boolean; shell
     BUCKLE_APPROVAL_TIMEOUT_MS: '60000', BUCKLE_DELETE_IN_WORKSPACE: 'ask',
     ...(input.shell ? { BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell' } : { BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' }),
     ...(webhook ? { BUCKLE_APPROVAL_WEBHOOK: webhook.url } : {}),
+    ...(input.forms ? { BUCKLE_APPROVAL_FORMS: 'true' } : {}),
   })
   const runtime = await createRuntime({ config, interaction: fixedInteraction(input.interaction ?? NOBODY) })
   runtimes.push(runtime)
@@ -85,9 +86,12 @@ function mcpTool(server: McpServer, tool: string) {
 
 const accepted = (token: string, content: { approve: boolean; scope: 'once' | 'session' | 'always' }) => ({ [token]: { action: 'accept', content } })
 
-/** A node behind the MCP server a face builds: stdio trusts the answers its host's forms carry, HTTP does not. */
+/**
+ * A node behind the MCP server a face builds: stdio trusts the answers its host's forms carry, with the node's forms
+ * setting on, and HTTP does not.
+ */
 async function mcpNode(input: { trusted: boolean }) {
-  const context = await node()
+  const context = await node({ forms: input.trusted })
   const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime) } : {}) })
   return { ...context, tool: (name: string) => mcpTool(server, name), waiting: () => context.runtime.approvalService.pending().map(request => request.token) }
 }

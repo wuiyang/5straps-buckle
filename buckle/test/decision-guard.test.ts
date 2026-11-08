@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView, type LiveSettings } from '../common/domain/approval/decision-guard.js'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-note.js'
 import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -11,6 +11,8 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 // registry also runs screenDecision before it locks the approvals file, with the same messages as before.
 
 const NOW = Date.parse('2026-11-07T10:00:00.000Z')
+// The forms setting on, as these checks are read by it (approval-forms-setting.test.ts holds it off).
+const LIVE: LiveSettings = { forms: true }
 const SHOWN = 'a'.repeat(64)
 const request: ApprovalRequest = { token: 't-1', rule: 'write_scope', subject: '/outside', reason: 'outside', tool: 'fs_write', offeredScopes: ['once', 'session', 'always'], expiresAt: '2026-11-07T10:10:00.000Z' }
 
@@ -18,7 +20,7 @@ const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<Appro
 const deny = (scope: ApprovalDecision['scope'] = 'once'): ApprovalDecision => ({ token: 't-1', approved: false, scope })
 const claim = (decision: ApprovalDecision, extra: Partial<DecisionClaim> = {}): DecisionClaim => ({ decision, source: SOURCES.cli, ...extra })
 const waiting = (asked: Partial<ApprovalRequest> = {}, input: { complete?: boolean; challenges?: string[] } = {}): LedgerView => ({ waiting: { request: { ...request, ...asked }, complete: input.complete ?? true, challenges: input.challenges ?? [SHOWN], marks: PLAIN_MARKS, routes: TODAYS_ROUTES } })
-const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW })
+const guard = (input: { claim: DecisionClaim; ledger?: LedgerView }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? waiting(), now: NOW, live: LIVE })
 
 describe('the checks before the approvals file is read', () => {
   it.each<[string, DecisionClaim, GuardRefusalCode, string]>([
@@ -30,12 +32,12 @@ describe('the checks before the approvals file is read', () => {
     ['a host pattern that is no wildcard', claim(approve('session'), { widenTo: ' api.example.com ' }), 'statement_invalid', '--host takes a wildcard pattern such as *.example.com, got api.example.com; without --host the approval is for the host that asked'],
     ['a wildcard over an address', claim(approve('session'), { widenTo: '*.10.0.0.1' }), 'statement_invalid', 'A wildcard covers a domain, not an address: *.10.0.0.1'],
   ])('refuses %s', (_name, input, code, reason) => {
-    expect(screenDecision(input)).toEqual({ ok: false, code, reason })
+    expect(screenDecision(input, LIVE)).toEqual({ ok: false, code, reason })
   })
 
   it('passes a once from a relayed source, and gives a host pattern trimmed', () => {
-    expect(screenDecision(claim(approve('once'), { source: SOURCES.judge }))).toEqual({ ok: true })
-    expect(screenDecision(claim(approve('always'), { widenTo: ' *.example.com ' }))).toEqual({ ok: true, widenedTo: '*.example.com' })
+    expect(screenDecision(claim(approve('once'), { source: SOURCES.judge }), LIVE)).toEqual({ ok: true })
+    expect(screenDecision(claim(approve('always'), { widenTo: ' *.example.com ' }), LIVE)).toEqual({ ok: true, widenedTo: '*.example.com' })
   })
 })
 
@@ -114,18 +116,18 @@ describe('the checks on a skip of an approval\'s save', () => {
   const recorded = (scope: ApprovalDecision['scope'], approved = true) => ({ approved, scope, source: SOURCES.cli })
 
   it('lets the source that recorded a session or always approval skip its save, and a lasting approval whose grant was dropped', () => {
-    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('session') })).toEqual({ ok: true })
-    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('always') })).toEqual({ ok: true })
-    expect(guardSkip({ source: SOURCES.forms, recorded: { approved: true, scope: 'session' } })).toEqual({ ok: true })
+    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('session'), live: LIVE })).toEqual({ ok: true })
+    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('always'), live: LIVE })).toEqual({ ok: true })
+    expect(guardSkip({ source: SOURCES.forms, recorded: { approved: true, scope: 'session' }, live: LIVE })).toEqual({ ok: true })
   })
 
-  it.each<[string, Parameters<typeof guardSkip>[0], GuardRefusalCode, string]>([
+  it.each<[string, Omit<Parameters<typeof guardSkip>[0], 'live'>, GuardRefusalCode, string]>([
     ['no decision recorded', { source: SOURCES.cli, recorded: undefined }, 'unknown_ask', 'No decision is recorded for this token, so it has no save to skip'],
     ['a once approval', { source: SOURCES.cli, recorded: recorded('once') }, 'conflicting_decision', 'This decision made no session or always grant, so it has no save to skip'],
     ['a lasting denial', { source: SOURCES.cli, recorded: recorded('session', false) }, 'conflicting_decision', 'This decision made no session or always grant, so it has no save to skip'],
     ['another route', { source: SOURCES.terminal, recorded: recorded('session') }, 'approver_not_allowed', 'cli recorded this decision, so only it may skip its save'],
     ['a backend named after the route', { source: { id: 'cli', kind: 'backend' }, recorded: recorded('session') }, 'approver_not_allowed', 'cli recorded this decision, so only it may skip its save'],
   ])('refuses a skip of %s', (_name, input, code, reason) => {
-    expect(guardSkip(input)).toEqual({ ok: false, code, reason })
+    expect(guardSkip({ ...input, live: LIVE })).toEqual({ ok: false, code, reason })
   })
 })

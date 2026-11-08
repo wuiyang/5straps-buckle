@@ -106,7 +106,7 @@ const shell = (name: 'network' | 'isolation', what: string): SettingKey => ({
   unset: settings => withoutShell(settings, name),
 })
 
-type ApprovalKey = 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts' | 'quickJudge' | 'quickJudgeProvider' | 'quickJudgeModel'
+type ApprovalKey = 'forms' | 'judge' | 'judgeProvider' | 'judgeModel' | 'judgeStandardScripts' | 'quickJudge' | 'quickJudgeProvider' | 'quickJudgeModel'
 
 /** The approval block with `name` taken out: unset, so the node's value stands for it. */
 function withoutApproval(settings: WorkspaceSettings, name: ApprovalKey): WorkspaceSettings {
@@ -185,6 +185,7 @@ export const SETTING_KEYS: readonly SettingKey[] = [
   pack('shell'), pack('code'), pack('history'), pack('hostGit'), pack('hostLsp'),
   shell('network', 'whether shell commands may reach the network while no approved URL list is set'),
   shell('isolation', 'whether each shell command runs on a private copy of the folder, published once it ends'),
+  approval('forms', `on or off: whether an MCP host's form answers decide this workspace's asks (the node's, else ${BUILT_IN_SETTINGS.approval.forms ? 'on' : 'off'})`, raw => onOff('approval.forms', raw)),
   // The decision AI (D91): the node's BUCKLE_APPROVAL_JUDGE and its kin stand where these are unset.
   approval('judge', `off, on-request, or automated: whether the decision AI rates an interpreter call, when the owner asks or at each call (the node's, else ${BUILT_IN_SETTINGS.approval.judge})`, raw => oneOf('approval.judge', JUDGE_MODES, raw)),
   approval('judgeProvider', `openai-compatible: who rates it, with the node's key (the node's, else ${BUILT_IN_SETTINGS.approval.judgeProvider})`, raw => oneOf('approval.judgeProvider', JUDGE_PROVIDERS, raw)),

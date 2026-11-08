@@ -167,7 +167,7 @@ describe('a call inside a script that needs a person', () => {
   })
 
   it('shows the nested ask whole in an MCP host\'s form, and runs once the host retries with the answer', async () => {
-    const { workspace, runtime } = await node()
+    const { workspace, runtime } = await node({ BUCKLE_APPROVAL_FORMS: 'true' })
     const server = createMcpServer({ runtime, serverName: 'buckle-test', serverId: 'node-7', version: '0.0.0', forms: openForms(runtime, 'node-7'), followToolChanges: false })
     const call = (responses?: Record<string, unknown>) => {
       const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools

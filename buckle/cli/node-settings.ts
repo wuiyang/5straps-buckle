@@ -41,6 +41,8 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   // Owner decision D8: the admin HTTP layer is experimental, off until this is on (and an admin credential is set).
   { key: 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP', alias: 'experimental-admin-http', kind: 'boolean', fallback: 'false' },
   { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000', workspace: { key: 'approvalWaitMs', change: 'buckle workspace set approvalWaitMs <milliseconds>' } },
+  // MCP form approvals: every workspace's default where its own settings hold none.
+  { key: 'BUCKLE_APPROVAL_FORMS', alias: 'approval-forms', kind: 'boolean', fallback: 'false', workspace: { key: 'approval.forms', change: 'buckle workspace set approval.forms on|off' } },
   // The decision AI (D91): every workspace's defaults where its own settings hold none. Its key and base URL are the node's
   // alone, left to a hand edit, and never listed here.
   { key: 'BUCKLE_APPROVAL_JUDGE', alias: 'approval-judge', kind: 'judge-mode', fallback: 'off', workspace: { key: 'approval.judge', change: 'buckle workspace set approval.judge off|on-request|automated' } },

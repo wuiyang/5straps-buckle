@@ -36,6 +36,12 @@ export interface LedgerView {
   waiting?: { request: ApprovalRequest; complete: boolean; challenges: readonly string[]; marks: AskMarks; routes: readonly RecordedRoute[] }
 }
 
+/** The workspace's settings a decision meets, as core reads them when it decides, never from the route that sent it. */
+export interface LiveSettings {
+  /** Whether MCP form answers decide here: the forms setting as it stands now. */
+  forms: boolean
+}
+
 export interface DecisionPlan { widenedTo?: string; wider?: string }
 
 export type GuardVerdict =
@@ -44,9 +50,11 @@ export type GuardVerdict =
   | { ok: true; apply: DecisionPlan }
 
 // Needs no ask, so the registry also runs it before it locks the approvals file.
-export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true; widenedTo?: string } {
+export function screenDecision(claim: DecisionClaim, live: LiveSettings): GuardRefusal | { ok: true; widenedTo?: string } {
   const { decision } = claim
   const rights = rightsOf(claim.source.kind)
+  const unset = settingRefusal({ rights, live })
+  if (unset) return unset
   if (decision.approved && !rights.approves) return refuse('capability_exceeded', 'Approval requires an enrolled device key: review and confirm with buckle client approve')
   const lasting = decision.scope !== 'once' && !(rights.deniesLasting && !decision.approved)
   if (lasting && !atLeast(rights.assurance, 'local')) return refuse('assurance_too_low', 'This answer is relayed, so it decides once and nothing that outlives the call')
@@ -54,11 +62,14 @@ export function screenDecision(claim: DecisionClaim): GuardRefusal | { ok: true;
   return checkWidening({ pattern: claim.widenTo, decision, source: claim.source })
 }
 
-/** `policy`: whether the file floor takes scope always; today's floor policy unless a caller turns it the safer way. */
-export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number; policy?: FloorPolicy }): GuardVerdict {
+/**
+ * The live settings come first, so a repeat, a save retry, and an ask already gone meet them too. `policy`: whether the
+ * file floor takes scope always; today's floor policy unless a caller turns it the safer way.
+ */
+export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number; live: LiveSettings; policy?: FloorPolicy }): GuardVerdict {
   const { claim: { decision }, claim, ledger } = input
   const policy = input.policy ?? FLOOR_POLICY
-  const screened = screenDecision(claim)
+  const screened = screenDecision(claim, input.live)
   if (!screened.ok) return screened
   const { widenedTo } = screened
   if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved, source: claim.source })
@@ -92,8 +103,10 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
 export interface RecordedForSkip { approved: boolean; scope: ApprovalDecision['scope']; source?: ApprovalSource }
 
 /** A skip gives up a session or always approval's grant, and only the source that recorded the decision sends one. */
-export function guardSkip(input: { source: ApprovalSource; recorded: RecordedForSkip | undefined }): GuardRefusal | { ok: true } {
+export function guardSkip(input: { source: ApprovalSource; recorded: RecordedForSkip | undefined; live: LiveSettings }): GuardRefusal | { ok: true } {
   const { recorded } = input
+  const unset = settingRefusal({ rights: rightsOf(input.source.kind), live: input.live })
+  if (unset) return unset
   if (recorded === undefined) return refuse('unknown_ask', 'No decision is recorded for this token, so it has no save to skip')
   if (!recorded.approved || recorded.scope === 'once') return refuse('conflicting_decision', 'This decision made no session or always grant, so it has no save to skip')
   if (recorded.source !== undefined && !sameSource(recorded.source, input.source)) return refuse('approver_not_allowed', `${recorded.source.id} recorded this decision, so only it may skip its save`)
@@ -102,6 +115,11 @@ export function guardSkip(input: { source: ApprovalSource; recorded: RecordedFor
 
 function sameSource(left: ApprovalSource, right: ApprovalSource): boolean {
   return left.id === right.id && left.kind === right.kind
+}
+
+function settingRefusal(input: { rights: SourceRights; live: LiveSettings }): GuardRefusal | null {
+  if (input.rights.whileFormsOn && !input.live.forms) return refuse('approver_not_allowed', 'MCP form approvals are off in this workspace (approval.forms), so a form answer decides nothing: answer at the node')
+  return null
 }
 
 function refuse(code: GuardRefusalCode, reason: string): GuardRefusal {

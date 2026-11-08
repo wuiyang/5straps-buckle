@@ -308,7 +308,7 @@ export const WORKSPACE_DEFAULT_KEYS: readonly string[] = Object.freeze([
   'BUCKLE_APPROVAL_TIMEOUT_MS', 'BUCKLE_MOUNTS', 'BUCKLE_SCRATCH_ROOTS', 'BUCKLE_SHELL_NETWORK', 'BUCKLE_SHELL_ISOLATION', 'BUCKLE_ALLOWED_HOSTS',
   'BUCKLE_BROWSER_CDP', 'BUCKLE_BROWSER_PROFILE', 'BUCKLE_BROWSER_ARGS', 'BUCKLE_BROWSER_HEADED',
   'BUCKLE_APPROVAL_JUDGE', 'BUCKLE_APPROVAL_JUDGE_PROVIDER', 'BUCKLE_APPROVAL_JUDGE_MODEL', 'BUCKLE_APPROVAL_JUDGE_STANDARD_SCRIPTS',
-  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
+  'BUCKLE_APPROVAL_QUICK_JUDGE', 'BUCKLE_APPROVAL_QUICK_JUDGE_MODEL', 'BUCKLE_APPROVAL_FORMS', 'BUCKLE_DELETE_IN_WORKSPACE', 'BUCKLE_MASS_DELETE_LIMIT',
 ])
 
 /**
@@ -452,8 +452,11 @@ export interface NodeDefaults {
   /** BUCKLE_SHELL_NETWORK and BUCKLE_SHELL_ISOLATION, where buckle.env names them. */
   shell: { network?: boolean; isolation?: boolean }
   browser: { cdp?: string; profile?: string; args?: string; headed?: boolean }
-  /** BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, and BUCKLE_APPROVAL_QUICK_JUDGE and its _MODEL, where buckle.env names them (D91). */
-  approval: { judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
+  /**
+   * BUCKLE_APPROVAL_JUDGE, its _PROVIDER, _MODEL, and _STANDARD_SCRIPTS, and BUCKLE_APPROVAL_QUICK_JUDGE and its _MODEL, where
+   * buckle.env names them (D91), and BUCKLE_APPROVAL_FORMS, whether MCP form answers decide.
+   */
+  approval: { forms?: boolean; judge?: JudgeMode; judgeProvider?: JudgeProvider; judgeModel?: string; judgeStandardScripts?: string[]; quickJudge?: QuickJudgeScope; quickJudgeModel?: string }
   /** BUCKLE_DELETE_IN_WORKSPACE and BUCKLE_MASS_DELETE_LIMIT, where buckle.env names them (the delete policy brief). */
   files: { deleteInWorkspace?: DeleteInWorkspace; massDeleteLimit?: number }
   env: Readonly<Record<string, string>>
@@ -515,7 +518,8 @@ function deleteDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['files'] {
 
 /**
  * The node's decision AI defaults (D91), each checked as a workspace's own is, so a value Buckle refuses stops the node,
- * naming the variable. The standard scripts are command globs separated by ;;, and an empty value names none.
+ * naming the variable. The standard scripts are command globs separated by ;;, and an empty value names none. MCP form
+ * answers decide only at BUCKLE_APPROVAL_FORMS=true, as the node's other switches read.
  */
 function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approval'] {
   const judge = environment.BUCKLE_APPROVAL_JUDGE || undefined
@@ -535,7 +539,9 @@ function approvalDefaults(environment: NodeJS.ProcessEnv): NodeDefaults['approva
       throw error
     }
   }
+  const forms = environment.BUCKLE_APPROVAL_FORMS ? environment.BUCKLE_APPROVAL_FORMS === 'true' : undefined
   return {
+    ...defined('forms', forms),
     ...defined('judge', judge as JudgeMode | undefined), ...defined('judgeProvider', judgeProvider as JudgeProvider | undefined),
     ...defined('judgeModel', judgeModel), ...defined('judgeStandardScripts', scripts),
     ...defined('quickJudge', quickJudge as QuickJudgeScope | undefined), ...defined('quickJudgeModel', quickJudgeModel),

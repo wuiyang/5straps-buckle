@@ -97,9 +97,10 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
  * and `judgeModel` which model rates it (Buckle's own: an OpenAI-compatible endpoint and gpt-6-luna), and `judgeStandardScripts` the commands rated on
  * their command line alone; `quickJudge` which calls the optional quick stage rates (off, interpreters, asks, or all),
  * with `quickJudgeProvider` and `quickJudgeModel` (Buckle's own: TypeSafe's jev-latest). None holds a credential: the
- * keys and base URLs are the node's alone.
+ * keys and base URLs are the node's alone. `forms` says whether an MCP host's form answers decide its asks.
  */
 const ApprovalSchema = z.object({
+  forms: z.boolean().optional(),
   judge: z.enum(JUDGE_MODES).optional(),
   judgeProvider: z.enum(JUDGE_PROVIDERS).optional(),
   judgeModel: z.string().regex(JUDGE_MODEL_NAME).optional(),
@@ -306,7 +307,8 @@ export const BUILT_IN_SETTINGS = Object.freeze({
   approvalWaitMs: DEFAULT_APPROVAL_WAIT_MS,
   shell: Object.freeze({ network: false, isolation: true }),
   browser: Object.freeze({ idleTimeoutMs: DEFAULT_BROWSER_IDLE_MS, headed: false }),
-  approval: Object.freeze({ judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
+  // MCP form answers decide only where the owner turns them on, for a workspace or as the node's default.
+  approval: Object.freeze({ forms: false, judge: 'off' as JudgeMode, judgeProvider: 'openai-compatible' as JudgeProvider, judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off' as QuickJudgeScope, quickJudgeProvider: 'typesafe' as QuickJudgeProvider, quickJudgeModel: 'jev-latest' }),
   secrets: Object.freeze({ enabled: true, files: Object.freeze([] as string[]) }),
   files: Object.freeze({ deleteInWorkspace: BUILT_IN_DELETE_POLICY.inWorkspace, massDeleteLimit: BUILT_IN_DELETE_POLICY.massLimit }),
 })
@@ -333,8 +335,9 @@ export interface ResolvedSettings {
   sources: Readonly<Record<string, SettingSource>>
 }
 
-/** A workspace's decision AI in force (D91): Buckle's own provider and model stand where neither the workspace nor the node names one. */
+/** A workspace's approval settings in force: whether MCP forms decide, and its decision AI (D91), whose provider and model are Buckle's own where neither the workspace nor the node names one. */
 export interface ResolvedApproval {
+  forms: boolean
   judge: JudgeMode
   judgeProvider: JudgeProvider
   judgeModel: string
@@ -424,6 +427,7 @@ export function resolveSettings(stored: WorkspaceSettings, node: NodeDefaults): 
     },
     browser,
     approval: {
+      forms: pick('approval.forms', stored.approval.forms, node.approval.forms, BUILT_IN_SETTINGS.approval.forms),
       judge: pick('approval.judge', stored.approval.judge, node.approval.judge, BUILT_IN_SETTINGS.approval.judge),
       judgeProvider: pick('approval.judgeProvider', stored.approval.judgeProvider, node.approval.judgeProvider, BUILT_IN_SETTINGS.approval.judgeProvider),
       judgeModel: pick('approval.judgeModel', stored.approval.judgeModel, node.approval.judgeModel, BUILT_IN_SETTINGS.approval.judgeModel),

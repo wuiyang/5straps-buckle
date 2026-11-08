@@ -11,7 +11,7 @@ import { approvalsPath, loadConfig } from '../common/runtime/config.js'
 import { CHANGES_DIRECTORY } from '../common/services/judge/call-forms.js'
 import { withMount } from '../common/services/workspaces/workspace-settings.js'
 import { CREDENTIAL_HIDDEN, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import type { DecisionClaim } from '../common/domain/approval/decision-guard.js'
+import type { DecisionClaim, LiveSettings } from '../common/domain/approval/decision-guard.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, workspacesOf } from './support/workspaces.js'
@@ -26,7 +26,7 @@ import { auditEntries } from './support/action-log-writer.js'
 const claims = vi.hoisted(() => [] as Array<{ source: unknown; scope: string }>)
 vi.mock('../common/domain/approval/decision-guard.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/domain/approval/decision-guard.js')>()
-  return { ...actual, screenDecision: (claim: DecisionClaim) => { claims.push({ source: claim.source, scope: claim.decision.scope }); return actual.screenDecision(claim) } }
+  return { ...actual, screenDecision: (claim: DecisionClaim, live: LiveSettings) => { claims.push({ source: claim.source, scope: claim.decision.scope }); return actual.screenDecision(claim, live) } }
 })
 
 const KEY = 'sk-on-request-fixture-0123456789'

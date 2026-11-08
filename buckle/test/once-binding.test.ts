@@ -49,13 +49,13 @@ function terminal(): Terminal {
 }
 
 /** A node paired with Rings refuses a plain decision, so only the sealed route's node holds the key. */
-async function node(options: { paired?: boolean } = {}): Promise<Setup> {
+async function node(options: { paired?: boolean; forms?: boolean } = {}): Promise<Setup> {
   const root = mkdtempSync(join(tmpdir(), 'buckle-once-binding-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(join(workspace, 'one'), { recursive: true })
   const key = mintApprovalKey()
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...(options.paired ? { BUCKLE_RINGS_APPROVAL_KEY: key } : {}) })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000', ...(options.paired ? { BUCKLE_RINGS_APPROVAL_KEY: key } : {}), ...(options.forms ? { BUCKLE_APPROVAL_FORMS: 'true' } : {}) })
   const person = terminal()
   const runtime = await createRuntime({ config, interaction: async () => ({ requestCli: person.requestCli, hold: 'grace' }) })
   return { workspace, config, runtime, key, person }
@@ -141,7 +141,7 @@ describe('a once decided through MCP elicitation', () => {
   }
 
   it('S2: answers the ask it names, and a retry carrying that answer with other arguments still asks', async () => {
-    const setup = await node()
+    const setup = await node({ forms: true })
     const server = createMcpServer({ runtime: setup.runtime, serverName: 'buckle-test', version: '0.0.0', forms: openForms(setup.runtime), followToolChanges: false })
     const token = await asked(setup, approved('A-1'))
 

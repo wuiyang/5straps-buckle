@@ -62,6 +62,7 @@ function gatedServer(decide: ApprovalHost['decide'] = async () => APPLIED, waiti
     workspaceId: 'default',
     workspaceName: () => 'Fixture workspace',
     judgeApproves: () => judgeApproves,
+    approvalForms: () => true,
   } as unknown as BuckleRuntime
   // The asks as core hands them to the forms: from the ledger, each whole where its call was kept whole.
   const asks = () => waiting.map(ask => ledgerAskOf(ask, { workspace: { id: 'default', node: 'node-7' }, idempotencyKey: key => key }))

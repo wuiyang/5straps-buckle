@@ -12,6 +12,8 @@ export interface SourceRights {
   widens: boolean
   /** A core client at the node, routed to every ask whatever routes the ask recorded. */
   everyAsk: boolean
+  /** Its answers decide only while the workspace's forms setting is on, read as each is decided. */
+  whileFormsOn?: true
 }
 
 const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, widens: true, everyAsk: false }
@@ -19,9 +21,9 @@ const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: 
 const RIGHTS: Record<SourceKind, SourceRights> = {
   terminal: AT_THE_NODE,
   cli: { ...AT_THE_NODE, everyAsk: true },
-  // Ruling 3 of 2026-09-25, which the owner keeps: a stdio host's form answers count as the person's. `relayed` would
-  // hold them to a non-floor once.
-  forms: { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false },
+  // Ruling 3 of 2026-09-25, which the owner keeps: a stdio host's form answers count as the person's, while the owner's
+  // forms setting is on. `relayed` would hold them to a non-floor once.
+  forms: { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
   // The setup route's envelope keeps today's lasting denials of a sensitive file.

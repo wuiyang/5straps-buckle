@@ -22,8 +22,9 @@ export interface McpServerOptions {
   serverId?: string
   version: string
   /**
-   * A stdio host's forms, through which its answers decide as the forms source. Absent over HTTP, where a call's
-   * `inputResponses` are never read, so nothing the agent's token reaches answers an ask.
+   * A stdio host's forms, through which its answers decide as the forms source while the workspace's forms setting is on,
+   * read at each call. Absent over HTTP, where a call's `inputResponses` are never read, so nothing the agent's token
+   * reaches answers an ask.
    */
   forms?: FormsBackend
   callScope?: ToolCallScope
@@ -70,7 +71,10 @@ export function createMcpServer(input: McpServerOptions): McpServer {
   return server
 }
 
-/** A stdio host's forms, opened on the runtime's approvals, where core binds them to the forms source. */
+/**
+ * A stdio host's forms, opened on the runtime's approvals, where core binds them to the forms source. They stay open while
+ * the forms setting is off, so turning it on applies from the next call.
+ */
 export function openForms(runtime: BuckleRuntime, node?: string): FormsBackend {
   const forms = createFormsBackend({ workspace: () => ({ id: runtime.workspaceId, name: runtime.workspaceName() }), ...(node === undefined ? {} : { node }), approves: () => runtime.judgeApproves() })
   runtime.openApprovalForms(forms)
@@ -98,9 +102,11 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           await options.beforeCall?.()
           const hints = callHints(context.mcpReq?._meta)
           if ('refused' in hints) return refusedHint(hints.refused)
-          const approvalTokens = forms ? await forms.answer(context.mcpReq?.inputResponses) : []
+          // Off, the call gets the relay text and the answers it carries are not read.
+          const opened = forms !== undefined && runtime.approvalForms() ? forms : undefined
+          const approvalTokens = opened ? await opened.answer(context.mcpReq?.inputResponses) : []
           // The host asks its user itself, so the call reports back at once instead of waiting.
-          const elicits = forms !== undefined && supportsElicitation(readers, context) ? forms : undefined
+          const elicits = opened !== undefined && supportsElicitation(readers, context) ? opened : undefined
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
 
           const { response, replay } = await invokeJoined({

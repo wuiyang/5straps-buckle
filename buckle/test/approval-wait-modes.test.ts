@@ -148,7 +148,7 @@ it('offers native elicitation immediately even when the node waits until answere
 async function mcpFixture(nativePrompt = false, isCancel?: (reason: unknown) => boolean) {
   const root = directory()
   mkdirSync(join(root, 'workspace'))
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0', ...(nativePrompt ? { BUCKLE_APPROVAL_FORMS: 'true' } : {}) })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
   const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', ...(nativePrompt ? { forms: openForms(runtime) } : {}), ...(isCancel ? { isCancel } : {}) })
   // The SDK does not expose handlers publicly; exercise its registered callback with a request context.

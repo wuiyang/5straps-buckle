@@ -28,7 +28,7 @@ const approve = (scope: ApprovalDecision['scope'] = 'once', extra: Partial<Appro
 const deny = (): ApprovalDecision => ({ token: 't-1', approved: false, scope: 'once' })
 const claim = (source: ApprovalSource, decision: ApprovalDecision): DecisionClaim => ({ decision, source })
 const ledger = (input: { marks?: AskMarks; routes?: readonly RecordedRoute[] } = {}): LedgerView => ({ waiting: { request, complete: true, challenges: [], marks: input.marks ?? PLAIN_MARKS, routes: input.routes ?? TODAYS_ROUTES } })
-const guard = (input: { claim: DecisionClaim; ledger?: LedgerView; policy?: FloorPolicy }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? ledger(), now: NOW, ...(input.policy ? { policy: input.policy } : {}) })
+const guard = (input: { claim: DecisionClaim; ledger?: LedgerView; policy?: FloorPolicy }) => guardDecision({ claim: input.claim, ledger: input.ledger ?? ledger(), now: NOW, live: { forms: true }, ...(input.policy ? { policy: input.policy } : {}) })
 const PERSONS = ['terminal', 'cli', 'forms', 'devices'] as const
 
 describe('routing by the ask\'s recorded routes', () => {

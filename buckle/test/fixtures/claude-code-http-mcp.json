@@ -1,0 +1,18 @@
+{
+  "what": "The first request Claude Code's HTTP MCP client sent a local MCP server built on @modelcontextprotocol/server 2.3.1, logged by a throwaway probe on 127.0.0.1 while claude mcp list checked its health. No model was called. Claude Code 2.1.300 sent the same request, its own version aside.",
+  "claudeCode": "2.1.303",
+  "recorded": "2026-11-08",
+  "headers": { "mcp-method": "server/discover", "mcp-protocol-version": "2026-07-28" },
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "server-discover-probe-1",
+    "method": "server/discover",
+    "params": {
+      "_meta": {
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": { "name": "claude-code", "title": "Claude Code", "version": "2.1.303", "description": "Anthropic's agentic coding tool", "websiteUrl": "https://claude.com/claude-code" },
+        "io.modelcontextprotocol/clientCapabilities": { "roots": { "listChanged": true }, "elicitation": { "form": {}, "url": {} } }
+      }
+    }
+  }
+}

@@ -11,7 +11,7 @@ import type { CodeBinding } from '../../domain/permission/judged.js'
 import { servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
-import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type LedgerView } from '../../domain/approval/decision-guard.js'
+import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type LedgerView, type LiveSettings } from '../../domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../../domain/approval/routes.js'
 import { GRANT_SAVES, type ApprovalErrorCode, type EventReason, type GrantSave } from '../../types/ports/approval-backend.js'
 import { BUILT_IN_SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
@@ -450,13 +450,18 @@ export interface ApprovalRegistryOptions {
   onNoticeQueued?: () => void
   /** Told of this workspace's asks that expired unanswered, by whichever update drops them first. */
   onExpired?: (requests: ApprovalRequest[]) => void
+  /** The workspace's settings as they stand, read at each decision and skip; without it no MCP form answer decides. */
+  live?: () => LiveSettings
 }
+
+const UNREAD_SETTINGS: LiveSettings = Object.freeze({ forms: false })
 
 /** The ledger is keyed by the grant store's workspace, so its asks and their grants never part. */
 export function createApprovalRegistry(grantStore: GrantStore, filePath: string, waitMs: number | null = 0, options: ApprovalRegistryOptions = {}): ApprovalRegistry {
   const { workspace } = grantStore
   const store = createJsonFileStore({ filePath, schema: fileSchema, fallback: { version: 1, pending: [], once: [], resolved: [], outbox: [] }, lockDeadlineMs: options.lockDeadlineMs })
   const durableNotices = options.durableNotices === true
+  const live = options.live ?? (() => UNREAD_SETTINGS)
   const calls = createCallFiles(join(dirname(filePath), CALLS_DIRECTORY))
   const revocationsPath = join(dirname(filePath), REVOCATIONS_FILE)
   const revocations = createJsonFileStore({ filePath: revocationsPath, schema: revocationsSchema, fallback: { version: 1, revoked: [] }, lockDeadlineMs: options.lockDeadlineMs })
@@ -783,7 +788,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
     const owedBy = previous?.grant?.save === 'owed' ? { owedBy: previous.grant.source } : {}
     const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: { ...previous, ...owedBy } }), ...(waiting === undefined ? {} : { waiting }) }
-    const verdict = guardDecision({ claim, ledger, now })
+    const verdict = guardDecision({ claim, ledger, now, live: live() })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     if ('repeated' in verdict) {
       const repeated: Extract<Resolution, { ok: true }> = { ok: true, repeated: true, ...(verdict.asked ? { asked: verdict.asked } : {}) }
@@ -889,7 +894,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   async function skipIn(input: { state: State; commit: () => Promise<void>; token: string; source: ApprovalSource }): Promise<SkipResolution> {
     const entry = input.state.resolved.find(candidate => candidate.workspace === workspace && candidate.decision.token === input.token)
     const recorded = entry === undefined ? undefined : { approved: entry.decision.approved, scope: entry.decision.scope, ...(entry.grant ? { source: entry.grant.source } : {}) }
-    const verdict = guardSkip({ source: input.source, recorded })
+    const verdict = guardSkip({ source: input.source, recorded, live: live() })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     // Skipped already, or a revoke, a session end, or a denial in its place dropped it, so none stands and none is written.
     if (entry?.grant === undefined || entry.grant.save === 'skipped' || entry.grant.save === 'dropped') return { ok: true, repeated: true }
@@ -970,7 +975,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
         ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
       }
       // Refused before the lock, so these come back even when the approvals file cannot be read.
-      const screened = screenDecision(claim)
+      const screened = screenDecision(claim, live())
       if (!screened.ok) {
         if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source: source.id })
         return { ok: false, code: screened.code, reason: screened.reason }

@@ -39,7 +39,7 @@ describe('a workspace\'s decision AI settings', () => {
   it('are its own, else the node\'s, else off with an OpenAI-compatible endpoint, gpt-6-luna, and the built-in standard scripts, naming where each came from', () => {
     const unset = WorkspaceSettingsSchema.parse({ version: 1 })
     const builtIn = resolveSettings(unset, loadConfig({}).workspaceDefaults)
-    expect(builtIn.approval).toEqual({ judge: 'off', judgeProvider: 'openai-compatible', judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off', quickJudgeProvider: 'typesafe', quickJudgeModel: 'jev-latest' })
+    expect(builtIn.approval).toEqual({ forms: false, judge: 'off', judgeProvider: 'openai-compatible', judgeModel: 'gpt-6-luna', judgeStandardScripts: STANDARD_SCRIPTS, quickJudge: 'off', quickJudgeProvider: 'typesafe', quickJudgeModel: 'jev-latest' })
     expect(builtIn.sources).toMatchObject({ 'approval.judge': 'built-in', 'approval.judgeProvider': 'built-in', 'approval.judgeModel': 'built-in', 'approval.judgeStandardScripts': 'built-in' })
     expect(STANDARD_SCRIPTS).toEqual(expect.arrayContaining(['npm run *', 'pnpm dev', 'npx vitest *', 'bunx tsc *']))
 

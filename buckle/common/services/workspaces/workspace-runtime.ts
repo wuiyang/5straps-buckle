@@ -245,6 +245,8 @@ export interface BuckleRuntime {
   judgeAsk(token: string, options?: { signal?: AbortSignal }): Promise<JudgeAskResult>
   /** Whether the decision AI's thorough stage can rate here, so --approve-if-safe can approve (fix brief 9, B37). */
   judgeApproves(): boolean
+  /** Whether MCP form answers decide here: approval.forms as workspace.json holds it now, else the node's, else off. */
+  approvalForms(): boolean
   invoke(input: InvokeInput): Promise<InvokeResponse>
   /**
    * Shutdown's in-flight tool calls step (B19): cancels every call still running here, a shell among
@@ -344,6 +346,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     lockDeadlineMs, durableNotices: webhook !== null,
     onExpired: requests => notices?.expired(requests),
     onNoticeQueued: () => { void notices?.flush() },
+    live: () => ({ forms: formsInForce() }),
   })
   // Every revoke goes through the ledger, so a decision's owed mark never writes a revoked grant again.
   const { grants } = approvals
@@ -417,6 +420,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // A version that read but would not apply, reported once; unlike one that would not read, it is tried again.
   let failedVersion: string | undefined
   let pickingUp: Promise<void> | undefined
+  // A version whose forms setting could not be read, reported once.
+  let formsUnreadVersion: string | undefined
 
   let compiled = compileStartupPolicy(applied)
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, mounts: config.mounts })
@@ -562,6 +567,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     scriptOfAsk: token => scriptOfAsk(journalDirectory({ stateDirectory: config.stateDirectory, cwd: config.cwd }), token),
 
     judgeApproves: () => inForce().judge.thoroughReady,
+
+    approvalForms: formsInForce,
 
     async judgeAsk(token, options = {}) {
       const refused = (reason: string): JudgeAskResult => ({ kind: 'refused', reason })
@@ -738,6 +745,21 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       await retire(next.replaced)
     }
     for (const listener of listeners) listener()
+  }
+
+  /**
+   * The forms setting as workspace.json holds it now, not as the last call took it up, so turning it off refuses a form
+   * answer at once. A file that will not read counts as off: no form answer decides while the owner's word is unknown.
+   */
+  function formsInForce(): boolean {
+    const version = settingsFile.version()
+    try {
+      return resolveSettings(version === appliedVersion ? applied : settingsFile.read(), config.workspaceDefaults).approval.forms
+    } catch (error) {
+      if (formsUnreadVersion !== version) logger.warn('Workspace settings cannot be read, so MCP form answers decide nothing until they can', { workspaceId, error })
+      formsUnreadVersion = version
+      return false
+    }
   }
 
   /** The settings a call runs under: those in force as it starts, which a later pickup does not change for it. */

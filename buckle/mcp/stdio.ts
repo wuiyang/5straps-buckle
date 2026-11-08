@@ -45,9 +45,9 @@ export async function serveMcpStdio(input: { config: NodeConfig; common: BuckleC
 }
 
 /**
- * The MCP server a stdio session is served by. The owner's own host answers an ask, so its answers count as a person's;
- * a call that asks waits the workspace's own wait, which a caller's hint may shorten, where the HTTP face holds at most
- * MCP_HOLD_MS (the MCP asks brief, item 1).
+ * The MCP server a stdio session is served by. The owner's own host answers an ask, so its answers count as a person's
+ * while the workspace's forms setting is on; a call that asks waits the workspace's own wait, which a caller's hint may
+ * shorten, where the HTTP face holds at most MCP_HOLD_MS (the MCP asks brief, item 1).
  */
 export function createStdioServer(input: { runtime: BuckleRuntime; config: Pick<BuckleConfig, 'serverName' | 'serverId' | 'approvalTimeoutMs'>; callScope: ToolCallScope; beforeCall: () => Promise<void> }) {
   const { runtime, config } = input

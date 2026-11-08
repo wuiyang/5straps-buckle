@@ -147,7 +147,8 @@ async function opened() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-forms-'))
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
-  const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
+  // The forms setting on, as the owner turns it on for a workspace whose host's forms should decide.
+  const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000, { live: () => ({ forms: true }) })
   const heard: ApprovalSource[] = []
   const refused: Array<{ token: string; code: string }> = []
   const decisionAudit: DecisionAudit = {
