@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CliOutcome, RequestCli } from '@5straps/runtime'
+import type { CliOutcome, CliRequest, RequestCli } from '@5straps/runtime'
 import type { PermissionRuleId } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonce-claims.js'
@@ -10,7 +10,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
-import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../common/types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { UNHEARD_DECISIONS } from './support/decision-audit.js'
 
@@ -40,12 +40,12 @@ function recordingBackend(decide: (host: ApprovalHost, asks: FullAsk[]) => Promi
   return { backend, seen }
 }
 
-function setUp(backend: ApprovalBackend, graceMs: number | null = 200) {
+function setUp(backend: ApprovalBackend, graceMs: number | null = 200, hold: ApprovalHold = 'grace') {
   const root = mkdtempSync(join(tmpdir(), 'buckle-terminal-port-'))
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
-  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => 'grace', terminal: backend, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS })
+  const service = createApprovalService({ registry, workspaceId: 'w-1', workspaceName: 'The site', serverId: 'node-1', graceMs, hold: async () => hold, terminal: backend, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS })
   return { registry, grants, service, root }
 }
 
@@ -362,6 +362,28 @@ describe('the service and the terminal backend together', () => {
     expect((await service.request(call())).settled).toBe(true)
     await vi.waitFor(() => expect(grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: '/outside/a.md', scope: 'session' })]))
     expect(terminal.shown).toEqual([expect.stringMatching(/^approval:w-1:/), expect.stringMatching(/^grant_save:w-1:.+:1$/)])
+    await service.close()
+  })
+
+  it('holds a one-shot prompt\'s call until its person answers the save question their decision raised, then runs it on the saved grant', async () => {
+    const shown: CliRequest[] = []
+    const saving = Promise.withResolvers<string>()
+    const requestCli: RequestCli = async (request) => {
+      shown.push(request)
+      const choice = request.kind === 'approval' ? 'session' : await saving.promise
+      return { status: 'answered', requestId: request.id, answer: { choice } }
+    }
+    const { service, grants } = setUp(createTerminalBackend({ requester: async () => requestCli }), 5_000, 'prompt')
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(unwritable())
+    let ran = false
+    const waiting = service.request(call()).then((result) => { ran = true; return result })
+    await vi.waitFor(() => expect(shown.map(request => request.kind)).toEqual(['approval', 'grant_save']))
+    await new Promise(resolve => setTimeout(resolve, 200))
+    expect(ran).toBe(false)
+
+    saving.resolve('r')
+    expect((await waiting).settled).toBe(true)
+    expect(grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: '/outside/a.md', scope: 'session' })])
     await service.close()
   })
 

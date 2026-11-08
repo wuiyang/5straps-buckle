@@ -197,6 +197,10 @@ interface OpenAsk {
   /** The terminal questions; settles when they end. */
   prompting: Promise<void> | undefined
   promptEnded: boolean
+  /** A decision this process is recording on one of its asks; settles once its answer is known. */
+  deciding: Promise<void> | undefined
+  /** A decision this process recorded on it left its lasting grant owed, so its person may be asked to retry or skip. */
+  saving: boolean
   /** The tokens the terminal was told have left the queue. */
   readonly told: Set<string>
 }
@@ -329,26 +333,34 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     async answer(input) {
       const { challenge } = input
-      const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) })
-      let result: Resolution
+      const asks = [...live].filter(ask => ask.tokens.includes(input.decision.token))
+      const recording = Promise.withResolvers<void>()
+      for (const ask of asks) ask.deciding = recording.promise
       try {
-        result = await options.registry.resolve(input.decision, input.source, {
-          ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
-          ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
-          ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
-          ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
-          ...(input.code === undefined ? {} : { code: input.code }),
-          ...(input.widen === undefined ? {} : { widen: input.widen }),
-        })
-      } catch (error) {
-        received.failed()
-        throw error
+        const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) })
+        let result: Resolution
+        try {
+          result = await options.registry.resolve(input.decision, input.source, {
+            ...(input.widenTo === undefined ? {} : { widenTo: input.widenTo }),
+            ...(challenge === undefined ? {} : { challenge: { digest: challenge, shown: shownDigests } }),
+            ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }),
+            ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
+            ...(input.code === undefined ? {} : { code: input.code }),
+            ...(input.widen === undefined ? {} : { widen: input.widen }),
+          })
+        } catch (error) {
+          received.failed()
+          throw error
+        }
+        endDecision({ received, source: input.source, result })
+        if (!result.ok) return result
+        if (result.save === 'owed') for (const ask of asks) ask.saving = true
+        if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })
+        wake(input.decision.token)
+        return result
+      } finally {
+        recording.resolve()
       }
-      endDecision({ received, source: input.source, result })
-      if (!result.ok) return result
-      if (!result.repeated) notices.answered({ ...input.decision, ...(input.decision.approved && input.decision.scope === 'once' && input.consumeNotAfter !== undefined ? { consumeNotAfter: new Date(input.consumeNotAfter).toISOString() } : {}) })
-      wake(input.decision.token)
-      return result
     },
 
     async decide(input) {
@@ -491,7 +503,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     const tokens = [...input.approvals.map(approval => approval.token), ...input.answered]
     const ask: OpenAsk = {
       key, approvals: input.approvals, tokens, group: groupOf(tokens), participants: new Set(),
-      stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, told: new Set(),
+      stop: new AbortController(), settled: Promise.withResolvers<void>(), prompting: undefined, promptEnded: false, deciding: undefined, saving: false, told: new Set(),
     }
     open.set(key, ask)
     live.add(ask)
@@ -593,8 +605,15 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       for (const cleanup of cleanups) cleanup()
       resolve(ending)
     }
-    void input.ask.settled.promise.then(() => done('settled'))
-    if (input.hold === 'prompt') void input.ask.prompting?.then(() => done('prompt_ended'))
+    if (input.hold === 'prompt') {
+      // A one-shot prompt's call waits for the save question its person's own decision raised, so the command is still
+      // there to take the answer; it runs once the terminal's questions end.
+      const { ask } = input
+      void ask.settled.promise.then(() => ask.deciding).then(() => { if (!ask.saving || ask.prompting === undefined || ask.promptEnded) done('settled') })
+      void ask.prompting?.then(() => done('prompt_ended'))
+    } else {
+      void input.ask.settled.promise.then(() => done('settled'))
+    }
     if (input.holdMs !== null) {
       const timer = setTimeout(() => done('elapsed'), Math.min(input.holdMs, MAX_TIMER_MS))
       cleanups.push(() => clearTimeout(timer))
