@@ -56,6 +56,10 @@ it decides only the asks its own caller raised. No face opens it yet.
   before a repeat or a save retry is read, and `guardSkip` before the decision's scope or the
   source that recorded it. A missing caller or actor, or another one, is `approver_not_allowed`;
   a token the ledger does not hold stays `unknown_ask`.
+- **In the audit:** the service hands the caller to the decision audit with each answer and skip,
+  and `common/adapters/approval/logged-decision-audit.ts` names an `http-forms` one by it, so a
+  token answering its own ask shows as that token in the workspace's log. A stdio one names
+  `forms`.
 - **stdio:** the `forms` row has no `sameCaller`, so a stdio form answer decides any waiting ask,
   whichever caller raised it, as before.
 
