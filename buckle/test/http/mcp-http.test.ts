@@ -9,6 +9,7 @@ import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckl
 import { nodeEnvironment } from '../support/node-environment.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
 import { auditEntries } from '../support/action-log-writer.js'
+import { CLAUDE_CODE_HTTP_MCP, type RecordedRequest } from '../support/claude-code-http-mcp.js'
 
 // The MCP face over HTTP on the MCP layer (B16): initialize, a tool call relayed through the invoker,
 // 405 with Allow for other methods, a cancelled call, and the workspace twin.
@@ -41,13 +42,13 @@ function toolCall(name: string, args: Record<string, unknown>, inputResponses?: 
 
 interface ToolResult { isError?: boolean; content: Array<{ type: string; text: string }>; structuredContent?: unknown }
 
-/** The tool result of a tools/call answer, whether the face answered as JSON or as an event stream. */
-async function toolResult(response: Response): Promise<ToolResult> {
+/** The result of a JSON-RPC answer, a tools/call one by default, whether the face answered as JSON or as an event stream. */
+async function rpcResult<T = ToolResult>(response: Response): Promise<T> {
   const text = await response.text()
   const message = response.headers.get('content-type')?.includes('text/event-stream')
-    ? text.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)) as { result?: ToolResult }).find(item => item.result)
-    : JSON.parse(text) as { result?: ToolResult }
-  if (!message?.result) throw new Error(`No tool result in ${text}`)
+    ? text.split('\n').filter(line => line.startsWith('data:')).map(line => JSON.parse(line.slice(5)) as { result?: T }).find(item => item.result)
+    : JSON.parse(text) as { result?: T }
+  if (!message?.result) throw new Error(`No result in ${text}`)
   return message.result
 }
 
@@ -85,7 +86,7 @@ describe('the MCP face over HTTP', () => {
     const write = toolCall('fs_write', { path: join(buckle.root, 'outside.md'), content: 'x' })
     const gated = await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body })
     // No error, and /v1/invoke's own approval_required answer beside the words (review of the MCP asks slice, finding m1).
-    const result = await toolResult(gated)
+    const result = await rpcResult(gated)
     expect(result.content[0]!.text).toContain('This call needs approval')
     expect(result.isError).toBe(false)
     expect(InvokeResponseSchema.parse(result.structuredContent)).toMatchObject({ outcome: 'approval_required', approvals: [{ tool: 'fs_write', token: buckle.runtime.approvals.pending()[0]!.token }] })
@@ -94,7 +95,7 @@ describe('the MCP face over HTTP', () => {
   it('joins an identical call sent again to the ask it made, under the agent actor of the real route, and runs it once when approved', async () => {
     const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
     const write = toolCall('fs_write', { path: join(buckle.root, 'joined.md'), content: 'joined' })
-    const send = async () => toolResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body }))
+    const send = async () => rpcResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body }))
 
     const first = InvokeResponseSchema.parse((await send()).structuredContent)
     const again = InvokeResponseSchema.parse((await send()).structuredContent)
@@ -115,7 +116,7 @@ describe('the MCP face over HTTP', () => {
   it('reads no form answer the agent\'s token carries: an accepted approval in inputResponses leaves the ask waiting and writes nothing', async () => {
     const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
     const args = { path: join(buckle.root, 'answered.md'), content: 'x' }
-    const send = async (call: ReturnType<typeof toolCall>) => InvokeResponseSchema.parse((await toolResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, call.headers), body: call.body }))).structuredContent)
+    const send = async (call: ReturnType<typeof toolCall>) => InvokeResponseSchema.parse((await rpcResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, call.headers), body: call.body }))).structuredContent)
 
     expect((await send(toolCall('fs_write', args))).outcome).toBe('approval_required')
     const [token] = buckle.runtime.approvals.pending().map(request => request.token)
@@ -196,6 +197,18 @@ describe('the MCP face over HTTP', () => {
     await buckle.runtime.reload()
     expect(await events.next()).toMatchObject({ method: 'notifications/tools/list_changed' })
     await events.stop()
+  })
+
+  it('answers the requests Claude Code\'s HTTP client sent a probe at revision 2026-07-28: discovery, its tools-changed subscription, and the tool list', async () => {
+    const buckle = await node()
+    const send = (recorded: RecordedRequest) => buckle.request('/mcp', { method: recorded.method, headers: headers(TOKEN, recorded.headers), body: JSON.stringify(recorded.body) })
+    const { discover, listen, toolsList } = CLAUDE_CODE_HTTP_MCP.modern
+
+    expect(await rpcResult(await send(discover))).toMatchObject({ supportedVersions: expect.arrayContaining([PROTOCOL]), _meta: { 'io.modelcontextprotocol/serverInfo': { name: buckle.config.serverName } } })
+    const events = sseMessages(await send(listen))
+    expect(await events.next()).toMatchObject({ method: 'notifications/subscriptions/acknowledged', params: { notifications: { toolsListChanged: true } } })
+    await events.stop()
+    expect((await rpcResult<{ tools: Array<{ name: string }> }>(await send(toolsList))).tools.map(tool => tool.name)).toContain('fs_read')
   })
 })
 

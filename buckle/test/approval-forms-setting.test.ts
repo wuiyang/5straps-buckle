@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { join } from 'node:path'
 import type { ApprovalRequest, JsonObject } from '@5straps/protocol'
 import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -20,6 +19,7 @@ import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-sou
 import type { GrantStore } from '../common/types/ports/grant-store.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { CLAUDE_CODE_CAPABILITIES } from './support/claude-code-http-mcp.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -249,10 +249,6 @@ async function stdioNode(input: { forms: boolean }) {
   const waitingTokens = () => runtime.approvalService.pending().map(asked => asked.token)
   return { workspace, runtime, forms, setForms, breakSettings, waitingTokens, write: hostTool(server, 'fs_write') }
 }
-
-/** Claude Code's own capabilities, as its HTTP MCP client declared them to a probe (fixtures/claude-code-http-mcp.json). */
-const claudeCode = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'claude-code-http-mcp.json'), 'utf8')) as { request: { params: { _meta: Record<string, unknown> } } }
-const CLAUDE_CODE_CAPABILITIES = claudeCode.request.params._meta[CLIENT_CAPABILITIES_META_KEY]
 
 interface ToolResult { isError?: boolean; resultType?: string; inputRequests?: Record<string, unknown>; structuredContent?: { outcome?: string } }
 
