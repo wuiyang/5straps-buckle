@@ -66,14 +66,21 @@ it decides only the asks its own caller raised. No face opens it yet.
 ## The files that hold it
 
 `workspace.json` lies in the state directory, and `NodeConfig.environmentFile` names the node's
-environment file, there or wherever `BUCKLE_ENV_FILE` puts it (`common/runtime/config.ts`).
-`protectedStateRoots` returns both, typed and real, and each route reads that one set: the
+environment file, there or wherever `BUCKLE_ENV_FILE` puts it (`common/runtime/config.ts`). A
+process knows only the file its own environment names, so `buckle init`, `buckle service
+install`, and each serve start record one outside the state directory in its
+`environment-files.json` (`common/runtime/environment-files.ts`), and `loadConfig` reads them into
+`recordedEnvironmentFiles`, so a `buckle mcp`, whose environment names none, protects them too.
+`protectedStateRoots` returns all of them, typed and real, and each route reads that one set: the
 `sensitive_path` rule over every effect a tool, a script's call, a browser command, a secret
 reference, or a restore makes; the shell's hidden paths, sorted in
 `common/services/shell/shell-filesystem.ts` so a file is masked by binding `/dev/null` over it and
 a folder by a tmpfs; the workbench terminal; the change history's exclusions; and the mount
 checks. With `BUCKLE_SANDBOX=none` a shell command reaches them; the user pages say so beside each
-setting.
+setting. `protectedSettingsFiles` names the environment files among them, so one not made yet is
+masked as no folder: bubblewrap would make its mount point on the host. A shell call that writes
+the folder holding one is refused, an isolated call's publish refuses a change that makes one, and
+Seatbelt denies the path as it stands.
 
 ## Claude Code over HTTP
 

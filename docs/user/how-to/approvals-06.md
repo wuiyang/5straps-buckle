@@ -46,7 +46,9 @@ restart of `buckle mcp`:
 ## Who can change it
 
 The setting lives in the workspace's `workspace.json`, in the state directory, and in
-`buckle.env`, or the file `BUCKLE_ENV_FILE` names wherever it lies. No tool reaches either: the
+`buckle.env`, or the file `BUCKLE_ENV_FILE` names wherever it lies. `buckle init`, `buckle service
+install`, and each serve record such a file in the state directory, so every Buckle process on the
+node knows it, a `buckle mcp` whose own environment names none too. No tool reaches either: the
 file tools, code mode, the browser, a secret reference, and a history restore refuse them as
 Buckle's own state, and the sandbox hides them from shell commands, so an agent cannot turn forms
 on by running `buckle settings set` itself. With `BUCKLE_SANDBOX=none`, a shell command you allowed

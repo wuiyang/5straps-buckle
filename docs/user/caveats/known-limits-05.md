@@ -51,14 +51,14 @@ Limits of running Buckle as a service ([part one](../how-to/service.md) and
 ## The node's settings file
 
 - `buckle.env`, or the file `BUCKLE_ENV_FILE` names, is refused to every tool wherever it lies,
-  and a sandboxed shell command sees an empty, read-only file where a folder the sandbox binds
-  holds it. With `BUCKLE_SANDBOX=none`, a shell command you allowed reaches it.
+  in every Buckle process once `buckle init`, a service install, or a serve has named it, and a
+  sandboxed shell command sees an empty, read-only file where a folder the sandbox binds holds
+  it. With `BUCKLE_SANDBOX=none`, a shell command you allowed reaches it.
 - A shell command running an owner command such as `buckle settings` is refused by its words, so
   a quoted subcommand (`buckle 'settings'`) passes once you allow a shell wrapper such as `sh -c`.
   The sandbox, which hides the files that hold the settings, is then what stops it.
-- A `BUCKLE_ENV_FILE` that names no file yet is masked as a folder, and an empty folder can be left
-  at that path where a folder the sandbox binds holds it, which the node cannot read as its
-  settings. Run `buckle init --out <file>` first.
+- While `BUCKLE_ENV_FILE` names no file yet, bubblewrap refuses a shell command that writes the
+  folder holding that path, as its mask would make one there. Run `buckle init --out <file>` first.
 
 ## A serve at a terminal
 
