@@ -576,6 +576,26 @@ describe('a lasting denial', () => {
   })
 })
 
+describe('buckle grants, beside an approval whose grant is not written yet', () => {
+  it('lists it, marked so, and revokes it by its id, so it is never written', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    Object.assign(failing, { rename: grantsPath(config), count: 100 })
+    expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'always' }, source: SOURCES.cli })).toMatchObject({ ok: true, save: 'owed' })
+    let stdout = ''
+    vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { stdout += String(chunk); return true })
+
+    expect((await runCli({ argv: ['grants', 'list'], config })).exitCode).toBe(0)
+    const listed = stdout.trim().split('\n')
+    expect(listed).toEqual([expect.stringMatching(/^\S+ {2}ALLOW always +write_scope +\S+one {2}\(not saved yet\)$/)])
+    expect((await runCli({ argv: ['grants', 'revoke', listed[0]!.split(' ')[0]!], config })).exitCode).toBe(0)
+    failing.rename = undefined
+    await runtime.approvals.recover()
+    expect(runtime.grants.list()).toEqual([])
+    expect(keptGrant(config, token)?.save).toBe('dropped')
+  })
+})
+
 describe('a lasting approval whose grant cannot be saved', () => {
   const approve = (runtime: CoreRuntime, token: string) => runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })
   const resend = (runtime: CoreRuntime, path: string, token: string): Promise<InvokeResponse> =>

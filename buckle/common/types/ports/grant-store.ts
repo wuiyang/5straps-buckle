@@ -42,4 +42,10 @@ export interface GrantStore {
 }
 
 /** The grants as every caller holds them: a session ends through the approval service alone, which ends its asks with it. */
-export type LedgerGrants = Omit<GrantStore, 'endSessions'>
+export interface LedgerGrants extends Omit<GrantStore, 'endSessions'> {
+  /**
+   * The lasting approvals the ledger recorded whose grants the grants file does not hold yet, each as it will be written;
+   * a revoke takes one by its id. Throws StateFileError where the ledger cannot be read.
+   */
+  owed(): GrantRecord[]
+}

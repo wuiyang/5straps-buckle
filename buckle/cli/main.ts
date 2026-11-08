@@ -5,7 +5,7 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { randomUUID } from 'node:crypto'
 import { askAtTerminal } from './ask.js'
 import { parseArgs } from 'node:util'
-import type { GrantScope, InvokeResponse } from '@5straps/protocol'
+import type { GrantRecord, GrantScope, InvokeResponse } from '@5straps/protocol'
 import { GrantScopeSchema } from '@5straps/protocol'
 import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { FLOOR_WARNING } from '../common/types/ports/approval-backend.js'
@@ -44,6 +44,7 @@ import { asksForHelp } from './help-request.js'
 import { runInit } from './init.js'
 import { settingsCommand } from './settings.js'
 import { serviceCommand } from './service.js'
+import { StateFileError } from '../common/adapters/json-file-store.js'
 import { runProcess } from '../common/adapters/process-runner.js'
 import { serviceManagerFor } from '../common/adapters/service-manager/index.js'
 import { builtMainPath } from '../common/runtime/package-root.js'
@@ -823,12 +824,26 @@ async function grants(runtime: BuckleRuntime, argv: string[]): Promise<CliResult
     process.stdout.write(`Revoked ${id}\n`)
     return { exitCode: 0 }
   }
-  for (const grant of runtime.grants.list()) {
-    // A session grant serves one caller in one session, so two callers' grants for one subject are told apart.
-    const holder = grant.sessionId === null ? '' : `  (session ${printable(grant.sessionId)}, caller ${grant.actor === null ? 'the node\'s own process' : printable(grant.actor)})`
-    process.stdout.write(`${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}${holder}\n`)
-  }
+  for (const grant of runtime.grants.list()) process.stdout.write(grantLine(grant))
+  for (const grant of owedGrants(runtime)) process.stdout.write(grantLine(grant, '  (not saved yet)'))
   return { exitCode: 0 }
+}
+
+// A session grant serves one caller in one session, so two callers' grants for one subject are told apart.
+function grantLine(grant: GrantRecord, note = ''): string {
+  const holder = grant.sessionId === null ? '' : `  (session ${printable(grant.sessionId)}, caller ${grant.actor === null ? 'the node\'s own process' : printable(grant.actor)})`
+  return `${grant.id}  ${grant.denied ? 'DENY ' : 'ALLOW'} ${grant.scope.padEnd(8)} ${grant.rule.padEnd(20)} ${printable(grant.subject)}${grant.pattern ? '  (host pattern)' : ''}${holder}${note}\n`
+}
+
+/** The approvals decided whose grants are not written yet, which a revoke still takes; none listed where the ledger cannot be read. */
+function owedGrants(runtime: BuckleRuntime): GrantRecord[] {
+  try {
+    return runtime.grants.owed()
+  } catch (error) {
+    if (!(error instanceof StateFileError)) throw error
+    process.stderr.write('The approvals file cannot be read, so approvals whose grants are not written yet are not listed\n')
+    return []
+  }
 }
 
 async function plugin(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {

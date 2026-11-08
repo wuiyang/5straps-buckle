@@ -891,10 +891,29 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     }
   }
 
+  /** Revokes a grant the grants file holds, or one a decision owes, which is then never written; read again under the lock. */
   async function revoke(id: string): Promise<boolean> {
-    const record = grantStore.list().find(grant => grant.id === id)
+    const stored = grantStore.list().find(grant => grant.id === id)
+    const record = stored ?? owedGrant(id)
     if (record === undefined) return false
-    return withGrantsDropped({ revocation: { grant: record }, remove: () => grantStore.revoke(id) })
+    return withGrantsDropped({ revocation: { grant: record }, remove: () => grantStore.list().some(grant => grant.id === id) ? grantStore.revoke(id) : Promise.resolve(stored === undefined) })
+  }
+
+  function owedGrant(id: string): GrantRecord | undefined {
+    try {
+      return owedGrants().find(grant => grant.id === id)
+    } catch (error) {
+      if (error instanceof StateFileError) return undefined
+      throw error
+    }
+  }
+
+  function owedGrants(): GrantRecord[] {
+    const held = new Set(grantStore.list().map(grant => grant.id))
+    return read().resolved.flatMap((entry) => {
+      const owed = owedHere(entry)
+      return owed === undefined || held.has(owed.id) ? [] : [owedRecord({ owed, workspace, decidedAt: Date.parse(entry.expiresAt) - PENDING_TTL_MS })]
+    })
   }
 
   // Read through at each call, so the registry's own writes and every caller's meet the same store. A revoke also drops the
@@ -906,6 +925,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     activePatterns: input => grantStore.activePatterns(withheldIn(input)),
     grant: input => grantStore.grant(input),
     list: () => grantStore.list(),
+    owed: owedGrants,
     revoke,
   }
 
@@ -1556,6 +1576,17 @@ function lastingGrantOf(input: { decision: ApprovalDecision; holder: GrantHolder
   const { decision } = input
   if (!decision.approved || decision.scope === 'once') return undefined
   return { id: randomUUID(), ...input.holder, rule: input.rule, subject: input.widenedTo ?? input.wider ?? input.subject, scope: decision.scope, ...(input.widenedTo ? { pattern: true as const } : {}), ...input.decider, source: { id: input.source.id, kind: input.source.kind }, save: 'owed' }
+}
+
+/** An owed grant as the grant store will write it, made when it was decided. */
+function owedRecord(input: { owed: LastingGrant; workspace: string; decidedAt: number }): GrantRecord {
+  const { owed } = input
+  return {
+    id: owed.id, workspace: input.workspace, rule: owed.rule, subject: owed.subject, scope: owed.scope,
+    ...(owed.pattern ? { pattern: true as const } : {}), ...(owed.decidedBy === undefined ? {} : { decidedBy: owed.decidedBy }),
+    sessionId: owed.scope === 'always' ? null : owed.sessionId, actor: owed.scope === 'session' ? owed.actor ?? null : null,
+    createdAt: new Date(input.decidedAt).toISOString(), expiresAt: null,
+  }
 }
 
 /** What one end of sessions is about, and the tally of what it ended in each. */
