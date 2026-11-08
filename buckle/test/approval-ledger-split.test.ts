@@ -279,6 +279,23 @@ describe('a lasting decision', () => {
     expect(onDisk(config, token).owes).toBe(false)
   })
 
+  it('withdraws the asks and onces of a session ended while approvals.json was unreadable once the file is repaired, so none grants into it', async () => {
+    const { config, runtime } = await open()
+    const waiting = tokenOf(await write(runtime, 'one/a.md'))
+    const onceGiven = tokenOf(await write(runtime, 'b.md'))
+    expect(await runtime.approvalService.answer({ decision: { token: onceGiven, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
+    const kept = readFileSync(approvalsPath(config), 'utf8')
+    writeFileSync(approvalsPath(config), '{')
+
+    await runtime.approvalService.endSessions({ ending: { sessionId: 's' }, cause: 'idle' })
+    writeFileSync(approvalsPath(config), kept)
+    expect(await runtime.approvalService.answer(session(waiting))).toMatchObject({ ok: false })
+    expect(runtime.grants.list()).toEqual([])
+    expect(runtime.approvals.unspent('s')).toEqual([])
+    expect(runtime.approvals.departures([waiting]).get(waiting)).toEqual({ type: 'cancelled', reason: 'session_ended' })
+    expect(existsSync(revocationsOf(config))).toBe(false)
+  })
+
   it('refuses a decision while the revocations file is damaged, naming it, so no owed grant is written past a revoke it holds', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
