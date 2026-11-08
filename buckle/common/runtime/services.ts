@@ -63,7 +63,7 @@ type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
  */
 function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
-  // Every workspace at once, inside the step's one limit, so one that fails stops none of the others (review L14 of B20-B22).
+  // Every workspace at once, inside the step's one limit, so one that fails stops none of the others.
   const all = (step: (runtime: BuckleRuntime) => Promise<unknown>, failed: string) => async () => {
     const results = await Promise.allSettled((await input.runtimes()).map(step))
     const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))

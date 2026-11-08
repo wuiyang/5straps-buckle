@@ -13,7 +13,7 @@ import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The executing mark (approval follow-ups, F5x): a lease each runtime holds on disk only while a tool runs, so the idle
+// The executing mark: a lease each runtime holds on disk only while a tool runs, so the idle
 // check of another process can tell a long tool from a workspace nobody uses. A call waiting for a person holds none.
 
 const roots: string[] = []

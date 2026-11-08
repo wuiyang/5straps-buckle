@@ -182,7 +182,7 @@ export interface PolicyHandle {
   /**
    * The dangerously-allow switch as stored now, read from the store at every call, so the local switch applies in a
    * running node at once: its mode, the root it is bound to, as the agent names it (owner decision D7), and
-   * whether an earlier build's file held it on, which reads as off. It needs no node switch beside it (Q14).
+   * whether an earlier build's file held it on, which reads as off. It needs no node switch beside it.
    */
   dangerouslyAllow(): DangerouslyAllowState
   /**
@@ -266,7 +266,7 @@ export interface BuckleRuntime {
    */
   closeBrowsers(): Promise<BrowserCloseCounts>
   reload(): Promise<void>
-  /** Shutdown's timers step: closes the settings-folder watcher (Q2) and stops the idle sweep. Idempotent. */
+  /** Shutdown's timers step: closes the settings-folder watcher and stops the idle sweep. Idempotent. */
   closeWatchers(): void
   /** Shutdown's face session step: ends the session this process's face holds here, where it holds one. */
   endFaceSession(): Promise<void>
@@ -366,7 +366,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   // The settings `buckle workspace` writes; until one does, the ones this runtime was built from.
   const settingsFile = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), fallback: () => settingsOf(config), lockDeadlineMs })
   // What this runtime last took up from workspace.json, and the file's version then, read first so a write landing
-  // meanwhile is seen at the next call (Q2: a stat per call, no watcher). Before the registry, whose live reader reads them.
+  // meanwhile is seen at the next call (a stat per call, beside the settings watcher). Before the registry, whose live
+  // reader reads them.
   let appliedVersion = settingsFile.version()
   let applied = settingsFile.read()
   // A version that would not read, so it is reported once and the settings in force stay.
@@ -380,7 +381,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   // This runtime's own id beside the pid: it names the browser sessions it writes and its executing mark, so what a
   // runtime left is told from a live one's.
   const instance = randomUUID()
-  // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it (finding 9).
+  // Marked on disk while any call runs, so `buckle workspace disable` and `remove` in another process see it.
   const marks = activeWorkDirectory(config.nodeStateDirectory ?? config.stateDirectory, workspaceId)
   const executing = createExecutingMark({ directory: marks, workspaceId, instance })
   const sessionIdle = createSessionIdleCheck({

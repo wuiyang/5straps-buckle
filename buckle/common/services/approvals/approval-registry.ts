@@ -154,8 +154,8 @@ interface DecisionProgress { decided?: AppliedDecision; refused?: Extract<Resolu
 export type PendingAsk = Omit<PendingEntry, 'workspace' | 'callFile'> & { callRef?: string }
 
 // Refused before anything is written; the invoker records the refusal in the call's audit entries. A session is
-// its id under the actor that opened it: HTTP callers choose the id, and stdio hosts share `mcp`, so one caller's
-// asks never fill another's session (review L5 of the slice 5 re-review).
+// its id under the actor that opened it: HTTP API callers choose the id, HTTP MCP clients share `mcp`, and each
+// `buckle mcp` process has a `stdio:<id>` of its own, so one caller's asks never fill another's session.
 function assertRoomFor(input: { state: State; workspace: string; sessionId: string; actor: string | undefined; asked: number }): void {
   const waiting = input.state.pending.filter(entry => entry.workspace === input.workspace)
   const session = waiting.filter(entry => entry.sessionId === input.sessionId && entry.actor === input.actor).length

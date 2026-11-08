@@ -11,8 +11,8 @@ const EXECUTING = 'executing-'
 
 /**
  * Where processes mark the calls they run in one workspace, `<state>/workspaces/<id>/active-work/<pid>`: a call runs in
- * whichever process serves it, and `buckle workspace disable` and `remove` run in another, which sees it only here
- * (finding 9 of the Phase 1 review). One mark per process, so one going idle never clears another's. The executing marks
+ * whichever process serves it, and `buckle workspace disable` and `remove` run in another, which sees it only here.
+ * One mark per process, so one going idle never clears another's. The executing marks
  * live beside them, `executing-<instance>`.
  */
 export function activeWorkDirectory(nodeStateDirectory: string, workspaceId: string): string {

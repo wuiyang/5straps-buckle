@@ -42,7 +42,7 @@ export const DANGEROUSLY_ALLOW_REACH: Readonly<Record<DangerouslyAllowOnMode, Re
  * `dangerously_allow:<mode>:<rule>:<subject>` so the invoker audits each use at the mode it ran at. What each mode
  * answers beyond that is its reach (DANGEROUSLY_ALLOW_REACH); a call with asks both inside and outside a mode's reach
  * asks those outside it alone. A restore of the change history it leaves to a person in every mode, as every restore
- * asks one (slice D). It is bound to the workspace in every mode:
+ * asks one. It is bound to the workspace in every mode:
  * an ask about a path outside the workspace root (which a mount presents) keeps its question, so the
  * switch never opens the rest of the host. Asks that name no path (commands, hosts, process probes)
  * are covered wherever they point. A deny is never turned: the engine returns the first deny before
