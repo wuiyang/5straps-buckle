@@ -413,7 +413,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         })
         const result = { ...entry, auditId, event: 'result' as const, workspaceId: options.workspaceId, ...auditContext(request, via) }
         // A call that ran answers with what it did whatever becomes of its result, which the log service writes:
-        // refusing it would tell the caller it did not run, and a retry would run it twice (review L5 of B18-B19).
+        // refusing it would tell the caller it did not run, and a retry would run it twice.
         // The attempt is already in the log, and recovery marks it interrupted where its result never lands.
         if (ran) options.actions.append(result)
         else await options.actions.record(result)

@@ -38,7 +38,7 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
 
 /**
  * `workspaceName`: the name of the log's own workspace, read as each entry is handed in, so a rename shows: every entry
- * of that workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
+ * of that workspace carries it beside its UUID. An entry of another workspace, or one naming its own, is left as it is.
  * `purgeable`: the log's folder holds its workspace's records, which a purge deletes, so a queued entry is not written
  * once the folder is gone, and none makes it again.
  * `writer` and `service`: the process's writer worker and log service unless a test hands in its own.
@@ -58,10 +58,10 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     } catch (error) {
       logger.error('Could not durably write the action log', { filePath, error })
       // Another process held the pending-audit state past the wait: temporary, so the caller is told
-      // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
+      // to retry, as for any busy state, and the storage is not unhealthy.
       if (error instanceof StateBusyError) throw error
       // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
-      // even when the owner reads it (review L12 of B23-B25).
+      // even when the owner reads it.
       if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => writer().probe(file), workspaceId: options.workspaceId ?? 'node' })
       throw new AuditUnavailableError({ cause: error })
     }
