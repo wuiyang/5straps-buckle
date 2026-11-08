@@ -191,6 +191,25 @@ describe('the activity store', () => {
     await activity.close()
   })
 
+  it('warns once while it cannot record, not at every ask, decision, and call, and again after a write succeeds', async () => {
+    const directory = scratch()
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const activity = await openHistoryActivity(directory)
+    const holder = new DatabaseSync(join(directory, 'activity.sqlite'))
+    holder.exec('PRAGMA busy_timeout = 0')
+    holder.exec('BEGIN EXCLUSIVE')
+    for (let index = 0; index < 2; index++) activity.touch(NOW + index)
+    expect(warn.mock.calls.map(([message]) => message)).toEqual(['Workspace activity could not be recorded; its sessions may end at idle sooner than its window'])
+    holder.exec('ROLLBACK')
+    activity.touch(NOW + 5)
+    holder.exec('BEGIN EXCLUSIVE')
+    activity.touch(NOW + 6)
+    holder.exec('ROLLBACK')
+    holder.close()
+    expect(warn).toHaveBeenCalledTimes(2)
+    await activity.close()
+  })
+
   it('counts its in-memory fallback as unknown: latest throws where the store could not be opened', async () => {
     const directory = scratch()
     mkdirSync(join(directory, 'activity.sqlite'))

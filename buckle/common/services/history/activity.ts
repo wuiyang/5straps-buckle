@@ -13,6 +13,7 @@ export class ActivityBusyError extends Error {
   constructor() { super(`${ACTIVITY_STORE} was busy`) }
 }
 
+const UNPERSISTED = 'History activity could not be persisted; turn grouping may reset after restart'
 const TOUCH_WORKSPACE = 'INSERT INTO workspace (id, at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET at = max(at, excluded.at)'
 
 /**
@@ -24,6 +25,13 @@ export async function openHistoryActivity(directory: string) {
   const active = new Map<string, Map<string | null, { turn: string; count: number }>>()
   let database: SqliteDatabase | undefined
   let db: Awaited<ReturnType<typeof rawConnection>> | undefined
+  // Each warning is said once until a write succeeds again: a store that stays broken would warn at every call and ask.
+  const warned = new Set<string>()
+  const failed = (message: string): void => {
+    if (warned.has(message)) return
+    warned.add(message)
+    logger.warn(message)
+  }
   try {
     const file = join(directory, ACTIVITY_STORE)
     database = await openDatabase({ path: file, pragmas: { busy_timeout: 1000, journal_mode: 'DELETE' }, requireOwnerOnlyDirectory: true, logger })
@@ -32,7 +40,7 @@ export async function openHistoryActivity(directory: string) {
     db.exec('CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)')
   } catch {
     await database?.dispose(); database = undefined; db = undefined
-    logger.warn('History activity could not be persisted; turn grouping may reset after restart')
+    failed(UNPERSISTED)
   }
 
   function observe(input: { session: string; at: number; stage?: string; idleMs: number; knownTurn?: string; fallback?: Activity }): string {
@@ -51,9 +59,10 @@ export async function openHistoryActivity(directory: string) {
         db.prepare('INSERT INTO activity (session, at, turn, stage) VALUES (?, ?, ?, ?) ON CONFLICT(session) DO UPDATE SET at = excluded.at, turn = excluded.turn, stage = excluded.stage').run(input.session, next.at, next.turn, next.stage)
         db.exec('DELETE FROM activity WHERE session IN (SELECT session FROM activity ORDER BY at DESC LIMIT -1 OFFSET 4096); COMMIT')
       } catch (error) { db.exec('ROLLBACK'); throw error }
+      warned.clear()
     } catch {
       next = choose(memory.get(input.session) ?? input.fallback)
-      logger.warn('History activity could not be persisted; turn grouping may reset after restart')
+      failed(UNPERSISTED)
     }
     memory.delete(input.session); memory.set(input.session, next)
     if (memory.size > 4096) memory.delete(memory.keys().next().value!)
@@ -89,7 +98,8 @@ export async function openHistoryActivity(directory: string) {
         db.prepare(TOUCH_WORKSPACE).run(at)
         db.exec('COMMIT')
       } catch (error) { db.exec('ROLLBACK'); throw error }
-    } catch { logger.warn('History activity could not be persisted; turn grouping may reset after restart, and the workspace\'s sessions may end at idle sooner than its window') }
+      warned.clear()
+    } catch { failed('History activity could not be persisted; turn grouping may reset after restart, and the workspace\'s sessions may end at idle sooner than its window') }
   }
 
   /** An ask or a decision in the workspace, at `at`. */
@@ -97,7 +107,8 @@ export async function openHistoryActivity(directory: string) {
     try {
       if (!db) throw new Error('Activity store unavailable')
       db.prepare(TOUCH_WORKSPACE).run(at)
-    } catch { logger.warn('Workspace activity could not be recorded; its sessions may end at idle sooner than its window') }
+      warned.clear()
+    } catch { failed('Workspace activity could not be recorded; its sessions may end at idle sooner than its window') }
   }
 
   /**
