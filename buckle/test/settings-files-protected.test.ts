@@ -138,6 +138,30 @@ describe('an env file the state directory records, to a buckle mcp whose environ
     if (process.platform !== 'win32') expect(statSync(environmentFilesPath(state)).mode & 0o777).toBe(0o600)
   })
 
+  it('is recorded where the state directory names it through a link to a file outside it, and that file is refused by either name', async () => {
+    const root = scratch()
+    const workspace = join(root, 'workspace')
+    mkdirSync(workspace)
+    const state = join(root, 'state')
+    mkdirSync(state, { mode: 0o700 })
+    const envFile = join(root, 'settings', 'buckle.env')
+    writeSettings(envFile)
+    const named = join(state, 'node.env')
+    symlinkSync(envFile, named)
+    await recordEnvironmentFile({ stateDirectory: state, file: named })
+    expect(recordedEnvironmentFiles(state)).toEqual([named])
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: state, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    const call = (tool: string, args: JsonObject) => runtime.invoke({ sessionId: 'agent', request: { requestId: randomUUID(), tool, args, approvalTokens: [], context: { approvalWait: { mode: 'none' } } } })
+    for (const rule of ['read_scope', 'write_scope'] as const) await runtime.grants.grant({ sessionId: 'agent', rule, subject: join(root, 'settings'), scope: 'always' })
+    for (const path of [envFile, named]) {
+      refusedAsState(await call('fs_read', { path }))
+      refusedAsState(await call('fs_write', { path, content: 'BUCKLE_APPROVAL_FORMS=true\n' }))
+    }
+    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
+  })
+
   it('refuses to load the node\'s config while the record will not read, naming it', () => {
     const root = scratch()
     const state = join(root, 'state')

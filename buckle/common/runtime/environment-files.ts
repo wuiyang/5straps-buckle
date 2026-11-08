@@ -5,6 +5,7 @@ import { isRuntimeError, RuntimeErrorCode } from '@5straps/runtime'
 import { withFileLock } from '@5straps/runtime/sqlite'
 import { writeEnvironmentFile } from '../adapters/environment-file.js'
 import { isInside } from '../domain/paths.js'
+import { realPathOf } from './real-path.js'
 
 /**
  * The environment files a node was set up, installed, or started with outside its state directory. Only the process
@@ -36,9 +37,12 @@ export function recordedEnvironmentFiles(stateDirectory: string): string[] {
   return parsed.data.files
 }
 
-/** Adds a node's environment file to its state directory's record, under a lock; one inside the state directory is protected with it, so none is needed. */
+/**
+ * Adds a node's environment file to its state directory's record, under a lock. One inside the state directory where
+ * each really is needs none, as it is protected with it; one named there through a link to a file outside is recorded.
+ */
 export async function recordEnvironmentFile(input: { stateDirectory: string; file: string }): Promise<void> {
-  if (isInside(input.stateDirectory, input.file)) return
+  if (isInside(realPathOf(input.stateDirectory), realPathOf(input.file))) return
   mkdirSync(input.stateDirectory, { recursive: true, mode: 0o700 })
   const path = environmentFilesPath(input.stateDirectory)
   try {
