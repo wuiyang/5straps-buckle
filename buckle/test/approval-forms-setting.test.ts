@@ -1,8 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ApprovalRequest, JsonObject } from '@5straps/protocol'
-import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
+import type { ApprovalRequest } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { settingsCommand } from '../cli/settings.js'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -19,8 +18,8 @@ import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-sou
 import type { GrantStore } from '../common/types/ports/grant-store.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
-import { CLAUDE_CODE_CAPABILITIES } from './support/claude-code-http-mcp.js'
 import { runCli } from './support/cli.js'
+import { hostTool } from './support/mcp-host-tool.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
@@ -250,35 +249,26 @@ async function stdioNode(input: { forms: boolean }) {
   return { workspace, runtime, forms, setForms, breakSettings, waitingTokens, write: hostTool(server, 'fs_write') }
 }
 
-interface ToolResult { isError?: boolean; resultType?: string; inputRequests?: Record<string, unknown>; structuredContent?: { outcome?: string } }
-
-/** A tool the server registered, called by a host that declares form elicitation, with the answers a retry carries. */
-function hostTool(server: McpServer, tool: string) {
-  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<ToolResult> }> })._registeredTools
-  const envelope = { [CLIENT_CAPABILITIES_META_KEY]: CLAUDE_CODE_CAPABILITIES }
-  return (args: JsonObject, responses?: Record<string, unknown>) => tools[tool]!.handler(args, { mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(responses ? { inputResponses: responses } : {}) } } as unknown as ServerContext)
-}
-
 const accepted = (token: string, content: { approve: boolean; scope: 'once' | 'session' | 'always' }) => ({ [token]: { action: 'accept', content } })
 const ARGS = { path: 'one/a.md', content: 'a' }
 
 describe('the stdio face and the forms setting', () => {
   it('draws one form per ask for a host that declares form elicitation, as Claude Code does, while the setting is on, and a once answer runs the call', async () => {
     const { workspace, write, waitingTokens } = await stdioNode({ forms: true })
-    const asked = await write(ARGS)
+    const asked = await write({ args: ARGS })
     const [token] = waitingTokens()
     expect(asked).toMatchObject({ resultType: 'input_required' })
     expect(Object.keys(asked.inputRequests ?? {})).toEqual([token])
-    expect(await write(ARGS, accepted(token!, { approve: true, scope: 'once' }))).not.toHaveProperty('isError')
+    expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).not.toHaveProperty('isError')
     expect(readFileSync(join(workspace, 'one', 'a.md'), 'utf8')).toBe('a')
   })
 
   it('gives a host that declares form elicitation the relay text while the setting is off, and reads no answer its call carries', async () => {
     const { workspace, runtime, write, waitingTokens } = await stdioNode({ forms: false })
-    expect(await write(ARGS)).toMatchObject({ isError: false, structuredContent: { outcome: 'approval_required' } })
+    expect(await write({ args: ARGS })).toMatchObject({ isError: false, structuredContent: { outcome: 'approval_required' } })
     const [token] = waitingTokens()
     const answers = vi.spyOn(runtime.approvalService, 'answer')
-    expect(await write(ARGS, accepted(token!, { approve: true, scope: 'session' }))).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+    expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'session' }) })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
     expect(answers).not.toHaveBeenCalled()
     expect(waitingTokens()).toEqual([token])
     expect(runtime.grants.list()).toEqual([])
@@ -287,11 +277,11 @@ describe('the stdio face and the forms setting', () => {
 
   it('turned off after a form was drawn, reads no answer to it, and refuses one that reaches core, recording the refusal', async () => {
     const { workspace, runtime, forms, setForms, write, waitingTokens } = await stdioNode({ forms: true })
-    expect(await write(ARGS)).toMatchObject({ resultType: 'input_required' })
+    expect(await write({ args: ARGS })).toMatchObject({ resultType: 'input_required' })
     const [token] = waitingTokens()
     await setForms(false)
 
-    expect(await write(ARGS, accepted(token!, { approve: true, scope: 'once' }))).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+    expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
     expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual([])
     expect(waitingTokens()).toEqual([token])
     expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
@@ -302,12 +292,12 @@ describe('the stdio face and the forms setting', () => {
   it('counts the setting off while workspace.json will not read, so no form is drawn and no answer decides', async () => {
     vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const { workspace, runtime, forms, breakSettings, write, waitingTokens } = await stdioNode({ forms: true })
-    expect(await write(ARGS)).toMatchObject({ resultType: 'input_required' })
+    expect(await write({ args: ARGS })).toMatchObject({ resultType: 'input_required' })
     const [token] = waitingTokens()
     breakSettings()
 
     expect(runtime.approvalForms()).toBe(false)
-    expect(await write(ARGS, accepted(token!, { approve: true, scope: 'once' }))).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+    expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
     expect(await forms.answer(accepted(token!, { approve: true, scope: 'once' }))).toEqual([])
     expect(waitingTokens()).toEqual([token])
     expect(existsSync(join(workspace, 'one', 'a.md'))).toBe(false)
@@ -315,11 +305,11 @@ describe('the stdio face and the forms setting', () => {
 
   it('turned on, draws a form for an ask already waiting from the next call, with no restart', async () => {
     const { workspace, setForms, write, waitingTokens } = await stdioNode({ forms: false })
-    expect(await write(ARGS)).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
+    expect(await write({ args: ARGS })).toMatchObject({ structuredContent: { outcome: 'approval_required' } })
     const [token] = waitingTokens()
     await setForms(true)
-    expect(await write(ARGS)).toMatchObject({ resultType: 'input_required', inputRequests: { [token!]: expect.anything() } })
-    expect(await write(ARGS, accepted(token!, { approve: true, scope: 'once' }))).not.toHaveProperty('isError')
+    expect(await write({ args: ARGS })).toMatchObject({ resultType: 'input_required', inputRequests: { [token!]: expect.anything() } })
+    expect(await write({ args: ARGS, responses: accepted(token!, { approve: true, scope: 'once' }) })).not.toHaveProperty('isError')
     expect(readFileSync(join(workspace, 'one', 'a.md'), 'utf8')).toBe('a')
   })
 })

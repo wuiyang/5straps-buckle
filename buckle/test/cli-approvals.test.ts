@@ -315,9 +315,16 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
     const config = node()
     const token = await networkRequest(config)
 
+    // Forms on, so the forms rows meet the widening rule and not the setting.
+    const formsOn = createApprovalRegistry(createFileGrantStore({ filePath: grantsPath(config), workspace: config.workspaceId }), approvalsPath(config), 0, { live: () => ({ forms: true }) })
     for (const source of [SOURCES.terminal, SOURCES.forms, SOURCES.devices, SOURCES.sealed, SOURCES.judge]) {
       for (const scope of ['once', 'session', 'always'] as const) {
-        expect(await registry(config).resolve({ token, approved: true, scope }, source, { widenTo: '*.localhost' })).toMatchObject({ ok: false })
+        expect(await formsOn.resolve({ token, approved: true, scope }, source, { widenTo: '*.localhost' })).toMatchObject({ ok: false })
+      }
+    }
+    for (const source of [SOURCES.terminal, SOURCES.forms]) {
+      for (const scope of ['once', 'session', 'always'] as const) {
+        expect(await formsOn.resolve({ token, approved: true, scope }, source, { widenTo: '*.localhost' })).toEqual({ ok: false, code: 'scope_forbidden', reason: 'Only buckle approve widens an approval to a host pattern' })
       }
     }
     expect(networkSubjects(config)).toEqual([])

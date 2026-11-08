@@ -110,7 +110,8 @@ const keptGrant = (approvals: string, token: string): KeptGrant | undefined =>
 async function owedApproval(input: { fails?: { grant?: number; revoke?: number; list?: number } } = {}) {
   const { approvals, store } = files()
   const grants = flaky(store, { grant: 1, ...input.fails })
-  const registry = createApprovalRegistry(grants, approvals)
+  // Forms on, so a forms row below meets the rule its test names and not the setting.
+  const registry = createApprovalRegistry(grants, approvals, 0, { live: () => ({ forms: true }) })
   const token = await askIn(registry, 'one')
   expect(await registry.resolve(sessionApproval(token), cli)).toMatchObject({ ok: true, save: 'owed', saveError: 'permission denied' })
   return { approvals, store, grants, registry, token, kept: keptGrant(approvals, token)! }
@@ -329,7 +330,7 @@ describe('who may skip, and what', () => {
     expect(kept.source).toEqual({ id: 'cli', kind: 'cli' })
 
     for (const source of [SOURCES.terminal, SOURCES.forms, { id: 'cli', kind: 'backend' as const }]) {
-      expect(await registry.skipSave({ token, source })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+      expect(await registry.skipSave({ token, source })).toEqual({ ok: false, code: 'approver_not_allowed', reason: 'cli recorded this decision, so only it may skip its save' })
     }
     expect(keptGrant(approvals, token)?.save).toBe('owed')
   })

@@ -1,9 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createOperationScope, runInScope } from '@5straps/runtime'
-import type { ApprovalDecision, ApprovalRequest, JsonObject } from '@5straps/protocol'
-import { CLIENT_CAPABILITIES_META_KEY, type McpServer, type ServerContext } from '@modelcontextprotocol/server'
+import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { rightsOf } from '../common/domain/approval/assurance.js'
@@ -23,8 +21,8 @@ import { createFormsBackend } from '../mcp/forms-backend.js'
 import { createMcpServer, openForms } from '../mcp/server.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
-import { CLAUDE_CODE_CAPABILITIES } from './support/claude-code-http-mcp.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
+import { hostTool } from './support/mcp-host-tool.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // An HTTP form answer decides only the asks its own caller raised: the actor the transport authenticated, carried from
@@ -245,7 +243,6 @@ describe('the forms backend', () => {
 
 /** No terminal, a hold only while this process asks: a gated call answers at once. */
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
-const owner = Symbol('approval-caller')
 
 async function formsNode() {
   const root = scratch()
@@ -262,18 +259,6 @@ async function formsNode() {
   runtimes.push(runtime)
   const server = createMcpServer({ runtime, serverName: 'caller-mcp', version: '0', followToolChanges: false, forms: openForms(runtime) })
   return { workspace, runtime, write: hostTool(server, 'fs_write') }
-}
-
-interface ToolResult { isError?: boolean; resultType?: string; inputRequests?: Record<string, unknown> }
-
-/** A tool the server registered, called as `actor` by a host that declares form elicitation, with a retry's answers and `_meta`. */
-function hostTool(server: McpServer, tool: string) {
-  const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<ToolResult> }> })._registeredTools
-  const envelope = { [CLIENT_CAPABILITIES_META_KEY]: CLAUDE_CODE_CAPABILITIES }
-  return (input: { actor: string; args: JsonObject; responses?: Record<string, unknown>; meta?: Record<string, unknown> }) => runInScope(
-    createOperationScope({ owner, context: { actor: input.actor } }),
-    () => tools[tool]!.handler(input.args, { mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined, envelope, ...(input.meta ? { _meta: input.meta } : {}), ...(input.responses ? { inputResponses: input.responses } : {}) } } as unknown as ServerContext),
-  )
 }
 
 describe('the MCP face', () => {
