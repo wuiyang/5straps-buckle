@@ -113,7 +113,7 @@ describe('the MCP face over HTTP', () => {
     expect((await auditEntries(buckle.runtime.actions, 50)).filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => entry.outcome)).toEqual(['approval_required', 'approval_required', 'ok'])
   })
 
-  it('reads no form answer the agent\'s token carries: an accepted approval in inputResponses leaves the ask waiting and writes nothing', async () => {
+  it('reads no form answer the agent\'s token carries while forms are off: an accepted approval in inputResponses leaves the ask waiting and writes nothing', async () => {
     const buckle = await node({ BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
     const args = { path: join(buckle.root, 'answered.md'), content: 'x' }
     const send = async (call: ReturnType<typeof toolCall>) => InvokeResponseSchema.parse((await rpcResult(await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, call.headers), body: call.body }))).structuredContent)
@@ -129,6 +129,29 @@ describe('the MCP face over HTTP', () => {
     expect(ledger.pending.map(entry => entry.request.token)).toEqual([token])
     expect(ledger).toMatchObject({ once: [], resolved: [] })
     expect(existsSync(args.path)).toBe(false)
+  })
+
+  it('plays a form round with Claude Code\'s recorded envelope while forms are on: a form, then the call sent again with its once answer runs, recorded under the agent token', async () => {
+    const buckle = await node({ BUCKLE_APPROVAL_FORMS: 'true', BUCKLE_APPROVAL_TIMEOUT_MS: '50' })
+    const args = { path: join(buckle.root, 'formed.md'), content: 'formed' }
+    const { headers: recorded, body } = CLAUDE_CODE_HTTP_MCP.modern.toolsList
+    const call = (inputResponses?: Record<string, unknown>) => buckle.request('/mcp', {
+      method: 'POST', headers: headers(TOKEN, { ...recorded, 'mcp-method': 'tools/call', 'mcp-name': 'fs_write' }),
+      body: JSON.stringify({ jsonrpc: '2.0', id: 5, method: 'tools/call', params: { name: 'fs_write', arguments: args, _meta: body.params._meta, ...(inputResponses ? { inputResponses } : {}) } }),
+    })
+
+    const asked = await rpcResult<{ resultType?: string; inputRequests?: Record<string, unknown> }>(await call())
+    const [token] = buckle.runtime.approvals.pending().map(request => request.token)
+    expect(asked.resultType).toBe('input_required')
+    expect(Object.keys(asked.inputRequests ?? {})).toEqual([token])
+    const ran = await rpcResult(await call({ [token!]: { action: 'accept', content: { approve: true, scope: 'once' } } }))
+    expect(ran.isError).toBeUndefined()
+    expect(readFileSync(args.path, 'utf8')).toBe('formed')
+
+    const entries = await auditEntries(buckle.runtime.actions, 100)
+    const agent = entries.find(entry => entry.tool === 'fs_write' && entry.event === 'attempt')?.actorId
+    expect(agent).toMatch(/^agent:/)
+    expect(entries.filter(entry => entry.tool === 'approval_decision' && entry.event === 'attempt')).toEqual([expect.objectContaining({ actorId: agent, args: expect.objectContaining({ token, scope: 'once', source: SOURCES['http-forms'] }) })])
   })
 
   it('answers every method but POST with a JSON-RPC 405 and Allow: POST, after the credential', async () => {

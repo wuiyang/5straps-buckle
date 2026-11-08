@@ -1,6 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import type { AnswerSender, ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt, SubmitContext } from '../../common/types/ports/approval-backend.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt, SourceReach, SubmitContext } from '../../common/types/ports/approval-backend.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 // The contract kit: the duties every approval backend owes core, run against a fake host that records every call. The
@@ -41,7 +41,7 @@ export function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk
     workspace: { id: 'w-1', node: 'node-1' },
     requester: { actor: 'agent:a', sessionId: 's-1' },
     tool: 'fs_write',
-    policy: { rule: 'write_scope', subject: `/w/${token}`, reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'] },
+    policy: { rule: 'write_scope', subject: `/w/${token}`, reason: 'A first write in this folder', offeredScopes: ['once', 'session', 'always'], floor: false },
     risk: { notes: [] },
     deadline: { expiresAt: new Date(Date.now() + 600_000).toISOString(), hold: 'grace' },
     action: { arguments: { path: token }, cwd: '/w', description: null },
@@ -49,11 +49,18 @@ export function askFor(token: string, overrides: Partial<FullAsk> = {}): FullAsk
   }
 }
 
-/** A host that routes `routed` alone and answers each decision with `receipt`, applied by default. */
-export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: DecisionInput, sent: number) => DecisionReceipt }): FakeHost {
+/** What a person at the node may decide, as the terminal's source may. */
+const AT_THE_NODE: SourceReach = { lasting: true, floor: true }
+
+/**
+ * A host that routes `routed` alone and answers each decision with `receipt`, applied by default; `reach` is what its
+ * source may decide, a person at the node's by default.
+ */
+export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: DecisionInput, sent: number) => DecisionReceipt; reach?: SourceReach }): FakeHost {
   const routed = new Map(input.routed.map(ask => [ask.token, ask]))
   const host: FakeHost = {
     source: SOURCES.terminal,
+    reach: input.reach ?? AT_THE_NODE,
     decided: [],
     skipped: [],
     logged: [],

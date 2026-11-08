@@ -3,6 +3,7 @@ import type { ManagedWorkspace } from '../common/services/workspaces/workspace-m
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { McpHttpHandlers } from '../common/types/ports/mcp-http.js'
 import { mcpWait } from './holds.js'
+import { openForms } from './open-forms.js'
 import { createMcpServer } from './server.js'
 
 type SdkHandler = ReturnType<typeof createMcpHandler>
@@ -12,6 +13,8 @@ type SdkHandler = ReturnType<typeof createMcpHandler>
  * runtime lives. The SDK builds a server per request; the handler outlives them, so it is the one
  * that tells subscribed streams the tool list changed. Over HTTP the request's operation is already
  * open (layers/mcp), so tool calls run inside it and ask through its bound hold, which ends by MCP_HOLD_MS at the latest.
+ * The runtime's HTTP forms are opened with its handler and closed with its approvals, and every per-request server draws
+ * them; their answers come in as http-forms, under the caller the agent guard authenticated.
  */
 export function createMcpHttpHandlers(): McpHttpHandlers {
   const handlers = new WeakMap<BuckleRuntime, SdkHandler>()
@@ -19,9 +22,10 @@ export function createMcpHttpHandlers(): McpHttpHandlers {
   const handlerFor = ({ config, runtime }: ManagedWorkspace): SdkHandler => {
     const existing = handlers.get(runtime)
     if (existing) return existing
+    const forms = openForms(runtime, { face: 'http', node: config.serverId })
     // A per-request server answers one request, so it does not follow tool changes itself.
     // The workspace's wait is read at each call, so a change to it applies from the next one, and at most MCP_HOLD_MS.
-    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, followToolChanges: false, approvalWait: () => mcpWait(config.approvalTimeoutMs) }))
+    const handler = createMcpHandler(() => createMcpServer({ runtime, serverName: config.serverName, serverId: config.serverId, version: runtime.manifest().version, forms, followToolChanges: false, approvalWait: () => mcpWait(config.approvalTimeoutMs) }))
     runtime.onToolsChanged(() => handler.notify.toolsChanged())
     handlers.set(runtime, handler)
     open.add(handler)

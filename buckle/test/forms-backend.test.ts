@@ -8,7 +8,7 @@ import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../commo
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
-import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
+import { SOURCES, type ApprovalSource, type FormsFace } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
@@ -129,6 +129,47 @@ describe('the forms backend', () => {
   })
 })
 
+const ONCE_ALONE = { lasting: false, floor: false }
+const sensitive = (token: string): ApprovalRequest => ({ ...request(token), rule: 'sensitive_path', subject: '/w/.env' })
+const floorAsk = (token: string) => askFor(token, { policy: { ...askFor(token).policy, floor: true } })
+
+describe('the forms a host\'s reach allows', () => {
+  it('offers a non-floor ask once alone where the host\'s source decides nothing past the call, and names where a longer scope is approved', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [askFor('a')], reach: ONCE_ALONE }))
+    const form = formOf(backend.forms([request('a')]), 'a')
+    expect(form.requestedSchema.properties['scope']?.enum).toEqual(['once'])
+    expect(form.message).toContain('this form approves it once; for the session or always, approve it at the serve terminal or with buckle approve a --scope session --workspace Site')
+  })
+
+  it('offers a credential file\'s use and its denial once alone there', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [askFor('s', { policy: { ...askFor('s').policy, rule: 'sensitive_path', subject: '/w/.env' } }), askFor('t', { action: undefined })], reach: ONCE_ALONE }))
+    const drawn = backend.forms([sensitive('s'), sensitive('t')])
+    expect(formOf(drawn, 's').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'deny'])
+    expect(formOf(drawn, 't').requestedSchema.properties['action']?.enum).toEqual(['deny'])
+  })
+
+  it('draws a floor ask as a denial alone where the host\'s source approves no floor ask, naming where a person approves it', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [floorAsk('f')], reach: ONCE_ALONE }))
+    const form = formOf(backend.forms([request('f')]), 'f')
+    expect(form.requestedSchema.properties['action']?.enum).toEqual(['deny'])
+    expect(form.requestedSchema.properties['approve']).toBeUndefined()
+    expect(form.message).toContain('"path": "f"')
+    expect(form.message).toContain('a person approves this at the node, at the serve terminal or with buckle approve f --scope session --workspace Site; this form only denies it')
+  })
+
+  it('draws as before where the host\'s source decides as a person at the node: every offered scope, a floor ask included', async () => {
+    const backend = forms()
+    await backend.open(fakeHost({ routed: [floorAsk('f'), askFor('s', { policy: { ...askFor('s').policy, rule: 'sensitive_path', subject: '/w/.env' } })] }))
+    const drawn = backend.forms([request('f'), sensitive('s')])
+    expect(formOf(drawn, 'f').requestedSchema.properties['scope']?.enum).toEqual(['once', 'session', 'always'])
+    expect(formOf(drawn, 'f').message).not.toContain('this form')
+    expect(formOf(drawn, 's').requestedSchema.properties['action']?.enum).toEqual(['allow_once', 'allow_session', 'allow_always', 'deny', 'deny_session', 'always_deny'])
+  })
+})
+
 const REFUSED: DecisionReceipt = { status: 'refused', error: { code: 'scope_not_offered', message: 'refused', retryable: false } }
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -143,7 +184,7 @@ afterEach(async () => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
-async function opened() {
+async function opened(face: FormsFace = 'stdio') {
   const root = mkdtempSync(join(tmpdir(), 'buckle-forms-'))
   roots.push(root)
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
@@ -166,7 +207,7 @@ async function opened() {
   const backend = forms()
   // The host core opens the forms on, caught as the forms backend receives it.
   let host: ApprovalHost | undefined
-  service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } }, 'stdio')
+  service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } }, face)
   return { registry, grants, service, backend, heard, refused, host: () => host! }
 }
 
@@ -178,6 +219,15 @@ describe('the forms host core opens', () => {
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
     expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
     expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
+    expect(host().reach).toEqual({ lasting: true, floor: true })
+  })
+
+  it('tells the HTTP face\'s forms their source decides a non-floor once alone, and marks each waiting ask at the floor or not', async () => {
+    const { registry, host } = await opened('http')
+    await registry.ask({ tool: 'fs_delete', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, DELETE], call: CALL })
+    expect(host().source).toEqual(SOURCES['http-forms'])
+    expect(host().reach).toEqual({ lasting: false, floor: false })
+    expect(host().pending().map(ask => [ask.policy.subject, ask.policy.floor])).toEqual([['/outside', false], ['delete:/srv/data', true]])
   })
 
   it('skips the save of a form approval as the forms source, and refuses to skip one buckle approve recorded', async () => {

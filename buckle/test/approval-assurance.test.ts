@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { atLeast, rightsOf } from '../common/domain/approval/assurance.js'
+import { atLeast, reachOf, rightsOf } from '../common/domain/approval/assurance.js'
 import { guardDecision, screenDecision, type DecisionClaim, type LiveSettings } from '../common/domain/approval/decision-guard.js'
 import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -35,6 +35,17 @@ describe('the assurance each source kind carries', () => {
   it('holds the setup route\'s envelope as a built-in kind of its own, and rates a source by its kind and not its id', () => {
     expect(SOURCES.sealed.kind).toBe('sealed')
     expect(screenDecision(claim({ id: 'cli', kind: 'backend' }), LIVE)).toEqual({ ok: false, code: 'capability_exceeded', reason: DENIES_ONLY })
+  })
+
+  it.each<[keyof typeof SOURCES, { lasting: boolean; floor: boolean }]>([
+    ['terminal', { lasting: true, floor: true }],
+    ['cli', { lasting: true, floor: true }],
+    ['forms', { lasting: true, floor: true }],
+    ['http-forms', { lasting: false, floor: false }],
+    ['devices', { lasting: true, floor: true }],
+    ['judge', { lasting: false, floor: false }],
+  ])('tells a %s backend it may decide %o, read from the same row the guard rates', (source, reach) => {
+    expect(reachOf(rightsOf(SOURCES[source].kind))).toEqual(reach)
   })
 
   it('ranks relayed below local, and key and idp above it', () => {

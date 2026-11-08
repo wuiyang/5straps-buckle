@@ -132,10 +132,10 @@ describe('the approval boundary', () => {
     expect(widening).toEqual([])
   })
 
-  it('hands the forms opener to the MCP faces alone: core binds it, the MCP forms module alone imports it, and only the stdio face imports that', () => {
+  it('hands the forms opener to the MCP faces alone: core binds it, the MCP forms module alone imports it, and only the stdio and HTTP faces import that', () => {
     const everywhere = ['main.ts', 'common', 'cli', 'mcp', 'server', 'layers']
     expect(importersOf(everywhere, FORMS_OPENER).sort()).toEqual([RUNTIME, OPEN_FORMS].sort())
-    expect(importersOf(everywhere, OPEN_FORMS).sort()).toEqual(['mcp/stdio.ts'])
+    expect(importersOf(everywhere, OPEN_FORMS).sort()).toEqual(['mcp/http.ts', 'mcp/stdio.ts'])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {

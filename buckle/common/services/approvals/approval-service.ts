@@ -6,7 +6,7 @@ import { requestIdKey } from '../invocation/executions.js'
 import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
-import { rightsOf } from '../../domain/approval/assurance.js'
+import { reachOf, rightsOf } from '../../domain/approval/assurance.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
 import type { DecisionAudit, DecisionEnding, DecisionProofKind } from '../../types/ports/decision-audit.js'
@@ -243,6 +243,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const log: ApprovalHost['log'] = (level, message, fields) => { logger[level](message, fields) }
   const host: ApprovalHost = {
     source: SOURCES.terminal,
+    reach: reachOf(rightsOf(SOURCES.terminal.kind)),
     decide: input => readBackendDecision(input, decideRouted),
     skipSave: token => skipAs({ source: SOURCES.terminal, token }),
     pending: () => {
@@ -255,6 +256,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   // Today's routes hand an MCP host's forms every waiting ask; each answer carries its sender's caller into core.
   const formsHostOf = (source: ApprovalSource): ApprovalHost => ({
     source,
+    reach: reachOf(rightsOf(source.kind)),
     decide: (input, sender) => readBackendDecision(input, body => decideAs({ source, body, sender })),
     skipSave: (token, sender) => skipAs({ source, token, sender }),
     pending: () => options.registry.waiting().map(asked => ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })),
@@ -317,7 +319,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
       const ask = openAsk({ key, approvals, answered, joined: issued.joined })
       const setting: AskSetting = { workspace, group: ask.group, correlationId: scope?.context.correlationId ?? input.requestId, requestId: input.requestId, actor: actor ?? null, sessionId: input.sessionId, idempotencyKey: callKeyOf(key), hold, ...(input.call === undefined ? {} : { call: input.call }) }
-      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf(approval, setting)), resend: issued.joined }))
+      if (!ask.prompting) track(ask.prompting = startQuestions({ ask, asks: ask.approvals.map(approval => fullAskOf({ request: approval, floor: atTheFloor(input.asks, approval) }, setting)), resend: issued.joined }))
       // The newest joined caller carries the wait; every earlier one ends without running (review M1).
       // A re-send whose own transport already dropped carries nothing on, so the earlier one keeps it.
       if (!input.signal?.aborted) for (const earlier of ask.participants) earlier.abort()
@@ -821,4 +823,9 @@ function createCallShapes(): CallShapes {
 
 function shownCallOf(tool: string, call: AskedCall): ShownApprovalCall {
   return { tool, arguments: call.arguments, cwd: call.cwd, description: call.description, effects: call.effects ?? [] }
+}
+
+/** Whether the call's ask behind a request is at the floor: its rule's ask carries the mark, and the request does not. */
+function atTheFloor(asks: readonly Ask[], request: ApprovalRequest): boolean {
+  return asks.some(ask => ask.floor && ask.rule === request.rule && ask.subject === request.subject)
 }

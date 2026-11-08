@@ -8,8 +8,12 @@ const RecordedRequestSchema = z.object({
   body: z.looseObject({ method: z.string(), params: z.looseObject({ _meta: z.record(z.string(), z.unknown()).optional() }) }),
 })
 
+// The fallback a 2025-era server drew: an initialize naming the revision it speaks.
+const LegacyInitializeSchema = RecordedRequestSchema.extend({ body: z.looseObject({ method: z.literal('initialize'), params: z.looseObject({ protocolVersion: z.string() }) }) })
+
 const ClaudeCodeRecordSchema = z.object({
   modern: z.object({ discover: RecordedRequestSchema, listen: RecordedRequestSchema, toolsList: RecordedRequestSchema }),
+  legacy: z.object({ initialize: LegacyInitializeSchema }),
 })
 
 export type RecordedRequest = z.infer<typeof RecordedRequestSchema>

@@ -63,7 +63,8 @@ export interface FullAsk {
   workspace: { id: string; name?: string; node: string }
   requester: { actor: string | null; sessionId: string }
   tool: string
-  policy: { rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; widerSubject?: string }
+  /** `floor`: a person decides it (sudo, the destructive list, the file floor), whatever else could answer. */
+  policy: { rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; widerSubject?: string; floor: boolean }
   /** `notes`: what the decision AI said of the call's command asks (D91). */
   risk: { severity?: ApprovalSeverity; notes: readonly RatingNote[] }
   deadline: { expiresAt: string; hold: ApprovalHold | null }
@@ -183,9 +184,17 @@ export type SubmitResult =
   | { kind: 'accepted'; refs: Array<{ token: string; ref: string; url?: string }> }
   | { kind: 'declined'; reason: string }
 
+/**
+ * What the decision guard lets a source decide, read from the row it rates the source's kind by: a scope that outlives the
+ * call (`lasting`), and the approval of a floor ask (`floor`). A backend offers no more than this; the guard still checks
+ * every answer.
+ */
+export interface SourceReach { lasting: boolean; floor: boolean }
+
 /** What core hands a backend at open, bound to the source core holds for it. */
 export interface ApprovalHost {
   readonly source: ApprovalSource
+  readonly reach: SourceReach
   /** The one way a decision enters; the decision guard checks it before anything applies. */
   decide(input: DecisionInput, sender?: AnswerSender): Promise<DecisionReceipt>
   /**

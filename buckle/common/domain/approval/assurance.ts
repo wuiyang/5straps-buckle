@@ -1,3 +1,4 @@
+import type { SourceReach } from '../../types/ports/approval-backend.js'
 import { ASSURANCE_ORDER, type Assurance, type SourceKind } from '../../types/ports/approval-source.js'
 
 export interface SourceRights {
@@ -38,6 +39,12 @@ const RIGHTS: Record<SourceKind, SourceRights> = {
 
 export function rightsOf(kind: SourceKind): SourceRights {
   return RIGHTS[kind]
+}
+
+/** What a backend is told its source may decide, by the rules the decision guard holds these rights to. */
+export function reachOf(rights: SourceRights): SourceReach {
+  const local = atLeast(rights.assurance, 'local')
+  return { lasting: local, floor: rights.approves && rights.person && local }
 }
 
 export function atLeast(assurance: Assurance, least: Assurance): boolean {

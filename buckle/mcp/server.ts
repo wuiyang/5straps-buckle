@@ -23,9 +23,10 @@ export interface McpServerOptions {
   serverId?: string
   version: string
   /**
-   * A stdio host's forms, through which its answers decide as the forms source while the workspace's forms setting is on,
-   * read at each call. Absent over HTTP, where a call's `inputResponses` are never read, so nothing the agent's token
-   * reaches answers an ask.
+   * The face's forms, through which a host's answers decide under the face's forms source while the workspace's forms
+   * setting is on, read at each call: over stdio as the forms source, over HTTP as http-forms, which the agent's token
+   * reaches, so those decide only a non-floor ask once and only their own caller's. Off, a call's `inputResponses` are not
+   * read.
    */
   forms?: FormsBackend
   callScope?: ToolCallScope
