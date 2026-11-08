@@ -6,6 +6,7 @@ import { runInitCommand, runSettingsCommand } from '../cli/main.js'
 import { serviceCommand, SERVICE_USAGE } from '../cli/service.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { runCli } from './support/cli.js'
+import { auditWritten } from './support/action-log-writer.js'
 
 // Asking a command for its usage has no side effect: no audit entry, as `cp --help`, `--version`, and `--help` already
 // write none. `buckle init --help` once wrote a cli_init attempt and result as if init had run (the 0.1.8 publish test, B2),
@@ -24,12 +25,20 @@ beforeEach(() => {
 })
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); rmSync(base, { recursive: true, force: true }) })
 
-/** Every line of every audit log under the state directory: the node's, and each workspace's. */
-function auditLines(directory: string): string[] {
+/**
+ * Every line of every audit log under the state directory, the node's and each workspace's, once the log service has
+ * written what the owner's commands queued: init, settings, and service hand theirs over and return without closing it.
+ */
+async function auditLines(directory: string): Promise<string[]> {
+  await auditWritten()
+  return linesUnder(directory)
+}
+
+function linesUnder(directory: string): string[] {
   if (!existsSync(directory)) return []
   return readdirSync(directory).flatMap((name) => {
     const path = join(directory, name)
-    if (statSync(path).isDirectory()) return auditLines(path)
+    if (statSync(path).isDirectory()) return linesUnder(path)
     return /^actions\.jsonl(\.\d+)?$/.test(name) ? readFileSync(path, 'utf8').split('\n').filter(line => line !== '') : []
   })
 }
@@ -44,7 +53,7 @@ describe('a help request writes no audit entry', () => {
   it('is seen by the audit helper when a command does run, so the other tests cannot pass for want of looking', async () => {
     const config = node()
     expect((await runCli({ argv: ['grants'], config })).exitCode).toBe(0)
-    expect(auditLines(state).map(line => JSON.parse(line)).map(entry => [entry.tool, entry.event])).toEqual([['cli_grants', 'attempt'], ['cli_grants', 'result']])
+    expect((await auditLines(state)).map(line => JSON.parse(line)).map(entry => [entry.tool, entry.event])).toEqual([['cli_grants', 'attempt'], ['cli_grants', 'result']])
   })
 
   it.each(OWNER_COMMANDS.flatMap(command => [[command, '--help'], [command, '-h']]))('buckle %s %s prints its usage, exits 0, and audits nothing', async (command, flag) => {
@@ -52,7 +61,7 @@ describe('a help request writes no audit entry', () => {
     const result = await runCli({ argv: [command!, flag!], config })
     expect(result.exitCode).toBe(0)
     expect(printed.out).toContain(`buckle ${command}`)
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 
   it.each([
@@ -63,13 +72,13 @@ describe('a help request writes no audit entry', () => {
   ])('buckle %j audits nothing', async (argv) => {
     const result = await runCli({ argv, config: node() })
     expect(result.exitCode).toBe(0)
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 
   it('asks for help from a folder no workspace holds, and still writes nothing', async () => {
     const result = await runCli({ argv: ['approve', '--help'], config: node(), cwd: tmpdir() })
     expect(result.exitCode).toBe(0)
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 
   it.each(['--help', '-h'])('buckle init %s prints the usage and writes no audit entry, though the config it reads names a state directory', async (flag) => {
@@ -77,7 +86,7 @@ describe('a help request writes no audit entry', () => {
     const result = await runInitCommand([flag])
     expect(result.exitCode).toBe(0)
     expect(printed.out).toContain('Usage: buckle init')
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 
   it.each(['--help', '-h'])('buckle settings %s prints the usage, exits 0, and audits nothing', async (flag) => {
@@ -85,13 +94,13 @@ describe('a help request writes no audit entry', () => {
     const result = await runSettingsCommand([flag])
     expect(result.exitCode).toBe(0)
     expect(printed.out).toContain('buckle settings show')
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 
   it('still audits a settings command that runs', async () => {
     vi.stubEnv('BUCKLE_STATE_DIR', state)
     expect((await runSettingsCommand(['show'])).exitCode).toBe(0)
-    expect(auditLines(state)).toHaveLength(2)
+    expect(await auditLines(state)).toHaveLength(2)
   })
 
   it.each([
@@ -107,6 +116,6 @@ describe('a help request writes no audit entry', () => {
     expect(result.exitCode).toBe(0)
     expect(printed.out).toBe(SERVICE_USAGE)
     expect(printed.err).toBe('')
-    expect(auditLines(state)).toEqual([])
+    expect(await auditLines(state)).toEqual([])
   })
 })
