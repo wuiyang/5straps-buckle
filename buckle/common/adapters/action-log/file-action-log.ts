@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import type { LogDrops } from '@5straps/runtime'
 import { z } from 'zod'
+import { LOG_DROPPED_TOOL } from '../../domain/record-tools.js'
 import { OWNER_RECORDS_WAIT } from '../../runtime/log-budget.js'
 import { logger } from '../../runtime/log.js'
 import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
@@ -10,7 +11,7 @@ import type { LogDestination, LogService } from '../../types/ports/log-service.j
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { StateBusyError } from '../json-file-store.js'
 import { actionLogWriter, type ActionLogWriter } from './action-log-writer.js'
-import { LOG_DROPPED_TOOL, logService } from './log-service.js'
+import { logService } from './log-service.js'
 import { entryLine, MAX_ENTRY_BYTES, nameEntry, withEntryId, type LogFile, type WorkspaceNaming } from './writer-protocol.js'
 
 const MAX_PAGE_BYTES = 1_048_576

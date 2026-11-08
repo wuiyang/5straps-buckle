@@ -3,9 +3,6 @@ import { PROCESS_LOG_QUEUE } from '../../runtime/log-budget.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 import type { LogDestination, LogService } from '../../types/ports/log-service.js'
 
-/** The tool of the entry that says how many of a log's entries were dropped unwritten, and over what time. */
-export const LOG_DROPPED_TOOL = 'log_dropped'
-
 /** How each log's queue holds and retries its entries: under the process's one budget unless a test hands in its own. */
 export type LogQueueSettings = Pick<LogQueueOptions<ActionLogEntry>, 'retryDelaysMs' | 'writeDeadlineMs' | 'maxBatch'> & Required<Pick<LogQueueOptions<ActionLogEntry>, 'budget'>>
 

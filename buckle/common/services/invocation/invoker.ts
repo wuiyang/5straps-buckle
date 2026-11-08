@@ -11,6 +11,7 @@ import type { PathView } from '../../domain/path-view.js'
 import type { PermissionEngine, PermissionOutcome } from '../../domain/permission/engine.js'
 import { commandMarks } from '../../domain/permission/decision.js'
 import { MAX_LOGGED_ID, redactAuditArguments, reviewableArguments } from '../../domain/redact.js'
+import { isRecordTool } from '../../domain/record-tools.js'
 import { describeCall } from '../../domain/describe-call.js'
 import { DANGEROUSLY_ALLOW, dangerousUses, redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
 import { CODE_CHANGED_REASON, CodeChangedError, JUDGE, passKey, QUICK_FLAG_REASON, withFlagged, withJudged, type CodeBinding } from '../../domain/permission/judged.js'
@@ -204,6 +205,11 @@ export function createInvoker(options: InvokerOptions): Invoker {
       let failureCode: string | undefined
       const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(sessionId, request.context?.stageId) : undefined
       try {
+        // No tool takes such a name, and an attempt under it would read as one of Buckle's own records.
+        if (isRecordTool(request.tool)) {
+          feedback = failed(request, notAvailable(request.tool))
+          return feedback
+        }
         const auditId = randomUUID()
         // A required audit write that fails stops the call here, before anything runs (data.md).
         await options.actions.record(attemptEntry({ auditId, workspaceId: options.workspaceId, request, sessionId, via }))
@@ -457,6 +463,7 @@ function attemptEntry(input: { auditId: string; workspaceId: string; request: In
  * the refusal is the log's.
  */
 export async function recordRefusedCall(input: { actions: ActionLog; workspaceId: string; call: Pick<InvokeInput, 'request' | 'sessionId'>; code: string }): Promise<void> {
+  if (isRecordTool(input.call.request.tool)) return
   const attempt = attemptEntry({ auditId: randomUUID(), workspaceId: input.workspaceId, request: input.call.request, sessionId: input.call.sessionId })
   await input.actions.record(attempt)
   await input.actions.record({ ...attempt, event: 'result', at: new Date().toISOString(), outcome: 'error', detail: input.code })
@@ -929,6 +936,10 @@ const SCRIPT_CALL_REUSED = { code: CODE_REPLAY_DIVERGED, message: 'This script r
 
 function failed(request: InvokeRequest, error: { code: string; message: string; retryable: boolean }): InvokeResponse {
   return { requestId: request.requestId, outcome: 'error', error }
+}
+
+function notAvailable(tool: string): { code: string; message: string; retryable: boolean } {
+  return shapeError(new ToolExecutionError(`Tool is not available: ${tool.slice(0, MAX_LOGGED_ID)}`, { code: 'TOOL_NOT_FOUND' }))
 }
 
 function denied(request: InvokeRequest, message: string): InvokeResponse {

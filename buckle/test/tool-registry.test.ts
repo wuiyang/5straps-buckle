@@ -9,6 +9,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { hasExecutable } from '../common/domain/executable.js'
 import { createNoneSandbox } from '../common/adapters/sandbox/none-sandbox.js'
 import { defineTool } from '../common/domain/tool.js'
+import { DECISION_TOOL } from '../common/domain/record-tools.js'
 import { toolNameToCommand, commandToToolName, buildToolArgs, parseArgsOptions } from '../cli/arguments.js'
 
 function builtinRegistry(allowHostGit = false) {
@@ -89,6 +90,12 @@ describe('defineTool', () => {
       effects: () => [],
       run: async () => null,
     })).toThrow(/not MCP-safe/)
+  })
+
+  it('refuses a name Buckle writes its own records under, so no agent\'s call under it reads as one', () => {
+    for (const name of [DECISION_TOOL, 'log_dropped', 'cli_grants', 'setup_post_policy', 'workspace_register', 'policy_dangerously_allowed']) {
+      expect(() => defineTool('fs', { name, description: 'Clashing tool', risk: 'read', input: z.object({}), effects: () => [], run: async () => null }), name).toThrow(/own records/)
+    }
   })
 
   it('derives the JSON Schema from the Zod schema, so the two cannot drift', () => {

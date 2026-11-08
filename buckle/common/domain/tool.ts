@@ -2,6 +2,7 @@ import { z } from 'zod'
 import type { ApprovalRequest, CapabilityRisk, InvokeResponse, JsonObject, JsonValue, ToolCapability } from '@5straps/protocol'
 import { TOOL_NAME_PATTERN } from '@5straps/protocol'
 import type { ToolEffect } from './effect.js'
+import { isRecordTool } from './record-tools.js'
 
 /**
  * One value filled into a browser from a secret reference (docs/user/how-to/secrets.md): its file as the rules judged it and as
@@ -372,6 +373,7 @@ export function defineTool<TInput, TJudged = undefined>(pack: string, definition
   if (!TOOL_NAME_PATTERN.test(definition.name)) {
     throw new Error(`Tool name is not MCP-safe: ${definition.name}`)
   }
+  if (isRecordTool(definition.name)) throw new Error(`Tool name is one Buckle writes its own records under: ${definition.name}`)
 
   const { description } = definition
   const capability: ToolCapability = {
