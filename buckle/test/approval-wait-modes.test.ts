@@ -1,5 +1,6 @@
 import { CLIENT_CAPABILITIES_META_KEY, type ServerContext } from '@modelcontextprotocol/server'
-import { createMcpServer, openForms } from '../mcp/server.js'
+import { createMcpServer } from '../mcp/server.js'
+import { openForms } from '../mcp/open-forms.js'
 import { isExplicitCancel } from '../mcp/stdio.js'
 import { SdkError, SdkErrorCode } from '@modelcontextprotocol/server'
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
@@ -150,7 +151,7 @@ async function mcpFixture(nativePrompt = false, isCancel?: (reason: unknown) => 
   mkdirSync(join(root, 'workspace'))
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: join(root, 'workspace'), BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '0', ...(nativePrompt ? { BUCKLE_APPROVAL_FORMS: 'true' } : {}) })
   const runtime = await createRuntime({ config, interaction: fixedInteraction() })
-  const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', ...(nativePrompt ? { forms: openForms(runtime) } : {}), ...(isCancel ? { isCancel } : {}) })
+  const server = createMcpServer({ runtime, serverName: 'wait-test', version: '1', ...(nativePrompt ? { forms: openForms(runtime, { face: 'stdio' }) } : {}), ...(isCancel ? { isCancel } : {}) })
   // The SDK does not expose handlers publicly; exercise its registered callback with a request context.
   const registered = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean }> }> })._registeredTools
   return { runtime, call: (signal: AbortSignal) => registered.fs_write!.handler({ path: 'probe.txt', content: 'approved' }, {

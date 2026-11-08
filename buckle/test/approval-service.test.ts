@@ -17,7 +17,8 @@ import { holdFor, type ApprovalAskInput } from '../common/services/approvals/app
 import { NO_INTERACTION } from '../common/runtime/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
-import { createMcpServer, openForms } from '../mcp/server.js'
+import { createMcpServer } from '../mcp/server.js'
+import { openForms } from '../mcp/open-forms.js'
 import { stdioCallScope } from '../mcp/stdio.js'
 import type { ServerContext } from '@modelcontextprotocol/server'
 import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
@@ -278,7 +279,7 @@ describe('the interaction each HTTP request binds', () => {
     const requestCli: RequestCli = async request => { questions.push({ actor: request.actor, sessionId: request.sessionId }); return { status: 'unavailable', requestId: request.id, reason: 'no_consumer' } }
     common.bindRequester(requestCli)
     const runtime = await defaultRuntime(common)
-    const server = createMcpServer({ runtime, serverName: 'stdio-test', version: '0', forms: openForms(runtime), callScope: stdioCallScope(common) })
+    const server = createMcpServer({ runtime, serverName: 'stdio-test', version: '0', forms: openForms(runtime, { face: 'stdio' }), callScope: stdioCallScope(common) })
     const tools = (server as unknown as { _registeredTools: Record<string, { handler(args: unknown, context: ServerContext): Promise<{ isError?: boolean; structuredContent?: unknown }> }> })._registeredTools
 
     const result = await tools.fs_write!.handler({ path: 'a.md', content: 'x' }, { sessionId: 'stdio-session', mcpReq: { signal: new AbortController().signal } } as unknown as ServerContext)

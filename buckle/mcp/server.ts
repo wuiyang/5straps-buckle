@@ -9,7 +9,7 @@ import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { AnswerSender } from '../common/types/ports/approval-backend.js'
-import { createFormsBackend, type FormsBackend } from './forms-backend.js'
+import type { FormsBackend } from './forms-backend.js'
 import { MCP_HOLD_MS } from './holds.js'
 import { createResendJoin, sameCallKey, type ResendJoin } from './resend-join.js'
 
@@ -70,16 +70,6 @@ export function createMcpServer(input: McpServerOptions): McpServer {
   }
 
   return server
-}
-
-/**
- * A stdio host's forms, opened on the runtime's approvals, where core binds them to the forms source. They stay open while
- * the forms setting is off, so turning it on applies from the next call.
- */
-export function openForms(runtime: BuckleRuntime, node?: string): FormsBackend {
-  const forms = createFormsBackend({ workspace: () => ({ id: runtime.workspaceId, name: runtime.workspaceName() }), ...(node === undefined ? {} : { node }), approves: () => runtime.judgeApproves() })
-  runtime.openApprovalForms(forms, 'stdio')
-  return forms
 }
 
 function registerTools(server: McpServer, options: McpServerOptions): Array<ReturnType<McpServer['registerTool']>> {

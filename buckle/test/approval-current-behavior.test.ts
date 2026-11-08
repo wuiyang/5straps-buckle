@@ -15,7 +15,8 @@ import { actionsPath, approvalsPath, grantsPath, type BuckleConfig } from '../co
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
-import { createMcpServer, openForms } from '../mcp/server.js'
+import { createMcpServer } from '../mcp/server.js'
+import { openForms } from '../mcp/open-forms.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -92,7 +93,7 @@ const accepted = (token: string, content: { approve: boolean; scope: 'once' | 's
  */
 async function mcpNode(input: { trusted: boolean }) {
   const context = await node({ forms: input.trusted })
-  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime) } : {}) })
+  const server = createMcpServer({ runtime: context.runtime, serverName: 'current-mcp', version: '0', followToolChanges: false, ...(input.trusted ? { forms: openForms(context.runtime, { face: 'stdio' }) } : {}) })
   return { ...context, tool: (name: string) => mcpTool(server, name), waiting: () => context.runtime.approvalService.pending().map(request => request.token) }
 }
 

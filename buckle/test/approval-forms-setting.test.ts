@@ -16,7 +16,8 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import type { GrantStore } from '../common/types/ports/grant-store.js'
-import { createMcpServer, openForms } from '../mcp/server.js'
+import { createMcpServer } from '../mcp/server.js'
+import { openForms } from '../mcp/open-forms.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { runCli } from './support/cli.js'
 import { hostTool } from './support/mcp-host-tool.js'
@@ -270,7 +271,7 @@ async function stdioNode(input: { forms: boolean }) {
   await setForms(input.forms)
   const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
-  const forms = openForms(runtime)
+  const forms = openForms(runtime, { face: 'stdio' })
   const server = createMcpServer({ runtime, serverName: 'forms-mcp', version: '0', followToolChanges: false, forms })
   const waitingTokens = () => runtime.approvalService.pending().map(asked => asked.token)
   return { workspace, runtime, forms, setForms, breakSettings, waitingTokens, write: hostTool(server, 'fs_write') }

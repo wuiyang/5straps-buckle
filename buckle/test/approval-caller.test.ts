@@ -18,7 +18,8 @@ import { SOURCES, type ApprovalSource, type FormsFace } from '../common/types/po
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import type { GrantStore } from '../common/types/ports/grant-store.js'
 import { createFormsBackend } from '../mcp/forms-backend.js'
-import { createMcpServer, openForms } from '../mcp/server.js'
+import { createMcpServer } from '../mcp/server.js'
+import { openForms } from '../mcp/open-forms.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
 import { approvalServiceWithTerminal, fixedInteraction } from './support/interaction.js'
@@ -259,7 +260,7 @@ async function formsNode() {
   await settings.update(current => ({ ...current, approval: { ...current.approval, forms: true } }))
   const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
-  const server = createMcpServer({ runtime, serverName: 'caller-mcp', version: '0', followToolChanges: false, forms: openForms(runtime) })
+  const server = createMcpServer({ runtime, serverName: 'caller-mcp', version: '0', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }) })
   return { workspace, runtime, write: hostTool(server, 'fs_write') }
 }
 

@@ -2,6 +2,7 @@ import type { ServerContext } from '@modelcontextprotocol/server'
 import { z } from 'zod'
 import { describe, expect, it, vi } from 'vitest'
 import { createToolRegistry } from '../common/domain/tool-registry.js'
+import { bindFormsOpener } from '../common/services/workspaces/forms-opener.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { MCP_HOLD_MS, mcpWait, workspaceWait } from '../mcp/holds.js'
 import { createStdioServer } from '../mcp/stdio.js'
@@ -29,8 +30,9 @@ function stdioCall(approvalTimeoutMs: number | null) {
   const invoke = vi.fn(async (_input: Record<string, unknown>) => ({ requestId: 'r', outcome: 'ok' as const, output: null, meta: { durationMs: 0, truncated: false } }))
   const runtime = {
     registry: () => registry, manifest: () => ({ tools: registry.capabilities(), version: '0.0.0' }), skills: () => [], onToolsChanged: () => undefined,
-    openApprovalForms: () => undefined, approvalForms: () => false, invoke,
+    approvalForms: () => false, invoke,
   } as unknown as BuckleRuntime
+  bindFormsOpener(runtime, () => undefined)
   const server = createStdioServer({ runtime, config: { serverName: 'stdio-test', serverId: 'node-1', approvalTimeoutMs }, callScope: run => run(), beforeCall: async () => undefined })
   const tools = (server as unknown as { _registeredTools: Record<string, { handler: (args: unknown, context: ServerContext) => Promise<unknown> }> })._registeredTools
   const context = { sessionId: 'stdio-1', mcpReq: { id: 1, method: 'tools/call', requestState: () => undefined } } as unknown as ServerContext

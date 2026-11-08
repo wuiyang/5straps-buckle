@@ -22,12 +22,10 @@ const GUARDS = /\b(?:guardDecision|guardSkip|screenDecision)\(/
 // The whole approval service, whose `answer` takes any source: a face holds `approvalApi`, typed as the core approval API.
 const NAMES_THE_SERVICE = /\bapprovalService\b/
 const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
-// Opening a host's forms: nothing the agent's token reaches may answer an ask, so only the stdio face opens them. Any
-// mention counts, so an import under another name is caught too: the opener sits on the faces' runtime type, and this
-// scan, not the type, keeps it to the stdio face.
-const OPENS_FORMS = /\bopenForms\b/
-const NAMES_THE_FORMS_OPENER = /\bopenApprovalForms\b/
-const NAMES_THE_SERVICE_FORMS_OPENER = /\bopenFormsBackend\b/
+// Opening a host's forms is no part of the runtime every face holds: core binds each runtime's opener in a module of its
+// own, which only the MCP faces' forms module imports, and only the two MCP faces import that one.
+const FORMS_OPENER = 'common/services/workspaces/forms-opener.ts'
+const OPEN_FORMS = 'mcp/open-forms.ts'
 const RUNTIME = 'common/services/workspaces/workspace-runtime.ts'
 // The runtime as core composes it, with the ledger and the service: a face that named it could widen its view back.
 const NAMES_THE_CORE_RUNTIME = /\bCoreRuntime\b/
@@ -78,6 +76,10 @@ function reachedFrom(file: string, follow: 'own' | 'all' = 'own'): string[] {
 const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...paths)
   .filter(file => importsOf(file).some(specifier => target.test(specifier)))
   .map(file => relative(PACKAGE_ROOT, file))
+// The modules under `paths` that import the module `target` (package-relative), under any name, each import resolved.
+const importersOf = (paths: string[], target: string): string[] => sourceFiles(...paths)
+  .filter(file => importsOf(file).some(specifier => specifier.startsWith('.') && relative(PACKAGE_ROOT, resolve(dirname(file), specifier)).replace(/\.js$/, '.ts') === target))
+  .map(file => relative(PACKAGE_ROOT, file))
 
 // Ruling 4 of 2026-09-28: the approval service is the single answerer (review L8).
 describe('the approval boundary', () => {
@@ -118,9 +120,10 @@ describe('the approval boundary', () => {
     expect(naming).toEqual([])
   })
 
-  it('types the runtime the faces hold without the ledger or the service, and its approval API without answer or the forms opener', () => {
+  it('types the runtime the faces hold without the ledger, the service, or the forms opener, and its approval API without answer or the forms opener', () => {
     expectTypeOf<BuckleRuntime>().not.toHaveProperty('approvals')
     expectTypeOf<BuckleRuntime>().not.toHaveProperty('approvalService')
+    expectTypeOf<BuckleRuntime>().not.toHaveProperty('openApprovalForms')
     expectTypeOf<BuckleRuntime['approvalApi']>().not.toHaveProperty('answer')
     expectTypeOf<BuckleRuntime['approvalApi']>().not.toHaveProperty('openFormsBackend')
     const widening = sourceFiles(...FACES)
@@ -129,14 +132,10 @@ describe('the approval boundary', () => {
     expect(widening).toEqual([])
   })
 
-  it('lets only the stdio face open a host\'s forms, through the one opener the MCP server defines', () => {
-    const calling = (pattern: RegExp) => sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
-      .filter(file => pattern.test(readFileSync(file, 'utf8')))
-      .map(file => relative(PACKAGE_ROOT, file))
-    expect(OPENS_FORMS.test('import { openForms as hostForms } from \'./server.js\'')).toBe(true)
-    expect(calling(OPENS_FORMS)).toEqual(['mcp/server.ts', 'mcp/stdio.ts'])
-    expect(calling(NAMES_THE_FORMS_OPENER)).toEqual([RUNTIME, 'mcp/server.ts'])
-    expect(calling(NAMES_THE_SERVICE_FORMS_OPENER)).toEqual([SERVICE, RUNTIME])
+  it('hands the forms opener to the MCP faces alone: core binds it, the MCP forms module alone imports it, and only the stdio face imports that', () => {
+    const everywhere = ['main.ts', 'common', 'cli', 'mcp', 'server', 'layers']
+    expect(importersOf(everywhere, FORMS_OPENER).sort()).toEqual([RUNTIME, OPEN_FORMS].sort())
+    expect(importersOf(everywhere, OPEN_FORMS).sort()).toEqual(['mcp/stdio.ts'])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {

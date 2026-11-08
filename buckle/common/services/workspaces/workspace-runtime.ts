@@ -74,10 +74,9 @@ import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
 import type { GrantStore } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
+import { bindFormsOpener } from './forms-opener.js'
 import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { CoreApprovalApi } from '../approvals/core-approval-api.js'
-import type { ApprovalBackend } from '../../types/ports/approval-backend.js'
-import type { FormsFace } from '../../types/ports/approval-source.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
@@ -223,8 +222,6 @@ export interface BuckleRuntime {
   approvalApi: CoreApprovalApi
   /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
   closeApprovals(): Promise<void>
-  /** Opens an MCP host's forms under its face's forms source, which core holds and rates; the stdio face's alone. */
-  openApprovalForms(backend: ApprovalBackend, face: FormsFace): void
   /** How a call meets approvals: its last check, the grants it holds, and its asks. */
   approvalGate: ApprovalGate
   history: ChangeHistory
@@ -527,7 +524,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     approvalService,
     approvalApi: approvalFaceOf(approvalService),
     closeApprovals: () => approvalService.close(),
-    openApprovalForms: (backend, face) => approvalService.openFormsBackend(backend, face),
     approvalGate,
     actions,
     history,
@@ -904,6 +900,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     return isToolAllowed(compiled.policy, tool) ? null : TOOL_DISABLED
   }
 
+  bindFormsOpener(runtime, (backend, face) => approvalService.openFormsBackend(backend, face))
   return runtime
 }
 
