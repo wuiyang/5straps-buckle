@@ -125,10 +125,11 @@ type PendingEntry = State['pending'][number]
 /** A decision, with the answer it gives and its resolved entry, whose lasting grant reads `owed` while it is unwritten. */
 interface AppliedDecision { resolution: Extract<Resolution, { ok: true }>; entry: ResolvedEntry }
 /**
- * How far a decision got: made under the lock (`decided`), then on disk (`recorded`), with a lasting denial written to the
- * grant store before either (`denial`), and why the last settling pass left a grant owed (`saveError`).
+ * How far a decision got: made under the lock (`decided`), or refused there (`refused`), then on disk (`recorded`), with a
+ * lasting denial written to the grant store before either (`denial`), and why the last settling pass left a grant owed
+ * (`saveError`).
  */
-interface DecisionProgress { decided?: AppliedDecision; recorded?: true; denial?: GrantRecord; saveError?: string }
+interface DecisionProgress { decided?: AppliedDecision; refused?: Extract<Resolution, { ok: false }>; recorded?: true; denial?: GrantRecord; saveError?: string }
 /**
  * An ask waiting in the queue, with the whole call it came from, read from its file. `callRef` names the file,
  * which every ask of one request group shares, so a listing carries the group's call once and each ask names it
@@ -486,6 +487,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   /**
    * Every change starts by dropping what expired; this workspace's unanswered asks among them are reported once
    * written, and the call files no waiting ask names any longer are removed once the index no longer names them.
+   * `committed` runs once the change is on disk, before the lock is released.
    */
   async function update<R>(change: (state: State, commit: () => Promise<void>) => R | Promise<R>, committed?: () => void): Promise<R> {
     let expired: ApprovalRequest[] = []
@@ -513,13 +515,12 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       if (added.length > 0 && pastDeliveryLimits(state.outbox)) logger.warn('Approval outcome delivery is past its limits; the asks\' ends were kept anyway, and new asks wait until the receiver drains it', { entries: state.outbox.length, added: added.length, events: [...new Set(added.map(entry => entry.notice.event))] })
       nextExpiry = earliestExpiry(state)
       return value
-    }).finally(() => {
+    }, committed).finally(() => {
       // The update read the index whole, so a version marked unreadable is readable again: forget it once the lock is
       // released, even when the change then threw, as the store forgot its own report (slice 7g review R7G-RG-1).
       if (readable) unreadableVersion = undefined
     })
     // The change is on disk, so a step below that fails undoes none of it.
-    committed?.()
     queueVersion = undefined
     calls.remove(released)
     departed(expired.map(request => request.token), EXPIRED)
@@ -788,12 +789,15 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     // The subject can carry a command's arguments, so the log names its size only; the action log keeps it.
     if (decision.approved) logger.info('Approval granted', { rule, scope: decision.scope, tool, subjectLength: subject.length, ...(widenedTo || wider ? { widened: true } : {}) })
     if (!owesGrants(state)) return resolution
+    // The call that asked still runs, once, on an approval whose lasting grant did not save: it gets less than the person
+    // granted, never more. Any other call asks until the grant saves. Committed with the decision, so it stands whenever
+    // the decision does, and dropped once the grant saves.
+    const fallback = grant === undefined ? undefined : onceFor()
+    if (fallback) state.once.push(fallback)
     await commit()
     progress.recorded = true
     progress.saveError = await settleGrants(state, commit)
-    // The call that asked still runs, once, on an approval whose lasting grant did not save: it gets less than the person
-    // granted, never more. Any other call asks until the grant saves.
-    if (owedHere(resolved)) state.once.push(onceFor())
+    if (fallback && !owedHere(resolved)) state.once = state.once.filter(entry => entry !== fallback)
     return savedAs({ decided: progress.decided, saveError: progress.saveError })
   }
 
@@ -920,12 +924,15 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       try {
         return await update(async (state, commit) => {
           await applyRevocations(state, commit)
-          return applyDecision({ state, commit, claim, options, progress })
+          const answer = await applyDecision({ state, commit, claim, options, progress })
+          if (!answer.ok) progress.refused = answer
+          return answer
         }, () => { progress.recorded = true })
       } catch (error) {
         // A failure after the decision is on disk leaves it applied, its denial in force: the answer says so, and names a
-        // grant it still owes.
-        const { decided, recorded, denial } = progress
+        // grant it still owes. A refusal recorded nothing, so a step after it that fails changes no answer.
+        const { decided, recorded, denial, refused } = progress
+        if (refused !== undefined) return refused
         if (decided === undefined || !recorded) {
           if (denial !== undefined) await withdrawDenial(denial)
           throw error

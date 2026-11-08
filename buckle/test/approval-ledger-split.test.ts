@@ -45,11 +45,27 @@ vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
   }
 })
 
+// The release of the lock at `path` to fail once, after the update under it is on disk.
+const releasing = vi.hoisted(() => ({ path: undefined as string | undefined }))
+vi.mock('@5straps/runtime/sqlite', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@5straps/runtime/sqlite')>()
+  return {
+    ...actual,
+    withFileLock: async <T>(options: Parameters<typeof actual.withFileLock>[0], operation: () => Promise<T>): Promise<T> => {
+      const result = await actual.withFileLock(options, operation)
+      if (releasing.path === undefined || options.path !== releasing.path) return result
+      releasing.path = undefined
+      throw new Error('Injected release failure')
+    },
+  }
+})
+
 const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   Object.assign(failing, { rename: undefined, skip: 0, count: 1 })
+  releasing.path = undefined
   Object.assign(holding, { path: undefined, reached: () => {}, until: Promise.resolve() })
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   await settleAuditLogs()
@@ -461,6 +477,34 @@ describe('a lasting denial', () => {
     expect(registry.wasDenied([secret!.token])).toBe(true)
   })
 
+  it('keeps its denial in force when its decision is on disk and the approvals lock then fails to release', async () => {
+    const { config, runtime } = await open()
+    const token = await secretAsk(runtime)
+    releasing.path = `${approvalsPath(config)}.lock.sqlite`
+
+    expect(await runtime.approvalService.answer(denial(token))).toMatchObject({ ok: true })
+    expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: false })
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
+  })
+
+  it('still answers grant_unsaved when a step after its update fails', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
+    roots.push(root)
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' })
+    let armed = false
+    const grants = { ...store, grant: async () => { throw Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }) } }
+    const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 0, { onExpired: () => { if (armed) throw new Error('A step after the update failed') } })
+    const call = { arguments: {}, cwd: '/workspace', description: null, complete: true as const }
+    const [secret] = (await registry.ask({ tool: 'fs_read', sessionId: 's', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject: '/workspace/.env', reason: 'secret', offeredScopes: ['once'] }], call })).requests
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() - 60 * 60_000)
+    await registry.ask({ tool: 'fs_write', sessionId: 'other', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], call })
+    clock.mockRestore()
+    armed = true
+
+    expect(await registry.resolve({ token: secret!.token, approved: false, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: false, code: 'grant_unsaved', retryable: true })
+    expect(registry.pending().map(request => request.token)).toEqual([secret!.token])
+  })
+
   it.each(['session', 'always'] as const)('stands over an earlier %s approval of the same secret file whose grant was left owed, and after reopening', async (scope) => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-denial-'))
     roots.push(root)
@@ -528,6 +572,18 @@ describe('a lasting approval whose grant cannot be saved', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ id: owed!.id, rule: 'write_scope', scope: 'session', sessionId: 's' })])
     expect(keptGrant(config, token)).toEqual({ id: owed!.id, save: 'saved' })
     expect(await again(runtime, 'one/b.md')).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('keeps the once for the call that asked on disk when the update that settled its grant then fails to write', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(Object.assign(new Error('EACCES: permission denied'), { code: 'EACCES' }))
+    // The decision's own commit goes through; the update's last write, after the settling pass, fails.
+    Object.assign(failing, { rename: approvalsPath(config), skip: 1, count: 1 })
+
+    expect(await approve(runtime, token)).toMatchObject({ status: 'applied', save: 'owed' })
+    expect(runtime.approvals.unspent('s')).toEqual([expect.objectContaining({ tool: 'fs_write' })])
+    expect(await resend(runtime, 'one/a.md', token)).toMatchObject({ outcome: 'ok' })
   })
 
   it('keeps the id its grant was written under, saved, and gives no once beside a grant that saved', async () => {

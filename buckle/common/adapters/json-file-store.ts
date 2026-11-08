@@ -56,8 +56,9 @@ export interface JsonFileStore<T> {
   /**
    * Read, change and persist under the file lock. A change that awaits keeps the lock meanwhile, so keep it short.
    * `commit` persists the state as the change has it so far, the lock still held, for work that must follow a write.
+   * `persisted` runs once the last write is on disk, before the lock is released, which may still fail after it.
    */
-  update<R>(change: (state: T, commit: () => Promise<void>) => R | Promise<R>): Promise<R>
+  update<R>(change: (state: T, commit: () => Promise<void>) => R | Promise<R>, persisted?: () => void): Promise<R>
   /** Runs `operation` under the file lock without reading the file, so it takes its turn with updates even while the file cannot be read. */
   locked<R>(operation: () => R | Promise<R>): Promise<R>
 }
@@ -161,10 +162,11 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
     read,
     locked,
     write: value => locked(() => persist(value)),
-    update: change => locked(async () => {
+    update: (change, persisted) => locked(async () => {
       const state = read()
       const result = await change(state, () => persist(state))
       await persist(state)
+      persisted?.()
       return result
     }),
   }
