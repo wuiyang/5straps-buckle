@@ -51,7 +51,19 @@ setting.
 
 ## Claude Code over HTTP
 
-A probe on 2026-11-08 logged the first request Claude Code 2.1.303 and 2.1.300 sent an HTTP MCP
-server built on `@modelcontextprotocol/server` 2.3.1: `server/discover` at protocol revision
-`2026-07-28`, declaring `elicitation` with `form` and `url`. `test/fixtures/claude-code-http-mcp.json`
-keeps the request, and `test/approval-forms-setting.test.ts` draws forms for those capabilities.
+A probe on 2026-11-08 ran `claude mcp list`, which checks each server's health and calls no
+model, against two throwaway HTTP MCP servers on 127.0.0.1, and logged each request as it arrived.
+Claude Code 2.1.303 and 2.1.300 sent the same requests, their versions aside.
+
+- **A server on `@modelcontextprotocol/server` 2.3.1, as `/mcp` is:** `server/discover` at
+  revision `2026-07-28`, declaring the client capabilities `roots` with `listChanged` and
+  `elicitation` with `form` and `url`. Then `subscriptions/listen` for tool changes, held open,
+  and `tools/list`. No `initialize`.
+- **A server of the 2025 revisions, which answers the `2026-07-28` header with HTTP 400 as SDK
+  1.32 does:** the same `server/discover`, then `initialize` at `2025-11-25` with the same
+  capabilities, `notifications/initialized`, a GET for a stream, and `tools/list`.
+
+So Claude Code reaches `/mcp` at `2026-07-28`, the revision a tool's `input_required` answer
+needs, and `/mcp` offers no other in `supportedVersions`. `test/fixtures/claude-code-http-mcp.json`
+keeps the requests. `test/http/mcp-http.test.ts` replays the `2026-07-28` ones against `/mcp`, and
+`test/approval-forms-setting.test.ts` draws forms for the capabilities they declare.
