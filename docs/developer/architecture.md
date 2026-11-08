@@ -29,7 +29,7 @@ inside `buckle/` unless they start with `packages/`.
   `policy.ts`, `approvals-watch.ts`, `terminal-consumer.ts`, `keys.ts`, `client.ts`,
   `workspace.ts`, `workspace-keys.ts`, `target.ts`, and `service.ts` implement them.
 - `mcp/` is the MCP face. `server.ts` registers each available tool and each skill and turns an
-  ask into relay text, or on stdio into the forms `forms-backend.ts` draws; `stdio.ts`,
+  ask into relay text, or, while forms are on, into the forms `forms-backend.ts` draws; `stdio.ts`,
   `stdio-wire.ts`, and `audited-stdio-transport.ts` serve it on stdio; `http.ts` keeps one
   stateless handler per workspace runtime for `/mcp`.
 - `server/` is the HTTP face. `setup-server.ts` imports the built Nitro app from

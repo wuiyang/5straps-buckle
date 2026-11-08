@@ -34,10 +34,13 @@ save states and reasons.
 - **The MCP forms:** `mcp/forms-backend.ts` answers with the tokens the call spends and each
   decision `unsavedOf` reads as unsaved; `mcp/server.ts` then returns `saveForms`, one form per
   decision under `save:<token>`, retry or skip, before it invokes, so the call's once stays unspent.
-  The backend keeps each question with the caller it was drawn for, and reads a `save:` answer only
-  from that caller and only for a form it drew; an approval form's answer naming neither `approve`
-  nor `action` decides nothing. It runs `settleUnsaved` once: an accepted `retry` or `skip`, a
-  decline as a skip, and a cancel as leaving it, with no further form where the retry fails again.
+  The backend keeps each question in memory, with the ask it answered, which its form names first,
+  and the caller it was drawn for; an approval form's answer naming neither `approve` nor `action`
+  decides nothing. That caller's `save:` answer runs `settleUnsaved` once: an accepted `retry` or
+  `skip`, a decline as a skip, and a cancel as leaving it, with no further form where the retry
+  fails again. Any other, or one after a restart lost the questions, sends a skip or decline to
+  `host.skipSave`, where core holds it to the source and caller that recorded the decision, and
+  logs a retry as dropped.
   Each step goes through `host.decide` or `host.skipSave` with the transport's sender, so the live
   forms setting and the caller check meet it. The call sent again joins the first call's ask by
   the resend join, so it runs once. The ending goes to `host.log`.
