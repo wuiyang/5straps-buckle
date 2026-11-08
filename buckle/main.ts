@@ -13,6 +13,7 @@ import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig 
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { initializeCommon, type BuckleCommon } from './common/runtime/initialize.js'
 import { createConsoleWriter, type ConsoleWriter } from './common/runtime/console.js'
+import { LOG_CLOSE_DEADLINE_MS } from './common/runtime/log-budget.js'
 import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, type LogOutput } from './common/runtime/log.js'
 import { BUCKLE_VERSION } from './common/runtime/version.js'
 import { AlreadyServingError, holdServe, refusedServeExit, runningNode, serviceLogPath, watchStopRequest, type ServiceManagerKind } from './common/services/node-service/serve-record.js'
@@ -29,9 +30,6 @@ export type Mode =
   | { kind: 'serve' | 'mcp'; options: string[] }
 
 type ServiceKind = 'serve' | 'mcp'
-
-/** How long the logger may take to flush its last lines at exit. */
-const LOGGING_CLOSE_MS = 2_000
 
 interface Shutdown {
   close(): Promise<void>
@@ -201,7 +199,8 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
   // every other command does, before the approval terminal starts; `buckle mcp` cannot, as stdin carries the protocol.
   const terminal = input.service === null ? terminalFor(input.kind, input.console) : null
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminal ? { askName: question => askAtTerminal(question) } : {}) })
-  common.owner.onClose('sinks', 'logger', () => logging.flush())
+  // Bounded: a sink that fails waits out its retries, which must not run past the close step's own limit.
+  common.owner.onClose('sinks', 'logger', () => logging.flush({ deadlineMs: LOG_CLOSE_DEADLINE_MS }))
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.
   const cli = setupCli({ terminal, logPending: true })
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
@@ -289,7 +288,7 @@ async function closeProcess(input: { common: BuckleCommon; logging: LoggerRoot }
   })
   input.logging.logger.info('5straps Buckle stopped')
   // Bounded: a sink that waits for stderr to drain (an unread pipe) must not keep the process alive (review L3 of B20-B22).
-  await Promise.race([input.logging.close(), new Promise(resolve => setTimeout(resolve, LOGGING_CLOSE_MS).unref())])
+  await input.logging.close({ deadlineMs: LOG_CLOSE_DEADLINE_MS })
   // Every subsystem Buckle starts has a close step; a handle a plugin or a child left open must not keep the process alive.
   process.exit()
 }

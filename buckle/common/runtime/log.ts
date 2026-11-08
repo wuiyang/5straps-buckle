@@ -3,6 +3,7 @@ import { createLogger, createRotatingFileSink, createStderrJsonSink, LOG_LEVELS,
 import { maskHeld, maskHeldJson, masksHeld } from '../services/secrets/mask.js'
 import { parseList } from './config.js'
 import { createConsoleWriter, type ConsoleWriter } from './console.js'
+import { LOG_RETRY_DELAYS_MS, processLogBudget } from './log-budget.js'
 import { isVerbose, renderEvent } from './log-render.js'
 
 const COMPONENT = 'buckle'
@@ -15,6 +16,7 @@ let root: LoggerRoot | undefined
 /**
  * The process's root logger, on the runtime logger: seven levels, child bindings, redaction of
  * secrets and content keys, and a stderr sink, JSON or human lines (stdout stays for machine output and MCP frames).
+ * Its lines are held under the process's one log budget and retried as every log of the process is (log-budget.ts).
  */
 export const logger: Logger = delegate(() => rootLogger().logger)
 
@@ -99,7 +101,7 @@ export function stderrFormat(override: LogFormat | undefined, stream: { isTTY?: 
 }
 
 function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
-  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output, config.level ?? 'info')] })
+  return createLogger({ ...config, component: COMPONENT, sinks: [sinkFor(output, config.level ?? 'info')], budget: processLogBudget, retryDelaysMs: LOG_RETRY_DELAYS_MS })
 }
 
 function sinkFor(output: LogOutput, level: LogLevel): LogSink {

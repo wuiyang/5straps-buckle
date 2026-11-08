@@ -1,9 +1,11 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createLogQueue } from '@5straps/runtime'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { z } from 'zod'
 import { createJsonFileStore } from '../common/adapters/json-file-store.js'
+import { processLogBudget } from '../common/runtime/log-budget.js'
 import { configureRootLogger, flushLogs, logFormatFrom, logger, loggerConfigFrom, stderrFormat, withoutCause } from '../common/runtime/log.js'
 
 // The root logger writes asynchronously, so every stderr capture flushes before reading.
@@ -150,7 +152,7 @@ describe('the format of the log on stderr', () => {
     }
   })
 
-  it('keeps the logger\'s fallback line JSON when the human sink fails', async () => {
+  it('keeps the logger\'s fallback line JSON when the human sink fails, and writes the line when it tries again', async () => {
     configureRootLogger({}, { format: 'human' })
     let text = ''
     const spy = vi.spyOn(process.stderr, 'write')
@@ -162,7 +164,9 @@ describe('the format of the log on stderr', () => {
     } finally {
       spy.mockRestore()
     }
-    expect(JSON.parse(text)).toMatchObject({ level: 'error', component: 'logger', message: 'Log sink stderr-human failed', dropped: { level: 'info', message: 'lost line' } })
+    const [failed, retried] = text.split('\n').filter(Boolean)
+    expect(JSON.parse(failed!)).toMatchObject({ level: 'error', component: 'logger', message: 'Log sink stderr-human failed', event: { level: 'info', message: 'lost line' } })
+    expect(retried).toMatch(/^\d\d:\d\d:\d\d \[info\] lost line$/)
   })
 
   // C2: the human sink renders the event the logger already redacted, so no sink can show more than the JSON does.
@@ -179,6 +183,103 @@ describe('the format of the log on stderr', () => {
     expect(await stderrText(() => logger.info('close step', { stage: 'accept', name: 'http server' }))).toBe('')
     configureRootLogger({ level: 'debug' }, { format: 'human' })
     expect(await stderrText(() => logger.info('close step', { stage: 'accept', name: 'http server' }))).toMatch(/^\d\d:\d\d:\d\d \[info\] close step stage=accept name=http server\n$/)
+  })
+})
+
+// Every log the process writes shares one budget of 30 held entries, the oldest dropped, and a failed write is tried 3
+// more times before its entries drop.
+describe('what the process holds of its logs', () => {
+  const range = (from: number, to: number) => Array.from({ length: to - from }, (_, index) => `line ${from + index}`)
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('holds 30 lines of a burst on stderr, drops the oldest, warns once, and writes the count first', async () => {
+    configureRootLogger({}, { format: 'json' })
+    let held = 0
+    const lines = await captureStderr(() => {
+      for (const line of range(0, 40)) logger.info(line)
+      held = processLogBudget.held()
+    })
+    expect(held).toBe(30)
+    expect(lines[0]).toMatchObject({ level: 'warn', component: 'logger', message: 'Log events dropped', fields: { destination: 'stderr-json', reason: 'full', limit: 30 } })
+    expect(lines.slice(1).map(line => line.message)).toEqual(['log events dropped', ...range(10, 40)])
+    expect(lines[1]).toMatchObject({ level: 'warn', component: 'buckle', fields: { destination: 'stderr-json', dropped: 10 } })
+  })
+
+  it('holds 30 lines of a burst on the service file too, and warns on stderr, not in the file', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'buckle-log-budget-'))
+    try {
+      const file = join(root, 'logs', 'buckle.log')
+      configureRootLogger({}, { file })
+      let held = 0
+      const warnings = await captureStderr(() => {
+        for (const line of range(0, 40)) logger.info(line)
+        held = processLogBudget.held()
+      })
+      expect(held).toBe(30)
+      expect(warnings).toEqual([expect.objectContaining({ message: 'Log events dropped', fields: { destination: 'rotating-file', reason: 'full', limit: 30 } })])
+      const stored = readFileSync(file, 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+      expect(stored.map(line => line.message)).toEqual(['log events dropped', ...range(10, 40)])
+      expect(stored[0]).toMatchObject({ fields: { destination: 'rotating-file', dropped: 10 } })
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('shares the budget with every other log of the process, dropping the oldest whichever log holds it', async () => {
+    configureRootLogger({}, { format: 'json' })
+    const actions = createLogQueue<string>({ destination: 'actions.jsonl', budget: processLogBudget, write: () => new Promise<void>(() => {}) })
+    try {
+      for (const line of range(0, 20)) actions.push(line)
+      let held = 0
+      const lines = await captureStderr(() => {
+        for (const line of range(0, 20)) logger.info(line)
+        held = processLogBudget.held()
+      })
+      expect(held).toBe(30)
+      expect(lines.map(line => line.message)).toEqual(range(0, 20))
+      expect(actions.stats().dropped).toBe(10)
+    } finally {
+      await actions.close({ deadlineMs: 1 })
+    }
+  })
+
+  it('tries a failed line again after 250 ms, 1 s, and 4 s, then drops it and says so before the next line', async () => {
+    vi.useFakeTimers()
+    configureRootLogger({}, { format: 'json' })
+    let failures = 4
+    let attempts = 0
+    let text = ''
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => {
+      const line = String(chunk)
+      if (line.includes('"component":"buckle","message":"lost line"')) {
+        attempts += 1
+        if (failures-- > 0) throw new Error('stderr is gone')
+      }
+      text += line
+      return true
+    })
+    try {
+      logger.info('lost line')
+      await vi.advanceTimersByTimeAsync(0)
+      expect(attempts).toBe(1)
+      await vi.advanceTimersByTimeAsync(249)
+      expect(attempts).toBe(1)
+      await vi.advanceTimersByTimeAsync(1)
+      expect(attempts).toBe(2)
+      await vi.advanceTimersByTimeAsync(1_000)
+      expect(attempts).toBe(3)
+      await vi.advanceTimersByTimeAsync(4_000)
+      expect(attempts).toBe(4)
+      logger.info('next line')
+      await vi.advanceTimersByTimeAsync(0)
+    } finally {
+      spy.mockRestore()
+    }
+    const lines = text.split('\n').filter(Boolean).map(line => JSON.parse(line) as Record<string, unknown>)
+    expect(lines.map(line => line.message)).toEqual([...Array<string>(4).fill('Log sink stderr-json failed'), 'Log events dropped', 'log events dropped', 'next line'])
+    expect(lines[4]).toMatchObject({ fields: { destination: 'stderr-json', reason: 'failed', limit: 30 } })
+    expect(lines[5]).toMatchObject({ fields: { dropped: 1 } })
   })
 })
 
