@@ -20,6 +20,15 @@ Their `args` hold the `token`, the `outcome` (`approve` or `deny`), the `scope`,
 enrolled key or the decision AI decided. A result adds the `assurance`, `repeated`, and, for a
 `session` or `always` approval, `save`: where its grant stands (`owed`, `saved`, `skipping`,
 `skipped`, or `dropped`), or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
+
+- **`widening`:** its `kind`, `none`, `below` (a folder and its subfolders, as `buckle approve
+  --below` grants), or `host` (a host pattern, as `--host` grants, its `subject` the pattern). A
+  result that applied a widening names the `subject` the grant took in place of the ask's own.
+- **`call`:** on a result, the call the answer met: the `requestId` and `auditId` of that call's
+  attempt entry, which find it in this log, and the ask's `rule` and `subject`. A subject is kept
+  as written, a command line as its program and its length, a credential in a path hidden. An
+  answer refused before Buckle read its ask, or for a token it does not hold, names none.
+
 Each names who answered as its `actorId`: the key or judge that decided, else `local-owner` for the
 terminal and the CLI, the route's name (`forms`, `sealed`), the agent token that sent an HTTP form
 (`agent:<id>`), or `backend:<id>`. An HTTP form answer to an ask its token did not raise, or to no

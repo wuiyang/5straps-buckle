@@ -42,10 +42,9 @@ is written by the next settling pass, at another decision or at `recover()`.
 
 ## The caller
 
-Form answers over HTTP come in under a kind of their own, `http-forms`, rated `relayed`: a
-non-floor `once`, never a lasting scope or a floor approval. Its row also carries `sameCaller`, so
-it decides only the asks its own caller raised. The HTTP face opens it ([over
-HTTP](approval-backend-05.md)).
+Form answers over HTTP come in under a kind of their own, `http-forms`, whose row is the `forms`
+row with `sameCaller`: it decides what a stdio form answer does, but only the asks its own caller
+raised. The HTTP face opens it ([over HTTP](approval-backend-05.md)).
 
 - **Where the caller comes from:** the actor the transport authenticated, as the request's
   operation scope holds it: `agent:<tokenId>` over HTTP, `mcp-stdio` over stdio. `mcp/server.ts`

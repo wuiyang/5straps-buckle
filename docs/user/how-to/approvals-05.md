@@ -56,8 +56,7 @@ Each route that warns asks next what to do:
 - **MCP forms:** the save form comes before the call runs, as the call's answer, so the call's once
   waits for it. Your answer travels back with the same call sent again, which then runs once, on
   its once or on the grant a retry saved. Each save form names its ask: the tool, the rule, the
-  subject, and the token. An approval over HTTP is `once` alone, so it saves nothing and draws no
-  save form.
+  subject, and the token. Over HTTP, a save form answers only to the token whose call asked.
 - **A restart before you answer:** the node forgets the save forms it drew, and the workspace
   opening again writes the grant. A skip or a decline still reaches the node and removes that
   grant; a retry changes nothing, since the grant is written.

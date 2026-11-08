@@ -128,8 +128,8 @@ claude mcp add buckle -- buckle mcp
 
 Both drive the same registry and the same permission engine. While the workspace's
 `approval.forms` setting is on, hosts that support form elicitation show approvals as an inline
-form: over stdio, and over HTTP `/mcp` for 2026-07-28 clients, where a form approves a non-floor
-ask once only. Otherwise they come back as the same relay text.
+form, over stdio and over HTTP `/mcp` for 2026-07-28 clients. Otherwise they come back as the
+same relay text.
 
 ## Running a node
 

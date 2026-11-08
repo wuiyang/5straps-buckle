@@ -50,9 +50,10 @@
 
 [Approvals over MCP](../how-to/approvals-03.md) says how an agent sees an ask and sends the call again.
 
-- With [MCP forms](../how-to/approvals-06.md) on, a form over HTTP approves a non-floor ask once
-  alone: its client holds the agent token, so its answer may be the agent approving its own
-  call. Clients under one token count as one caller, so one may answer the other's ask.
+- With [MCP forms](../how-to/approvals-06.md) on, a form over HTTP approves what a stdio form
+  does, floor asks and `session` or `always` included: its client holds the agent token, so its
+  answer may be the agent approving its own call. Clients under one token count as one caller,
+  so one may answer the other's ask.
 - With [MCP forms](../how-to/approvals-06.md) on, Buckle cannot tell your answer in a form from one
   the agent's app sent itself: the form proves the channel, not a person.
 - Every HTTP MCP client under one token shares the session `mcp` and one actor. Identical calls

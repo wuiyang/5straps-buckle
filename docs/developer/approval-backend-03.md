@@ -41,9 +41,7 @@ save states and reasons.
   fails again: that warning and its ending come back as `warnings`, which the face adds to the
   call's result, or puts at the top of its forms drawn again. Any other, or one after a restart lost the questions, sends a skip or decline to
   `host.skipSave`, where core holds it to the source and caller that recorded the decision, and
-  logs a retry as dropped. Where the host's source decides nothing past the call (`reach.lasting`
-  false, an HTTP host's), no save form is ever drawn, so no `save:` answer is read at all.
-  Each step goes through `host.decide` or `host.skipSave` with the transport's sender, so the live
+  logs a retry as dropped. Each step goes through `host.decide` or `host.skipSave` with the transport's sender, so the live
   forms setting and the caller check meet it. The call sent again joins the first call's ask by
   the resend join, so it runs once. The ending goes to `host.log`.
 - **The setup POST:** an owed approval answers `grantOwed` and `saveError`; a decision refusal

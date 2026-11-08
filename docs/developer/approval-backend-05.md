@@ -18,7 +18,7 @@ declares form elicitation, answers an ask with `input_required` and one form per
 instead of holding the call. The client sends the call again with its answers, which joins the
 first call's ask by the resend join, so the call runs once. Where an answer's grant did not save,
 the face returns a save form first and invokes nothing ([grant save
-routes](approval-backend-03.md#each-route)); under today's rights an HTTP answer saves nothing.
+routes](approval-backend-03.md#each-route)), over HTTP as over stdio.
 
 - **A 2026-07-28 client:** declares its capabilities in every request's `_meta` envelope, which the
   first capability reader takes. Claude Code's HTTP client is one ([the
@@ -30,25 +30,16 @@ routes](approval-backend-03.md#each-route)); under today's rights an HTTP answer
 
 ## What a form offers
 
-A form offers what its host's source may decide, no more, and the guard still checks each answer.
+A form offers what its ask offers, whichever face draws it: the owner ruled that where an ask is
+answered changes nothing it offers. The `http-forms` row in `common/domain/approval/assurance.ts`
+is the `forms` row with `sameCaller`, so an HTTP form approves `once`, `session`, or `always` as
+the ask offers them, floor asks included, and the guard still checks each answer: a destructive
+command never takes `always`, and only the terminal and `buckle approve` widen. A credential
+file's form offers its lasting denials; an ask kept without its whole call gets the denial form.
 
-- **`host.reach`:** `{ lasting, floor, sameCaller }`, which core sets on each host it opens with
-  `reachOf(rightsOf(source.kind))` (`common/domain/approval/assurance.ts`): `lasting` where the row
-  rates the kind `local` or above, `floor` where it also approves as a person, and `sameCaller`
-  where it holds answers to the asks their own caller raised. So the reach and the guard read one
-  row.
-- **`FullAsk.policy.floor`:** the ask's floor mark as the ledger recorded it: the forms read it
-  from the ledger's entry, and the terminal from the marks the registry returns with the issued
-  requests (`AskResult.floor`), so the guard, the forms, and the terminal read one mark.
-- **The forms:** `mcp/forms-backend.ts` leaves out each scope past `once` that the reach does not
-  allow, and names where it is granted: the serve terminal, or the ask's `buckle approve` command. A
-  floor ask the reach does not approve gets the denial form, naming the same. A credential file's
-  form offers its lasting denials only where `lasting` holds.
-
-For `http-forms`, rated `relayed`, the reach is neither: a non-floor ask is approved `once`, a
-floor ask only denied, and a forged lasting or floor answer is refused `assurance_too_low`. To give
-HTTP forms stdio's rights, change `relayed` to `local` in that row; the reach and every form
-follow.
+- **`host.reach`:** `{ sameCaller }`, which core sets on each host it opens with
+  `reachOf(rightsOf(source.kind))`, so the forms and the guard read one row: where it holds, the
+  forms read answers only to the asks their own caller raised.
 
 ## The answers read
 
@@ -56,12 +47,9 @@ follow.
 at most 50 asks waiting, and reads the waiting asks once with `host.pending()`. An approval answer
 goes to `host.decide` only for one of them, and where `reach.sameCaller` holds, only for one its
 sender raised; any other key costs no record and no lock. A `save:` key settles the question the
-backend drew for its sender ([grant save routes](approval-backend-03.md#each-route)).
-
-A form that comes back declined or cancelled, for an ask whose floor approval or scope past the
-call the reach leaves out, sets `holds`. `mcp/server.ts` then gives the call the face's own wait
-instead of none, as forms off does, so a person can answer at the node before the forms are drawn
-again; the narrowed forms say so.
+backend drew for its sender ([grant save routes](approval-backend-03.md#each-route)). A form that
+comes back declined or cancelled decides nothing, and the call sent again draws the forms again
+at once.
 
 ## The caller
 
@@ -85,16 +73,15 @@ A specifier assembled at run time from pieces is beyond that scan.
 - `test/mcp-http-forms.test.ts`, on the face's own handler with a real runtime: a `tools/call`
   built from Claude Code's recorded `_meta` envelope draws one form per ask, and the call sent
   again with a `once` answer runs, recorded under its caller; `@modelcontextprotocol/client` 2.0.0
-  plays the round itself; `once` alone, a floor ask denied only, another token's answer and 300
-  unknown keys left unread with no record and the approvals file untouched, a dismissed floor form
-  held until the CLI approves it, the forms closed with the runtime's approvals, a 2025-era
-  client's relay text, and the setting off.
+  plays the round itself; every offered scope, a `session` answer saving its own caller's grant, a
+  floor ask approved, another token's answer and 300 unknown keys left unread with no record and
+  the approvals file untouched, a dismissed form drawn again at once, the forms closed with the
+  runtime's approvals, a 2025-era client's relay text, and the setting off.
 - `test/http/mcp-http.test.ts`: the same round on the real `/mcp` route, under the agent token.
-- `test/forms-backend.test.ts`: the forms for each reach, the answers read and the cap, `holds`,
-  the reach and floor mark core hands, and the save form's answers, a skip without its question
-  included.
+- `test/forms-backend.test.ts`: the same forms for either face, the answers read and the cap, the
+  reach core hands, and the save form's answers, a skip without its question included.
 - `test/mcp-save-form.test.ts` and `test/mcp-http-save-form.test.ts`: the save form over stdio,
-  and over HTTP with that row changed for the test alone. Each also lets the SDK's own client play
+  and over HTTP. Each also lets the SDK's own client play
   all three rounds, a 2025-era one through the server's legacy shim and a 2026-07-28 one over
   HTTP; a call of two asks sent again with the save answer alone still runs once on both. Over
   stdio, a skip after a restart removes the grant the reopening wrote; over HTTP, core refuses

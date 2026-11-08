@@ -27,16 +27,14 @@ terminal does. Your answer travels back with the same call sent again, and decid
 form grants the ask's own subject alone: a folder and its subfolders, or a host pattern, are
 granted at the node.
 
-- **Over stdio:** `once`, `session`, or `always`, floor asks included. Where a `session` or
-  `always` answer's grant cannot be saved, a save form asks to retry or skip it before the call
-  runs ([when a grant cannot be saved](approvals-05.md)).
-- **Over HTTP:** `once` alone, and no floor ask: `sudo`, the destructive list, and the file floor.
-  Anything holding the agent token can send an answer there, so a floor ask's form only denies,
-  and a form names the serve terminal and the `buckle approve` command for what it leaves out.
-  A client of an earlier revision gets the text instead.
-- **Answering at the node instead:** where a form offers less than the node does, dismiss it,
-  before or after you answer at the node. The call sent again then waits for your answer there, as
-  with forms off, and draws the form again only if that wait ends unanswered.
+- **Over stdio and HTTP alike:** `once`, `session`, or `always`, as the ask offers them, floor
+  asks included: `sudo`, the destructive list, and the file floor. A destructive command still
+  never takes `always`. Over HTTP, a client of an earlier revision gets the text instead.
+- **A grant that cannot be saved:** where a `session` or `always` answer's grant cannot be
+  saved, a save form asks to retry or skip it before the call runs ([when a grant cannot be
+  saved](approvals-05.md)).
+- **A dismissed form:** decides nothing, and the call sent again draws it again. You may answer
+  at the node instead at any time.
 
 With forms off, the call is answered with the text that names the commands to approve it
 ([approvals over MCP](approvals-03.md)), and any answers a call carries are not read.
@@ -77,6 +75,7 @@ A form proves the channel, not a person: the app the agent runs in draws it and 
 back. Over stdio, an answer may decide any ask waiting in the workspace, whichever agent's call
 raised it. Over HTTP, it decides only the asks its own agent token raised, an answer to any
 other ask is not read, and the [audit log](audit-log.md) names that token; every client under one
-token counts as one. Turn
+token counts as one. Anything holding that token can send an answer, so an agent that reads its
+own MCP config could approve its own asks, floor asks and `session` or `always` included. Turn
 forms on for a workspace whose agent app you trust to show you each form unchanged. Answers at
 the node, with `buckle approvals`, stay open to you whichever way the setting is.

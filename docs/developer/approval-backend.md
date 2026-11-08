@@ -12,11 +12,11 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
   leaves the queue (`session_ended` where [its session ended](approval-backend-06.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
-  backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, what that
-  source may decide; a backend names neither.
+  backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, whose asks
+  that source may answer; a backend names neither.
 - **`FullAsk`:** the whole ask, never cut, as an approver sees the full raw action: token,
-  group, an HMAC idempotency key, the requester, the rule's subject, offered scopes, floor
-  mark, the decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
+  group, an HMAC idempotency key, the requester, the rule's subject, offered scopes, the
+  decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
 - **Receipts:** `applied` with the assurance core rated, `repeated`, or `refused` with an
   `ApprovalErrorCode`; one for a lasting approval names its grant's `save` state, and a pathless
   `saveError` while unsettled. Core checks each decision's shape first. A failure is no decision.
@@ -58,8 +58,8 @@ schema, a service, or the node's logger.
 5. An approval commits, then its grant; a lasting denial is written first, and withdrawn if its
    decision cannot commit. [Grant saves](approval-backend-02.md) covers a write that fails.
 6. The audit hears it applied, refused, or failed, outside the lock. `logged-decision-audit.ts`
-   writes each as `approval_decision`, naming who answered, through the log service, never
-   holding up the answer.
+   writes each as `approval_decision`, naming who answered, the widening, and the call's attempt
+   entry, through the log service, never blocking.
 
 ## Sources and their rights
 
@@ -67,14 +67,14 @@ schema, a service, or the node's logger.
 |---|---|---|
 | `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
 | `forms` | `local` | Any ask, lasting and floor included, while forms are on |
-| `http-forms` | `relayed` | A non-floor `once` its own caller asked, while forms are on |
+| `http-forms` | `local` | As `forms`, for the asks its own caller raised |
 | `devices` | `key` | Any ask it signed the challenge of |
 | `judge` | `relayed` | A non-floor `once`, bound to the code it rated |
 | `sealed` | `relayed` | Nothing; it denies, a sensitive file's lasting denial included |
 | A configured backend | `relayed` | Nothing; it denies for one call |
 
-Rights follow the kind, never the id: a backend named `terminal` or `sealed` gets a backend's
-rights and no route. `cli` and `judge` count as routed to every ask.
+Rights follow the kind, never the id: a backend named `terminal` gets a backend's rights and no
+route. `cli` and `judge` count as routed to every ask.
 
 ## What the built-in backends own
 
@@ -83,8 +83,8 @@ one-shot prompt. It asks each ask in turn, one request per call key and group, a
 question whose ask left the queue.
 
 **The forms** (`mcp/forms-backend.ts`): an MCP host's elicitation, pulled, opened by both faces
-([over HTTP](approval-backend-05.md)). Each draws one form per ask in the call's answer, as
-`host.reach` allows, and decides each answer the retried call carries; `submit` declines.
+([over HTTP](approval-backend-05.md)). Each draws one form per ask in the call's answer, offering
+what the ask offers, and decides each answer the retried call carries; `submit` declines.
 
 Each maps a person's answer to a decision and scope, and decides through `host.decide`.
 Neither decides which scopes are allowed, rates an answer, writes a grant, or audits.
@@ -109,7 +109,7 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
   grant a remote source makes.
 - **Egress:** an `AskSummary` for a notify route.
 - **Startup:** refusing a configured source named after a built-in id, which the guard
-  already routes nothing.
+  routes nothing.
 
 A pushed backend runs the contract kit in `test/support/approval-backend-kit.ts`, as the
 terminal does; the pulled forms have `test/forms-backend.test.ts`.
