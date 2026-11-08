@@ -7,12 +7,15 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { actionLogWriter } from '../common/adapters/action-log/action-log-writer.js'
 import { createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import { createLogService, LOG_DROPPED_TOOL, logService } from '../common/adapters/action-log/log-service.js'
+import { createLoggedDecisionAudit, DECISION_TOOL } from '../common/adapters/approval/logged-decision-audit.js'
 import { MAX_ENTRY_BYTES } from '../common/adapters/action-log/writer-protocol.js'
 import { LOG_HOLD_LIMIT, PROCESS_LOG_QUEUE, processLogBudget } from '../common/runtime/log-budget.js'
 import { configureRootLogger, flushLogs, logger } from '../common/runtime/log.js'
 import { createMasker, holdMasker } from '../common/services/secrets/mask.js'
 import type { ActionLogEntry } from '../common/types/ports/action-log.js'
+import { SOURCES } from '../common/types/ports/approval-source.js'
 import type { LogDestination, LogService } from '../common/types/ports/log-service.js'
+import { recordRefusal } from '../layers/common/server/utils/audit.js'
 import { startActionLogWriter } from './support/action-log-writer.js'
 import { closeFaultyWriters, faultyWriter } from './support/writer-faults.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -115,6 +118,30 @@ describe('the log service', () => {
 
     expect(stderr().filter(line => line.component === 'buckle' && String(line.message).startsWith('e')).map(line => line.message)).toEqual(range(100, 120))
     expect(logs.stats().logs['actions.jsonl']).toMatchObject({ dropped: 10 })
+  })
+
+  it('keeps a decision record queued behind 100 refusals on a stalled disk, since a refusal gives way to every other entry', async () => {
+    const path = logPath()
+    const faulty = faultyWriter()
+    const logs = service()
+    const log = createFileActionLog(path, { writer: faulty.writer, service: logs })
+    await log.record(entry('first'))
+    captureStderr()
+    faulty.stall()
+    const refuse = (count: number) => {
+      for (const index of range(0, count)) recordRefusal(log, { tool: 'rpc_invoke_rejected', workspaceId: 'w-1', sessionId: 'rpc-untrusted', status: 400, detail: `refusal ${index}` })
+    }
+    createLoggedDecisionAudit({ actions: log, workspaceId: 'w-1' }).received({ token: 't-1', approved: true, scope: 'session', source: SOURCES.cli, proof: 'none' }).applied({ assurance: 'local', repeated: false, grantOwed: false })
+    refuse(100)
+    // Past the write deadline, the stalled batch may give up entries too.
+    await delay(1_200)
+    refuse(100)
+    faulty.release()
+    await logs.flush()
+
+    const lines = written(path)
+    expect(lines.filter(line => line.tool === DECISION_TOOL).map(line => line.event)).toEqual(['attempt', 'result'])
+    expect(lines.some(line => line.tool === LOG_DROPPED_TOOL)).toBe(true)
   })
 
   it('drops a batch its writer failed 4 times, and writes the count first once the log takes writes again', async () => {

@@ -71,7 +71,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     recoverInterrupted: () => writer().recover({ file, naming: naming() }),
     record: entry => log.recordMany([entry]),
     // Its id now, kept across every attempt the service makes at writing it, so a retry never writes it twice.
-    append: entry => service().append(destination, withinSizeLimit(withEntryId(prepared(entry)))),
+    append: (entry, appendOptions) => service().append(destination, withinSizeLimit(withEntryId(prepared(entry))), appendOptions),
     async recordMany(entries) {
       if (entries.length === 0) return
       await write(entries.map(prepared))

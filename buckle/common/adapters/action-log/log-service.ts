@@ -48,7 +48,7 @@ export function createLogService(settings: LogQueueSettings = PROCESS_LOG_QUEUE)
   }
 
   return {
-    append: (destination, entry) => heldFor(destination).queue.push(entry),
+    append: (destination, entry, options) => heldFor(destination).queue.push(entry, { expendable: options?.untrusted === true }),
     async flush() {
       await Promise.all([...logs.values()].map(({ queue }) => queue.flush()))
     },

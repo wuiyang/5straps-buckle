@@ -1,4 +1,5 @@
 import type { JsonValue } from '@5straps/protocol'
+import type { AppendOptions } from './log-service.js'
 
 /** A standing grant a call used, as its audit entry names it. */
 export interface GrantUse {
@@ -100,7 +101,7 @@ export interface ActionLog {
    * Hands the entry to the process's log service, masked and named now, and returns at once; never throws. For a record
    * nothing waits on: a refusal, the result of work already done, and the owner's own change.
    */
-  append(entry: ActionLogEntry): void
+  append(entry: ActionLogEntry, options?: AppendOptions): void
   /** The entries as one batch, one append and one sync, in their order; resolves once all are durable, or rejects for all. */
   recordMany(entries: readonly ActionLogEntry[]): Promise<void>
   recoverInterrupted(): Promise<number>

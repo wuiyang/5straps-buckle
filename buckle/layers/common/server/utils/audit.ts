@@ -25,12 +25,12 @@ export async function nodeActions(event: H3Event): Promise<ActionLog> {
 /**
  * One refusal, through the log service, since it stands whether or not its entry is written: which face refused whom
  * with what status, and nothing the caller sent but what `args` names (a signed request's claimed key fingerprint,
- * which is public).
+ * which is public). Anyone can send one, so it gives way to every other held entry.
  */
 export function recordRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; sessionId: string; status: number; outcome?: Outcome; detail?: string; args?: Record<string, string> }): void {
   const auditId = crypto.randomUUID()
   actions.append({ auditId, event: 'result', workspaceId: input.workspaceId, at: new Date().toISOString(), requestId: auditId, sessionId: input.sessionId,
-    tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: input.args ?? {}, ...(input.detail === undefined ? {} : { detail: input.detail }) })
+    tool: input.tool, outcome: input.outcome ?? outcomeOf(input.status), durationMs: 0, effects: [], args: input.args ?? {}, ...(input.detail === undefined ? {} : { detail: input.detail }) }, UNTRUSTED)
 }
 
 /**
@@ -55,12 +55,14 @@ export async function withTransportAudit<T>(actions: ActionLog, input: { tool: s
   return result
 }
 
-/** The pair a transport audit leaves for a request refused before its work began, through the log service. */
+/** The pair a transport audit leaves for a request refused before its work began, through the log service, as a refusal. */
 export function recordTransportRefusal(actions: ActionLog, input: { tool: string; workspaceId: string; status: number }): void {
   const entry = transportEntry(input)
-  actions.append({ ...entry, event: 'attempt', outcome: 'started' })
-  actions.append(transportResult(entry, input.status, performance.now()))
+  actions.append({ ...entry, event: 'attempt', outcome: 'started' }, UNTRUSTED)
+  actions.append(transportResult(entry, input.status, performance.now()), UNTRUSTED)
 }
+
+const UNTRUSTED = { untrusted: true } as const
 
 function transportEntry(input: { tool: string; workspaceId: string; actorId?: string }): ActionLogEntry {
   const auditId = crypto.randomUUID()

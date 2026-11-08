@@ -9,6 +9,14 @@ export interface LogDestination {
   dropped(drops: LogDrops): ActionLogEntry
 }
 
+/**
+ * `untrusted`: a record anyone can make Buckle write, such as the refusal of a caller with no credential or of the
+ * agent's own malformed request; it gives way to every other held entry, so a flood of them pushes none of those out.
+ */
+export interface AppendOptions {
+  untrusted?: boolean
+}
+
 export interface LogServiceStats {
   /** Entries the process holds under its one budget, the node log's lines included. */
   held: number
@@ -21,7 +29,7 @@ export interface LogServiceStats {
  */
 export interface LogService {
   /** Returns at once and never throws. */
-  append(destination: LogDestination, entry: ActionLogEntry): void
+  append(destination: LogDestination, entry: ActionLogEntry, options?: AppendOptions): void
   /** Resolves once every log has written or dropped what it held. */
   flush(): Promise<void>
   /** Writes what is held until the deadline; what is left is dropped, counted on stderr, and returned. A later append starts again. */
