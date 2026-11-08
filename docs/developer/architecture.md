@@ -71,7 +71,7 @@ security model: `sensitive_path`, the workspace's `command_policy`, `destructive
 `network_egress`, `process_probe`, `filesystem_policy`, `read_scope`, and `write_scope`. Floor
 rules run before scope rules, so a granted directory never unlocks a credential file inside it.
 `rules/dangerously-allow.ts` wraps the engine and turns covered asks into allows while the
-switch is `on` or `safe`, each mode's reach over floor asks, unknown interpreters, and a secret
+switch is `on` or `safe`, each mode's reach over floor asks, unread code, and a secret
 reference's file in `DANGEROUSLY_ALLOW_REACH`; it never touches a deny. Each rule lives in `common/domain/permission/rules/`.
 
 ## The command reader
@@ -99,11 +99,11 @@ other: `allowedInterpreters` in each workspace's policy (`buckle policy allow-in
 <name>`), empty by default. A name is matched exactly, so `python3` allows neither `python` nor
 `python3.12`.
 
-The list (`INTERPRETERS` in `common/domain/command-forms.ts`) holds the Python and PyPy builds,
-node, deno, bun, perl, ruby, php, the awk family, lua, PowerShell, the TypeScript runners, the
-package runners `npx`, `pnpx`, and `bunx`, the C shells, and the
-busybox and toybox shell applets. The optional [decision AI](../user/how-to/judge.md) rates an
-interpreter call before a person has to.
+The list is `INTERPRETERS` in `common/domain/command-forms.ts`
+([which programs](../user/how-to/policy-02.md#interpreters)). A
+[script file](../user/how-to/policy-03.md#script-files) run directly (the reading's `scripts`) asks
+at the floor too, though it is no reading limit, so a deny glob does not refuse it. The optional
+[decision AI](../user/how-to/judge.md) rates either before a person has to.
 
 The approval registry and the pack system continue on [Architecture: state and packs](architecture-02.md).
 How an ask reaches a person and their decision comes back is on [Approval backend](approval-backend.md).

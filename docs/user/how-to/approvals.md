@@ -54,8 +54,9 @@ Built in, it asks before `sudo`, `su`, `doas`, `pkexec`, `mkfs`, `fdisk`, `parte
 `git push` with force, `--delete`, `--mirror`, or `--prune`; `git reset --hard`; `git clean -f`;
 and `git checkout --force`. In a shell body it catches a pipe into a shell, a fork bomb,
 `rm -rf /`, and `chmod 777`. It judges [every command a call runs](policy-02.md#what-buckle-reads),
-and asks about an `eval` of text that only exists at run time and a call past the
-[reading limits](policy-02.md#reading-limits).
+and asks about an `eval` of text that only exists at run time, a call past the
+[reading limits](policy-02.md#reading-limits), and a [script file](policy-03.md#script-files) run
+directly.
 
 `buckle policy destructive-command '<glob>'` adds to the floor, and nothing removes a built-in.
 The command floor never offers `always`, and its subject is the exact command with its

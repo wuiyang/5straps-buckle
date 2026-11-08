@@ -28,7 +28,7 @@ because a signed challenge carries no verdict yet. An allowed
 command Jev rated `danger` asks with the reason "The decision AI's quick stage rated this command
 danger, so a person decides; nothing it says refuses a command".
 
-The thorough model's pass lifts an interpreter ask, and the webhook is not called for it: the serve
+The thorough model's pass lifts an interpreter or script file ask, and the webhook is not called for it: the serve
 terminal prints one info line naming the thorough stage, the model, the level, the confidence, and
 the command as an approver would see it, credentials hidden. Jev's verdict never passes an ask.
 Where another ask remains, such as `write_scope`, the line says the call still waits for it, and the
@@ -62,7 +62,7 @@ buckle approvals judge <token> --approve-if-safe  # and approve it once on the t
 The command prepares the call again from the arguments its ask kept, reads its code afresh, has
 every stage that applies rate it, and prints the whole action as `buckle approvals show` does, with
 each verdict, confidence, model, and the thorough reasoning. With `--approve-if-safe`, the
-thorough model's `safe` at 0.8 or above approves once an interpreter ask, or an allowed command Jev
+thorough model's `safe` at 0.8 or above approves once an interpreter or script file ask, or an allowed command Jev
 turned into an ask under `all`, recorded as decided by the thorough stage and its model and bound
 to the code it rated: a retry after that code changed spends nothing and asks again. Jev's verdict
 alone approves nothing, and an ask at the destructive floor never: the command prints the floor's

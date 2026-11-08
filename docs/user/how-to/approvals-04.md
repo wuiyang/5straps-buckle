@@ -13,13 +13,14 @@ workspace; `true` and `false` read as `on` and `off`. It is off by default.
 - `on` allows every ask about a path inside the workspace, and every command, host, and process
   ask.
 - `safe` allows the same but floor asks (the built-in floor, such as sudo and rm -rf, the
-  destructive list, and the file floor), code run through an unknown interpreter, and a secret
-  reference's file, which still ask a person.
+  destructive list, and the file floor), code run through an unknown interpreter or a script
+  file, and a secret reference's file, which still ask a person.
 
 The [destructive floor](approvals.md#the-destructive-floor) names the built-in floor, and
 [the file floor](policy-04.md) the file asks. An unknown interpreter is one the workspace's
 [policy](policy-02.md#reading-limits) does not allow: `python3 -c`, `node -e`, `perl -e`, and
-`python3 job.py` all run code Buckle cannot read.
+`python3 job.py` all run code Buckle cannot read. So does a [script file](policy-03.md#script-files)
+run directly: `bash deploy.sh`, `source ./env.sh`, and `./deploy.sh`.
 
 ## What stays asked
 
@@ -28,13 +29,13 @@ The [destructive floor](approvals.md#the-destructive-floor) names the built-in f
   the state directory still refuse.
 - A call holding an ask the mode answers and one it keeps asks the kept one alone.
 - A destructive command never takes `always`, whoever answers it.
-- At `safe`, an unknown interpreter's ask goes to the [decision AI](judge.md) first where it is
-  set to answer it, as with the switch off, and to a person otherwise. The decision AI's quick
+- At `safe`, an unknown interpreter's or a script file's ask goes to the [decision AI](judge.md)
+  first where it is set to answer it, as with the switch off, and to a person otherwise. The decision AI's quick
   stage still rates allowed commands where it is set to; at `on` it rates nothing.
 
-A script file on disk is not read in any mode ([known limits](../caveats/known-limits.md)):
-`bash deploy.sh` is judged by those two words. At `safe`, a script written inside the workspace
-and then run by name is therefore not stopped. Keep the switch `off` where that matters.
+`npm run` and other package scripts do not ask: they are judged by their own words, and a
+`package.json` the agent edits can still run anything, malware included
+([known limits](../caveats/known-limits.md)). Keep the switch `off` where that matters.
 
 ## Setting and audit
 

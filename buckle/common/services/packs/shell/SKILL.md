@@ -36,6 +36,9 @@ The first write into any directory also asks, once, and is then remembered.
 Code an interpreter runs (`python3`, `node`, `perl`, `ruby`, and the like, a `script_run` with
 the `python` or `node` runtime included) asks, or is refused when the owner has command deny rules,
 until the owner allows that interpreter; a version call such as `python3 --version` runs as usual.
+Running a script file directly asks too: `bash deploy.sh`, `source ./env.sh`, and any program named
+by its path (`./deploy.sh`, `bin/tool`). Call a program by its bare name where you can; `npm run`
+and other package scripts do not ask.
 
 ## Sensitive files
 

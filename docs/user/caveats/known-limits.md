@@ -17,9 +17,10 @@ pushes, MCP asks, deletes, and history, and [part eleven](known-limits-11.md) th
   `timeout "$T" make test` and `nice -n"$N" make` are refused.
 - A deny rule meets the words as typed: `git $x origin main` does not meet `git push *`, and runs
   whatever `$x` holds. Deny the program itself, or use an allow list.
-- A script file on disk, and text bash builds at run time, are not read: `bash deploy.sh` is judged
-  by those two words, and `p='$(git'; x="a[$p push origin main)]"; (( x ))` runs a push no rule
-  meets.
+- A [script file](../how-to/policy-03.md#script-files) run directly asks, but `npm run`, `make`,
+  and other task runners do not, and a `package.json` the agent edits can run anything. Text bash
+  builds at run time is not read: `p='$(git'; x="a[$p push origin main)]"; (( x ))` runs a push no
+  rule meets.
 - A program outside the [wrapper list](../how-to/policy-02.md#what-buckle-reads), such as `parallel`, is
   judged by its own words: `parallel git push origin ::: main` does not meet `git push *`.
 - A startup file that reaches bash through a shebang script or `make` is not marked:

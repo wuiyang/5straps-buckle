@@ -5,8 +5,8 @@ Limits of the [decision AI](../how-to/judge.md), which runs with the node's own 
 
 ## Judgement
 
-- In automated mode the thorough model's `safe` at 0.8 or above runs an interpreter ask with no
-  person. Jev's verdict never runs a call, and an ask the built-in floor or the destructive list
+- In automated mode the thorough model's `safe` at 0.8 or above runs an interpreter or script file
+  ask with no person. Jev's verdict never runs a call, and an ask the built-in floor or the destructive list
   makes always goes to a person.
 - Jev, TypeSafe AI's quick stage, writes no reasoning: an approver reads its level, confidence,
   and model alone.

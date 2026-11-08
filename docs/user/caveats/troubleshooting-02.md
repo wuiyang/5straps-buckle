@@ -37,6 +37,19 @@ buckle policy allow-interpreter python3
 It applies to that workspace alone, from its next call. `python3` and `python3.12` are separate
 names. A version or help call, such as `python3 --version`, never needs it.
 
+## A script file asks
+
+`bash deploy.sh`, `source ./env.sh`, and `./deploy.sh` ask, under a deny glob too, since Buckle
+does not read the file:
+
+```
+Runs a file whose code Buckle does not read: a script a shell or source runs, or a program named by its path (script file); asked rather than run
+```
+
+Answer it once or for the session, or, where a program named by its path is one you trust, allow it
+by that path: `buckle policy allow-command './deploy.sh *'`. A shell given a script asks whatever
+the allow list says ([script files](../how-to/policy-03.md#script-files)).
+
 ## A call Buckle cannot read whole is refused
 
 With a deny glob in the policy, a call Buckle could not read to the end is refused, since the

@@ -37,7 +37,30 @@ exists only once the shell runs.
   so is a call that defines an alias and hands the same shell text it parses later (`eval`, a
   `trap` action, or a sourced input), where the alias may reach.
 
-## Scripts and startup files
+## Script files
+
+A script file run directly runs code Buckle does not read, so the
+[destructive floor](approvals.md#the-destructive-floor) asks about it, as about an unknown
+interpreter (script file):
+
+- a shell given a script: `bash deploy.sh`, `sh -e x.sh`, `zsh x.sh`;
+- `source ./env.sh` and `. venv/bin/activate`;
+- a command word written as a path, which runs the file at that path whatever its name says:
+  `./deploy.sh`, `bin/tool`, `/tmp/x`, and `/usr/bin/git`. Write the bare name (`git`) to have it
+  judged by its words.
+
+It asks under a deny list too, rather than being refused, and offers `once` and `session`. An allow
+glob that spells the path (`buckle policy allow-command './deploy.sh *'`) runs that file without
+asking; one naming a shell (`bash *`) does not. The [dangerously-allow switch](approvals-04.md)
+answers it only at `on`, and the [decision AI](judge.md) may where it is set to: it is shown the
+script that `sh`, `bash`, or `dash` runs as the call itself, and leaves any other to a person.
+
+`npm run`, `npm test`, `pnpm dev`, `make`, and other package scripts and task runners are judged by
+their own words, so they do not ask, and what they run is not read: a `package.json` or `Makefile`
+the agent edits can still run anything, malware included. Where the decision AI rates one, it reads
+the command line and the `package.json` script's text, not the files that script runs.
+
+## Scripts as data and startup files
 
 - A shell or `source` given a script file while the call's own text feeds its input (a pipe from a
   command in the call, a heredoc, a here-string, or a process substitution) is unread (script as
@@ -46,12 +69,10 @@ exists only once the shell runs.
 - A startup file whose text the call supplies is unread (script as data):
   `BASH_ENV=<(echo ...) bash -c true`, or `bash --rcfile <(...) -i`. A file on disk
   (`BASH_ENV=/etc/profile`) or `/dev/null` leaves the call read, as a script file does.
-- A script file on disk is not read: `bash deploy.sh`, `source ./env.sh`, and `make` are judged by
-  their own words, never by what the file runs. Allow only the scripts you trust.
 - A startup file that reaches bash through a program Buckle does not see as a shell is not marked:
   `BASH_ENV=<(echo ...) ./deploy.sh`, where `deploy.sh` has a bash shebang, or
   `BASH_ENV=<(echo ...) make SHELL=/bin/bash`. The call reads as complete, and no rule meets what
-  the startup file runs.
+  the startup file runs; `./deploy.sh` still asks as a script file, and `make` does not.
 
 ## Other programs and run-time text
 

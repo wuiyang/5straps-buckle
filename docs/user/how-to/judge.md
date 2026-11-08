@@ -24,14 +24,15 @@ nothing](judge-05.md) continue on the next pages.
 
 ## What each stage rates
 
-The thorough model rates an ask about running code with an interpreter the policy does not allow,
-such as `python3 job.py` ([interpreters](policy-02.md#interpreters)), and on request any ask Jev's
-scope covers. `approval.quickJudge` sets what Jev rates:
+The thorough model rates an ask about code Buckle does not read: an interpreter the policy does not
+allow, such as `python3 job.py` ([interpreters](policy-02.md#interpreters)), or a
+[script file](policy-03.md#script-files) run directly, such as `bash deploy.sh`; and on request
+any ask Jev's scope covers. `approval.quickJudge` sets what Jev rates:
 
 | Value | Jev rates |
 |---|---|
 | `off` | Nothing: the default. |
-| `interpreters` | The interpreter asks the thorough model rates. |
+| `interpreters` | The interpreter and script file asks the thorough model rates. |
 | `asks` | Every command ask a person would see at the [destructive floor](approvals.md#the-destructive-floor): an interpreter, the built-in floor (`sudo`, `rm -rf`), a command written as a path, and the workspace's destructive list. |
 | `all` | Every command, allowed ones too, in automated mode only: an allowed command runs unless Jev rates it `danger` at 0.8 or above, which turns it into an ask; one whose code the reader cannot read whole is rated on its command line. |
 
@@ -46,9 +47,9 @@ through at `on` is not rated; at `safe` it is rated as with the switch off.
 | Jev's answer | What happens |
 |---|---|
 | `danger` at 0.8 or above | A person decides, the verdict beside the whole action; the thorough model is not asked. |
-| `safe`, `warning`, a lower confidence, no verdict, a call over Jev's budget, or Jev off | An interpreter ask goes to the thorough model; any other goes to a person, Jev's verdict beside the action. |
+| `safe`, `warning`, a lower confidence, no verdict, a call over Jev's budget, or Jev off | An interpreter or script file ask goes to the thorough model; any other goes to a person, Jev's verdict beside the action. |
 
-The thorough model's `safe` at 0.8 or above lifts an interpreter ask, and the call runs once no
+The thorough model's `safe` at 0.8 or above lifts an interpreter or script file ask, and the call runs once no
 other ask remains, named in the audit entry and at the serve terminal; any other answer asks, with
 both verdicts beside the action. A pass binds to the code it rated: Buckle reads that code again
 under the write lock just before the program starts, and where it changed the call does not run,

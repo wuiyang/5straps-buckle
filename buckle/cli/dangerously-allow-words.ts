@@ -6,7 +6,7 @@ import type { DangerouslyAllowOnMode, DangerouslyAllowReading } from '../common/
 // pages that pin them, each worded from the mode's reach (DANGEROUSLY_ALLOW_REACH).
 
 export const FLOOR_ASKS = 'floor asks (the built-in floor, such as sudo and rm -rf, the destructive list, and the file floor)'
-export const UNREAD_CODE = 'code run through an unknown interpreter'
+export const UNREAD_CODE = 'code run through an unknown interpreter or a script file'
 export const SECRET_FILE = 'a secret reference\'s file'
 export const OUTSIDE = 'Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
 export const RESTORE_ASKS = 'A history restore asks a person in every mode.'
