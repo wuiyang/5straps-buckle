@@ -72,7 +72,7 @@ function stubQueue(requests: ApprovalRequest[]) {
   let pending = [...requests]
   const resolved: ApprovalDecision[] = []
   const registry = {
-    ask: async () => ({ requests, joined: false, answered: [] }),
+    ask: async () => ({ requests, floor: [], joined: false, answered: [] }),
     pending: vi.fn(() => pending.filter(request => remainingMs(request.expiresAt) > 0)),
     waiting: () => [],
     waitingAsk: () => undefined,

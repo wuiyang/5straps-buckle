@@ -1,7 +1,7 @@
 import type { ApprovalDecision, ApprovalRequest, PermissionRuleId } from '@5straps/protocol'
 import type { ApprovalErrorCode } from '../../types/ports/approval-backend.js'
 import type { ApprovalSource } from '../../types/ports/approval-source.js'
-import { atLeast, rightsOf, type SourceRights } from './assurance.js'
+import { approvesFloor, atLeast, rightsOf, type SourceRights } from './assurance.js'
 import { RECORDED_BEFORE_NOTE } from './recorded-before-note.js'
 import { routeOf, type RecordedRoute } from './routes.js'
 import type { AskMarks } from '../permission/decision.js'
@@ -89,7 +89,7 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   // Owner decision D17, on every route: an ask never shown whole is never approved.
   if (decision.approved && !asked.complete) return refuse('incomplete_action', `This ask was ${RECORDED_BEFORE_NOTE}`)
   // A floor ask always reaches a person: the decision AI rates it and never approves it.
-  if (decision.approved && asked.marks.floor && !(rights.person && atLeast(rights.assurance, 'local'))) return refuse('assurance_too_low', 'A person decides a floor ask: approve it at the node, or with an enrolled key')
+  if (decision.approved && asked.marks.floor && !approvesFloor(rights)) return refuse('assurance_too_low', 'A person decides a floor ask: approve it at the node, or with an enrolled key')
   const { request } = asked
   if (decision.approved && !request.offeredScopes.includes(decision.scope)) return refuse('scope_not_offered', `Scope ${decision.scope} is not offered for this approval`)
   if (decision.approved && decision.scope === 'always' && alwaysForbidden({ request, marks: asked.marks, policy })) return refuse('scope_forbidden', 'A destructive ask is approved once or for the session, never always')

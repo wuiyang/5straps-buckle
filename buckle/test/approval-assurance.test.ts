@@ -38,18 +38,18 @@ describe('the assurance each source kind carries', () => {
     expect(screenDecision(claim({ id: 'cli', kind: 'backend' }), LIVE)).toEqual({ ok: false, code: 'capability_exceeded', reason: DENIES_ONLY })
   })
 
-  it('rates an HTTP form answer as a stdio one, held to the asks its own caller raised', () => {
-    expect(rightsOf('http-forms')).toEqual({ ...rightsOf('forms'), sameCaller: true })
+  it('rates an HTTP form answer as a stdio one, held to the asks its own caller raised and barred from the floor', () => {
+    expect(rightsOf('http-forms')).toEqual({ ...rightsOf('forms'), sameCaller: true, approvesFloor: false })
   })
 
   it.each<[keyof typeof SOURCES, SourceReach]>([
-    ['terminal', { sameCaller: false }],
-    ['cli', { sameCaller: false }],
-    ['forms', { sameCaller: false }],
-    ['http-forms', { sameCaller: true }],
-    ['devices', { sameCaller: false }],
-    ['judge', { sameCaller: false }],
-  ])('tells a %s backend whose asks it may answer, %o, read from the same row the guard rates', (source, reach) => {
+    ['terminal', { floor: true, sameCaller: false }],
+    ['cli', { floor: true, sameCaller: false }],
+    ['forms', { floor: true, sameCaller: false }],
+    ['http-forms', { floor: false, sameCaller: true }],
+    ['devices', { floor: true, sameCaller: false }],
+    ['judge', { floor: false, sameCaller: false }],
+  ])('tells a %s backend what it may decide, %o, read from the same row the guard rates', (source, reach) => {
     expect(reachOf(rightsOf(SOURCES[source].kind))).toEqual(reach)
   })
 

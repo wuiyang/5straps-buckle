@@ -2,8 +2,8 @@ import { acceptedContent, inputRequired, inputResponse } from '@modelcontextprot
 import { GrantScopeSchema, type ApprovalRequest, type GrantScope } from '@5straps/protocol'
 import { z } from 'zod'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type SaveRoute, type Unsaved, type UnsavedKind } from '../common/adapters/approval/grant-save-question.js'
-import { describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
-import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SubmitResult } from '../common/types/ports/approval-backend.js'
+import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
 
 // An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
 const FormAnswerSchema = z.object({
@@ -28,14 +28,17 @@ export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved; ask
 
 /**
  * What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save.
- * `warnings`: each save whose retry or skip failed again, which no further save form asks about, for the face to show in
- * whatever the call answers with.
+ * `holds`: a floor ask's form came back dismissed where the host's source may not approve it, so the face holds the call
+ * for a person's answer at the node, as it would with forms off, before it draws the forms again. `warnings`: each save
+ * whose retry or skip failed again, which no further save form asks about, for the face to show in whatever the call
+ * answers with.
  */
-export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; warnings?: string[] }
+export interface FormsAnswered { tokens: string[]; unsaved: UnsavedDecision[]; holds: boolean; warnings?: string[] }
 
 /**
  * An MCP host's forms: drawn in the call's own answer, and decided when the retried call carries them back. Each form
- * offers what its ask offers, whichever face draws it.
+ * offers the scopes its ask offers, whichever face draws it, and a floor ask's approval only where the host's source
+ * may give it.
  */
 export interface FormsBackend extends ApprovalBackend {
   /** One form per ask of the call, the first headed by `warnings`, the saves this call's answers left. */
@@ -58,6 +61,8 @@ type Denial = 'deny' | 'deny_session' | 'always_deny'
 const DENIAL_LABELS: Readonly<Record<Denial, string>> = { deny: 'Deny', deny_session: 'Deny this session', always_deny: 'Always deny' }
 // A credential file's ask may be denied for longer than the call; every other ask's denial is for the call alone.
 const SENSITIVE_DENIALS: readonly Denial[] = ['deny', 'deny_session', 'always_deny']
+// Forms that are not open draw what nothing that approves a floor ask may answer.
+const NO_REACH: SourceReach = { floor: false, sameCaller: true }
 /** A call makes at most as many asks as one session keeps waiting (50), so one round of its forms comes back under no more keys. */
 export const MOST_FORM_ANSWERS = 50
 /** The key a save form's answer comes under, before its decision's token, so it never reads as an approval form's. */
@@ -81,7 +86,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   const live = () => (closed ? undefined : host)
 
   async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<FormsAnswered> {
-    const answered: FormsAnswered = { tokens: [], unsaved: [] }
+    const answered: FormsAnswered = { tokens: [], unsaved: [], holds: false }
     const reading = live()
     if (!reading) return answered
     const keys = roundKeys({ host: reading, responses })
@@ -98,6 +103,10 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       }
       const ask = waiting.get(key)
       if (ask === undefined) continue
+      if (dismissed(responses, key)) {
+        if (floorAtTheNode(ask, opened.reach)) answered.holds = true
+        continue
+      }
       const answer = acceptedContent(responses, key, FormAnswerSchema)
       if (!answer) continue
       const decision = decisionOf(key, answer)
@@ -173,11 +182,11 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
 
     forms(approvals, warnings = []) {
       const opened = live()
-      return formsFor({ approvals, waiting: opened?.pending() ?? [], options, warnings })
+      return formsFor({ approvals, waiting: opened?.pending() ?? [], reach: opened?.reach ?? NO_REACH, options, warnings })
     },
 
     answer(responses, sender) {
-      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [] })
+      if (!live() || !responses) return Promise.resolve({ tokens: [], unsaved: [], holds: false })
       const run = decideAnswers(responses, sender)
       answering.add(run)
       const forget = () => { answering.delete(run) }
@@ -222,6 +231,16 @@ function skipEndingOf(receipt: SkipReceipt): SaveEnding {
   return { ending: 'skipped', removed: receipt.removed === true }
 }
 
+function dismissed(responses: Record<string, unknown>, key: string): boolean {
+  const view = inputResponse(responses, key)
+  return view.kind === 'elicit' && view.action !== 'accept'
+}
+
+/** Whether a person at the node may approve an ask its form only denies: a floor ask, shown whole, the source may not approve. */
+function floorAtTheNode(ask: FullAsk, reach: SourceReach): boolean {
+  return ask.action !== undefined && ask.policy.floor && !reach.floor
+}
+
 /** A save form's answer: retry or skip as accepted, a decline as a skip, and a cancel, or none, as leaving it. */
 function saveAnswerIn(responses: Record<string, unknown>, key: string): SaveAnswer | undefined {
   const view = inputResponse(responses, key)
@@ -259,10 +278,10 @@ function decisionOf(token: string, answer: FormAnswer): DecisionBody {
  * every argument, the directory, the effects and the node's summary from the call the ask recorded. An ask whose whole
  * call was not kept has none: its form says so and offers denials only. A call that made several asks is shown whole
  * once, in the form of its first ask, which lists the others; each other form names that ask. Each form offers the
- * scopes its ask offers.
+ * scopes its ask offers; a floor ask the host's source may not approve is a denial naming where a person approves it.
  */
-function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; options: FormsBackendOptions; warnings: readonly string[] }) {
-  const { options } = input
+function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; reach: SourceReach; options: FormsBackendOptions; warnings: readonly string[] }) {
+  const { options, reach } = input
   const workspace = options.workspace()
   const asked = new Map(input.waiting.map(ask => [ask.token, ask]))
   const groupOf = (token: string) => asked.get(token)?.group
@@ -276,10 +295,16 @@ function formsFor(input: { approvals: ApprovalRequest[]; waiting: FullAsk[]; opt
     if (call && group !== undefined && earlier === undefined) shownWith.set(group, approval.token)
     const asks = group === undefined ? [] : input.approvals.filter(other => groupOf(other.token) === group)
     const lines = !call ? describeAsk(shown) : earlier !== undefined ? describeAskOfShownCall(shown, earlier) : [...describeAsk(shown), ...(asks.length > 1 ? describeCallAsks(asks) : [])]
-    const message = [...(index === 0 ? input.warnings : []), ...lines].join('\n')
-    return [approval.token, call ? approvalForm({ approval, message }) : denialForm({ approval, message })]
+    const floorOnly = call !== undefined && ask?.policy.floor === true && !reach.floor
+    const note = floorOnly ? [floorNote(approveCommand({ workspaceId: workspace.id, workspaceName: workspace.name, request: approval }))] : []
+    const message = [...(index === 0 ? input.warnings : []), ...lines, ...note].join('\n')
+    return [approval.token, call && !floorOnly ? approvalForm({ approval, message }) : denialForm({ approval, message })]
   }))
   return inputRequired({ inputRequests })
+}
+
+function floorNote(command: string): string {
+  return `  approve:  a person approves this at the node, at the serve terminal or with ${command}; this form only denies it, and dismissing it holds the call for their answer`
 }
 
 /** The whole call a form shows, where the ask came with one. */
@@ -310,7 +335,7 @@ function approvalForm(input: { approval: ApprovalRequest; message: string }) {
   })
 }
 
-/** An ask nobody was shown whole: it may be denied here, never approved. */
+/** An ask nobody was shown whole, or a floor ask the host's source may not approve: it may be denied here, never approved. */
 function denialForm(input: { approval: ApprovalRequest; message: string }) {
   const denials: Denial[] = input.approval.rule === 'sensitive_path' ? [...SENSITIVE_DENIALS] : ['deny']
   return inputRequired.elicit({
