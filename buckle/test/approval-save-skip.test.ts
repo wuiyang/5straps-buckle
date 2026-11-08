@@ -1,6 +1,6 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
@@ -13,7 +13,6 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 import type { GrantStore } from '../common/types/ports/grant-store.js'
 import { settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
-import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { inSecondProcess } from './support/registry-process.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
@@ -66,6 +65,9 @@ function files(): { approvals: string; store: GrantStore } {
   roots.push(root)
   return { approvals: join(root, 'approvals.json'), store: createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'workspace-id' }) }
 }
+
+/** The same ledger and grants files, as a second process opens them. */
+const secondOf = (approvals: string) => ({ approvals, grants: join(dirname(approvals), 'grants.json'), workspace: 'workspace-id' })
 
 const denied = (path: string) => Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
 
@@ -160,6 +162,16 @@ describe('a skip before the settling pass', () => {
     expect(keptGrant(approvals, token)?.save).toBe('skipped')
   })
 
+  it('leaves nothing for this process\'s settling pass to write once a second process skipped first', async () => {
+    const { approvals, store, token, kept } = await owedApproval()
+    expect(await inSecondProcess(secondOf(approvals), { skip: token })).toEqual({ result: { ok: true } })
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
+
+    await createApprovalRegistry(store, approvals).recover()
+    expect(store.list()).toEqual([])
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
+  }, SPAWN_TEST_TIMEOUT_MS)
+
   it('skips while the grant store cannot be written, since the grant it would remove was never written', async () => {
     const { approvals, store, grants, registry, token } = await owedApproval({ fails: { grant: 2, revoke: 2 } })
 
@@ -201,27 +213,28 @@ describe('a settling pass before the skip', () => {
     expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
   })
 
-  it('reads the ledger under the lock another process held while it settled, and removes the grant that process saved', async () => {
+  it('removes the grant a second process saved first through its own settling pass, saying it had saved', async () => {
     const { approvals, store, registry, token, kept } = await owedApproval()
-    const holder = await holdLockInProcess(`${approvals}.lock.sqlite`)
-    let skipping: Promise<unknown> | undefined
-    try {
-      skipping = registry.skipSave({ token, source: cli })
-      expect(await settled(skipping, 200)).toBe(false)
-      // The holder's settling pass: the grant written under its kept id, then its entry committed as saved.
-      const { id, sessionId, rule, subject, scope } = kept
-      await store.grant({ id, sessionId, rule, subject, scope })
-      const ledger = JSON.parse(readFileSync(approvals, 'utf8')) as { resolved: Array<{ grant?: { save: string } }> }
-      for (const entry of ledger.resolved) if (entry.grant) entry.grant.save = 'saved'
-      writeFileSync(approvals, JSON.stringify(ledger))
-    } finally {
-      await killHolder(holder)
-    }
+    expect(await inSecondProcess(secondOf(approvals), { recover: true })).toEqual({ result: null })
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'saved' })
+    expect(store.list().map(grant => grant.id)).toEqual([kept.id])
 
-    expect(await skipping).toEqual({ ok: true, removed: true })
+    expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, removed: true })
     expect(store.list()).toEqual([])
-    expect(keptGrant(approvals, token)?.save).toBe('skipped')
-  })
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipped' })
+  }, SPAWN_TEST_TIMEOUT_MS)
+
+  it('removes a grant a second process wrote and was killed before committing, while its entry still reads owed', async () => {
+    const { approvals, store, registry, token, kept } = await owedApproval()
+    expect(await inSecondProcess(secondOf(approvals), { recover: true }, 'grant_written')).toEqual({ stopped: true })
+    expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'owed' })
+    expect(store.list().map(grant => grant.id)).toEqual([kept.id])
+
+    expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, removed: true })
+    expect(store.list()).toEqual([])
+    await createApprovalRegistry(store, approvals).recover()
+    expect(store.list()).toEqual([])
+  }, SPAWN_TEST_TIMEOUT_MS)
 
   it('removes a grant written before its commit was lost, which the entry still reads as owed', async () => {
     const { approvals, store } = files()
@@ -294,9 +307,7 @@ describe('a skip whose removal is not confirmed', () => {
   it('is finished when the workspace opens again after a process stopped between recording the skip and removing the grant', async () => {
     const { approvals, store, token, kept } = await owedApproval()
     await createApprovalRegistry(store, approvals).recover()
-    const second = { approvals, grants: join(approvals, '..', 'grants.json'), workspace: 'workspace-id' }
-
-    expect(await inSecondProcess(second, { skip: token }, 'removing')).toEqual({ stopped: true })
+    expect(await inSecondProcess(secondOf(approvals), { skip: token }, 'removing')).toEqual({ stopped: true })
     expect(keptGrant(approvals, token)).toEqual({ ...kept, save: 'skipping' })
     expect(store.list().map(grant => grant.id)).toEqual([kept.id])
 
