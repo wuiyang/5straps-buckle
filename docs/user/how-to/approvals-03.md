@@ -11,8 +11,9 @@ seconds at most; `0`, which elsewhere waits until someone answers, holds it 30 s
 MCP client times out on its own clock, Claude Code's near a minute, and the work after an approval counts against it, so the hold ends well inside it. History capture runs with the call after approval: a file tool's reads only the paths it names, and a command's asks Git what changed. The caller waits for it before receiving the result. `buckle mcp` over stdio holds the
 call for `approvalWaitMs` as before. With [MCP forms](approvals-06.md) on, either face answers at
 once with a form for a host that declares form elicitation, over HTTP one of the 2026-07-28
-revision. An answer whose grant did not save draws a save form before the call runs
-([when a grant cannot be saved](approvals-05.md)).
+revision. A form dismissed while the node could give its ask more than the form offers, such as
+a floor ask's approval over HTTP, holds the call as above. An answer whose grant did not save
+draws a save form before the call runs ([when a grant cannot be saved](approvals-05.md)).
 
 When the hold ends unanswered, the result is no error (`isError: false`). Its text names each ask, the commands
 that show and answer it, and says to send the same call again once it is decided. Its

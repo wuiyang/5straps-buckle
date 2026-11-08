@@ -7,7 +7,7 @@ how it is written and what is queued.
 
 Every answer that reaches the approval service writes two `approval_decision` entries in its
 workspace's log, whichever route it came by: the serve terminal, `buckle approve`,
-`buckle approvals --watch`, `--approve-if-safe`, a stdio MCP form, or the setup and device routes.
+`buckle approvals --watch`, `--approve-if-safe`, an MCP form over stdio or HTTP, or the setup and device routes.
 The attempt is written as Buckle receives the answer, and the result once it applied (`ok`) or was
 refused (`error`, its detail the refusal's code, such as `scope_not_offered`). An answer that
 stopped on an error ends with an `error` result and no code. A device's or an envelope's answer
@@ -21,7 +21,9 @@ enrolled key or the decision AI decided. A result adds the `assurance`, `repeate
 `session` or `always` approval, `save`: where its grant stands (`owed`, `saved`, `skipping`,
 `skipped`, or `dropped`), or the refusal's `code`. A refusal's reason is not kept, since it can name a path.
 Each names who answered as its `actorId`: the key or judge that decided, else `local-owner` for the
-terminal and the CLI, the route's name (`forms`, `sealed`), or `backend:<id>`.
+terminal and the CLI, the route's name (`forms`, `sealed`), the agent token that sent an HTTP form
+(`agent:<id>`), or `backend:<id>`. An HTTP form answer to an ask its token did not raise, or to no
+waiting ask, is not read, and writes none.
 
 Skipping the save of an approval whose grant could not be written
 ([when a grant cannot be saved](approvals-05.md)) writes two `approval_decision` entries too. Their

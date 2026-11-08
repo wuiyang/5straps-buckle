@@ -34,6 +34,9 @@ granted at the node.
   Anything holding the agent token can send an answer there, so a floor ask's form only denies,
   and a form names the serve terminal and the `buckle approve` command for what it leaves out.
   A client of an earlier revision gets the text instead.
+- **Answering at the node instead:** where a form offers less than the node does, dismiss it,
+  before or after you answer at the node. The call sent again then waits for your answer there, as
+  with forms off, and draws the form again only if that wait ends unanswered.
 
 With forms off, the call is answered with the text that names the commands to approve it
 ([approvals over MCP](approvals-03.md)), and any answers a call carries are not read.
@@ -71,7 +74,8 @@ reaches any file your user can, these included.
 
 A form proves the channel, not a person: the app the agent runs in draws it and sends its answer
 back. Over stdio, an answer may decide any ask waiting in the workspace, whichever agent's call
-raised it. Over HTTP, it decides only the asks its own agent token raised, and the
-[audit log](audit-log.md) names that token; every client under one token counts as one. Turn
+raised it. Over HTTP, it decides only the asks its own agent token raised, an answer to any
+other ask is not read, and the [audit log](audit-log.md) names that token; every client under one
+token counts as one. Turn
 forms on for a workspace whose agent app you trust to show you each form unchanged. Answers at
 the node, with `buckle approvals`, stay open to you whichever way the setting is.

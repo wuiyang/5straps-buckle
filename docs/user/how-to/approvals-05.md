@@ -46,14 +46,19 @@ Each route that warns asks next what to do:
 | The [serve terminal](approvals-02.md), `buckle approvals --watch`, `buckle approve` at a terminal | `r` | `s` | any other answer leaves it; the serve terminal and `--watch` ask a lasting denial again |
 | `buckle approve` without a terminal | the same command | a denial: `buckle approve <token> --deny`; an approval: the same command at a terminal | exits 5 |
 | `buckle client approve` | not yet | not yet | prints the warning, exits 5 |
-| [MCP forms](approvals-06.md) | `retry` in the save form | `skip`, or decline the form | cancel leaves it, and the call runs once |
+| [MCP forms](approvals-06.md) | `retry` in the save form | `skip`, or decline the form | cancel leaves it: an approval's call runs once, a denial's call still waits |
 
 - **Asked again:** a retry that fails again shows the warning and the question again, with no cap.
-  MCP forms ask once: a retry that fails again is left, and the call runs once.
+  MCP forms ask once: a retry that fails again leaves an approval unsaved, and its call runs once;
+  it leaves a lasting denial unrecorded, so its call still waits and draws the approval form again.
 - **MCP forms:** the save form comes before the call runs, as the call's answer, so the call's once
   waits for it. Your answer travels back with the same call sent again, which then runs once, on
-  its once or on the grant a retry saved. An approval over HTTP is `once` alone, so it saves
-  nothing and draws no save form.
+  its once or on the grant a retry saved. Each save form names its ask: the tool, the rule, the
+  subject, and the token. An approval over HTTP is `once` alone, so it saves nothing and draws no
+  save form.
+- **A restart before you answer:** the node forgets the save forms it drew, and the workspace
+  opening again writes the grant. A skip or a decline still reaches the node and removes that
+  grant; a retry changes nothing, since the grant is written.
 - **After the question:** the route says `Saved.`, `Skipped: later calls ask again.` (adding
   `It had already saved; removed.` where it had), `Denied this call once; nothing was saved.`,
   `Not saved: its grant was revoked, ...` where it was removed meanwhile, or `Left unsaved`, where
