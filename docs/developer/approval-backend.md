@@ -17,8 +17,8 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
   group, an HMAC idempotency key, the requester, the rule's subject and offered scopes, the
   decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
 - **Receipts:** `applied` with the assurance core rated, `repeated`, or `refused` with an
-  `ApprovalErrorCode`; a grant still owed is flagged. Core checks each decision's shape first.
-  A failure is no decision.
+  `ApprovalErrorCode`; a grant still owed is flagged, with a `saveError` that names no path. Core
+  checks each decision's shape first. A failure is no decision.
 
 ## The module boundary
 
@@ -54,8 +54,8 @@ schema, a service, or the node's logger.
    forbids it, a wider subject from the terminal or `cli` alone, sensitive files, lasting
    denials for sensitive files alone, a signed `once` inside its deadline, and the host pattern
    covering the host that asked.
-5. An approval commits, then its grant, written on next open if owed. A lasting denial drops
-   the owed approvals it replaces, is written, and is withdrawn if its decision cannot commit.
+5. An approval commits, then its grant; a lasting denial is written first, and withdrawn if its
+   decision cannot commit. [Grant saves](approval-backend-02.md) covers a write that fails.
 6. The audit hears it applied, refused, or failed, outside the lock. The runtime's
    `logged-decision-audit.ts` writes each as `approval_decision`, naming who answered, through the
    log service, never holding up the answer.
