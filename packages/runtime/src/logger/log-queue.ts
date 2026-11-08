@@ -10,7 +10,10 @@ export interface LogBudgetOptions {
   overflow?: LogOverflow
 }
 
-/** Entries held in memory, waiting or being written, across every queue that shares it. */
+/**
+ * Entries waiting or being written, across every queue that shares it. One dropped from a write past its deadline leaves
+ * the count, though the writer still holds it until the write answers.
+ */
 export interface LogBudget {
   readonly limit: number
   readonly overflow: LogOverflow
@@ -38,8 +41,9 @@ export interface LogQueueOptions<T> {
   /** Waits before each further attempt at a failed batch; once they run out, its entries drop. */
   retryDelaysMs?: readonly number[]
   /**
-   * A write unanswered by then counts as a failed attempt, and its entries may drop like waiting ones. None is sent again
-   * while it is out, so none is written twice: one that answers late is written, or is tried again. None by default.
+   * A write unanswered by then counts as a failed attempt, and its entries may drop like waiting ones, while the writer
+   * still holds them. None is sent again while it is out, so none is written twice: one that answers late is written, or
+   * is tried again. None by default.
    */
   writeDeadlineMs?: number
   maxBatch?: number
