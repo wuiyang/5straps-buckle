@@ -8,7 +8,7 @@ import { alreadyReported, createJsonFileStore, fileVersion, StateFileError } fro
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import { endsWithSessions, servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
+import { endsSession, endsWithSessions, holderKey, servesHolder, sessionOf, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { GrantStore, LedgerGrants, SessionEnding } from '../../types/ports/grant-store.js'
 import type { CallAttempt } from '../../types/ports/action-log.js'
 import { askedCallSchema, type AskedCall } from '../../domain/approval/asked-call.js'
@@ -129,7 +129,7 @@ const fileSchema = z.object({
 type State = z.infer<typeof fileSchema>
 type ResolvedEntry = State['resolved'][number]
 
-const endingSchema = z.union([z.object({ sessionId: z.string() }), z.object({ allSessions: z.literal(true) })])
+const endingSchema = z.union([z.object({ sessionId: z.string() }), z.object({ sessions: z.array(z.object({ sessionId: z.string(), actor: z.string().optional() })).readonly() }), z.object({ allSessions: z.literal(true) })])
 // A revoke, by the record it removed, or a session end, by when it ended, so one done late never reaches a grant made after
 // it. Each drops the owed grants that would write again what it removed, applied before the next decision, so it reaches
 // only grants decided before it.
@@ -395,6 +395,8 @@ export interface AskResult {
  */
 export interface EndedSession {
   sessionId: string
+  /** The actor that asked in it; absent for the node's own process. */
+  actor?: string
   withdrawn: string[]
   onces: number
   owed: number
@@ -447,11 +449,17 @@ export interface ApprovalRegistry {
   /**
    * Ends sessions under the approvals lock, then the grants lock: their waiting asks are withdrawn, their onces no call
    * spent dropped, their owed and saved lasting grants marked dropped so none is written later, and their session grants
-   * removed; each session that held any of these is named. `due` is read again under the lock first, and where it says no
-   * nothing ends (null). Always grants never end with a session. A removal from the grants that fails stays owed: those
-   * grants clear no call, and the next update removes them, never reaching a grant made after the end.
+   * removed; each session that held any of these is named. `due` is read again under the lock first for each session
+   * named, and only those it still names end; where it names none, nothing ends (null). Always grants never end with a
+   * session. A removal from the grants that fails stays owed: those grants clear no call, and the next update removes
+   * them, never reaching a grant made after the end.
    */
-  endSessions(input: { ending: SessionEnding; due?: () => boolean }): Promise<EndedSession[] | null>
+  endSessions(request: SessionEndRequest): Promise<EndedSession[] | null>
+  /**
+   * The sessions that hold anything an end removes: a waiting ask, an unspent once, a lasting session grant owed or saved,
+   * or a session grant; read without the lock. Throws where neither approvals.json nor the grants can be read.
+   */
+  heldSessions(): GrantHolder[]
   /** Drops the asks that expired unanswered, telling `onExpired` about them. Every update does this too. */
   sweep(): Promise<void>
   /**
@@ -500,8 +508,8 @@ export interface ApprovalRegistryOptions {
   onExpired?: (requests: ApprovalRequest[]) => void
   /** The workspace's settings as they stand, read at each decision and skip; without it no MCP form answer decides. */
   live?: () => LiveSettings
-  /** Told of each ask recorded and each decision applied, which count as the workspace's activity for its idle check. */
-  onActivity?: () => void
+  /** Told of each ask recorded and each decision applied, which count as the activity of the session it asked in for its idle check. */
+  onActivity?: (session: GrantHolder) => void
 }
 
 const UNREAD_SETTINGS: LiveSettings = Object.freeze({ forms: false })
@@ -787,7 +795,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   async function dropRevoked(input: { state: State; commit: () => Promise<void>; revoked: readonly Revocation[] }): Promise<void> {
     const { state, revoked } = input
     const endings = revoked.flatMap(revocation => 'ending' in revocation ? [revocation.ending] : [])
-    const { withdrawn, onces } = withdrawSessions(state, sessionId => endings.some(ending => endsSession(ending, sessionId)))
+    const { withdrawn, onces } = withdrawSessions(state, session => endings.some(ending => endsSession(ending, session)))
     const dropped = dropGrants(state, { saves: STANDING_SAVES, undone: grant => revoked.some(revocation => undoes(revocation, grant)) })
     if (withdrawn.length > 0 || onces.length > 0 || dropped > 0) await input.commit()
     if (withdrawn.length > 0 || onces.length > 0) logger.info('Withdrew the asks and onces of sessions that ended while the approvals file could not be read', { withdrawn: withdrawn.length, onces: onces.length })
@@ -860,15 +868,15 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /** Withdraws the waiting asks and drops the unspent onces of the sessions `ends` names, keeping why each ask left. */
-  function withdrawSessions(state: State, ends: (sessionId: string) => boolean): { withdrawn: PendingEntry[]; onces: OnceEntry[] } {
+  function withdrawSessions(state: State, ends: (session: GrantHolder) => boolean): { withdrawn: PendingEntry[]; onces: OnceEntry[] } {
     const now = Date.now()
-    const withdrawn = state.pending.filter(entry => entry.workspace === workspace && ends(entry.sessionId))
+    const withdrawn = state.pending.filter(entry => entry.workspace === workspace && ends(sessionOf(entry)))
     state.pending = state.pending.filter(entry => !withdrawn.includes(entry))
     for (const entry of withdrawn) {
       state.ended.push({ workspace, token: entry.request.token, expiresAt: new Date(now + PENDING_TTL_MS).toISOString() })
       if (notifies(entry)) enqueueOutcome(state, workspace, { token: entry.request.token, event: 'cancelled', at: new Date(now).toISOString() })
     }
-    const onces = state.once.filter(entry => entry.workspace === workspace && ends(entry.sessionId))
+    const onces = state.once.filter(entry => entry.workspace === workspace && ends(sessionOf(entry)))
     state.once = state.once.filter(entry => !onces.includes(entry))
     return { withdrawn, onces }
   }
@@ -937,15 +945,25 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     revoke,
   }
 
-  async function endSessions(input: { ending: SessionEnding; due?: () => boolean }): Promise<EndedSession[] | null> {
-    const { ending, due } = input
-    const ends = (sessionId: string | null | undefined): boolean => typeof sessionId === 'string' && endsSession(ending, sessionId)
-    if (!holdsSessions(ends)) return due === undefined || due() ? [] : null
+  async function endSessions(request: SessionEndRequest): Promise<EndedSession[] | null> {
+    const { ending } = request
+    const due = 'sessions' in ending && 'due' in request ? request.due : undefined
+    const ends = (session: GrantHolder): boolean => endsSession(ending, session)
+    if (!holdsSessions(ends)) return 'sessions' in ending && due !== undefined && !ending.sessions.some(due) ? null : []
     const tally = sessionTally()
-    if (await endUnderLock({ ending, ends, due, tally })) return null
+    if (await endUnderLock({ ending, due, tally })) return null
     const sessions = tally.sessions()
     departed(sessions.flatMap(session => session.withdrawn), SESSION_ENDED)
     return sessions
+  }
+
+  /** The sessions of the request still due under the lock, or null where `due` keeps them all. */
+  function stillDue(input: SessionEndInput): EndingNow | null {
+    if (input.due === undefined || !('sessions' in input.ending)) return { ending: input.ending, ends: session => endsSession(input.ending, session) }
+    const sessions = input.ending.sessions.filter(input.due)
+    if (sessions.length === 0) return null
+    const ending = { sessions }
+    return { ending, ends: session => endsSession(ending, session) }
   }
 
   /** Ends them in the ledger, then in the grants, under the approvals lock, owing the removal until done; true where `due` kept them. */
@@ -954,12 +972,13 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     try {
       return await update(async (state, commit) => {
         read = true
-        if (input.due !== undefined && !input.due()) return true
+        const now = stillDue(input)
+        if (now === null) return true
         await applyRevocations(state, commit)
-        const revocation: Revocation = { ending: input.ending, endedAt: new Date().toISOString() }
+        const revocation: Revocation = { ending: now.ending, endedAt: new Date().toISOString() }
         await withRemovalOwed(revocation, async () => {
-          if (endInLedger({ ...input, state, revocation })) await commit()
-          input.tally.removed(await endInGrants(input.ending))
+          if (endInLedger({ ...now, tally: input.tally, state, revocation })) await commit()
+          input.tally.removed(await endInGrants(now.ending))
         })
         return false
       })
@@ -970,14 +989,14 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /** Withdraws the waiting asks, drops the unspent onces, and marks the lasting grants dropped; true where it changed any. */
-  function endInLedger(input: SessionEndInput & { state: State; revocation: Revocation }): boolean {
+  function endInLedger(input: EndingNow & { tally: SessionTally; state: State; revocation: Revocation }): boolean {
     const { state, ends, tally, revocation } = input
     const { withdrawn, onces } = withdrawSessions(state, ends)
-    for (const entry of withdrawn) tally.of(entry.sessionId).withdrawn.push(entry.request.token)
-    for (const entry of onces) tally.of(entry.sessionId).onces += 1
+    for (const entry of withdrawn) tally.of(sessionOf(entry)).withdrawn.push(entry.request.token)
+    for (const entry of onces) tally.of(sessionOf(entry)).onces += 1
     for (const entry of state.resolved) {
       const owed = owedHere(entry)
-      if (owed !== undefined && undoes(revocation, owed)) tally.of(owed.sessionId).owed += 1
+      if (owed !== undefined && undoes(revocation, owed)) tally.of(sessionOf(owed)).owed += 1
     }
     const dropped = dropGrants(state, { saves: STANDING_SAVES, undone: grant => undoes(revocation, grant) })
     return withdrawn.length > 0 || onces.length > 0 || dropped > 0
@@ -989,10 +1008,11 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    */
   async function endWhileUnreadable(input: SessionEndInput & { error: unknown }): Promise<boolean> {
     return store.locked(async () => {
-      if (input.due !== undefined && !input.due()) return true
-      await owe({ ending: input.ending, endedAt: new Date().toISOString() }, 'revoked')
+      const now = stillDue(input)
+      if (now === null) return true
+      await owe({ ending: now.ending, endedAt: new Date().toISOString() }, 'revoked')
       logger.warn('Ended sessions while the approvals file is unreadable; the decisions it records will not write their grants again once it is repaired', { error: withoutCause(input.error) })
-      input.tally.removed(await endInGrants(input.ending))
+      input.tally.removed(await endInGrants(now.ending))
       return false
     })
   }
@@ -1005,22 +1025,35 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
   /**
    * Whether any session that ends holds an ask, a once, a lasting grant to undo, or a session grant, read without the lock,
-   * so an idle workspace with nothing to end takes no lock; where either file cannot be read, the locked end decides.
+   * so a session with nothing to end takes no lock; where either file cannot be read, the locked end decides.
    */
-  function holdsSessions(ends: (sessionId: string | null | undefined) => boolean): boolean {
-    let state: State
-    let standing: GrantRecord[]
+  function holdsSessions(ends: (session: GrantHolder) => boolean): boolean {
     try {
-      state = read()
-      standing = grantStore.list()
+      return ledgerSessions(read()).some(ends) || grantSessions(grantStore.list()).some(ends)
     } catch {
       return true
     }
+  }
+
+  /** The sessions the ledger holds an ask, a once, or a lasting session grant owed or saved of. */
+  function ledgerSessions(state: State): GrantHolder[] {
     const mine = <T extends { workspace: string }>(entries: readonly T[]) => entries.filter(entry => entry.workspace === workspace)
-    return mine(state.pending).some(entry => ends(entry.sessionId))
-      || mine(state.once).some(entry => ends(entry.sessionId))
-      || mine(state.resolved).some(entry => entry.grant !== undefined && STANDING_SAVES.has(entry.grant.save) && entry.grant.scope === 'session' && ends(entry.grant.sessionId))
-      || standing.some(grant => grant.scope === 'session' && ends(grant.sessionId))
+    return [
+      ...mine(state.pending).map(sessionOf),
+      ...mine(state.once).map(sessionOf),
+      ...mine(state.resolved).flatMap(entry => entry.grant !== undefined && STANDING_SAVES.has(entry.grant.save) && entry.grant.scope === 'session' ? [sessionOf(entry.grant)] : []),
+    ]
+  }
+
+  function heldSessions(): GrantHolder[] {
+    const reads = [() => ledgerSessions(read()), () => grantSessions(grantStore.list())]
+    const held = new Map<string, GrantHolder>()
+    const failures: unknown[] = []
+    for (const sessionsIn of reads) {
+      try { for (const session of sessionsIn()) held.set(holderKey(session), session) } catch (error) { failures.push(error) }
+    }
+    if (failures.length === reads.length) throw failures[0]
+    return [...held.values()]
   }
 
   /**
@@ -1208,7 +1241,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   }
 
   /** A decision checked by the guard and recorded under the approvals lock, with its lasting grant settled after. */
-  async function record(decision: ApprovalDecision, source: ApprovalSource, options: ResolveOptions): Promise<Resolution> {
+  async function record(decision: ApprovalDecision, source: ApprovalSource, options: ResolveOptions, progress: DecisionProgress): Promise<Resolution> {
     const claim: DecisionClaim = {
       decision, source, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
       ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
@@ -1220,7 +1253,6 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       if (screened.code === 'assurance_too_low') logger.warn('A lasting decision was refused: its source is relayed', { scope: decision.scope, source: source.id })
       return { ok: false, code: screened.code, reason: screened.reason }
     }
-    const progress: DecisionProgress = {}
     try {
       return await update(async (state, commit) => {
         await applyRevocations(state, commit)
@@ -1267,6 +1299,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     grants,
 
     endSessions,
+    heldSessions,
 
     async ask({ tool, sessionId, asks, requestId, actor, fingerprint: callFingerprint, call, attempt: asking, waitMs: lifetime = waitMs, holdMs }) {
       const evicted: PendingEntry[] = []
@@ -1297,13 +1330,15 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       })
       if (evicted.length > 0) logger.info('Withdrew abandoned approvals to make room for a new ask', { withdrawn: evicted.length })
       departed(evicted.map(entry => entry.request.token), { type: 'cancelled', reason: 'evicted' })
-      options.onActivity?.()
+      options.onActivity?.(actor === undefined ? { sessionId } : { sessionId, actor })
       return result
     },
 
     async resolve(decision, source, resolveOptions = {}) {
-      const resolution = await record(decision, source, resolveOptions)
-      if (resolution.ok && resolution.repeated !== true) options.onActivity?.()
+      const progress: DecisionProgress = {}
+      const resolution = await record(decision, source, resolveOptions, progress)
+      const sessionId = progress.decided?.entry.sessionId
+      if (resolution.ok && resolution.repeated !== true && sessionId !== undefined) options.onActivity?.(sessionOf({ sessionId, actor: progress.decided?.entry.actor }))
       return resolution
     },
 
@@ -1611,41 +1646,58 @@ function owedRecord(input: { owed: LastingGrant; workspace: string; decidedAt: n
   }
 }
 
+/**
+ * Which sessions end: every caller's under a face's own id, or the sessions named, each ended only where `due`, read again
+ * under the approvals lock, still says so.
+ */
+export type SessionEndRequest = { ending: { sessionId: string } } | { ending: { sessions: readonly GrantHolder[] }; due?: (session: GrantHolder) => boolean }
+
 /** What one end of sessions is about, and the tally of what it ended in each. */
 interface SessionEndInput {
   ending: SessionEnding
-  ends: (sessionId: string | null | undefined) => boolean
-  due: (() => boolean) | undefined
+  due: ((session: GrantHolder) => boolean) | undefined
   tally: SessionTally
 }
 
+/** The sessions an end reaches once `due` was read again under the lock. */
+interface EndingNow {
+  ending: SessionEnding
+  ends: (session: GrantHolder) => boolean
+}
+
 interface SessionTally {
-  of(sessionId: string): EndedSession
+  of(session: GrantHolder): EndedSession
   removed(grants: readonly GrantRecord[]): void
-  /** Each session that held anything, by id. */
+  /** Each session that held anything, by id, then actor. */
   sessions(): EndedSession[]
 }
 
 function sessionTally(): SessionTally {
   const ended = new Map<string, EndedSession>()
-  const of = (sessionId: string): EndedSession => {
-    const known = ended.get(sessionId) ?? { sessionId, withdrawn: [], onces: 0, owed: 0, grants: 0, denials: 0 }
-    ended.set(sessionId, known)
+  const of = (session: GrantHolder): EndedSession => {
+    const key = holderKey(session)
+    const known = ended.get(key) ?? { ...session, withdrawn: [], onces: 0, owed: 0, grants: 0, denials: 0 }
+    ended.set(key, known)
     return known
   }
   return {
     of,
     removed(grants) {
-      for (const grant of grants) if (grant.sessionId !== null) of(grant.sessionId)[grant.denied ? 'denials' : 'grants'] += 1
+      for (const grant of grants) if (grant.sessionId !== null) of(sessionOf({ sessionId: grant.sessionId, actor: grant.actor }))[grant.denied ? 'denials' : 'grants'] += 1
     },
-    sessions: () => [...ended.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId)),
+    sessions: () => [...ended.values()].sort((left, right) => left.sessionId.localeCompare(right.sessionId) || (left.actor ?? '').localeCompare(right.actor ?? '')),
   }
+}
+
+/** The sessions the grants hold a session grant of. */
+function grantSessions(grants: readonly GrantRecord[]): GrantHolder[] {
+  return grants.flatMap(grant => grant.scope === 'session' && grant.sessionId !== null ? [sessionOf({ sessionId: grant.sessionId, actor: grant.actor })] : [])
 }
 
 /** Whether a revoke or a session end removes what an owed grant would write. */
 function undoes(revocation: Revocation, owed: LastingGrant): boolean {
   if ('grant' in revocation) return owed.id === revocation.grant.id || writesAgain(owed, revocation.grant)
-  return owed.scope === 'session' && endsSession(revocation.ending, owed.sessionId)
+  return owed.scope === 'session' && endsSession(revocation.ending, sessionOf(owed))
 }
 
 /** Whether a standing record is one a revocation removed: the grant it names, or a session grant its end reaches. */
@@ -1656,11 +1708,9 @@ function removes(revocation: Revocation, record: GrantRecord): boolean {
 /** What a revocation removes, which a later one of the same grant or sessions replaces: a later end reaches all the earlier did. */
 function targetOf(revocation: Revocation): string {
   if ('grant' in revocation) return `grant:${revocation.grant.id}`
-  return 'allSessions' in revocation.ending ? 'sessions' : `session:${revocation.ending.sessionId}`
-}
-
-function endsSession(ending: SessionEnding, sessionId: string): boolean {
-  return 'allSessions' in ending || ending.sessionId === sessionId
+  const { ending } = revocation
+  if ('allSessions' in ending) return 'sessions'
+  return 'sessionId' in ending ? `session:${ending.sessionId}` : `sessions:${ending.sessions.map(holderKey).sort().join(',')}`
 }
 
 /** Where the grant store keeps a record: one per rule, subject, scope, and holder, approved or denied. */

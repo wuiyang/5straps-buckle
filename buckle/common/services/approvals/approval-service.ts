@@ -11,8 +11,8 @@ import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, Decisio
 import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
 import type { CallAttempt } from '../../types/ports/action-log.js'
 import type { AuditedWidening, DecisionAudit, DecisionEnding, DecisionProofKind, SessionEndCause } from '../../types/ports/decision-audit.js'
-import type { SessionEnding } from '../../types/ports/grant-store.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
+import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
@@ -21,7 +21,7 @@ import { createApprovalNotices, type ApprovalNotices } from './approval-notices.
 import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
-import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
+import type { ApprovalRegistry, Departure, EndedSession, PendingAsk, Resolution, SessionEndRequest, SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -126,9 +126,9 @@ export interface ApprovalService extends CoreApprovalApi {
   /**
    * Ends sessions (the ledger's endSessions): their waiting asks are withdrawn, the webhook told they were cancelled and
    * each caller waiting on one woken, and each session that ended recorded with its cause. Null where `due`, read again
-   * under the lock, kept them.
+   * under the lock, kept them all.
    */
-  endSessions(input: { ending: SessionEnding; cause: SessionEndCause; due?: () => boolean }): Promise<EndedSession[] | null>
+  endSessions(input: SessionEndRequest & { cause: SessionEndCause }): Promise<EndedSession[] | null>
   /** Opens an MCP host's forms under its face's forms source, which core holds and rates; closed with the service. */
   openFormsBackend(backend: ApprovalBackend, face: FormsFace): void
   /**
@@ -186,10 +186,11 @@ export interface ApprovalServiceOptions {
   /** Told of each decision as received, then how it ended; it never holds up or refuses an answer. */
   decisionAudit: DecisionAudit
   /**
-   * Ends the workspace's sessions where it idled past its window, run before each ask is recorded and each decision applied,
-   * so neither lands in a session that should have ended, nor counts as activity that brings it back. Never throws.
+   * Ends the session where it idled past its window, before each of its asks is recorded, and every such session of the
+   * workspace before each decision applies, so neither lands in a session that should have ended, nor counts as activity
+   * that brings it back. Never throws.
    */
-  idleCheck?: () => Promise<void>
+  idleCheck?: (session?: GrantHolder) => Promise<void>
   pollMs?: number
 }
 
@@ -291,10 +292,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // grant binds stays as the rule named it.
       const input = masksHeld() ? { ...asked, asks: asked.asks.map(ask => ({ ...ask, reason: maskHeld(ask.reason) })), ...(asked.call === undefined ? {} : { call: maskHeldJson(asked.call) }) } : asked
       input.signal?.throwIfAborted()
-      await options.idleCheck?.()
-      const hold = (await options.hold()) ?? UNBOUND_HOLD
       const scope = useScopeSafe()
       const actor = scope?.context.actor
+      await options.idleCheck?.(actor === undefined ? { sessionId: input.sessionId } : { sessionId: input.sessionId, actor })
+      const hold = (await options.hold()) ?? UNBOUND_HOLD
       const key = joinKey({ ...input, actor })
       const ownHold = holdFor({ hold, graceMs: options.graceMs, hint: input.wait })
       // The hold the asks are recorded with: an ask that states no deadline lapses ten minutes after it where the face sends the call again (the MCP asks brief, item 5).
@@ -426,13 +427,13 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       track(backend.open(formsHostOf(FORMS_SOURCES[face])).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
     },
 
-    async endSessions({ ending, cause, due }) {
-      const ended = await options.registry.endSessions({ ending, ...(due === undefined ? {} : { due }) })
+    async endSessions({ cause, ...request }) {
+      const ended = await options.registry.endSessions(request)
       if (ended === null) return null
       const withdrawn = ended.flatMap(session => session.withdrawn)
       notices.cancelled(withdrawn)
       for (const token of withdrawn) wake(token)
-      for (const session of ended) options.decisionAudit.sessionEnded({ sessionId: session.sessionId, cause, withdrawn: session.withdrawn.length, onces: session.onces, owed: session.owed, grants: session.grants, denials: session.denials })
+      for (const session of ended) options.decisionAudit.sessionEnded({ sessionId: session.sessionId, ...(session.actor === undefined ? {} : { actor: session.actor }), cause, withdrawn: session.withdrawn.length, onces: session.onces, owed: session.owed, grants: session.grants, denials: session.denials })
       if (ended.length > 0) logger.info('Ended approval sessions', { cause, sessions: ended.length, withdrawn: withdrawn.length, workspaceId: options.workspaceId })
       return ended
     },

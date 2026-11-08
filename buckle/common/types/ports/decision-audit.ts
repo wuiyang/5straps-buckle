@@ -54,14 +54,16 @@ export type DecisionEnding = AuditEnding<
 export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 
 /**
- * Why sessions end: the workspace idled past its window, a stdio MCP process ended, or `buckle serve` stopped or started
- * again after a crash, which ends the HTTP MCP session, as that face keeps no session of its own to close.
+ * Why sessions end: the session idled past its window, a stdio MCP process ended, or `buckle serve` stopped or started
+ * again after a crash, which ends every caller's HTTP MCP session, as that face keeps no session of its own to close.
  */
 export type SessionEndCause = 'idle' | 'stdio_closed' | 'serve_stopped' | 'serve_started'
 
-/** One session's end, as its audit entry names it: what it withdrew, dropped, and removed. */
+/** One session's end, as its audit entry names it: the session and its actor, what it withdrew, dropped, and removed. */
 export interface AuditedSessionEnd {
   sessionId: string
+  /** The actor that asked in the session; absent for the node's own process. */
+  actor?: string
   cause: SessionEndCause
   /** Asks still waiting, withdrawn. */
   withdrawn: number

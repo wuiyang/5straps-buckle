@@ -186,9 +186,9 @@ for (const name of ['checkpoints.json', 'history.sqlite']) it(`starts, runs, and
     const journal = join(directory, 'checkpoints.json')
     const saved = readFileSync(journal, 'utf8')
     statFault.names = [name]
-    const turn = history.startCall('s', 'stage')
+    const turn = history.startCall({ sessionId: 's' }, 'stage')
     await expect(history.run({ ...details, requestId: 'r-1' }, async () => { writeFileSync(file, 'one'); return 'ran' })).resolves.toBe('ran')
-    history.finishCall('s', 'stage', turn)
+    history.finishCall({ sessionId: 's' }, 'stage', turn)
     expect(readFileSync(file, 'utf8')).toBe('one')
     if (name === 'checkpoints.json') {
       expect(history.notice('s', 'r-1')).toMatchObject({ restorable: false, reason: expect.stringContaining('EIO') })

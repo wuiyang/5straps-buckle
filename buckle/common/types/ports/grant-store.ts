@@ -1,11 +1,14 @@
 import type { GrantRecord, GrantScope, PermissionRuleId } from '@5straps/protocol'
 import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 
-/** Which sessions end: one session id, whichever actor asked in it, or every session of the workspace. */
-export type SessionEnding = { sessionId: string } | { allSessions: true }
+/**
+ * Which sessions end: every caller's under one id, as a face ends its own; the sessions named, each its id under its actor,
+ * as each ends at its own idle window; or any, which only a revocations file that cannot be read stands for.
+ */
+export type SessionEnding = { sessionId: string } | { sessions: readonly GrantHolder[] } | { allSessions: true }
 
 /**
- * `sessionApprovalsSuspended`: where true, a session approval clears nothing, as while the workspace's activity cannot be
+ * `sessionApprovalsSuspended`: where true, a session approval clears nothing, as while the session's activity cannot be
  * read; an always grant and every denial still stand. `withheld`: an approval it holds for clears nothing, as one a revoke
  * or a session end removed and the grants file still holds.
  */

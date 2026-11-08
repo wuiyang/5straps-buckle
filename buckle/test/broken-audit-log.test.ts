@@ -54,7 +54,7 @@ async function waitingAsk(config: BuckleConfig): Promise<string> {
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
-  await recordActivity(config)
+  await recordActivity(config, { sessionId: 'chat-1' })
   return request!.token
 }
 

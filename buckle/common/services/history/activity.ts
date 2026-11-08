@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { isSqliteBusy, openDatabase, rawConnection, type SqliteDatabase } from '@5straps/runtime/sqlite'
 import { join } from 'pathe'
+import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import { logger } from '../../runtime/log.js'
 
 interface Activity { at: number; turn: string; stage: string | null }
@@ -14,11 +15,15 @@ export class ActivityBusyError extends Error {
 }
 
 const UNPERSISTED = 'History activity could not be persisted; turn grouping may reset after restart'
-const TOUCH_WORKSPACE = 'INSERT INTO workspace (id, at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET at = max(at, excluded.at)'
+const UNTOUCHED = 'Session activity could not be recorded; the session may end at idle sooner than its window'
+// A session is its id under its actor; one no actor asked in is kept under ''.
+const TOUCH_SESSION = 'INSERT INTO sessions (session, actor, at) VALUES (?, ?, ?) ON CONFLICT(session, actor) DO UPDATE SET at = max(at, excluded.at)'
+/** The sessions whose activity the store keeps, newest first; an older one reads as idle, as one never seen does. */
+const SESSIONS_KEPT = 4096
 
 /**
- * Each session's newest call start or end, for turn grouping, and the workspace's own row, which each call end, ask, and
- * decision touches: together the workspace's last activity, which the idle check reads.
+ * Each session id's newest call start or end, for turn grouping, and each session's own row, its id under its actor, which
+ * its calls' starts and ends, its asks, and its decisions touch: the session's last activity, which the idle check reads.
  */
 export async function openHistoryActivity(directory: string) {
   const memory = new Map<string, Activity>()
@@ -37,13 +42,18 @@ export async function openHistoryActivity(directory: string) {
     database = await openDatabase({ path: file, pragmas: { busy_timeout: 1000, journal_mode: 'DELETE' }, requireOwnerOnlyDirectory: true, logger })
     db = await rawConnection(database)
     db.exec('CREATE TABLE IF NOT EXISTS activity (session TEXT PRIMARY KEY, at INTEGER NOT NULL, turn TEXT NOT NULL, stage TEXT)')
-    db.exec('CREATE TABLE IF NOT EXISTS workspace (id INTEGER PRIMARY KEY CHECK (id = 1), at INTEGER NOT NULL)')
+    db.exec('CREATE TABLE IF NOT EXISTS sessions (session TEXT NOT NULL, actor TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (session, actor))')
   } catch {
     await database?.dispose(); database = undefined; db = undefined
     failed(UNPERSISTED)
   }
 
-  function observe(input: { session: string; at: number; stage?: string; idleMs: number; knownTurn?: string; fallback?: Activity }): string {
+  function touchSession(connection: NonNullable<typeof db>, holder: GrantHolder, at: number): void {
+    connection.prepare(TOUCH_SESSION).run(holder.sessionId, holder.actor ?? '', at)
+  }
+
+  /** A call's turn; `holder`, the session a call starts in, which counts as its activity, where a call starts. */
+  function observe(input: { session: string; holder?: GrantHolder; at: number; stage?: string; idleMs: number; knownTurn?: string; fallback?: Activity }): string {
     const choose = (previous: Activity | undefined): Activity => {
       const stage = input.stage ?? null
       const same = previous?.stage === stage && (stage !== null || input.at - previous.at <= input.idleMs)
@@ -57,7 +67,10 @@ export async function openHistoryActivity(directory: string) {
         const previous = db.prepare('SELECT at, turn, stage FROM activity WHERE session = ?').get(input.session) as Activity | undefined
         next = choose(previous ?? input.fallback)
         db.prepare('INSERT INTO activity (session, at, turn, stage) VALUES (?, ?, ?, ?) ON CONFLICT(session) DO UPDATE SET at = excluded.at, turn = excluded.turn, stage = excluded.stage').run(input.session, next.at, next.turn, next.stage)
-        db.exec('DELETE FROM activity WHERE session IN (SELECT session FROM activity ORDER BY at DESC LIMIT -1 OFFSET 4096); COMMIT')
+        if (input.holder) touchSession(db, input.holder, input.at)
+        db.exec(`DELETE FROM activity WHERE session IN (SELECT session FROM activity ORDER BY at DESC LIMIT -1 OFFSET ${SESSIONS_KEPT})`)
+        if (input.holder) db.exec(`DELETE FROM sessions WHERE rowid IN (SELECT rowid FROM sessions ORDER BY at DESC LIMIT -1 OFFSET ${SESSIONS_KEPT})`)
+        db.exec('COMMIT')
       } catch (error) { db.exec('ROLLBACK'); throw error }
       warned.clear()
     } catch {
@@ -78,15 +91,16 @@ export async function openHistoryActivity(directory: string) {
     else stages.set(key, { turn, count: 1 })
     active.set(session, stages)
   }
-  function finish(session: string, stage: string | undefined, turn: string, at: number): void {
-    complete(session, turn, at)
+  function finish(session: string, stage: string | undefined, turn: string, at: number, holder: GrantHolder): void {
+    complete(session, turn, at, holder)
     const stages = active.get(session)
     const entry = stages?.get(stage ?? null)
     if (entry?.turn === turn && --entry.count === 0) stages!.delete(stage ?? null)
     if (stages?.size === 0) active.delete(session)
   }
 
-  function complete(session: string, turn: string, at: number): void {
+  /** The turn's time moves to `at`; `holder`, the session whose call ended, which counts as its activity, where a call ended. */
+  function complete(session: string, turn: string, at: number, holder?: GrantHolder): void {
     const previous = memory.get(session)
     if (previous?.turn === turn) previous.at = Math.max(previous.at, at)
     if (!db) return
@@ -94,33 +108,33 @@ export async function openHistoryActivity(directory: string) {
       db.exec('BEGIN IMMEDIATE')
       try {
         db.prepare('UPDATE activity SET at = max(at, ?) WHERE session = ? AND turn = ?').run(at, session, turn)
-        // A call's end is activity whatever turn its session moved on to meanwhile.
-        db.prepare(TOUCH_WORKSPACE).run(at)
+        // A call's end is its session's activity whatever turn the session moved on to meanwhile.
+        if (holder) touchSession(db, holder, at)
         db.exec('COMMIT')
       } catch (error) { db.exec('ROLLBACK'); throw error }
       warned.clear()
-    } catch { failed('History activity could not be persisted; turn grouping may reset after restart, and the workspace\'s sessions may end at idle sooner than its window') }
+    } catch { failed('History activity could not be persisted; turn grouping may reset after restart, and the session may end at idle sooner than its window') }
   }
 
-  /** An ask or a decision in the workspace, at `at`. */
-  function touch(at: number): void {
+  /** An ask or a decision of the session, at `at`. */
+  function touch(holder: GrantHolder, at: number): void {
     try {
       if (!db) throw new Error('Activity store unavailable')
-      db.prepare(TOUCH_WORKSPACE).run(at)
+      touchSession(db, holder, at)
       warned.clear()
-    } catch { failed('Workspace activity could not be recorded; its sessions may end at idle sooner than its window') }
+    } catch { failed(UNTOUCHED) }
   }
 
   /**
-   * The newest activity the store holds, of any session or the workspace's own row; undefined where none was recorded.
-   * Throws where the store cannot be read, its in-memory fallback included, which knows this process's activity alone, and
-   * ActivityBusyError where another process held it busy past the wait.
+   * The session's newest activity; undefined where none was recorded. Throws where the store cannot be read, its in-memory
+   * fallback included, which knows this process's activity alone, and ActivityBusyError where another process held it
+   * busy past the wait.
    */
-  function latest(): number | undefined {
+  function latest(holder: GrantHolder): number | undefined {
     if (!db) throw new Error('Activity store unavailable')
     try {
-      const row = db.prepare('SELECT max(at) AS at FROM (SELECT at FROM activity UNION ALL SELECT at FROM workspace)').get() as { at: number | null }
-      return row.at ?? undefined
+      const row = db.prepare('SELECT at FROM sessions WHERE session = ? AND actor = ?').get(holder.sessionId, holder.actor ?? '') as { at: number } | undefined
+      return row?.at
     } catch (error) {
       if (isSqliteBusy(error)) throw new ActivityBusyError()
       throw error

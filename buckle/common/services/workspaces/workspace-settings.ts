@@ -100,7 +100,7 @@ const StandardScriptSchema = z.string().min(1).max(1_000).refine((glob) => {
  * their command line alone; `quickJudge` which calls the optional quick stage rates (off, interpreters, asks, or all),
  * with `quickJudgeProvider` and `quickJudgeModel` (Buckle's own: TypeSafe's jev-latest). None holds a credential: the
  * keys and base URLs are the node's alone. `forms` says whether an MCP host's form answers decide its asks, and
- * `sessionIdleMs` how long it may go without activity before its sessions end: a minute to a day, or 0 for never at idle.
+ * `sessionIdleMs` how long each of its sessions may go without activity of its own before it ends: a minute to a day, or 0 for never at idle.
  */
 const ApprovalSchema = z.object({
   forms: z.boolean().optional(),

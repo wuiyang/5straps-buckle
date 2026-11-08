@@ -74,15 +74,15 @@ describe('a session end whose grant removal fails', () => {
     const terminal: ApprovalBackend = { open: async () => ({ contractVersion: 1, decides: true, scopes: ['once'], cancels: true, revokes: false }), submit: async () => ({ kind: 'accepted', refs: [] }), async notify() {}, close: async () => undefined }
     const service = createApprovalService({ registry, workspaceId: WORKSPACE, serverId: 'node-1', graceMs: 200, hold: async () => 'grace', terminal, nonces: createMemoryNonceClaims(), decisionAudit: UNHEARD_DECISIONS })
     let lastAt = Date.now() - 16 * MINUTE
-    const check = createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: () => lastAt, executing: () => [], runningHere: () => false, sessions: service })
+    const check = createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: () => lastAt, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service })
     broken.removals = true
 
     await check.check()
     expect(store.list().map(grant => grant.subject)).toEqual(['/outside/a'])
-    expect(clearing(registry, 'chat-1', check.sessionApprovalsSuspended())).toEqual([])
+    expect(clearing(registry, 'chat-1', check.sessionApprovalsSuspended({ sessionId: 'chat-1' }))).toEqual([])
     lastAt = Date.now()
     await check.check()
-    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
     expect(clearing(registry, 'chat-1')).toEqual([])
     expect(clearing(createApprovalRegistry(store, approvals), 'chat-1')).toEqual([])
 
@@ -113,7 +113,7 @@ describe('a session end whose grant removal fails', () => {
     writeFileSync(approvals, '{')
     broken.removals = true
 
-    await expect(registry.endSessions({ ending: { allSessions: true } })).rejects.toThrow('read-only')
+    await expect(registry.endSessions({ ending: { sessions: [{ sessionId: 'chat-1' }] } })).rejects.toThrow('read-only')
     expect(clearing(registry, 'chat-1')).toEqual([])
     writeFileSync(approvals, kept)
     await registry.recover()
@@ -127,16 +127,16 @@ describe('a session end whose grant removal fails', () => {
     expect(existsSync(revocations)).toBe(false)
   })
 
-  it('keeps one record of every session\'s end however many come while approvals.json is unreadable, and writes no grants for one that finds none', async () => {
+  it('keeps one record of a session\'s end however many come while approvals.json is unreadable, and writes no grants for one that finds none', async () => {
     const { root, store, registry, approvals, revocations } = setUp()
     await granted(registry, 'chat-1', '/outside/a')
     writeFileSync(approvals, '{')
-    await registry.endSessions({ ending: { allSessions: true } })
+    await registry.endSessions({ ending: { sessions: [{ sessionId: 'chat-1' }] } })
     const grants = readFileSync(join(root, 'grants.json'), 'utf8')
     const written = vi.spyOn(store, 'endSessions')
 
-    await registry.endSessions({ ending: { allSessions: true } })
-    await registry.endSessions({ ending: { allSessions: true } })
+    await registry.endSessions({ ending: { sessions: [{ sessionId: 'chat-1' }] } })
+    await registry.endSessions({ ending: { sessions: [{ sessionId: 'chat-1' }] } })
     expect((JSON.parse(readFileSync(revocations, 'utf8')) as { revoked: unknown[] }).revoked).toHaveLength(1)
     expect(written).not.toHaveBeenCalled()
     expect(readFileSync(join(root, 'grants.json'), 'utf8')).toBe(grants)

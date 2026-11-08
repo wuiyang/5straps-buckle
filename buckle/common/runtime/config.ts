@@ -166,7 +166,7 @@ export interface BuckleConfig extends NodeConfig {
   allowHistory: boolean
   /** How long a gated call is held for an answer, in milliseconds; null holds it until someone answers. */
   approvalTimeoutMs: number | null
-  /** How long the workspace may go without activity before its sessions end (approval.sessionIdleMs); 0 ends none at idle. */
+  /** How long a session may go without activity of its own before it ends (approval.sessionIdleMs); 0 ends none at idle. */
   approvalSessionIdleMs: number
   /** The plain variables the workspace's settings give its shell commands (Q13); a call's own `env` is set over them. */
   commandEnvironment: Readonly<Record<string, string>>

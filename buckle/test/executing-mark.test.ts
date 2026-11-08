@@ -6,15 +6,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { InvokeResponse } from '@5straps/protocol'
 import type { ToolContext } from '../common/domain/tool.js'
 import { logger } from '../common/runtime/log.js'
-import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, activeElsewhere, activeWorkDirectory, createExecutingMark, executingInstances } from '../common/services/workspaces/active-work.js'
+import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, activeElsewhere, activeWorkDirectory, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// The executing mark: a lease each runtime holds on disk only while a tool runs, so the idle
-// check of another process can tell a long tool from a workspace nobody uses. A call waiting for a person holds none.
+// The executing mark: a lease each runtime holds on disk only while a tool runs, naming the sessions whose tools run, so
+// the idle check of another process can tell a session's long tool from a session nobody uses. A call waiting for a person
+// holds none.
 
 const roots: string[] = []
 afterEach(async () => {
@@ -36,14 +37,18 @@ function marks(): string {
 }
 
 const executingFiles = (directory: string) => existsSync(directory) ? readdirSync(directory).filter(name => name.startsWith('executing-')) : []
+const executingInstances = (input: { directory: string; now?: number }) => executingMarks(input).map(mark => mark.instance)
+const CHAT = { sessionId: 'chat-1' }
+/** A mark as another process writes it, naming the sessions whose tools run there. */
+const markOf = (sessions: ReadonlyArray<{ sessionId: string; actor?: string }>) => JSON.stringify({ sessions })
 
 describe('the executing mark', () => {
   it('is written under its instance as a run begins, refreshed while any run holds it, and removed as the last run ends', () => {
     vi.useFakeTimers()
     const directory = marks()
     const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'first' })
-    const one = mark.begin()
-    const two = mark.begin()
+    const one = mark.begin(CHAT)
+    const two = mark.begin(CHAT)
     expect(executingFiles(directory)).toEqual(['executing-first'])
 
     vi.advanceTimersByTime(ACTIVE_WORK_FRESH_MS * 3)
@@ -56,15 +61,36 @@ describe('the executing mark', () => {
     expect(executingInstances({ directory, now: Date.now() })).toEqual([])
   })
 
+  it('names the sessions whose tools run, each under its actor, until the last run of each ends', () => {
+    const directory = marks()
+    const one = { sessionId: 'mcp', actor: 'agent:one' }
+    const two = { sessionId: 'mcp', actor: 'agent:two' }
+    const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'shared' })
+    const first = mark.begin(one)
+    const second = mark.begin(two)
+    const again = mark.begin(one)
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two] }])
+    expect([mark.running(one), mark.running(two), mark.running(CHAT)]).toEqual([true, true, false])
+
+    first.end()
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one, two] }])
+    second.end()
+    expect(executingMarks({ directory })).toEqual([{ instance: 'shared', sessions: [one] }])
+    expect(mark.running(two)).toBe(false)
+    again.end()
+    expect(executingMarks({ directory })).toEqual([])
+    expect(executingFiles(directory)).toEqual([])
+  })
+
   it('is not held while a run waits for a person, unless another run of the instance holds it', async () => {
     const directory = marks()
     const mark = createExecutingMark({ directory, workspaceId: 'w', instance: 'script' })
-    const script = mark.begin()
+    const script = mark.begin(CHAT)
     let answered!: () => void
     const waiting = script.paused(() => new Promise<string>((resolve) => { answered = () => resolve('answer') }))
     expect(executingInstances({ directory })).toEqual([])
 
-    const nested = mark.begin()
+    const nested = mark.begin(CHAT)
     expect(executingInstances({ directory })).toEqual(['script'])
     nested.end()
     expect(executingInstances({ directory })).toEqual([])
@@ -78,7 +104,7 @@ describe('the executing mark', () => {
 
   it('ends a run that waits without holding the mark again once the wait ends', async () => {
     const directory = marks()
-    const script = createExecutingMark({ directory, workspaceId: 'w', instance: 'cut' }).begin()
+    const script = createExecutingMark({ directory, workspaceId: 'w', instance: 'cut' }).begin(CHAT)
     let answered!: () => void
     const waiting = script.paused(() => new Promise<void>((resolve) => { answered = resolve }))
     script.end()
@@ -91,11 +117,11 @@ describe('the executing mark', () => {
     vi.useFakeTimers()
     const directory = marks()
     const left = join(directory, 'executing-dead')
-    writeFileSync(left, '')
+    writeFileSync(left, markOf([CHAT]))
     const died = new Date(Date.now() - 1_000)
     utimesSync(left, died, died)
 
-    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'reborn' }).begin()
+    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'reborn' }).begin(CHAT)
     expect(executingInstances({ directory, now: Date.now() }).sort()).toEqual(['dead', 'reborn'])
     vi.advanceTimersByTime(ACTIVE_WORK_FRESH_MS)
     expect(executingInstances({ directory, now: Date.now() })).toEqual(['reborn'])
@@ -106,7 +132,7 @@ describe('the executing mark', () => {
   it('recreates its mark at the next refresh where a reader removed it while the process stalled', () => {
     vi.useFakeTimers()
     const directory = marks()
-    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'slow' }).begin()
+    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'slow' }).begin(CHAT)
     rmSync(join(directory, 'executing-slow'))
     vi.advanceTimersByTime(ACTIVE_WORK_REFRESH_MS)
     expect(executingInstances({ directory, now: Date.now() })).toEqual(['slow'])
@@ -117,7 +143,7 @@ describe('the executing mark', () => {
     const blocked = join(temporary(), 'blocked')
     writeFileSync(blocked, '')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    const run = createExecutingMark({ directory: blocked, workspaceId: 'w', instance: 'nowhere' }).begin()
+    const run = createExecutingMark({ directory: blocked, workspaceId: 'w', instance: 'nowhere' }).begin(CHAT)
     run.end()
     expect(warned).toHaveBeenCalledWith('Could not mark that a tool runs in this workspace; another process may take it as idle meanwhile', expect.objectContaining({ workspaceId: 'w' }))
     warned.mockRestore()
@@ -128,7 +154,7 @@ describe('the executing mark', () => {
     const directory = join(temporary(), 'late')
     writeFileSync(directory, '')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'late' }).begin()
+    const run = createExecutingMark({ directory, workspaceId: 'w', instance: 'late' }).begin(CHAT)
     expect(warned).toHaveBeenCalledOnce()
     vi.advanceTimersByTime(ACTIVE_WORK_REFRESH_MS * 3)
     expect(warned).toHaveBeenCalledTimes(2)
@@ -156,9 +182,25 @@ describe('the executing mark', () => {
     expect(executingInstances({ directory: join(temporary(), 'none') })).toEqual([])
   })
 
+  it('throws where a fresh mark does not name its sessions, so the idle check can tell activity is unknown', () => {
+    const directory = marks()
+    writeFileSync(join(directory, 'executing-other'), 'not a mark')
+    expect(() => executingMarks({ directory })).toThrow()
+  })
+
+  it('skips a mark still being written, and removes one a process that died while writing it left', () => {
+    const directory = marks()
+    const half = join(directory, 'executing-half.tmp')
+    writeFileSync(half, '{')
+    expect(executingMarks({ directory, now: Date.now() })).toEqual([])
+    expect(existsSync(half)).toBe(true)
+    expect(executingMarks({ directory, now: Date.now() + ACTIVE_WORK_FRESH_MS + 1_000 })).toEqual([])
+    expect(existsSync(half)).toBe(false)
+  })
+
   it.skipIf(process.getuid?.() === 0)('throws where the marks cannot be read, so the idle check can tell activity is unknown', () => {
     const directory = marks()
-    writeFileSync(join(directory, 'executing-other'), '')
+    writeFileSync(join(directory, 'executing-other'), markOf([CHAT]))
     chmodSync(directory, 0o000)
     try { expect(() => executingInstances({ directory })).toThrow() } finally { chmodSync(directory, 0o700) }
   })
@@ -179,6 +221,7 @@ describe('a workspace runtime', () => {
     slowRead(runtime, 'notes.md', new Promise<void>((resolve) => { release = resolve }))
     const reading = read(runtime)
     await vi.waitFor(() => expect(executingInstances({ directory })).toHaveLength(1))
+    expect(executingMarks({ directory }).flatMap(mark => mark.sessions)).toEqual([CHAT])
     release()
     expect(await reading).toMatchObject({ outcome: 'ok' })
     expect(executingFiles(directory)).toEqual([])
@@ -290,7 +333,7 @@ async function killedWhileRunning(directory: string, instance: string): Promise<
   writeFileSync(script, `
     import { createExecutingMark } from ${JSON.stringify(new URL('../common/services/workspaces/active-work.ts', import.meta.url).href)};
     const [directory, instance] = process.argv.slice(2);
-    createExecutingMark({ directory, workspaceId: 'w', instance }).begin();
+    createExecutingMark({ directory, workspaceId: 'w', instance }).begin({ sessionId: 'chat-1' });
     setInterval(() => {}, 60_000);
     process.stdout.write('running\\n');
   `)

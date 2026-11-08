@@ -11,6 +11,7 @@ import { requireOwnerOnly, setMode } from '../../adapters/file-modes.js'
 import { replaceFile } from '../../adapters/replace-file.js'
 import { logger } from '../../runtime/log.js'
 import type { UntrustedRoots } from '../../domain/executable.js'
+import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { applySnapshot, assertSnapshotMatches, changedPaths, notRestorablePaths, sameEntry, SnapshotConflictError, uncapturedAt, type Entry, type Snapshot } from './snapshot.js'
 import { HistoryBusyError, OWNER_LOCK_WAIT_MS, withHistoryLock } from './execution-lock.js'
@@ -264,21 +265,23 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
     await save(state)
   }
   /** The call's turn: one the journal cannot give, read failing, falls back to the activity alone, so no call's start is walled (X7). */
-  function observeCall(sessionId: string, stageId?: string): string {
+  function observeCall(sessionId: string, stageId?: string, holder?: GrantHolder): string {
     let existing: Checkpoint[]
     try { existing = records() } catch (error) { existing = []; logger.warn('History could not read its journal to group this call into a turn; the call runs', { cause: causeOf(error) }) }
     const latest = existing.findLast(record => record.sessionId === sessionId)
     const known = activity.activeTurn(sessionId, stageId) ?? (stageId === undefined ? undefined : existing.find(record => record.sessionId === sessionId && record.turnStageId === stageId)?.turnId)
     const fallback = latest?.turnId ? { at: Date.parse(latest.createdAt), turn: latest.turnId, stage: latest.turnStageId ?? null } : undefined
-    return activity.observe({ session: sessionId, at: now(), ...(stageId === undefined ? {} : { stage: stageId }), idleMs: settings.turnIdleMs, ...(known ? { knownTurn: known } : {}), ...(fallback ? { fallback } : {}) })
+    return activity.observe({ session: sessionId, ...(holder ? { holder } : {}), at: now(), ...(stageId === undefined ? {} : { stage: stageId }), idleMs: settings.turnIdleMs, ...(known ? { knownTurn: known } : {}), ...(fallback ? { fallback } : {}) })
   }
-  function startCall(sessionId: string, stageId?: string): string {
-    const turn = observeCall(sessionId, stageId)
-    activity.start(sessionId, stageId, turn)
+  /** A call starts in its session, which counts as the session's activity beside the call's turn. */
+  function startCall(holder: GrantHolder, stageId?: string): string {
+    const turn = observeCall(holder.sessionId, stageId, holder)
+    activity.start(holder.sessionId, stageId, turn)
     return turn
   }
+  function finishCall(holder: GrantHolder, stageId: string | undefined, turn: string): void { activity.finish(holder.sessionId, stageId, turn, now(), holder) }
+  /** A checkpoint of the turn is done: the turn's own time moves, no session's, whose call's end is its activity. */
   function completeCall(sessionId: string, turn: string): void { activity.complete(sessionId, turn, now()) }
-  function finishCall(sessionId: string, stageId: string | undefined, turn: string): void { activity.finish(sessionId, stageId, turn, now()) }
   /** The capture budget of one phase from now, with the call's cancellation for the before phase alone (X14). */
   function budget(signal?: AbortSignal): CaptureBudget { return { deadline: Date.now() + (input.captureBudgetMs ?? CAPTURE_BUDGET_MS), ...(signal ? { signal } : {}) } }
   async function begin(details: HistoryInput, restore?: { restores: string; undoes?: number }, signal?: AbortSignal): Promise<Checkpoint> {
@@ -763,14 +766,13 @@ export async function openChangeHistory(input: ChangeHistoryOptions) {
   }
   return {
     list: async () => { const view = listedAs(); return records().map(record => summary(view(record))) },
-    observeCall,
+    observeCall: (sessionId: string, stageId?: string) => observeCall(sessionId, stageId),
     startCall,
-    completeCall,
     finishCall,
-    /** An ask or a decision: the workspace's activity, which the idle check reads beside each call's start and end. */
-    touchActivity: () => activity.touch(now()),
-    /** The workspace's newest activity; throws where the store cannot be read. */
-    lastActivity: () => activity.latest(),
+    /** An ask or a decision: the session's activity, which the idle check reads beside its calls' starts and ends. */
+    touchActivity: (holder: GrantHolder) => activity.touch(holder, now()),
+    /** The session's newest activity; throws where the store cannot be read. */
+    lastActivity: (holder: GrantHolder) => activity.latest(holder),
     notice: (sessionId: string, requestId: string) => {
       const matches = (record: Checkpoint) => record.sessionId === sessionId && (record.requestId === requestId || record.parentRequestId === requestId)
       let found = [...unsaved.values()].findLast(matches)

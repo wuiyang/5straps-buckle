@@ -1,5 +1,7 @@
-import { mkdirSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'pathe'
+import { z } from 'zod'
+import { holderKey, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import { logger } from '../../runtime/log.js'
 
 /** How often a process with calls running in a workspace refreshes its mark. */
@@ -8,6 +10,10 @@ export const ACTIVE_WORK_REFRESH_MS = 2_000
 export const ACTIVE_WORK_FRESH_MS = 10_000
 /** The executing marks' names start with it; every other mark is a process's active work, named by its pid. */
 const EXECUTING = 'executing-'
+/** An executing mark is written beside itself under this suffix, then renamed, so no reader meets one half written. */
+const WRITING = '.tmp'
+/** What an executing mark holds: the sessions whose tools run in its runtime. */
+const executingSchema = z.object({ sessions: z.array(z.object({ sessionId: z.string(), actor: z.string().optional() })) })
 
 /**
  * Where processes mark the calls they run in one workspace, `<state>/workspaces/<id>/active-work/<pid>`: a call runs in
@@ -45,47 +51,66 @@ export interface ExecutingRun {
 }
 
 /**
- * A runtime's executing mark: held on disk while any of its tools runs, never while a call only waits for an answer.
- * Named by the runtime's own instance id, not its pid, so a new process under a dead one's pid never refreshes its mark.
+ * A runtime's executing mark: held on disk while any of its tools runs, never while a call only waits for an answer, and
+ * naming the sessions whose tools run, so each session's idle check reads its own. Named by the runtime's own instance id,
+ * not its pid, so a new process under a dead one's pid never refreshes its mark.
  */
 export interface ExecutingMark {
-  begin(): ExecutingRun
-  /** Whether a tool of this runtime runs now, which its own idle check counts as activity without reading the marks. */
-  running(): boolean
+  begin(session: GrantHolder): ExecutingRun
+  /** Whether a tool of the session runs in this runtime now, which its idle check counts as activity without reading the marks. */
+  running(session: GrantHolder): boolean
 }
 
+/** One runtime's executing mark as another process reads it. */
+export interface ExecutingMarkReading { instance: string; sessions: GrantHolder[] }
+
 export function createExecutingMark(input: { directory: string; workspaceId: string; instance: string }): ExecutingMark {
-  const lease = markLease({ directory: input.directory, file: join(input.directory, `${EXECUTING}${input.instance}`), workspaceId: input.workspaceId })
+  // The sessions whose tools run, each with how many of its runs hold the mark.
+  const holding = new Map<string, { session: GrantHolder; runs: number }>()
+  const content = () => JSON.stringify({ sessions: [...holding.values()].map(held => held.session) })
+  const lease = markLease({ directory: input.directory, file: join(input.directory, `${EXECUTING}${input.instance}`), workspaceId: input.workspaceId, content })
   // Never thrown: a tool that cleared runs, and answers as it ran. A missing mark can only end sessions early, which asks again.
   const guarded = (step: () => void) => {
     try { step() } catch (error) {
       logger.warn('Could not mark that a tool runs in this workspace; another process may take it as idle meanwhile', { workspaceId: input.workspaceId, error })
     }
   }
-  let holding = 0
-  const hold = () => { if (holding++ === 0) guarded(lease.start) }
-  const release = () => { if (--holding === 0) guarded(lease.stop) }
+  const hold = (session: GrantHolder) => {
+    const key = holderKey(session)
+    const held = holding.get(key)
+    if (held !== undefined) { held.runs++; return }
+    const first = holding.size === 0
+    holding.set(key, { session, runs: 1 })
+    guarded(first ? lease.start : lease.write)
+  }
+  const release = (session: GrantHolder) => {
+    const key = holderKey(session)
+    const held = holding.get(key)
+    if (held === undefined || --held.runs > 0) return
+    holding.delete(key)
+    guarded(holding.size === 0 ? lease.stop : lease.write)
+  }
   return {
-    running: () => holding > 0,
-    begin() {
+    running: session => holding.has(holderKey(session)),
+    begin(session) {
       let pauses = 0
       let ended = false
       const holds = () => !ended && pauses === 0
-      hold()
+      hold(session)
       return {
         async paused(wait) {
-          if (holds()) release()
+          if (holds()) release(session)
           pauses++
           try { return await wait() } finally {
             pauses--
-            if (holds()) hold()
+            if (holds()) hold(session)
           }
         },
         end() {
           if (ended) return
           const held = holds()
           ended = true
-          if (held) release()
+          if (held) release(session)
         },
       }
     },
@@ -93,24 +118,49 @@ export function createExecutingMark(input: { directory: string; workspaceId: str
 }
 
 /**
- * The instances running a tool in the workspace now, each mark refreshed within ACTIVE_WORK_FRESH_MS. A stale mark, which a
- * process that died left, is removed. Throws where the marks cannot be read, which the idle check takes as activity unknown.
+ * The instances running a tool in the workspace now, each with the sessions whose tools it runs, each mark refreshed within
+ * ACTIVE_WORK_FRESH_MS. A stale mark, which a process that died left, is removed, as is one it left half written. Throws
+ * where the marks cannot be read, a fresh one included, which the idle check takes as activity unknown.
  */
-export function executingInstances(input: { directory: string; now?: number }): string[] {
+export function executingMarks(input: { directory: string; now?: number }): ExecutingMarkReading[] {
   const now = input.now ?? Date.now()
   return markNames(input.directory).filter(mark => mark.startsWith(EXECUTING)).flatMap((mark) => {
     const file = join(input.directory, mark)
-    if (markIsFresh(file, now)) return [mark.slice(EXECUTING.length)]
-    rmSync(file, { force: true })
-    return []
+    if (!markIsFresh(file, now)) {
+      rmSync(file, { force: true })
+      return []
+    }
+    if (mark.endsWith(WRITING)) return []
+    const sessions = readMark(file)
+    return sessions === undefined || sessions.length === 0 ? [] : [{ instance: mark.slice(EXECUTING.length), sessions }]
   })
 }
 
-function markLease(input: { directory: string; file: string; workspaceId: string }): ActiveWorkMark {
+/** The sessions a mark names; undefined where it went since the listing, as a process gone idle. */
+function readMark(file: string): GrantHolder[] | undefined {
+  let text: string
+  try { text = readFileSync(file, 'utf8') } catch (error) {
+    if (isMissing(error)) return undefined
+    throw error
+  }
+  return executingSchema.parse(JSON.parse(text)).sessions.map(({ sessionId, actor }) => actor === undefined ? { sessionId } : { sessionId, actor })
+}
+
+interface MarkLease extends ActiveWorkMark {
+  /** Writes the mark again with what it holds now. */
+  write(): void
+}
+
+function markLease(input: { directory: string; file: string; workspaceId: string; content?: () => string }): MarkLease {
   let timer: NodeJS.Timeout | undefined
   // Said once until a refresh lands again, not every ACTIVE_WORK_REFRESH_MS.
   let failing = false
-  const write = () => writeFileSync(input.file, '', { mode: 0o600 })
+  const write = () => {
+    if (input.content === undefined) return writeFileSync(input.file, '', { mode: 0o600 })
+    const writing = `${input.file}${WRITING}`
+    writeFileSync(writing, input.content(), { mode: 0o600 })
+    renameSync(writing, input.file)
+  }
   const touch = () => {
     try { utimesSync(input.file, new Date(), new Date()) } catch (error) {
       // Written again where a reader removed it as stale while this process stalled, or where the first write failed.
@@ -140,6 +190,7 @@ function markLease(input: { directory: string; file: string; workspaceId: string
       timer = undefined
       rmSync(input.file, { force: true })
     },
+    write,
   }
 }
 

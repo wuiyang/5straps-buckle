@@ -10,13 +10,14 @@ import { createMemoryNonceClaims } from '../common/adapters/approval/memory-nonc
 import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-store.js'
 import { DEFAULT_SESSION_IDLE_MS, idleVerdict, newestSessionGrant, parseSessionIdle, SESSION_IDLE_BOUNDS, type ActivityReading } from '../common/domain/approval/session-idle.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import type { GrantHolder } from '../common/domain/permission/grant-holder.js'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import { createSessionIdleCheck } from '../common/services/approvals/session-idle-check.js'
 import { ActivityBusyError, openHistoryActivity } from '../common/services/history/activity.js'
-import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, createExecutingMark, executingInstances } from '../common/services/workspaces/active-work.js'
+import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
 import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import type { ApprovalBackend, LifecycleEvent } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -26,9 +27,10 @@ import { runCli } from './support/cli.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
 
-// Session end at idle: a session ends once the workspace has had no activity for longer than its window, 15 minutes unless
-// set. Activity is a running tool, a call starting or ending, an ask, and a decision, never a call waiting for a person.
-// Where activity cannot be read, no session ends, and no session approval clears a call.
+// Session end at idle: each session, its id under the actor that asked in it, ends once it has had no activity of its own
+// for longer than its window, 15 minutes unless set, while the workspace's other sessions keep theirs. Activity is one of
+// its tools running, one of its calls starting or ending, an ask, and a decision, never a call waiting for a person. Where
+// a session's activity cannot be read, it does not end, and none of its session approvals clears a call.
 
 const roots: string[] = []
 afterEach(() => {
@@ -77,11 +79,14 @@ describe('the idle verdict', () => {
     expect(idleVerdict({ now: NOW, idleMs: DEFAULT_SESSION_IDLE_MS, read: read({ unreadable: 'activity.sqlite' }) })).toEqual({ kind: 'unknown', store: 'activity.sqlite' })
   })
 
-  it('takes, where the store holds no activity, the newest session grant\'s making as the last activity', () => {
-    const made = (scope: string, at: number) => ({ scope, createdAt: new Date(at).toISOString() })
-    expect(newestSessionGrant([])).toBeUndefined()
-    expect(newestSessionGrant([made('always', NOW)])).toBeUndefined()
-    expect(newestSessionGrant([made('session', NOW - MINUTE), made('session', NOW - 5), made('always', NOW)])).toBe(NOW - 5)
+  it('takes, where the store holds no activity of a session, its own newest session grant\'s making as its last activity', () => {
+    const one = { sessionId: 'mcp', actor: 'agent:one' }
+    const made = (scope: string, at: number, holder: { sessionId: string | null; actor: string | null } = { sessionId: 'mcp', actor: 'agent:one' }) => ({ scope, ...holder, createdAt: new Date(at).toISOString() })
+    expect(newestSessionGrant([], one)).toBeUndefined()
+    expect(newestSessionGrant([made('always', NOW, { sessionId: null, actor: null })], one)).toBeUndefined()
+    expect(newestSessionGrant([made('session', NOW - MINUTE), made('session', NOW - 5), made('always', NOW, { sessionId: null, actor: null })], one)).toBe(NOW - 5)
+    // Another caller's grant under the same id, or another session's, is no activity of this one.
+    expect(newestSessionGrant([made('session', NOW - MINUTE), made('session', NOW, { sessionId: 'mcp', actor: 'agent:two' }), made('session', NOW, { sessionId: 'rpc', actor: 'agent:one' })], one)).toBe(NOW - MINUTE)
   })
 
   it('takes 0, or a minute to a day, in milliseconds, and nothing else', () => {
@@ -142,9 +147,9 @@ describe('the idle window setting', () => {
     expect(shown.out.slice(shown.out.indexOf('Workspace defaults'))).toMatch(/approval-session-idle\s+BUCKLE_APPROVAL_SESSION_IDLE_MS\s+900000\s+default/)
     expect((await settings(['set', 'approval-session-idle', '1800000'])).exitCode).toBe(0)
     expect(readFileSync(file, 'utf8')).toContain('BUCKLE_APPROVAL_SESSION_IDLE_MS=1800000\n')
-    // Every process ends all of its workspace's sessions at the window it started with, so a running buckle mcp is named.
+    // Every process ends each session at the window it started with, so a running buckle mcp is named.
     for (const argv of [['set', 'approval-session-idle', '0'], ['unset', 'approval-session-idle']]) {
-      expect((await settings(argv)).out).toContain('A buckle mcp an MCP client started keeps the window it started with, and ends every session of its workspace at it, until the client starts it again; buckle workspace set approval.sessionIdleMs changes a workspace\'s window from its next call.\n')
+      expect((await settings(argv)).out).toContain('A buckle mcp an MCP client started keeps the window it started with, and ends each session of its workspace at it, until the client starts it again; buckle workspace set approval.sessionIdleMs changes a workspace\'s window from its next call.\n')
     }
     const refused = await settings(['set', 'approval-session-idle', '10'])
     expect(refused.exitCode).toBe(1)
@@ -153,33 +158,41 @@ describe('the idle window setting', () => {
 })
 
 describe('the activity store', () => {
-  it('reads the newest activity of any session, or the workspace\'s own row that asks and decisions touch', async () => {
+  const one = { sessionId: 'mcp', actor: 'agent:one' }
+  const two = { sessionId: 'mcp', actor: 'agent:two' }
+  const node = { sessionId: 'mcp' }
+
+  it('reads each session\'s own newest activity, under its actor: its calls\' starts and ends, its asks, and its decisions', async () => {
     const directory = scratch()
     const activity = await openHistoryActivity(directory)
-    expect(activity.latest()).toBeUndefined()
-    activity.observe({ session: 'chat-1', at: NOW, idleMs: MINUTE })
-    activity.observe({ session: 'chat-2', at: NOW + 5, idleMs: MINUTE })
-    expect(activity.latest()).toBe(NOW + 5)
-    activity.touch(NOW + 9)
-    activity.touch(NOW + 7)
-    expect(activity.latest()).toBe(NOW + 9)
+    expect(activity.latest(one)).toBeUndefined()
+    const turn = activity.observe({ session: 'mcp', holder: one, at: NOW, idleMs: MINUTE })
+    activity.observe({ session: 'mcp', holder: two, at: NOW + 5, idleMs: MINUTE })
+    expect([activity.latest(one), activity.latest(two), activity.latest(node)]).toEqual([NOW, NOW + 5, undefined])
+    activity.touch(one, NOW + 9)
+    activity.touch(one, NOW + 7)
+    activity.finish('mcp', undefined, turn, NOW + 8, node)
+    expect([activity.latest(one), activity.latest(two), activity.latest(node)]).toEqual([NOW + 9, NOW + 5, NOW + 8])
+    // A turn of history alone, as a checkpoint observes it, is no session's activity.
+    activity.observe({ session: 'rpc', at: NOW + 20, idleMs: MINUTE })
+    expect(activity.latest({ sessionId: 'rpc' })).toBeUndefined()
     await activity.close()
     const reopened = await openHistoryActivity(directory)
-    expect(reopened.latest()).toBe(NOW + 9)
+    expect([reopened.latest(one), reopened.latest(two)]).toEqual([NOW + 9, NOW + 5])
     await reopened.close()
   })
 
   it('counts a call\'s end whatever turn its session moved on to while it ran, so another process reads it', async () => {
     const directory = scratch()
     const activity = await openHistoryActivity(directory)
-    const long = activity.observe({ session: 'mcp', at: NOW, idleMs: MINUTE })
+    const long = activity.observe({ session: 'mcp', holder: one, at: NOW, idleMs: MINUTE })
     activity.start('mcp', undefined, long)
-    const short = activity.observe({ session: 'mcp', at: NOW + 2 * MINUTE, idleMs: MINUTE })
+    const short = activity.observe({ session: 'mcp', holder: one, at: NOW + 2 * MINUTE, idleMs: MINUTE })
     expect(short).not.toBe(long)
-    activity.finish('mcp', undefined, long, NOW + 20 * MINUTE)
+    activity.finish('mcp', undefined, long, NOW + 20 * MINUTE, one)
 
     const elsewhere = await openHistoryActivity(directory)
-    expect(elsewhere.latest()).toBe(NOW + 20 * MINUTE)
+    expect(elsewhere.latest(one)).toBe(NOW + 20 * MINUTE)
     await elsewhere.close()
     await activity.close()
   })
@@ -187,11 +200,11 @@ describe('the activity store', () => {
   it('says it was busy, not unreadable, where another process holds it past the wait', async () => {
     const directory = scratch()
     const activity = await openHistoryActivity(directory)
-    activity.touch(NOW)
+    activity.touch(one, NOW)
     const holder = new DatabaseSync(join(directory, 'activity.sqlite'))
     holder.exec('BEGIN EXCLUSIVE')
-    try { expect(() => activity.latest()).toThrow(ActivityBusyError) } finally { holder.exec('ROLLBACK'); holder.close() }
-    expect(activity.latest()).toBe(NOW)
+    try { expect(() => activity.latest(one)).toThrow(ActivityBusyError) } finally { holder.exec('ROLLBACK'); holder.close() }
+    expect(activity.latest(one)).toBe(NOW)
     await activity.close()
   })
 
@@ -202,12 +215,12 @@ describe('the activity store', () => {
     const holder = new DatabaseSync(join(directory, 'activity.sqlite'))
     holder.exec('PRAGMA busy_timeout = 0')
     holder.exec('BEGIN EXCLUSIVE')
-    for (let index = 0; index < 2; index++) activity.touch(NOW + index)
-    expect(warn.mock.calls.map(([message]) => message)).toEqual(['Workspace activity could not be recorded; its sessions may end at idle sooner than its window'])
+    for (let index = 0; index < 2; index++) activity.touch(one, NOW + index)
+    expect(warn.mock.calls.map(([message]) => message)).toEqual(['Session activity could not be recorded; the session may end at idle sooner than its window'])
     holder.exec('ROLLBACK')
-    activity.touch(NOW + 5)
+    activity.touch(one, NOW + 5)
     holder.exec('BEGIN EXCLUSIVE')
-    activity.touch(NOW + 6)
+    activity.touch(two, NOW + 6)
     holder.exec('ROLLBACK')
     holder.close()
     expect(warn).toHaveBeenCalledTimes(2)
@@ -219,9 +232,9 @@ describe('the activity store', () => {
     mkdirSync(join(directory, 'activity.sqlite'))
     vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const activity = await openHistoryActivity(directory)
-    activity.observe({ session: 'chat-1', at: NOW, idleMs: MINUTE })
-    activity.touch(NOW)
-    expect(() => activity.latest()).toThrow()
+    activity.observe({ session: 'chat-1', holder: { sessionId: 'chat-1' }, at: NOW, idleMs: MINUTE })
+    activity.touch({ sessionId: 'chat-1' }, NOW)
+    expect(() => activity.latest({ sessionId: 'chat-1' })).toThrow()
     await activity.close()
   })
 })
@@ -261,16 +274,17 @@ async function decided(service: ApprovalService, token: string, scope: 'once' | 
   expect(await service.answer({ decision: { token, approved, scope }, source: SOURCES.cli })).toMatchObject({ ok: true })
 }
 
-/** The idle check over the ledger, with the workspace's last activity `idleFor` ago and the marks in `marks`. */
-function idleCheck(input: { service: ApprovalService; marks: string; lastAt: () => number | undefined; now?: () => number }) {
+/** The idle check over the ledger, with each session's last activity as `lastAt` gives it and the marks in `marks`. */
+function idleCheck(input: { registry: ApprovalRegistry; service: ApprovalService; marks: string; lastAt: (session: GrantHolder) => number | undefined; now?: () => number }) {
   const now = input.now ?? Date.now
   const reads = { activity: 0, executing: 0 }
   const check = createSessionIdleCheck({
     workspaceId: WORKSPACE,
     idleMs: () => DEFAULT_SESSION_IDLE_MS,
-    lastActivity: () => { reads.activity++; return input.lastAt() },
-    executing: () => { reads.executing++; return executingInstances({ directory: input.marks, now: now() }) },
+    lastActivity: (session) => { reads.activity++; return input.lastAt(session) },
+    executing: () => { reads.executing++; return executingMarks({ directory: input.marks, now: now() }).flatMap(mark => mark.sessions) },
     runningHere: () => false,
+    held: () => input.registry.heldSessions(),
     sessions: input.service,
     now,
   })
@@ -279,6 +293,9 @@ function idleCheck(input: { service: ApprovalService; marks: string; lastAt: () 
 
 const sixteenMinutesAgo = () => Date.now() - 16 * MINUTE
 const ledgerOf = (approvals: string) => JSON.parse(readFileSync(approvals, 'utf8')) as { pending: Array<{ request: { token: string } }>; once: Array<{ token: string }>; resolved: Array<{ decision: { token: string }; grant?: { save: string } }> }
+const holders = (grants: ReadonlyArray<{ sessionId: string | null; actor: string | null }>) => grants.map(grant => [grant.sessionId, grant.actor])
+const ONE = { sessionId: 'mcp', actor: 'agent:one' }
+const TWO = { sessionId: 'mcp', actor: 'agent:two' }
 
 describe('an idle end', () => {
   it('ends the session approvals and lasting denials of every face, and keeps always grants', async () => {
@@ -289,8 +306,48 @@ describe('an idle end', () => {
     await decided(service, await asked(registry, faces[1]!, '/outside/kept'), 'always')
     expect(store.list()).toHaveLength(6)
 
-    await idleCheck({ service, marks, lastAt: sixteenMinutesAgo }).check.check()
+    await idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo }).check.check()
     expect(store.list().map(grant => [grant.scope, grant.subject])).toEqual([['always', '/outside/kept']])
+    await service.close()
+  })
+
+  it('ends each session after its own window: another caller\'s session under the same id, active within its window, keeps its grants, onces, and asks', async () => {
+    const { store, registry, service, marks } = setUp()
+    for (const caller of [ONE, TWO]) {
+      await decided(service, await asked(registry, caller, `/outside/${caller.actor}`), 'session')
+      await decided(service, await asked(registry, caller, `/outside/${caller.actor}/once`), 'once')
+      await asked(registry, caller, `/outside/${caller.actor}/held`)
+    }
+    const lastAt = (session: GrantHolder) => session.actor === TWO.actor ? Date.now() - 14 * MINUTE : Date.now() - 16 * MINUTE
+
+    await idleCheck({ registry, service, marks, lastAt }).check.check()
+    expect(holders(store.list())).toEqual([['mcp', 'agent:two']])
+    expect(registry.unspent('mcp').map(once => once.actor)).toEqual(['agent:two'])
+    expect(registry.pending().map(request => request.subject)).toEqual(['/outside/agent:two/held'])
+    await service.close()
+  })
+
+  it('keeps a session while one of its own tools runs, and ends another whose tools do not', async () => {
+    const { store, registry, service, marks } = setUp()
+    for (const caller of [ONE, TWO]) await decided(service, await asked(registry, caller, `/outside/${caller.actor}`), 'session')
+    const run = createExecutingMark({ directory: marks, workspaceId: WORKSPACE, instance: 'here' }).begin(ONE)
+
+    await idleCheck({ registry, service, marks, lastAt: () => Date.now() - 60 * MINUTE }).check.check()
+    expect(holders(store.list())).toEqual([['mcp', 'agent:one']])
+    run.end()
+    await service.close()
+  })
+
+  it('checks one session alone where a call names it, reading no other session\'s activity', async () => {
+    const { store, registry, service, marks } = setUp()
+    for (const caller of [ONE, TWO]) await decided(service, await asked(registry, caller, `/outside/${caller.actor}`), 'session')
+    const read: string[] = []
+    const { check } = idleCheck({ registry, service, marks, lastAt: (session) => { read.push(session.actor ?? ''); return sixteenMinutesAgo() } })
+
+    await check.check(TWO)
+    // Read once, then again under the approvals lock before it ends.
+    expect([...new Set(read)]).toEqual(['agent:two'])
+    expect(holders(store.list())).toEqual([['mcp', 'agent:one']])
     await service.close()
   })
 
@@ -303,7 +360,7 @@ describe('an idle end', () => {
     expect(await service.answer({ decision: { token: owed, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true, save: 'owed' })
     expect(registry.unspent('chat-1')).toHaveLength(2)
 
-    await idleCheck({ service, marks, lastAt: sixteenMinutesAgo }).check.check()
+    await idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo }).check.check()
     expect(registry.unspent('chat-1')).toEqual([])
     expect(ledgerOf(approvals).resolved.find(entry => entry.decision.token === owed)?.grant?.save).toBe('dropped')
     failing = false
@@ -318,7 +375,7 @@ describe('an idle end', () => {
     const [held] = (await service.request(call)).approvals
     expect(registry.pending()).toHaveLength(1)
 
-    await idleCheck({ service, marks, lastAt: sixteenMinutesAgo }).check.check()
+    await idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo }).check.check()
     expect(registry.pending()).toEqual([])
     expect(registry.departures([held!.token]).get(held!.token)).toEqual({ type: 'cancelled', reason: 'session_ended' })
     await vi.waitFor(() => expect(events.map(event => ({ type: event.type, reason: event.reason }))).toEqual([{ type: 'cancelled', reason: 'session_ended' }]))
@@ -332,40 +389,68 @@ describe('an idle end', () => {
     const registry = createApprovalRegistry(store, approvals, 15_000, { durableNotices: true })
     const token = await asked(registry, { sessionId: 'chat-1' }, '/outside/held')
 
-    expect(await registry.endSessions({ ending: { allSessions: true } })).toEqual([expect.objectContaining({ sessionId: 'chat-1', withdrawn: [token] })])
+    expect(await registry.endSessions({ ending: { sessions: [{ sessionId: 'chat-1' }] } })).toEqual([expect.objectContaining({ sessionId: 'chat-1', withdrawn: [token] })])
     expect(registry.pendingDeliveries().map(delivery => [delivery.notice.token, delivery.notice.event])).toEqual([[token, 'cancelled']])
     const elsewhere = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: WORKSPACE }), approvals, 15_000)
     expect(elsewhere.departures([token]).get(token)).toEqual({ type: 'cancelled', reason: 'session_ended' })
   })
 
-  it('records one end per session, with its cause and what it ended, and none where nothing ended', async () => {
+  it('ends the sessions named, each under its actor, or every caller\'s under one id where a face ends its own', async () => {
+    const { store, registry, service } = setUp()
+    for (const caller of [ONE, TWO, { sessionId: 'rpc', actor: 'agent:one' }]) await decided(service, await asked(registry, caller, `/outside/${caller.sessionId}/${caller.actor}`), 'session')
+
+    expect((await registry.endSessions({ ending: { sessions: [ONE] } }))?.map(session => [session.sessionId, session.actor])).toEqual([['mcp', 'agent:one']])
+    expect(holders(store.list())).toEqual([['mcp', 'agent:two'], ['rpc', 'agent:one']])
+    // Read again under the lock: a session `due` no longer names keeps everything, and where it names none, nothing ends.
+    expect(await registry.endSessions({ ending: { sessions: [ONE, TWO] }, due: session => session.actor !== TWO.actor })).toEqual([])
+    expect(await registry.endSessions({ ending: { sessions: [TWO] }, due: () => false })).toBeNull()
+    expect(holders(store.list())).toEqual([['mcp', 'agent:two'], ['rpc', 'agent:one']])
+    await decided(service, await asked(registry, ONE, '/outside/again'), 'session')
+    expect((await registry.endSessions({ ending: { sessionId: 'mcp' } }))?.map(session => session.actor)).toEqual(['agent:one', 'agent:two'])
+    expect(holders(store.list())).toEqual([['rpc', 'agent:one']])
+    await service.close()
+  })
+
+  it('lists the sessions that hold anything an end removes, each under its actor', async () => {
+    const { registry, service } = setUp()
+    await decided(service, await asked(registry, ONE, '/outside/a'), 'session')
+    await decided(service, await asked(registry, TWO, '/outside/b'), 'once')
+    await asked(registry, { sessionId: 'chat-1' }, '/outside/c')
+    await decided(service, await asked(registry, { sessionId: 'rpc', actor: 'agent:three' }, '/outside/d'), 'always')
+
+    expect(registry.heldSessions()).toEqual(expect.arrayContaining([ONE, TWO, { sessionId: 'chat-1' }]))
+    expect(registry.heldSessions()).toHaveLength(3)
+    await service.close()
+  })
+
+  it('records one end per session, with its actor, its cause, and what it ended, and none where nothing ended', async () => {
     const { registry, service, audit, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/b'), 'once')
-    await asked(registry, { sessionId: 'chat-2' }, '/outside/c')
-    const { check } = idleCheck({ service, marks, lastAt: sixteenMinutesAgo })
+    await asked(registry, ONE, '/outside/c')
+    const { check } = idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo })
 
     await check.check()
     const ended = audit.entries.filter(entry => entry.step === 'session_ended').map(entry => entry.fields)
     expect(ended).toEqual([
       { sessionId: 'chat-1', cause: 'idle', withdrawn: 0, onces: 1, owed: 0, grants: 1, denials: 0 },
-      { sessionId: 'chat-2', cause: 'idle', withdrawn: 1, onces: 0, owed: 0, grants: 0, denials: 0 },
+      { sessionId: 'mcp', actor: 'agent:one', cause: 'idle', withdrawn: 1, onces: 0, owed: 0, grants: 0, denials: 0 },
     ])
-    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: sixteenMinutesAgo, executing: () => [], runningHere: () => false, sessions: service }).check()
+    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, lastActivity: sixteenMinutesAgo, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
     expect(audit.entries.filter(entry => entry.step === 'session_ended')).toHaveLength(2)
     await service.close()
   })
 
-  it('ends nothing where a tool started in another process between its first read and the approvals lock', async () => {
+  it('ends nothing where one of the session\'s tools started in another process between its first read and the approvals lock', async () => {
     const { store, registry, service, marks, approvals } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     let clock = Date.now()
-    const { check, reads } = idleCheck({ service, marks, lastAt: () => clock - 16 * MINUTE, now: () => clock })
+    const { check, reads } = idleCheck({ registry, service, marks, lastAt: () => clock - 16 * MINUTE, now: () => clock })
     const holder = await holdLockInProcess(`${approvals}.lock.sqlite`)
 
     const sweeping = check.check()
     await vi.waitFor(() => expect(reads.executing).toBe(1))
-    const run = createExecutingMark({ directory: marks, workspaceId: WORKSPACE, instance: 'other' }).begin()
+    const run = createExecutingMark({ directory: marks, workspaceId: WORKSPACE, instance: 'other' }).begin({ sessionId: 'chat-1' })
     await killHolder(holder)
     await sweeping
     expect(reads.executing).toBe(2)
@@ -378,15 +463,16 @@ describe('an idle end', () => {
     await service.close()
   }, 30_000)
 
-  it('keeps every session while a tool in a second process runs longer than the window, and for the window after it stopped', async () => {
+  it('keeps a session while its tool in a second process runs longer than the window, and for the window after it stopped', async () => {
     const { store, registry, service, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
-    const second = await runningElsewhere(marks)
+    await decided(service, await asked(registry, { sessionId: 'chat-2' }, '/outside/b'), 'session')
+    const second = await runningElsewhere(marks, 'chat-1')
     let clock = Date.now()
-    const { check } = idleCheck({ service, marks, lastAt: () => clock - 60 * MINUTE, now: () => clock })
+    const { check } = idleCheck({ registry, service, marks, lastAt: () => clock - 60 * MINUTE, now: () => clock })
 
     await check.check()
-    expect(store.list()).toHaveLength(1)
+    expect(store.list().map(grant => grant.sessionId)).toEqual(['chat-1'])
     const stoppedAt = await second.kill()
     clock = stoppedAt + DEFAULT_SESSION_IDLE_MS - ACTIVE_WORK_FRESH_MS
     await check.check()
@@ -404,23 +490,35 @@ describe('an idle end', () => {
     let clock = Date.now()
     let failing = true
     const check = createSessionIdleCheck({
-      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingInstances({ directory: marks }), runningHere: () => false, sessions: service, now: () => clock,
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions), runningHere: () => false, held: () => registry.heldSessions(), sessions: service, now: () => clock,
       lastActivity: () => { if (failing) throw new Error('SQLITE_IOERR'); return clock },
     })
-    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
 
     await check.check()
     expect(store.list()).toHaveLength(1)
-    expect(check.sessionApprovalsSuspended()).toBe(true)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(true)
     expect(warned).toHaveBeenCalledWith(expect.stringContaining('activity.sqlite'), expect.objectContaining({ workspaceId: WORKSPACE }))
     clock += MINUTE
     await check.check()
-    expect(check.sessionApprovalsSuspended()).toBe(true)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(true)
     expect(warned).toHaveBeenCalledOnce()
 
     failing = false
     await check.check()
-    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
+    await service.close()
+  })
+
+  it('suspends the approvals of the session whose activity cannot be read alone, and ends another that idled', async () => {
+    const { store, registry, service, marks } = setUp()
+    for (const caller of [ONE, TWO]) await decided(service, await asked(registry, caller, `/outside/${caller.actor}`), 'session')
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const { check } = idleCheck({ registry, service, marks, lastAt: (session) => { if (session.actor === ONE.actor) throw new Error('SQLITE_IOERR'); return sixteenMinutesAgo() } })
+
+    await check.check()
+    expect(holders(store.list())).toEqual([['mcp', 'agent:one']])
+    expect([check.sessionApprovalsSuspended(ONE), check.sessionApprovalsSuspended(TWO)]).toEqual([true, false])
     await service.close()
   })
 
@@ -429,13 +527,13 @@ describe('an idle end', () => {
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     const check = createSessionIdleCheck({
-      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingInstances({ directory: marks }), runningHere: () => false, sessions: service,
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions), runningHere: () => false, held: () => registry.heldSessions(), sessions: service,
       lastActivity: () => { throw new ActivityBusyError() },
     })
 
     await check.check()
     expect(store.list()).toHaveLength(1)
-    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
     expect(warned).not.toHaveBeenCalled()
     await service.close()
   })
@@ -444,11 +542,11 @@ describe('an idle end', () => {
     const { store, registry, service, marks, approvals } = setUp({ lockDeadlineMs: 100 })
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
-    const { check } = idleCheck({ service, marks, lastAt: sixteenMinutesAgo })
+    const { check } = idleCheck({ registry, service, marks, lastAt: sixteenMinutesAgo })
     const holder = await holdLockInProcess(`${approvals}.lock.sqlite`)
     try { await check.check() } finally { await killHolder(holder) }
     expect(store.list()).toHaveLength(1)
-    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(check.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(false)
     expect(warned).not.toHaveBeenCalled()
 
     await check.check()
@@ -456,18 +554,18 @@ describe('an idle end', () => {
     await service.close()
   }, 30_000)
 
-  it('lets activity this process sees after a gap wait for a check, which reads the gap and ends the sessions', async () => {
+  it('lets activity this process sees after a gap wait for a check, which reads the gap and ends the session', async () => {
     const { store, registry, service, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     let clock = Date.now()
     const lastAt = clock
-    const { check, reads } = idleCheck({ service, marks, lastAt: () => lastAt, now: () => clock })
+    const { check, reads } = idleCheck({ registry, service, marks, lastAt: () => lastAt, now: () => clock })
     await check.check()
     expect(reads.activity).toBe(1)
 
     clock += DEFAULT_SESSION_IDLE_MS + 1
-    check.saw()
-    await check.check()
+    check.saw({ sessionId: 'chat-1' })
+    await check.check({ sessionId: 'chat-1' })
     expect(reads.activity).toBeGreaterThan(1)
     expect(store.list()).toEqual([])
     await service.close()
@@ -477,24 +575,24 @@ describe('an idle end', () => {
     const { store, registry, service } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const lastActivity = vi.fn(sixteenMinutesAgo)
-    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => 0, lastActivity, executing: () => [], runningHere: () => false, sessions: service }).check()
+    await createSessionIdleCheck({ workspaceId: WORKSPACE, idleMs: () => 0, lastActivity, executing: () => [], runningHere: () => false, held: () => registry.heldSessions(), sessions: service }).check()
     expect(store.list()).toHaveLength(1)
     expect(lastActivity).not.toHaveBeenCalled()
     await service.close()
   })
 })
 
-/** A second process that holds an executing mark until it is killed; `kill` resolves with when it stopped. */
-async function runningElsewhere(directory: string): Promise<{ kill(): Promise<number> }> {
+/** A second process that holds an executing mark for `sessionId` until it is killed; `kill` resolves with when it stopped. */
+async function runningElsewhere(directory: string, sessionId: string): Promise<{ kill(): Promise<number> }> {
   mkdirSync(directory, { recursive: true, mode: 0o700 })
   const script = join(dirname(directory), `running-elsewhere-${process.pid}.mts`)
   writeFileSync(script, `
     import { createExecutingMark } from ${JSON.stringify(new URL('../common/services/workspaces/active-work.ts', import.meta.url).href)};
-    createExecutingMark({ directory: process.argv[2], workspaceId: 'w-1', instance: 'second' }).begin();
+    createExecutingMark({ directory: process.argv[2], workspaceId: 'w-1', instance: 'second' }).begin({ sessionId: process.argv[3] });
     setInterval(() => {}, 60_000);
     process.stdout.write('running\\n');
   `)
-  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, directory], { stdio: ['ignore', 'pipe', 'ignore'] })
+  const child = spawn(process.execPath, ['--import', import.meta.resolve('tsx'), script, directory, sessionId], { stdio: ['ignore', 'pipe', 'ignore'] })
   const exited = new Promise<void>(resolve => child.once('exit', () => resolve()))
   await new Promise<void>((resolve, reject) => {
     let output = ''

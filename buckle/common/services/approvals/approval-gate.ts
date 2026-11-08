@@ -32,8 +32,8 @@ export interface GateClearance {
 /**
  * The one way a call meets approvals: its last check spends its onces and claims its execution under the ledger's lock,
  * its grants serve the actor that asked, and its asks are recorded and waited on. A once and a session grant serve only
- * the actor whose call asked. While `sessionApprovalsSuspended` says so, as while the workspace's activity cannot be read,
- * no session approval clears a call; a denial binds whatever.
+ * the actor whose call asked. While `sessionApprovalsSuspended` says so of the call's session, as while its activity cannot
+ * be read, none of its session approvals clears a call; a denial binds whatever.
  */
 export interface ApprovalGate {
   clear(input: GateCheck): Promise<GateClearance>
@@ -48,7 +48,7 @@ export interface ApprovalGate {
   unspent(sessionId: string): UnspentOnce[]
 }
 
-export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: LedgerGrants; service: ApprovalService; sessionApprovalsSuspended: () => boolean }): ApprovalGate {
+export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: LedgerGrants; service: ApprovalService; sessionApprovalsSuspended: (session: GrantHolder) => boolean }): ApprovalGate {
   const { ledger, grants, service, sessionApprovalsSuspended } = input
   return {
     async clear(call) {
@@ -62,14 +62,20 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Le
         ...(call.holds === undefined ? {} : { holds: call.holds }),
         check: (subjects) => {
           relied = subjects
-          return call.check(grantLookup({ store: grants, holder, consumed: subjects, sessionApprovalsSuspended: sessionApprovalsSuspended() }))
+          return call.check(grantLookup({ store: grants, holder, consumed: subjects, sessionApprovalsSuspended: sessionApprovalsSuspended(holder) }))
         },
         spent: (deciders) => { decidedBy = deciders },
       })
       return { outcome, relied, ...(decidedBy === undefined ? {} : { decidedBy }) }
     },
-    grants: ({ consumed, ...holder }) => grantLookup({ store: grants, holder: holderOf(holder), consumed, sessionApprovalsSuspended: sessionApprovalsSuspended() }),
-    standing: holder => standingGrants(grants, holderOf(holder), sessionApprovalsSuspended()),
+    grants: ({ consumed, ...holder }) => {
+      const session = holderOf(holder)
+      return grantLookup({ store: grants, holder: session, consumed, sessionApprovalsSuspended: sessionApprovalsSuspended(session) })
+    },
+    standing: (holder) => {
+      const session = holderOf(holder)
+      return standingGrants(grants, session, sessionApprovalsSuspended(session))
+    },
     ask: request => service.request(request),
     wasDenied: tokens => ledger.wasDenied(tokens),
     withdraw: tokens => service.withdraw(tokens),

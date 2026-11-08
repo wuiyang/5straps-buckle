@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createOperationScope, runInScope } from '@5straps/runtime'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { grantsPath, type BuckleConfig } from '../common/runtime/config.js'
@@ -13,7 +14,7 @@ import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
-// Session end at idle through a workspace runtime. The Date clock is faked before a runtime
+// Session end at idle through a workspace runtime: each session, its id under its caller, on its own window. The Date clock is faked before a runtime
 // opens, so the history's activity store, the grants, and the idle check read one clock, which runs on with real time
 // and which a test steps past the window; timers stay real.
 
@@ -79,7 +80,40 @@ function past(window: number = 15 * MINUTE): void {
 
 const sessionEnds = async (runtime: CoreRuntime) => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_session_ended')
 
+/** Runs `run` as the caller its transport authenticated, as HTTP MCP runs each token's calls. */
+function as<T>(actor: string, run: () => Promise<T>): Promise<T> {
+  return runInScope(createOperationScope({ owner: Symbol('session-idle-runtime'), context: { actor } }), run)
+}
+
 describe('a workspace runtime', () => {
+  it('ends one HTTP MCP caller\'s session after its own window, while another caller active meanwhile keeps its own', async () => {
+    clock()
+    const runtime = await open(configOf())
+    await as('agent:one', () => approvedForSession(runtime, 'mcp', 'one/a.md'))
+    await as('agent:two', () => approvedForSession(runtime, 'mcp', 'one/a.md'))
+    past(10 * MINUTE)
+    expect(await as('agent:two', () => write(runtime, 'mcp', 'one/a.md'))).toMatchObject({ outcome: 'ok' })
+    past(5 * MINUTE)
+
+    expect(await as('agent:one', () => write(runtime, 'mcp', 'one/a.md'))).toMatchObject({ outcome: 'approval_required' })
+    expect(await as('agent:two', () => write(runtime, 'mcp', 'one/a.md'))).toMatchObject({ outcome: 'ok' })
+    expect(runtime.grants.list().map(grant => grant.actor)).toEqual(['agent:two'])
+    expect((await sessionEnds(runtime)).map(entry => [entry.sessionId, entry.args])).toEqual([['mcp', expect.objectContaining({ actor: 'agent:one', cause: 'idle', grants: 1 })]])
+  }, 30_000)
+
+  it('ends at its sweep only the sessions of the workspace idle past their own window', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], shouldAdvanceTime: true })
+    const runtime = await open(configOf())
+    await approvedForSession(runtime, 'chat-1', 'one/a.md')
+    past(10 * MINUTE)
+    await approvedForSession(runtime, 'chat-2', 'one/a.md')
+    past(5 * MINUTE)
+
+    await vi.advanceTimersByTimeAsync(SESSION_SWEEP_MS)
+    await vi.waitFor(() => expect(runtime.grants.list().map(grant => grant.sessionId)).toEqual(['chat-2']))
+    expect((await sessionEnds(runtime)).map(entry => entry.sessionId)).toEqual(['chat-1'])
+  }, 30_000)
+
   it('ends a session idle past the window before a CLI call, which asks again, and records the end', async () => {
     clock()
     const config = configOf()
@@ -199,8 +233,8 @@ describe('a workspace runtime', () => {
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     vi.spyOn(logger, 'error').mockImplementation(() => {})
 
-    await runtime.sessionIdle.check()
-    expect(runtime.sessionIdle.sessionApprovalsSuspended()).toBe(true)
+    await runtime.sessionIdle.check({ sessionId: 'chat-1' })
+    expect(runtime.sessionIdle.sessionApprovalsSuspended({ sessionId: 'chat-1' })).toBe(true)
     expect(warned).toHaveBeenCalledWith(expect.stringContaining('as grants.json cannot be read'), expect.objectContaining({ store: 'grants.json' }))
   }, 30_000)
 

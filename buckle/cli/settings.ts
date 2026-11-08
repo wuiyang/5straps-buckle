@@ -185,8 +185,8 @@ async function write(context: SettingsContext, name: string, raw: string | null)
 // and no node restart restarts it.
 const AFTER_CHANGE: ReadonlyMap<string, string> = new Map([
   ['BUCKLE_APPROVAL_FORMS', 'A buckle mcp an MCP client started takes the new default only when the client starts it again; buckle workspace set approval.forms off stops forms in a workspace at once.'],
-  // Each process ends every session of its workspace at its own window, so one left running ends them early for all.
-  ['BUCKLE_APPROVAL_SESSION_IDLE_MS', 'A buckle mcp an MCP client started keeps the window it started with, and ends every session of its workspace at it, until the client starts it again; buckle workspace set approval.sessionIdleMs changes a workspace\'s window from its next call.'],
+  // Each process ends each session of its workspace at its own window, so one left running ends them early for all.
+  ['BUCKLE_APPROVAL_SESSION_IDLE_MS', 'A buckle mcp an MCP client started keeps the window it started with, and ends each session of its workspace at it, until the client starts it again; buckle workspace set approval.sessionIdleMs changes a workspace\'s window from its next call.'],
 ])
 
 /**

@@ -208,7 +208,9 @@ export function createInvoker(options: InvokerOptions): Invoker {
       const scriptMasked = (response: InvokeResponse): InvokeResponse => (scriptSecrets ?? ownSecrets)?.json(response) ?? response
       let replayed = false
       let failureCode: string | undefined
-      const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(sessionId, request.context?.stageId) : undefined
+      // Whose grants every check of this call reads, taken once: a tool's mid-call check may run outside the call's context.
+      const holder = holderOf(sessionId)
+      const activityTurn = sessionId.length <= MAX_SESSION_ID ? options.history?.startCall(holder, request.context?.stageId) : undefined
       try {
         // No tool takes such a name, and an attempt under it would read as one of Buckle's own records.
         if (isRecordTool(request.tool)) {
@@ -236,8 +238,6 @@ export function createInvoker(options: InvokerOptions): Invoker {
         // The caller leaving or the runtime shutting down: either stops a running tool.
         const stop = anySignal(signal, options.shutdown)
         // One entry per rule and subject a call's dangerously-allowed uses name, however often it meets them (review L12 of B20-B22).
-        // Whose grants every check of this call reads, taken once: a tool's mid-call check may run outside the call's context.
-        const holder = holderOf(sessionId)
         const grantUses = grantUseRecorder({ gate: options.approvals, holder })
         const auditUses = useAuditor({ options, request, sessionId, grantUses })
         const answerEarlier = async (earlier: Earlier): Promise<InvokeResponse> => {
@@ -320,7 +320,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
               const changed = changedCode({ options, judgment, call: { effects, tool: request.tool, args: request.args, fromCopy } })
               if (changed.length > 0) throw new CodeChangedError(changed)
               markStarted()
-              executing = options.executing.begin()
+              executing = options.executing.begin(holder)
             }
             const execute = async () => {
               if (!prepared.managesHistory) beginRun()
@@ -440,7 +440,7 @@ export function createInvoker(options: InvokerOptions): Invoker {
         throw error
       } finally {
         logCallFeedback({ tool: request.tool, knownTool: options.registry.has(request.tool), ...(feedback ? { response: feedback } : {}), ...(failureCode ? { code: failureCode } : {}), durationMs: performance.now() - startedAt, nested: via !== undefined, replayed })
-        if (activityTurn) options.history?.finishCall(sessionId, request.context?.stageId, activityTurn)
+        if (activityTurn) options.history?.finishCall(holder, request.context?.stageId, activityTurn)
         ownSecrets?.drop()
       }
     },
@@ -970,8 +970,8 @@ function denied(request: InvokeRequest, message: string): InvokeResponse {
   }
 }
 
-/** Whose grants a call reads: its session, under the actor its transport authenticated. */
-function holderOf(sessionId: string): GrantHolder {
+/** Whose grants a call reads, and the session it counts as activity of: its session, under the actor its transport authenticated. */
+export function holderOf(sessionId: string): GrantHolder {
   const actor = useScopeSafe()?.context.actor
   return { sessionId, ...(actor === undefined ? {} : { actor }) }
 }

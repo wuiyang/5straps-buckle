@@ -45,7 +45,7 @@ export const NODE_SETTINGS: readonly NodeSetting[] = [
   { key: 'BUCKLE_APPROVAL_TIMEOUT_MS', alias: 'approval-wait', kind: 'approval-wait', fallback: '15000', workspace: { key: 'approvalWaitMs', change: 'buckle workspace set approvalWaitMs <milliseconds>' } },
   // MCP form approvals: every workspace's default where its own settings hold none.
   { key: 'BUCKLE_APPROVAL_FORMS', alias: 'approval-forms', kind: 'boolean', fallback: 'false', workspace: { key: 'approval.forms', change: 'buckle workspace set approval.forms on|off' } },
-  // How long a workspace may go without activity before its sessions end, every workspace's where its own settings hold none.
+  // How long a session may go without activity of its own before it ends, in every workspace whose own settings hold none.
   { key: 'BUCKLE_APPROVAL_SESSION_IDLE_MS', alias: 'approval-session-idle', kind: 'session-idle', fallback: String(DEFAULT_SESSION_IDLE_MS), workspace: { key: 'approval.sessionIdleMs', change: 'buckle workspace set approval.sessionIdleMs <milliseconds>' } },
   // The decision AI (D91): every workspace's defaults where its own settings hold none. Its key and base URL are the node's
   // alone, left to a hand edit, and never listed here.

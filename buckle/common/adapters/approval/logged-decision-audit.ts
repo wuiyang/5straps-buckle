@@ -85,10 +85,10 @@ function decisionEnding(decision: AuditedDecision, ending: RecordEnding): Decisi
 
 function sessionEndEntry(workspaceId: string, end: AuditedSessionEnd): ActionLogEntry {
   const auditId = randomUUID()
-  const { sessionId, ...counts } = end
+  const { sessionId, actor, ...counts } = end
   return {
     auditId, workspaceId, event: 'result', at: new Date().toISOString(), requestId: auditId, sessionId: sessionId.slice(0, MAX_LOGGED_ID),
-    tool: SESSION_END_TOOL, outcome: 'ok', durationMs: 0, effects: [], args: counts,
+    tool: SESSION_END_TOOL, outcome: 'ok', durationMs: 0, effects: [], args: { ...(actor === undefined ? {} : { actor: actor.slice(0, MAX_LOGGED_ID) }), ...counts },
   }
 }
 

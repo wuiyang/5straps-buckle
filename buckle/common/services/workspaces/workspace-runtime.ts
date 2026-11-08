@@ -87,7 +87,7 @@ import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapter
 import { createTerminalBackend } from '../../adapters/approval/terminal-backend.js'
 import { createApprovalNotices, type ApprovalNotices } from '../approvals/approval-notices.js'
 import { createExecutionBudget, createExecutions, requestFingerprint, type ExecutionBudget } from '../invocation/executions.js'
-import { createInvoker, InvocationsClosedError, recordRefusedCall, type InvokeInput } from '../invocation/invoker.js'
+import { createInvoker, holderOf, InvocationsClosedError, recordRefusedCall, type InvokeInput } from '../invocation/invoker.js'
 import { createAuditHealth } from '../audit/audit-health.js'
 import { logger } from '../../runtime/log.js'
 import { auditOperation } from '../audit/audit-operation.js'
@@ -96,7 +96,7 @@ import { workspaceUntrusted, type NodeRoots } from './node-roots.js'
 import { mountRows, openSettingsFile, ownMount, policySources, resolveSettings, settingsPath, scopeOf, withMount, withPolicy, WorkspaceSettingsSchema, type PolicySources, type ResolvedSettings, type WorkspaceSettings } from './workspace-settings.js'
 import type { MountRow } from '../../domain/mount-table.js'
 import { WorkspaceError } from './registry.js'
-import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingInstances } from './active-work.js'
+import { activeWorkDirectory, createActiveWorkMark, createExecutingMark, executingMarks } from './active-work.js'
 import type { SecretSettings } from '../secrets/places.js'
 import { logCallFeedback } from '../invocation/call-feedback.js'
 import { unavailableToolReason } from '../invocation/owner-remediation.js'
@@ -313,7 +313,7 @@ export interface CoreRuntime extends BuckleRuntime {
   approvals: ApprovalRegistry
   /** The single answerer: every ask waits here and every verdict is recorded here. */
   approvalService: ApprovalService
-  /** Ends the workspace's sessions once it idles past its window: before each call, and once a minute while open. */
+  /** Ends each session once it idles past its window: before each of its calls, and every such session once a minute while open. */
   sessionIdle: SessionIdleCheck
 }
 
@@ -389,10 +389,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   const sessionIdle = createSessionIdleCheck({
     workspaceId,
     idleMs: () => config.approvalSessionIdleMs,
-    lastActivity: () => history.lastActivity(),
-    sessionGrantMade: () => newestSessionGrant(grantFile.list()),
-    executing: () => executingInstances({ directory: marks }),
-    runningHere: () => executing.running(),
+    lastActivity: session => history.lastActivity(session),
+    sessionGrantMade: session => newestSessionGrant(grantFile.list(), session),
+    executing: () => executingMarks({ directory: marks }).flatMap(mark => mark.sessions),
+    runningHere: session => executing.running(session),
+    held: () => approvals.heldSessions(),
     sessions: { endSessions: end => approvalService.endSessions(end) },
   })
   const approvals = createApprovalRegistry(grantFile, approvalsPath(config), config.approvalTimeoutMs, {
@@ -400,7 +401,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     onExpired: requests => notices?.expired(requests),
     onNoticeQueued: () => { void notices?.flush() },
     live: () => ({ forms: formsInForce() }),
-    onActivity: () => { history.touchActivity(); sessionIdle.saw() },
+    onActivity: (session) => { history.touchActivity(session); sessionIdle.saw(session) },
   })
   // Every revoke goes through the ledger, so a decision's owed mark never writes a revoked grant again.
   const { grants } = approvals
@@ -427,13 +428,13 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
     // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
-    idleCheck: () => sessionIdle.check(),
+    idleCheck: session => sessionIdle.check(session),
   })
   input.onApprovalCleanup(() => approvalService.close())
   // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open.
   const face = input.faceSession
   if (face?.endsAtOpen) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtOpen })
-  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionApprovalsSuspended: () => sessionIdle.sessionApprovalsSuspended() })
+  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionApprovalsSuspended: session => sessionIdle.sessionApprovalsSuspended(session) })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
@@ -665,10 +666,11 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
         }
         throw error
       }
-      // Before the call's attempt entry, so a session that idled ends before the call reads its grants.
-      await sessionIdle.check()
-      sessionIdle.saw()
-      try { return await invokeNow(call, inForce()) } finally { sessionIdle.saw() }
+      // Before the call's attempt entry, so its session, where it idled, ends before the call reads its grants.
+      const session = holderOf(call.sessionId)
+      await sessionIdle.check(session)
+      sessionIdle.saw(session)
+      try { return await invokeNow(call, inForce()) } finally { sessionIdle.saw(session) }
     },
 
     async cancelInvocations() {

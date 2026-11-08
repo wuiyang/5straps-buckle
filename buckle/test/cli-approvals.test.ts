@@ -43,7 +43,7 @@ async function pendingRequest(config: BuckleConfig): Promise<string> {
     tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
     asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
   })).requests
-  await recordActivity(config)
+  await recordActivity(config, { sessionId: 'chat-1' })
   return request!.token
 }
 
@@ -191,7 +191,7 @@ async function networkRequest(config: BuckleConfig, subject = 'app.localhost:300
     tool: 'web_fetch', sessionId: 'chat-1', call: { arguments: { url: `http://${subject}/` }, cwd: '/workspace', description: `Fetch "http://${subject}/"`, effects: [`network http://${subject}/`], complete: true },
     asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'network_egress', subject, reason: 'resolves to this machine', offeredScopes: ['once', 'session', 'always'] }],
   })).requests
-  await recordActivity(config)
+  await recordActivity(config, { sessionId: 'chat-1' })
   return request!.token
 }
 
@@ -402,7 +402,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
   /** An ask as a build before D17 left it: the request without its whole call. */
   async function preBuildRequest(config: BuckleConfig): Promise<string> {
     const [request] = (await registry(config).ask({ tool: 'fs_write', sessionId: 'chat-1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/old.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }] })).requests
-    await recordActivity(config)
+    await recordActivity(config, { sessionId: 'chat-1' })
     return request!.token
   }
   const pendingTokens = (config: BuckleConfig) => registry(config).pending().map(request => request.token)
