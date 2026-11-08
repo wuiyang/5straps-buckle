@@ -69,3 +69,12 @@ A node with no terminal logs `Approval pending` for each ask it cannot put to an
 tool, the rule, the scopes, the workspace, and the command that shows the action, never its
 subject; [known limits](../caveats/known-limits-05.md#a-serve-at-a-terminal) lists what the console does not
 yet do.
+
+### Lines that cannot be written
+
+These lines never hold up a call or an answer. Each Buckle process holds at most 30 of them, waiting
+or being written, and when another arrives, the oldest waiting one is dropped. A write that fails is
+tried again after 250 ms, 1 s, and 4 s, and then its line is dropped too. The first drop prints one
+`Log events dropped` warning on stderr, as JSON. Once writing works again, a `log events dropped`
+line goes first, with the count and the time span (`dropped`, `firstAt`, `lastAt`). A node that
+stops waits 2 seconds for its last lines, then prints on stderr how many it left unwritten.

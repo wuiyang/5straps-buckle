@@ -73,7 +73,8 @@ level would, in your local time with a date line when the day changes; piped, or
 `-n` counts the lines it shows, so the lines it hides, a request's second line among them, do not
 use up the count; piped, it counts stored lines. It never reads that setting from `buckle.env`,
 and the startup and shutdown steps, correlation ids, and the stack of any error short of fatal show
-only in the stored lines.
+only in the stored lines. A line the file cannot take in time is dropped and counted
+([how](approvals-02.md#lines-that-cannot-be-written)).
 
 `buckle service status` shows the definition and whether it starts at login, the running node's pid
 and address, whether `/health` and `/health/ready` answer, the running version against the

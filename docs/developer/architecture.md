@@ -8,7 +8,7 @@ inside `buckle/` unless they start with `packages/`.
 | Path | Package | Role |
 |---|---|---|
 | `packages/protocol/` | `@5straps/protocol` | Zod schemas for everything on the wire: invoke requests and responses, approvals and grants, the workspace policy, the manifest, action reports, signed requests, and sealed envelopes. Depends on `zod` alone. |
-| `packages/runtime/` | `@5straps/runtime` | Runtime primitives: a runtime owner that starts services and closes them in stages, async operation scopes, the CLI interaction channel, the JSON logger with credential redaction, SQLite and file locks (`@5straps/runtime/sqlite`), and Nitro adapters (`@5straps/runtime/nitro`). |
+| `packages/runtime/` | `@5straps/runtime` | Runtime primitives: a runtime owner that starts services and closes them in stages, async operation scopes, the CLI interaction channel, the JSON logger with credential redaction, the bounded log queue whose one budget every log of a process can share, SQLite and file locks (`@5straps/runtime/sqlite`), and Nitro adapters (`@5straps/runtime/nitro`). |
 | `buckle/` | `@5straps/buckle` | The `buckle` binary: the CLI, the MCP server, and the HTTP server. Depends on the other two. |
 
 ## Layers inside buckle/
