@@ -31,6 +31,16 @@ save states and reasons.
   terminal, `buckle approve` prints the warning and the commands and exits 5 (`cli/exit-codes.ts`);
   its `cli_approve` result still reads `ok` where the decision applied. `--watch` shows a lasting
   denial left unsaved again at its next poll.
+- **The MCP forms:** `mcp/forms-backend.ts` answers with the tokens the call spends and each
+  decision `unsavedOf` reads as unsaved; `mcp/server.ts` then returns `saveForms`, one form per
+  decision under `save:<token>`, retry or skip, before it invokes, so the call's once stays unspent.
+  The backend keeps each question with the caller it was drawn for, and reads a `save:` answer only
+  from that caller and only for a form it drew; an approval form's answer naming neither `approve`
+  nor `action` decides nothing. It runs `settleUnsaved` once: an accepted `retry` or `skip`, a
+  decline as a skip, and a cancel as leaving it, with no further form where the retry fails again.
+  Each step goes through `host.decide` or `host.skipSave` with the transport's sender, so the live
+  forms setting and the caller check meet it. The call sent again joins the first call's ask by
+  the resend join, so it runs once. The ending goes to `host.log`.
 - **The setup POST:** an owed approval answers `grantOwed` and `saveError`; a decision refusal
   answers 409 with its `code`, and `saveError` for `grant_unsaved`, which `server/error.ts` writes
   beside `error`. `buckle client approve` words the warning from them and exits 5.

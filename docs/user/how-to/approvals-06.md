@@ -27,7 +27,9 @@ terminal does. Your answer travels back with the same call sent again, and decid
 form grants the ask's own subject alone: a folder and its subfolders, or a host pattern, are
 granted at the node.
 
-- **Over stdio:** `once`, `session`, or `always`, floor asks included.
+- **Over stdio:** `once`, `session`, or `always`, floor asks included. Where a `session` or
+  `always` answer's grant cannot be saved, a save form asks to retry or skip it before the call
+  runs ([when a grant cannot be saved](approvals-05.md)).
 - **Over HTTP:** `once` alone, and no floor ask: `sudo`, the destructive list, and the file floor.
   Anything holding the agent token can send an answer there, so a floor ask's form only denies,
   and a form names the serve terminal and the `buckle approve` command for what it leaves out.

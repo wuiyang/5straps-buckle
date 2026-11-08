@@ -16,7 +16,9 @@ opened does.
 the call's `inputResponses` to the forms with the transport's caller, and, for a client that
 declares form elicitation, answers an ask with `input_required` and one form per ask at once,
 instead of holding the call. The client sends the call again with its answers, which joins the
-first call's ask by the resend join, so the call runs once.
+first call's ask by the resend join, so the call runs once. Where an answer's grant did not save,
+the face returns a save form first and invokes nothing ([grant save
+routes](approval-backend-03.md#each-route)); under today's rights an HTTP answer saves nothing.
 
 - **A 2026-07-28 client:** declares its capabilities in every request's `_meta` envelope, which the
   first capability reader takes. Claude Code's HTTP client is one ([the
@@ -70,4 +72,7 @@ path reaches it.
   plays the round itself; `once` alone, a floor ask denied only, another token's answer refused, a
   2025-era client's relay text, and the setting off.
 - `test/http/mcp-http.test.ts`: the same round on the real `/mcp` route, under the agent token.
-- `test/forms-backend.test.ts`: the forms for each reach, and the reach and floor mark core hands.
+- `test/forms-backend.test.ts`: the forms for each reach, the reach and floor mark core hands, and
+  the save form's answers.
+- `test/mcp-save-form.test.ts` and `test/mcp-http-save-form.test.ts`: the save form over stdio,
+  and over HTTP with that row changed for the test alone.
