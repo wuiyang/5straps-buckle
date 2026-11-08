@@ -12,6 +12,7 @@ import { reviewableArguments } from '../../common/domain/redact.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // B24, approval-proofs.md: the node signs each waiting ask as a challenge with its own key; a person's
 // client verifies it with the node key it pinned, shows the raw action from it, and signs a decision
@@ -212,7 +213,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
 
     // Review item 6 of the proof-of-possession fixes: the decision's entry says what the key decided, on
     // which challenge, for which rule and subject; the call that spent it names the key that decided it.
-    const entries = buckle.runtime.actions.read(200)
+    const entries = await auditEntries(buckle.runtime.actions, 200)
     const decision = entries.find(entry => entry.tool === 'setup_post_approvals' && entry.event === 'result')
     expect(decision).toMatchObject({ actorId: `key:${owner.keyId}`, args: { token, approved: true, scope: 'once', challenge: item!.digest, rule: 'write_scope', subject: buckle.root } })
     const spent = entries.filter(entry => entry.tool === 'fs_write' && entry.event === 'result' && entry.requestId === 'proof-1').at(-1)
@@ -224,7 +225,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     const token = await ask(buckle, write(buckle.root, 'proof-deny'))
     const [item] = (await challenges(buckle)).challenges
     expect((await decide(buckle, { token, approved: false, scope: 'once', challenge: item!.digest }).send()).status).toBe(200)
-    const decision = buckle.runtime.actions.read(200).find(entry => entry.tool === 'setup_post_approvals' && entry.event === 'result')
+    const decision = (await auditEntries(buckle.runtime.actions, 200)).find(entry => entry.tool === 'setup_post_approvals' && entry.event === 'result')
     expect(decision).toMatchObject({ actorId: `key:${owner.keyId}`, args: { token, approved: false, scope: 'once', challenge: item!.digest, rule: 'write_scope' } })
   })
 
@@ -246,7 +247,7 @@ describe('an approval decision a person\'s key proves (B24)', () => {
     await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })
     expect((await decide(buckle, { token: second, approved: true, scope: 'once', challenge: digestOf(second) }).send()).status).toBe(401)
     expect(buckle.runtime.approvals.pending().map(request => request.token)).toEqual([second])
-    expect(buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)).toEqual(['expired', 'replayed', 'unknown_key'])
+    expect((await auditEntries(buckle.nodeActions, 200)).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)).toEqual(['expired', 'replayed', 'unknown_key'])
   })
 
   it('never takes an approval past a deny the node finds when the call runs: a rule the owner adds after the decision still refuses it', async () => {

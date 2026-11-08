@@ -8,6 +8,7 @@ import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { byName, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Review H2 and M1 of the second proof-of-possession re-review, on an emulated macOS volume: the platform
 // reads as darwin, and lstat and the C library's realpath find a path in any case and name it in the
@@ -46,6 +47,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) await runtime.history.close()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

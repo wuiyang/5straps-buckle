@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import type { ActionLog } from '../../common/types/ports/action-log.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { auditEntries, auditWritten } from '../support/action-log-writer.js'
 
 // Review M2 of B15-B17: the guard property across the whole route table, not by sample. Every route
 // the built layers serve, with every method, under every kind of credential a caller can hold. MCP
@@ -110,10 +111,10 @@ async function sweep(paths: Map<string, Set<string>>): Promise<Probe[]> {
   for (const [path, methods] of paths) {
     for (const method of METHODS) {
       for (const [credential, token] of Object.entries(CREDENTIALS) as Array<[Credential, string | undefined]>) {
-        const before = newestAudit()
+        const before = await newestAudit()
         const response = await buckle.request(path, { method, headers: { 'content-type': 'application/json', ...bearer(token) } })
         await response.body?.cancel()
-        results.push({ path, method, credential, status: response.status, audited: newestAudit() !== before, served: serves(methods, method) })
+        results.push({ path, method, credential, status: response.status, audited: await newestAudit() !== before, served: serves(methods, method) })
       }
     }
   }
@@ -209,7 +210,8 @@ function matchedRoutes(): Map<string, { data: object; handler: unknown }> {
 }
 
 // Every refusal before authentication is recorded on the node's log, or on the named workspace's own (D85, Q15).
-function newestAudit(): string | undefined {
+async function newestAudit(): Promise<string | undefined> {
+  await auditWritten()
   return [buckle.nodeActions, buckle.runtime.actions, childActions].flatMap(actions => actions?.read(1)[0]?.auditId ?? []).join(' ')
 }
 
@@ -409,7 +411,7 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
       const unmatched = await off.request('/sweep-off-table', { headers: bearer(NODE_ADMIN) })
       const expected = { status: 404, type: unmatched.headers.get('content-type'), body: await unmatched.text() }
       expect(expected.status).toBe(404)
-      const before = off.runtime.actions.read(1)[0]?.auditId
+      const before = (await auditEntries(off.runtime.actions, 1))[0]?.auditId
       const paths = [...concretePaths().keys()].filter(isSetup)
       expect(paths.length).toBeGreaterThan(50)
       const answered: string[] = []
@@ -423,7 +425,7 @@ describe('the admin layer with its experimental flag off (owner decision D8)', (
         }
       }
       expect(answered).toEqual([])
-      expect(off.runtime.actions.read(1)[0]?.auditId).toBe(before)
+      expect((await auditEntries(off.runtime.actions, 1))[0]?.auditId).toBe(before)
       // The agent's face still serves.
       expect((await off.request('/v1/manifest', { headers: bearer(NODE_AGENT) })).status).toBe(200)
       // A closing node answers an admin path as an unmatched one too, not 503 (review L9 of B23-B25).

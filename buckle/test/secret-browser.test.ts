@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The secret-references slice, parts 5 and 6 (docs/user/how-to/secrets.md), through the browser pack: the value a fill enters is
 // handed to agent-browser as its text, and every later browser call that shows the page is masked by it, one that ran
@@ -32,6 +33,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -79,7 +81,7 @@ describe('a browser fill', () => {
     expect(filled).toMatchObject({ outcome: 'ok', output: { result: { data: { filled: LABEL } } } })
     const snapshot = await browser(runtime, { command: 'snapshot', args: [] })
     expect(snapshot).toMatchObject({ outcome: 'ok', output: { result: { data: { page: LABEL } } } })
-    expect(JSON.stringify([filled, snapshot, runtime.actions.read(10)])).not.toContain(TOKEN)
+    expect(JSON.stringify([filled, snapshot, (await auditEntries(runtime.actions, 10))])).not.toContain(TOKEN)
   })
 
   it('masks a snapshot that began before a fill beside it, in the same browser, and answered after', async () => {

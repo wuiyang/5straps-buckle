@@ -18,6 +18,7 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The decision audit's seam: told of each decision as received, then applied or refused. Today's adapter writes no entry
 // and a failed entry never blocks an answer; a node may later turn both on.
@@ -26,6 +27,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -152,8 +154,8 @@ describe('the decision audit seam', () => {
     runtimes.push(runtime)
     const response = await runtime.invoke({ request: { requestId: 'write-1', tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] }, sessionId: 's' })
     if (response.outcome !== 'approval_required') throw new Error(`expected an ask, got ${response.outcome}`)
-    const before = runtime.actions.read(200)
+    const before = await auditEntries(runtime.actions, 200)
     expect(await runtime.approvalService.answer({ decision: { token: response.approvals[0]!.token, approved: true, scope: 'session' }, source: SOURCES.terminal })).toMatchObject({ ok: true })
-    expect(runtime.actions.read(200)).toEqual(before)
+    expect(await auditEntries(runtime.actions, 200)).toEqual(before)
   })
 })

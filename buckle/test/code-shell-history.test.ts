@@ -8,6 +8,7 @@ import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-s
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Recheck of the final review of 0.1.4, finding shell index.ts:151: the isolated shell checkpoints its own changes, and
 // filed a script's under the nested requestId while the invoker filed the same script's file writes under the code_run
@@ -34,7 +35,7 @@ vi.mock('../common/adapters/process-runner.js', async (importOriginal) => {
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 it('files a script\'s shell and file changes under one stage, which restore-stage reverts together', async () => {
   const root = mkdtempSync(join(tmpdir(), 'buckle-code-shell-'))

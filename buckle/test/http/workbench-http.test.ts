@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import { createBuckleHttp, mintedToken } from '../support/buckle-http.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup() })
@@ -62,7 +63,7 @@ it('audits a changing workbench call as transport status beside the operation, a
   expect((await f.request(f.buckle.setup('workbenches'), f.config.adminToken, grant)).status).toBe(200)
   expect((await f.request(`/v1/workbenches/${grant.id}/reviews`, grant.token, { actorId: 'alice' })).status).toBe(200)
   expect((await f.request(`/v1/workbenches/${grant.id}/reviews`, 'wrong-fixture-workbench-grant-long', { actorId: 'alice' })).status).toBe(401)
-  const tools = [...f.buckle.nodeActions.read(200), ...f.runtime.actions.read(200)].map(entry => `${entry.tool}:${entry.outcome}`)
+  const tools = [...(await auditEntries(f.buckle.nodeActions, 200)), ...(await auditEntries(f.runtime.actions, 200))].map(entry => `${entry.tool}:${entry.outcome}`)
   expect(tools).toEqual(expect.arrayContaining(['http_workbench_post:started', 'http_workbench_post:ok', 'http_workbench_post:denied', 'workbench_auth_rejected:denied']))
   await f.request(`/v1/workbenches/${grant.id}/discard`, grant.token, { actorId: 'alice' })
 })

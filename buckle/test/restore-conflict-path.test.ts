@@ -9,6 +9,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // A restore refused as a conflict names the path in conflict: the owner's command as it lies in the workspace's folder, an
 // agent's tool as the agent names it, and a path the agent's read rules keep from it not at all. The refusal once said
@@ -19,6 +20,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

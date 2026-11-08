@@ -10,6 +10,7 @@ import { runCli } from '../support/cli.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { captureWebhook } from '../support/webhook.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // The approval service reached over HTTP, as serve composes it: the harness binds the app's host,
 // main's one cli:call listener and the process requester (moved from the unit tests in B15).
@@ -205,7 +206,7 @@ describe('the setup face withdraws one call\'s asks (owner decision D6, review M
       await buckle.runtime.approvalService.close()
       const cancelled = webhook.notices.filter(notice => notice.event === 'cancelled').map(notice => notice.token).sort()
       expect(cancelled).toEqual([...withdrawn, ...three.approvals.map(request => request.token)].sort())
-      const audited = buckle.runtime.actions.read(50).filter(entry => entry.tool === 'setup_post_approvals-withdraw' && entry.event === 'result')
+      const audited = (await auditEntries(buckle.runtime.actions, 50)).filter(entry => entry.tool === 'setup_post_approvals-withdraw' && entry.event === 'result')
       expect(audited.map(entry => entry.detail)).toEqual(['HTTP 200', 'HTTP 200', 'HTTP 200', 'HTTP 400', 'HTTP 400'])
       // Each withdraw names what it withdrew, under the selector as the node keeps it: a requestId hashed (review L14 of B23-B25).
       expect(audited[0]!.args).toEqual({ selector: { requestId: requestIdKey('run-1'), sessionId: 'rings-chat' }, withdrawn, dropped: [] })

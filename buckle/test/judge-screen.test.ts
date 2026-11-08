@@ -11,6 +11,7 @@ import type { Judge, JudgeInput, JudgeLevel } from '../common/types/ports/judge.
 import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // approval.quickJudge all (D91, addendum 2 B): every command is rated by the quick stage, allowed ones included. An
 // allowed command runs unless Jev rates it danger at 0.8 or above, which turns the run into an ask with the verdict beside
@@ -22,6 +23,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -60,7 +62,7 @@ async function call(runtime: CoreRuntime, command: string, args: string[], appro
   const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute })
   try {
     const response = await runtime.invoke({ request: { requestId, approvalTokens, tool: 'shell_exec', args: {} }, sessionId: 'screen', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(400).filter(item => item.event === 'result' && item.requestId === requestId).at(-1)!
+    const entry = (await auditEntries(runtime.actions, 400)).filter(item => item.event === 'result' && item.requestId === requestId).at(-1)!
     return { response, entry, ran: execute.mock.calls.length > 0 }
   } finally { prepare.mockRestore() }
 }

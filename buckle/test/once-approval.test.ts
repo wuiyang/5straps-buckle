@@ -10,10 +10,11 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const recorded = { arguments: { path: '/outside' }, cwd: '/workspace', description: null, effects: [], complete: true as const }
 const roots: string[] = []
-afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.useRealTimers(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function registry() {
   const root = mkdtempSync('/tmp/buckle-once-'); roots.push(root)
   return createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: '/workspace' }), join(root, 'approvals.json'))

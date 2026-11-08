@@ -9,6 +9,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // A once and a session grant serve the actor whose call asked, never another actor's call in the same session.
 
@@ -17,6 +18,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

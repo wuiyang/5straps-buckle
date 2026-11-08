@@ -19,6 +19,7 @@ import { createMcpServer, openForms } from '../mcp/server.js'
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Today's approval behaviors, driven through the invoker, the approval service, and the MCP faces, so each slice of the
 // approval backend design shows what it keeps and what it changes.
@@ -30,6 +31,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   for (const close of closers.splice(0)) await close()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -101,7 +103,7 @@ describe('a serve terminal answer', () => {
     expect(asker.asked).toHaveLength(1)
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 's', expiresAt: null })])
     await vi.waitFor(() => expect(webhook!.notices.filter(notice => notice.event === 'answered')).toEqual([expect.objectContaining({ event: 'answered', scope: 'session' })]))
-    const entries = runtime.actions.read(50)
+    const entries = await auditEntries(runtime.actions, 50)
     expect(new Set(entries.map(entry => entry.tool))).toEqual(new Set(['fs_write']))
     expect(entries.filter(entry => entry.event === 'result').map(entry => [entry.outcome, entry.asked, entry.approvedBy])).toEqual([
       ['ok', ['write_scope'], ['write_scope']],
@@ -320,7 +322,7 @@ describe('a stdio MCP form answer', () => {
     expect(waiting()).toEqual([])
     expect(readFileSync(join(workspace, 'one', 'b.md'), 'utf8')).toBe('b')
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', subject: join(folder, 'one'), scope: 'session', sessionId: 'mcp' })])
-    expect(runtime.actions.read(50).map(entry => [entry.tool, entry.event])).toEqual(Array.from({ length: 3 }, () => [['fs_write', 'attempt'], ['fs_write', 'result']]).flat())
+    expect((await auditEntries(runtime.actions, 50)).map(entry => [entry.tool, entry.event])).toEqual(Array.from({ length: 3 }, () => [['fs_write', 'attempt'], ['fs_write', 'result']]).flat())
   })
 
   it('approves a delete at the file floor, and its always answer lands an always grant that clears the next delete there', async () => {

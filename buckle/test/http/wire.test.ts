@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // Review L4 of B13-B14: the body paths of a moved route through the production listener on node:http,
 // not only the in-process Request: a chunked body past the limit, and a body streamed in pieces. Since
@@ -94,8 +95,8 @@ describe('a client that hangs up over node:http', () => {
 
     request.destroy()
 
-    const results = () => buckle.runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.requestId === 'wire-hang-up')
-    await vi.waitFor(() => expect(results()).toHaveLength(1), { timeout: 10_000 })
+    const results = async () => (await auditEntries(buckle.runtime.actions, 50)).filter(entry => entry.event === 'result' && entry.requestId === 'wire-hang-up')
+    await vi.waitFor(async () => expect(await results()).toHaveLength(1), { timeout: 10_000 })
     expect(buckle.runtime.approvals.pending().map(pending => pending.token)).toEqual([token])
     expect(existsSync(join(root, 'outside.md'))).toBe(false)
 
@@ -109,7 +110,7 @@ describe('a client that hangs up over node:http', () => {
     expect(reply.status).toBe(200)
     expect(await reply.json()).toMatchObject({ requestId: 'wire-hang-up', outcome: 'ok' })
     expect(readFileSync(join(root, 'outside.md'), 'utf8')).toBe('x')
-    expect(results().map(entry => entry.outcome).filter(outcome => outcome === 'ok')).toHaveLength(1)
+    expect((await results()).map(entry => entry.outcome).filter(outcome => outcome === 'ok')).toHaveLength(1)
   })
 })
 
@@ -152,7 +153,7 @@ describe('a re-send after every ask of the dropped call was answered (review M2 
     expect(answers.map(answer => [answer.status, answer.body.outcome])).toEqual([[200, 'ok'], [200, 'ok']])
     expect(buckle.runtime.approvals.pending()).toEqual([])
     expect(readFileSync(join(root, 'approved.md'), 'utf8')).toBe('once')
-    const results = buckle.runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.requestId === 'wire-approve-once' && entry.outcome === 'ok')
+    const results = (await auditEntries(buckle.runtime.actions, 50)).filter(entry => entry.event === 'result' && entry.requestId === 'wire-approve-once' && entry.outcome === 'ok')
     expect(results.map(entry => entry.detail ?? null).sort()).toEqual(['REPLAYED', null].sort())
   })
 })

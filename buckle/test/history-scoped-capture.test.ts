@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice F2, item 1: a file tool's checkpoint records only the paths its effects name, before the call and after it. No
 // walk of the workspace and no git: host git is off here, and the folder holds what a walk would trip on (a FIFO, a hard
@@ -16,6 +17,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

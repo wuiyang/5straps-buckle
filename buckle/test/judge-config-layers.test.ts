@@ -6,6 +6,7 @@ import { DECISION_AI_FILE_KEYS, legacyWorkspaceRoot, loadConfig, unreadWorkspace
 import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { scopeOf, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The decision AI's keys and addresses (D91, fix brief 1 item 17) come from the node's environment file alone where the
 // process entry reads its defaults from it, as main.ts does: a shell's or an MCP config's env, which an agent may write,
@@ -17,6 +18,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

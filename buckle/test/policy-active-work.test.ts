@@ -10,6 +10,7 @@ import type { BuckleRuntime } from '../common/services/workspaces/workspace-runt
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { byName, registerWorkspace, workspaceIdOf } from './support/workspaces.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // buckle policy changes a list while buckle serve runs in the same workspace. A list swaps in at the next call, so a
 // shell result awaiting review, a call running, and a workbench lock another process holds are no reason to refuse it.
@@ -43,6 +44,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await serving.close()
   vi.restoreAllMocks()
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 

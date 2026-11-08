@@ -21,6 +21,7 @@ import { summarizeEffect } from '../common/domain/effect.js'
 import { reviewableArguments } from '../common/domain/redact.js'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 function node(environment: NodeJS.ProcessEnv = {}): BuckleConfig {
   return configFromEnvironment({
@@ -338,7 +339,7 @@ describe('buckle approve --host, widening a network approval to a pattern (BUCKL
 
     await captureAll({ argv: ['approve', token, '--scope', 'session', '--host', '*.localhost:3000'], config })
 
-    const result = createFileActionLog(actionsPath(config)).read(10).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    const result = (await auditEntries(createFileActionLog(actionsPath(config)), 10)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
     expect(result).toMatchObject({ outcome: 'ok', detail: 'network_egress session approval widened to *.localhost:3000, asked by app.localhost:3000' })
   })
 
@@ -447,7 +448,7 @@ describe('buckle approve shows the whole action before it decides (owner decisio
       expect((await runCli({ argv: ['approve', token, '--deny'], config, confirm: null })).exitCode).toBe(0)
     } finally { out.mockRestore() }
     expect(pendingTokens(config)).toEqual([])
-    expect(createFileActionLog(actionsPath(config)).read(10).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')).toMatchObject({ outcome: 'ok' })
+    expect((await auditEntries(createFileActionLog(actionsPath(config)), 10)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')).toMatchObject({ outcome: 'ok' })
   })
 
   it('refuses to approve an ask recorded before this build, even at a terminal, and denies it with --deny', async () => {

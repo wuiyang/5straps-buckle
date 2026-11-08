@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The delete policy brief, item 4: code mode sees the same policy, as a script's fs_delete and fs_move calls go through
 // the rules a direct call meets (owner decision D82: every listed tool is reachable, and judged alike).
@@ -13,6 +14,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

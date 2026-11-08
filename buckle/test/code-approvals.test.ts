@@ -24,12 +24,13 @@ import { isExplicitCancel } from '../mcp/stdio.js'
 import { fixedInteraction } from './support/interaction.js'
 import { workspaceIdOf } from './support/workspaces.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // An ask inside a script (owner decision D82, points 6 and 7): the script stops, the outer call answers with the
 // nested call's own ask, shown whole (owner decision D17), and the same script sent again replays what already ran.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const READ_THEN_WRITE = 'const read = await tools.fs_read({ path: "notes.md" }); await tools.fs_write({ path: "one/out.md", content: read.content.toUpperCase() }); text("written"); return Math.random()'
 
@@ -66,8 +67,8 @@ function send(runtime: CoreRuntime, script: string, input: { timeoutMs?: number;
   })
 }
 
-function results(runtime: CoreRuntime, tool: string) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.tool === tool)
+async function results(runtime: CoreRuntime, tool: string) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'result' && entry.tool === tool)
 }
 
 /** fs_read made slow for one path, for `wait` ms or until it settles, its tool ignoring its signal as a slow tool may; every run is counted by path. */
@@ -110,8 +111,8 @@ function journals(root: string): string[] {
   return existsSync(directory) ? readdirSync(directory, { recursive: true, encoding: 'utf8' }).filter(name => name.endsWith('.json')).map(name => join(directory, name)) : []
 }
 
-function attempts(runtime: CoreRuntime, tool: string) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'attempt' && entry.tool === tool)
+async function attempts(runtime: CoreRuntime, tool: string) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'attempt' && entry.tool === tool)
 }
 
 function asked(response: InvokeResponse) {
@@ -133,7 +134,7 @@ describe('a call inside a script that needs a person', () => {
       effects: [`write ${join(workspace, 'one', 'out.md')}`],
     })
     expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
-    const outer = runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.tool === 'code_run')
+    const outer = (await auditEntries(runtime.actions, 50)).filter(entry => entry.event === 'result' && entry.tool === 'code_run')
     expect(outer).toEqual([expect.objectContaining({ outcome: 'approval_required', asked: ['write_scope'] })])
     const [file] = journals(root)
     expect(statSync(file!).mode & 0o777).toBe(0o600)
@@ -153,15 +154,15 @@ describe('a call inside a script that needs a person', () => {
     expect(retried).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
     expect(read).not.toHaveBeenCalled()
-    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(await attempts(runtime, 'fs_read')).toHaveLength(1)
     // One parent for the script, its first run's code_run call, before and after its ask (finding docs-rules
     // code-mode.md:111), and each send's own stage, as its direct calls have (final review of 0.1.4, finding invoker 701).
-    expect(attempts(runtime, 'fs_write').map(entry => [entry.stageId, entry.parentRequestId])).toEqual([['stage-a', first], ['stage-b', first]])
+    expect((await attempts(runtime, 'fs_write')).map(entry => [entry.stageId, entry.parentRequestId])).toEqual([['stage-a', first], ['stage-b', first]])
     expect(journals(root)).toEqual([])
 
     // Done by itself, the script is a new run when sent again: its calls run again, and the spent once asks again.
     expect(asked(await run(runtime, READ_THEN_WRITE))).toHaveLength(1)
-    expect(attempts(runtime, 'fs_read')).toHaveLength(2)
+    expect(await attempts(runtime, 'fs_read')).toHaveLength(2)
     await runtime.history.close()
   })
 
@@ -187,10 +188,10 @@ describe('a call inside a script that needs a person', () => {
     expect(second.isError).not.toBe(true)
     expect(JSON.parse(second.content[0]!.text)).toMatchObject({ ok: true, output: 'written' })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
-    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(await attempts(runtime, 'fs_read')).toHaveLength(1)
     // MCP gives each tools/call its own requestId, which a script's calls name as their parent; the retry keeps the
     // first one. They carry no stage, as the direct calls of the same host carry none.
-    const nested = [...attempts(runtime, 'fs_read'), ...attempts(runtime, 'fs_write')]
+    const nested = [...(await attempts(runtime, 'fs_read')), ...(await attempts(runtime, 'fs_write'))]
     const parents = [...new Set(nested.map(entry => entry.parentRequestId))]
     expect(parents).toHaveLength(1)
     expect(nested.map(entry => entry.stageId)).toEqual([undefined, undefined, undefined])
@@ -265,7 +266,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
     expect(journals(root)).toHaveLength(1)
     // The cut wait is the ask the outer call reports, not a failed tool.
-    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+    expect((await results(runtime, 'fs_write')).map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
     await runtime.history.close()
   }, 30_000)
 
@@ -281,7 +282,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
       expect(others).toEqual([])
       expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
       expect(journals(root)).toHaveLength(1)
-      expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+      expect((await results(runtime, 'fs_write')).map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
       await runtime.history.close()
     } finally {
       webhook.closeAllConnections()
@@ -335,7 +336,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     expect(others).toEqual([])
     expect(runtime.approvalService.pending().map(request => request.token)).toEqual([approval!.token])
     expect(journals(root)).toHaveLength(1)
-    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
+    expect((await results(runtime, 'fs_write')).map(entry => [entry.outcome, entry.detail])).toEqual([['approval_required', undefined]])
     await runtime.history.close()
   }, 30_000)
 
@@ -350,7 +351,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     })
     const failed = vi.spyOn(logger, 'error')
     expect(await send(runtime, READ_THEN_WRITE, { timeoutMs: 2_500 })).toMatchObject({ outcome: 'ok', output: { ok: false, error: { kind: 'timeout' } } })
-    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect((await results(runtime, 'fs_write')).map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
     expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
     failed.mockRestore()
     await runtime.history.close()
@@ -375,7 +376,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     } finally {
       clearTimeout(stall)
     }
-    expect(results(runtime, 'fs_read').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect((await results(runtime, 'fs_read')).map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
     expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
     failed.mockRestore()
     await runtime.history.close()
@@ -413,7 +414,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     const caller = new AbortController()
     const script = 'await Promise.all([tools.fs_write({ path: "one/a.md", content: "a" }), tools.fs_read({ path: "slow.md" })])'
     const left = send(runtime, script, { timeoutMs: 20_000, approvalWait: { mode: 'finite', ms: 200 }, signal: caller.signal, ...(isCancel ? { isCancel } : {}) })
-    await vi.waitFor(() => expect(results(runtime, 'fs_write').map(entry => entry.outcome)).toEqual(['approval_required']), { timeout: 10_000 })
+    await vi.waitFor(async () => expect((await results(runtime, 'fs_write')).map(entry => entry.outcome)).toEqual(['approval_required']), { timeout: 10_000 })
     caller.abort(new Error('notifications/cancelled'))
     await left.catch(() => undefined)
 
@@ -438,7 +439,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
     release()
 
     expect(await running).toMatchObject({ outcome: 'ok', output: { ok: true, value: 1 } })
-    expect(results(runtime, 'fs_write').map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
+    expect((await results(runtime, 'fs_write')).map(entry => [entry.outcome, entry.detail])).toEqual([['error', 'SCRIPT_ENDED']])
     expect(runtime.approvalService.pending()).toHaveLength(1)
     expect(failed.mock.calls.filter(([message]) => message === 'Tool invocation failed')).toEqual([])
     failed.mockRestore()
@@ -453,7 +454,7 @@ describe('a call inside a script that waits for a person, as the CLI and HTTP do
 
     expect(await running).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
-    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect(await attempts(runtime, 'fs_read')).toHaveLength(1)
     expect(journals(root)).toEqual([])
     await runtime.history.close()
   }, 30_000)
@@ -532,7 +533,7 @@ describe('the replay journal', () => {
     await answer(after, approval!.token)
     expect(await run(after, READ_THEN_WRITE)).toMatchObject({ outcome: 'ok', output: { ok: true } })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
-    expect(attempts(after, 'fs_read')).toHaveLength(1)
+    expect(await attempts(after, 'fs_read')).toHaveLength(1)
     await after.history.close()
   })
 
@@ -552,7 +553,7 @@ describe('the replay journal', () => {
       vi.restoreAllMocks()
     }
     expect(read).toHaveBeenCalledTimes(1)
-    expect(results(runtime, 'fs_read').map(entry => entry.detail)).toEqual([undefined, undefined])
+    expect((await results(runtime, 'fs_read')).map(entry => entry.detail)).toEqual([undefined, undefined])
     await runtime.history.close()
   })
 
@@ -587,7 +588,7 @@ describe('the replay journal', () => {
     const first = await open(config)
     const caller = new AbortController()
     const running = send(first, spin, { timeoutMs: stop === 'deadline' ? 1_500 : 20_000, signal: caller.signal })
-    await vi.waitFor(() => expect(results(first, 'fs_find_names')).toHaveLength(1), { timeout: 10_000 })
+    await vi.waitFor(async () => expect(await results(first, 'fs_find_names')).toHaveLength(1), { timeout: 10_000 })
     if (stop === 'cancel') caller.abort(new Error('stopped by the caller'))
     if (stop === 'shutdown') await first.cancelInvocations()
     await running.catch(() => undefined)
@@ -681,7 +682,7 @@ describe('the replay journal', () => {
     const script = 'for (let i = 0; i < 4; i++) await tools.fs_read({ path: "large.txt" }); await tools.fs_find_names({ path: ".", pattern: "notes" }); while (true) {}'
     const first = await open(config)
     const running = send(first, script, { timeoutMs: 60_000 })
-    await vi.waitFor(() => expect(results(first, 'fs_find_names')).toHaveLength(1), { timeout: 50_000 })
+    await vi.waitFor(async () => expect(await results(first, 'fs_find_names')).toHaveLength(1), { timeout: 50_000 })
     await first.cancelInvocations()
     expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
     const [file] = journals(root)
@@ -710,7 +711,7 @@ describe('the replay journal', () => {
   describe('across a tool policy change between the stop and the re-send', () => {
     const SCRIPT = 'const d = await describeTool("fs_find_names"); if (!d) await describeTool("fs_list"); await tools.fs_write({ path: "logs/deploy.md", content: "deployed" }); await tools.fs_write({ path: "one/out.md", content: "x" }); return "end"'
     const policy = (deny: string[]) => WorkspacePolicySchema.parse({ ...emptyWorkspacePolicy(), tools: { deny }, filesystem: { rules: [{ path: 'logs', write: 'allow' }] } })
-    const writes = (runtime: CoreRuntime) => attempts(runtime, 'fs_write').map(entry => entry.args)
+    const writes = async (runtime: CoreRuntime) => (await attempts(runtime, 'fs_write')).map(entry => entry.args)
 
     it('replays normally when a tool describeTool asked about is allowed since, and the write runs once', async () => {
       const { workspace, runtime } = await node()
@@ -721,8 +722,8 @@ describe('the replay journal', () => {
       await runtime.policy.apply(policy([]))
 
       expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
-      expect(writes(runtime).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
-      expect(writes(runtime)).toHaveLength(3)
+      expect((await writes(runtime)).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
+      expect(await writes(runtime)).toHaveLength(3)
       await runtime.history.close()
     })
 
@@ -740,7 +741,7 @@ describe('the replay journal', () => {
       const began = performance.now()
       expect(await run(runtime, parallel)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
       expect(performance.now() - began).toBeLessThan(10_000)
-      expect(writes(runtime).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
+      expect((await writes(runtime)).filter(args => (args as { path: string }).path === `[${'logs/deploy.md'.length} characters]`)).toHaveLength(1)
       await runtime.history.close()
     }, 30_000)
 
@@ -753,7 +754,7 @@ describe('the replay journal', () => {
       await runtime.policy.apply(policy(['fs_find_names']))
 
       expect(await run(runtime, SCRIPT)).toMatchObject({ outcome: 'ok', output: { ok: true, value: 'end' } })
-      expect(writes(runtime)).toHaveLength(3)
+      expect(await writes(runtime)).toHaveLength(3)
       expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('x')
       await runtime.history.close()
     })
@@ -781,7 +782,7 @@ describe('the replay journal', () => {
     const script = 'let size = 0; for (let i = 0; i < 4; i++) size += (await tools.fs_read({ path: "large.txt" })).size; await tools.fs_write({ path: "one/out.md", content: String(size) })'
     expect(await run(runtime, script)).toMatchObject({ outcome: 'error', error: { code: CODE_REPLAY_TOO_LARGE } })
     expect(runtime.approvalService.pending()).toEqual([])
-    expect(results(runtime, 'fs_write').map(entry => entry.outcome)).toEqual(['approval_required'])
+    expect((await results(runtime, 'fs_write')).map(entry => entry.outcome)).toEqual(['approval_required'])
     await runtime.history.close()
   }, 60_000)
 
@@ -850,8 +851,8 @@ describe('the replay journal', () => {
 
     expect(await send()).toMatchObject({ outcome: 'ok', output: { ok: true, output: 'written' } })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('HELLO')
-    expect(attempts(runtime, 'fs_read')).toHaveLength(1)
-    expect(results(runtime, 'code_run').map(entry => entry.detail)).toEqual([undefined, undefined])
+    expect(await attempts(runtime, 'fs_read')).toHaveLength(1)
+    expect((await results(runtime, 'code_run')).map(entry => entry.detail)).toEqual([undefined, undefined])
     await runtime.history.close()
   })
 

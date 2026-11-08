@@ -11,6 +11,7 @@ import { deleteInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // fs_delete (the fs-verbs brief): every delete asks at the destructive floor, even inside a folder whose writes are
 // granted; a link goes and its target stays; the change history brings every file back. The workspace here sets
@@ -20,6 +21,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -100,9 +102,9 @@ describe('fs_delete asks at the destructive floor', () => {
     writeFileSync(join(workspace, 'token=synthetic-value/a.txt'), 'a')
     writeFileSync(join(workspace, 'b.txt'), 'b')
     await approved(runtime, 'fs_delete', { paths: ['token=synthetic-value/a.txt', 'b.txt'] })
-    const result = runtime.actions.read(20).filter(entry => entry.tool === 'fs_delete' && entry.event === 'result').at(-1)
+    const result = (await auditEntries(runtime.actions, 20)).filter(entry => entry.tool === 'fs_delete' && entry.event === 'result').at(-1)
     expect(result).toMatchObject({ outcome: 'ok', effects: ['delete_path'], args: { paths: ['token=[redacted]', 'b.txt'] } })
-    expect(JSON.stringify(runtime.actions.read(50))).not.toContain('synthetic-value')
+    expect(JSON.stringify(await auditEntries(runtime.actions, 50))).not.toContain('synthetic-value')
   })
 })
 

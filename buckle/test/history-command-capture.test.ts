@@ -11,6 +11,7 @@ import { historyObjects } from './support/history-objects.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { fixedInteraction } from './support/interaction.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice F2, item 3 (owner correction 2026-11-01): a command's checkpoint comes from git itself, in a shadow repository
 // that reads the workspace's own ignore rules. git add -A brings its index up to date before and after the command, and
@@ -73,12 +74,13 @@ vi.mock('node:fs', async importOriginal => {
 })
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
   folderReads.on = false; folderReads.paths = []
   objectFaults.first = undefined; objectFaults.refuse = undefined; objectFaults.removed = []; objectFaults.files = undefined; objectFaults.refused = []
   gitAdd.hook = undefined; gitAdd.slow = 0; gitAdd.cold = 0; gitAdd.held = false; gitAdd.indexes = []; gitAdd.ended = []; gitAdd.started = undefined
   gitInit.gate = undefined
   vi.restoreAllMocks()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) { ownerWritable(root); rmSync(root, { recursive: true, force: true }) }
 })
 /** Gives the owner back each folder a test locked, with Node alone, so cleanup needs no Unix chmod (X15). */

@@ -8,6 +8,7 @@ import { openWorkspaceManager, type WorkspaceManager } from '../common/services/
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // `buckle approvals --watch --all` through the CLI itself, at a terminal: the watch re-reads the online workspaces at
 // each poll, and closes what a workspace taken offline left open in its process (finding 10 of the Phase 1 review, and
@@ -52,6 +53,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   for (const stream of [process.stdout, process.stderr]) delete (stream as { isTTY?: boolean }).isTTY
   await manager.close()
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 

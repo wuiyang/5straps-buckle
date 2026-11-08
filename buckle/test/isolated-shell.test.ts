@@ -12,9 +12,10 @@ import { createPathView } from '../common/domain/path-view.js'
 import { createBubblewrapSandbox } from '../common/adapters/sandbox/bubblewrap-sandbox.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 async function fixture(options: { lockDeadlineMs?: number } = {}) {
   const root = mkdtempSync('/tmp/buckle-isolated-shell-'); roots.push(root)
   const sourceRoot = join(root, 'source'); mkdirSync(sourceRoot)

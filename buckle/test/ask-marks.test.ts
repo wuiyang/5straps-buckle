@@ -20,6 +20,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import type { Judge } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The floor and destructive marks the permission rules set on their asks, kept with each ask in the ledger (the approval
 // backend design, slice 3). Nothing reads them yet: they are stored for the decision guard's later checks.
@@ -108,7 +109,7 @@ describe('a destructive command ask', () => {
 
 describe('the ask record', () => {
   const roots: string[] = []
-  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+  afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
   function ledger() {
     const root = mkdtempSync(join(tmpdir(), 'buckle-marks-'))
     roots.push(root)
@@ -157,6 +158,7 @@ describe('an ask the invoker records', () => {
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+    await settleAuditLogs()
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 

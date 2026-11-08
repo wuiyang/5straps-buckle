@@ -12,6 +12,7 @@ import { browserAllowedDomains, type ApprovedList } from '../common/services/pac
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const node = (...entries: string[]): ApprovedList => ({ name: 'node', entries })
 const workspace = (...entries: string[]): ApprovedList => ({ name: 'workspace', entries })
@@ -85,7 +86,7 @@ describe('the approved list, read as agent-browser allowed domains (BUCKLE-D21)'
 
 describe('the allowed domains a real runtime hands a fake agent-browser', () => {
   const roots: string[] = []
-  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+  afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
   async function fixture(network: string[], closeDelayMs = 0, waitDelayMs = 0, environment: Record<string, string> = {}) {
     const root = mkdtempSync(join(tmpdir(), 'buckle-allowed-domains-'))

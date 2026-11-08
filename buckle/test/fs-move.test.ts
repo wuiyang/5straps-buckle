@@ -10,6 +10,7 @@ import { moveInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // fs_move (the fs-verbs brief): safe by default, `replace` to replace a file, into a folder by name, no folder made, a
 // rename beneath parents reached without following a link, and a copy then a removal across devices. The workspace here
@@ -28,6 +29,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   counting.limit = 10_000
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -192,7 +194,7 @@ describe('fs_move is safe by default', () => {
     const { runtime, workspace } = await node()
     writeFileSync(join(workspace, 'a.md'), 'a')
     await call(runtime, { from: 'a.md', to: 'b.md' })
-    expect(runtime.actions.read(10).filter(entry => entry.tool === 'fs_move' && entry.event === 'result').at(-1)).toMatchObject({ outcome: 'ok', args: { from: 'a.md', to: 'b.md' } })
+    expect((await auditEntries(runtime.actions, 10)).filter(entry => entry.tool === 'fs_move' && entry.event === 'result').at(-1)).toMatchObject({ outcome: 'ok', args: { from: 'a.md', to: 'b.md' } })
   })
 })
 

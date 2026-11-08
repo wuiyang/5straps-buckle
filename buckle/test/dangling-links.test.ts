@@ -10,6 +10,7 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import type { WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 // Review H1 and H2 of B23-B25: a dangling link inside the workspace was judged by its own path while
 // the write followed it, so an agent could create Buckle's absent state files (turn its own switch on,
@@ -86,8 +87,8 @@ function plant(workspace: string, name: string, target: string): void {
   symlinkSync(relative(workspace, target), join(workspace, name))
 }
 
-function uses(runtime: BuckleRuntime) {
-  return runtime.actions.read(200).filter(entry => entry.tool === 'policy_dangerously_allowed')
+async function uses(runtime: BuckleRuntime) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'policy_dangerously_allowed')
 }
 
 function asks(result: InvokeResponse): Array<{ rule: string; subject: string }> {
@@ -122,7 +123,7 @@ describe('a dangling link to Buckle\'s absent state (review H1 of B23-B25)', () 
         expect({ tool, result }).toMatchObject({ tool, result: { outcome: 'error', error: { code: 'PERMISSION_DENIED' } } })
         expect(existsSync(file) ? readFileSync(file, 'utf8') : null).toBe(before)
       }
-      expect(uses(runtime)).toEqual([])
+      expect(await uses(runtime)).toEqual([])
       expect(runtime.policy.dangerouslyAllow().mode).toBe(switchOn ? 'on' : 'off')
       await stop(setup)
     })
@@ -171,7 +172,7 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     expect(asks(result)).toEqual(expect.arrayContaining([{ rule: 'sensitive_path', subject: credential }, { rule: 'write_scope', subject: dirname(credential) }]))
     expect(existsSync(plain)).toBe(false)
     expect(existsSync(credential)).toBe(false)
-    expect(uses(runtime)).toEqual([])
+    expect(await uses(runtime)).toEqual([])
     await stop(setup)
   })
 
@@ -192,7 +193,7 @@ describe('a dangling link to an absent target outside the root (review H2 of B23
     }
     expect(existsSync(plain)).toBe(false)
     expect(existsSync(credential)).toBe(false)
-    expect(uses(runtime)).toEqual([])
+    expect(await uses(runtime)).toEqual([])
     await stop(setup)
   })
 })

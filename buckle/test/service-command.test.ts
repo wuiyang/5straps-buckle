@@ -7,6 +7,7 @@ import { serviceCommand, SERVICE_USAGE, type ServiceCommandInput } from '../cli/
 import { holdServe, runningNode, serviceDirectory, serviceLogPath, watchStopRequest, type ServeManagerKind } from '../common/services/node-service/serve-record.js'
 import { startInBackground } from '../server/service-mode.js'
 import type { InstalledService, ServiceDefinition, ServiceManager } from '../common/types/ports/service-manager.js'
+import { auditWritten } from './support/action-log-writer.js'
 
 // Phase 3 of the workspace-model slice: the `buckle service` family over a service manager, here one that imitates a
 // platform's, and over a node `buckle serve --background` started. Each subcommand prints one line on success and a
@@ -74,7 +75,8 @@ async function service(target: Node, argv: string[], manager: ServiceManager | n
   return { ...result, out, err }
 }
 
-function audited(state: string): Array<{ tool: string; event: string; outcome: string; detail?: string }> {
+async function audited(state: string): Promise<Array<{ tool: string; event: string; outcome: string; detail?: string }>> {
+  await auditWritten()
   return readFileSync(join(state, 'actions.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line))
 }
 
@@ -116,7 +118,7 @@ describe('buckle service and a node buckle serve --background started', () => {
     await serving(target.state, 'background', 900_001)
     const stopped = await service(target, ['stop'], null)
     expect(stopped).toMatchObject({ exitCode: 0, out: 'Stopped Buckle (pid 900001).\n', err: '' })
-    expect(audited(target.state).filter(entry => entry.tool === 'cli_service')).toEqual([
+    expect((await audited(target.state)).filter(entry => entry.tool === 'cli_service')).toEqual([
       expect.objectContaining({ event: 'attempt', outcome: 'started' }),
       expect.objectContaining({ event: 'result', outcome: 'ok', detail: 'stop background' }),
     ])
@@ -196,7 +198,7 @@ describe('buckle service install --now and uninstall where the manager has no re
       expect(installed.out).not.toContain('900030')
       expect(calls.map(call => call[0])).toEqual(['install', 'start'])
       expect(calls[0]).toEqual(['install', expect.anything(), { now: false }])
-      expect(audited(target.state).at(-1)).toMatchObject({ tool: 'cli_service', outcome: 'ok', detail: 'install --now task-scheduler' })
+      expect((await audited(target.state)).at(-1)).toMatchObject({ tool: 'cli_service', outcome: 'ok', detail: 'install --now task-scheduler' })
     } finally { await old.close(); await service(target, ['stop'], manager) }
   })
 
@@ -251,7 +253,7 @@ describe('buckle service install', () => {
     const installed = await service(target, ['install'], manager)
     expect(installed).toMatchObject({ exitCode: 0, out: 'Installed the Buckle service (the imitated definition); it starts at every login. Start it now with buckle service start.\n', err: '' })
     expect(calls).toEqual([['install', { node: process.execPath, main: target.main, stateDirectory: target.state, environmentFile: null, path: '/usr/bin:/bin' }, { now: false }]])
-    expect(audited(target.state).at(-1)).toMatchObject({ tool: 'cli_service', outcome: 'ok', detail: 'install systemd' })
+    expect((await audited(target.state)).at(-1)).toMatchObject({ tool: 'cli_service', outcome: 'ok', detail: 'install systemd' })
   })
 
   it('starts it too with --now, and says its pid', async () => {
@@ -354,7 +356,7 @@ describe('buckle service start, stop, restart, and uninstall', () => {
     const own = fakeManager(target.state, { installed: { ...installed, thisNode: true } })
     expect(await service(target, ['stop'], own.manager)).toEqual({ exitCode: 0, detail: 'stop systemd', out: 'Stopped the Buckle service (the imitated definition); no node was running.\n', err: '' })
     expect(own.calls).toEqual([['stop']])
-    expect(audited(target.state)).toContainEqual(expect.objectContaining({ tool: 'cli_service', event: 'result', outcome: 'ok', detail: 'stop systemd' }))
+    expect(await audited(target.state)).toContainEqual(expect.objectContaining({ tool: 'cli_service', event: 'result', outcome: 'ok', detail: 'stop systemd' }))
     for (const options of [{ installed: { ...installed, thisNode: false } }, { installed: { ...installed, thisNode: null } }, { installed: null }, { installed: { ...installed, thisNode: true }, signals: false, kind: 'task-scheduler' as const }]) {
       const { manager, calls } = fakeManager(target.state, options)
       expect(await service(target, ['stop'], manager)).toEqual({ exitCode: 0, out: 'Buckle is not running.\n', err: '' })

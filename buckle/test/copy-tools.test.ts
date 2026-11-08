@@ -12,6 +12,7 @@ import { MAX_TRANSFER_BYTES } from '../common/services/packs/browser/file-transf
 import { refuseLanding } from '../common/services/packs/fs/transfer.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // `buckle cp` on the node (the copy-verb brief): fs_receive and fs_send are judged, approved, and audited as fs_write and
 // fs_read are, run with the bytes beside the call and never in its arguments, and offered to no agent, MCP client, or script.
@@ -20,6 +21,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -125,7 +127,7 @@ describe('fs_receive', () => {
     expect(response).toMatchObject({ outcome: 'ok', output: { path: 'out.txt', size: content.byteLength, sha256: sha256(content) } })
     expect(readFileSync(join(workspace, 'out.txt'))).toEqual(content)
     expect(entries(workspace)).toEqual(['out.txt'])
-    const result = runtime.actions.read(5).find(entry => entry.tool === 'fs_receive' && entry.event === 'result')
+    const result = (await auditEntries(runtime.actions, 5)).find(entry => entry.tool === 'fs_receive' && entry.event === 'result')
     expect(result).toMatchObject({ outcome: 'ok', effects: ['write_path'], args: { path: 'out.txt', bytes: content.byteLength, sha256: sha256(content) } })
   })
 
@@ -261,7 +263,7 @@ describe('fs_send', () => {
     const response = await call(runtime, 'fs_send', { path: 'big.bin' }, out.file)
     expect(response).toMatchObject({ outcome: 'ok', output: { path: 'big.bin', size: content.byteLength, sha256: sha256(content) } })
     expect(out.sent()).toEqual({ size: content.byteLength, sha256: sha256(content), bytes: content })
-    const result = runtime.actions.read(5).find(entry => entry.tool === 'fs_send' && entry.event === 'result')
+    const result = (await auditEntries(runtime.actions, 5)).find(entry => entry.tool === 'fs_send' && entry.event === 'result')
     expect(result).toMatchObject({ outcome: 'ok', effects: ['read_path'], args: { path: 'big.bin', bytes: content.byteLength, sha256: sha256(content) } })
   })
 

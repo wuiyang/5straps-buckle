@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { FILES_HOLD_MS, filesWait, outgoingFile } from '../layers/common/server/utils/files.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // GET /v1/files hands fs_send a channel (outgoingFile) whose stream the response is: it pulls a chunk as the caller
 // reads one, errors rather than ends where the file changed after its hash, and fails the send where the caller left.
@@ -15,6 +16,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

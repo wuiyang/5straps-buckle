@@ -8,13 +8,14 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Final review of 0.1.4, finding invoker 701: a script's calls carry the caller's own stage, unset where it named
 // none, so a script's browser_command drives the browser the agent opened directly, in the same session, and the
 // audit log names the script beside the stage, by its code_run call's requestId.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** A node with a fake agent-browser that keeps the page each `--session` opened and answers a snapshot with it. */
 async function browsing(): Promise<{ config: BuckleConfig; runtime: BuckleRuntime; sessions: () => string[] }> {
@@ -78,7 +79,7 @@ describe('a code_run script that drives the browser', () => {
     expect(sessions()).toHaveLength(4)
     expect(new Set(sessions()).size).toBe(1)
 
-    const entries = runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.tool === 'browser_command')
+    const entries = (await auditEntries(runtime.actions, 50)).filter(entry => entry.event === 'result' && entry.tool === 'browser_command')
     expect(entries.map(entry => [entry.stageId, entry.parentRequestId])).toEqual([[stageId, undefined], [stageId, 'script-1'], [stageId, 'script-2'], [stageId, undefined]])
     expect(entries.filter(entry => entry.parentRequestId).every(entry => /^code:[0-9a-f]{64}:1$/.test(entry.requestId))).toBe(true)
     await runtime.history.close()

@@ -10,6 +10,7 @@ import { BATCH_REWRITE_LIMIT, SHRINK_RATIO } from '../common/services/invocation
 import { createSessionReads, MAX_KNOWN_PATHS, MAX_KNOWN_SESSIONS, READ_WINDOW_MS } from '../common/services/invocation/session-reads.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The destructive-write check (the fs-verbs brief): a write that empties a file, or leaves it under half its size, where
 // the session never read it lately, and one call that rewrites more than ten existing files, ask at the destructive
@@ -19,6 +20,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

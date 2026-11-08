@@ -16,6 +16,7 @@ import { loadConfig, WORKSPACE_DEFAULT_KEYS } from '../common/runtime/config.js'
 import { defaultSettings, resolveSettings } from '../common/services/workspaces/workspace-settings.js'
 import { holdLockInProcess, killHolder } from './support/lock-holder.js'
 import { BUILTIN_PACKS, createBuiltinPacks, unmetPackPrerequisite } from '../common/services/packs/index.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 const SECRET = 'fixture-secret-value-never-printed-7f3a'
 
@@ -59,6 +60,8 @@ async function settings(argv: string[], environment: NodeJS.ProcessEnv = {}, env
   const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(chunk => { err += String(chunk); return true })
   try {
     const result = await settingsCommand({ argv, environment, environmentFile, cwd: root, home })
+    // As the command's process does before it exits: what it queued for its audit log is written.
+    await settleAuditLogs()
     return { ...result, out, err, printed: out + err }
   } finally { stdout.mockRestore(); stderr.mockRestore() }
 }
@@ -239,7 +242,7 @@ describe('buckle settings set', () => {
   it('records an audit entry naming the key and the value', async () => {
     await settings(['set', 'allowed-hosts', 'db.internal,*.internal.test'])
 
-    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(10)
+    const entries = await auditEntries(createFileActionLog(join(state, 'actions.jsonl')), 10)
     expect(entries.at(-1)).toMatchObject({ tool: 'cli_settings', outcome: 'ok', detail: 'BUCKLE_ALLOWED_HOSTS=db.internal,*.internal.test' })
     expect(JSON.stringify(entries)).not.toContain(SECRET)
   })
@@ -252,10 +255,10 @@ describe('buckle settings set', () => {
     const sets = [await settings(['set', 'browser-cdp', cdp]), await settings(['unset', 'browser-cdp']), await settings(['set', 'browser-args', args]), await settings(['set', 'browser-profile', profile]), await settings(['set', 'browser-headed', 'on'])]
     expect(sets.map(result => result.exitCode)).toEqual([0, 0, 0, 0, 0])
     for (const secret of ['settings-devtools-token', 'settings-proxy-pass', 'settings-profile-folder']) {
-      expect(JSON.stringify(createFileActionLog(join(state, 'actions.jsonl')).read(50))).not.toContain(secret)
+      expect(JSON.stringify(await auditEntries(createFileActionLog(join(state, 'actions.jsonl')), 50))).not.toContain(secret)
       expect(sets.map(result => result.printed).join('')).not.toContain(secret)
     }
-    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(50).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
+    const entries = (await auditEntries(createFileActionLog(join(state, 'actions.jsonl')), 50)).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
     expect(entries.map(entry => entry.detail)).toEqual(['BUCKLE_BROWSER_CDP set', 'BUCKLE_BROWSER_CDP unset', 'BUCKLE_BROWSER_ARGS set', 'BUCKLE_BROWSER_PROFILE set', 'BUCKLE_BROWSER_HEADED=true'])
     expect(sets[0]!.out).toContain('Set BUCKLE_BROWSER_CDP in')
   })
@@ -314,7 +317,7 @@ describe('buckle settings set', () => {
     expect(parseEnv(readFileSync(file, 'utf8')).BUCKLE_EXPERIMENTAL_ADMIN_HTTP).toBe('true')
     expect((await settings(['show'])).out).toMatch(/experimental-admin-http +BUCKLE_EXPERIMENTAL_ADMIN_HTTP +true +environment file/)
     expect((await settings(['unset', 'experimental-admin-http'])).exitCode).toBe(0)
-    const entries = createFileActionLog(join(state, 'actions.jsonl')).read(10).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
+    const entries = (await auditEntries(createFileActionLog(join(state, 'actions.jsonl')), 10)).filter(entry => entry.tool === 'cli_settings' && entry.event === 'result')
     expect(entries.map(entry => entry.detail)).toEqual([undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true', undefined, 'BUCKLE_EXPERIMENTAL_ADMIN_HTTP unset'])
   })
 
@@ -379,7 +382,7 @@ describe('buckle settings set', () => {
 
     expect(result.exitCode).toBe(1)
     expect(result.err).toContain('buckle init')
-    expect(createFileActionLog(join(state, 'actions.jsonl')).read(10).at(-1)).toMatchObject({ tool: 'cli_settings', outcome: 'error' })
+    expect((await auditEntries(createFileActionLog(join(state, 'actions.jsonl')), 10)).at(-1)).toMatchObject({ tool: 'cli_settings', outcome: 'error' })
   })
 })
 

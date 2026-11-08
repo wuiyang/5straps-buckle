@@ -7,13 +7,14 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice D, rollback as an agent option, item 3: `buckle history list --last <n>` shows the n checkpoints back from the
 // current state, newest first, each with its time, its files, and the agent call that made it, the current one marked.
 // Plain `buckle history list` keeps its JSON.
 
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** A workspace whose history holds the writes `files` names, one call each, made by an agent through the invoker. */
 async function workspaceWith(writes: Array<{ requestId: string; files: Record<string, string> }>): Promise<{ config: BuckleConfig; workspace: string }> {

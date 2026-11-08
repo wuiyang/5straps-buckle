@@ -16,6 +16,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { JUDGE_REASONING_LIMIT, type Judge, type JudgeInput, type JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The decision AI in automated mode (D91, brief item 2 and addendum C): an interpreter call the destructive floor asks
 // about is rated once per call, and a safe verdict at 0.8 or above runs it, audited; every other answer asks as before,
@@ -26,6 +27,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -66,7 +68,7 @@ async function call(runtime: CoreRuntime, command: string, args: string[], extra
   const requestId = `judge-${Math.random()}`
   try {
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'judge', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     return { response, entry, ran: execute.mock.calls.length > 0 }
   } finally { prepare.mockRestore() }
 }
@@ -178,7 +180,7 @@ describe('code a mount holds, where the program runs in a copy of the workspace 
     vi.spyOn(runtime.registry().get('fs_read'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'python3', args: ['/data/job.py'] }], execute, ...(fromCopy ? { managesHistory: true } : {}) })
     const requestId = `mounted-${fromCopy}`
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'fs_read', args: {} }, sessionId: 'judge', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     return { response, entry, ran: execute.mock.calls.length > 0 }
   }
 

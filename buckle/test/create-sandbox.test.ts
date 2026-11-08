@@ -10,14 +10,16 @@ import { initializeCommon, type BuckleCommon } from '../common/runtime/initializ
 import { nodeRootsOf } from '../common/services/workspaces/workspace-manager.js'
 import { byName, defaultRuntime } from './support/workspaces.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The sandbox program is the one program every shell, script, and terminal call runs through. `npx` and `pnpm exec`
 // put `<ws>/node_modules/.bin` first on PATH, so a bwrap planted there was the sandbox from the next runtime on. It is
 // now resolved as every other program is, and refused where the agent writes. These tests put a lookup in PATH's place.
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
   vi.unstubAllEnvs()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

@@ -8,6 +8,7 @@ import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // buckle serve and buckle mcp both open on one workspace, each a process of its own (two managers on one state
 // directory stand in for them). Whichever took the workbench lock kept it, and the other could take no change up: a
@@ -31,6 +32,7 @@ beforeEach(async () => {
 })
 afterEach(async () => {
   for (const manager of managers.splice(0)) await manager.close()
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 

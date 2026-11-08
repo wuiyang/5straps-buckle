@@ -15,6 +15,7 @@ import type { DecisionClaim } from '../common/domain/approval/decision-guard.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf, workspacesOf } from './support/workspaces.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 // `buckle approvals judge <token> [--approve-if-safe]` (D91, addendum C): the decision AI rates one waiting interpreter
 // ask at the owner's request, through the real OpenAI-compatible adapter against a local stand-in at the node's
@@ -137,11 +138,11 @@ describe('buckle approvals judge', () => {
     expect(runtime.approvalService.waitingAsk(token)).toBeUndefined()
     expect(claims).toEqual([{ source: SOURCES.judge, scope: 'once' }])
     // The command is audited with what the judge said, and the call it approved names the judge as who decided.
-    const audited = runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
+    const audited = (await auditEntries(runtime.actions, 100)).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
     expect(audited?.judge).toMatchObject({ provider: 'openai-compatible', model: 'GPT-6-luna', level: 'safe', confidence: 0.91, passed: true })
     const ran = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent' })
     expect(ran.outcome).not.toBe('approval_required')
-    const result = runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
+    const result = (await auditEntries(runtime.actions, 100)).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
     expect(result?.decidedBy).toEqual(['judge:thorough:openai-compatible:GPT-6-luna'])
     expect(shown.out + approved.out).not.toContain(KEY)
     await manager.close()
@@ -156,7 +157,7 @@ describe('buckle approvals judge', () => {
     const changed = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent', approvalWait: { mode: 'none' } })
     expect(changed).toMatchObject({ outcome: 'approval_required' })
     if (changed.outcome === 'approval_required') expect(changed.approvals).toEqual([expect.objectContaining({ rule: 'destructive_command', reason: expect.stringContaining(CODE_CHANGED_REASON) })])
-    expect(runtime.actions.read(100).some(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome === 'ok')).toBe(false)
+    expect((await auditEntries(runtime.actions, 100)).some(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome === 'ok')).toBe(false)
     // The once still holds for the code it was given for.
     writeFileSync(join(folder, 'job.py'), 'print(1)\n')
     const kept = await runtime.invoke({ request: { ...request, approvalTokens: [token] }, sessionId: 'agent', approvalWait: { mode: 'none' } })
@@ -192,7 +193,7 @@ describe('buckle approvals judge', () => {
     expect(alone.out).toContain(`Only the thorough stage can approve; it did not rate this ask, so nothing is approved; ${first.token} is still waiting`)
     expect(alone.out).not.toContain('Not safe')
     expect(quickOnly.runtime.approvalService.waitingAsk(first.token)).toBeDefined()
-    expect(quickOnly.runtime.actions.read(100).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect((await auditEntries(quickOnly.runtime.actions, 100)).some(entry => entry.judge?.passed === true)).toBe(false)
     await quickOnly.manager.close()
 
     const both = await node({ url: judge.url, quickUrl: jev.url })
@@ -221,7 +222,7 @@ describe('buckle approvals judge', () => {
     expect(refused.exitCode).toBe(0)
     expect(refused.out).toContain(`Not safe at 0.8 or above, so nothing is approved; ${token} is still waiting`)
     expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
-    expect(runtime.actions.read(100).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect((await auditEntries(runtime.actions, 100)).some(entry => entry.judge?.passed === true)).toBe(false)
     expect(shown.out + refused.out).not.toContain(QUICK_KEY)
     await manager.close()
 
@@ -233,10 +234,10 @@ describe('buckle approvals judge', () => {
     const approved = await second.buckle(['approvals', 'judge', other, '--approve-if-safe'])
     expect(approved.exitCode).toBe(0)
     expect(approved.out).toContain(`Approved ${other} once in workspace site, on the decision AI's thorough stage's safe verdict`)
-    const audited = second.runtime.actions.read(100).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
+    const audited = (await auditEntries(second.runtime.actions, 100)).find(entry => entry.tool === 'cli_approvals' && entry.event === 'result' && entry.detail?.includes('approved once'))
     expect(audited?.judge).toMatchObject({ level: 'safe', passed: true, passedBy: 'thorough', quick: { provider: 'typesafe', model: 'jev-1.13.0', level: 'danger' } })
     await second.runtime.invoke({ request: { ...request, approvalTokens: [other] }, sessionId: 'agent' })
-    const result = second.runtime.actions.read(100).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
+    const result = (await auditEntries(second.runtime.actions, 100)).find(entry => entry.event === 'result' && entry.requestId === request.requestId && entry.outcome !== 'approval_required')
     expect(result?.decidedBy).toEqual(['judge:thorough:openai-compatible:GPT-6-luna'])
     await second.manager.close()
   })
@@ -295,7 +296,7 @@ describe('buckle approvals judge', () => {
     expect(judge.seen).toHaveLength(0)
     expect(jev.seen).toHaveLength(0)
     expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
-    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect((await auditEntries(runtime.actions, 200)).some(entry => entry.judge?.passed === true)).toBe(false)
     await manager.close()
   })
   it('rates a floor ask with both stages and prints both verdicts, and --approve-if-safe approves nothing for one, saying why (addendum 3 R2)', async () => {
@@ -320,9 +321,9 @@ describe('buckle approvals judge', () => {
       expect(shown.exitCode, requestId).toBe(0)
       expect(shown.out, requestId).toContain(`Nothing is approved; ${token} is still waiting`)
     }
-    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect((await auditEntries(runtime.actions, 200)).some(entry => entry.judge?.passed === true)).toBe(false)
     // No audit entry of a floor ask carries passedBy: a pass recorded for the wrong ask (fix brief 8, B26).
-    expect(runtime.actions.read(200).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
+    expect((await auditEntries(runtime.actions, 200)).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
     await manager.close()
   })
 
@@ -340,7 +341,7 @@ describe('buckle approvals judge', () => {
     expect(result.exitCode).toBe(0)
     expect(result.out).toContain(`A command at the destructive floor always needs a person, so nothing is approved; ${token} is still waiting`)
     expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
-    expect(runtime.actions.read(200).some(entry => entry.judge?.passed === true)).toBe(false)
+    expect((await auditEntries(runtime.actions, 200)).some(entry => entry.judge?.passed === true)).toBe(false)
     await manager.close()
   })
 
@@ -361,7 +362,7 @@ describe('buckle approvals judge', () => {
     expect(judge.seen).toHaveLength(0)
     expect(jev.seen).toHaveLength(0)
     expect(runtime.approvalService.waitingAsk(token)).toBeDefined()
-    expect(runtime.actions.read(200).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
+    expect((await auditEntries(runtime.actions, 200)).flatMap(entry => (entry.judge && 'passedBy' in entry.judge ? [entry.judge.passedBy] : []))).toEqual([])
     await manager.close()
   })
 })

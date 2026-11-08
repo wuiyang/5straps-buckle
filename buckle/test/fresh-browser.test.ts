@@ -7,9 +7,10 @@ import { createPathView } from '../common/domain/path-view.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { ProcessRequest } from '../common/types/ports/process-runner.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
-afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.unstubAllEnvs(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function fixture(mode: BrowserMode = { kind: 'fresh' }) {
   const root = mkdtempSync('/tmp/buckle-fresh-browser-'); roots.push(root)
   const calls: ProcessRequest[] = []

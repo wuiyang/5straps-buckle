@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { createOperationScope, runInScope } from '@5straps/runtime'
 import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
 import { beforeAll, describe, expect, it, vi } from 'vitest'
-import { startActionLogWriter } from './support/action-log-writer.js'
+import { startActionLogWriter, auditEntries } from './support/action-log-writer.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createExecutionBudget, createExecutions, EVICTED_STUB_LIMIT, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -54,8 +54,8 @@ function watchRuns(runtime: BuckleRuntime, tool: string, options: { hold?: boole
   return { runs: () => runs, release: () => gate.resolve() }
 }
 
-function results(runtime: BuckleRuntime, requestId: string) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
+async function results(runtime: BuckleRuntime, requestId: string) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'result' && entry.requestId === requestId)
 }
 
 function asActor<T>(actor: string, run: () => Promise<T>): Promise<T> {
@@ -79,7 +79,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     expect(runs.runs()).toBe(1)
     // Told it was answered by the earlier run (whether that still ran, and so had no time, depends on the timing).
     expect(onReplayed).toHaveBeenCalledOnce()
-    expect(results(runtime, 'rings-1').map(entry => entry.detail ?? 'ran')).toEqual(['ran', 'REPLAYED'])
+    expect((await results(runtime, 'rings-1')).map(entry => entry.detail ?? 'ran')).toEqual(['ran', 'REPLAYED'])
   })
 
   it('answers a re-send after the call settled with its kept response, without asking or running again', async () => {
@@ -101,7 +101,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const fresh = vi.fn()
     await runtime.invoke({ sessionId: 'chat-1', request: read('rings-2b'), onReplayed: fresh })
     expect(fresh).not.toHaveBeenCalled()
-    expect(results(runtime, 'rings-2').map(entry => `${entry.outcome}:${entry.detail ?? 'ran'}`)).toEqual(['ok:ran', 'ok:REPLAYED'])
+    expect((await results(runtime, 'rings-2')).map(entry => `${entry.outcome}:${entry.detail ?? 'ran'}`)).toEqual(['ok:ran', 'ok:REPLAYED'])
   })
 
   it('does not run again after a session grant would allow it: the re-send gets the first run', async () => {
@@ -116,7 +116,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
 
     expect(await runtime.invoke({ sessionId: 'chat-1', request })).toMatchObject({ outcome: 'ok' })
     expect(runs.runs()).toBe(1)
-    expect(results(runtime, 'rings-3').filter(entry => entry.detail === 'REPLAYED')).toHaveLength(1)
+    expect((await results(runtime, 'rings-3')).filter(entry => entry.detail === 'REPLAYED')).toHaveLength(1)
     // A new requestId is a new call, which the session grant lets run.
     expect(await runtime.invoke({ sessionId: 'chat-1', request: { ...request, requestId: 'rings-3b' } })).toMatchObject({ outcome: 'ok' })
     expect(runs.runs()).toBe(2)
@@ -157,7 +157,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     const reused = await runtime.invoke({ sessionId: 'chat-1', request: { ...read('rings-8'), args: { path: 'other.md' } } })
     expect(reused).toMatchObject({ outcome: 'error', error: { code: REQUEST_ID_REUSED, retryable: false } })
     expect(runs.runs()).toBe(1)
-    expect(results(runtime, 'rings-8').map(entry => entry.detail ?? 'ran')).toEqual(['ran', REQUEST_ID_REUSED])
+    expect((await results(runtime, 'rings-8')).map(entry => entry.detail ?? 'ran')).toEqual(['ran', REQUEST_ID_REUSED])
   })
 
   it('keeps nothing for a call that did not run: a re-send after approval_required asks again', async () => {
@@ -168,7 +168,7 @@ describe('execution dedupe by requestId (review M2 of B13-B14)', () => {
     expect(await waiting).toMatchObject({ outcome: 'approval_required' })
     expect(await runtime.invoke({ sessionId: 'chat-1', request, approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
     expect(runs.runs()).toBe(0)
-    expect(results(runtime, 'rings-7').filter(entry => entry.detail === 'REPLAYED')).toEqual([])
+    expect((await results(runtime, 'rings-7')).filter(entry => entry.detail === 'REPLAYED')).toEqual([])
   })
 })
 
@@ -200,7 +200,7 @@ describe('the requestId, the result write and retryable errors (review L2, L4 an
     expect(await runtime.invoke({ sessionId: 'chat-1', request: read('flaky') })).toMatchObject({ outcome: 'error', error: { code: 'LSP_TIMEOUT', retryable: true } })
     expect(await runtime.invoke({ sessionId: 'chat-1', request: read('flaky') })).toMatchObject({ outcome: 'error', error: { code: 'LSP_TIMEOUT' } })
     expect(runs).toBe(2)
-    expect(results(runtime, 'flaky').filter(entry => entry.detail === 'REPLAYED')).toEqual([])
+    expect((await results(runtime, 'flaky')).filter(entry => entry.detail === 'REPLAYED')).toEqual([])
   })
 
   it('answers a call that ran with its real response when the result entry cannot be written', async () => {
@@ -235,7 +235,7 @@ describe('shutdown\'s tool calls step (B19)', () => {
     expect(await running).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN', retryable: false } })
     expect(await runtime.invoke({ sessionId: 'chat-1', request: read('late') })).toMatchObject({ outcome: 'error', error: { code: 'BUCKLE_SHUTTING_DOWN' } })
     expect(runs.runs()).toBe(1)
-    expect(results(runtime, 'late')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'BUCKLE_SHUTTING_DOWN' })])
+    expect(await results(runtime, 'late')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'BUCKLE_SHUTTING_DOWN' })])
   })
 
   it('answers a tool that throws its own error once the shutdown killed it as the shutdown (review L8 of B20-B22)', async () => {

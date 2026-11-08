@@ -9,6 +9,7 @@ import { searchBuiltin } from '../common/services/packs/fs/builtin-search.js'
 import { searchInput } from '../common/services/packs/fs/schemas.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The built-in search never fails whole for one file (the live failure: a search of a folder that a 95 MiB file was being
 // received into failed with the invoker's generic "Tool invocation failed"). Linux has no sharing locks and the disk
@@ -96,7 +97,7 @@ afterEach(() => {
   faults.workers.die = 0
   faults.workers.refuse = 0
 })
-afterAll(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterAll(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 interface Output { matches: JsonObject[]; truncated: boolean; excludedFiles: number; skipped?: Array<{ path: string; reason: string }>; skippedMore?: number }
 

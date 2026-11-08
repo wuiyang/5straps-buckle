@@ -13,12 +13,13 @@ import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { byName, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction } from './support/interaction.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Code mode (owner decision D82): a script's calls are the workspace's own calls, judged, refused, and audited as
 // direct ones, and the script is held to its limits on calls, output, and time.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 async function node(environment: Record<string, string> = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-code-'))
@@ -47,8 +48,8 @@ function ran(response: InvokeResponse): Ran {
   return response.output as unknown as Ran
 }
 
-function results(runtime: CoreRuntime) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'result')
+async function results(runtime: CoreRuntime) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'result')
 }
 
 describe('a code_run script on a workspace', () => {
@@ -80,7 +81,7 @@ describe('a code_run script on a workspace', () => {
 
     expect(result.value).toEqual(['PERMISSION_DENIED', 'PERMISSION_DENIED', false])
     expect(JSON.stringify(result)).not.toContain('never shown')
-    expect(results(runtime).filter(entry => entry.tool === 'fs_read').map(entry => entry.outcome)).toEqual(['denied'])
+    expect((await results(runtime)).filter(entry => entry.tool === 'fs_read').map(entry => entry.outcome)).toEqual(['denied'])
     await runtime.history.close()
   })
 
@@ -92,9 +93,9 @@ describe('a code_run script on a workspace', () => {
     const outer = ran(await run(runtime, 'await tools.fs_list({ path: "docs" })'))
     expect(outer.ok).toBe(true)
 
-    const nested = results(runtime).filter(entry => entry.tool === 'fs_list')
+    const nested = (await results(runtime)).filter(entry => entry.tool === 'fs_list')
     expect(nested.map(entry => [entry.stageId, entry.parentRequestId])).toEqual([['stage-7', `outer-${sequence - 1}`], [undefined, `outer-${sequence}`]])
-    expect(results(runtime).filter(entry => entry.tool === 'code_run').map(entry => entry.parentRequestId)).toEqual([undefined, undefined])
+    expect((await results(runtime)).filter(entry => entry.tool === 'code_run').map(entry => entry.parentRequestId)).toEqual([undefined, undefined])
     expect(nested.every(entry => /^code:[0-9a-f]{64}:1$/.test(entry.requestId) && entry.sessionId === 'chat-1' && entry.outcome === 'ok')).toBe(true)
     await runtime.history.close()
   })
@@ -114,7 +115,7 @@ describe('a code_run script on a workspace', () => {
     }))
     const refused = await run(runtime, 'ignored', { stageId: 'nesting' })
     expect(refused).toMatchObject({ outcome: 'ok', output: { outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Scripts cannot start scripts') } } })
-    expect(results(runtime).find(entry => entry.tool === 'code_api')).toMatchObject({ outcome: 'denied', stageId: 'nesting' })
+    expect((await results(runtime)).find(entry => entry.tool === 'code_api')).toMatchObject({ outcome: 'denied', stageId: 'nesting' })
     await runtime.history.close()
   })
 
@@ -136,7 +137,7 @@ describe('a code_run script on a workspace', () => {
     expect(names.length).toBeLessThanOrEqual(8)
     expect(names.every(name => name.startsWith('fs_'))).toBe(true)
     expect([keys, limited, none, codes]).toEqual([['description', 'name'], 1, 0, ['INVALID_TOOL_INPUT', 'INVALID_TOOL_INPUT', 'INVALID_TOOL_INPUT']])
-    expect(results(runtime)).toEqual([expect.objectContaining({ tool: 'code_run' })])
+    expect(await results(runtime)).toEqual([expect.objectContaining({ tool: 'code_run' })])
     await runtime.history.close()
   })
 
@@ -190,7 +191,7 @@ describe('a code_run script on a workspace', () => {
       return [codes, (await tools.fs_read({ path: 'docs/alpha.md', pad: 'x'.repeat(100) })).size > 0]
     `))
     expect(result.value).toEqual([[[REQUEST_TOO_LARGE, true], [REQUEST_TOO_LARGE, true]], true])
-    expect(runtime.actions.read(200).filter(entry => entry.tool === 'fs_read').map(entry => entry.event)).toEqual(['attempt', 'result'])
+    expect((await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'fs_read').map(entry => entry.event)).toEqual(['attempt', 'result'])
     await runtime.history.close()
   })
 
@@ -277,8 +278,8 @@ describe('code mode inside one workspace (BUCKLE-D07: a token opens one workspac
 
     expect(result.value).toEqual(['PERMISSION_DENIED', 'PERMISSION_DENIED'])
     expect(JSON.stringify(result)).not.toContain('the default workspace only')
-    expect(results(child).filter(entry => entry.requestId.startsWith('code:')).map(entry => [entry.tool, entry.outcome])).toEqual([['fs_read', 'denied'], ['fs_list', 'denied']])
-    expect(results(runtime).filter(entry => entry.requestId.startsWith('code:') || entry.tool === 'code_run')).toEqual([])
+    expect((await results(child)).filter(entry => entry.requestId.startsWith('code:')).map(entry => [entry.tool, entry.outcome])).toEqual([['fs_read', 'denied'], ['fs_list', 'denied']])
+    expect((await results(runtime)).filter(entry => entry.requestId.startsWith('code:') || entry.tool === 'code_run')).toEqual([])
     expect([...runtime.approvals.pending(), ...child.approvals.pending()]).toEqual([])
     await runtime.history.close()
   }, 30_000)

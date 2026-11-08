@@ -4,6 +4,7 @@ import { keysCommand } from '../../cli/keys.js'
 import { enrollEarlierKey } from '../support/earlier-keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // B24, approval-proofs.md (Setup activity; Protocol gates): a person's key opens a setup session with
 // a signed request, and each signed setup change names it and refreshes it. Forged, replayed or
@@ -57,8 +58,8 @@ async function lastActivity(buckle: BuckleHttp, id: string): Promise<string | un
   return (await buckle.services.getSetupSessions()).list().find(session => session.id === id)?.lastActivityAt
 }
 
-function refusals(buckle: BuckleHttp): Array<string | undefined> {
-  return buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
+async function refusals(buckle: BuckleHttp): Promise<Array<string | undefined>> {
+  return (await auditEntries(buckle.nodeActions, 200)).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
 }
 
 describe('a setup session (B24)', () => {
@@ -71,7 +72,7 @@ describe('a setup session (B24)', () => {
     expect(buckle.runtime.policy.stored().commands.deny).toEqual(['rm *'])
     // The request that opens one names none.
     expect((await send(buckle, signed(buckle, { method: 'POST', path: buckle.setup('sessions'), body: '', session }))).status).toBe(401)
-    expect(refusals(buckle)).toEqual(['session_required', 'session_closed', 'session_not_expected'])
+    expect(await refusals(buckle)).toEqual(['session_required', 'session_closed', 'session_not_expected'])
   })
 
   it('refreshes only on a fresh verified request of its own key: forged, replayed, altered and foreign requests refresh nothing', async () => {
@@ -87,7 +88,7 @@ describe('a setup session (B24)', () => {
     expect((await send(buckle, { ...genuine, call: { ...genuine.call, body: policy.replace('rm *', 'ls') } })).status).toBe(401)
     expect((await send(buckle, signed(buckle, { key: colleague, session }))).status).toBe(401)
     expect(await lastActivity(buckle, session)).toBe(before)
-    expect(refusals(buckle)).toEqual(['unknown_key', 'replayed', 'body_mismatch', 'session_closed'])
+    expect(await refusals(buckle)).toEqual(['unknown_key', 'replayed', 'body_mismatch', 'session_closed'])
     // A GET is inspection: it needs the admin credential and touches no session.
     expect((await buckle.request(buckle.setup('status'), { headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
     expect(await lastActivity(buckle, session)).toBe(before)
@@ -105,7 +106,7 @@ describe('a setup session (B24)', () => {
     expect((await send(buckle, finish)).status).toBe(401)
     expect((await send(buckle, earlier)).status).toBe(401)
     expect((await send(buckle, signed(buckle, { session }))).status).toBe(401)
-    expect(refusals(buckle)).toEqual(['replayed', 'session_closed', 'session_closed'])
+    expect(await refusals(buckle)).toEqual(['replayed', 'session_closed', 'session_closed'])
     expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
 
@@ -117,7 +118,7 @@ describe('a setup session (B24)', () => {
     expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['revoke', owner.keyId] })).exitCode).toBe(0)
     expect((await buckle.services.getSetupSessions()).list()).toEqual([])
     expect((await send(buckle, captured)).status).toBe(401)
-    expect(refusals(buckle)).toEqual(['unknown_key'])
+    expect(await refusals(buckle)).toEqual(['unknown_key'])
     expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
 

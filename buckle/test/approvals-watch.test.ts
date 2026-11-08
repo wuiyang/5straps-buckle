@@ -17,6 +17,7 @@ import { fixedInteraction, approvalServiceWithTerminal } from './support/interac
 import { mkdirSync } from 'node:fs'
 import { PLAIN_MARKS, commandMarks } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 const POLL = { first: 20, idle: 50 }
 
@@ -106,7 +107,7 @@ describe('buckle approvals --watch over several workspaces', () => {
       terminal.type('o\r')
       await vi.waitFor(() => expect(terminal.shown()).toContain(`Approved (once) ${token} in workspace Site two`))
       expect(registryOf(second).pending()).toEqual([])
-      expect(secondLog.read(10).map(entry => entry.tool)).toContain('cli_approve')
+      expect((await auditEntries(secondLog, 10)).map(entry => entry.tool)).toContain('cli_approve')
       expect(firstLog.read(10)).toEqual([])
     } finally {
       terminal.type('\x03')
@@ -360,10 +361,10 @@ describe('buckle approvals --watch, audit', () => {
     terminal.type('\x03')
     await done
 
-    const results = actions.read(50).filter(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    const results = (await auditEntries(actions, 50)).filter(entry => entry.tool === 'cli_approve' && entry.event === 'result')
     expect(results).toHaveLength(2)
     expect(results.map(entry => [entry.workspaceId, entry.sessionId, entry.outcome])).toEqual([['default', 'local-owner', 'ok'], ['default', 'local-owner', 'ok']])
-    expect(actions.read(50).filter(entry => entry.tool === 'cli_approve' && entry.event === 'attempt')).toHaveLength(2)
+    expect((await auditEntries(actions, 50)).filter(entry => entry.tool === 'cli_approve' && entry.event === 'attempt')).toHaveLength(2)
     expect(grantsOf(config).map(grant => [grant.subject, grant.scope])).toEqual([['10.0.0.1', 'always']])
   })
 })

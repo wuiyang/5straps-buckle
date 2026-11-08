@@ -10,6 +10,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { idOf, workspacesOf } from './support/workspaces.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice D, rollback as an agent option, item 2: packs.history withholds history_list and history_restore, on by default
 // since every restore asks a person, over the node's BUCKLE_ALLOW_HISTORY; the tool policy reads a denial of fs_read or
@@ -20,6 +21,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 function scratch(): string {

@@ -12,12 +12,13 @@ import { logger } from '../common/runtime/log.js'
 import { chooseBrowser, settingScrubber } from '../common/services/packs/browser/mode.js'
 import { createSetupViews } from '../common/services/setup/setup-views.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // A node owner may point the browser pack at a browser that keeps a login, and pass extra Chromium arguments. Fresh
 // sessions stay the default, and nothing an agent sends selects these modes.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function base(): { root: string; workspace: string; state: string; environment: NodeJS.ProcessEnv } {
   const root = mkdtempSync(join(tmpdir(), 'buckle-browser-settings-'))

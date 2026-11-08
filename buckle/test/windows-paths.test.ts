@@ -26,12 +26,13 @@ import { findInput, listInput, searchInput } from '../common/services/packs/fs/s
 import { searchContent } from '../common/services/packs/fs/search.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Buckle names every path with pathe. These tests give the path helpers and the sandbox's walks Windows-shaped input
 // on Linux, and imitate Windows' open, which has no O_NOFOLLOW, through the platform each check takes.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), 'buckle-windows-paths-'))

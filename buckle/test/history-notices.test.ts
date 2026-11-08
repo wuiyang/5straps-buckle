@@ -8,6 +8,7 @@ import { createMcpHttpHandlers } from '../mcp/http.js'
 import { copyCommand } from '../cli/copy.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
 const runtimes: CoreRuntime[] = []
@@ -16,6 +17,7 @@ afterEach(async () => {
   vi.restoreAllMocks()
   for (const server of servers.splice(0)) { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

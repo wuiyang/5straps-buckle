@@ -11,6 +11,7 @@ import { logger } from '../common/runtime/log.js'
 import { runCli } from './support/cli.js'
 import { byName, idOf } from './support/workspaces.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The workspace-model brief, item 4, item 6, Q9, and D85, Q15: every ask names its workspace by name; `buckle approvals`,
 // its watch, and `buckle approve` default to the workspace holding the current directory, take --workspace or --dir for
@@ -37,6 +38,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks()
   await manager.close()
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 
@@ -130,7 +132,7 @@ describe('buckle approve naming no workspace', () => {
     expect(runtime.approvals.pending()).toEqual([])
     expect(readFileSync(actionsPath(config), 'utf8')).toContain('"tool":"cli_approve"')
     // D85, Q15: the workspace's entries carry its name beside its id.
-    expect(runtime.actions.read(5).filter(entry => entry.tool === 'cli_approve').map(entry => [entry.workspaceId, entry.workspaceName])).toEqual([[idOf(manager, 'Site two'), 'Site two'], [idOf(manager, 'Site two'), 'Site two']])
+    expect((await auditEntries(runtime.actions, 5)).filter(entry => entry.tool === 'cli_approve').map(entry => [entry.workspaceId, entry.workspaceName])).toEqual([[idOf(manager, 'Site two'), 'Site two'], [idOf(manager, 'Site two'), 'Site two']])
     expect((await byName(manager, 'Site one')).runtime.approvals.pending()).toHaveLength(1)
   })
 
@@ -157,7 +159,7 @@ describe('an approver\'s command refused before any workspace answers it', () =>
     [['approve', 'bogus-token', '--workspace', 'nosuch'], 'cli_approve'],
   ])('%j is recorded in the node\'s log, an attempt and a failed result', async (argv, tool) => {
     expect((await buckle(argv)).exitCode).toBe(1)
-    const entries = createFileActionLog(actionsPath(node)).read(20).filter(entry => entry.tool === tool)
+    const entries = (await auditEntries(createFileActionLog(actionsPath(node)), 20)).filter(entry => entry.tool === tool)
     expect(entries.map(entry => [entry.event, entry.outcome])).toEqual([['attempt', 'started'], ['result', 'error']])
   })
 })
@@ -166,7 +168,7 @@ describe('an approver\'s command refused before any workspace answers it', () =>
 // node. Its exit 1 means denied, so each refusal takes its bad-input code 2.
 describe('buckle check-url refused before a workspace is chosen', () => {
   const attemptAndResult = [['attempt', 'started'], ['result', 'error']]
-  const logged = () => createFileActionLog(actionsPath(node)).read(40).filter(entry => entry.tool === 'cli_check-url').map(entry => [entry.event, entry.outcome])
+  const logged = async () => (await auditEntries(createFileActionLog(actionsPath(node)), 40)).filter(entry => entry.tool === 'cli_check-url').map(entry => [entry.event, entry.outcome])
 
   it.each([
     [['https://example.com'], 'No workspace holds the current directory. Name one with --workspace <name>'],
@@ -178,14 +180,14 @@ describe('buckle check-url refused before a workspace is chosen', () => {
     expect(refused.exitCode).toBe(2)
     expect(refused.err).toContain(why)
     expect(refused.err).not.toContain('Cannot read this node\'s policy or state')
-    expect(logged()).toEqual(attemptAndResult)
+    expect(await logged()).toEqual(attemptAndResult)
   })
 })
 
 // Recheck of finding 31: three more refusals of an owner's command that the audit log kept nowhere. The node's log holds
 // each as an attempt and a failed result, as docs/user/how-to/audit-log.md says of every refusal.
 describe('an owner\'s command refused before it names a workspace, under the node scope', () => {
-  const nodeEntries = (tool: string) => createFileActionLog(actionsPath(node)).read(40).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])
+  const nodeEntries = async (tool: string) => (await auditEntries(createFileActionLog(actionsPath(node)), 40)).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])
   const recorded = [['attempt', 'started'], ['result', 'error']]
 
   it('records a command naming no online workspace', async () => {
@@ -196,8 +198,8 @@ describe('an owner\'s command refused before it names a workspace, under the nod
       expect(refused.exitCode).toBe(1)
       expect(refused.err).toContain('No workspace is online')
     }
-    expect(nodeEntries('cli_approve')).toEqual(recorded)
-    expect(nodeEntries('cli_approvals')).toEqual(recorded)
+    expect(await nodeEntries('cli_approve')).toEqual(recorded)
+    expect(await nodeEntries('cli_approvals')).toEqual(recorded)
   })
 
   it.each([
@@ -209,7 +211,7 @@ describe('an owner\'s command refused before it names a workspace, under the nod
     const refused = await buckle(argv)
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain(why)
-    expect(nodeEntries(tool)).toEqual(recorded)
+    expect(await nodeEntries(tool)).toEqual(recorded)
   })
 
   // Fix brief 4, findings 33 and 34: --all beside a named workspace was ignored, and the usage texts left --all out.
@@ -224,7 +226,7 @@ describe('an owner\'s command refused before it names a workspace, under the nod
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain('Name one workspace with --workspace or --dir, or pass --all, not both')
     expect(refused.out).toBe('')
-    expect(nodeEntries(tool)).toEqual(recorded)
+    expect(await nodeEntries(tool)).toEqual(recorded)
   })
 
   it.each([
@@ -243,7 +245,7 @@ describe('an owner\'s command refused before it names a workspace, under the nod
     expect(refused.exitCode).toBe(1)
     expect(refused.err).toContain("Unknown option '--bogus'")
     expect(refused.err).toContain(usage)
-    expect(nodeEntries(argv[0] === 'approve' ? 'cli_approve' : 'cli_approvals')).toEqual(recorded)
+    expect(await nodeEntries(argv[0] === 'approve' ? 'cli_approve' : 'cli_approvals')).toEqual(recorded)
   })
 
   it.each([
@@ -255,7 +257,7 @@ describe('an owner\'s command refused before it names a workspace, under the nod
     expect(refused.err).toContain("Unknown option '--bogus'")
     expect(refused.err).toContain(usage)
     const { runtime } = await byName(manager, 'Site one')
-    expect(runtime.actions.read(20).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])).toEqual(recorded)
+    expect((await auditEntries(runtime.actions, 20)).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.outcome])).toEqual(recorded)
   })
 })
 

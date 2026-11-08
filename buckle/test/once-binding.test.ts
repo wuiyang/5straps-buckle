@@ -12,6 +12,7 @@ import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Review item 1 of the proof-of-possession fixes (S1 and S2 of the B23-B25 review): a `once` decided on
 // an ask covers the call that asked and no other, whichever route decided it (policy.md: "Once binds to
@@ -19,8 +20,9 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 // person's key proved was bound before; these are the routes that decide without a challenge.
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

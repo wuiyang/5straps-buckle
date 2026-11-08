@@ -12,13 +12,14 @@ import { createForgePack } from '../common/services/packs/forge/index.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice D, rollback as an agent option, item 4: git_revert makes a new commit that undoes one (git revert --no-edit, no
 // hard reset ever), under the node's agent identity and the forge pack's isolation, as git_commit commits. A merge commit
 // needs mainline; a dirty work tree is refused by git itself, whose refusal is passed through; a conflict is aborted.
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const IDENTITY = ['-c', 'user.name=owner', '-c', 'user.email=owner@example.com']
 

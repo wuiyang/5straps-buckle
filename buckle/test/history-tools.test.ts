@@ -13,6 +13,7 @@ import { createPiCodemodeVm } from '../common/adapters/script-vm/pi-codemode.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice D, rollback as an agent option: history_list answers the newest checkpoints from the current state back, and
 // history_restore restores the workspace to before one, by id or steps, through the restore path. Every restore asks a
@@ -22,6 +23,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

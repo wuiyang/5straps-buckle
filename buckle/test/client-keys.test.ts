@@ -13,6 +13,7 @@ import { actionsPath, clientKeysPath, nodeKeyPath, requestNoncesPath, type Buckl
 import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.js'
 import { initializeCommon } from '../common/runtime/initialize.js'
 import { loadNodeKey } from '../common/adapters/keys/file-node-key.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 // B23, owner ruling H4 of 2026-09-28: the SSH model. A person's device keeps its Ed25519 private key
 // owner-only (`buckle client`); the owner enrolls the public half on the node (`buckle keys`), locally.
@@ -116,9 +117,9 @@ describe('buckle keys: the node side, local only', () => {
     expect(createFileClientKeys({ filePath: clientKeysPath(config) }).publicKeyFor(device.keyId, SETUP_ON_DEFAULT)).toEqual({ refused: 'unknown_key' })
     expect((await runCli({ argv: ['keys', 'revoke', 'SHA256:nobody'], config })).exitCode).toBe(1)
 
-    const audited = createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')).read(20).filter(entry => entry.tool === 'cli_keys' && entry.event === 'result')
+    const audited = (await auditEntries(createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')), 20)).filter(entry => entry.tool === 'cli_keys' && entry.event === 'result')
     expect(audited.map(entry => entry.detail)).toEqual([`enroll ${device.keyId} setup node`, undefined, undefined, `revoke ${device.keyId}`, undefined])
-    expect(JSON.stringify(createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')).read(50))).not.toContain(device.publicKey.slice('ed25519:'.length))
+    expect(JSON.stringify(await auditEntries(createFileActionLog(join(config.nodeStateDirectory!, 'actions.jsonl')), 50))).not.toContain(device.publicKey.slice('ed25519:'.length))
   })
 
   it('refuses what is not an Ed25519 public key, and a key revoked before', async () => {

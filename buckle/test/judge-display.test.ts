@@ -14,6 +14,7 @@ import type { QuickJudge, QuickResult } from '../common/types/ports/quick-judge.
 import { fixedInteraction } from './support/interaction.js'
 import { captureWebhook } from './support/webhook.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Where the decision AI ran and did not pass a call, the ask goes out with its verdict beside the whole action (D91,
 // brief item 4): the terminal question's judge line, the webhook's judge object, the listing's call, and the level
@@ -24,6 +25,7 @@ const closing: Array<() => Promise<unknown>> = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const close of closing.splice(0)) await close()
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

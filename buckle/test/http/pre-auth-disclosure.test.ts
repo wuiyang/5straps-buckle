@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ActionLogEntry } from '../../common/types/ports/action-log.js'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // Review M1 and L6 of B15-B17: nothing an agent-facing route answers names the owner's state path,
 // and a workbench path tells a caller without the grant nothing about whether its workspace exists.
@@ -48,8 +49,8 @@ function breakStoredPolicy(state: string, id: string): void {
 }
 
 /** The node's own log, where a refusal before a workspace is known is recorded (D85, Q15). */
-function nodeLog(buckle: BuckleHttp): ActionLogEntry[] {
-  return buckle.nodeActions.read(200)
+async function nodeLog(buckle: BuckleHttp): Promise<ActionLogEntry[]> {
+  return (await auditEntries(buckle.nodeActions, 200))
 }
 
 describe('a workspace whose stored policy will not load', () => {
@@ -86,9 +87,9 @@ describe('a workspace whose stored policy will not load', () => {
     await register(buckle, 'two')
     breakStoredPolicy(buckle.state, await buckle.idOf('two'))
     await buckle.request(`/workspaces/two/v1/workbenches/${randomUUID()}`, { headers: bearer(FAKE_GRANT) })
-    const refusal = nodeLog(buckle).find(entry => entry.tool === 'workbench_auth_rejected')
+    const refusal = (await nodeLog(buckle)).find(entry => entry.tool === 'workbench_auth_rejected')
     expect(refusal).toMatchObject({ workspaceId: await buckle.idOf('two'), detail: 'HTTP 401' })
-    expect(JSON.stringify(nodeLog(buckle))).not.toContain(FAKE_GRANT)
+    expect(JSON.stringify(await nodeLog(buckle))).not.toContain(FAKE_GRANT)
   })
 })
 
@@ -103,7 +104,7 @@ describe('workbench twins before the grant (review L6)', () => {
         expect({ workspace, token, status: response.status }).toEqual({ workspace, token, status: 401 })
       }
     }
-    const unresolved = nodeLog(buckle).filter(entry => entry.tool === 'workbench_auth_rejected' && entry.workspaceId === 'unresolved')
+    const unresolved = (await nodeLog(buckle)).filter(entry => entry.tool === 'workbench_auth_rejected' && entry.workspaceId === 'unresolved')
     expect(unresolved).toHaveLength(3)
   })
 })

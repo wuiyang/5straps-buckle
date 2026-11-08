@@ -21,6 +21,7 @@ import { resolveEffects } from '../common/services/invocation/resolve-effects.js
 import type { PathView } from '../common/domain/path-view.js'
 import { startGitHttp, type GitHttpServer } from './support/git-http.js'
 import { actionsPath } from '../common/runtime/config.js'
+import { auditWritten, settleAuditLogs } from './support/action-log-writer.js'
 
 /**
  * The runtime's process runner, passed through, with a hook a test may set to act just before git is
@@ -53,7 +54,7 @@ beforeAll(async () => {
 })
 
 afterAll(() => { server.close() })
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function startForgeServer(): Promise<Server> {
   const pull = (number: number, state = 'open') => ({
@@ -1446,6 +1447,7 @@ describe('a push to an approved https origin that names userinfo (review M4)', (
         try { await runtime.approvalService.close() } finally { await runtime.history.close() }
       }
       const basic = Buffer.from(`alice:${password}`).toString('base64')
+      await auditWritten()
       for (const form of [password, basic]) {
         expect(JSON.stringify(response)).not.toContain(form)
         expect(readFileSync(actionsPath(runtime.paths().root === repository ? { stateDirectory: join(state, 'workspaces', runtime.workspaceId) } : { stateDirectory: state }), 'utf8')).not.toContain(form)
@@ -1635,6 +1637,7 @@ describe('the credential', () => {
       expect(response.error.message).not.toContain(TOKEN)
     }
     expect(JSON.stringify(response)).not.toContain(TOKEN)
+    await auditWritten()
     expect(readFileSync(actionsPath(config), 'utf8')).not.toContain(TOKEN)
   })
 

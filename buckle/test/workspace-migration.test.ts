@@ -21,6 +21,7 @@ import { workspaceIdFor } from '../common/services/workspaces/workspace-id.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { runCli } from './support/cli.js'
 import { byName, workspaceIdOf } from './support/workspaces.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The workspace-model brief, item 1, and D85, Q3, Q14, and Q15: a node set up before the workspace model moves onto it at
 // its first start, once. Its own folder becomes a workspace named after the folder, with an id derived from it, and its
@@ -29,7 +30,7 @@ import { byName, workspaceIdOf } from './support/workspaces.js'
 // every workspace's defaults, copied into none.
 
 const roots: string[] = []
-afterEach(() => { vi.restoreAllMocks(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 const NODE_TOKEN = 'node-agent-token-fixture-for-migration'
 const SITE_TOKEN = 'site-agent-token-fixture-for-migration'

@@ -20,6 +20,7 @@ import type { ProcessRequest, ProcessRunner } from '../common/types/ports/proces
 import { ServiceManagerError, type ServiceManager } from '../common/types/ports/service-manager.js'
 import { leastProcessorTime, PROCESSOR_TIME_ROW_TIMEOUT } from './support/processor-time.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, auditWritten } from './support/action-log-writer.js'
 
 // D85 Q4, owner ruling of 2026-10-17 ("macOS find equivalent of Linux"): on macOS, a launchd agent, the counterpart of
 // the systemd user unit. No launchd runs here or on CI, so the agent is checked as the text launchd reads, and launchctl
@@ -485,6 +486,7 @@ describe.skipIf(process.platform === 'win32')('buckle service on macOS, with lau
     expect(await service(fake, ['stop'])).toMatchObject({ exitCode: 0, out: 'Stopped the Buckle service (the launchd agent com.5straps.buckle); no node was running.\n', err: '' })
     expect(fake.calls().slice(before)).toEqual(['print-disabled gui/501', `bootout ${SERVICE}`, `print ${SERVICE}`])
     expect(existsSync(join(fake.root, 'loaded'))).toBe(false)
+    await auditWritten()
     const entries = readFileSync(join(fake.state, 'actions.jsonl'), 'utf8').split('\n').filter(Boolean).map(line => JSON.parse(line) as { tool: string; event: string; outcome: string; detail?: string })
     expect(entries).toContainEqual(expect.objectContaining({ tool: 'cli_service', event: 'result', outcome: 'ok', detail: 'stop launchd' }))
 
@@ -670,7 +672,7 @@ describe('a shell command on Buckle\'s own launchd agent', () => {
     try {
       const refused = await runtime.invoke({ request: { requestId: 'agent-bootout', tool: 'shell_exec', args: { command: 'launchctl', args: ['bootout', 'gui/501/com.5straps.buckle'] }, approvalTokens: [] }, sessionId: 'launchd' })
       expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it. Only the owner can administer Buckle from their own terminal. A tool approval or allow rule cannot enable this action.' } })
-      expect(runtime.actions.read(20).filter(entry => entry.event === 'result')).toContainEqual(expect.objectContaining({ requestId: 'agent-bootout', outcome: 'denied' }))
+      expect((await auditEntries(runtime.actions, 20)).filter(entry => entry.event === 'result')).toContainEqual(expect.objectContaining({ requestId: 'agent-bootout', outcome: 'denied' }))
       expect(existsSync(join(root, 'ran'))).toBe(false)
     } finally {
       vi.unstubAllEnvs()

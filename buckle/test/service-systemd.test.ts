@@ -10,6 +10,7 @@ import { runProcess } from '../common/adapters/process-runner.js'
 import { createSystemdManager } from '../common/adapters/service-manager/systemd.js'
 import { readUnit, renderUnit, systemdGuardedPaths, systemdUnitDirectory, systemdUnitPaths } from '../common/domain/systemd-unit.js'
 import { ServiceManagerError } from '../common/types/ports/service-manager.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 // Phase 3, item 2 of the workspace-model slice (Q4): on Linux, a systemd user unit. No systemd user session runs here
 // or on CI, so a fake systemctl on PATH records each call's words and environment, and answers as the user manager
@@ -147,7 +148,7 @@ describe('a shell command on Buckle\'s own unit', () => {
     try {
       const refused = await runtime.invoke({ request: { requestId: 'unit-stop', tool: 'shell_exec', args: { command: 'systemctl', args: ['--user', 'stop', 'buckle.service'] }, approvalTokens: [] }, sessionId: 'unit' })
       expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: 'A tool cannot administer the Buckle that runs it. Only the owner can administer Buckle from their own terminal. A tool approval or allow rule cannot enable this action.' } })
-      const audited = runtime.actions.read(20).filter(entry => entry.event === 'result')
+      const audited = (await auditEntries(runtime.actions, 20)).filter(entry => entry.event === 'result')
       expect(audited, JSON.stringify(audited)).toContainEqual(expect.objectContaining({ requestId: 'unit-stop', outcome: 'denied' }))
       expect(existsSync(join(root, 'ran'))).toBe(false)
     } finally {

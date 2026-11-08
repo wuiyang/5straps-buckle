@@ -9,6 +9,7 @@ import { keysCommand } from '../../cli/keys.js'
 import { enrollEarlierKey } from '../support/earlier-keys.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // B23, owner ruling H4 of 2026-09-28: the setup and approval guards accept a request a person's
 // enrolled key signed, as well as the admin credential for now; inspection stays on the admin
@@ -62,8 +63,8 @@ function send(buckle: BuckleHttp, authorization: string, input: { method?: strin
   return buckle.request(input.path ?? buckle.setup('policy'), { method: input.method ?? 'PUT', headers: { authorization, 'content-type': 'application/json' }, ...(body ? { body } : {}) })
 }
 
-function refusals(buckle: BuckleHttp): Array<string | undefined> {
-  return buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
+async function refusals(buckle: BuckleHttp): Promise<Array<string | undefined>> {
+  return (await auditEntries(buckle.nodeActions, 200)).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => entry.detail)
 }
 
 describe('a request the enrolled key signed (B23)', () => {
@@ -74,7 +75,7 @@ describe('a request the enrolled key signed (B23)', () => {
     expect(buckle.runtime.policy.stored().commands.deny).toEqual(['rm *'])
     expect((await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
     expect(buckle.runtime.policy.stored().commands.deny).toEqual([])
-    expect(refusals(buckle)).toEqual([])
+    expect(await refusals(buckle)).toEqual([])
   })
 
   it('opens the approval guard for a plain decision, on the workspace twin as well, where a paired node refuses a plain one with the admin credential', async () => {
@@ -101,7 +102,7 @@ describe('a request the enrolled key signed (B23)', () => {
     const body = 'not a decision'
     const refused = await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'POST', path, body }), { method: 'POST', path, body })
     expect(refused.status).toBe(401)
-    const tools = buckle.runtime.actions.read(200).map(entry => entry.tool)
+    const tools = (await auditEntries(buckle.runtime.actions, 200)).map(entry => entry.tool)
     expect(tools).toContain('setup_approval_proof_refused')
     expect(tools).not.toContain('setup_approval_envelope_refused')
   })
@@ -129,9 +130,9 @@ describe('a request the enrolled key signed (B23)', () => {
       // Nothing tells an unauthenticated caller which check failed.
       expect(await response.json()).toEqual({ error: 'Unauthorized' })
     }
-    expect(refusals(buckle)).toEqual(cases.map(([reason]) => reason))
+    expect(await refusals(buckle)).toEqual(cases.map(([reason]) => reason))
     // Each refusal names the key its payload claims, when one could be read (review H4 of B23-B25).
-    const claimed = buckle.nodeActions.read(200).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => (entry.args as { claimedKeyId?: string }).claimedKeyId)
+    const claimed = (await auditEntries(buckle.nodeActions, 200)).filter(entry => entry.tool === 'setup_signed_request_refused').map(entry => (entry.args as { claimedKeyId?: string }).claimedKeyId)
     expect(claimed).toEqual([...cases.slice(0, -2).map(() => owner.keyId), stranger.keyId, undefined])
     expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
   })
@@ -149,7 +150,7 @@ describe('a request the enrolled key signed (B23)', () => {
     const payload = JSON.parse(Buffer.from(encoded!, 'base64url').toString('utf8')) as Record<string, unknown>
     const substituted = `${scheme} ${Buffer.from(JSON.stringify({ ...payload, keyId: owner.keyId })).toString('base64url')}.${signature}`
     expect((await send(buckle, substituted)).status).toBe(401)
-    expect(refusals(buckle)).toEqual(['replayed', 'wrong_purpose', 'bad_signature'])
+    expect(await refusals(buckle)).toEqual(['replayed', 'wrong_purpose', 'bad_signature'])
   })
 
   it('refuses a key once the owner revokes it, at once and for good', async () => {
@@ -164,7 +165,7 @@ describe('a request the enrolled key signed (B23)', () => {
     expect((await keysCommand({ config: buckle.config, workspaces: await buckle.services.getWorkspaces(), argv: ['enroll', owner.publicKey, '--purpose', 'setup', '--workspace', 'node'] })).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('was revoked')
     expect((await send(buckle, sign(buckle, { session }))).status).toBe(401)
-    expect(refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])
+    expect(await refusals(buckle)).toEqual(['unknown_key', 'unknown_key'])
   })
 
   it('keeps inspection on the admin credential: a signed read is refused', async () => {
@@ -243,9 +244,9 @@ describe('a key\'s scope over three children (owner decision D10)', () => {
     const onNode = await sessionOn(buckle, setupOnNode, 'node')
     const renamed = await send(buckle, sign(buckle, { key: setupOnNode, workspace: 'node', method: 'PATCH', path: registryPath, body: rename, session: String(onNode) }), { method: 'PATCH', path: registryPath, body: rename })
     expect(renamed.status).toBe(200)
-    expect(refusals(buckle)).toEqual(['out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope'])
+    expect(await refusals(buckle)).toEqual(['out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope', 'out_of_scope'])
     // The registry change names the key that made it (review H4 of B23-B25).
-    expect(buckle.nodeActions.read(200).filter(entry => entry.tool === 'http_workspace_registry_patch' && entry.event === 'result' && entry.outcome === 'ok').map(entry => entry.actorId)).toEqual([`key:${setupOnNode.keyId}`])
+    expect((await auditEntries(buckle.nodeActions, 200)).filter(entry => entry.tool === 'http_workspace_registry_patch' && entry.event === 'result' && entry.outcome === 'ok').map(entry => entry.actorId)).toEqual([`key:${setupOnNode.keyId}`])
   })
 })
 
@@ -257,7 +258,7 @@ describe('the node a request is signed for (owner decision D11)', () => {
     expect(first.nodeKey).not.toBe(second.nodeKey)
     const forFirst = sign(first, { method: 'POST', path: first.setup('sessions'), body: '' })
     expect((await send(second, forFirst, { method: 'POST', path: first.setup('sessions'), body: '' })).status).toBe(401)
-    expect(refusals(second)).toEqual(['wrong_target'])
+    expect(await refusals(second)).toEqual(['wrong_target'])
     expect((await send(first, forFirst, { method: 'POST', path: first.setup('sessions'), body: '' })).status).toBe(201)
   })
 
@@ -284,14 +285,14 @@ describe('the node a request is signed for (owner decision D11)', () => {
 
     expect((await clientCommand(['session', 'open', relayUrl], environment)).exitCode).toBe(1)
     expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('is not pinned on this device')
-    expect(refusals(buckle)).toEqual([])
+    expect(await refusals(buckle)).toEqual([])
     // The person pinned X as the node it really is; the node behind it refuses what X relays.
     expect((await clientCommand(['trust', relayUrl, 'relay-x', generateSigningKey().publicKey], environment)).exitCode).toBe(0)
     expect((await clientCommand(['session', 'open', relayUrl], environment)).exitCode).toBe(1)
     const body = JSON.stringify({ version: 1, network: { allow: ['meant-for-x.example'] } })
     expect((await clientCommand(['request', 'PUT', `${relayUrl}/setup/policy`, '--body', body, '--session', 'AAAAAAAAAAAAAAAAAAAAAA'], environment)).exitCode).toBe(1)
     expect(buckle.runtime.policy.stored().updatedAt).toBeNull()
-    expect(refusals(buckle)).toEqual(['wrong_target', 'wrong_target'])
+    expect(await refusals(buckle)).toEqual(['wrong_target', 'wrong_target'])
   })
 })
 
@@ -309,26 +310,26 @@ describe('who signed, in the audit (review H4 of B23-B25)', () => {
     const decision = JSON.stringify({ token, approved: true, scope: 'session', challenge: listed.challenges[0]!.digest })
     expect((await send(buckle, sign(buckle, { purpose: 'buckle-approval', method: 'POST', path: buckle.setup('approvals'), body: decision }), { method: 'POST', path: buckle.setup('approvals'), body: decision })).status).toBe(200)
 
-    const attributed = (tool: string) => buckle.runtime.actions.read(200).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.actorId])
-    expect(attributed('setup_post_sessions')).toEqual([['attempt', actor], ['result', actor]])
-    expect(attributed('setup_put_policy')).toEqual([['attempt', actor], ['result', actor]])
-    expect(attributed('setup_get_approvals-challenges')).toEqual([['result', actor]])
-    expect(attributed('setup_post_approvals')).toEqual([['attempt', actor], ['result', actor]])
+    const attributed = async (tool: string) => (await auditEntries(buckle.runtime.actions, 200)).filter(entry => entry.tool === tool).map(entry => [entry.event, entry.actorId])
+    expect(await attributed('setup_post_sessions')).toEqual([['attempt', actor], ['result', actor]])
+    expect(await attributed('setup_put_policy')).toEqual([['attempt', actor], ['result', actor]])
+    expect(await attributed('setup_get_approvals-challenges')).toEqual([['result', actor]])
+    expect(await attributed('setup_post_approvals')).toEqual([['attempt', actor], ['result', actor]])
     expect(buckle.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', decidedBy: actor })])
     // The admin credential is named too.
     expect((await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: { authorization: `Bearer ${ADMIN}` } })).status).toBe(200)
-    expect(attributed('setup_delete_policy')).toEqual([['attempt', `admin:${buckle.runtime.workspaceId}`], ['result', `admin:${buckle.runtime.workspaceId}`]])
+    expect(await attributed('setup_delete_policy')).toEqual([['attempt', `admin:${buckle.runtime.workspaceId}`], ['result', `admin:${buckle.runtime.workspaceId}`]])
   })
 })
 
 describe('a node with no BUCKLE_ADMIN_TOKEN and the flag on (review M4 of B23-B25)', () => {
   it('answers a signed request 404, as when the face is not there, and audits nothing', async () => {
     const buckle = await node({ BUCKLE_ADMIN_TOKEN: '' })
-    const before = buckle.runtime.actions.read(500).length
+    const before = (await auditEntries(buckle.runtime.actions, 500)).length
     const response = await send(buckle, sign(buckle, { method: 'POST', path: buckle.setup('sessions'), body: '' }), { method: 'POST', path: buckle.setup('sessions'), body: '' })
     expect(response.status).toBe(404)
     expect((await send(buckle, sign(buckle))).status).toBe(404)
-    expect(buckle.runtime.actions.read(500).length).toBe(before)
+    expect((await auditEntries(buckle.runtime.actions, 500)).length).toBe(before)
     expect((await buckle.services.getSetupSessions()).list()).toEqual([])
   })
 })

@@ -8,6 +8,7 @@ import { blobId } from '../common/services/history/object-store.js'
 import { applySnapshot, SnapshotConflictError } from '../common/services/history/snapshot.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice F2, item 2 (A1 of the 2026-11-01 review): a restore touches only the paths its checkpoints recorded, each read
 // from the disk now and required to stand as the newest checkpoint left it, or the path is a conflict. Ignore rules never
@@ -30,6 +31,7 @@ afterEach(async () => {
   contentRead.hook = undefined
   for (const history of histories.splice(0)) await history.close()
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

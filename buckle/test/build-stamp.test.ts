@@ -8,9 +8,10 @@ import { readBuildInfo, writeBuildInfo } from '../scripts/build-info.mjs'
 import { BUCKLE_BUILD, BUCKLE_VERSION, buildStampOf, stampedVersion } from '../common/runtime/version.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const made: string[] = []
-afterEach(() => { for (const directory of made.splice(0)) rmSync(directory, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const directory of made.splice(0)) rmSync(directory, { recursive: true, force: true }) })
 function scratch(prefix: string): string { const directory = mkdtempSync(join(tmpdir(), prefix)); made.push(directory); return directory }
 
 /** A repository of one commit, its git isolated from the machine's own configuration. */

@@ -11,6 +11,7 @@ import type { ProcessRequest } from '../common/types/ports/process-runner.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { historyObjects } from './support/history-objects.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Fix brief 6, item 2 (finding 2 of recheck 4): the workspace's own folder is checked at each use, as a mount's source
 // is. Swapped for a link since it was registered (by another workspace's agent with write access to its parent, say),
@@ -39,7 +40,8 @@ vi.mock('../common/adapters/process-runner.js', async (importOriginal) => {
 })
 
 const roots: string[] = []
-afterEach(() => {
+afterEach(async () => {
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   bwrap.length = 0
   swaps.length = 0

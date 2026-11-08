@@ -14,6 +14,7 @@ import { settingsPath, type WorkspaceSettings } from '../common/services/workspa
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
 import { fixedInteraction } from './support/interaction.js'
+import { auditWritten, settleAuditLogs } from './support/action-log-writer.js'
 
 // The workspace-model brief, item 7 and Q2: a running workspace takes up a write to its workspace.json at the next
 // call, found by a stat, with no watcher. Lists and the approval wait apply between calls; a change to the packs waits
@@ -42,6 +43,7 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const manager of managers.splice(0)) await manager.close()
+  await settleAuditLogs()
   rmSync(base, { recursive: true, force: true })
 })
 
@@ -230,6 +232,7 @@ describe('a call refused before it reaches the invoker', () => {
   it('records nothing for a call that is answered, beyond the invoker\'s own pair', async () => {
     const runtime = await held()
     expect(await call(runtime)).toMatchObject({ outcome: 'ok' })
+    await auditWritten()
     expect(recorded(runtime).map(entry => [entry.event, entry.outcome])).toEqual([['attempt', 'started'], ['result', 'ok']])
   })
 })

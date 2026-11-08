@@ -9,6 +9,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The owner's report of 2026-11-01 (docs/user/how-to/secrets.md): a code_run script could not fill a password through a secret
 // reference, as the whole code_run call was refused for the reference in its script. The script is not read for
@@ -39,6 +40,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -112,7 +114,7 @@ describe('a code_run script that passes a reference to a fill', () => {
     expect(page()).toBe(TOKEN)
     // The log is the process's own, as the spy saw it: it names the calls, and never the value.
     expect(log).toContain('Tool call completed')
-    const audit = runtime.actions.read(50)
+    const audit = await auditEntries(runtime.actions, 50)
     expect(audit.filter(entry => entry.event === 'result').map(entry => [entry.tool, entry.outcome])).toEqual([['browser_command', 'ok'], ['browser_command', 'ok'], ['code_run', 'ok']])
     expect(JSON.stringify([response, audit, log, stateText(root)])).not.toContain(TOKEN)
   })
@@ -128,7 +130,7 @@ return filled.result.data.filled`
       const response = await codeRun(runtime, script)
       expect(ran(response)).toMatchObject({ ok: true, value: LABEL })
       expect(page()).toBe(TOKEN)
-      expect(JSON.stringify([response, runtime.actions.read(50)])).not.toContain(TOKEN)
+      expect(JSON.stringify([response, (await auditEntries(runtime.actions, 50))])).not.toContain(TOKEN)
     }
   })
 
@@ -161,7 +163,7 @@ return codes`)
       expect(message.startsWith(`PERMISSION_DENIED: ${PLACES_REASON}; this one is in content`)).toBe(true)
     }
     expect(existsSync(join(workspace, 'notes.txt'))).toBe(false)
-    expect(runtime.actions.read(50).filter(entry => entry.event === 'result' && entry.tool === 'fs_write').map(entry => entry.outcome)).toEqual(['denied', 'denied'])
+    expect((await auditEntries(runtime.actions, 50)).filter(entry => entry.event === 'result' && entry.tool === 'fs_write').map(entry => entry.outcome)).toEqual(['denied', 'denied'])
     // Refused before it is judged, as a direct call is: nobody is asked about the write or the file.
     expect(runtime.approvals.pending()).toEqual([])
   })
@@ -193,13 +195,13 @@ describe('the ask a nested reference makes', () => {
       description: expect.stringContaining('Called by a "code_run" script'),
       effects: expect.arrayContaining(['secrets API_TOKEN from .env.local']),
     })
-    expect(JSON.stringify([first, runtime.approvalService.waiting(), runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
+    expect(JSON.stringify([first, runtime.approvalService.waiting(), (await auditEntries(runtime.actions, 50)), stateText(root)])).not.toContain(TOKEN)
 
     expect((await runtime.approvalService.answer({ decision: { token: nested.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     const second = await codeRun(runtime, FILL)
     expect(ran(second)).toMatchObject({ ok: true, value: { filled: LABEL, page: LABEL } })
     expect(page()).toBe(TOKEN)
-    expect(JSON.stringify([second, runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
+    expect(JSON.stringify([second, (await auditEntries(runtime.actions, 50)), stateText(root)])).not.toContain(TOKEN)
   })
 })
 
@@ -225,7 +227,7 @@ return read.content`
     // The type was handed the label the read showed the script, never the value, and the page saved that.
     expect(page()).toBe(LABEL)
     expect(readFileSync(join(workspace, 'saved.txt'), 'utf8')).toBe(LABEL)
-    expect(JSON.stringify([response, runtime.actions.read(50), log, stateText(root)])).not.toContain(TOKEN)
+    expect(JSON.stringify([response, (await auditEntries(runtime.actions, 50)), log, stateText(root)])).not.toContain(TOKEN)
   })
 
   const ACROSS_ASK = `await tools.browser_command({ command: 'fill', args: ['#password', '${REF}'] })
@@ -242,7 +244,7 @@ return { before: before.content, after: after.content }`
     const ask = first.approvals.find(approval => approval.rule === 'write_scope')!
     expect(ask).toMatchObject({ tool: 'fs_write' })
     // The record holds the read's result for the resumed run, masked.
-    expect(JSON.stringify([first, setup.runtime.actions.read(50), stateText(setup.root)])).not.toContain(TOKEN)
+    expect(JSON.stringify([first, (await auditEntries(setup.runtime.actions, 50)), stateText(setup.root)])).not.toContain(TOKEN)
     expect((await setup.runtime.approvalService.answer({ decision: { token: ask.token, approved: true, scope: 'once' }, source: SOURCES.cli })).ok).toBe(true)
     return setup
   }
@@ -252,7 +254,7 @@ return { before: before.content, after: after.content }`
     const second = await codeRun(runtime, ACROSS_ASK)
     expect(ran(second)).toMatchObject({ ok: true, value: { before: LABEL, after: LABEL } })
     expect(readFileSync(join(workspace, 'one', 'out.md'), 'utf8')).toBe('x')
-    expect(JSON.stringify([second, runtime.actions.read(50), stateText(root)])).not.toContain(TOKEN)
+    expect(JSON.stringify([second, (await auditEntries(runtime.actions, 50)), stateText(root)])).not.toContain(TOKEN)
   })
 
   it('refuses the resumed script where a value its calls used before the ask no longer reads as it did, and runs it once the file is back', async () => {
@@ -263,7 +265,7 @@ return { before: before.content, after: after.content }`
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('API_TOKEN in .env.local') } })
     // Nothing after the ask ran, so the old value the file saved never reached a call the script could not mask.
     expect(existsSync(join(workspace, 'one', 'out.md'))).toBe(false)
-    expect(JSON.stringify([refused, runtime.actions.read(50), stateText(root)])).not.toMatch(new RegExp(`${TOKEN}|${other}`))
+    expect(JSON.stringify([refused, (await auditEntries(runtime.actions, 50)), stateText(root)])).not.toMatch(new RegExp(`${TOKEN}|${other}`))
     writeFileSync(join(workspace, '.env.local'), `API_TOKEN=${TOKEN}\n`)
     expect(ran(await codeRun(runtime, ACROSS_ASK))).toMatchObject({ ok: true, value: { before: LABEL, after: LABEL } })
   })

@@ -13,13 +13,14 @@ import { codeRunDescription, declare, DECLARATION_BUDGET_TOKENS, withinBudget } 
 import { createFsPack } from '../common/services/packs/fs/index.js'
 import { createWebPack } from '../common/services/packs/web/index.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // What a script is told about the tools it can call (owner decision D82, point 9): TypeScript declarations from each
 // tool's schema and description, within a budget in code_run's description, and whole from code_api.
 
 const vm = createPiCodemodeVm()
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** Every tool the built-in packs define, available here or not, but the code tools. */
 function builtinTools(): ToolCapability[] {

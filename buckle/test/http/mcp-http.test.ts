@@ -8,6 +8,7 @@ import type { McpHttpHandlers } from '../../common/types/ports/mcp-http.js'
 import { createBuckleHttp, mintedToken, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // The MCP face over HTTP on the MCP layer (B16): initialize, a tool call relayed through the invoker,
 // 405 with Allow for other methods, a cancelled call, and the workspace twin.
@@ -68,7 +69,7 @@ describe('the MCP face over HTTP', () => {
     const response = await buckle.request('/mcp', { method: 'POST', headers: headers(), body: initialize })
     expect(response.status).toBe(200)
     expect(await response.text()).toContain(buckle.config.serverName)
-    const tools = buckle.runtime.actions.read(20).map(entry => `${entry.tool}:${entry.event}:${entry.outcome}`)
+    const tools = (await auditEntries(buckle.runtime.actions, 20)).map(entry => `${entry.tool}:${entry.event}:${entry.outcome}`)
     expect(tools).toEqual(expect.arrayContaining(['http_mcp_post:attempt:started', 'http_mcp_post:result:ok']))
   })
 
@@ -79,7 +80,7 @@ describe('the MCP face over HTTP', () => {
     const response = await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, read.headers), body: read.body })
     expect(response.status).toBe(200)
     expect(await response.text()).toContain('relayed content')
-    expect(buckle.runtime.actions.read(20)).toContainEqual(expect.objectContaining({ tool: 'fs_read', event: 'result', outcome: 'ok' }))
+    expect(await auditEntries(buckle.runtime.actions, 20)).toContainEqual(expect.objectContaining({ tool: 'fs_read', event: 'result', outcome: 'ok' }))
 
     const write = toolCall('fs_write', { path: join(buckle.root, 'outside.md'), content: 'x' })
     const gated = await buckle.request('/mcp', { method: 'POST', headers: headers(TOKEN, write.headers), body: write.body })
@@ -108,7 +109,7 @@ describe('the MCP face over HTTP', () => {
     expect(ran.structuredContent).toBeUndefined()
     expect(existsSync(join(buckle.root, 'joined.md'))).toBe(true)
     expect(buckle.runtime.approvals.pending()).toEqual([])
-    expect(buckle.runtime.actions.read(50).filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => entry.outcome)).toEqual(['approval_required', 'approval_required', 'ok'])
+    expect((await auditEntries(buckle.runtime.actions, 50)).filter(entry => entry.tool === 'fs_write' && entry.event === 'result').map(entry => entry.outcome)).toEqual(['approval_required', 'approval_required', 'ok'])
   })
 
   it('reads no form answer the agent\'s token carries: an accepted approval in inputResponses leaves the ask waiting and writes nothing', async () => {
@@ -165,7 +166,7 @@ describe('the MCP face over HTTP', () => {
     const agent = await mintedToken(buckle.request('/setup/workspaces', { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'one', name: 'One', dir: one }) }))
 
     expect((await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: headers(), body: initialize })).status).toBe(401)
-    expect(buckle.nodeActions.read(20)).toContainEqual(expect.objectContaining({ tool: 'workspace_mcp_auth_rejected', workspaceId: await buckle.idOf('one'), outcome: 'denied' }))
+    expect(await auditEntries(buckle.nodeActions, 20)).toContainEqual(expect.objectContaining({ tool: 'workspace_mcp_auth_rejected', workspaceId: await buckle.idOf('one'), outcome: 'denied' }))
     const read = toolCall('fs_read', { path: '/workspace/note.md' })
     const response = await buckle.request('/workspaces/one/mcp', { method: 'POST', headers: headers(agent, read.headers), body: read.body })
     expect(response.status).toBe(200)

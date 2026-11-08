@@ -19,6 +19,7 @@ import { fixedInteraction, approvalServiceWithTerminal } from './support/interac
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { questionFor } from '../common/adapters/approval/terminal-question.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The delete policy brief, item 3: a delete outside the workspace's own folder (a writable mount, or a path an approval
 // reached) asks at the floor as before, and offers two subjects besides its scopes: the target alone, as before, or its
@@ -130,7 +131,7 @@ describe('the wider subject, where the target\'s folder is too wide to grant', (
 })
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 function scratch(): string {
   const root = mkdtempSync(join(tmpdir(), 'buckle-delete-below-'))
   roots.push(root)

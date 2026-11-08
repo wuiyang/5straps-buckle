@@ -11,6 +11,7 @@ import { createCommandPolicyRule } from '../../common/domain/permission/rules/co
 import { compilePolicy } from '../../common/domain/policy.js'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 const NODE_AGENT = 'node-agent-token-fixture'
 const NODE_ADMIN = 'node-admin-credential-fixture'
@@ -149,13 +150,13 @@ describe('a registry in the pre-BUCKLE-08 shape', () => {
       expect(JSON.parse(body)).toEqual({ error: 'Workspace registry needs owner repair' })
       expect(body).not.toContain(root)
       expect(body).not.toContain('workspaces.0')
-      if (tool) expect(app.nodeActions.read(1)[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
+      if (tool) expect((await auditEntries(app.nodeActions, 1))[0]).toMatchObject({ tool, workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 503' })
     }
     // A workbench path without a grant reads nothing, the registry included: the plain 401 (review L6 of B15-B17).
     expect((await app.request('/workspaces/anything/v1/workbenches/one')).status).toBe(401)
     // The admin credential is the node's (D83), checked without the registry: a caller without it learns nothing at all.
     expect((await app.request('/workspaces/anything/setup/status')).status).toBe(401)
-    expect(app.nodeActions.read(1)[0]).toMatchObject({ tool: 'workspace_setup_auth_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' })
+    expect((await auditEntries(app.nodeActions, 1))[0]).toMatchObject({ tool: 'workspace_setup_auth_rejected', workspaceId: 'unresolved', outcome: 'denied', detail: 'HTTP 401' })
   })
 
   it('reports the same repair from buckle workspace list', async () => {

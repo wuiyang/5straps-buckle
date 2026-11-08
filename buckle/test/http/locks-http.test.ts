@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { holdLockInProcess, killHolder } from '../support/lock-holder.js'
 import { nodeEnvironment } from '../support/node-environment.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 const holders: ChildProcess[] = []
 const nodes: BuckleHttp[] = []
@@ -26,7 +27,7 @@ describe('a state file busy past the wait, over HTTP', () => {
 
     expect(response.status).toBe(503)
     expect(await response.json()).toEqual({ error: expect.stringContaining('is busy in another Buckle process') })
-    expect(buckle.runtime.actions.read(5)).toContainEqual(expect.objectContaining({ tool: 'setup_delete_grants', event: 'result', outcome: 'error', detail: 'HTTP 503' }))
+    expect(await auditEntries(buckle.runtime.actions, 5)).toContainEqual(expect.objectContaining({ tool: 'setup_delete_grants', event: 'result', outcome: 'error', detail: 'HTTP 503' }))
   })
 })
 

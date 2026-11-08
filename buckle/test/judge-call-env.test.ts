@@ -15,6 +15,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import type { Judge, JudgeInput, JudgeResult } from '../common/types/ports/judge.js'
 import type { QuickJudge } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The variables a call sets for its command (D91, fix brief 1 item 14): one that changes what code runs means no rating,
 // so the call asks a person, and under scope all nothing is screened; every other variable reaches both stages, its value
@@ -25,6 +26,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -67,7 +69,7 @@ async function call(runtime: CoreRuntime, args: JsonObject = {}, command = ['nod
   const requestId = `env-${Math.random()}`
   try {
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'shell_exec', args: { command: program, args: words, ...args } }, sessionId: 'env', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     return { response, entry, ran: execute.mock.calls.length > 0 }
   } finally { prepare.mockRestore() }
 }
@@ -576,7 +578,7 @@ describe('a call that sets more variables than the stages are sent (fix brief 3,
   async function script(runtime: CoreRuntime, text: string) {
     const requestId = `script-${Math.random()}`
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'script_run', args: { runtime: 'bash', script: text } }, sessionId: 'env', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     return { response, entry }
   }
 
@@ -632,7 +634,7 @@ describe('shell text the reader does not rate whole (fix brief 4, P)', () => {
     await runtime.policy.apply({ ...emptyWorkspacePolicy(), commands: { allow: ['bash -c *'], deny: [] } })
     const requestId = `script-${Math.random()}`
     await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'script_run', args: { runtime: 'bash', script: 'python3 -c "print(1)"' } }, sessionId: 'env', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     expect(entry.judge).toMatchObject({ passed: true, passedBy: 'thorough' })
     expect(judge.shown.map(input => input.inline)).toEqual(['print(1)'])
   })

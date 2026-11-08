@@ -14,6 +14,7 @@ import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { workspaceIdOf } from '../support/workspaces.js'
 import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 const ADMIN = { authorization: 'Bearer admin-token-fixture', 'content-type': 'application/json' }
 const nodes: BuckleHttp[] = []
@@ -49,7 +50,7 @@ async function node(input: { key?: string; state?: string; workspace?: string; g
   const { config, runtime } = app
   const ask = async (complete = true) => ((await runtime.approvals.ask({ tool: 'fs_write', sessionId: 's1', asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }], ...(complete ? { call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true as const } } : {}) })).requests)[0]!
   const decide = (body: unknown) => app.request(app.setup('approvals'), { method: 'POST', headers: ADMIN, body: JSON.stringify(body) })
-  const refusals = () => runtime.actions.read(200).filter(entry => entry.tool === 'setup_approval_envelope_refused')
+  const refusals = async () => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'setup_approval_envelope_refused')
   return { state, workspace, config, runtime, app, ask, decide, refusals }
 }
 
@@ -105,9 +106,9 @@ describe('sealed approval decisions on the setup face', () => {
     expect(response.status).toBe(401)
     expect(await response.json()).toEqual({ error: 'Approval decision refused: plain_refused' })
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
-    expect(refusals()).toHaveLength(1)
-    expect(refusals()[0]).toMatchObject({ outcome: 'denied', detail: 'plain_refused', args: {} })
-    expect(JSON.stringify(refusals())).not.toContain(token)
+    expect(await refusals()).toHaveLength(1)
+    expect((await refusals())[0]).toMatchObject({ outcome: 'denied', detail: 'plain_refused', args: {} })
+    expect(JSON.stringify(await refusals())).not.toContain(token)
   })
 
   it('opens a sealed denial once and refuses its replay, even after a restart inside the window', async () => {
@@ -125,7 +126,7 @@ describe('sealed approval decisions on the setup face', () => {
     const replay = await restarted.decide(envelope)
     expect(replay.status).toBe(401)
     expect(await replay.json()).toEqual({ error: 'Approval decision refused: replayed' })
-    expect(restarted.refusals().map(entry => entry.detail)).toEqual(expect.arrayContaining(['replayed']))
+    expect((await restarted.refusals()).map(entry => entry.detail)).toEqual(expect.arrayContaining(['replayed']))
     expect(readFileSync(join(first.state, 'workspaces', workspaceIdOf(first.workspace), 'approval-nonces.json'), 'utf8')).not.toContain(encoded)
   })
 
@@ -176,9 +177,9 @@ describe('sealed approval decisions on the setup face', () => {
     const workspaceBound = seal(key, { method: 'POST', path: '/workspaces/other/setup/approvals', body: { token, approved: true, scope: 'once' } })
     expect((await decide(workspaceBound)).status).toBe(401)
 
-    expect(refusals().map(entry => entry.detail)).toEqual(['expired', 'tampered', 'unknown_key', 'tampered'])
+    expect((await refusals()).map(entry => entry.detail)).toEqual(['expired', 'tampered', 'unknown_key', 'tampered'])
     expect(runtime.approvals.pending().map(request => request.token)).toContain(token)
-    expect(JSON.stringify(refusals())).not.toContain(encoded)
+    expect(JSON.stringify(await refusals())).not.toContain(encoded)
   })
 
   it('refuses an envelope while it holds no key, naming the key as unknown', async () => {

@@ -7,6 +7,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { browserCloseCommand } from '../cli/browser.js'
 import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice F4, item 6: the owner's `buckle browser close [--workspace <name>]` ends every browser a workspace's agents
 // left, in any Buckle process, and every hold their fills left, with or without a node running.
@@ -16,6 +17,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -67,7 +69,7 @@ describe('buckle browser close', () => {
     expect(calls().slice(2).map(call => call.slice(0, 3))).toEqual([['close', '--json', '--config'], ['close', '--json', '--config']])
     expect(calls().slice(2).map(sessionOf).sort()).toEqual([...opened].sort())
     expect(JSON.parse(readFileSync(sessions, 'utf8')).browsers).toEqual({})
-    expect(running.actions.read(10)).toContainEqual(expect.objectContaining({ tool: 'cli_browser_close', outcome: 'ok', detail: 'closed 2 of 2 browsers, dropped 0 held secret values' }))
+    expect(await auditEntries(running.actions, 10)).toContainEqual(expect.objectContaining({ tool: 'cli_browser_close', outcome: 'ok', detail: 'closed 2 of 2 browsers, dropped 0 held secret values' }))
     // The node's next call starts a browser of its own, as its record is gone.
     expect(await running.invoke({ sessionId: 'chat-1', request: { requestId: 'after', tool: 'browser_command', args: { command: 'snapshot', args: [] }, approvalTokens: [] } })).toMatchObject({ outcome: 'ok' })
     expect(opened).not.toContain(sessionOf(calls().at(-1)!))

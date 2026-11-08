@@ -19,6 +19,7 @@ import { settingsCommand } from '../cli/settings.js'
 import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, workspaceIdOf } from './support/workspaces.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The workspace-model brief, item 4: buckle workspace init, list, show, enable, disable, remove, set, unset and token,
 // each on the workspace --workspace or --dir names or else the one holding the current directory (D83 (2) to (6)).
@@ -45,7 +46,7 @@ beforeEach(() => {
   vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { out += String(chunk); return true })
   vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { err += String(chunk); return true })
 })
-afterEach(() => { vi.restoreAllMocks(); rmSync(base, { recursive: true, force: true }) })
+afterEach(async () => { vi.restoreAllMocks(); await settleAuditLogs(); rmSync(base, { recursive: true, force: true }) })
 
 function node(environment: Record<string, string> = {}): NodeConfig {
   return loadConfig({ BUCKLE_STATE_DIR: state, BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_SANDBOX: 'none', ...environment })

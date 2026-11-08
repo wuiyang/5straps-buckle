@@ -9,6 +9,7 @@ import { resolveSettings, WorkspaceSettingsSchema } from '../common/services/wor
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The secret-references slice, part 2 (docs/user/how-to/secrets.md): references are read in three places only, shell words,
 // browser fill values, and web_fetch header values; a reference anywhere else refuses the call before it is judged.
@@ -135,6 +136,7 @@ describe('through the invoker', () => {
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+    await settleAuditLogs()
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 
@@ -173,7 +175,7 @@ describe('through the invoker', () => {
       expect(response.error.message.startsWith(PLACES_REASON)).toBe(true)
     }
     expect(ran).toEqual([])
-    expect(runtime.actions.read(10).filter(entry => entry.event === 'result').map(entry => entry.outcome)).toEqual(['denied', 'denied'])
+    expect((await auditEntries(runtime.actions, 10)).filter(entry => entry.event === 'result').map(entry => entry.outcome)).toEqual(['denied', 'denied'])
     expect(runtime.approvals.pending().length).toBe(0)
   })
 

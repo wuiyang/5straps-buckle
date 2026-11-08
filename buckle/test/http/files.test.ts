@@ -11,6 +11,7 @@ import { FILES_HOLD_MS } from '../../layers/common/server/utils/files.js'
 import { createBuckleHttp, type BuckleHttp } from '../support/buckle-http.js'
 import { nodeEnvironment } from '../support/node-environment.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
+import { auditEntries } from '../support/action-log-writer.js'
 
 // The files face behind `buckle cp` (the copy-verb brief): PUT /v1/files judges fs_receive before it reads a byte of the
 // body, and GET /v1/files streams a file fs_send judged, each with its /workspaces/[id]/ twin, under the same policy,
@@ -49,12 +50,12 @@ function get(path: string, options: { requestId?: string; prefix?: string } = {}
 }
 
 const entries = (folder: string) => readdirSync(folder).sort()
-const results = (tool: string) => buckle.runtime.actions.read(200).filter(entry => entry.tool === tool && entry.event === 'result')
+const results = async (tool: string) => (await auditEntries(buckle.runtime.actions, 200)).filter(entry => entry.tool === tool && entry.event === 'result')
 
 /** Waits until the audit log holds a result of `tool`, as a call the caller left still records one as it ends. */
 async function settled(tool: string, count = 1): Promise<void> {
   const deadline = Date.now() + 10_000
-  while (results(tool).length < count) {
+  while ((await results(tool)).length < count) {
     if (Date.now() > deadline) throw new Error(`No ${tool} result was recorded`)
     await new Promise(resolve => setTimeout(resolve, 50))
   }
@@ -94,7 +95,7 @@ describe('PUT /v1/files', () => {
     expect(await again.json()).toMatchObject({ requestId, outcome: 'ok', output: { path: 'copied.txt', size: content.byteLength, sha256: sha256(content) } })
     expect(readFileSync(join(workspace, 'copied.txt'))).toEqual(content)
     expect(entries(workspace)).toEqual(['copied.txt'])
-    expect(results('fs_receive').map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
+    expect((await results('fs_receive')).map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
     expect(buckle.runtime.approvalService.waiting()).toEqual([])
   })
 
@@ -115,8 +116,8 @@ describe('PUT /v1/files', () => {
     expect(response.status).toBe(413)
     expect(await response.json()).toEqual({ error: `The file is ${LIMIT + 1} bytes, more than the ${LIMIT} this node copies at once (BUCKLE_MAX_TRANSFER_BYTES)` })
     expect(buckle.runtime.approvalService.waiting()).toEqual([])
-    expect(results('fs_receive')).toEqual([])
-    expect(buckle.runtime.actions.read(1)[0]).toMatchObject({ tool: 'rpc_files_rejected', detail: 'HTTP 413', outcome: 'error' })
+    expect(await results('fs_receive')).toEqual([])
+    expect((await auditEntries(buckle.runtime.actions, 1))[0]).toMatchObject({ tool: 'rpc_files_rejected', detail: 'HTTP 413', outcome: 'error' })
     expect(entries(workspace)).toEqual([])
   })
 
@@ -135,7 +136,7 @@ describe('PUT /v1/files', () => {
     } as RequestInit)
     expect(response.status).toBe(status)
     expect(await response.json()).toEqual({ error: expect.any(String) })
-    expect(results('fs_receive')).toEqual([])
+    expect(await results('fs_receive')).toEqual([])
     expect(entries(workspace)).toEqual([])
   })
 
@@ -163,7 +164,7 @@ describe('PUT /v1/files', () => {
     if (how === 'end') socket.end()
     else socket.destroy()
     await settled('fs_receive')
-    expect(results('fs_receive')[0]?.outcome).toBe('error')
+    expect((await results('fs_receive'))[0]?.outcome).toBe('error')
     expect(entries(workspace)).toEqual([])
   })
 
@@ -184,10 +185,10 @@ describe('PUT /v1/files', () => {
     const response = await put('twin.txt', content, { prefix: `/workspaces/${buckle.runtime.workspaceId}` })
     expect(await response.json()).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(workspace, 'twin.txt'))).toEqual(content)
-    const [result] = results('fs_receive')
+    const [result] = await results('fs_receive')
     expect(result).toMatchObject({ tool: 'fs_receive', outcome: 'ok', actorId: 'agent:node', actorTrust: 'authenticated', args: { path: 'twin.txt', bytes: content.byteLength, sha256: sha256(content) } })
-    expect(JSON.stringify(buckle.runtime.actions.read(200))).not.toContain(TOKEN)
-    expect(JSON.stringify(buckle.nodeActions.read(200))).not.toContain(TOKEN)
+    expect(JSON.stringify(await auditEntries(buckle.runtime.actions, 200))).not.toContain(TOKEN)
+    expect(JSON.stringify(await auditEntries(buckle.nodeActions, 200))).not.toContain(TOKEN)
   })
 })
 
@@ -213,7 +214,7 @@ describe('GET /v1/files', () => {
     expect(answer.headers['x-buckle-sha256']).toBe(sha256(content))
     expect(sha256(answer.body)).toBe(sha256(content))
     await settled('fs_send')
-    expect(results('fs_send')[0]).toMatchObject({ outcome: 'ok', effects: ['read_path'], args: { path: 'out.bin', bytes: content.byteLength, sha256: sha256(content) } })
+    expect((await results('fs_send'))[0]).toMatchObject({ outcome: 'ok', effects: ['read_path'], args: { path: 'out.bin', bytes: content.byteLength, sha256: sha256(content) } })
   })
 
   it('judges the read: a credential file answers approval_required, and its bytes only once approved', async () => {
@@ -287,9 +288,9 @@ describe('buckle cp against this node', () => {
     expect(out).toBe(`Copied ${content.byteLength} bytes to ${buckle.runtime.workspaceId}:copies/back.tgz (sha256 ${sha256(content)})\n`)
     expect(sha256(readFileSync(join(workspace, 'copies', 'back.tgz')))).toBe(sha256(content))
     // Each folder target is refused as one before anyone is asked, and sent again by the file's name.
-    expect(results('fs_receive').map(entry => [entry.outcome, entry.detail ?? null])).toEqual([['error', 'TARGET_IS_DIRECTORY'], ['approval_required', null], ['ok', null], ['error', 'TARGET_IS_DIRECTORY'], ['ok', null]])
+    expect((await results('fs_receive')).map(entry => [entry.outcome, entry.detail ?? null])).toEqual([['error', 'TARGET_IS_DIRECTORY'], ['approval_required', null], ['ok', null], ['error', 'TARGET_IS_DIRECTORY'], ['ok', null]])
     // Each copy ran in a session of its own, which no caller can name ahead of it.
-    const sessions = results('fs_receive').map(entry => entry.sessionId)
+    const sessions = (await results('fs_receive')).map(entry => entry.sessionId)
     expect(sessions.every(id => /^buckle-cp-[0-9a-f-]{36}$/.test(String(id)))).toBe(true)
     expect(new Set(sessions).size).toBe(2)
   })

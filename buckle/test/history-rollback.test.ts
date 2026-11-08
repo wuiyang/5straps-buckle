@@ -6,13 +6,14 @@ import { openChangeHistory, RestoreRefusedError } from '../common/services/histo
 import { resolveEffects } from '../common/services/invocation/resolve-effects.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // Slice D, rollback as an agent option: the change history lists its newest checkpoints from the current state back,
 // names the call that made each, and restores the workspace to before one, undoing it and every later one together.
 
 const roots: string[] = []
 const histories: Awaited<ReturnType<typeof openChangeHistory>>[] = []
-afterEach(async () => { for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 async function fixture(options: { now?: () => number } = {}) {
   const root = mkdtempSync('/tmp/buckle-rollback-'); roots.push(root)

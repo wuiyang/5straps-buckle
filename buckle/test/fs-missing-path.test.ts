@@ -5,6 +5,7 @@ import type { InvokeResponse, JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // A path a file tool is sent that stands on nothing answers FILE_NOT_FOUND (a missing folder for a write, PARENT_MISSING),
 // in the words the agent sent, as fs_move and fs_search_content did. It once answered "Tool invocation failed", and only
@@ -14,6 +15,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -142,7 +144,7 @@ describe('a path that stands on nothing', () => {
   it('records the code in the audit entry, and no host path', async () => {
     const { runtime, workspace, root } = await node()
     await call(runtime, 'fs_read', { path: 'gone/nope.txt' })
-    const entries = runtime.actions.read(10).filter(entry => entry.event === 'result' && entry.tool === 'fs_read')
+    const entries = (await auditEntries(runtime.actions, 10)).filter(entry => entry.event === 'result' && entry.tool === 'fs_read')
     expect(entries).toHaveLength(1)
     expect(entries[0]).toMatchObject({ outcome: 'error', detail: 'FILE_NOT_FOUND' })
     const text = JSON.stringify(entries)

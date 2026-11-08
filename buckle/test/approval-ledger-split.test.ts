@@ -15,6 +15,7 @@ import { runCli } from './support/cli.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The ledger commits a decision first and its grant after, under the approvals lock, and a grant owed at a crash is
 // written when the workspace opens again, before any call runs.
@@ -51,6 +52,7 @@ afterEach(async () => {
   Object.assign(failing, { rename: undefined, skip: 0, count: 1 })
   Object.assign(holding, { path: undefined, reached: () => {}, until: Promise.resolve() })
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -179,7 +181,7 @@ describe('a lasting decision', () => {
     expect(stdout).toContain(`Approved ${token} in workspace`)
     expect(stdout).toContain(GRANT_OWED_NOTE)
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
-    const result = runtime.actions.read(50).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
+    const result = (await auditEntries(runtime.actions, 50)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
     expect(result).toMatchObject({ outcome: 'ok', detail: expect.stringContaining(GRANT_OWED_NOTE) })
   })
 

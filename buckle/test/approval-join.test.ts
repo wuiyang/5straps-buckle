@@ -13,6 +13,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { fixedInteraction, headlessGrace, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 /** A node whose gated calls wait a minute, with two directories a write asks for. */
 async function node(interaction = headlessGrace) {
@@ -27,8 +28,8 @@ const batch = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_writ
 const single = (requestId: string): InvokeRequest => ({ requestId, tool: 'fs_write', args: { path: 'one/a.md', content: 'a' }, approvalTokens: [] })
 const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
-function results(runtime: CoreRuntime, requestId: string) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
+async function results(runtime: CoreRuntime, requestId: string) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'result' && entry.requestId === requestId)
 }
 
 async function answer(runtime: CoreRuntime, token: string, scope: 'once' | 'session' = 'once') {
@@ -60,7 +61,7 @@ describe('a re-sent call joined to a waiting ask (review M1)', () => {
     await answer(runtime, runtime.approvalService.pending()[0]!.token, 'session')
 
     expect(await second).toMatchObject({ outcome: 'ok' })
-    expect(results(runtime, 'rings-1').map(entry => entry.outcome).sort()).toEqual(['error', 'ok'])
+    expect((await results(runtime, 'rings-1')).map(entry => entry.outcome).sort()).toEqual(['error', 'ok'])
     await runtime.history.close()
   })
 
@@ -71,7 +72,7 @@ describe('a re-sent call joined to a waiting ask (review M1)', () => {
     await answer(runtime, runtime.approvalService.pending()[0]!.token)
 
     expect(await second).toMatchObject({ outcome: 'ok' })
-    expect(results(runtime, 'rings-2').map(entry => entry.outcome)).not.toContain('denied')
+    expect((await results(runtime, 'rings-2')).map(entry => entry.outcome)).not.toContain('denied')
     await runtime.history.close()
   })
 
@@ -83,7 +84,7 @@ describe('a re-sent call joined to a waiting ask (review M1)', () => {
     await runtime.approvals.cancel(runtime.approvalService.pending().map(request => request.token))
 
     expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_UNANSWERED', retryable: true } })
-    expect(results(runtime, 'rings-3').map(entry => entry.outcome)).toEqual(['error'])
+    expect((await results(runtime, 'rings-3')).map(entry => entry.outcome)).toEqual(['error'])
     await runtime.history.close()
   })
 })
@@ -103,7 +104,7 @@ describe('a re-sent call after part of its asks were answered (review M2)', () =
     await answer(runtime, two!.token)
 
     expect(await again).toMatchObject({ outcome: 'ok' })
-    expect(results(runtime, 'rings-4').map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
+    expect((await results(runtime, 'rings-4')).map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
     await runtime.history.close()
   })
 })
@@ -127,7 +128,7 @@ describe('what the registry keeps about an ask', () => {
     const refused = await runtime.invoke({ sessionId: 'busy', request: single('one-too-many'), approvalWait: { mode: 'none' } })
 
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_LIMIT', retryable: true } })
-    expect(results(runtime, 'one-too-many')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
+    expect(await results(runtime, 'one-too-many')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
     // Another session is not held back by this one.
     expect(await runtime.invoke({ sessionId: 'calm', request: single('calm-1'), approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
     await runtime.history.close()
@@ -142,7 +143,7 @@ describe('what the registry keeps about an ask', () => {
     const refused = await runtime.invoke({ sessionId: 'never-seen', request: single('workspace-full'), approvalWait: { mode: 'none' } })
 
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'APPROVAL_LIMIT', retryable: true, message: expect.stringContaining(`limit ${MAX_PENDING_PER_WORKSPACE}`) } })
-    expect(results(runtime, 'workspace-full')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
+    expect(await results(runtime, 'workspace-full')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'APPROVAL_LIMIT' })])
     expect(runtime.approvals.pending()).toHaveLength(MAX_PENDING_PER_WORKSPACE)
     await runtime.history.close()
   })
@@ -156,7 +157,7 @@ describe('what the registry keeps about an ask', () => {
     expect(refused).toMatchObject({ outcome: 'error', error: { code: 'SESSION_ID_TOO_LONG', retryable: false } })
     if (refused.outcome === 'error') expect(refused.error.message).not.toContain('/secret/path')
     expect(runtime.approvals.pending()).toEqual([])
-    expect(results(runtime, 'long-session')).toEqual([expect.objectContaining({ outcome: 'error', sessionId: sessionId.slice(0, MAX_SESSION_ID) })])
+    expect(await results(runtime, 'long-session')).toEqual([expect.objectContaining({ outcome: 'error', sessionId: sessionId.slice(0, MAX_SESSION_ID) })])
     // At the cap exactly, the call goes on to ask.
     expect(await runtime.invoke({ sessionId: 's'.repeat(MAX_SESSION_ID), request: single('at-cap'), approvalWait: { mode: 'none' } })).toMatchObject({ outcome: 'approval_required' })
     await runtime.history.close()
@@ -265,6 +266,6 @@ describe('a waiting caller whose re-send ran while it waited (review L6 of B23-B
     expect(await first).toMatchObject({ outcome: 'ok' })
     expect(readFileSync(join(runtime.paths().root, 'one', 'a.md'), 'utf8')).toBe('a')
     // It ran once; the waiting caller was answered with that run.
-    expect(results(runtime, 'out-of-process-1').filter(entry => entry.outcome === 'ok' && entry.detail === undefined)).toHaveLength(1)
+    expect((await results(runtime, 'out-of-process-1')).filter(entry => entry.outcome === 'ok' && entry.detail === undefined)).toHaveLength(1)
   })
 })

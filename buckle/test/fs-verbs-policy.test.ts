@@ -11,6 +11,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The fs-verbs brief: fs_delete, fs_move, and fs_apply_patch are listed in the fs pack, denied where fs_write is, and
 // reachable from a script with typed declarations (owner decision D82: every listed tool is reachable).
@@ -20,6 +21,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 

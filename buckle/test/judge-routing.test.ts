@@ -11,6 +11,7 @@ import { createRuntime, type CoreRuntime } from '../common/services/workspaces/w
 import type { Judge, JudgeInput, JudgeLevel, JudgeResult } from '../common/types/ports/judge.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickResult } from '../common/types/ports/quick-judge.js'
 import { configFromEnvironment } from './support/workspace-config.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The decision AI's two stages in automated mode (D91, addendum 2 B, and the owner's ruling of 2026-10-20, addendum 3),
 // row by row: Jev's verdict is a rating alone and never runs a call; its danger at 0.8 or above goes to a person with no
@@ -22,6 +23,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -69,7 +71,7 @@ async function call(runtime: CoreRuntime, command: string, args: string[]) {
   const requestId = `route-${Math.random()}`
   try {
     const response = await runtime.invoke({ request: { requestId, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'route', approvalWait: { mode: 'none' } })
-    const entry = runtime.actions.read(200).find(item => item.event === 'result' && item.requestId === requestId)!
+    const entry = (await auditEntries(runtime.actions, 200)).find(item => item.event === 'result' && item.requestId === requestId)!
     const waiting = runtime.approvalService.listing().find(item => item.tool === 'shell_exec')
     return { response, entry, ran: execute.mock.calls.length > 0, waiting }
   } finally { prepare.mockRestore() }

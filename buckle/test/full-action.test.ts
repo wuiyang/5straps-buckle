@@ -22,6 +22,7 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { approvalServiceWithTerminal } from './support/interaction.js'
 import { questionFor } from '../common/adapters/approval/terminal-question.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // Owner ruling B and decision D17: hiding is display only. A test turns it off here to show that every approval field
 // then carries the raw call and that the identity a decision binds does not move.
@@ -44,6 +45,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -295,7 +297,7 @@ describe('every approval field a person or a relay reads is redacted (owner deci
     const serve = approvalBlock({ ...ask, workspaceId: 'default', call: waiting.call! }, new Date()).join('\n')
     const question = questionFor({ approval: ask, workspaceId: 'default', node: config.serverId, context: { correlationId: 'c', sessionId: 'chat-1', call: waiting.call! } })
     const seen: Record<string, unknown> = {
-      response: asked, waiting, challenge, terminal, serve, question, queue: readFileSync(approvalsPath(config), 'utf8'), audit: runtime.actions.read(200),
+      response: asked, waiting, challenge, terminal, serve, question, queue: readFileSync(approvalsPath(config), 'utf8'), audit: (await auditEntries(runtime.actions, 200)),
     }
     for (const [where, value] of Object.entries(seen)) expect(JSON.stringify(value), where).not.toMatch(/5ecret/)
     expect(challenge.subject).toContain('[redacted]@github.com')

@@ -17,10 +17,11 @@ import type { ProcessRunner } from '../common/types/ports/process-runner.js'
 import { historyObjects } from './support/history-objects.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 let root: string
 beforeEach(() => { root = mkdtempSync(join(tmpdir(), 'buckle-sensitive-')) })
-afterEach(() => rmSync(root, { recursive: true, force: true }))
+afterEach(async () => { await settleAuditLogs(); rmSync(root, { recursive: true, force: true }) })
 
 it('exempts only .env.schema outside credential directories', () => {
   expect(sensitivePathReason('/workspace/.env.schema')).toBeNull()

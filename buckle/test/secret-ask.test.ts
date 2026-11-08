@@ -17,6 +17,7 @@ import { SETTING_KEYS } from '../cli/workspace-keys.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The secret-references slice, part 4 (docs/user/how-to/secrets.md): the first use of a file in a workspace asks a person once under
 // the credential-file rule, naming the file and the NAMEs and never a value; the answer is remembered per workspace and
@@ -94,7 +95,7 @@ describe('the credential-file rule on a secret file', () => {
 
 describe('the grant a person gives', () => {
   const roots: string[] = []
-  afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+  afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
   it.each(['session', 'always'] as const)('is remembered for a secret file at scope %s, while a credential file stays once-only', async (scope) => {
     const root = mkdtempSync(join(tmpdir(), 'buckle-secret-grant-'))
@@ -137,6 +138,7 @@ describe('through the invoker', () => {
   afterEach(async () => {
     vi.restoreAllMocks()
     for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+    await settleAuditLogs()
     for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
   })
 

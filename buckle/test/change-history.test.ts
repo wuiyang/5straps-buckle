@@ -9,10 +9,11 @@ import { configFromEnvironment } from './support/workspace-config.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SPAWN_TEST_TIMEOUT_MS } from './spawn-timeout.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
 const histories: ChangeHistory[] = []
-afterEach(async () => { vi.useRealTimers(); for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.useRealTimers(); await settleAuditLogs(); for (const history of histories.splice(0)) await history.close(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 async function fixture(maxBytes = 1_000_000) {
   const root = mkdtempSync('/tmp/buckle-history-'); roots.push(root)
   const workspace = join(root, 'workspace'); mkdirSync(workspace)

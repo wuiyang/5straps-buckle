@@ -12,6 +12,7 @@ import { createRuntime, type BuckleRuntime } from '../common/services/workspaces
 import { fixedInteraction, approvalServiceWithTerminal } from './support/interaction.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries } from './support/action-log-writer.js'
 
 // The MCP asks brief, item 5: a call whose caller left before its hold ended did not run, and its audit entry says so in a
 // code of its own; its ask is marked abandoned, stays answerable for the join window, and makes room under the caps.
@@ -43,8 +44,8 @@ function queue() {
 
 const outside = (index: number) => ({ kind: 'ask' as const, ...PLAIN_MARKS, rule: 'write_scope' as const, subject: `/outside/${index}`, reason: 'outside', offeredScopes: ['once' as const] })
 
-function results(runtime: BuckleRuntime, requestId: string) {
-  return runtime.actions.read(200).filter(entry => entry.event === 'result' && entry.requestId === requestId)
+async function results(runtime: BuckleRuntime, requestId: string) {
+  return (await auditEntries(runtime.actions, 200)).filter(entry => entry.event === 'result' && entry.requestId === requestId)
 }
 
 describe('a call whose caller left while it waited for a person', () => {
@@ -56,7 +57,7 @@ describe('a call whose caller left while it waited for a person', () => {
     leaving.abort()
 
     expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'CALLER_LEFT', retryable: true } })
-    expect(results(runtime, 'left-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_LEFT' })])
+    expect(await results(runtime, 'left-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_LEFT' })])
     expect(runtime.approvalService.pending()).toHaveLength(1)
     await runtime.history.close()
   })
@@ -69,7 +70,7 @@ describe('a call whose caller left while it waited for a person', () => {
     cancelling.abort()
 
     expect(await waiting).toMatchObject({ outcome: 'error', error: { code: 'CALLER_CANCELLED' } })
-    expect(results(runtime, 'cancelled-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_CANCELLED' })])
+    expect(await results(runtime, 'cancelled-1')).toEqual([expect.objectContaining({ outcome: 'error', detail: 'CALLER_CANCELLED' })])
     expect(runtime.approvalService.pending()).toEqual([])
     await runtime.history.close()
   })

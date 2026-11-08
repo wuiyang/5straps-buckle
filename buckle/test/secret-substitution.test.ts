@@ -16,6 +16,7 @@ import { COMMAND_WORD_REASON, EXPANSION_REASON, readShellReferences, UNQUOTED_RE
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 
 // The secret-references slice, parts 5 and 6 (docs/user/how-to/secrets.md): the rules judge the reference text as written; each
 // value is read and put in place only as the tool starts, into the argument list, never the child's environment; and
@@ -38,6 +39,7 @@ const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
@@ -140,7 +142,7 @@ describe('the value in the argument list, masked in what comes back', () => {
   it('records the call as written, never the value, in the audit log', async () => {
     const { runtime } = await node()
     await shell(runtime, 'printf', ['%s', '{{file:.env.local:API_TOKEN}}'])
-    const entries = JSON.stringify(runtime.actions.read(10))
+    const entries = JSON.stringify(await auditEntries(runtime.actions, 10))
     // The audit keeps each argument's length: the reference's 29 characters, not the value's.
     expect(entries).toContain(`[${'{{file:.env.local:API_TOKEN}}'.length} characters]`)
     expect(entries).not.toContain(`[${TOKEN.length} characters]`)

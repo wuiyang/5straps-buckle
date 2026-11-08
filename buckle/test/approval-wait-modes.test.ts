@@ -21,11 +21,12 @@ import { describeExpiry } from '../common/domain/approval-deadline.js'
 import { remainingMs } from '../common/domain/approval/expiry.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const recorded = { arguments: { path: '/synthetic', content: 'x' }, cwd: '/workspace', description: null, effects: ['write /synthetic'], complete: true as const }
 const roots: string[] = []
 function directory() { const root = mkdtempSync(join(tmpdir(), 'approval-wait-')); roots.push(root); return root }
-afterEach(() => { vi.useRealTimers(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { vi.useRealTimers(); await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 // A node entry point with nobody at its terminal: the call is held for the configured grace period.
 async function fixture(timeoutMs: number | null) {
   const root = directory()

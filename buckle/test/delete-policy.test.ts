@@ -16,6 +16,7 @@ import { createPathView, type PathView } from '../common/domain/path-view.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 // The delete policy brief, items 1 and 2 (the owner's ruling of 2026-10-28): under files.deleteInWorkspace allow, the
 // default, a delete inside the workspace's own folder runs under the ordinary write gate, as removing old code is part of
@@ -240,6 +241,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
+  await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
 })
 
