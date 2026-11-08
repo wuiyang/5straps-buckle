@@ -49,8 +49,9 @@ Each route that warns asks next what to do:
 | [MCP forms](approvals-06.md) | `retry` in the save form | `skip`, or decline the form | cancel leaves it: an approval's call runs once, a denial's call still waits |
 
 - **Asked again:** a retry that fails again shows the warning and the question again, with no cap.
-  MCP forms ask once: a retry that fails again leaves an approval unsaved, and its call runs once;
-  it leaves a lasting denial unrecorded, so its call still waits and draws the approval form again.
+  MCP forms ask once: a retry that fails again leaves an approval unsaved, and its call runs once,
+  its result ending with the warning; it leaves a lasting denial unrecorded, so its call still
+  waits and draws the approval form again, headed by the warning.
 - **MCP forms:** the save form comes before the call runs, as the call's answer, so the call's once
   waits for it. Your answer travels back with the same call sent again, which then runs once, on
   its once or on the grant a retry saved. Each save form names its ask: the tool, the rule, the

@@ -38,7 +38,8 @@ save states and reasons.
   and the caller it was drawn for; an approval form's answer naming neither `approve` nor `action`
   decides nothing. That caller's `save:` answer runs `settleUnsaved` once: an accepted `retry` or
   `skip`, a decline as a skip, and a cancel as leaving it, with no further form where the retry
-  fails again. Any other, or one after a restart lost the questions, sends a skip or decline to
+  fails again: that warning and its ending come back as `warnings`, which the face adds to the
+  call's result, or puts at the top of its forms drawn again. Any other, or one after a restart lost the questions, sends a skip or decline to
   `host.skipSave`, where core holds it to the source and caller that recorded the decision, and
   logs a retry as dropped. Where the host's source decides nothing past the call (`reach.lasting`
   false, an HTTP host's), no save form is ever drawn, so no `save:` answer is read at all.
