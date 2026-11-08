@@ -14,7 +14,11 @@ import { createCommandPolicyRule } from '../common/domain/permission/rules/comma
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructiveCommandRule, PATH_SPELLING_REASON } from '../common/domain/permission/rules/destructive-command-rule.js'
 import { compilePolicy } from '../common/domain/policy.js'
+import { createPathView } from '../common/domain/path-view.js'
+import { createCodeView, isSystemProgram } from '../common/services/judge/code-reader.js'
 import { leastProcessorTime, LINEAR_TENFOLD_LIMIT, PROCESSOR_TIME_ROW_TIMEOUT, tenfoldProcessorRatio } from './support/processor-time.js'
+
+const MOUNTED = createCodeView({ paths: createPathView({ root: '/w', mount: '/workspace' }), canRead: () => false, protectedRoots: [] })
 
 /** `platform`, where a test imitates a host other than this one. */
 function evaluate(command: string, args: string[], commands: { allow?: string[]; deny?: string[]; destructive?: string[] } = {}, shownAs?: string, platform?: NodeJS.Platform) {
@@ -24,10 +28,11 @@ function evaluate(command: string, args: string[], commands: { allow?: string[];
   policy.commands.destructive = commands.destructive ?? []
   const compiled = compilePolicy(policy)
   const host = platform === undefined ? {} : { platform }
-  // As the node builds them (workspace-runtime.ts, buildPermissionEngine): the floor reads the allow list too (D74).
+  // As the node builds them (workspace-runtime.ts, buildPermissionEngine): the floor reads the allow list too (D74), and
+  // places a program named by its path, here under a mounted workspace, so no host file is looked at.
   const engine = createPermissionEngine([
     createCommandPolicyRule(compiled, host),
-    createDestructiveCommandRule({ added: compiled.commands.destructive, allow: compiled.commands.allow, ...host }),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allow: compiled.commands.allow, ...host, systemProgram: word => isSystemProgram(word, MOUNTED) }),
   ])
   const effect: ResolvedEffect = { kind: 'exec', command, args, ...(shownAs === undefined ? {} : { shownAs }) }
   return engine.evaluate({ tool: 'shell_exec', effects: [effect], grants: { subjectsFor: () => [] } })
@@ -2860,8 +2865,8 @@ describe('what no pattern can change', () => {
 
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
-    // A program named by its path is not refused as administration; the floor asks about it, as about any.
-    expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts'])).toMatchObject({ kind: 'ask', asks: [{ cause: 'script' }] })
+    // A program named by its path is not refused as administration: a system one runs, and the floor asks about any other.
+    expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
     expect(evaluate('/opt/notbuckle', ['approve', 'abc'])).toMatchObject({ kind: 'ask', asks: [{ cause: 'script' }] })
     expect(evaluate('pnpm', ['--filter', '@5straps/buckle', 'mcp-probe']).kind).toBe('allow')
     expect(evaluate('cat', ['/srv/buckle', 'policy.json']).kind).toBe('allow')

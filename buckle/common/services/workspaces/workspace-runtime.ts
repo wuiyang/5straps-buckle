@@ -58,7 +58,7 @@ import { createProviderJudge } from '../../adapters/judge/providers.js'
 import { createProviderQuickJudge } from '../../adapters/judge/quick-providers.js'
 import type { QuickJudge, QuickJudgeProvider } from '../../types/ports/quick-judge.js'
 import type { Judge, JudgeProvider } from '../../types/ports/judge.js'
-import { createCodeView } from '../judge/code-reader.js'
+import { createCodeView, isSystemProgram } from '../judge/code-reader.js'
 import { judgeCachePath, openJudgeCache, type JudgeCache } from '../judge/judge-cache.js'
 import { openSocketCache, socketCachePath } from '../judge/socket-cache.js'
 import { createSocketScanner } from '../../adapters/package-scan/socket.js'
@@ -1170,10 +1170,12 @@ function buildPermissionEngine(input: { config: BuckleConfig; compiled: Compiled
   const { config, compiled, paths } = input
   // One policy for both rules, so a delete the floor leaves to the write scope is always judged there (relievedDelete).
   const deletes = deletePolicyOf(config)
+  // Places a program and reads no file, so it is handed no reader.
+  const placing = createCodeView({ paths, canRead: () => false, protectedRoots: protectedStateRoots(config) })
   return withDangerouslyAllow(createPermissionEngine([
     createSensitivePathRule({ protectedRoots: protectedStateRoots(config), strict: config.strictWrites, secretListed: path => secretFileListed(config.secretFiles ?? [], paths, path) }),
     createCommandPolicyRule(compiled),
-    createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow }),
+    createDestructiveCommandRule({ added: compiled.commands.destructive, allowedInterpreters: compiled.commands.allowedInterpreters, allow: compiled.commands.allow, systemProgram: word => isSystemProgram(word, placing) }),
     createDestructivePathRule({ paths, strict: config.strictWrites, deletes }),
     networkEgressRule(compiled, config),
     createProcessProbeRule(),

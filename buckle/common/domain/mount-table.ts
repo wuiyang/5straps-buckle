@@ -38,6 +38,13 @@ export const MAX_OWNER_MOUNTS = 32
 export const SYSTEM_TARGETS: readonly string[] = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64', '/etc', '/dev', '/proc', '/sys', '/tmp'])
 
 /**
+ * The host's own programs and their libraries, which every sandbox binds read-only at their own path (D85, Q1): the
+ * kernel opens a program's loader at a fixed path (`/lib64/ld-linux-x86-64.so.2`), and scripts need `/bin/sh` and
+ * `/usr/bin/env`. No agent places a file there.
+ */
+export const SYSTEM_PROGRAM_FOLDERS: readonly string[] = Object.freeze(['/usr', '/bin', '/sbin', '/lib', '/lib64'])
+
+/**
  * Why a mount may not show at `target`, or null. `folder` is where the workspace's folder shows; `others` are the other
  * mounts' targets; `fixed` are host paths the sandbox binds at their own path (the Node prefix and the toolchains the
  * node names), which a mount would hide or be hidden by. A target inside the sandbox home (`/tmp/home/...`, where HOME

@@ -22,6 +22,12 @@ export const PATH_SPELLING_REASON = 'A command written as a path runs the progra
 export const SCRIPT_FILE_REASON = 'Runs a file whose code Buckle does not read: a script a shell or source runs, or a program named by its path (script file); asked rather than run'
 
 /**
+ * Whether every program a command word names by its path asks as a script file run (true), or only one the agent may
+ * have placed (false), so a host program in a system folder runs as its bare name does (`systemProgram`).
+ */
+export const EVERY_PATH_RUN_ASKS = false
+
+/**
  * A target word that stands for more than one file, or for one Buckle cannot see: a glob character, a brace group of
  * choices or a range (`{a,b}.txt`, `{1..9}`), a variable or a command substitution (`$FILES`, `$(ls)`, a backtick), and
  * the `{}` that find -exec fills with each file it finds.
@@ -56,9 +62,11 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * `allow`, the workspace's command allow list: a command the call runs written as a path that only a glob naming its
  * bare word meets asks here, as a floor reason (D74, bare words only); the command policy no longer admits it by that
  * glob, and no longer refuses it either. `platform`: the host's unless a test imitates another (meetsAsSpelled).
+ * `systemProgram`: whether a command word written as a path names a host program no agent placed; left out, none does.
  */
-export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[]; platform?: NodeJS.Platform } = {}): PermissionRule {
+export function createDestructiveCommandRule(input: { added?: readonly CommandGlob[]; allowedInterpreters?: ReadonlySet<string>; allow?: readonly CommandGlob[]; platform?: NodeJS.Platform; systemProgram?: (word: string) => boolean } = {}): PermissionRule {
   const added = input.added ?? []
+  const systemProgram = EVERY_PATH_RUN_ASKS ? () => false : input.systemProgram ?? (() => false)
   const platform = input.platform ?? process.platform
   // Each allow glob by the alternatives of its command word: `{git,/usr/bin/git} status` names the bare word and spells a path.
   const splits = (input.allow ?? []).map(splitByCommandWord)
@@ -77,7 +85,7 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const floor = firstReason(judged) ?? headScriptReason(forms.heads)
       const listed = floor === null ? classifyAdded({ added, forms: judged }) : null
       const own = effect.shownAs !== undefined
-      const script = floor === null && limit === null && listed === null && runsScript({ forms, own, spelled: pathAllow, platform }) ? SCRIPT_FILE_REASON : null
+      const script = floor === null && limit === null && listed === null && runsScript({ forms, own, spelled: pathAllow, platform, systemProgram }) ? SCRIPT_FILE_REASON : null
       const found = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed ?? script
       // What the decision AI may answer (D91): an unknown interpreter or a script file alone, never a built-in reason,
       // another reading limit, or a call the owner's destructive list names, whichever reason the ask shows.
@@ -100,14 +108,17 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
 }
 
 /**
- * Whether the call runs a script file directly, past a host path Buckle supplies itself (`own`) and a command written as
- * a path an allow glob spells, which names that file. A shell or `source` given a script asks whatever the allow list holds.
+ * Whether the call runs a script file directly, past a host path Buckle supplies itself (`own`), a host program in a
+ * system folder (`systemProgram`), and a command written as a path an allow glob spells, which names that file. A shell
+ * or `source` given a script asks whatever the allow list holds.
  */
-function runsScript(input: { forms: CommandForms; own: boolean; spelled: readonly CommandGlob[]; platform: NodeJS.Platform }): boolean {
+function runsScript(input: { forms: CommandForms; own: boolean; spelled: readonly CommandGlob[]; platform: NodeJS.Platform; systemProgram: (word: string) => boolean }): boolean {
   const { forms, own, spelled, platform } = input
   return scriptForms(forms).some((form) => {
     if (own && form === forms.chain[0]) return false
-    return scriptRunOf(form) !== 'path' || !spelled.some(glob => meetsAsSpelled(glob, typedForm(form), platform))
+    if (scriptRunOf(form) !== 'path') return true
+    const typed = typedForm(form)
+    return !input.systemProgram(typed[0]!) && !spelled.some(glob => meetsAsSpelled(glob, typed, platform))
   })
 }
 

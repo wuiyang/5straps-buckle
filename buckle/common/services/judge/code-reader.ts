@@ -10,6 +10,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
 import { baseCommand, shellLeadingWords, shellScriptOperand } from '../../domain/argv.js'
 import { OWN_PROCESS_PLACES } from '../../domain/executable.js'
+import { SYSTEM_PROGRAM_FOLDERS } from '../../domain/mount-table.js'
 import { outsideMountReason, type PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
 import type { JudgeFile, JudgePackage } from '../../types/ports/judge.js'
@@ -84,6 +85,9 @@ export interface CodeView {
 }
 
 export type Located = { real: string } | 'none' | 'outside' | 'dotdot'
+
+/** What placing a program needs of the view: no file is read. */
+export type PlacementView = Pick<CodeView, 'named' | 'locate' | 'rootOf'>
 
 /** Where an interpreter's own lookup lands: a real file, nothing, or a refusal with its reason. */
 type Entry = { real: string } | 'none' | { refused: string }
@@ -263,7 +267,7 @@ const PATH_SEPARATOR = /[\\/]/
  * /workspace under a root holding each mount at its target, so `../data/x` reaches a mount and `../workspace/x` the
  * workspace, wherever the host keeps them (fix brief 7, B14).
  */
-function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
+function placedWord(word: string | null, cwd: string, view: PlacementView): boolean {
   // A NAME=value command word is a program a direct exec, or a wrapper that execs its command, runs by that name, while
   // the rules read it as an assignment (fix brief 7, B15).
   if (word === null || RULES_ASSIGNMENT.test(word)) return true
@@ -277,6 +281,17 @@ function placedWord(word: string | null, cwd: string, view: CodeView): boolean {
   // /proc or /dev/fd, however its slashes are spelled, names a place of whichever process reads it (fix brief 9, B28).
   if (dotSegment(word) || processPlace(word)) return true
   return !programOutsideView(word, cwd, view)
+}
+
+/**
+ * Whether a command word written as a path names a host program no agent placed: an absolute name in a system program
+ * folder (SYSTEM_PROGRAM_FOLDERS), the program it names and the file its links reach outside the workspace and every
+ * mount (placedWord).
+ */
+export function isSystemProgram(word: string, view: PlacementView): boolean {
+  if (placedWord(word, '/', view)) return false
+  const place = foldedPath(word)
+  return SYSTEM_PROGRAM_FOLDERS.some(folder => place.startsWith(`${folder}/`))
 }
 
 /** Whether a path holds a `.` or `..` segment, split on `/`, and on `\` too on Windows. */
@@ -316,7 +331,7 @@ function chainPlaced(chain: readonly (readonly string[])[], typed: readonly stri
  * the path as named, before any link is followed (a link beside a pyvenv.cfg runs the real interpreter with that
  * folder's settings), and the file its links reach; a name that reaches no file is not (fix brief 6, B1).
  */
-function programOutsideView(name: string, base: string, view: CodeView): boolean {
+function programOutsideView(name: string, base: string, view: PlacementView): boolean {
   const named = view.named(name, base)
   if (named === 'outside') return true
   // A name the view cannot place is no program outside it: the agent may have placed the file it runs (fix brief 8, B21).

@@ -1,5 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'pathe'
+import { SYSTEM_PROGRAM_FOLDERS } from '../../domain/mount-table.js'
 import { SANDBOX_HOME } from '../../domain/sandbox-mounts.js'
 import { isInside } from '../../domain/paths.js'
 import type { Sandbox, SandboxCommand } from '../../types/ports/sandbox.js'
@@ -27,13 +28,6 @@ export function createBubblewrapSandbox(bwrapPath: string, options: { nodePrefix
 }
 
 /**
- * The system folders every sandbox binds at their own path (D85, Q1, ruled "present but unlisted"): the kernel opens a
- * program's loader at a fixed path (`/lib64/ld-linux-x86-64.so.2`), and scripts need `/bin/sh` and `/usr/bin/env`.
- * `ls /` shows them; no mount table lists them.
- */
-const SYSTEM_FOLDERS = ['/usr', '/bin', '/sbin', '/lib', '/lib64']
-
-/**
  * The host files /etc is built from: the loader's cache, name lookup and the services and protocols it reads,
  * certificates (Fedora's OpenSSL reads /etc/pki/tls/cert.pem by default), the time zone, and the program alternatives
  * Debian and Ubuntu reach `awk`, `which`, and `cc` through; never the host's accounts or its hosts file, which the
@@ -54,8 +48,8 @@ function buildArgs(command: SandboxCommand, nodePrefix: string, identity: Sandbo
   if (command.commandIsPid1) args.push('--as-pid-1')
   if (!command.allowNetwork) args.push('--unshare-net')
   args.push('--tmpfs', '/', '--hostname', SANDBOX_HOSTNAME)
-  const fixed = [...new Set([...SYSTEM_FOLDERS, nodePrefix, ...command.readOnlyPaths])]
-  for (const path of [...new Set([...SYSTEM_FOLDERS, ...ETC_FILES, nodePrefix, ...command.readOnlyPaths])]) args.push('--ro-bind-try', path, path)
+  const fixed = [...new Set([...SYSTEM_PROGRAM_FOLDERS, nodePrefix, ...command.readOnlyPaths])]
+  for (const path of [...new Set([...SYSTEM_PROGRAM_FOLDERS, ...ETC_FILES, nodePrefix, ...command.readOnlyPaths])]) args.push('--ro-bind-try', path, path)
   if (identity) args.push('--ro-bind', identity.passwd, '/etc/passwd', '--ro-bind', identity.group, '/etc/group', '--ro-bind', identity.hosts, '/etc/hosts')
   args.push('--dev', '/dev', '--proc', '/proc', '--tmpfs', '/tmp', '--dir', SANDBOX_HOME, '--setenv', 'HOME', SANDBOX_HOME)
   const root = command.workspaceRoot ?? command.mount?.root ?? command.writableRoots[0] ?? command.cwd

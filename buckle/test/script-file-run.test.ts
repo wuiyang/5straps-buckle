@@ -1,5 +1,8 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { commandSubject } from '../common/domain/argv.js'
 import { compilePolicy } from '../common/domain/policy.js'
 import type { ResolvedEffect } from '../common/domain/effect.js'
@@ -9,7 +12,10 @@ import { judgeable, quickCovers } from '../common/domain/permission/judged.js'
 import { createCommandPolicyRule } from '../common/domain/permission/rules/command-policy-rule.js'
 import { withDangerouslyAllow } from '../common/domain/permission/rules/dangerously-allow.js'
 import { createDestructiveCommandRule, SCRIPT_FILE_REASON } from '../common/domain/permission/rules/destructive-command-rule.js'
+import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import type { DangerouslyAllowMode } from '../common/types/ports/dangerously-allow-store.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
+import { configFromEnvironment } from './support/workspace-config.js'
 
 // A script file run directly: a shell or `source` given a script file, or a command word written as a path,
 // runs code Buckle does not read, so it asks as unread code does. A package script (`npm run`) and a task runner keep
@@ -138,5 +144,59 @@ describe('who may answer a script file ask', () => {
     expect(quickCovers('interpreters', script)).toBe(true)
     expect(quickCovers('asks', script)).toBe(true)
     expect(quickCovers('off', script)).toBe(false)
+  })
+})
+
+describe('a program named by its path, as the node judges it', () => {
+  const roots: string[] = []
+  const runtimes: CoreRuntime[] = []
+  afterEach(async () => {
+    for (const runtime of runtimes.splice(0)) { runtime.closeWatchers(); await runtime.approvalService.close(); await runtime.history.close() }
+    await settleAuditLogs()
+    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
+  })
+
+  async function node() {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-script-path-')))
+    roots.push(root)
+    const workspace = join(root, 'workspace')
+    for (const folder of [join(workspace, 'bin'), join(root, 'state')]) mkdirSync(folder, { recursive: true, mode: 0o700 })
+    writeFileSync(join(workspace, 'bin', 'tool'), '#!/bin/sh\n', { mode: 0o700 })
+    const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_PACKS: 'fs,shell', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
+    const runtime = await createRuntime({ config })
+    runtimes.push(runtime)
+    const run = async (command: string, args: string[]) => {
+      const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command, args }], execute: vi.fn(async () => 'executed') })
+      try {
+        return await runtime.invoke({ request: { requestId: `path-${command}`, approvalTokens: [], tool: 'shell_exec', args: {} }, sessionId: 'path', approvalWait: { mode: 'none' } })
+      } finally { prepare.mockRestore() }
+    }
+    return { workspace, run }
+  }
+
+  it.each<[string, string, string[]]>([
+    ['a system program', '/usr/bin/env', ['true']],
+    ['a system program behind a wrapper', 'env', ['/usr/bin/env', 'true']],
+    ['a system program a link may name', '/bin/sh', ['--version']],
+  ])('runs %s, which the agent cannot have placed, with no script ask: %s %j', async (_, command, args) => {
+    const { run } = await node()
+    const response = await run(command, args)
+    expect(response.outcome, JSON.stringify(response)).toBe('ok')
+  })
+
+  it.each<[string, string, string[]]>([
+    ['a file the agent may write outside the workspace', '/tmp/x.sh', []],
+    ['a program outside the system folders', '/opt/notbuckle', ['approve', 'abc']],
+    ['a wrapper by its relative path', './gradlew', ['build']],
+    ['a package\'s own program', './node_modules/.bin/vitest', ['run']],
+    ['a program through a dot segment', '/usr/bin/../../tmp/x.sh', []],
+  ])('asks about %s: %s %j', async (_, command, args) => {
+    const { run } = await node()
+    expect(await run(command, args)).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command' }] })
+  })
+
+  it('asks about a program in the workspace named by its absolute path', async () => {
+    const { workspace, run } = await node()
+    expect(await run(join(workspace, 'bin', 'tool'), [])).toMatchObject({ outcome: 'approval_required', approvals: [{ rule: 'destructive_command' }] })
   })
 })

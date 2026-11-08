@@ -1,7 +1,7 @@
 import { realpathSync, statSync } from 'node:fs'
 import { dirname } from 'pathe'
 import { protectedStateRoots, type NodeConfig } from '../../runtime/config.js'
-import { MAX_OWNER_MOUNTS, mountTargetRefusal, type OwnerMount } from '../../domain/mount-table.js'
+import { MAX_OWNER_MOUNTS, mountTargetRefusal, SYSTEM_PROGRAM_FOLDERS, type OwnerMount } from '../../domain/mount-table.js'
 import { ignoresCase, isDriveRoot, isInsideComparable, nativePath, shareRoot, typedShare, WHOLE_DRIVE } from '../../domain/paths.js'
 import { WorkspaceError } from './registry.js'
 
@@ -34,7 +34,7 @@ export function overlaps(left: string, right: string, platform: NodeJS.Platform)
 /** The host folders every sandbox shares read-only, which no workspace may hold or sit inside: toolchains and the node's read-only mounts. */
 export function exposedRoots(node: Pick<NodeConfig, 'mountReadOnlyPaths' | 'workspaceDefaults'>): string[] {
   const shared = (node.workspaceDefaults.mounts ?? []).filter(mount => mount.access === 'ro').map(mount => mount.source)
-  return [...node.mountReadOnlyPaths, ...shared, dirname(dirname(process.execPath)), '/usr', '/bin', '/sbin', '/lib', '/lib64']
+  return [...node.mountReadOnlyPaths, ...shared, dirname(dirname(process.execPath)), ...SYSTEM_PROGRAM_FOLDERS]
     .map(path => { try { return nativePath(realpathSync.native(path)) } catch { return path } })
 }
 
