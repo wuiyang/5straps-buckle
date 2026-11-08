@@ -1,6 +1,6 @@
 import type { JudgeResult } from '../../types/ports/judge.js'
 import type { QuickJudgeScope, QuickResult } from '../../types/ports/quick-judge.js'
-import type { AskCause, GrantLookup, PermissionDecision } from './decision.js'
+import { type AskCause, type GrantLookup, type PermissionDecision, unreadCodeCause } from './decision.js'
 import type { PermissionOutcome } from './engine.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -13,15 +13,16 @@ export const JUDGE_PASS_CONFIDENCE = 0.8
 
 /**
  * Whether the thorough stage answers an ask on its own in automated mode (D91, addendum 3 R1): the destructive floor's
- * ask about an interpreter the policy does not allow, and nothing else, once the quick stage, where its scope covers the
+ * ask about code Buckle does not read, an interpreter the policy does not allow or a script file run directly, and
+ * nothing else, once the quick stage, where its scope covers the
  * ask, rated it anything but danger at 0.8 or above; a quick danger goes to a person with the thorough stage not asked. A
  * built-in floor reason, another reading limit, and the workspace's destructive list go to a person, the quick stage's
  * rating beside the action where its scope covers them; a deny is no ask, and is refused unrated. On request the
- * thorough stage also rates any ask that scope covers, and its safe approves an interpreter ask, or an allowed command
+ * thorough stage also rates any ask that scope covers, and its safe approves an unread code ask, or an allowed command
  * the quick stage flagged under `all`, never a floor ask (addendum 3 R2; fix brief 9, B37).
  */
 export function judgeable(ask: Ask): boolean {
-  return ask.rule === 'destructive_command' && ask.cause === 'interpreter'
+  return ask.rule === 'destructive_command' && unreadCodeCause(ask.cause)
 }
 
 /**

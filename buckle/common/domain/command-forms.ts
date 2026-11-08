@@ -254,6 +254,11 @@ export interface CommandForms {
   /** The interpreters the call runs code with (interpreterRunningCode), by program name, each once. */
   interpreters: string[]
   /**
+   * The forms that run a script file directly (scriptRunOf), each a whole command a shell surely runs, never a statement
+   * piece or the words a shell's script is given as text (innerCommands).
+   */
+  scripts: string[][]
+  /**
    * The whole-command reading: each command a substitution cut, read whole with each body as `$()` (a head), as the
    * command behind each wrapper in turn, wherever it surely runs (textCommands), and again with each word that is only a
    * substitution left out, since one may expand to no word (`git $(echo) push`). The destructive floor and the deny list
@@ -400,7 +405,7 @@ function formsOf(words: readonly string[], depth: number, budget: Budget, place:
   const interpreter = interpreterRunningCode(chain, place)
   const own = startupOf(words, chain, place)
   const substituted = place.sure && readsValueAsPattern(words, place) ? 'globSubst' : null
-  const forms: Reading = { chain, nested: [], pieces: [], unread: firstLimit(firstLimit(unread, inner.unread), substituted), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
+  const forms: Reading = { chain, nested: [], pieces: [], unread: firstLimit(firstLimit(unread, inner.unread), substituted), overBudget: false, scriptData: inner.scriptData || scriptArrivesAsData(chain, place) || runsStartupText(own), interpreters: interpreter ? [interpreter] : [], scripts: place.sure && place.whole ? chain.filter(form => scriptRunOf(form) !== null) : [], heads: inner.heads ?? [], rereads: inner.rereads, startup: { ...own, shell: false, fed: false }, aliases: { defined: place.sure && definesAlias(chain.at(-1)!), later: place.sure && parsesLater(chain.at(-1)!) } }
   addStartup(forms.startup, inner.startup)
   for (const group of inner.groups) {
     if (budget.spent) break
@@ -441,6 +446,7 @@ function readNested(forms: Reading, command: string[], depth: number, budget: Bu
   if (!piece) {
     forms.scriptData ||= nested.scriptData
     for (const name of nested.interpreters) if (!forms.interpreters.includes(name)) forms.interpreters.push(name)
+    for (const form of nested.scripts) forms.scripts.push(form)
     addStartup(forms.startup, nested.startup)
     forms.aliases.defined ||= nested.aliases.defined
     forms.aliases.later ||= nested.aliases.later
@@ -764,11 +770,28 @@ function startupFile(word: string, file: string, place: Place): 'text' | 'expans
 
 /** Whether the command a chain ends in is a shell or `source` given a script file. */
 function runsScriptFile(chain: readonly string[][]): boolean {
-  const [command = '', ...args] = chain.at(-1)!
-  if (SHELL_COMMANDS.has(command)) return shellScriptOperand(args).source === 'file'
-  if (!SOURCE_COMMANDS.has(command)) return false
+  const run = scriptRunOf(chain.at(-1)!)
+  return run === 'shell' || run === 'source'
+}
+
+/**
+ * How a form runs a file whose code Buckle does not read: a shell given a script file, `source` or `.` of one, or a
+ * command word written as a path, which runs the file at that path whatever its name says.
+ */
+export type ScriptRun = 'shell' | 'source' | 'path'
+
+/** The way a form runs a script file (ScriptRun), or null where it runs none. */
+export function scriptRunOf(form: readonly string[]): ScriptRun | null {
+  const [command = '', ...args] = form
+  if (SHELL_COMMANDS.has(command) && shellScriptOperand(args).source === 'file') return 'shell'
   const file = args[0] === '--' ? args[1] : args[0]
-  return file !== undefined && scriptOperandKind(file) === 'file'
+  if (SOURCE_COMMANDS.has(command) && file !== undefined && scriptOperandKind(file) === 'file') return 'source'
+  return writtenPaths.has(form) ? 'path' : null
+}
+
+/** The forms of a call that run a script file (CommandForms.scripts), and each command a substitution cut, read whole, that does. */
+export function scriptForms(forms: CommandForms): string[][] {
+  return [...forms.scripts, ...forms.heads.filter(form => scriptRunOf(form) !== null)]
 }
 
 /** Forms appended one at a time, never spread into one call (slice 7b review W7B-8), up to the budget's command count. */

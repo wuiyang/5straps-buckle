@@ -22,12 +22,21 @@ export interface AskMarks {
 
 /**
  * Why the destructive floor asked (D91), set by that rule alone and never sent anywhere: a built-in floor reason or
- * another reading limit (`floor`), an interpreter the policy does not allow and nothing else (`interpreter`), or the
- * workspace's destructive list (`destructive-list`); or set by the decision AI's gate, an allowed command its quick stage
- * rated danger, which a person now decides (`judge`). The thorough stage answers an `interpreter` ask; the quick stage, by
- * its scope, any but a `judge` one (domain/permission/judged.ts).
+ * another reading limit (`floor`), an interpreter the policy does not allow and nothing else (`interpreter`), a script
+ * file run directly and nothing else (`script`), or the workspace's destructive list (`destructive-list`); or set by the
+ * decision AI's gate, an allowed command its quick stage rated danger, which a person now decides (`judge`). The thorough
+ * stage answers an `interpreter` or `script` ask; the quick stage, by its scope, any but a `judge` one
+ * (domain/permission/judged.ts).
  */
-export type AskCause = 'floor' | 'interpreter' | 'destructive-list' | 'judge'
+export type AskCause = 'floor' | 'interpreter' | 'script' | 'destructive-list' | 'judge'
+
+/** The causes of an ask about code Buckle does not read: what safe leaves to a person and the thorough stage may answer. */
+const UNREAD_CODE_CAUSES: ReadonlySet<AskCause> = new Set(['interpreter', 'script'])
+
+/** Whether an ask's cause is code Buckle does not read (UNREAD_CODE_CAUSES). */
+export function unreadCodeCause(cause: AskCause | undefined): boolean {
+  return cause !== undefined && UNREAD_CODE_CAUSES.has(cause)
+}
 
 /** The standing grant a rule relied on, so the action log can say why a call was permitted. */
 export interface GrantReference {

@@ -1,7 +1,7 @@
 import type { PermissionRuleId } from '@5straps/protocol'
 import { isDangerouslyAllowOnMode, type DangerouslyAllowMode, type DangerouslyAllowOnMode } from '../../../types/ports/dangerously-allow-store.js'
 import { isInside } from '../../paths.js'
-import type { PermissionDecision } from '../decision.js'
+import { type PermissionDecision, unreadCodeCause } from '../decision.js'
 import type { PermissionEngine } from '../engine.js'
 import { floorSubjectPath, isFloorSubject, isRestoreSubject } from './destructive-path-rule.js'
 import { isSecretFileSubject, SECRET_FILE_PREFIX } from './sensitive-path-rule.js'
@@ -23,7 +23,7 @@ export interface ModeReach {
   floor: boolean
   /** A secret reference's file. */
   secretFile: boolean
-  /** A call running code through an interpreter the workspace's policy does not allow. */
+  /** A call running code Buckle does not read: through an interpreter the workspace's policy does not allow, or a script file run directly. */
   unreadCode: boolean
 }
 
@@ -70,7 +70,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { mode: ()
 export function coversAsk(input: { ask: Ask; root: string; reach: Readonly<ModeReach> }): boolean {
   const { ask, root, reach } = input
   if (ask.floor && !reach.floor) return false
-  if (ask.cause === 'interpreter' && !reach.unreadCode) return false
+  if (unreadCodeCause(ask.cause) && !reach.unreadCode) return false
   if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && !reach.secretFile) return false
   if (ask.rule === 'write_scope' && isRestoreSubject(ask.subject)) return false
   const path = askedPath(ask)

@@ -121,8 +121,8 @@ describe('a shell wrapper', () => {
     expect(evaluate('zsh', ['-c', 'pnpm build'], { allow: ['bash -c *'] }).kind).toBe('deny')
   })
 
-  it('leaves a shell handed a script file to the ordinary rules', () => {
-    expect(evaluate('bash', ['build.sh']).kind).toBe('allow')
+  it('asks about a shell handed a script file, whose code it does not read, rather than taking it for a wrapper', () => {
+    expect(evaluate('bash', ['build.sh'])).toMatchObject({ kind: 'ask', asks: [{ rule: 'destructive_command', cause: 'script' }] })
   })
 })
 
@@ -1266,8 +1266,10 @@ describe('a call Buckle cannot read whole', () => {
   })
 
   // With no feed from the call's own text, a script operand stays a script file, and a deny glob that names none of the
-  // call's commands lets it run: after a pipeline that ended, after `&&`, before a pipe, from a file, inside a body fed
-  // to a shell (whose input is that body, which Buckle reads), and a substitution in a command a here-string feeds.
+  // call's commands does not refuse it: after a pipeline that ended, after `&&`, before a pipe, from a file, inside a body
+  // fed to a shell (whose input is that body, which Buckle reads), and a substitution in a command a here-string feeds.
+  // The floor asks about the script file it runs, which the switch lifts while on; a shell's -c text with its arguments
+  // runs no script file.
   it.each(cases.flatMap(([engine, switched]) => [
     ['source "$NVM_DIR/nvm.sh"', 'source "$NVM_DIR/nvm.sh"'],
     ['. "$HOME/.cargo/env"', '. "$HOME/.cargo/env"'],
@@ -1284,7 +1286,9 @@ describe('a call Buckle cannot read whole', () => {
   ].map(([shape, body]) => [engine, switched, shape!, body!] as const)))('admits %s deny, switch on: %s, a script operand with no feed from the call\'s text: %s', (engine, switched, _shape, body) => {
     const forms = commandFormsOf({ command: 'bash', args: ['-c', body] })
     expect([forms.unread, forms.scriptData]).toEqual([null, false])
-    expect(check(engine, switched, body, ['terraform destroy *']).kind).toBe('allow')
+    const outcome = check(engine, switched, body, ['terraform destroy *'])
+    if (switched || body.startsWith('sh -c')) expect(outcome.kind).toBe('allow')
+    else expect(outcome).toMatchObject({ kind: 'ask', asks: [{ rule: 'destructive_command', cause: 'script' }] })
   })
 
   // A shell runs a startup file before its script (BASH_ENV, ENV, --rcfile, --init-file). One whose text the call
@@ -2688,13 +2692,17 @@ describe("a line continuation before zsh's =name, and zsh's precommand modifiers
   })
 
   it('reads the plain forms as before: a continuation before other words, an escaped or quoted =, and a modifier before a plain command', () => {
-    const rows = ['\\\nls -l', 'echo \\\n=rm', '\\\n\\=rm -rf x', "\\\n'=rm' -rf x", '\\\nFOO=1 echo x', '\\\n~/bin/tool x', 'noglob echo *.txt',
+    const rows = ['\\\nls -l', 'echo \\\n=rm', '\\\n\\=rm -rf x', "\\\n'=rm' -rf x", '\\\nFOO=1 echo x', 'noglob echo *.txt',
       'nocorrect git status', 'noglob git log --oneline', 'watch -n 1 git status', 'watch -n "$n" git status', 'watch -x ls -l', "watch 'git status; git log'", 'echo a; - echo b']
     for (const text of rows) {
       expect(commandFormsOf({ command: 'zsh', args: ['-c', text] }).unread, text).toBeNull()
       const outcome = evaluate('zsh', ['-c', text], { allow: ['zsh -c *'], deny: ['rm -rf *', 'git push *'] })
       expect(outcome.kind, `${text}: ${reasonOf(outcome)}`).toBe('allow')
     }
+    // A tilde path keeps the name it types, and runs the file there, which the floor asks about.
+    const tilde = '\\\n~/bin/tool x'
+    expect(commandFormsOf({ command: 'zsh', args: ['-c', tilde] }).unread).toBeNull()
+    expect(evaluate('zsh', ['-c', tilde], { allow: ['zsh -c *'], deny: ['rm -rf *', 'git push *'] })).toMatchObject({ kind: 'ask', asks: [{ cause: 'script' }] })
   })
 })
 
@@ -2852,8 +2860,9 @@ describe('what no pattern can change', () => {
 
   it('still lets a tool drive the node the ordinary way', () => {
     expect(evaluate('buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
-    expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts']).kind).toBe('allow')
-    expect(evaluate('/opt/notbuckle', ['approve', 'abc']).kind).toBe('allow')
+    // A program named by its path is not refused as administration; the floor asks about it, as about any.
+    expect(evaluate('/usr/local/bin/buckle', ['fs', 'read', 'a.ts'])).toMatchObject({ kind: 'ask', asks: [{ cause: 'script' }] })
+    expect(evaluate('/opt/notbuckle', ['approve', 'abc'])).toMatchObject({ kind: 'ask', asks: [{ cause: 'script' }] })
     expect(evaluate('pnpm', ['--filter', '@5straps/buckle', 'mcp-probe']).kind).toBe('allow')
     expect(evaluate('cat', ['/srv/buckle', 'policy.json']).kind).toBe('allow')
     expect(evaluate('buckle', ['--version']).kind).toBe('allow')
@@ -2919,8 +2928,8 @@ describe('a command word written as a path (D74, bare words only)', () => {
     expect(evaluate('bash', ['-c', body.replace('./git', 'git')], { allow }).kind).toBe('allow')
   })
 
-  it('leaves a path spelling alone where no allow rule names the command, and a host path Buckle supplies itself', () => {
-    expect(evaluate('./gradlew', ['build']).kind).toBe('allow')
+  it('asks no path-spelling question where no allow rule names the command, the script file\'s alone, and none for a host path Buckle supplies itself', () => {
+    expect(evaluate('./gradlew', ['build'])).toMatchObject({ kind: 'ask', asks: [{ cause: 'script', reason: expect.not.stringMatching(PATH_CAUSE) }] })
     expect(evaluate('/opt/tools/agent-browser', ['open', 'https://x.test'], { allow: ['agent-browser *'] }, 'agent-browser').kind).toBe('allow')
   })
 

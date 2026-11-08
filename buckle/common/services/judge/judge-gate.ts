@@ -3,7 +3,7 @@ import { redactCredentials } from '@5straps/runtime'
 import { relative } from 'pathe'
 import { baseCommand, commandSubject, parseArgv, shownCommand, shownWords } from '../../domain/argv.js'
 import { compileCommandGlob } from '../../domain/command-glob.js'
-import { allForms, commandFormsOf } from '../../domain/command-forms.js'
+import { allForms, type CommandForms, commandFormsOf, scriptForms, scriptRunOf } from '../../domain/command-forms.js'
 import { describeCall } from '../../domain/describe-call.js'
 import type { ResolvedEffect } from '../../domain/effect.js'
 import type { PathView } from '../../domain/path-view.js'
@@ -19,7 +19,7 @@ import type { PackageScanner } from '../../types/ports/package-scan.js'
 import { QUICK_STATE_BUDGET_BYTES, type QuickJudge, type QuickJudgeProvider, type QuickJudgeScope, type QuickResult } from '../../types/ports/quick-judge.js'
 import { callVariables, codeLoadingReason, codeLoadingVariable, joinedVariables, MAX_SHOWN_VARIABLES, shownVariables } from './call-env.js'
 import { assignedVariables, CHANGES_DIRECTORY, changesDirectory, LOADS_ENV_FILE, loadsEnvFile, NPM_CODE_OPTION, setsNpmCodeOption } from './call-forms.js'
-import { CODE_REFUSALS, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, valueOptionsOf, type CodeView } from './code-reader.js'
+import { CODE_REFUSALS, packageScript, planRefusal, readBunScriptPreloads, readInterpreterCode, readsShellScript, valueOptionsOf, type CodeView } from './code-reader.js'
 import { judgeCacheKey, type JudgeCache } from './judge-cache.js'
 import { withSocket } from './socket-view.js'
 
@@ -81,7 +81,7 @@ export interface JudgeGate {
   readonly thoroughReady: boolean
   /** Whether the quick stage screens allowed commands too (approval.quickJudge all, with its key, in automated mode). */
   readonly screens: boolean
-  /** Whether a stage rates this ask: an interpreter ask for the thorough stage, or a command ask the quick stage's scope covers. */
+  /** Whether a stage rates this ask: an unread code ask (judgeable) for the thorough stage, or a command ask the quick stage's scope covers. */
   covers(ask: Ask): boolean
   /** Automated mode: each ask it covers, once per distinct subject, by the routing of addendum 2 B as addendum 3 changes it. */
   rate(call: CallView & { asks: readonly Ask[] }): Promise<JudgedAsk[]>
@@ -123,7 +123,7 @@ export const QUICK_OVER_BUDGET = 'the call is larger than the quick stage reads'
  * and model were rated in the last day, else from the stage, which is kept. Routing, in automated mode (the owner's ruling
  * of 2026-10-20, addendum 3 R1): the quick stage rates first where its scope covers the ask, a rating alone that never
  * runs a call; its danger verdict at 0.8 or above goes to a person; any other answer goes on to the thorough stage for an
- * interpreter ask, whose safe verdict at 0.8 or above runs the call, and otherwise to a person. Nothing it says refuses a
+ * unread code ask (judgeable), whose safe verdict at 0.8 or above runs the call, and otherwise to a person. Nothing it says refuses a
  * call.
  */
 export function createJudgeGate(input: {
@@ -184,7 +184,10 @@ export function createJudgeGate(input: {
     if (setsNpmCodeOption(forms)) return NPM_CODE_OPTION
     const interpreters = forms.interpreters.filter(name => !input.allowedInterpreters.has(name))
     const reading = allowed ? forms.interpreters : interpreters
-    const running = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
+    const interpreting = allForms(forms).filter(([command = '']) => reading.includes(command) || reading.includes(baseCommand(command)))
+    const scripts = shownScripts(forms, interpreting)
+    if (scripts === null) return CODE_REFUSALS.scriptFile
+    const running = [...interpreting, ...scripts]
     const cwd = workingDirectory(call.args)
     // The call as typed tells the reader the command word each chain form had before the rules reduced it; a host path
     // Buckle supplies itself (its own node) stands as the name it is shown by (fix brief 6, B1).
@@ -228,6 +231,22 @@ export function createJudgeGate(input: {
       standardScript,
       ...(typeof script === 'string' ? { scriptText: clippedReasoning(script) } : {}),
     }
+  }
+
+  /**
+   * The script forms the stages are shown: sh, bash, or dash given a script as the call itself. Null where the call runs
+   * any other script file, which a person decides. A program the call itself names by a path, or an interpreter form the
+   * reader reads, is left to planRefusal, which refuses one the agent may have placed.
+   */
+  function shownScripts(forms: CommandForms, interpreting: readonly string[][]): string[][] | null {
+    const shown: string[][] = []
+    for (const form of scriptForms(forms)) {
+      const run = scriptRunOf(form)
+      const itself = forms.chain.includes(form)
+      if (run === 'shell' && itself && readsShellScript(form)) shown.push(form)
+      else if (run !== 'path' || !(itself || interpreting.includes(form))) return null
+    }
+    return shown
   }
 
   /**
@@ -371,7 +390,7 @@ export function createJudgeGate(input: {
       // Jev's verdict is a rating, never a pass: a danger at 0.8 or above goes to a person (addendum 3 R1).
       if (ratedDanger(judged.quick.result)) return finished(judged, command)
     }
-    // Any other answer goes on to the thorough stage where it applies, an interpreter ask, and otherwise to a person.
+    // Any other answer goes on to the thorough stage where it applies, an unread code ask, and otherwise to a person.
     if (thoroughReady && judgeable(ask)) {
       judged.thorough = await thorough(command, call.signal)
       if (judgePasses(judged.thorough.result)) {

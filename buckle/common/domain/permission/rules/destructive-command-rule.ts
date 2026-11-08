@@ -1,9 +1,9 @@
 import type { ParsedArgv } from '../../argv.js'
 import { commandSubject, gitInvocation, hasFlag, parseArgv, parseGitSubcommand, SHELL_COMMANDS } from '../../argv.js'
 import { type CommandGlob, meetsAsSpelled, splitByCommandWord } from '../../command-glob.js'
-import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, typedForm } from '../../command-forms.js'
+import { type CommandForms, commandFormsOf, judgedForms, meetsPrefix, readLimitOf, readLimitReason, scriptForms, scriptRunOf, typedForm } from '../../command-forms.js'
 import type { AskCause, PermissionRule } from '../decision.js'
-import { allowedVia, ask, commandMarks } from '../decision.js'
+import { allowedVia, ask, commandMarks, unreadCodeCause } from '../decision.js'
 
 const PRIVILEGE_COMMANDS = new Set(['sudo', 'su', 'doas', 'pkexec'])
 const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard', 'shred', 'sgdisk'])
@@ -14,6 +14,12 @@ const DISK_COMMANDS = new Set(['mkfs', 'fdisk', 'parted', 'wipefs', 'blkdiscard'
  * written with a backslash (git pack recheck 1, held[4]).
  */
 export const PATH_SPELLING_REASON = 'A command written as a path runs the program at that path, which an allow rule naming the bare command does not admit; asked rather than run (a path written plainly with slashes can be named by an allow rule that spells it)'
+
+/**
+ * Why a call asks that runs a script file directly (scriptForms): a shell or `source` given one, or a command word written
+ * as a path. Constant, the call shown whole. Not a reading limit, so a deny list asks about it rather than refusing it.
+ */
+export const SCRIPT_FILE_REASON = 'Runs a file whose code Buckle does not read: a script a shell or source runs, or a program named by its path (script file); asked rather than run'
 
 /**
  * A target word that stands for more than one file, or for one Buckle cannot see: a glob character, a brace group of
@@ -44,8 +50,8 @@ const SCRIPT_PATTERNS: Array<{ pattern: RegExp; reason: string }> = [
  * W7B-1), an eval or a shell -c string whose text an expansion supplies among them, and a call running code with an
  * interpreter the workspace does not allow (`allowedInterpreters`; docs/developer/architecture.md, Interpreters); with a
  * command deny list, the
- * command policy refuses such a call first (slice 7c review R7C-CR-1). The subject asked and granted stays the call's
- * own argv (owner decision D17).
+ * command policy refuses such a call first (slice 7c review R7C-CR-1). A call that runs a script file directly asks last,
+ * under a deny list too (SCRIPT_FILE_REASON). The subject asked and granted stays the call's own argv (owner decision D17).
  *
  * `allow`, the workspace's command allow list: a command the call runs written as a path that only a glob naming its
  * bare word meets asks here, as a floor reason (D74, bare words only); the command policy no longer admits it by that
@@ -70,13 +76,15 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const judged = judgedForms(forms)
       const floor = firstReason(judged) ?? headScriptReason(forms.heads)
       const listed = floor === null ? classifyAdded({ added, forms: judged }) : null
-      const found = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed
-      // What the decision AI may answer (D91): an unknown interpreter alone, never a built-in reason, another reading
-      // limit, or a call the owner's destructive list names, whichever reason the ask shows.
-      const foundCause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : 'interpreter'
+      const own = effect.shownAs !== undefined
+      const script = floor === null && limit === null && listed === null && runsScript({ forms, own, spelled: pathAllow, platform }) ? SCRIPT_FILE_REASON : null
+      const found = floor ?? (limit ? `${readLimitReason(limit, forms, allowed)}; asked rather than guessed at` : null) ?? listed ?? script
+      // What the decision AI may answer (D91): an unknown interpreter or a script file alone, never a built-in reason,
+      // another reading limit, or a call the owner's destructive list names, whichever reason the ask shows.
+      const foundCause: AskCause = floor !== null || (limit !== null && limit !== 'interpreter') ? 'floor' : listed !== null ? 'destructive-list' : limit !== null ? 'interpreter' : 'script'
       // A command written as a path that only a bare-word allow rule names asks a person (D74), where the call would
-      // otherwise run or its one question would be the interpreter the thorough stage answers.
-      const spelled = (found === null || foundCause === 'interpreter') && runsByBareName({ forms, bare: bareAllow, spelled: pathAllow, own: effect.shownAs !== undefined, platform })
+      // otherwise run or its one question would be the unread code the thorough stage answers.
+      const spelled = (found === null || unreadCodeCause(foundCause)) && runsByBareName({ forms, bare: bareAllow, spelled: pathAllow, own, platform })
       const reason = spelled ? PATH_SPELLING_REASON : found
       if (!reason) return null
       const cause: AskCause = spelled ? 'floor' : foundCause
@@ -89,6 +97,18 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       return ask({ rule: 'destructive_command', subject, reason, marks: commandMarks(cause), offeredScopes: ['once', 'session'], cause, severity: floor !== null || listed !== null ? 'danger' : 'warn' })
     },
   }
+}
+
+/**
+ * Whether the call runs a script file directly, past a host path Buckle supplies itself (`own`) and a command written as
+ * a path an allow glob spells, which names that file. A shell or `source` given a script asks whatever the allow list holds.
+ */
+function runsScript(input: { forms: CommandForms; own: boolean; spelled: readonly CommandGlob[]; platform: NodeJS.Platform }): boolean {
+  const { forms, own, spelled, platform } = input
+  return scriptForms(forms).some((form) => {
+    if (own && form === forms.chain[0]) return false
+    return scriptRunOf(form) !== 'path' || !spelled.some(glob => meetsAsSpelled(glob, typedForm(form), platform))
+  })
 }
 
 const subjects = new WeakMap<object, string>()
