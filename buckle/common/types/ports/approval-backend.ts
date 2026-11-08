@@ -87,11 +87,15 @@ export interface DecisionBody {
 /** A plain decision has no proof: core takes its approvals only from a source whose kind approves. */
 export type DecisionInput = { kind: 'plain'; decision: DecisionBody }
 
+/**
+ * `grant_unsaved`: a lasting denial whose grant could not be written, so nothing was recorded and its ask still waits.
+ * It is retryable, by its person: the same denial sent again tries the write again.
+ */
 export type ApprovalErrorCode =
   | 'unknown_ask' | 'ask_closed' | 'conflicting_decision' | 'action_mismatch' | 'incomplete_action'
   | 'scope_not_offered' | 'scope_forbidden' | 'statement_invalid' | 'proof_invalid' | 'proof_expired' | 'replayed'
   | 'approver_not_allowed' | 'assurance_too_low' | 'capability_exceeded'
-  | 'unsupported_version' | 'rate_limited' | 'too_large'
+  | 'unsupported_version' | 'rate_limited' | 'too_large' | 'grant_unsaved'
 
 export interface ApprovalError {
   code: ApprovalErrorCode
@@ -102,10 +106,13 @@ export interface ApprovalError {
 
 export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'
 
-/** `grantOwed`: the decision is recorded, but its lasting grant is not written yet, so it is not in force. */
+/**
+ * `grantOwed`: the approval is recorded, but its lasting grant is not written yet, so only the call that asked runs on it;
+ * `saveError` says why, naming no path. The same decision sent again tries the write again.
+ */
 export type DecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; grantOwed?: true }
-  | { status: 'repeated'; state: AskState; grantOwed?: true }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; grantOwed?: true; saveError?: string }
+  | { status: 'repeated'; state: AskState; grantOwed?: true; saveError?: string }
   | { status: 'refused'; error: ApprovalError }
 
 export type EventType =

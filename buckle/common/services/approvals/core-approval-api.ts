@@ -44,8 +44,8 @@ export type RefusalStep = 'proof' | 'statement' | 'decision'
  * or host pattern an approval granted in place of the ask's own.
  */
 export type CoreDecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; decision: ReadDecision; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; grantOwed?: true }
-  | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; grantOwed?: true }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; decision: ReadDecision; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; grantOwed?: true; saveError?: string }
+  | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; grantOwed?: true; saveError?: string }
   | { status: 'refused'; step: 'decision'; decision: ReadDecision; error: ApprovalError }
   | { status: 'refused'; step: 'proof' | 'statement'; error: ApprovalError }
 
@@ -168,11 +168,12 @@ function readOf(decision: ApprovalDecision, challenge: string | undefined): Read
 export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution }): CoreDecisionReceipt {
   const { answer, result } = input
   const decision = readOf(answer.decision, answer.challenge)
-  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: false } }
+  if (!result.ok) return { status: 'refused', step: 'decision', decision, error: { code: result.code, message: result.reason, retryable: result.retryable === true } }
   const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),
     ...(result.grantOwed ? { grantOwed: true as const } : {}),
+    ...(result.saveError === undefined ? {} : { saveError: result.saveError }),
   }
   if (result.repeated) return { status: 'repeated', state, decision, ...said }
   return {
@@ -194,9 +195,10 @@ export function decisionRecord(receipt: CoreDecisionReceipt): DecisionRecord | u
   return { ...decision, ...(asked === undefined ? {} : { rule: asked.rule, subject: redactedSubject(asked.rule, asked.subject) }), ...(receipt.grantOwed ? { grantOwed: true } : {}) }
 }
 
-/** The receipt a backend reads: whether its decision applied, never the subject a core client prints. */
+/** The receipt a backend reads: whether its decision applied, and whether its grant saved, never the subject a core client prints. */
 export function backendReceipt(receipt: CoreDecisionReceipt): DecisionReceipt {
   if (receipt.status === 'refused') return { status: 'refused', error: receipt.error }
-  if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
-  return { status: 'applied', state: receipt.state, assurance: receipt.assurance, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
+  const save = { ...(receipt.grantOwed ? { grantOwed: true as const } : {}), ...(receipt.saveError === undefined ? {} : { saveError: receipt.saveError }) }
+  if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state, ...save }
+  return { status: 'applied', state: receipt.state, assurance: receipt.assurance, ...save }
 }

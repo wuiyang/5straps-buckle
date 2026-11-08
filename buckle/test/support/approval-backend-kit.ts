@@ -4,7 +4,7 @@ import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, Ful
 import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 // The contract kit: the duties every approval backend owes core, run against a fake host that records every call. The
-// guard's checks are core's own tests.
+// guard's checks are core's own tests. A save the host reports failed is retried or skipped on its person's say alone.
 
 /** What the person at a backend does with each ask it shows, in order: decide it, or leave it showing. */
 export type KitChoice = { outcome: 'approve' | 'deny'; scope: GrantScope } | 'wait'
@@ -135,6 +135,29 @@ export function runApprovalBackendKit(subject: KitSubject): void {
       const [refusedAt, ...again] = host.decided.map(sent => sent.at)
       for (const at of again) expect(at - refusedAt!).toBeGreaterThanOrEqual(retryAfterMs)
       await backend.close()
+    })
+
+    it('sends an approval whose grant the host could not save no second time on its own', async () => {
+      const asks = [askFor('a')]
+      const { backend, host } = await opened([{ outcome: 'approve', scope: 'session' }], asks, () => ({ status: 'applied', state: 'approved', assurance: 'local', grantOwed: true, saveError: 'permission denied' }))
+      const control = new AbortController()
+      const submitted = backend.submit(asks, { signal: control.signal, resend: false })
+      await sleep(50)
+      expect(tokensOf(host)).toEqual(['a'])
+      control.abort()
+      await submitted
+    })
+
+    it('sends a lasting denial the host could not save no second time on its own, though the refusal is retryable', async () => {
+      const asks = [askFor('a')]
+      const unsaved: DecisionReceipt = { status: 'refused', error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true } }
+      const { backend, host } = await opened([{ outcome: 'deny', scope: 'session' }], asks, () => unsaved)
+      const control = new AbortController()
+      const submitted = backend.submit(asks, { signal: control.signal, resend: false })
+      await sleep(50)
+      expect(tokensOf(host)).toEqual(['a'])
+      control.abort()
+      await submitted
     })
 
     it('settles an aborted submit within a second and opens nothing more', async () => {

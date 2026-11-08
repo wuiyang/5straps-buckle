@@ -82,13 +82,18 @@ const tokenOf = (response: InvokeResponse): string => {
   return response.approvals[0]!.token
 }
 
-interface Ledger { pending: Array<{ request: { token: string } }>; resolved: Array<{ decision: { token: string }; owedGrant?: unknown }> }
+interface Ledger { pending: Array<{ request: { token: string } }>; resolved: Array<{ decision: { token: string }; grant?: { id: string; save: string } }> }
 const ledgerOf = (config: BuckleConfig): Ledger => JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as Ledger
 const revocationsOf = (config: BuckleConfig): string => join(dirname(approvalsPath(config)), 'approval-revocations.json')
 const onDisk = (config: BuckleConfig, token: string) => {
   const ledger = ledgerOf(config)
   const resolved = ledger.resolved.find(entry => entry.decision.token === token)
-  return { pending: ledger.pending.some(entry => entry.request.token === token), resolved: resolved !== undefined, owes: resolved?.owedGrant !== undefined }
+  return { pending: ledger.pending.some(entry => entry.request.token === token), resolved: resolved !== undefined, owes: resolved?.grant?.save === 'owed' }
+}
+/** The lasting grant a decision keeps: the id it is written under, and whether it is saved. */
+const keptGrant = (config: BuckleConfig, token: string) => {
+  const grant = ledgerOf(config).resolved.find(entry => entry.decision.token === token)?.grant
+  return grant === undefined ? undefined : { id: grant.id, save: grant.save }
 }
 const session = (token: string) => ({ decision: { token, approved: true, scope: 'session' as const }, source: SOURCES.cli })
 
@@ -388,14 +393,41 @@ describe('a lasting denial', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
   })
 
-  it('records nothing when its denial cannot be written, so its ask still waits', async () => {
+  it('is refused as grant_unsaved, retryable and naming no path, when its denial cannot be written, and records nothing, so its ask still waits', async () => {
     const { config, runtime } = await open()
     const token = await secretAsk(runtime)
-    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(Object.assign(new Error(`EACCES: permission denied, open '${grantsPath(config)}'`), { code: 'EACCES' }))
 
-    await expect(runtime.approvalService.answer(denial(token))).rejects.toThrow('The grants file was busy')
+    const receipt = await runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: 'deny', scope: 'session' } })
+    expect(receipt).toEqual({
+      status: 'refused', step: 'decision', decision: { token, approved: false, scope: 'session' },
+      error: { code: 'grant_unsaved', message: 'Not denied for the session: saving failed: permission denied; the call still waits', retryable: true },
+    })
+    expect(JSON.stringify(receipt)).not.toContain(dirname(grantsPath(config)))
     expect(onDisk(config, token)).toEqual({ pending: true, resolved: false, owes: false })
     expect(runtime.grants.list()).toEqual([])
+  })
+
+  it('is recorded when sent again once its denial can be written, and a denial for that call alone refuses the call', async () => {
+    const { config, runtime } = await open()
+    writeFileSync(join(config.cwd, '.env'), 'TOKEN=fixture\n')
+    const read = (requestId: string, approvalTokens: string[] = []) => runtime.invoke({ request: { requestId, tool: 'fs_read', args: { path: '.env' }, approvalTokens }, sessionId: 's' })
+    const deny = (token: string, scope: 'once' | 'session') => runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: 'deny', scope } })
+    Object.assign(failing, { rename: grantsPath(config), count: 1 })
+
+    const sent = tokenOf(await read('read-first'))
+    expect(await deny(sent, 'session')).toMatchObject({ status: 'refused', error: { code: 'grant_unsaved', retryable: true } })
+    expect(await deny(sent, 'session')).toMatchObject({ status: 'applied', state: 'denied' })
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', scope: 'session', denied: true })])
+
+    await runtime.grants.revoke(runtime.grants.list()[0]!.id)
+    Object.assign(failing, { rename: grantsPath(config), count: 1 })
+    const skipped = tokenOf(await read('read-second'))
+    expect(await deny(skipped, 'session')).toMatchObject({ status: 'refused', error: { code: 'grant_unsaved' } })
+    expect(await deny(skipped, 'once')).toMatchObject({ status: 'applied', state: 'denied' })
+    expect(await read('read-second', [skipped])).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Approval was declined') } })
+    expect(runtime.grants.list()).toEqual([])
+    expect((await read('read-third')).outcome).toBe('approval_required')
   })
 
   it('takes its denial back when the ledger cannot then record its decision, so its ask waits with nothing in force', async () => {
@@ -453,6 +485,63 @@ describe('a lasting denial', () => {
     await createApprovalRegistry(store, join(root, 'approvals.json')).recover()
     expect(store.list()).toEqual([expect.objectContaining({ subject, scope, denied: true })])
     expect(store.activeSubjects(holder)).toEqual([])
+  })
+})
+
+describe('a lasting approval whose grant cannot be saved', () => {
+  const approve = (runtime: CoreRuntime, token: string) => runtime.approvalService.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })
+  const resend = (runtime: CoreRuntime, path: string, token: string): Promise<InvokeResponse> =>
+    runtime.invoke({ request: { requestId: `write-${path}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: [token] }, sessionId: 's' })
+  const again = (runtime: CoreRuntime, path: string): Promise<InvokeResponse> =>
+    runtime.invoke({ request: { requestId: `again-${path}`, tool: 'fs_write', args: { path, content: 'a' }, approvalTokens: [] }, sessionId: 's' })
+
+  it('is applied with its grant owed and why, naming no path, and the call that asked runs once while the same call sent anew asks', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(Object.assign(new Error(`EACCES: permission denied, open '${grantsPath(config)}'`), { code: 'EACCES' }))
+
+    const receipt = await approve(runtime, token)
+    expect(receipt).toMatchObject({ status: 'applied', state: 'approved', grantOwed: true, saveError: 'permission denied' })
+    expect(JSON.stringify(receipt)).not.toContain(dirname(grantsPath(config)))
+    expect(runtime.grants.list()).toEqual([])
+    expect(runtime.approvals.unspent('s')).toEqual([expect.objectContaining({ subject: { rule: 'write_scope', subject: expect.any(String) }, tool: 'fs_write' })])
+
+    expect(await resend(runtime, 'one/a.md', token)).toMatchObject({ outcome: 'ok' })
+    expect(runtime.approvals.unspent('s')).toEqual([])
+    expect((await again(runtime, 'one/a.md')).outcome).toBe('approval_required')
+  })
+
+  it('saves its grant under the id its decision kept when the same decision is sent again once the store heals, and gives no second once', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+    Object.assign(failing, { rename: grantsPath(config), count: 2 })
+
+    expect(await approve(runtime, token)).toMatchObject({ status: 'applied', grantOwed: true, saveError: 'a disk I/O error' })
+    const owed = keptGrant(config, token)
+    expect(owed).toEqual({ id: expect.any(String), save: 'owed' })
+    expect(await resend(runtime, 'one/a.md', token)).toMatchObject({ outcome: 'ok' })
+
+    expect(await approve(runtime, token)).toMatchObject({ status: 'repeated', state: 'approved', grantOwed: true, saveError: 'a disk I/O error' })
+    expect(runtime.approvals.unspent('s')).toEqual([])
+    const retried = await approve(runtime, token)
+    expect(retried).toMatchObject({ status: 'repeated', state: 'approved' })
+    expect(retried).not.toHaveProperty('grantOwed')
+    expect(retried).not.toHaveProperty('saveError')
+    expect(runtime.grants.list()).toEqual([expect.objectContaining({ id: owed!.id, rule: 'write_scope', scope: 'session', sessionId: 's' })])
+    expect(keptGrant(config, token)).toEqual({ id: owed!.id, save: 'saved' })
+    expect(await again(runtime, 'one/b.md')).toMatchObject({ outcome: 'ok' })
+  })
+
+  it('keeps the id its grant was written under, saved, and gives no once beside a grant that saved', async () => {
+    const { config, runtime } = await open()
+    const token = tokenOf(await write(runtime, 'one/a.md'))
+
+    const receipt = await approve(runtime, token)
+    expect(receipt).toMatchObject({ status: 'applied', state: 'approved' })
+    expect(receipt).not.toHaveProperty('grantOwed')
+    const [grant] = runtime.grants.list()
+    expect(keptGrant(config, token)).toEqual({ id: grant!.id, save: 'saved' })
+    expect(runtime.approvals.unspent('s')).toEqual([])
   })
 })
 

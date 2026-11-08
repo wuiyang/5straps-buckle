@@ -124,7 +124,7 @@ describe('the terminal backend port, core side', () => {
     await service.request(call())
     await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
     expect(seen.receipts).toEqual([
-      { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true },
+      { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true, saveError: 'an unexpected error' },
       { status: 'repeated', state: 'approved' },
     ])
     expect(grants.list().map(grant => grant.subject)).toEqual(['/outside/a.md'])
@@ -138,7 +138,7 @@ describe('the terminal backend port, core side', () => {
     vi.spyOn(grants, 'grant').mockRejectedValue(new Error('The grants file was busy'))
     await service.request(call())
     await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
-    expect(seen.receipts[1]).toEqual({ status: 'repeated', state: 'approved', grantOwed: true })
+    expect(seen.receipts[1]).toEqual({ status: 'repeated', state: 'approved', grantOwed: true, saveError: 'an unexpected error' })
     await service.close()
   })
 
