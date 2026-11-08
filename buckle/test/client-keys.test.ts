@@ -301,4 +301,22 @@ describe('buckle client --ignore-warning (APPROVAL-16)', () => {
     } finally { vi.unstubAllGlobals() }
     expect(sent.map(url => url.searchParams.get('ignoreWarning'))).toEqual(['true', 'true', null])
   })
+
+  it('turns the node\'s refusal of a change its log cannot record into the flag that makes it anyway, with the write\'s own error, and exits 6', async () => {
+    const environment = { BUCKLE_CLIENT_DIR: join(scratch(), 'device') }
+    const output = capture()
+    expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['trust', 'http://127.0.0.1:4320', 'node-1', generateSigningKey().publicKey], environment)).exitCode).toBe(0)
+    const refused = JSON.stringify({ error: 'Buckle could not write the record of this change to its audit log, so the change did not run; repair the audit log\'s storage, or send the request again with ignoreWarning=true in its query to make the change anyway; its record is then still tried in the background', code: 'OWNER_RECORD_UNAVAILABLE', recordError: 'no space is left on the disk' })
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(refused, { status: 503 })))
+    try {
+      for (const argv of [['request', 'POST', 'http://127.0.0.1:4320/setup/policy'], ['session', 'open', 'http://127.0.0.1:4320']]) {
+        output.stderr = ''
+        expect((await clientCommand(argv, environment)).exitCode, argv.join(' ')).toBe(6)
+        expect(output.stderr).toContain('Buckle could not write the record of this change to its audit log, so the change did not run: no space is left on the disk')
+        expect(output.stderr).toContain('run the command again with --ignore-warning')
+        expect(output.stderr).not.toContain('ignoreWarning=true')
+      }
+    } finally { vi.unstubAllGlobals() }
+  })
 })

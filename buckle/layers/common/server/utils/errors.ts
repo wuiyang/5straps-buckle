@@ -3,7 +3,7 @@ import type { AGENT_READABLE_CODES } from '../../../../common/services/agent-fai
 import type { STATE_BUSY_MESSAGE } from '../../../../common/services/state-busy.js'
 import type { WORKSPACE_REGISTRY_UNREADABLE } from '../../../../common/services/workspaces/workspace-manager.js'
 import type { ServiceFailure } from '../../../../common/types/service-failure.js'
-import type { OWNER_RECORD_UNAVAILABLE } from '../../../../common/adapters/action-log/file-action-log.js'
+import type { OWNER_RECORD_UNAVAILABLE, OwnerRecordError } from '../../../../common/adapters/action-log/file-action-log.js'
 
 // Checked against the common constants at compile time; the layers take common code as types only.
 const REGISTRY_UNREADABLE: typeof WORKSPACE_REGISTRY_UNREADABLE = 'WORKSPACE_REGISTRY_UNREADABLE'
@@ -30,8 +30,13 @@ export function hasCode(error: unknown, code: string): boolean {
  */
 export function toHttpError(error: unknown): unknown {
   if (!isServiceFailure(error)) return error
-  const message = error.code === OWNER_RECORD ? `${error.message}; ${OWNER_RECORD_BYPASS}` : error.message
-  return new HTTPError({ status: error.status, statusText: statusText(error.status), message })
+  if (error.code === OWNER_RECORD) return ownerRecordHttpError(error as OwnerRecordError)
+  return new HTTPError({ status: error.status, statusText: statusText(error.status), message: error.message })
+}
+
+/** An owner's change its record stopped: how to make it anyway, its code for a client to say so, and the write's error with no path. */
+function ownerRecordHttpError(error: OwnerRecordError): HTTPError {
+  return new HTTPError({ status: error.status, statusText: statusText(error.status), message: `${error.message}; ${OWNER_RECORD_BYPASS}`, body: { code: OWNER_RECORD, recordError: error.reason } })
 }
 
 /** Runs a service call on an owner's route, answering its failures by their status (plan section B: explicit error mapping). */

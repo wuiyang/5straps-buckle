@@ -10,6 +10,8 @@ import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/do
 import { realPathOf } from '../common/runtime/real-path.js'
 import { saveEndingLine, unsavedApproval, unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { SAVE_FAILED_EXIT } from './exit-codes.js'
+import { stoppedForNodeRecord } from './ignore-warning.js'
+import { OWNER_RECORD_UNAVAILABLE } from '../common/adapters/action-log/file-action-log.js'
 import { IGNORE_WARNING_QUERY } from '../common/domain/global-flags.js'
 
 export interface CliResult {
@@ -42,7 +44,7 @@ const USAGE = `Usage:
                                       Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
 
 --ignore-warning asks the node to make a change its audit log cannot record (ignoreWarning=true in the signed query);
-without it the node refuses the change, 503.
+without it the node refuses the change, 503, and the command prints the write's error and exits 6.
 
 The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
 A request is signed only for the node pinned for the URL typed, never for what the URL says it is.`
@@ -159,6 +161,8 @@ async function send(input: { environment: NodeJS.ProcessEnv; method: string; url
 }
 
 function report(response: Response, text: string): CliResult {
+  const stopped = recordStopped(response, text)
+  if (stopped) return stopped
   process.stderr.write(`HTTP ${response.status}\n`)
   if (text) process.stdout.write(`${text}\n`)
   return { exitCode: response.ok ? 0 : 1 }
@@ -176,6 +180,8 @@ async function session(argv: string[], environment: NodeJS.ProcessEnv, ignoreWar
   if (action === 'open' && node && positionals.length === 2) {
     const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'sessions'), body: '', purpose: 'buckle-setup', ignoreWarning })
     const text = await response.text()
+    const stopped = recordStopped(response, text)
+    if (stopped) return stopped
     if (response.ok) process.stdout.write(`${(JSON.parse(text) as { session: { id: string } }).session.id}\n`)
     else process.stderr.write(`HTTP ${response.status} ${text}\n`)
     return { exitCode: response.ok ? 0 : 1 }
@@ -392,6 +398,17 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
   if (warning === undefined) return reported
   process.stderr.write(`${warning}\n`)
   return { exitCode: SAVE_FAILED_EXIT }
+}
+
+const RecordStoppedSchema = z.object({ code: z.literal(OWNER_RECORD_UNAVAILABLE), recordError: z.string().max(200).optional() })
+
+/** The node's refusal of a change its own record stopped, said as this command's flag makes it anyway; null for any other answer. */
+function recordStopped(response: Response, text: string): CliResult | null {
+  if (response.status !== 503) return null
+  const parsed = RecordStoppedSchema.safeParse(jsonOf(text))
+  if (!parsed.success) return null
+  process.stderr.write(`HTTP ${response.status}\n`)
+  return stoppedForNodeRecord(parsed.data.recordError === undefined ? undefined : printable(parsed.data.recordError))
 }
 
 /** What the node answers of a decision whose grant it could not save: an approval left owed, or a lasting denial refused. */

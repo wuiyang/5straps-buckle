@@ -3,6 +3,7 @@ import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import type { LogDrops } from '@5straps/runtime'
 import { z } from 'zod'
 import { LOG_DROPPED_TOOL } from '../../domain/record-tools.js'
+import { writeFailure } from '../../domain/write-failure.js'
 import { OWNER_RECORDS_WAIT } from '../../runtime/log-budget.js'
 import { logger } from '../../runtime/log.js'
 import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
@@ -39,12 +40,20 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
 /** The code an owner's change carries where its record could not be written, so each face can say how to run it anyway. */
 export const OWNER_RECORD_UNAVAILABLE = 'OWNER_RECORD_UNAVAILABLE'
 
-/** The owner's own change did not run: its attempt could not be recorded (APPROVAL-16). `cause` is the write's own error. */
+/** What every face says of an owner's change whose record could not be written. */
+export const OWNER_RECORD_FAILED = 'Buckle could not write the record of this change to its audit log, so the change did not run'
+
+/**
+ * The owner's own change did not run: its attempt could not be recorded. `cause` is the write's own error, and `reason`
+ * its words with no path, which a face off the machine is shown.
+ */
 export class OwnerRecordError extends Error implements ServiceFailure {
   readonly code = OWNER_RECORD_UNAVAILABLE
   readonly status = 503
+  readonly reason: string
   constructor(options?: ErrorOptions) {
-    super('Buckle could not write the record of this change to its audit log, so the change did not run', options)
+    super(OWNER_RECORD_FAILED, options)
+    this.reason = writeFailure(options?.cause)
   }
 }
 

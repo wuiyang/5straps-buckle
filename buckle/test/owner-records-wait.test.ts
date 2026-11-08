@@ -52,7 +52,7 @@ describe('the owner\'s records on a broken log', () => {
   it('answer a setup request 503, naming the query that makes the change anyway', async () => {
     const actions = brokenLog()
     const failure = await withSetupAudit(setupPost(), { actions, workspaceId: 'w-1', resource: 'policy', actorId: 'admin:w-1' }, async () => 'changed').catch((error: unknown) => error)
-    expect(toHttpError(failure)).toMatchObject({ status: 503, message: expect.stringContaining('ignoreWarning=true') })
+    expect(toHttpError(failure)).toMatchObject({ status: 503, message: expect.stringContaining('ignoreWarning=true'), body: { code: OWNER_RECORD_UNAVAILABLE, recordError: 'system error EISDIR' } })
   })
 
   it('run each change the owner ignores the warning for, its attempt handed to the log service', async () => {
