@@ -151,6 +151,8 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
   /** The node's own log: refusals before any workspace is known, and registry changes. Workspace default writes it too. */
   const nodeActions: ActionLog = createFileActionLog(actionsPath(node), { lockDeadlineMs, health: auditHealth, workspaceId: 'node' })
   const runtimes = new Map<string, Promise<ManagedWorkspace>>()
+  /** The workspaces this process opened a runtime of since it started: a face session ends at the first open alone. */
+  const opened = new Set<string>()
   /** The registration each runtime was opened for: its folder as stored, and when it was made. */
   const registrations = new WeakMap<ManagedWorkspace, Pick<StoredWorkspace, 'dir' | 'createdAt'>>()
   const settingsOf = (id: string) => openSettingsFile({ filePath: settingsPath(node.stateDirectory, id), lockDeadlineMs })
@@ -497,8 +499,9 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
           // `reportUrl`, `reportToken` and `approvalWebhook` come with the node's settings on purpose: every action a
           // workspace reports carries its own workspaceId, and a notification names the workspace that answers it.
           const config = workspaceConfig(node, { id, name: workspace.name, nodeFolder: workspace.nodeFolder === true, dir, ...scopeOf(settings, node.workspaceDefaults) })
-          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), browserHeldBy: () => manager.browserHeldBy(id), ...(input.faceSession ? { faceSession: input.faceSession } : {}), ...(input.interaction ? { interaction: input.interaction } : {}) })
+          const opening: Promise<ManagedWorkspace> = createRuntime({ config, workspaceId: id, nodeRoots, auditHealth, executionBudget, serving: () => serving(id), browserHeldBy: () => manager.browserHeldBy(id), ...(input.faceSession ? { faceSession: input.faceSession, firstOpen: !opened.has(id) } : {}), ...(input.interaction ? { interaction: input.interaction } : {}) })
             .then((runtime) => {
+              opened.add(id)
               const managed = { config, runtime }
               registrations.set(managed, { dir: workspace.dir, createdAt: workspace.createdAt })
               return managed

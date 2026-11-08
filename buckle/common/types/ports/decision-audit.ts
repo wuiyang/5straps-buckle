@@ -54,8 +54,9 @@ export type DecisionEnding = AuditEnding<
 export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 
 /**
- * Why sessions end: the session idled past its window, a stdio MCP process ended, or `buckle serve` stopped or started
- * again after a crash, which ends every caller's HTTP MCP session, as that face keeps no session of its own to close.
+ * Why sessions end: the session idled past its window, a stdio MCP process ended, or `buckle serve` stopped or first opened
+ * the workspace after it started, which ends every caller's HTTP MCP session, as that face keeps no session of its own to
+ * close.
  */
 export type SessionEndCause = 'idle' | 'stdio_closed' | 'serve_stopped' | 'serve_started'
 

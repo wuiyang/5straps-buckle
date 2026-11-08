@@ -298,8 +298,10 @@ interface RuntimeInput {
   packageScanner?: PackageScanner
   /** The decision AI's quick stage, for a test; absent, each provider's is built from the node's BUCKLE_QUICK_JUDGE_API_KEY. */
   quickJudge?: QuickJudge
-  /** The session this process's face holds here, ended as the runtime opens where it says so, and at endFaceSession. */
+  /** The session this process's face holds here, ended at the process's first open of the workspace where it says so, and at endFaceSession. */
   faceSession?: FaceSession
+  /** Whether this is the process's first open of the workspace since it started, as against one after it went offline and back. */
+  firstOpen?: boolean
 }
 
 /** The settings watcher's debounce (Q2): a change is taken up this long after the last write, within the 100 to 250 ms the brief allows. */
@@ -431,9 +433,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
     idleCheck: session => sessionIdle.check(session),
   })
   input.onApprovalCleanup(() => approvalService.close())
-  // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open.
+  // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open. A later
+  // open, as after the workspace went offline and back, ends nothing: the sessions are this process's own.
   const face = input.faceSession
-  if (face?.endsAtOpen) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtOpen })
+  if (face?.endsAtFirstOpen && input.firstOpen === true) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtFirstOpen })
   const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionApprovalsSuspended: session => sessionIdle.sessionApprovalsSuspended(session) })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken

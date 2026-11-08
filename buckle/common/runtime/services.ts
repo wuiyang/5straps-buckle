@@ -70,7 +70,7 @@ function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<Buckl
     if (failures.length > 0) throw new AggregateError(failures, failed)
   }
   input.onClose('timers', 'settings watchers', each(async runtime => runtime.closeWatchers()))
-  input.onClose('timers', 'face sessions', all(runtime => runtime.endFaceSession(), 'Some workspaces could not end this process\'s session, whose approvals then end at idle or by revoke'))
+  input.onClose('timers', 'face sessions', all(runtime => runtime.endFaceSession(), 'Some workspaces could not end this process\'s sessions, whose approvals then end at idle or by revoke'))
   input.onClose('waiters', 'approval waits', each(runtime => runtime.closeApprovals()))
   input.onClose('jobs', 'tool calls', each(runtime => runtime.cancelInvocations()))
   input.onClose('streams', 'workbench terminals', each(runtime => runtime.workbenches.stopTerminals()))

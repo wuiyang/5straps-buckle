@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ServerContext } from '@modelcontextprotocol/server'
+import { createOperationScope, runInScope } from '@5straps/runtime'
 import type { InvokeResponse } from '@5straps/protocol'
 import { z } from 'zod'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,7 +20,8 @@ import { configFromEnvironment, nodeConfigOf } from './support/workspace-config.
 import { coreOf, defaultRuntime } from './support/workspaces.js'
 
 // The faces' own sessions: each stdio MCP process holds one of its own, which ends as it exits, and HTTP MCP, served
-// stateless, holds `mcp`, which ends as `buckle serve` stops and as it opens a workspace again, as after a crash.
+// stateless, names every call `mcp`, under each caller's own token: every caller's ends as `buckle serve` stops, and as it
+// first opens a workspace after it starts, as after a crash, never as it opens one again while it runs.
 
 const roots: string[] = []
 const commons: BuckleCommon[] = []
@@ -67,7 +69,12 @@ async function closed(runtime: CoreRuntime): Promise<void> {
 
 const sessionEnds = async (runtime: CoreRuntime) => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_session_ended').map(entry => ({ sessionId: entry.sessionId, args: entry.args }))
 const sessionsOf = (runtime: CoreRuntime) => runtime.grants.list().map(grant => grant.sessionId).sort()
-const tally = (cause: string, counts: { withdrawn?: number; grants?: number }) => ({ cause, withdrawn: counts.withdrawn ?? 0, onces: 0, owed: 0, grants: counts.grants ?? 0, denials: 0 })
+const tally = (cause: string, counts: { withdrawn?: number; grants?: number; actor?: string }) => ({ ...(counts.actor === undefined ? {} : { actor: counts.actor }), cause, withdrawn: counts.withdrawn ?? 0, onces: 0, owed: 0, grants: counts.grants ?? 0, denials: 0 })
+
+/** Runs `run` as the caller its transport authenticated, as HTTP MCP runs each token's calls. */
+function as<T>(actor: string, run: () => Promise<T>): Promise<T> {
+  return runInScope(createOperationScope({ owner: Symbol('face-sessions'), context: { actor } }), run)
+}
 
 /** A stdio MCP server over a runtime that answers every call at once, with the session each call and its scope were given. */
 function stdioServer(sessionId: string) {
@@ -137,29 +144,33 @@ describe('the HTTP MCP session', () => {
     expect(await sessionEnds(after.runtime)).toEqual([])
   })
 
-  it('ends as serve starts after a crash: serve opening the workspace ends what the earlier serve left, and every other session stays', async () => {
+  it('ends as serve starts after a crash: serve first opening the workspace ends what every caller of the earlier serve left, and every other session stays', async () => {
     const config = node()
-    // What a serve killed before its close step leaves on disk: an HTTP MCP approval and an ask still waiting. A CLI
-    // process, which ends no face session, leaves the same.
+    // What a serve killed before its close step leaves on disk: HTTP MCP approvals of two callers and an ask still waiting.
+    // A CLI process, which ends no face session, leaves the same.
     const crashed = await started(config, 'cli')
-    await approvedForSession(crashed.runtime, HTTP_MCP_SESSION, 'one/a.md')
+    await as('agent:one', () => approvedForSession(crashed.runtime, HTTP_MCP_SESSION, 'one/a.md'))
+    await as('agent:two', () => approvedForSession(crashed.runtime, HTTP_MCP_SESSION, 'one/a.md'))
     await approvedForSession(crashed.runtime, 'rpc', 'one/a.md')
-    expect(await write(crashed.runtime, HTTP_MCP_SESSION, 'three/a.md')).toMatchObject({ outcome: 'approval_required' })
+    expect(await as('agent:one', () => write(crashed.runtime, HTTP_MCP_SESSION, 'three/a.md'))).toMatchObject({ outcome: 'approval_required' })
     await crashed.common.owner.close()
 
     const serve = await started(config, 'server')
     expect(serve.common.faceSession?.sessionId).toBe(HTTP_MCP_SESSION)
     expect(sessionsOf(serve.runtime)).toEqual(['rpc'])
     expect(serve.runtime.approvalService.pending()).toEqual([])
-    expect(await write(serve.runtime, HTTP_MCP_SESSION, 'one/b.md')).toMatchObject({ outcome: 'approval_required' })
+    expect(await as('agent:two', () => write(serve.runtime, HTTP_MCP_SESSION, 'one/b.md'))).toMatchObject({ outcome: 'approval_required' })
     expect(await write(serve.runtime, 'rpc', 'one/b.md')).toMatchObject({ outcome: 'ok' })
-    expect(await sessionEnds(serve.runtime)).toEqual([{ sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { withdrawn: 1, grants: 1 }) }])
+    expect(await sessionEnds(serve.runtime)).toEqual([
+      { sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { actor: 'agent:one', withdrawn: 1, grants: 1 }) },
+      { sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { actor: 'agent:two', grants: 1 }) },
+    ])
   })
 
-  it('ends as serve opens a workspace taken offline and back online while it runs, and every other session stays', async () => {
+  it('keeps every session as serve opens a workspace again while it runs, taken offline and back online', async () => {
     const config = node()
     const serve = await started(config, 'server')
-    await approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md')
+    await as('agent:one', () => approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md'))
     await approvedForSession(serve.runtime, 'rpc', 'one/a.md')
     const workspaces = await serve.common.services.getWorkspaces()
     const id = serve.runtime.workspaceId
@@ -167,8 +178,9 @@ describe('the HTTP MCP session', () => {
     await workspaces.update(id, { online: true })
 
     const reopened = coreOf((await workspaces.resolve(id)).runtime)
-    expect(sessionsOf(reopened)).toEqual(['rpc'])
-    expect(await sessionEnds(reopened)).toEqual([{ sessionId: HTTP_MCP_SESSION, args: tally('serve_started', { grants: 1 }) }])
+    expect(sessionsOf(reopened)).toEqual([HTTP_MCP_SESSION, 'rpc'])
+    expect(await as('agent:one', () => write(reopened, HTTP_MCP_SESSION, 'one/b.md'))).toMatchObject({ outcome: 'ok' })
+    expect(await sessionEnds(reopened)).toEqual([])
   })
 
   it('fails the open where the end at open cannot be made, so no call is served on what the earlier serve left', async () => {
@@ -177,25 +189,29 @@ describe('the HTTP MCP session', () => {
     writeFileSync(grantsPath(config), '{', { mode: 0o600 })
     const cli = await createRuntime({ config, interaction: fixedInteraction() })
     await closed(cli)
-    await expect(createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION })).rejects.toThrow('grants.json')
+    await expect(createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION, firstOpen: true })).rejects.toThrow('grants.json')
 
     writeFileSync(grantsPath(config), JSON.stringify({ version: 1, grants: [] }), { mode: 0o600 })
-    const runtime = await createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION })
+    const runtime = await createRuntime({ config, interaction: fixedInteraction(), faceSession: SERVE_SESSION, firstOpen: true })
     expect(runtime.grants.list()).toEqual([])
     await closed(runtime)
   })
 
-  it('ends as serve stops, withdrawing its asks, and every other session stays', async () => {
+  it('ends every caller\'s as serve stops, withdrawing their asks, and every other session stays', async () => {
     const config = node()
     const serve = await started(config, 'server')
-    await approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md')
+    await as('agent:one', () => approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md'))
+    await as('agent:two', () => approvedForSession(serve.runtime, HTTP_MCP_SESSION, 'one/a.md'))
     await approvedForSession(serve.runtime, 'rpc', 'one/a.md')
-    expect(await write(serve.runtime, HTTP_MCP_SESSION, 'three/a.md')).toMatchObject({ outcome: 'approval_required' })
+    expect(await as('agent:two', () => write(serve.runtime, HTTP_MCP_SESSION, 'three/a.md'))).toMatchObject({ outcome: 'approval_required' })
     await serve.common.owner.close()
 
     const after = await started(config, 'cli')
     expect(sessionsOf(after.runtime)).toEqual(['rpc'])
     expect(after.runtime.approvalService.pending()).toEqual([])
-    expect(await sessionEnds(after.runtime)).toEqual([{ sessionId: HTTP_MCP_SESSION, args: tally('serve_stopped', { withdrawn: 1, grants: 1 }) }])
+    expect(await sessionEnds(after.runtime)).toEqual([
+      { sessionId: HTTP_MCP_SESSION, args: tally('serve_stopped', { actor: 'agent:one', grants: 1 }) },
+      { sessionId: HTTP_MCP_SESSION, args: tally('serve_stopped', { actor: 'agent:two', withdrawn: 1, grants: 1 }) },
+    ])
   })
 })
