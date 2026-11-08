@@ -81,9 +81,8 @@ describe('the log service', () => {
     const logs = service()
     const log = stuck('actions.jsonl')
     const stderr = captureStderr()
-    const started = performance.now()
     for (const id of range(0, 31)) expect(logs.append(log.destination, entry(id))).toBeUndefined()
-    expect(performance.now() - started).toBeLessThan(100)
+    expect(log.batches).toEqual([])
     await tick()
 
     expect(logs.stats()).toMatchObject({ held: 30, logs: { 'actions.jsonl': { held: 30, dropped: 1 } } })
@@ -197,10 +196,8 @@ describe('the log service', () => {
     const log = createFileActionLog(path, { writer: faulty.writer, service: logs })
     await log.record(entry('first'))
     faulty.stall()
-    const started = performance.now()
-    log.append(entry('queued'))
+    expect(log.append(entry('queued'))).toBeUndefined()
     const attempt = log.record(entry('required', { auditId: 'a1', event: 'attempt', outcome: 'started' }))
-    expect(performance.now() - started).toBeLessThan(100)
     const state = await Promise.race([attempt.then(() => 'written'), delay(200).then(() => 'waiting')])
     expect(state).toBe('waiting')
 
@@ -241,9 +238,8 @@ describe('the log service', () => {
     const stderr = captureStderr()
     for (const id of range(0, 3)) stalled.append(entry(id))
     await tick()
-    const started = performance.now()
+    // Answered while the disk still holds the write, which is released only after.
     expect(await logs.close({ deadlineMs: 100 })).toEqual({ left: 3 })
-    expect(performance.now() - started).toBeLessThan(1_000)
     expect(stderr()).toContainEqual(expect.objectContaining({ level: 'warn', message: 'Audit log entries left unwritten at close', fields: { left: 3 } }))
     faulty.release()
 

@@ -6,7 +6,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
 import { Worker } from 'node:worker_threads'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { MAX_WAITING_WRITES, PROBE_DEADLINE_MS } from '../common/adapters/action-log/action-log-writer.js'
+import { MAX_WAITING_WRITES } from '../common/adapters/action-log/action-log-writer.js'
 import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
 import type { WriterRequest } from '../common/adapters/action-log/writer-protocol.js'
 import { StateBusyError } from '../common/adapters/json-file-store.js'
@@ -88,9 +88,8 @@ describe('the action log writer worker', () => {
     expect(await settled(attempt, 200)).toBe('pending')
     expect(() => log.read(10)).not.toThrow()
     now = 10
-    const asked = performance.now()
-    await health.recheck()
-    expect(performance.now() - asked).toBeLessThan(PROBE_DEADLINE_MS + 1_000)
+    // Readiness answers while the stalled write it shares the worker with does not.
+    expect(await Promise.race([health.recheck().then(() => 'answered'), attempt.then(() => 'written')])).toBe('answered')
     expect(health.failing(broken)).toBe(true)
     expect(await settled(attempt, 0)).toBe('pending')
 
@@ -109,15 +108,15 @@ describe('the action log writer worker', () => {
     const held = createFileActionLog(logPath(), { writer: faults.writer }).record(entry({ requestId: 'held' }))
     await vi.waitFor(() => expect(faults.syncs()).toBe(1))
     const posted = vi.spyOn(Worker.prototype, 'postMessage')
+    const probes = () => posted.mock.calls.flatMap(([message]) => ((message as WriterRequest).op === 'probe' ? [(message as Extract<WriterRequest, { op: 'probe' }>).file.path] : []))
 
     for (const round of [1, 2, 3]) {
       now += 10
-      const asked = performance.now()
-      await health.recheck()
-      expect({ round, withinMs: performance.now() - asked < PROBE_DEADLINE_MS + 500 }).toEqual({ round, withinMs: true })
+      const rechecking = health.recheck()
+      // All three went out as the round began, before any could time out.
+      expect({ round, probes: probes().sort() }).toEqual({ round, probes: [...broken].sort() })
+      await rechecking
     }
-    const probes = posted.mock.calls.flatMap(([message]) => ((message as WriterRequest).op === 'probe' ? [(message as Extract<WriterRequest, { op: 'probe' }>).file.path] : []))
-    expect(probes.sort()).toEqual([...broken].sort())
     expect(broken.every(path => health.failing(path))).toBe(true)
 
     faults.release()
