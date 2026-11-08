@@ -31,6 +31,7 @@ node's applies again:
 | `shell.isolation` | `on` or `off`: each shell command runs on a private copy of the folder | on |
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
+| `approval.forms` | `on` or `off`: an MCP host's [form answers](approvals-06.md) decide its asks | off |
 | `approval.judge` | the [decision AI](judge.md), an optional model check: `off`, `on-request`, or `automated` | `off` |
 | `approval.judgeProvider` | the thorough model's provider: `openai-compatible` | `openai-compatible` |
 | `approval.judgeModel` | the thorough model's name, as your AI gateway serves it | `gpt-6-luna` |

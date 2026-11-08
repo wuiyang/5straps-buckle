@@ -77,13 +77,14 @@ ask whose whole call was not recorded can be denied, never approved.
 | A CLI tool command at a terminal | the same question, before it returns |
 | `buckle approvals --watch` | a second terminal: `o` once, `s` session, the word `always`, `d` deny, `n` skip; `ds` or `da` deny a sensitive file for the session or always |
 | `buckle approvals`, then `buckle approve <token>` | shows the whole action and approves only after you type `yes` at a terminal; `--deny` works anywhere |
-| MCP elicitation | `buckle mcp` sends a form per ask when the client declares form elicitation; other clients, and `/mcp` over HTTP, are pointed to `buckle approvals` |
+| MCP elicitation | with [forms](approvals-06.md) on, `buckle mcp` sends a form per ask when the client declares form elicitation; otherwise, and on `/mcp` over HTTP, the agent is pointed to `buckle approvals` |
 
 A question ignores keys until the keyboard rests half a second. `buckle approvals`, `--watch`,
 and `buckle approve` take the [workspace](workspaces.md) holding the current directory,
 `--workspace <name>`, or every online one with `--all`.
 
-Nothing the agent token reaches can decide. With the experimental
+Nothing the agent token reaches can decide, save an MCP form while you have [forms](approvals-06.md)
+on: the agent's own app draws and answers it. With the experimental
 `BUCKLE_EXPERIMENTAL_ADMIN_HTTP=true`, `POST /workspaces/<name>/setup/approvals` takes a denial
 under the admin credential, and an approval only when a device key enrolled with `buckle keys
 enroll` signed it, as `buckle client approve <node-url> <token> --workspace <name>` does.

@@ -78,6 +78,7 @@ const PINNED: PinnedLine[] = [
   { page: 'known-limits-07.md', what: 'the B30 line on a runner package that is not URL-safe', text: 'and a scope or name that is not URL-safe, which npm reads as a folder (`npx @scope/x#y`).' },
   { page: 'judge-05.md', what: 'the B30 item in the list of what no stage is shown', text: 'or by a scope or name that is not URL-safe (`npx @scope/x#y`);' },
   { page: 'judge-05.md', what: 'the B30 clause of the runner reason', text: 'a version part naming a folder (`npx eslint@.`) and a scope or name that is not URL-safe;' },
+  { page: 'workspaces-02.md', what: 'the approval.forms row', text: `| ${code('approval.forms')} | ${either(['on', 'off'])}: an MCP host's [form answers](approvals-06.md) decide its asks | ${defaults.forms ? 'on' : 'off'} |` },
   { page: 'workspaces-02.md', what: 'the approval.judge row', text: `| ${code('approval.judge')} | the [decision AI](judge.md), an optional model check: ${either(JUDGE_MODES)} | ${code(defaults.judge)} |` },
   { page: 'workspaces-02.md', what: 'the approval.judgeProvider row', text: `| ${code('approval.judgeProvider')} | the thorough model's provider: ${either(JUDGE_PROVIDERS)} | ${code(defaults.judgeProvider)} |` },
   { page: 'workspaces-02.md', what: 'the approval.judgeModel row', text: `| ${code('approval.judgeModel')} | the thorough model's name, as your AI gateway serves it | ${code(defaults.judgeModel)} |` },
@@ -120,7 +121,7 @@ describe('the lines round 9 added to the pages (fix brief 9, D9; follow-up F7)',
   })
 
   it('has a pinned row for each of the node\'s approval settings, in the order the page lists them', () => {
-    const keys = ['judge', 'judgeProvider', 'judgeModel', 'judgeStandardScripts', 'quickJudge', 'quickJudgeProvider', 'quickJudgeModel']
+    const keys = ['forms', 'judge', 'judgeProvider', 'judgeModel', 'judgeStandardScripts', 'quickJudge', 'quickJudgeProvider', 'quickJudgeModel']
     expect(Object.keys(defaults)).toEqual(keys)
     expect(PINNED.filter(line => line.page === 'workspaces-02.md').map(line => line.what)).toEqual(keys.map(key => `the approval.${key} row`))
   })

@@ -94,6 +94,10 @@ For a client configured in JSON:
 working directory. Each available tool registers with its schema; each skill is a resource at
 `buckle://skills/<id>`. Logs go to stderr, because stdout carries the protocol.
 
+A call that needs you answers with the commands that approve it at the node. To answer in Claude
+Code's own form instead, turn [MCP forms](../how-to/approvals-06.md) on with `buckle workspace set
+approval.forms on`.
+
 ### HTTP
 
 ```bash

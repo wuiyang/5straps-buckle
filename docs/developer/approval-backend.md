@@ -47,9 +47,10 @@ schema, a service, or the node's logger.
 1. Core reads the input: a device's proof, or a sealed envelope opened and its nonce claimed,
    then the body as the statement. A refusal here skips the decision audit.
 2. The decision audit hears it received, with its proof kind.
-3. The guard screens it before the ledger lock: the source's kind may approve, a lasting scope
-   needs `local` or above, and a host pattern comes from `cli` alone.
-4. Under the lock, in order: a repeat, the ask waiting, the source routed, a device's
+3. The guard screens it before the ledger lock: a form answer only while [forms are
+   on](approval-backend-04.md), the source's kind may approve, a lasting scope needs `local` or
+   above, and a host pattern comes from `cli` alone.
+4. Under the lock, in order: that screen again, a repeat, the ask waiting, the source routed, a device's
    challenge matching, the call kept whole, a floor approval from a person at `local` or
    above, the scope offered, no `always` on a destructive command or where the floor policy
    forbids it, a wider subject from the terminal or `cli` alone, sensitive files, lasting
@@ -66,7 +67,7 @@ schema, a service, or the node's logger.
 | Source | Assurance | Approves |
 |---|---|---|
 | `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
-| `forms` | `local` | Any ask, lasting scopes and floor asks included |
+| `forms` | `local` | Any ask, lasting scopes and floor asks included, while forms are on |
 | `devices` | `key` | Any ask it signed the challenge of |
 | `judge` | `relayed` | A non-floor `once`, bound to the code it rated |
 | `sealed` | `relayed` | Nothing; it denies, a sensitive file's lasting denial included |
@@ -95,8 +96,6 @@ Neither decides which scopes are allowed, rates an answer, writes a grant, or au
   is on: the file floor offers and takes `always`, and an earlier `always` grant on a floor
   subject or a `delete-below` folder clears its ask. Off, the floor neither offers, takes, nor
   reads `always`. A destructive command never takes `always`.
-- **Form answers:** the `forms` entry in `assurance.ts` counts them as a person's; rated
-  `relayed`, they would be held to a non-floor `once`.
 - **The dangerously-allow switch:** each mode's reach is a row of `DANGEROUSLY_ALLOW_REACH`.
 
 ## What remote backends will need

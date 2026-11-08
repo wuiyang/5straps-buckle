@@ -53,6 +53,8 @@
 - `/mcp` over HTTP never elicits, by ruling: its client holds the agent token, so a form answered
   there would be the agent approving its own call. A person answers at the node, with
   `buckle approvals`.
+- With [MCP forms](../how-to/approvals-06.md) on, Buckle cannot tell your answer in a form from one
+  the agent's app sent itself: the form proves the channel, not a person.
 - Every HTTP MCP client under one token shares the session `mcp` and one actor. Identical calls
   from two such clients count as one call, and their asks share the session's 50. A session per
   client is a follow-up.
