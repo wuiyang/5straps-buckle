@@ -17,12 +17,10 @@ export const DANGEROUSLY_ALLOW_SCOPE = 'bound to the workspace root, or its moun
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
 
-/** The floor asks a mode answers: every one, all but a privilege command (`sudo`, `su`, `doas`, `pkexec`, or a call that may hold one), or none. */
-export type FloorReach = 'all' | 'unprivileged' | 'none'
-
 /** What a mode answers beyond the asks every mode covers. */
 export interface ModeReach {
-  floor: FloorReach
+  /** Floor asks: the built-in command floor, the destructive list, and the file floor. */
+  floor: boolean
   /** A secret reference's file. */
   secretFile: boolean
   /** A call running code through an interpreter the workspace's policy does not allow. */
@@ -34,14 +32,8 @@ export interface ModeReach {
  * code, to the decision AI where it is set to answer); each is one field of its row to change.
  */
 export const DANGEROUSLY_ALLOW_REACH: Readonly<Record<DangerouslyAllowOnMode, Readonly<ModeReach>>> = {
-  on: { floor: 'all', secretFile: true, unreadCode: true },
-  safe: { floor: 'none', secretFile: false, unreadCode: false },
-}
-
-const FLOOR_LIFTS: Readonly<Record<FloorReach, (ask: Ask) => boolean>> = {
-  all: () => true,
-  unprivileged: ask => ask.privileged !== true,
-  none: () => false,
+  on: { floor: true, secretFile: true, unreadCode: true },
+  safe: { floor: false, secretFile: false, unreadCode: false },
 }
 
 /**
@@ -77,7 +69,7 @@ export function withDangerouslyAllow(engine: PermissionEngine, input: { mode: ()
 /** Whether the switch answers this ask: one inside its reach, and about a path only inside the workspace root. */
 export function coversAsk(input: { ask: Ask; root: string; reach: Readonly<ModeReach> }): boolean {
   const { ask, root, reach } = input
-  if (ask.floor && !FLOOR_LIFTS[reach.floor](ask)) return false
+  if (ask.floor && !reach.floor) return false
   if (ask.cause === 'interpreter' && !reach.unreadCode) return false
   if (ask.rule === 'sensitive_path' && isSecretFileSubject(ask.subject) && !reach.secretFile) return false
   if (ask.rule === 'write_scope' && isRestoreSubject(ask.subject)) return false

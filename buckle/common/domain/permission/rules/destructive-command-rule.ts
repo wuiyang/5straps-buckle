@@ -80,15 +80,13 @@ export function createDestructiveCommandRule(input: { added?: readonly CommandGl
       const reason = spelled ? PATH_SPELLING_REASON : found
       if (!reason) return null
       const cause: AskCause = spelled ? 'floor' : foundCause
-      // For the dangerously-allow switch: a privilege command among the commands read, or a call read only in part, which may hold one.
-      const privileged = runsPrivilegeCommand(judged) || (limit !== null && limit !== 'interpreter')
 
       // The shown command and its lossless identity (owner decision D17): never joined, never cut, no
       // credential the display redacts; a grant made before this form matches nothing.
       const subject = subjectOf(effect)
       if (grants.subjectsFor('destructive_command').includes(subject)) return allowedVia('destructive_command', subject)
       // No 'always': a standing grant for a destructive signature defeats the gate.
-      return ask({ rule: 'destructive_command', subject, reason, marks: commandMarks(cause), offeredScopes: ['once', 'session'], cause, privileged, severity: floor !== null || listed !== null ? 'danger' : 'warn' })
+      return ask({ rule: 'destructive_command', subject, reason, marks: commandMarks(cause), offeredScopes: ['once', 'session'], cause, severity: floor !== null || listed !== null ? 'danger' : 'warn' })
     },
   }
 }
@@ -102,10 +100,6 @@ function subjectOf(effect: { command: string; args: readonly string[] }): string
   const subject = commandSubject(effect.command, effect.args)
   subjects.set(effect, subject)
   return subject
-}
-
-function runsPrivilegeCommand(forms: readonly string[][]): boolean {
-  return forms.some(([command = '', ...args]) => PRIVILEGE_COMMANDS.has(parseArgv(command, args).command))
 }
 
 function firstReason(forms: readonly string[][]): string | null {

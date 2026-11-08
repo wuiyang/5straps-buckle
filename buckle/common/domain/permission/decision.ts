@@ -5,7 +5,7 @@ import type { ResolvedEffect } from '../effect.js'
 export type PermissionDecision =
   | { kind: 'allow'; via?: GrantReference }
   /** `widerSubject`: what a person may grant for the session or always in place of `subject` (a delete's folder and subfolders). */
-  | ({ kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string; severity?: ApprovalSeverity; privileged?: true } & AskMarks)
+  | ({ kind: 'ask'; rule: PermissionRuleId; subject: string; reason: string; offeredScopes: GrantScope[]; cause?: AskCause; widerSubject?: string; severity?: ApprovalSeverity } & AskMarks)
   | { kind: 'deny'; rule: PermissionRuleId; subject: string; reason: string }
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -67,13 +67,11 @@ export function ask(input: {
   offeredScopes?: GrantScope[]
   cause?: AskCause
   severity?: ApprovalSeverity
-  /** The call runs a privilege command, or cannot be read whole enough to rule one out; only the command rule sets it. */
-  privileged?: boolean
 }): Ask {
   const { rule, subject, reason, marks, cause, severity } = input
   return {
     kind: 'ask', rule, subject, reason, offeredScopes: input.offeredScopes ?? ['once', 'session', 'always'], floor: marks.floor, destructive: marks.destructive,
-    ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }), ...(input.privileged ? { privileged: true as const } : {}),
+    ...(cause === undefined ? {} : { cause }), ...(severity === undefined ? {} : { severity }),
   }
 }
 

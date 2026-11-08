@@ -1,4 +1,4 @@
-import { DANGEROUSLY_ALLOW_REACH, type FloorReach, type ModeReach } from '../common/domain/permission/rules/dangerously-allow.js'
+import { DANGEROUSLY_ALLOW_REACH, type ModeReach } from '../common/domain/permission/rules/dangerously-allow.js'
 import { wordList } from '../common/domain/word-list.js'
 import type { DangerouslyAllowOnMode, DangerouslyAllowReading } from '../common/types/ports/dangerously-allow-store.js'
 
@@ -6,18 +6,11 @@ import type { DangerouslyAllowOnMode, DangerouslyAllowReading } from '../common/
 // pages that pin them, each worded from the mode's reach (DANGEROUSLY_ALLOW_REACH).
 
 export const FLOOR_ASKS = 'floor asks (the built-in floor, such as sudo and rm -rf, the destructive list, and the file floor)'
-export const PRIVILEGE_ASKS = 'a privilege command (sudo, su, doas, or pkexec)'
 export const UNREAD_CODE = 'code run through an unknown interpreter'
 export const SECRET_FILE = 'a secret reference\'s file'
 export const OUTSIDE = 'Paths outside it keep their normal outcome: they ask, or the mount refuses them.'
 export const RESTORE_ASKS = 'A history restore asks a person in every mode.'
 export const EARLIER_BUILD = 'off: an earlier build of Buckle set it on, and this build reads its file as off; buckle policy dangerously-allow on or safe sets it again'
-
-const FLOOR_WORDS: Readonly<Record<FloorReach, { reached: string[]; kept: string[] }>> = {
-  all: { reached: [FLOOR_ASKS], kept: [] },
-  unprivileged: { reached: [FLOOR_ASKS], kept: [PRIVILEGE_ASKS] },
-  none: { reached: [], kept: [FLOOR_ASKS] },
-}
 
 /** The switch as a sentence names it: its mode in capitals where on, the earlier build's note where one set it, null where it is plainly off. */
 export function switchWords(reading: DangerouslyAllowReading): string | null {
@@ -27,10 +20,10 @@ export function switchWords(reading: DangerouslyAllowReading): string | null {
 
 /** What a reach answers beyond the asks every mode covers, and what it leaves to a person. */
 export function wordsOf(reach: Readonly<ModeReach>): { reached: string[]; kept: string[] } {
-  const floor = FLOOR_WORDS[reach.floor]
+  const fields: Array<[boolean, string]> = [[reach.floor, FLOOR_ASKS], [reach.unreadCode, UNREAD_CODE], [reach.secretFile, SECRET_FILE]]
   return {
-    reached: [...floor.reached, ...(reach.unreadCode ? [UNREAD_CODE] : []), ...(reach.secretFile ? [SECRET_FILE] : [])],
-    kept: [...floor.kept, ...(reach.unreadCode ? [] : [UNREAD_CODE]), ...(reach.secretFile ? [] : [SECRET_FILE])],
+    reached: fields.flatMap(([covered, words]) => (covered ? [words] : [])),
+    kept: fields.flatMap(([covered, words]) => (covered ? [] : [words])),
   }
 }
 
