@@ -36,7 +36,8 @@ An owner's own change (`common/services/audit/audit-operation.ts`, and the setup
 in `layers/admin/server/utils/audit.ts`) waits for its attempt as a call does, while
 `OWNER_RECORDS_WAIT` in `common/runtime/log-budget.ts` holds. An attempt that cannot be written
 throws `OwnerRecordError`: the CLI prints it with the write's own error and exits 6
-(`cli/ignore-warning.ts`), and the setup face answers 503. The owner's `--ignore-warning`, taken in
+(`cli/ignore-warning.ts`), and the setup face answers 503 with `code` and a pathless `recordError`,
+which `buckle client` prints the same way. The owner's `--ignore-warning`, taken in
 `main.ts` with the other global flags, or `ignoreWarning=true` in a setup request's query, hands
 the attempt to the log service instead (`ActionLog.ownerAttempt`).
 

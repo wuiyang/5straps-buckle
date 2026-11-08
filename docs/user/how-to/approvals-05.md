@@ -2,7 +2,7 @@
 
 Buckle, the local permission node that runs an AI agent's tool calls, keeps `session` and
 `always` grants, and remembered denials, in `grants.json` in its state directory. This page covers
-what happens when that file cannot be written. [Approvals](approvals.md) covers the scopes.
+what happens when that file cannot be written; [approvals](approvals.md) covers the scopes.
 
 ## An approval
 
@@ -15,8 +15,8 @@ fails:
   the grant is saved, every other call it would cover asks again.
 - **The answer says why:** `Approved for this call; saving it for the session failed:
   permission denied`. The reason names no path.
-- **Saving again:** send the same decision again, from the route that recorded it, to try the write
-  again, as often as you like. The next decision in the workspace, and the workspace opening again,
+- **Saving again:** send the same decision again, from the route that recorded it, to retry the
+  write, as often as you like. The next decision in the workspace, and the workspace opening again,
   also write it.
 - **Skipping:** gives up the `session` or `always` part for good: nothing writes it later, and a
   grant that had saved meanwhile is removed. The call that asked still runs once.
@@ -71,9 +71,10 @@ Each route that warns asks next what to do:
   closes after a minute unanswered. An approval's question stays open after its call ran; a
   denial's closes with its ask. A CLI tool command asking at its own terminal holds its call until
   the question is answered or closes, then runs it.
-- **`buckle approve` exit codes:** 0 once saved, skipped, or denied once, and 5 where the save
-  failed and was left or the grant was removed meanwhile. Without a terminal it prints the warning
-  and both commands. A tool command whose call waits for approval still exits 3.
+- **`buckle approve` exit codes:** 0 once saved, skipped, or denied once, 5 where the save failed
+  and was left or the grant was removed meanwhile, and 6 where the decision's own
+  [record](audit-log-02.md) could not be written, so nothing was decided. Without a terminal it
+  prints the warning and both commands. A tool command waiting for approval still exits 3.
 - **Devices:** the setup route answers an approval left owed with `grantOwed` and `saveError`, and
   a lasting denial that did not save with 409, `code: grant_unsaved`, and `saveError`. Retry and
   skip on that route come later.

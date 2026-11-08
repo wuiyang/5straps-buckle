@@ -38,8 +38,8 @@ Your own changes wait for their attempt too: `cli_*` commands, `policy_dangerous
 stops with exit 6, changing nothing, and a setup request answers 503. To make the change anyway,
 as `buckle policy dangerously-allow off` on a broken log, pass `--ignore-warning`, before or after
 the command word, or send `ignoreWarning=true` in a setup request's query (`buckle client` takes
-`--ignore-warning` and signs it): the change runs, and its attempt goes to the log service, which
-keeps trying it. A tool call takes no such flag.
+`--ignore-warning` and signs it, and on that 503 prints the write's error and exits 6): the change
+runs, and its attempt goes to the log service, which keeps trying it. A tool call takes no such flag.
 
 Every other entry goes to the log service and never waits: the result of a call that ran, refusals,
 transport and setup results, the results of your own changes, and
