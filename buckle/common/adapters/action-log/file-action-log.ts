@@ -1,12 +1,16 @@
+import { randomUUID } from 'node:crypto'
 import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
+import type { LogDrops } from '@5straps/runtime'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
 import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
 import type { ActionLog, ActionLogEntry, AuditHealth } from '../../types/ports/action-log.js'
+import type { LogDestination, LogService } from '../../types/ports/log-service.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
 import { StateBusyError } from '../json-file-store.js'
 import { actionLogWriter, type ActionLogWriter } from './action-log-writer.js'
-import { nameEntry, type LogFile, type WorkspaceNaming } from './writer-protocol.js'
+import { LOG_DROPPED_TOOL, logService } from './log-service.js'
+import { entryLine, MAX_ENTRY_BYTES, nameEntry, withEntryId, type LogFile, type WorkspaceNaming } from './writer-protocol.js'
 
 const MAX_PAGE_BYTES = 1_048_576
 const entrySchema = z.object({
@@ -31,36 +35,46 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
 }
 
 /**
- * `workspaceName`: the name of the log's own workspace, read at each write so a rename shows: every entry of that
- * workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
- * `writer`: the process's writer worker unless a test hands in its own.
+ * `workspaceName`: the name of the log's own workspace, read as each entry is handed in, so a rename shows: every entry
+ * of that workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
+ * `writer` and `service`: the process's writer worker and log service unless a test hands in its own.
  */
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean; writer?: ActionLogWriter } = {}): ActionLog {
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean; writer?: ActionLogWriter; service?: LogService } = {}): ActionLog {
   const file: LogFile = { path: filePath, ...(options.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: options.lockDeadlineMs }) }
   const writer = () => options.writer ?? actionLogWriter()
+  const service = () => options.service ?? logService()
   const naming = (): WorkspaceNaming | undefined => (options.workspaceName ? { workspaceId: options.workspaceId, workspaceName: options.workspaceName() } : undefined)
+  // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md), and named, before the
+  // entry leaves this thread or waits in a queue: a value never reaches the file.
+  const prepared = (entry: ActionLogEntry): ActionLogEntry => nameEntry(masksHeld() ? maskHeldJson(entry) : entry, naming())
+  async function write(entries: ActionLogEntry[]): Promise<void> {
+    try {
+      await writer().append({ file, entries })
+      options.health?.succeeded(filePath)
+    } catch (error) {
+      logger.error('Could not durably write the action log', { filePath, error })
+      // Another process held the pending-audit state past the wait: temporary, so the caller is told
+      // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
+      if (error instanceof StateBusyError) throw error
+      // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
+      // even when the owner reads it (review L12 of B23-B25).
+      if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => writer().probe(file), workspaceId: options.workspaceId ?? 'node' })
+      throw new AuditUnavailableError({ cause: error })
+    }
+  }
+  const destination: LogDestination = {
+    name: filePath,
+    write: entries => write([...entries]),
+    dropped: drops => prepared(droppedEntry({ drops, workspaceId: options.workspaceId })),
+  }
   const log: ActionLog = {
     recoverInterrupted: () => writer().recover({ file, naming: naming() }),
     record: entry => log.recordMany([entry]),
-    async recordMany(written) {
-      if (written.length === 0) return
-      // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md), before the entry
-      // leaves this thread: a value never reaches the file.
-      const named = naming()
-      const entries = written.map(entry => nameEntry(masksHeld() ? maskHeldJson(entry) : entry, named))
-      try {
-        await writer().append({ file, entries })
-        options.health?.succeeded(filePath)
-      } catch (error) {
-        logger.error('Could not durably write the action log', { filePath, error })
-        // Another process held the pending-audit state past the wait: temporary, so the caller is told
-        // to retry, as for any busy state (review L3 of B15-B17), and the storage is not unhealthy.
-        if (error instanceof StateBusyError) throw error
-        // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
-        // even when the owner reads it (review L12 of B23-B25).
-        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => writer().probe(file), workspaceId: options.workspaceId ?? 'node' })
-        throw new AuditUnavailableError({ cause: error })
-      }
+    // Its id now, kept across every attempt the service makes at writing it, so a retry never writes it twice.
+    append: entry => service().append(destination, withinSizeLimit(withEntryId(prepared(entry)))),
+    async recordMany(entries) {
+      if (entries.length === 0) return
+      await write(entries.map(prepared))
     },
     read(limit) { return log.page({ limit: Math.min(limit, 200) }).entries.reverse() },
     page({ limit, before }) {
@@ -101,4 +115,26 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     },
   }
   return log
+}
+
+/** The entry that tells a log how many of its entries were dropped unwritten, and over what time. */
+function droppedEntry(input: { drops: LogDrops; workspaceId: string | undefined }): ActionLogEntry {
+  const auditId = randomUUID()
+  return withEntryId({
+    auditId, event: 'result', ...(input.workspaceId === undefined ? {} : { workspaceId: input.workspaceId }), at: new Date().toISOString(), requestId: auditId,
+    sessionId: 'buckle', tool: LOG_DROPPED_TOOL, outcome: 'error', durationMs: 0, effects: [],
+    args: { dropped: input.drops.count, firstAt: input.drops.firstAt, lastAt: input.drops.lastAt },
+    detail: `${input.drops.count} entries of this log were dropped unwritten`,
+  })
+}
+
+/**
+ * An entry whose line would pass the size limit keeps what names it and its outcome, and says what it left out, so the
+ * worker does not refuse it and the batch it rides in.
+ */
+function withinSizeLimit(entry: ActionLogEntry): ActionLogEntry {
+  const bytes = Buffer.byteLength(entryLine(entry))
+  if (bytes <= MAX_ENTRY_BYTES) return entry
+  const { args: _args, effects: _effects, detail: _detail, judge: _judge, asked: _asked, approvedBy: _approvedBy, decidedBy: _decidedBy, grantUses: _grantUses, ...named } = entry
+  return { ...named, args: {}, effects: [], detail: `This entry took ${bytes} bytes, past the size limit of ${MAX_ENTRY_BYTES}: its arguments, effects, rules, judge, and detail were left out` }
 }

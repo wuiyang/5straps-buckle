@@ -1,4 +1,6 @@
 import { defineSingleton, useScopeSafe, type AnyServiceDefinition, type CloseStage, type Closer, type OperationScope, type RequestCli, type RuntimeOwner, type ScopedDefinition, type SingletonDefinition } from '@5straps/runtime'
+import { closeLogService } from '../adapters/action-log/log-service.js'
+import { LOG_CLOSE_DEADLINE_MS } from './log-budget.js'
 import { InteractionService, NO_INTERACTION, type InteractionPort, type InteractionSource } from './interaction.js'
 import { createSetupViews, type SetupViews } from '../services/setup/setup-views.js'
 import { nodeRootsOf, openWorkspaceManager, type WorkspaceManager } from '../services/workspaces/workspace-manager.js'
@@ -55,7 +57,7 @@ type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
  * 'timers', so a removed folder wakes no closed runtime; approval waits at 'waiters', keeping their asks; running tool
  * calls at 'jobs', answering before connections close; terminals, language servers, and browser sessions at 'streams';
  * the ownership lock at 'locks' and the history database at 'databases', after the services that use them; queued
- * action reports at 'sinks', before the logger.
+ * audit entries and action reports at 'sinks', before the logger and the action log writer.
  */
 function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
@@ -73,6 +75,7 @@ function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<Buckl
   input.onClose('locks', 'workbench ownership', each(runtime => runtime.workbenches.close()))
   input.onClose('databases', 'workspace history', each(runtime => runtime.history.close()))
   input.onClose('sinks', 'action reports', each(runtime => runtime.reporter.flush()))
+  input.onClose('sinks', 'audit log queue', async () => { await closeLogService({ deadlineMs: LOG_CLOSE_DEADLINE_MS }) })
 }
 
 export function defineBuckleServices(input: { config: NodeConfig; interaction: InteractionSource; onClose: OnClose; askName?: AskName }): BuckleServiceDefinitions {

@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { serveStdio, type ServeStdioOptions } from '@modelcontextprotocol/server/stdio'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { startActionLogWriter } from './support/action-log-writer.js'
+import { startActionLogWriter, auditEntries } from './support/action-log-writer.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createStdioWire } from '../mcp/stdio-wire.js'
 import { createAuditedStdioTransport } from '../mcp/audited-stdio-transport.js'
@@ -44,7 +44,7 @@ async function sdkFixture() {
   }
   await call(0, 'initialize', { protocolVersion: '2025-11-25', capabilities: {}, clientInfo: { name: 'audit-test', version: '0.0.0' } })
   stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' })}\n`)
-  return { runtime, invoke, call, stdin, replies, entries: () => runtime.actions.read(100) }
+  return { runtime, invoke, call, stdin, replies, entries: () => auditEntries(runtime.actions, 100) }
 }
 
 describe('stdio audit before MCP SDK validation', () => {
@@ -53,7 +53,7 @@ describe('stdio audit before MCP SDK validation', () => {
     await fixture.call('private-request-id-fixture', 'tools/call', { name: 'fs_read', arguments: { path: 42, secret: 'private-arg-fixture' } })
     await fixture.call(2, 'tools/call', { name: 'private-unknown-tool-fixture', arguments: { secret: 'private-arg-fixture' } })
     expect(fixture.invoke).not.toHaveBeenCalled()
-    const entries = fixture.entries().filter(entry => entry.tool === 'mcp_stdio_tools_call')
+    const entries = (await fixture.entries()).filter(entry => entry.tool === 'mcp_stdio_tools_call')
     expect(entries.map(entry => entry.event)).toEqual(['attempt', 'result', 'attempt', 'result'])
     expect(entries.filter(entry => entry.event === 'result').every(entry => entry.outcome === 'error')).toBe(true)
     expect(entries[0]?.auditId).toBe(entries[1]?.auditId)
@@ -82,7 +82,7 @@ describe('stdio audit before MCP SDK validation', () => {
     const fixture = await sdkFixture()
     await fixture.call(1, 'tools/call', { name: 'fs_read', arguments: { path: 'private-filename-fixture.txt' } })
     expect(fixture.invoke).toHaveBeenCalledOnce()
-    const entries = fixture.entries()
+    const entries = await fixture.entries()
     const transport = entries.filter(entry => entry.tool === 'mcp_stdio_tools_call')
     const semantic = entries.filter(entry => entry.tool === 'fs_read')
     expect(transport.map(entry => entry.outcome)).toEqual(['started', 'ok'])
@@ -96,15 +96,15 @@ describe('stdio audit before MCP SDK validation', () => {
   it('records malformed framing generically and never retains parser error text', async () => {
     const fixture = await sdkFixture()
     fixture.stdin.write('{"private-parser-fixture": invalid}\n')
-    await vi.waitFor(() => expect(fixture.entries().some(entry => entry.tool === 'mcp_stdio_transport_error' && entry.event === 'result')).toBe(true))
+    await vi.waitFor(async () => expect((await fixture.entries()).some(entry => entry.tool === 'mcp_stdio_transport_error' && entry.event === 'result')).toBe(true))
     expect(fixture.invoke).not.toHaveBeenCalled()
-    expect(JSON.stringify(fixture.entries())).not.toContain('private-parser-fixture')
+    expect(JSON.stringify(await fixture.entries())).not.toContain('private-parser-fixture')
   })
 })
 
 function fakeFixture(record?: (entry: ActionLogEntry) => void | Promise<void>) {
   const entries: ActionLogEntry[] = []
-  const actions: ActionLog = { record: async entry => { await record?.(entry); entries.push(entry) }, recordMany: async batch => { for (const entry of batch) await actions.record(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
+  const actions: ActionLog = { record: async entry => { await record?.(entry); entries.push(entry) }, append: entry => { entries.push(entry) }, recordMany: async batch => { for (const entry of batch) await actions.record(entry) }, recoverInterrupted: async () => 0, read: () => entries, page: () => ({ entries, nextCursor: null }) }
   const wire: Transport = { start: vi.fn(async () => undefined), close: vi.fn(async () => { wire.onclose?.() }), send: vi.fn(async () => undefined) }
   const transport = createAuditedStdioTransport({ transport: wire, actions, workspaceId: 'default', isKnownTool: name => name === 'fs_read' })
   const forwarded = vi.fn()

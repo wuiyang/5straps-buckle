@@ -7,9 +7,7 @@ import { setDescriptorMode } from '../file-modes.js'
 import { StateBusyError, withFileTurn } from '../json-file-store.js'
 import { entriesFrom, stringField } from './log-lines.js'
 import { createPendingAudit } from './pending-audit.js'
-import { nameEntry, withEntryId, type LogFile, type WriterFailure, type WriterReply, type WriterRequest, type WriterWorkerData } from './writer-protocol.js'
-
-const MAX_ENTRY_BYTES = 65_536
+import { entryLine, MAX_ENTRY_BYTES, nameEntry, withEntryId, type LogFile, type WriterFailure, type WriterReply, type WriterRequest, type WriterWorkerData } from './writer-protocol.js'
 
 /** The disk calls a test steers; every other file call is node's own. */
 export interface WriterIo {
@@ -123,7 +121,7 @@ function endingTornTail(lines: Buffer, size: number, tail: number | undefined): 
 }
 
 function serializeEntry(entry: ActionLogEntry): string {
-  const line = `${JSON.stringify(entry)}\n`
+  const line = entryLine(entry)
   if (Buffer.byteLength(line) > MAX_ENTRY_BYTES) throw new Error('Audit entry exceeds the size limit')
   return line
 }

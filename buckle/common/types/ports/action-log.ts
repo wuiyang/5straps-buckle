@@ -96,6 +96,11 @@ export interface ActionLogEntry {
 export interface ActionLog {
   /** Resolves once the entry is durable; a rejection means execution must not continue. */
   record(entry: ActionLogEntry): Promise<void>
+  /**
+   * Hands the entry to the process's log service, masked and named now, and returns at once; never throws. For a record
+   * nothing waits on: a refusal, the result of work already done, and the owner's own change.
+   */
+  append(entry: ActionLogEntry): void
   /** The entries as one batch, one append and one sync, in their order; resolves once all are durable, or rejects for all. */
   recordMany(entries: readonly ActionLogEntry[]): Promise<void>
   recoverInterrupted(): Promise<number>

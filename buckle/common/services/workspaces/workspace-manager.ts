@@ -3,8 +3,11 @@ import { existsSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileS
 import { basename, join, resolve } from 'pathe'
 import { z } from 'zod'
 import { isWorkspaceToolAllowed, WorkspacePolicySchema } from '@5straps/protocol'
+import { settleWithin } from '@5straps/runtime'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createFileActionLog } from '../../adapters/action-log/file-action-log.js'
+import { logService } from '../../adapters/action-log/log-service.js'
+import { LOG_CLOSE_DEADLINE_MS } from '../../runtime/log-budget.js'
 import { switchReading } from '../../adapters/policy-store/file-dangerously-allow-store.js'
 import type { DangerouslyAllowReading } from '../../types/ports/dangerously-allow-store.js'
 import { actionsPath, dangerouslyAllowPath, realPathOf, workspaceConfig, type BuckleConfig, type NodeConfig } from '../../runtime/config.js'
@@ -351,7 +354,10 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
         writeRemovedMarker(id, removed)
         throw new WorkspaceError(`Workspace ${removed.name} is removed, but a call began in it meanwhile, so its records are kept; run buckle workspace prune once the call ends to delete them`, 409)
       }
-      if (options.purge) rmSync(join(node.stateDirectory, 'workspaces', id), { recursive: true, force: true })
+      if (options.purge) {
+        await auditSettled()
+        rmSync(join(node.stateDirectory, 'workspaces', id), { recursive: true, force: true })
+      }
       // Its records stay, with a marker naming the folder, so `buckle workspace add` can take them up and `buckle workspace prune` can find them.
       else if (existsSync(join(node.stateDirectory, 'workspaces', id))) writeRemovedMarker(id, removed)
       return removed
@@ -365,6 +371,7 @@ function createWorkspaceManager(input: { config: NodeConfig; interaction?: Inter
      */
     async prune(options: { yes?: boolean } = {}): Promise<RemovedWorkspace[]> {
       if (!options.yes) return removedWorkspaces(store.read())
+      await auditSettled()
       // Under the registry's lock, so a folder added again meanwhile takes its records up first and is not deleted from under it.
       return store.update(async (state) => {
         const removed = removedWorkspaces(state)
@@ -798,4 +805,9 @@ async function closeRuntime(runtime: BuckleRuntime): Promise<void> {
   await runtime.closeSessions()
   await runtime.workbenches.close()
   await runtime.history.close()
+}
+
+/** Before records are deleted: the entries the log service holds land first, up to the close deadline, so none makes a deleted folder again. */
+async function auditSettled(): Promise<void> {
+  await settleWithin([logService().flush()], LOG_CLOSE_DEADLINE_MS)
 }

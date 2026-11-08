@@ -3,6 +3,14 @@ import type { LogLevel } from '@5straps/runtime'
 import type { ForwardedLine } from '../../runtime/log.js'
 import type { ActionLogEntry } from '../../types/ports/action-log.js'
 
+/** The longest line an entry may take in a log, its newline included. */
+export const MAX_ENTRY_BYTES = 65_536
+
+/** The line an entry takes in its log. */
+export function entryLine(entry: ActionLogEntry): string {
+  return `${JSON.stringify(entry)}\n`
+}
+
 /** One log file as the writer worker opens it: its path, and how long its pending store waits for another process. */
 export interface LogFile {
   path: string

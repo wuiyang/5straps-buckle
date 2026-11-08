@@ -9,6 +9,7 @@ import { clientCommand } from './cli/client.js'
 import { copyCommand } from './cli/copy.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { closeActionLogWriter } from './common/adapters/action-log/action-log-writer.js'
+import { closeLogService } from './common/adapters/action-log/log-service.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
@@ -74,6 +75,9 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
     return await runCommand(mode, global)
   } catch (error) {
     return refuseCommand(error)
+  } finally {
+    // What the command queued for its audit log is written before it exits, for up to the deadline.
+    await closeLogService({ deadlineMs: LOG_CLOSE_DEADLINE_MS })
   }
 }
 

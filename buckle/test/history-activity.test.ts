@@ -11,9 +11,10 @@ import { createShellWorkspaceRecovery, runIsolatedShell } from '../common/servic
 import { createWorkbenchManager } from '../common/services/workbench/manager.js'
 import { workbenchHash } from '../common/services/workbench/storage.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
+import { settleAuditLogs } from './support/action-log-writer.js'
 
 const roots: string[] = []
-afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
+afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 async function fixture(extra: { maxBytes?: number; allowHostGit?: boolean } = {}) {
   let at = 1_000_000
   const root = mkdtempSync(join(tmpdir(), 'history-activity-')); roots.push(root)
@@ -83,7 +84,7 @@ it('does not treat a workbench id as an actual stage', async () => {
   const node = await fixture({ allowHostGit: false })
   const id = randomUUID(); const directory = join(node.root, 'workbenches')
   const manager = createWorkbenchManager({ sourceRoot: node.workspace, directory, workspaceId: 'workspace', maxBytes: 1_000_000, protectedRoots: [node.directory], ripgrep: () => null, history: node.history,
-    actions: { async record() {}, async recordMany() {}, async recoverInterrupted() { return 0 }, read() { return [] }, page() { return { entries: [], nextCursor: null } } },
+    actions: { async record() {}, append() {}, async recordMany() {}, async recoverInterrupted() { return 0 }, read() { return [] }, page() { return { entries: [], nextCursor: null } } },
     authorizePath: () => true, policyHash: () => 'policy', authorizeTool: () => true,
     async prepareTerminal() { throw new Error('unused') }, async spawnPty() { throw new Error('unused') },
   })
