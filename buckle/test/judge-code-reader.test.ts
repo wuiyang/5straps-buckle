@@ -1481,3 +1481,37 @@ describe('a runner package whose name is not URL-safe (fix brief 9, B30)', () =>
     }
   })
 })
+
+describe('a script sh, bash, or dash runs', () => {
+  // The shell finds its script as named, in the working directory; bash then looks on PATH, so a name the reader finds
+  // nowhere refuses. Options are read as the rules read them (shellLeadingWords): only those that load no other code.
+  const files = { 'deploy.sh': '. ./lib.sh\necho "$STAGE"\n', 'lib.sh': 'STAGE=prod\n', '-x.sh': 'echo dash\n' }
+  const refused = (reason: string) => ({ kind: 'refused', reason, truncated: false })
+
+  it('reads the script and the files it sources, past the options that load nothing', () => {
+    const { read } = workspace(files)
+    for (const form of [['bash', 'deploy.sh'], ['sh', 'deploy.sh', 'lib.sh'], ['dash', '-e', 'deploy.sh'], ['bash', '-eux', '-o', 'pipefail', '+o', 'noglob', '-O', 'extglob', 'deploy.sh'], ['bash', '--norc', '--noprofile', '--posix', './deploy.sh']]) {
+      expect(paths(read(form)), form.join(' ')).toEqual(['/workspace/deploy.sh', '/workspace/lib.sh'])
+    }
+    expect(paths(read(['bash', '--', '-x.sh']))).toEqual(['/workspace/-x.sh'])
+  })
+
+  it('refuses a script it finds nowhere, one from standard input or a descriptor, and shell text', () => {
+    const { read } = workspace(files)
+    expect(read(['bash', 'missing.sh'])).toEqual(refused(CODE_REFUSALS.notFound))
+    expect(read(['bash', '-s', 'deploy.sh'])).toEqual(refused(CODE_REFUSALS.stdin))
+    expect(read(['bash'])).toEqual(refused(CODE_REFUSALS.stdin))
+    expect(read(['bash', '/dev/fd/3'])).toEqual(refused(CODE_REFUSALS.stdin))
+    expect(read(['bash', '-c', 'echo 1'])).toEqual(shellRefusal)
+  })
+
+  it('refuses an option that runs startup files first, and one it does not model', () => {
+    const { read } = workspace(files)
+    for (const options of [['-l'], ['--login'], ['-i'], ['-il'], ['--rcfile', 'lib.sh'], ['--init-file', 'lib.sh'], ['--debugger'], ['-O', 'extdebug']]) {
+      expect(read(['bash', ...options, 'deploy.sh']), options.join(' ')).toEqual(refused(CODE_REFUSALS.startupFiles))
+    }
+    for (const options of [['-k'], ['-o', 'vi'], ['-O', 'unknown_option'], ['--noediting-typo'], ['-eo', 'pipefail']]) {
+      expect(read(['bash', ...options, 'deploy.sh']), options.join(' ')).toEqual(refused(CODE_REFUSALS.unknownOption))
+    }
+  })
+})

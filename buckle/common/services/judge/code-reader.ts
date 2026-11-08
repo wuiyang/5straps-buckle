@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto'
 import { constants, fstatSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'pathe'
 import { withFileBeneath } from '../../adapters/beneath.js'
-import { baseCommand } from '../../domain/argv.js'
+import { baseCommand, shellLeadingWords, shellScriptOperand } from '../../domain/argv.js'
 import { OWN_PROCESS_PLACES } from '../../domain/executable.js'
 import { outsideMountReason, type PathView } from '../../domain/path-view.js'
 import { isInside } from '../../domain/paths.js'
@@ -45,6 +45,8 @@ export const CODE_REFUSALS = Object.freeze({
   runnerSource: 'the runner runs a package from a path or a source the reader does not show',
   xargsWords: 'the call hands the interpreter words it reads from a file or puts in place of its own',
   dotdotAfterLink: 'a path climbs with .. past a link or a missing folder, so the program may open another file than the reader would show',
+  scriptFile: 'the call runs a script file the reader does not read',
+  startupFiles: 'the shell runs startup files the reader does not show',
 })
 
 export interface CodeReading { inline: string | null; files: JudgeFile[]; packages: JudgePackage[] }
@@ -506,7 +508,8 @@ function readClosure(gathered: Gathered, place: Pick<CodeInput, 'cwd' | 'view'>)
     bytes += buffer.length
     const content = buffer.toString('utf8')
     files.push({ path, sha256: createHash('sha256').update(buffer).digest('hex'), bytes: buffer.length, content })
-    const language = languageOfFile(next.real, content) ?? next.language
+    // A shell runs its script and what it sources as shell, whatever a file's name or shebang says.
+    const language = SCRIPT_SHELLS.has(next.runtime) ? 'shell' : languageOfFile(next.real, content) ?? next.language
     const found = importsOf(language, content, { file: next.real, cwd, view, packages, runtime: next.runtime, names: gathered.names })
     if (typeof found === 'string') return refused(found)
     for (const item of found) queue.push({ ...item, runtime: next.runtime })
@@ -776,6 +779,7 @@ interface Arguments {
 
 function argumentsOf(program: string, args: readonly string[]): Arguments {
   if (RUNNERS.has(program)) return runnerArguments(args)
+  if (SCRIPT_SHELLS.has(program)) return shellScriptArguments(program, args)
   const inline: string[] = []
   const preloads: Preload[] = []
   // Whether the interpreter's script comes from its standard input (a `-`, `/dev/stdin`, php `--`, or csh/tcsh `-s`),
@@ -973,6 +977,56 @@ function takesCodeOnInput(program: string, args: readonly string[], read: { iner
 }
 
 /**
+ * The shells whose script file the reader reads: run non-interactively, each runs nothing first but what BASH_ENV or ENV
+ * names, which the gate refuses. zsh reads .zshenv first.
+ */
+const SCRIPT_SHELLS: ReadonlySet<string> = new Set(['sh', 'bash', 'dash'])
+
+/** Whether the reader reads the script file of a shell form (SCRIPT_SHELLS). */
+export function readsShellScript(form: readonly string[]): boolean {
+  return SCRIPT_SHELLS.has(baseCommand(form[0] ?? ''))
+}
+
+/** Short flags, clustered after `-` or `+`, with which a shell loads no other code. */
+const SHELL_FLAGS = /^[-+][aeEfhnuvxCT]+$/
+const SHELL_LONG_FLAGS: ReadonlySet<string> = new Set(['--norc', '--noprofile', '--posix', '--noediting'])
+/** The `set -o` names a shell's command line may set, none of which loads code. */
+const SHELL_SET_OPTIONS: ReadonlySet<string> = new Set(['allexport', 'errexit', 'errtrace', 'functrace', 'noclobber', 'noexec', 'noglob', 'nounset', 'pipefail', 'posix', 'verbose', 'xtrace'])
+/** The `shopt` names bash's `-O` may set, none of which loads code; extdebug runs the debugger profile first. */
+const SHELL_SHOPT_OPTIONS: ReadonlySet<string> = new Set(['dotglob', 'expand_aliases', 'extglob', 'failglob', 'globstar', 'inherit_errexit', 'lastpipe', 'nocaseglob', 'nullglob'])
+/** Options with which a shell runs startup files before its script: a login or interactive shell, an rc file, the debugger profile. */
+const SHELL_STARTUP_LONG: ReadonlySet<string> = new Set(['--login', '--rcfile', '--init-file', '--debugger'])
+const SHELL_STARTUP_CLUSTER = /^-[^-]*[il]/
+
+/** Why one leading option word of a shell (with the value it takes, if any) stops the reading, or null where it loads nothing. */
+function shellOptionRefusal(word: string, value: string | undefined): string | null {
+  if (SHELL_STARTUP_LONG.has(word) || SHELL_STARTUP_CLUSTER.test(word) || (word.endsWith('O') && value === 'extdebug')) return CODE_REFUSALS.startupFiles
+  if (word === '-o' || word === '+o') return value !== undefined && SHELL_SET_OPTIONS.has(value) ? null : CODE_REFUSALS.unknownOption
+  if (word === '-O' || word === '+O') return value !== undefined && SHELL_SHOPT_OPTIONS.has(value) ? null : CODE_REFUSALS.unknownOption
+  return SHELL_FLAGS.test(word) || SHELL_LONG_FLAGS.has(word) ? null : CODE_REFUSALS.unknownOption
+}
+
+/**
+ * A shell's script operand, found by its exact name, and the words after it as arguments. A `-c` text, a script from
+ * standard input or a descriptor, and an option that runs startup files or that the reader does not model refuse.
+ */
+function shellScriptArguments(program: string, args: readonly string[]): Arguments {
+  const none: Arguments = { inline: [], packages: [], modules: [], preloads: [], programFiles: [], candidates: [], operand: null, stdinScript: false, inputIsCode: false, refusal: null }
+  const { source } = shellScriptOperand(args)
+  if (source === 'command' || source === 'missingCommand') return { ...none, refusal: SHELL_TEXT_REFUSAL }
+  if (source !== 'file') return { ...none, refusal: CODE_REFUSALS.stdin }
+  const { leading, operand } = shellLeadingWords(args)
+  for (let at = 0; at < leading.length; at++) {
+    const next = leading[at + 1]
+    const value = next?.role === 'value' ? next.word : undefined
+    const refusal = shellOptionRefusal(leading[at]!.word, value)
+    if (refusal !== null) return { ...none, refusal }
+    if (value !== undefined) at++
+  }
+  return { ...none, operand: { name: args[operand]!, required: true, runtime: program }, candidates: args.slice(operand + 1) }
+}
+
+/**
  * A runner's words (npx, pnpx, bunx; fix brief 4, G11). An option before the package refuses. The package is named and
  * never read. A package that is a JavaScript runtime has the words after it read as that runtime reads its own, with its
  * tables; any other takes its first word as its operand, which need not name a file, and refuses an option before it.
@@ -1032,8 +1086,8 @@ function scriptEntry(runtime: string, name: string, base: string, view: CodeView
   if (literalBackslash(name)) return { refused: CODE_REFUSALS.unreadable }
   if (runtime === 'python') return entryOf(firstLocated(view, [name, `${name}/__main__.py`], base))
   if (runtime === 'node') return nodeEntry(name, base, view, 'entry')
-  // perl, ruby, php, lua, the C shells, and awk try no extension and no folder: the name as written.
-  if (SCRIPT_INTERPRETERS.has(runtime) || AWKS.has(runtime)) return entryOf(firstLocated(view, [name], base))
+  // perl, ruby, php, lua, the shells, and awk try no extension and no folder: the name as written.
+  if (SCRIPT_INTERPRETERS.has(runtime) || SCRIPT_SHELLS.has(runtime) || AWKS.has(runtime)) return entryOf(firstLocated(view, [name], base))
   return typeScriptEntry(name, base, view)
 }
 
@@ -1457,7 +1511,7 @@ function packageName(specifier: string): string {
 function languageOfProgram(program: string): Language {
   if (program === 'python') return 'python'
   if (['node', 'deno', 'bun', 'tsx', 'ts-node', 'npx', 'pnpx', 'bunx'].includes(program)) return 'js'
-  if (['tcsh', 'csh', 'busybox', 'toybox'].includes(program)) return 'shell'
+  if (['tcsh', 'csh', 'busybox', 'toybox'].includes(program) || SCRIPT_SHELLS.has(program)) return 'shell'
   return null
 }
 
