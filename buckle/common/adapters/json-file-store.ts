@@ -89,6 +89,23 @@ function inTurn<R>(key: string, operation: () => Promise<R>): Promise<R> {
 }
 
 /**
+ * Runs `operation` once this process's earlier operations on the file are done, under the file's cross-process lock in
+ * `<file>.lock.sqlite`; another process holding it past the wait answers StateBusyError.
+ */
+export function withFileTurn<R>(input: { filePath: string; lockDeadlineMs?: number }, operation: () => R | Promise<R>): Promise<R> {
+  return inTurn(resolve(input.filePath), async () => {
+    // SQLite supplies an OS-released cross-process lock; the file keeps its own format.
+    const wait = { deadlineMs: input.lockDeadlineMs ?? LOCK_DEADLINE_MS, pollMs: LOCK_POLL_MS }
+    try {
+      return await withFileLock({ path: `${input.filePath}.lock.sqlite`, wait }, async () => operation())
+    } catch (error) {
+      if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new StateBusyError(`${input.filePath} is busy in another Buckle process; retry shortly`, { cause: error })
+      throw error
+    }
+  })
+}
+
+/**
  * `silent` is for a look that leaves an unreadable file to the store that opens it for real: the failure is thrown, not
  * logged, so the owner reads one line for it and not one from each store (mounts follow-up, second fix round, item F5).
  */
@@ -120,16 +137,7 @@ export function createJsonFileStore<T>(input: { filePath: string; schema: z.ZodT
   }
 
   function locked<R>(operation: () => R | Promise<R>): Promise<R> {
-    return inTurn(resolve(input.filePath), async () => {
-      // SQLite supplies an OS-released cross-process lock; JSON remains the data format.
-      const wait = { deadlineMs: input.lockDeadlineMs ?? LOCK_DEADLINE_MS, pollMs: LOCK_POLL_MS }
-      try {
-        return await withFileLock({ path: `${input.filePath}.lock.sqlite`, wait }, async () => operation())
-      } catch (error) {
-        if (isRuntimeError(error, RuntimeErrorCode.lockBusy)) throw new StateBusyError(`State file ${input.filePath} is busy in another Buckle process; retry shortly`, { cause: error })
-        throw error
-      }
-    })
+    return withFileTurn({ filePath: input.filePath, lockDeadlineMs: input.lockDeadlineMs }, operation)
   }
 
   async function persist(value: T): Promise<void> {
