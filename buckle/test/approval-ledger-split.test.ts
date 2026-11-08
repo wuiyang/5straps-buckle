@@ -189,7 +189,7 @@ describe('a lasting decision', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session', sessionId: 's' })])
   })
 
-  it('audits buckle approve as recorded, naming why the grant it owes was not written, when the grant cannot be written', async () => {
+  it('audits buckle approve as applied, naming why the grant it owes was not written, when the grant cannot be written', async () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     failing.rename = grantsPath(config)
@@ -202,7 +202,7 @@ describe('a lasting decision', () => {
     expect(stdout).toContain(`Approved ${token} in workspace`)
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
     const result = (await auditEntries(runtime.actions, 50)).find(entry => entry.tool === 'cli_approve' && entry.event === 'result')
-    expect(result).toMatchObject({ outcome: 'error', detail: expect.stringContaining('saving it for the session failed: a disk I/O error') })
+    expect(result).toMatchObject({ outcome: 'ok', detail: expect.stringContaining('saving it for the session failed: a disk I/O error') })
   })
 
   it('keeps a revoked grant revoked when the mark its write cleared never reached the disk', async () => {

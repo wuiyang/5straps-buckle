@@ -60,7 +60,7 @@ describe('the decision audit seam', () => {
       { step: 'received', fields: { ...decision, scope: 'always' } },
       { step: 'refused', fields: { ...decision, scope: 'always', code: 'scope_not_offered' } },
       { step: 'received', fields: { ...decision, scope: 'session' } },
-      { step: 'applied', fields: { ...decision, scope: 'session', assurance: 'local', repeated: false, grantOwed: false } },
+      { step: 'applied', fields: { ...decision, scope: 'session', assurance: 'local', repeated: false, save: 'saved' } },
     ])
     await service.close()
   })
@@ -87,6 +87,24 @@ describe('the decision audit seam', () => {
       { step: 'skip_applied', fields: { ...skip, repeated: true, removed: false } },
       { step: 'skip_received', fields: skip },
       { step: 'skip_failed', fields: skip },
+    ])
+    await service.close()
+  })
+
+  it('tells the audit where each answer left its grant: owed, then saved by a retry, then skipped', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const { registry, service, token } = await asked({ decisionAudit: audit })
+    const answer = { decision: { token, approved: true, scope: 'session' as const }, source: SOURCES.cli }
+    const resolve = registry.resolve.bind(registry)
+    vi.spyOn(registry, 'resolve').mockImplementationOnce(async (...input) => ({ ...await resolve(...input), save: 'owed' as const }))
+    await service.answer(answer)
+    await service.answer(answer)
+    vi.spyOn(registry, 'resolve').mockImplementationOnce(async (...input) => ({ ...await resolve(...input), save: 'skipped' as const }))
+    await service.answer(answer)
+    expect(entries.filter(entry => entry.step === 'applied').map(entry => entry.fields)).toEqual([
+      expect.objectContaining({ repeated: false, save: 'owed' }),
+      expect.objectContaining({ repeated: true, save: 'saved' }),
+      expect.objectContaining({ repeated: true, save: 'skipped' }),
     ])
     await service.close()
   })
@@ -162,7 +180,7 @@ describe('the decision audit seam', () => {
     const decision = { token, outcome: 'approve', scope: 'session', source: { id: 'terminal', kind: 'terminal' }, proof: 'none' }
     expect(decisions).toEqual([
       expect.objectContaining({ event: 'attempt', outcome: 'started', workspaceId: runtime.workspaceId, args: decision }),
-      expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, grantOwed: false } }),
+      expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, save: 'saved' } }),
     ])
   })
 

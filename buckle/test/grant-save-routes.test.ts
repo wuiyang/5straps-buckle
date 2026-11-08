@@ -19,14 +19,15 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // The owner's ruling on a grant that fails to save: buckle approve and buckle approvals --watch warn of it and offer a
 // retry and a skip; buckle approve without a terminal prints the warning and both commands, and exits 5.
 
-// The renames onto `rename` to fail, `count` times.
-const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, count: 1 }))
+// The renames onto `rename` to fail: the first `skip` pass, then `count` fail.
+const failing = vi.hoisted(() => ({ rename: undefined as string | undefined, skip: 0, count: 1 }))
 vi.mock('../common/adapters/replace-file.js', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../common/adapters/replace-file.js')>()
   return {
     ...actual,
     replaceFile: async (from: string, to: string, io?: Parameters<typeof actual.replaceFile>[2]) => {
-      if (failing.rename === to && failing.count > 0) {
+      if (failing.rename === to && failing.skip > 0) failing.skip -= 1
+      else if (failing.rename === to && failing.count > 0) {
         failing.count -= 1
         throw Object.assign(new Error(`EACCES: permission denied, rename '${from}' -> '${to}'`), { code: 'EACCES' })
       }
@@ -39,7 +40,7 @@ const roots: string[] = []
 const runtimes: CoreRuntime[] = []
 afterEach(async () => {
   vi.restoreAllMocks()
-  Object.assign(failing, { rename: undefined, count: 1 })
+  Object.assign(failing, { rename: undefined, skip: 0, count: 1 })
   for (const runtime of runtimes.splice(0)) { await runtime.approvalService.close(); await runtime.history.close() }
   await settleAuditLogs()
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
@@ -205,6 +206,29 @@ describe('buckle approve, when the grant it decides cannot be saved', () => {
     expect(person.warned.map(unsaved => unsaved.kind)).toEqual(['denial'])
     expect(output.stdout).toContain('Denied this call once; nothing was saved.')
     expect(ledgerOf(config).resolved.find(entry => entry.decision.token === denied)?.decision).toMatchObject({ approved: false, scope: 'once' })
+  })
+})
+
+describe('buckle approve, on a skip whose grant is not confirmed removed', () => {
+  it('without a terminal, says the next decision or the opening removes it, that the same command retries now, and exits 5', async () => {
+    const { config, runtime } = await open()
+    const token = await asked(runtime)
+    const decision = { source: 'cli' as const, decision: { token, outcome: 'approve' as const, scope: 'session' as const } }
+    failing.rename = grantsPath(config)
+    expect(await runtime.approvalApi.decide(decision)).toMatchObject({ save: 'owed' })
+    expect(await runtime.approvalApi.decide(decision)).toMatchObject({ save: 'saved' })
+    Object.assign(failing, { rename: grantsPath(config), count: 1 })
+    expect(await runtime.approvalApi.skipSave({ source: 'cli', token })).toMatchObject({ status: 'unfinished', stands: true })
+
+    // The opening's own write of the grants file goes through; its settling pass fails to remove the grant, then the repeat's.
+    Object.assign(failing, { rename: grantsPath(config), skip: 1, count: 2 })
+    const output = captured()
+    const result = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: null, chooseSave: null })
+    vi.restoreAllMocks()
+    expect(result.exitCode).toBe(5)
+    expect(output.stderr).toContain('Skipped, but its grant, if it saved, could not be confirmed removed: permission denied.')
+    expect(output.stderr).toContain('The next decision or the workspace opening again removes it; the same command sent again retries now.')
+    expect(saveOf(config, token)).toBe('skipping')
   })
 })
 

@@ -1,5 +1,5 @@
 import type { GrantScope } from '@5straps/protocol'
-import type { ApprovalErrorCode } from './approval-backend.js'
+import type { ApprovalErrorCode, GrantSave } from './approval-backend.js'
 import type { ApprovalSource, Assurance } from './approval-source.js'
 
 /** What carried a decision: nothing beyond its route, a device's signed request, or the envelope the paired key sealed. */
@@ -29,7 +29,8 @@ export interface AuditEnding<Applied> {
   failed(): void
 }
 
-export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boolean; grantOwed: boolean }>
+/** `save`: where the lasting grant of a session or always approval stands once the answer applied. */
+export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boolean; save?: GrantSave }>
 /** `repeated`: the save was skipped already; `removed`: its grant had saved and is gone; `unfinished`: its removal is not confirmed. */
 export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean; unfinished?: true }>
 

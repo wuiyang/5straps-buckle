@@ -57,6 +57,8 @@ export interface CliResult {
   detail?: string
   /** For the command's audit entry: what the decision AI said at the owner's request (D91). */
   judge?: JudgeAudit
+  /** For the command's audit entry: the decision applied though its grant did not save, so an exit of 5 still reads ok. */
+  applied?: true
 }
 
 /**
@@ -281,7 +283,7 @@ async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: Works
     const browserClose = isBrowserClose(command, input.rest)
     if (!AUDITED_COMMANDS.includes(command) && !browserClose) return await dispatchRuntimeCommand(context)
     // A check that answers denied or asks has still succeeded; only bad input failed.
-    const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0
+    const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0 || result.applied === true
     return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: browserClose ? 'cli_browser_close' : `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
       operation: () => dispatchRuntimeCommand(context),
     })
@@ -758,10 +760,12 @@ const SAVE_ENDING_EXITS: Readonly<Record<SaveEnding['ending'], number>> = { save
 async function approveUnsaved(input: { unsaved: Unsaved; sent: CliDecision; runtime: BuckleRuntime; chooseSave: ChooseSave | null; detail?: string }): Promise<CliResult> {
   const { unsaved, sent, runtime } = input
   const noted = (ending: string) => [input.detail, unsaved.warning, ending].filter(part => part !== undefined).join('; ')
+  // Only a lasting denial that did not save left nothing recorded.
+  const applied = unsaved.kind === 'denial' ? {} : { applied: true as const }
   if (input.chooseSave === null) {
     const untaken = untakenSave({ unsaved, decision: sent.decision, workspaceName: runtime.workspaceName() })
     process.stderr.write(`${unsaved.warning}.\n${untaken}\n`)
-    return { exitCode: SAVE_FAILED_EXIT, detail: noted(untaken) }
+    return { exitCode: SAVE_FAILED_EXIT, detail: noted(untaken), ...applied }
   }
   const { token } = sent.decision
   const ending = await settleUnsaved({
@@ -775,12 +779,13 @@ async function approveUnsaved(input: { unsaved: Unsaved; sent: CliDecision; runt
   })
   const line = saveEndingLine(ending)
   process.stdout.write(`${line}\n`)
-  return { exitCode: SAVE_ENDING_EXITS[ending.ending], detail: noted(line) }
+  return { exitCode: SAVE_ENDING_EXITS[ending.ending], detail: noted(line), ...applied }
 }
 
 /** Where `buckle approve` had no terminal to ask at: a retry is the same command, and a lasting denial's skip a once denial. */
 function untakenSave(input: { unsaved: Unsaved; decision: DecisionBody; workspaceName: string }): string {
   const { token, scope } = input.decision
+  if (input.unsaved.kind === 'removal') return 'The next decision or the workspace opening again removes it; the same command sent again retries now.'
   if (input.unsaved.kind !== 'denial') return 'Retry with the same command; to skip, run it at a terminal and answer s.'
   const named = { request: { token }, workspaceName: input.workspaceName }
   return `Retry with: ${denyCommand({ ...named, scope })}. To deny this call once instead: ${denyCommand(named)}`

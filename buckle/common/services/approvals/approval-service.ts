@@ -785,7 +785,7 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
 /** Tells a received decision's audit how the guard and the ledger ended it, rated as the guard rates its source. */
 function endDecision(input: { received: DecisionEnding; source: ApprovalSource; result: Resolution }): void {
   const { received, result } = input
-  if (result.ok) received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, grantOwed: result.save === 'owed' })
+  if (result.ok) received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, ...(result.save === undefined ? {} : { save: result.save }) })
   else received.refused({ code: result.code })
 }
 

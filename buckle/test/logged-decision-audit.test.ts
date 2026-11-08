@@ -35,12 +35,12 @@ const DEVICE = { token: 'token-1', approved: true, scope: 'once' as const, sourc
 describe('the logged decision audit', () => {
   it('records a decision as received, then applied, under one auditId in the workspace\'s log', async () => {
     const { actions, audit } = workspaceLog()
-    audit.received(DEVICE).applied({ assurance: 'key', repeated: false, grantOwed: true })
+    audit.received(DEVICE).applied({ assurance: 'key', repeated: false, save: 'owed' })
 
     const [attempt, result] = await auditEntries(actions, 10)
     const decision = { token: 'token-1', outcome: 'approve', scope: 'once', source: { id: 'devices', kind: 'devices' }, proof: 'device', decidedBy: 'key:device-1' }
     expect(attempt).toMatchObject({ tool: DECISION_TOOL, event: 'attempt', outcome: 'started', workspaceId: 'w-1', workspaceName: 'The site', sessionId: 'approvals', effects: [], args: decision })
-    expect(result).toMatchObject({ tool: DECISION_TOOL, event: 'result', outcome: 'ok', auditId: attempt!.auditId, requestId: attempt!.requestId, args: { ...decision, assurance: 'key', repeated: false, grantOwed: true } })
+    expect(result).toMatchObject({ tool: DECISION_TOOL, event: 'result', outcome: 'ok', auditId: attempt!.auditId, requestId: attempt!.requestId, args: { ...decision, assurance: 'key', repeated: false, save: 'owed' } })
     expect(DECISION_TOOL).toBe('approval_decision')
   })
 
@@ -117,7 +117,7 @@ describe('the logged decision audit', () => {
     mkdirSync(filePath)
     vi.spyOn(process.stderr, 'write').mockReturnValue(true)
     const received = audit.received(DEVICE)
-    expect(received.applied({ assurance: 'key', repeated: false, grantOwed: false })).toBeUndefined()
+    expect(received.applied({ assurance: 'key', repeated: false, save: 'saved' })).toBeUndefined()
   })
 })
 

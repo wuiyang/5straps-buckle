@@ -330,7 +330,7 @@ describe('a stdio MCP form answer', () => {
     expect(entries.filter(entry => entry.tool === 'fs_write').map(entry => entry.event)).toEqual(Array.from({ length: 3 }, () => ['attempt', 'result']).flat())
     expect(entries.filter(entry => entry.tool === 'approval_decision').map(entry => [entry.event, entry.outcome, entry.args])).toEqual([
       ['attempt', 'started', expect.objectContaining({ token, outcome: 'approve', scope: 'session', source: SOURCES.forms })],
-      ['result', 'ok', expect.objectContaining({ token, source: SOURCES.forms, assurance: 'local', grantOwed: false })],
+      ['result', 'ok', expect.objectContaining({ token, source: SOURCES.forms, assurance: 'local', save: 'saved' })],
     ])
   })
 
