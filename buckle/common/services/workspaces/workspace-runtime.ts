@@ -342,6 +342,19 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   // Every notification names its workspace, whose `buckle approve --workspace` answers it, by id and by its name as it
   // stands at each post, so a rename shows.
   const webhook = config.approvalWebhook ? { url: config.approvalWebhook, serverId: config.serverId, workspaceId, get workspaceName() { return config.serverName }, token: config.reportToken, approvalKey: config.ringsApprovalKey } : null
+  // The settings `buckle workspace` writes; until one does, the ones this runtime was built from.
+  const settingsFile = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), fallback: () => settingsOf(config), lockDeadlineMs })
+  // What this runtime last took up from workspace.json, and the file's version then, read first so a write landing
+  // meanwhile is seen at the next call (Q2: a stat per call, no watcher). Before the registry, whose live reader reads them.
+  let appliedVersion = settingsFile.version()
+  let applied = settingsFile.read()
+  // A version that would not read, so it is reported once and the settings in force stay.
+  let unreadVersion: string | undefined
+  // A version that read but would not apply, reported once; unlike one that would not read, it is tried again.
+  let failedVersion: string | undefined
+  let pickingUp: Promise<void> | undefined
+  // A version whose forms setting could not be read, reported once.
+  let formsUnreadVersion: string | undefined
   let notices: ApprovalNotices | undefined
   const approvals = createApprovalRegistry(grantFile, approvalsPath(config), config.approvalTimeoutMs, {
     lockDeadlineMs, durableNotices: webhook !== null,
@@ -377,8 +390,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
   })
   input.onApprovalCleanup(() => approvalService.close())
   const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService })
-  // The settings `buckle workspace` writes; until one does, the ones this runtime was built from.
-  const settingsFile = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, workspaceId), fallback: () => settingsOf(config), lockDeadlineMs })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })
@@ -412,17 +423,6 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
 
   const localSkills = [loadRootSkill(), ...await loadSkills(config.skillDirectories)]
   const listeners: Array<() => void> = []
-  // What this runtime last took up from workspace.json, and the file's version then, read first so a write landing
-  // meanwhile is seen at the next call (Q2: a stat per call, no watcher).
-  let appliedVersion = settingsFile.version()
-  let applied = settingsFile.read()
-  // A version that would not read, so it is reported once and the settings in force stay.
-  let unreadVersion: string | undefined
-  // A version that read but would not apply, reported once; unlike one that would not read, it is tried again.
-  let failedVersion: string | undefined
-  let pickingUp: Promise<void> | undefined
-  // A version whose forms setting could not be read, reported once.
-  let formsUnreadVersion: string | undefined
 
   let compiled = compileStartupPolicy(applied)
   let paths = createPathView({ root: config.cwd, mount: compiled.mount, mounts: config.mounts })
