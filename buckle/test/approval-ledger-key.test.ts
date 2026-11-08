@@ -26,13 +26,13 @@ afterEach(async () => {
 
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 
-function setUp() {
+function setUp(environment: NodeJS.ProcessEnv = {}) {
   const root = mkdtempSync(join(tmpdir(), 'buckle-ledger-key-'))
   roots.push(root)
   const workspace = join(root, 'workspace')
   mkdirSync(join(workspace, 'one'), { recursive: true })
   mkdirSync(join(root, 'state'), { mode: 0o700 })
-  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs' })
+  const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', ...environment })
   return { root, workspace, config }
 }
 
@@ -79,7 +79,8 @@ describe('the ask ledger key', () => {
   })
 
   it('answers, after the workspace folder moved, an ask recorded before the move', async () => {
-    const { root, workspace, config } = setUp()
+    // Idle ends off: the history, and its activity store, are kept per folder, so a moved folder reads as never active.
+    const { root, workspace, config } = setUp({ BUCKLE_APPROVAL_SESSION_IDLE_MS: '0' })
     const before = await open(config)
     const token = tokenOf(await write(before, 'one/a.md'))
 

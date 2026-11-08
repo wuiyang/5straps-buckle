@@ -408,12 +408,13 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     notices, decisionKey: config.ringsApprovalKey, nonces: approvalNonces,
     // Every route's decisions, in this workspace's own log through the log service, which never holds up an answer.
     decisionAudit: createLoggedDecisionAudit({ actions, workspaceId }),
+    idleCheck: () => sessionIdle.check(),
   })
   input.onApprovalCleanup(() => approvalService.close())
   // Before any call is served: a face session an earlier process left cannot clear one. A failure fails the open.
   const face = input.faceSession
   if (face?.endsAtOpen) await approvalService.endSessions({ ending: { sessionId: face.sessionId }, cause: face.endsAtOpen })
-  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionsFrom: () => sessionIdle.sessionsFrom() })
+  const approvalGate = createApprovalGate({ ledger: approvals, grants, service: approvalService, sessionApprovalsSuspended: () => sessionIdle.sessionApprovalsSuspended() })
   const switchStore = createFileDangerouslyAllowStore({ filePath: dangerouslyAllowPath(config), workspace: workspaceId, lockDeadlineMs })
   const reporter = input.reporter ?? (config.reportUrl && config.reportToken
     ? createWebhookReporter({ url: config.reportUrl, token: config.reportToken, serverId: config.serverId, approvalKey: config.ringsApprovalKey })

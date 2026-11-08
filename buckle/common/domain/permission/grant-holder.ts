@@ -12,9 +12,9 @@ export function servesHolder(grant: Pick<GrantRecord, 'sessionId' | 'actor'>, ho
 }
 
 /**
- * Whether a session approval was made before `sessionsFrom`, so it clears nothing: while a workspace's activity cannot be
- * read, its session may have ended unseen, and only one made within the window since is sure to be live.
+ * Whether a grant is a session approval while session approvals are suspended, so it clears nothing: while a workspace's
+ * activity cannot be read, its session may have ended unseen. A denial binds whatever.
  */
-export function madeBeforeSessionsFrom(grant: Pick<GrantRecord, 'scope' | 'createdAt'>, sessionsFrom: number | undefined): boolean {
-  return sessionsFrom !== undefined && grant.scope === 'session' && Date.parse(grant.createdAt) < sessionsFrom
+export function suspendedSessionApproval(grant: Pick<GrantRecord, 'scope' | 'denied'>, suspended: boolean | undefined): boolean {
+  return suspended === true && grant.scope === 'session' && grant.denied !== true
 }

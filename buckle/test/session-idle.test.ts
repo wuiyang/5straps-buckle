@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process'
+import { DatabaseSync } from 'node:sqlite'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -14,7 +15,7 @@ import { logger } from '../common/runtime/log.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput, type ApprovalService } from '../common/services/approvals/approval-service.js'
 import { createSessionIdleCheck } from '../common/services/approvals/session-idle-check.js'
-import { openHistoryActivity } from '../common/services/history/activity.js'
+import { ActivityBusyError, openHistoryActivity } from '../common/services/history/activity.js'
 import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, createExecutingMark, executingInstances } from '../common/services/workspaces/active-work.js'
 import { openSettingsFile, resolveSettings, settingsPath, WorkspaceSettingsSchema } from '../common/services/workspaces/workspace-settings.js'
 import type { ApprovalBackend, LifecycleEvent } from '../common/types/ports/approval-backend.js'
@@ -27,7 +28,7 @@ import { idOf, workspacesOf } from './support/workspaces.js'
 
 // Session end at idle: a session ends once the workspace has had no activity for longer than its window, 15 minutes unless
 // set. Activity is a running tool, a call starting or ending, an ask, and a decision, never a call waiting for a person.
-// Where activity cannot be read, no session ends, and a session approval older than the window clears no call.
+// Where activity cannot be read, no session ends, and no session approval clears a call.
 
 const roots: string[] = []
 afterEach(() => {
@@ -164,6 +165,32 @@ describe('the activity store', () => {
     await reopened.close()
   })
 
+  it('counts a call\'s end whatever turn its session moved on to while it ran, so another process reads it', async () => {
+    const directory = scratch()
+    const activity = await openHistoryActivity(directory)
+    const long = activity.observe({ session: 'mcp', at: NOW, idleMs: MINUTE })
+    activity.start('mcp', undefined, long)
+    const short = activity.observe({ session: 'mcp', at: NOW + 2 * MINUTE, idleMs: MINUTE })
+    expect(short).not.toBe(long)
+    activity.finish('mcp', undefined, long, NOW + 20 * MINUTE)
+
+    const elsewhere = await openHistoryActivity(directory)
+    expect(elsewhere.latest()).toBe(NOW + 20 * MINUTE)
+    await elsewhere.close()
+    await activity.close()
+  })
+
+  it('says it was busy, not unreadable, where another process holds it past the wait', async () => {
+    const directory = scratch()
+    const activity = await openHistoryActivity(directory)
+    activity.touch(NOW)
+    const holder = new DatabaseSync(join(directory, 'activity.sqlite'))
+    holder.exec('BEGIN EXCLUSIVE')
+    try { expect(() => activity.latest()).toThrow(ActivityBusyError) } finally { holder.exec('ROLLBACK'); holder.close() }
+    expect(activity.latest()).toBe(NOW)
+    await activity.close()
+  })
+
   it('counts its in-memory fallback as unknown: latest throws where the store could not be opened', async () => {
     const directory = scratch()
     mkdirSync(join(directory, 'activity.sqlite'))
@@ -275,6 +302,19 @@ describe('an idle end', () => {
     await service.close()
   })
 
+  it('queues the webhook a cancelled notice for each ask it withdraws, and another process reads that each left as its session ended', async () => {
+    const root = scratch()
+    const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: WORKSPACE })
+    const approvals = join(root, 'approvals.json')
+    const registry = createApprovalRegistry(store, approvals, 15_000, { durableNotices: true })
+    const token = await asked(registry, { sessionId: 'chat-1' }, '/outside/held')
+
+    expect(await registry.endSessions({ ending: { allSessions: true } })).toEqual([expect.objectContaining({ sessionId: 'chat-1', withdrawn: [token] })])
+    expect(registry.pendingDeliveries().map(delivery => [delivery.notice.token, delivery.notice.event])).toEqual([[token, 'cancelled']])
+    const elsewhere = createApprovalRegistry(createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: WORKSPACE }), approvals, 15_000)
+    expect(elsewhere.departures([token]).get(token)).toEqual({ type: 'cancelled', reason: 'session_ended' })
+  })
+
   it('records one end per session, with its cause and what it ended, and none where nothing ended', async () => {
     const { registry, service, audit, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
@@ -334,25 +374,63 @@ describe('an idle end', () => {
     await service.close()
   }, 30_000)
 
-  it('ends nothing, and warns naming the store, where activity cannot be read; a session approval older than the window then clears no call', async () => {
+  it('ends nothing, and warns naming the store, where activity cannot be read; no session approval then clears a call until it can', async () => {
     const { store, registry, service, marks } = setUp()
     await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
     const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
     let clock = Date.now()
+    let failing = true
     const check = createSessionIdleCheck({
-      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => [], runningHere: () => false, sessions: service, now: () => clock,
-      lastActivity: () => { throw new Error('SQLITE_IOERR') },
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingInstances({ directory: marks }), runningHere: () => false, sessions: service, now: () => clock,
+      lastActivity: () => { if (failing) throw new Error('SQLITE_IOERR'); return clock },
     })
-    expect(check.sessionsFrom()).toBeUndefined()
+    expect(check.sessionApprovalsSuspended()).toBe(false)
 
     await check.check()
     expect(store.list()).toHaveLength(1)
-    expect(check.sessionsFrom()).toBe(clock - DEFAULT_SESSION_IDLE_MS)
+    expect(check.sessionApprovalsSuspended()).toBe(true)
     expect(warned).toHaveBeenCalledWith(expect.stringContaining('activity.sqlite'), expect.objectContaining({ workspaceId: WORKSPACE }))
     clock += MINUTE
     await check.check()
-    expect(check.sessionsFrom()).toBe(clock - DEFAULT_SESSION_IDLE_MS)
+    expect(check.sessionApprovalsSuspended()).toBe(true)
     expect(warned).toHaveBeenCalledOnce()
+
+    failing = false
+    await check.check()
+    expect(check.sessionApprovalsSuspended()).toBe(false)
+    await service.close()
+  })
+
+  it('ends nothing and suspends nothing where the activity store was busy this time, and says nothing of it as a fault', async () => {
+    const { store, registry, service, marks } = setUp()
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const check = createSessionIdleCheck({
+      workspaceId: WORKSPACE, idleMs: () => DEFAULT_SESSION_IDLE_MS, executing: () => executingInstances({ directory: marks }), runningHere: () => false, sessions: service,
+      lastActivity: () => { throw new ActivityBusyError() },
+    })
+
+    await check.check()
+    expect(store.list()).toHaveLength(1)
+    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(warned).not.toHaveBeenCalled()
+    await service.close()
+  })
+
+  it('lets activity this process sees after a gap wait for a check, which reads the gap and ends the sessions', async () => {
+    const { store, registry, service, marks } = setUp()
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    let clock = Date.now()
+    const lastAt = clock
+    const { check, reads } = idleCheck({ service, marks, lastAt: () => lastAt, now: () => clock })
+    await check.check()
+    expect(reads.activity).toBe(1)
+
+    clock += DEFAULT_SESSION_IDLE_MS + 1
+    check.saw()
+    await check.check()
+    expect(reads.activity).toBeGreaterThan(1)
+    expect(store.list()).toEqual([])
     await service.close()
   })
 

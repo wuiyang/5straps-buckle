@@ -182,6 +182,11 @@ export interface ApprovalServiceOptions {
   nonces: NonceClaims
   /** Told of each decision as received, then how it ended; it never holds up or refuses an answer. */
   decisionAudit: DecisionAudit
+  /**
+   * Ends the workspace's sessions where it idled past its window, run before each ask is recorded and each decision applied,
+   * so neither lands in a session that should have ended, nor counts as activity that brings it back. Never throws.
+   */
+  idleCheck?: () => Promise<void>
   pollMs?: number
 }
 
@@ -283,6 +288,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       // grant binds stays as the rule named it.
       const input = masksHeld() ? { ...asked, asks: asked.asks.map(ask => ({ ...ask, reason: maskHeld(ask.reason) })), ...(asked.call === undefined ? {} : { call: maskHeldJson(asked.call) }) } : asked
       input.signal?.throwIfAborted()
+      await options.idleCheck?.()
       const hold = (await options.hold()) ?? UNBOUND_HOLD
       const scope = useScopeSafe()
       const actor = scope?.context.actor
@@ -343,6 +349,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     },
 
     async answer(input) {
+      await options.idleCheck?.()
       const { challenge } = input
       const asks = [...live].filter(ask => ask.tokens.includes(input.decision.token))
       const recording = Promise.withResolvers<void>()

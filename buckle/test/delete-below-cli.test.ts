@@ -16,6 +16,7 @@ import { runCli } from './support/cli.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { FILE_FLOOR_MARKS } from '../common/domain/permission/decision.js'
 import { approvalServiceWithTerminal } from './support/interaction.js'
+import { recordActivity } from './support/activity.js'
 import { questionFor } from '../common/adapters/approval/terminal-question.js'
 
 // The delete policy brief, item 3: the serve terminal shows both choices for a delete outside the workspace's folder,
@@ -91,6 +92,7 @@ const registry = (config: BuckleConfig) => createApprovalRegistry(grants(config)
 async function waiting(config: BuckleConfig, wider = true): Promise<string> {
   const ask = { kind: 'ask' as const, ...FILE_FLOOR_MARKS, rule: 'write_scope' as const, subject: `delete:${FOLDER}`, reason: 'Deleting /data/reports/old.csv asks a person', offeredScopes: ['once' as const, 'session' as const, 'always' as const], ...(wider ? { widerSubject: `delete-below:${FOLDER}` } : {}) }
   const [request] = (await registry(config).ask({ tool: 'fs_delete', sessionId: 'chat-1', call: CALL, asks: [ask] })).requests
+  await recordActivity(config)
   return request!.token
 }
 

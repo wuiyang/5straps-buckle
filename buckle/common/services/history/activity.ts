@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { openDatabase, rawConnection, type SqliteDatabase } from '@5straps/runtime/sqlite'
+import { isSqliteBusy, openDatabase, rawConnection, type SqliteDatabase } from '@5straps/runtime/sqlite'
 import { join } from 'pathe'
 import { logger } from '../../runtime/log.js'
 
@@ -8,9 +8,16 @@ interface Activity { at: number; turn: string; stage: string | null }
 /** The store's file, which the idle check names where it cannot read it. */
 export const ACTIVITY_STORE = 'activity.sqlite'
 
+/** Another process held the store busy past its wait: activity is not unknown, only unread this time. */
+export class ActivityBusyError extends Error {
+  constructor() { super(`${ACTIVITY_STORE} was busy`) }
+}
+
+const TOUCH_WORKSPACE = 'INSERT INTO workspace (id, at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET at = max(at, excluded.at)'
+
 /**
- * Each session's newest call start or end, for turn grouping, and the workspace's own row, which each ask and decision
- * touches: together the workspace's last activity, which the idle check reads.
+ * Each session's newest call start or end, for turn grouping, and the workspace's own row, which each call end, ask, and
+ * decision touches: together the workspace's last activity, which the idle check reads.
  */
 export async function openHistoryActivity(directory: string) {
   const memory = new Map<string, Activity>()
@@ -73,26 +80,40 @@ export async function openHistoryActivity(directory: string) {
   function complete(session: string, turn: string, at: number): void {
     const previous = memory.get(session)
     if (previous?.turn === turn) previous.at = Math.max(previous.at, at)
-    try { db?.prepare('UPDATE activity SET at = max(at, ?) WHERE session = ? AND turn = ?').run(at, session, turn) }
-    catch { logger.warn('History activity could not be persisted; turn grouping may reset after restart') }
+    if (!db) return
+    try {
+      db.exec('BEGIN IMMEDIATE')
+      try {
+        db.prepare('UPDATE activity SET at = max(at, ?) WHERE session = ? AND turn = ?').run(at, session, turn)
+        // A call's end is activity whatever turn its session moved on to meanwhile.
+        db.prepare(TOUCH_WORKSPACE).run(at)
+        db.exec('COMMIT')
+      } catch (error) { db.exec('ROLLBACK'); throw error }
+    } catch { logger.warn('History activity could not be persisted; turn grouping may reset after restart, and the workspace\'s sessions may end at idle sooner than its window') }
   }
 
   /** An ask or a decision in the workspace, at `at`. */
   function touch(at: number): void {
     try {
       if (!db) throw new Error('Activity store unavailable')
-      db.prepare('INSERT INTO workspace (id, at) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET at = max(at, excluded.at)').run(at)
+      db.prepare(TOUCH_WORKSPACE).run(at)
     } catch { logger.warn('Workspace activity could not be recorded; its sessions may end at idle sooner than its window') }
   }
 
   /**
    * The newest activity the store holds, of any session or the workspace's own row; undefined where none was recorded.
-   * Throws where the store cannot be read, its in-memory fallback included, which knows this process's activity alone.
+   * Throws where the store cannot be read, its in-memory fallback included, which knows this process's activity alone, and
+   * ActivityBusyError where another process held it busy past the wait.
    */
   function latest(): number | undefined {
     if (!db) throw new Error('Activity store unavailable')
-    const row = db.prepare('SELECT max(at) AS at FROM (SELECT at FROM activity UNION ALL SELECT at FROM workspace)').get() as { at: number | null }
-    return row.at ?? undefined
+    try {
+      const row = db.prepare('SELECT max(at) AS at FROM (SELECT at FROM activity UNION ALL SELECT at FROM workspace)').get() as { at: number | null }
+      return row.at ?? undefined
+    } catch (error) {
+      if (isSqliteBusy(error)) throw new ActivityBusyError()
+      throw error
+    }
   }
 
   return { observe, activeTurn, start, finish, complete, touch, latest, close: () => database?.dispose() ?? Promise.resolve() }

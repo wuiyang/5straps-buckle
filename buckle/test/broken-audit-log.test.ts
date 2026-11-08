@@ -7,6 +7,7 @@ import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { actionsPath, approvalsPath, dangerouslyAllowPath, grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import { runCli } from './support/cli.js'
+import { recordActivity } from './support/activity.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The owner's own changes are recorded through the log service, which never makes them wait; a tool call still does
@@ -68,6 +69,7 @@ describe('a broken audit log', () => {
       tool: 'fs_write', sessionId: 'chat-1', call: { arguments: { path: '/outside/report.md', content: 'x' }, cwd: '/workspace', description: 'Write "/outside/report.md"', effects: ['write /outside/report.md'], complete: true },
       asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside/report.md', reason: 'outside the workspace', offeredScopes: ['once', 'session'] }],
     })).requests
+    await recordActivity(config)
     breakLogs(config)
     quiet()
 

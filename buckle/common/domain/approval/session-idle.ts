@@ -28,12 +28,15 @@ export function newestSessionGrant(grants: ReadonlyArray<{ scope: string; create
 
 /**
  * The workspace's activity as read now: its newest call start, call end, ask, or decision, and how many instances run a
- * tool; or the store that could not be read.
+ * tool; or the store that could not be read, or that another process held busy past its wait.
  */
-export type ActivityReading = { lastAt: number | undefined; executing: number } | { unreadable: string }
+export type ActivityReading = { lastAt: number | undefined; executing: number } | { unreadable: string } | { busy: string }
 
-/** `active` as of `at`, the latest time the workspace is known active, so a later check within the window need not read. */
-export type IdleVerdict = { kind: 'off' } | { kind: 'active'; at: number } | { kind: 'idle' } | { kind: 'unknown'; store: string }
+/**
+ * `active` as of `at`, the latest time the workspace is known active, so a later check within the window need not read.
+ * `busy`: the store was busy this time, which says nothing either way, so nothing ends and nothing changes.
+ */
+export type IdleVerdict = { kind: 'off' } | { kind: 'active'; at: number } | { kind: 'idle' } | { kind: 'unknown'; store: string } | { kind: 'busy'; store: string }
 
 /**
  * Whether the workspace's sessions end now. Off at a window of 0. Active, reading nothing, where this process itself saw
@@ -46,6 +49,7 @@ export function idleVerdict(input: { now: number; idleMs: number; seenAt?: numbe
   if (seenAt !== undefined && now - seenAt <= idleMs) return { kind: 'active', at: seenAt }
   const reading = input.read()
   if ('unreadable' in reading) return { kind: 'unknown', store: reading.unreadable }
+  if ('busy' in reading) return { kind: 'busy', store: reading.busy }
   if (reading.executing > 0) return { kind: 'active', at: now }
   if (reading.lastAt !== undefined && now - reading.lastAt <= idleMs) return { kind: 'active', at: reading.lastAt }
   return { kind: 'idle' }

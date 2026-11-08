@@ -5,10 +5,10 @@ import type { GrantHolder } from '../../domain/permission/grant-holder.js'
 export type SessionEnding = { sessionId: string } | { allSessions: true }
 
 /**
- * `sessionsFrom`: where set, a session approval made before it clears nothing, as while the workspace's activity cannot be
+ * `sessionApprovalsSuspended`: where true, a session approval clears nothing, as while the workspace's activity cannot be
  * read; an always grant and every denial still stand.
  */
-interface StandingFilter { sessionsFrom?: number }
+interface StandingFilter { sessionApprovalsSuspended?: boolean }
 
 export interface GrantStore {
   /** The workspace whose grants it holds, by id; the approval ledger is keyed by the same id. */

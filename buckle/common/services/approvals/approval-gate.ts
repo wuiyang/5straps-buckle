@@ -2,7 +2,7 @@ import type { GrantRecord, GrantSubject, PermissionRuleId } from '@5straps/proto
 import type { GrantLookup } from '../../domain/permission/decision.js'
 import type { PermissionOutcome } from '../../domain/permission/engine.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
-import { madeBeforeSessionsFrom, servesHolder, type GrantHolder } from '../../domain/permission/grant-holder.js'
+import { servesHolder, suspendedSessionApproval, type GrantHolder } from '../../domain/permission/grant-holder.js'
 import type { LedgerGrants } from '../../types/ports/grant-store.js'
 import type { ApprovalRegistry } from './approval-registry.js'
 import type { UnspentOnce } from './once-store.js'
@@ -32,8 +32,8 @@ export interface GateClearance {
 /**
  * The one way a call meets approvals: its last check spends its onces and claims its execution under the ledger's lock,
  * its grants serve the actor that asked, and its asks are recorded and waited on. A once and a session grant serve only
- * the actor whose call asked. While the workspace's activity cannot be read, `sessionsFrom` names when a session approval
- * must have been made to clear a call; a denial binds whenever it was made.
+ * the actor whose call asked. While `sessionApprovalsSuspended` says so, as while the workspace's activity cannot be read,
+ * no session approval clears a call; a denial binds whatever.
  */
 export interface ApprovalGate {
   clear(input: GateCheck): Promise<GateClearance>
@@ -48,8 +48,8 @@ export interface ApprovalGate {
   unspent(sessionId: string): UnspentOnce[]
 }
 
-export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: LedgerGrants; service: ApprovalService; sessionsFrom: () => number | undefined }): ApprovalGate {
-  const { ledger, grants, service, sessionsFrom } = input
+export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: LedgerGrants; service: ApprovalService; sessionApprovalsSuspended: () => boolean }): ApprovalGate {
+  const { ledger, grants, service, sessionApprovalsSuspended } = input
   return {
     async clear(call) {
       const holder = holderOf(call)
@@ -62,14 +62,14 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Le
         ...(call.holds === undefined ? {} : { holds: call.holds }),
         check: (subjects) => {
           relied = subjects
-          return call.check(grantLookup({ store: grants, holder, consumed: subjects, sessionsFrom: sessionsFrom() }))
+          return call.check(grantLookup({ store: grants, holder, consumed: subjects, sessionApprovalsSuspended: sessionApprovalsSuspended() }))
         },
         spent: (deciders) => { decidedBy = deciders },
       })
       return { outcome, relied, ...(decidedBy === undefined ? {} : { decidedBy }) }
     },
-    grants: ({ consumed, ...holder }) => grantLookup({ store: grants, holder: holderOf(holder), consumed, sessionsFrom: sessionsFrom() }),
-    standing: holder => standingGrants(grants, holderOf(holder), sessionsFrom()),
+    grants: ({ consumed, ...holder }) => grantLookup({ store: grants, holder: holderOf(holder), consumed, sessionApprovalsSuspended: sessionApprovalsSuspended() }),
+    standing: holder => standingGrants(grants, holderOf(holder), sessionApprovalsSuspended()),
     ask: request => service.request(request),
     wasDenied: tokens => ledger.wasDenied(tokens),
     withdraw: tokens => service.withdraw(tokens),
@@ -77,10 +77,10 @@ export function createApprovalGate(input: { ledger: ApprovalRegistry; grants: Le
   }
 }
 
-/** The grants a holder's checks read, with the onces its call counts beside them; see ApprovalGate for `sessionsFrom`. */
-export function grantLookup(input: { store: Pick<LedgerGrants, 'activeSubjects' | 'activePatterns' | 'list'>; holder: GrantHolder; consumed: readonly GrantSubject[]; sessionsFrom?: number }): GrantLookup {
+/** The grants a holder's checks read, with the onces its call counts beside them; see ApprovalGate for `sessionApprovalsSuspended`. */
+export function grantLookup(input: { store: Pick<LedgerGrants, 'activeSubjects' | 'activePatterns' | 'list'>; holder: GrantHolder; consumed: readonly GrantSubject[]; sessionApprovalsSuspended?: boolean }): GrantLookup {
   const { store, holder } = input
-  const filter = input.sessionsFrom === undefined ? {} : { sessionsFrom: input.sessionsFrom }
+  const filter = input.sessionApprovalsSuspended === true ? { sessionApprovalsSuspended: true } : {}
   return {
     // A lasting denial binds its whole session, whichever actor asked in it.
     deniedSubjectsFor: rule => deniedSubjects(store, holder.sessionId, rule),
@@ -94,9 +94,9 @@ function holderOf(input: GrantHolder): GrantHolder {
   return { sessionId: input.sessionId, ...(input.actor === undefined ? {} : { actor: input.actor }) }
 }
 
-function standingGrants(store: LedgerGrants, holder: GrantHolder, sessionsFrom: number | undefined): GrantRecord[] {
+function standingGrants(store: LedgerGrants, holder: GrantHolder, suspended: boolean): GrantRecord[] {
   const now = Date.now()
-  return store.list().filter(grant => !grant.denied && grant.scope !== 'once' && servesHolder(grant, holder) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now) && !madeBeforeSessionsFrom(grant, sessionsFrom))
+  return store.list().filter(grant => !grant.denied && grant.scope !== 'once' && servesHolder(grant, holder) && (!grant.expiresAt || Date.parse(grant.expiresAt) > now) && !suspendedSessionApproval(grant, suspended))
 }
 
 function deniedSubjects(store: Pick<LedgerGrants, 'list'>, sessionId: string, rule: PermissionRuleId): string[] {

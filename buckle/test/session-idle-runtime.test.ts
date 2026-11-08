@@ -5,6 +5,7 @@ import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
+import { SESSION_SWEEP_MS } from '../common/services/approvals/session-idle-check.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { openSettingsFile, settingsPath } from '../common/services/workspaces/workspace-settings.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
@@ -119,6 +120,32 @@ describe('a workspace runtime', () => {
     expect(runtime.grants.list()).toEqual([])
   }, 30_000)
 
+  it('ends a session idle past the window before a late decision from another process applies, so it grants nothing and the next call asks', async () => {
+    clock()
+    const config = configOf({ BUCKLE_APPROVAL_SESSION_IDLE_MS: String(MINUTE) })
+    const serving = await open(config)
+    await approvedForSession(serving, 'cli', 'one/a.md')
+    const asking = await write(serving, 'cli', 'two.md')
+    const token = asking.outcome === 'approval_required' ? asking.approvals[0]!.token : ''
+    past(MINUTE)
+
+    const approving = await open(config)
+    expect(await approving.approvalApi.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'refused' })
+    expect(approving.grants.list()).toEqual([])
+    expect(await write(serving, 'cli', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+  }, 30_000)
+
+  it('ends the sessions of a workspace idle past the window at its once-a-minute sweep, with no call to check first', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], shouldAdvanceTime: true })
+    const runtime = await open(configOf())
+    await approvedForSession(runtime, 'chat-1', 'one/a.md')
+    past()
+
+    await vi.advanceTimersByTimeAsync(SESSION_SWEEP_MS)
+    await vi.waitFor(() => expect(runtime.grants.list()).toEqual([]))
+    expect((await sessionEnds(runtime)).map(entry => entry.sessionId)).toEqual(['chat-1'])
+  }, 30_000)
+
   it('counts a decision as activity, which another process reads', async () => {
     clock()
     const config = configOf()
@@ -178,7 +205,7 @@ describe('a workspace runtime', () => {
     expect(await write(own, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'ok' })
   }, 30_000)
 
-  it('ends no session where activity cannot be read: a session approval older than the window then asks, one given since clears, and a lasting denial binds', async () => {
+  it('ends no session where activity cannot be read: every session approval then asks, one given meanwhile too, and a lasting denial binds', async () => {
     clock()
     const runtime = await open(configOf())
     await approvedForSession(runtime, 'chat-1', 'one/a.md')
@@ -197,7 +224,26 @@ describe('a workspace runtime', () => {
 
     const token = stale.outcome === 'approval_required' ? stale.approvals[0]!.token : ''
     expect(await runtime.approvalService.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
-    expect(await write(runtime, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'ok' })
+    expect(await write(runtime, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
     expect(await sessionEnds(runtime)).toEqual([])
+  }, 30_000)
+
+  it('ends no session where a second process cannot read activity, while its calls ask where session approvals cleared them and a lasting denial binds', async () => {
+    clock()
+    const config = configOf()
+    const first = await open(config)
+    await approvedForSession(first, 'chat-1', 'one/a.md')
+    const denying = await read(first, 'chat-1', '.env')
+    const denied = denying.outcome === 'approval_required' ? denying.approvals[0]!.token : ''
+    expect(await first.approvalService.answer({ decision: { token: denied, approved: false, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true })
+    past()
+
+    const second = await open(config)
+    vi.spyOn(second.history, 'lastActivity').mockImplementation(() => { throw new Error('SQLITE_IOERR: disk I/O error') })
+    vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    expect(await write(second, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+    expect(await read(second, 'chat-1', '.env')).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
+    expect(second.grants.list()).toHaveLength(2)
+    expect(await sessionEnds(second)).toEqual([])
   }, 30_000)
 })
