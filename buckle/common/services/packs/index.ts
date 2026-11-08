@@ -39,6 +39,8 @@ export interface BuiltinPackOptions {
   writableRoots: string[]
   /** Host paths no command may see, Buckle's own state above all. */
   hiddenPaths: string[]
+  /** Those of the hidden paths that are the node's settings files, there or not (protectedSettingsFiles). */
+  settingsFiles: string[]
   /** Host directories a mounted command may still read. */
   mountReadOnlyPaths: string[]
   /** The owner's approved list, or null for the default egress rules. */
@@ -202,6 +204,7 @@ export function createBuiltinPacks(options: BuiltinPackOptions): Pack[] {
     sandbox: options.sandbox,
     writableRoots: options.writableRoots,
     hiddenPaths: options.hiddenPaths,
+    settingsFiles: options.settingsFiles,
     readOnlyPaths: options.mountReadOnlyPaths,
     mounts: options.sandboxMounts,
     unavailableReason: shellUnavailableReason(options),

@@ -28,7 +28,7 @@ function builtinTools(): ToolCapability[] {
   const runProcess = async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false })
   const packs = [
     ...createBuiltinPacks({
-      allowHostGit: true, allowHostLsp: true, enableShell: true, cwd: '/work/project', paths, hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
+      allowHostGit: true, allowHostLsp: true, enableShell: true, cwd: '/work/project', paths, hiddenPaths: [], settingsFiles: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
       runProcess, sandbox: createNoneSandbox(), writableRoots: ['/work/project'], 
       forge: { token: 'fixture-token', apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } },
       stateDirectory: '/state', agentBrowserCommand: 'agent-browser', browserStateDirectory: '/state/browser', browserHeaded: false, environmentValidator: 'validate', sandboxUnavailableReason: null,

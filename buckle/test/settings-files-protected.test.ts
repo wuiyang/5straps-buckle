@@ -1,6 +1,6 @@
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { emptyWorkspacePolicy, type InvokeResponse, type JsonObject } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -45,13 +45,14 @@ function writeSettings(file: string): void {
 
 interface Node { root: string; workspace: string; envFile: string; runtime: CoreRuntime; call: (tool: string, args: JsonObject) => Promise<InvokeResponse> }
 
-/** A node whose env file `at` places, written, with `environment` over the defaults the rows share. */
-async function node(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string> }): Promise<Node> {
+/** A node whose env file `at` places, written unless `missing`, with `environment` over the defaults the rows share. */
+async function node(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; missing?: boolean }): Promise<Node> {
   const root = scratch()
   const workspace = join(root, 'workspace')
   mkdirSync(workspace)
   const envFile = input.at(root, workspace)
-  writeSettings(envFile)
+  if (input.missing) mkdirSync(dirname(envFile), { recursive: true })
+  else writeSettings(envFile)
   const config = configFromEnvironment({
     BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ENV_FILE: envFile, BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs',
     ...input.environment?.(root),
@@ -243,15 +244,23 @@ describe('the shell\'s hidden paths', () => {
     const folder = join(root, 'state')
     mkdirSync(folder)
     const hidden = await collectShellHiddenPaths({ roots: [], protectedPaths: [file, folder], signal: new AbortController().signal })
-    expect(hidden).toEqual({ directories: [folder], files: [file] })
+    expect(hidden).toEqual({ directories: [folder], files: [file], missingFiles: [] })
+  })
+
+  it('keep a settings file not made yet apart, to mask as no folder, and any other missing path a folder', async () => {
+    const root = scratch()
+    const [unmade, other] = [join(root, 'settings', 'buckle.env'), join(root, 'gone')]
+    const hidden = await collectShellHiddenPaths({ roots: [], protectedPaths: [unmade, other], settingsFiles: [unmade], signal: new AbortController().signal })
+    expect(hidden).toEqual({ directories: [other], files: [], missingFiles: [unmade] })
   })
 })
 
 describe('a sandboxed shell command and an env file outside the state directory', () => {
-  async function sandboxed(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; write?: string }) {
+  async function sandboxed(input: { at: (root: string, workspace: string) => string; environment?: (root: string) => Record<string, string>; missing?: boolean; write?: string }) {
     let recorded: () => string[][] = () => []
     const made = await node({
       at: input.at,
+      ...(input.missing ? { missing: true } : {}),
       environment: (root) => {
         recorded = fakeBwrap(root, input.write)
         return { BUCKLE_PACKS: 'fs,shell', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SANDBOX: 'bubblewrap', BUCKLE_SHELL_ISOLATION: 'false', ...input.environment?.(root) }
@@ -304,12 +313,29 @@ describe('a sandboxed shell command and an env file outside the state directory'
 
   // The default: an isolated call runs in a copy of the folder, where no mask is laid over the file inside it. The copy
   // leaves the file out, and its publish refuses a change at it. The fake bwrap writes it in the copy as a command would.
-  it('keeps an env file inside the workspace out of an isolated call\'s copy, and refuses the publish of a change that makes it there', async () => {
-    const { runtime, envFile, response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env'), environment: () => ({ BUCKLE_SHELL_ISOLATION: 'true' }), write: 'config/buckle.env' })
+  it.each([
+    ['there', false],
+    ['not made yet', true],
+  ])('keeps an env file inside the workspace, %s, out of an isolated call\'s copy, and refuses the publish of a change that makes it there', async (_state, missing) => {
+    const { runtime, envFile, response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env'), environment: () => ({ BUCKLE_SHELL_ISOLATION: 'true' }), missing, write: 'config/buckle.env' })
     expect(runs).toHaveLength(1)
     expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('need owner review') } })
     expect(runtime.shellWorkspaces.list().map(kept => [kept.status, kept.excluded.includes(envFile)])).toEqual([['needs_review', true]])
-    expect(readFileSync(envFile, 'utf8')).toBe(SETTINGS)
+    expect(missing ? existsSync(envFile) : readFileSync(envFile, 'utf8')).toBe(missing ? false : SETTINGS)
+  })
+
+  it('refuses a call, running nothing, where the env file, not made yet, lies inside a folder the command writes, since a mask would make it', async () => {
+    const { envFile, response, runs } = await sandboxed({ at: (_root, workspace) => join(workspace, 'config', 'buckle.env'), missing: true })
+    expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('not made yet inside a folder this command writes') } })
+    expect(runs).toEqual([])
+    expect(existsSync(envFile)).toBe(false)
+  })
+
+  it('runs where the env file, not made yet, lies only inside a folder bound read-only, laying no mask there', async () => {
+    const { envFile, response, runs } = await sandboxed({ at: root => join(root, 'tools', 'buckle.env'), environment: root => ({ BUCKLE_MOUNT_READ_ONLY: join(root, 'tools') }), missing: true })
+    expect(response, JSON.stringify(response)).toMatchObject({ outcome: 'ok' })
+    const laid = masks(runs[0]!)
+    expect([...laid.files, ...laid.folders]).not.toContain(envFile)
   })
 })
 

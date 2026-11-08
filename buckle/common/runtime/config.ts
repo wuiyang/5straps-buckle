@@ -682,6 +682,12 @@ export function protectedStateRoots(config: StateDirectories, platform: NodeJS.P
   return [...new Set([...named, ...named.map(path => realPathOf(path))])]
 }
 
+/** The node's environment files among the protected roots, as typed and where each really is: files, there or not, never masked as folders. */
+export function protectedSettingsFiles(config: StateDirectories): string[] {
+  const files = settingsFiles(config)
+  return [...new Set([...files, ...files.map(path => realPathOf(path))])]
+}
+
 function settingsFiles(config: StateDirectories): string[] {
   return [...(config.environmentFile === undefined ? [] : [config.environmentFile]), ...config.recordedEnvironmentFiles ?? []]
 }

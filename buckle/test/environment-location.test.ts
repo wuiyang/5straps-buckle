@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { runInit } from '../cli/init.js'
 import { settingsCommand } from '../cli/settings.js'
 import { defaultEnvironmentFile, environmentFilePath } from '../common/runtime/config.js'
-import { loadEnvironmentFile } from '../common/runtime/environment.js'
+import { loadEnvironmentFile, nodeLocation } from '../common/runtime/environment.js'
 import { recordedEnvironmentFiles } from '../common/runtime/environment-files.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -122,6 +122,15 @@ describe('loading it', () => {
     writeFileSync(named, `BUCKLE_ENV_FILE=${join(base, 'third.env')}\n`, { mode: 0o600 })
     vi.stubEnv('BUCKLE_ENV_FILE', named)
     expect(() => loadEnvironmentFile()).toThrow('cannot name another one')
+  })
+
+  it('refuses a folder where the settings file should be, naming it, in the start and in the node\'s location', () => {
+    const named = join(base, 'settings', 'node.env')
+    mkdirSync(named, { recursive: true })
+    vi.stubEnv('BUCKLE_ENV_FILE', named)
+    const refusal = `${named} is a folder, not the node's settings file: remove it, then write the settings there with buckle init --out ${named}`
+    expect(() => loadEnvironmentFile()).toThrow(refusal)
+    expect(() => nodeLocation()).toThrow(refusal)
   })
 
   it('refuses a state directory file that moves the state directory', async () => {

@@ -43,7 +43,7 @@ function ownEnvironmentFile(named: string, environment: NodeJS.ProcessEnv): bool
  */
 export function nodeLocation(environment: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): NodeLocation {
   const environmentFile = environment.BUCKLE_ENV_FILE ? environmentFilePath(environment, platform) : null
-  const named = environment.BUCKLE_STATE_DIR || (environmentFile !== null && existsSync(environmentFile) ? Object.fromEntries(buckleVariables(readFileSync(environmentFile, 'utf8'))).BUCKLE_STATE_DIR : undefined)
+  const named = environment.BUCKLE_STATE_DIR || (environmentFile !== null && existsSync(environmentFile) ? Object.fromEntries(buckleVariables(readSettingsText(environmentFile))).BUCKLE_STATE_DIR : undefined)
   return { stateDirectory: stateDirectoryOf({ ...environment, BUCKLE_STATE_DIR: named }, platform), environmentFile }
 }
 
@@ -66,13 +66,19 @@ export function loadEnvironmentFile(): LoadedEnvironmentFile {
     if (!explicit) refuseUnreadDotEnv({ cwd: process.cwd(), expected: path })
     return { file: null, openToOthers: false, values: {} }
   }
-  const values = Object.freeze(Object.fromEntries(buckleVariables(readFileSync(path, 'utf8'))))
+  const values = Object.freeze(Object.fromEntries(buckleVariables(readSettingsText(path))))
   refuseNamedEnvironmentFile({ file: path, variables: values })
   if (!explicit) refuseMovedStateDirectory({ file: path, variables: values })
   for (const [name, value] of Object.entries(values)) {
     if (process.env[name] === undefined) process.env[name] = value
   }
   return { file: path, openToOthers: isOpenToOthers(path), values }
+}
+
+/** An environment file's text; a folder in its place is refused, naming it, and not read as an EISDIR. */
+function readSettingsText(path: string): string {
+  if (statSync(path).isDirectory()) throw new Error(`${path} is a folder, not the node's settings file: remove it, then write the settings there with buckle init --out ${path}`)
+  return readFileSync(path, 'utf8')
 }
 
 /** An environment file's BUCKLE_ settings, the only names Buckle takes from one. */

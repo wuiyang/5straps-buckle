@@ -1,5 +1,5 @@
 import { mountSourceState, refuseChangedFolder, validateSandboxMounts } from '../../domain/sandbox-mounts.js'
-import { protectedStateRoots } from '../../runtime/config.js'
+import { protectedSettingsFiles, protectedStateRoots } from '../../runtime/config.js'
 import { serviceInstalled } from '../node-service/installed.js'
 import { createWorkbenchManager } from '../workbench/manager.js'
 import { WorkbenchError, workbenchesDirectory, workbenchHash } from '../workbench/storage.js'
@@ -487,7 +487,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
       // The copy lies inside Buckle's state, so the scan takes the protected paths beside it; those holding it are still
       // masked wherever else the layout shows them.
       const holdingCopy = state.filter(path => isInside(path, request.root))
-      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), signal })
+      // Every host bind here but the copy is read-only, so a settings file not made yet cannot be made there and needs no mask.
+      const hidden = await collectShellHiddenPaths({ roots: [request.root, ...scratchRoots, ...config.mountReadOnlyPaths], protectedPaths: state.filter(path => !holdingCopy.includes(path)), settingsFiles: protectedSettingsFiles(config), signal })
       if (projection.hiddenPaths.some(path => isInside(path, request.cwd))) throw new WorkbenchError('Filesystem restrictions hide this terminal working directory', 403)
       const wrapped = sandbox.sandbox.wrap({ command: 'bash', args: ['--noprofile', '--norc', '-i'], cwd: request.cwd,
         workspaceRoot: request.root, writableRoots: [request.root], mount: { root: request.root, at: '/workspace' }, commandIsPid1: true,
@@ -930,6 +931,7 @@ async function buildPacks(input: {
     sandboxUnavailableReason: input.sandbox.unavailableReason,
     writableRoots: [input.config.cwd, ...scratchSources(input.config.mounts)],
     hiddenPaths: protectedStateRoots(input.config),
+    settingsFiles: protectedSettingsFiles(input.config),
     mountReadOnlyPaths: input.config.mountReadOnlyPaths,
     sandboxMounts: sandboxBinds(input.config.mounts),
     approvedUrls: input.compiled.network,

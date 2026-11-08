@@ -18,6 +18,7 @@ function builtinRegistry(allowHostGit = false) {
     cwd: '/work/project',
     paths: createPathView({ root: '/work/project', mount: null }),
     hiddenPaths: [],
+    settingsFiles: [],
     mountReadOnlyPaths: [],
     approvedUrls: null,
     approvedLists: [],

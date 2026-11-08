@@ -4,7 +4,7 @@ import { projectFilesystemSandbox } from '../../../domain/filesystem-policy.js'
 import type { WorkspacePolicy } from '@5straps/protocol'
 import { relative, resolve } from 'pathe'
 import { runIsolatedShell, type IsolatedShellOptions } from '../../shell/isolated-shell.js'
-import { collectShellHiddenPaths } from '../../shell/shell-filesystem.js'
+import { collectShellHiddenPaths, refuseUnmadeSettingsFiles, type ShellHiddenPaths } from '../../shell/shell-filesystem.js'
 import { isInsideAny, nativePath } from '../../../domain/paths.js'
 import { z } from 'zod'
 import type { JsonValue } from '@5straps/protocol'
@@ -73,6 +73,8 @@ export interface ShellPackOptions {
   isolation?: IsolatedShellOptions
   /** Host paths no command may see, Buckle's own state above all. */
   hiddenPaths: string[]
+  /** Those of the hidden paths that are the node's settings files, there or not (protectedSettingsFiles); none where absent. */
+  settingsFiles?: string[]
   /** Host directories a mounted command may still read. */
   readOnlyPaths: string[]
   /** Set when there is no usable sandbox or shell was turned off, which withholds these tools. */
@@ -121,9 +123,11 @@ export function createShellPack(options: ShellPackOptions): Pack {
     const program = options.sandbox.mode === 'none' ? runnableCommand(input.command, { ...untrustedBeside(options.writableRoots), ...options.programSearch }) : null
     const command = program?.path ?? input.command
     // A root not made yet, or gone since the node started, is bound nowhere and holds nothing to hide, so it is not scanned.
-    const hidden = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [] } : await collectShellHiddenPaths({
-      roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths].filter(root => existsSync(root)), protectedPaths: options.hiddenPaths, signal: input.signal,
+    const hidden: ShellHiddenPaths = options.sandbox.mode === 'none' ? { directories: options.hiddenPaths, files: [], missingFiles: [] } : await collectShellHiddenPaths({
+      roots: [options.paths.root, ...options.writableRoots, ...options.readOnlyPaths].filter(root => existsSync(root)), protectedPaths: options.hiddenPaths, settingsFiles: options.settingsFiles ?? [], signal: input.signal,
     })
+    // Seatbelt denies a path whether or not it is there; bubblewrap would make one to mask it, so it is refused or kept out below.
+    if (options.sandbox.mode === 'seatbelt') hidden.files.push(...hidden.missingFiles)
     if (options.sandbox.mode === 'none' && options.filesystemPolicy?.policy.filesystem?.rules.length) throw new ToolInputError('Filesystem policy requires an operating-system sandbox', { code: 'PERMISSION_DENIED' })
     const restrictions = options.filesystemPolicy
       ? await projectFilesystemSandbox({ root: options.paths.root, ...options.filesystemPolicy, signal: input.signal })
@@ -147,6 +151,8 @@ export function createShellPack(options: ShellPackOptions): Pack {
     // state, is refused; one not made yet holds nothing to show. Hidden state inside one is masked where it shows.
     const scratchMounts = validateSandboxMounts(outsideScratch.filter(root => existsSync(root)).map(root => ({ source: root, target: root, readOnly: true })), { protectedRoots: options.hiddenPaths, workspaceRoots: [options.paths.root], workspaceTarget: options.paths.displayRoot })
     const callMounts = isolated ? [...mounts.map(mount => ({ ...mount, readOnly: true })), ...scratchMounts] : mounts
+    // An isolated call writes on the host only through its publish, which refuses a change at an excluded path.
+    if (options.sandbox.mode === 'bubblewrap' && !isolated) refuseUnmadeSettingsFiles({ missingFiles: hidden.missingFiles, hostWritable: [...callWritable, ...callMounts.filter(mount => !mount.readOnly).map(mount => mount.source)] })
     const heldReadOnly = isolated ? [...mounts.filter(mount => !mount.readOnly).map(mount => mount.target), ...scratchMounts.map(mount => mount.target)] : []
     const run = (copyRoot?: string) => {
       const mapped = (path: string) => copyRoot ? resolve(copyRoot, relative(options.paths.root, path)) : path
@@ -178,7 +184,7 @@ export function createShellPack(options: ShellPackOptions): Pack {
     folderInPlace()
     const result = await runIsolatedShell({
       isolation: options.isolation, sourceRoot: options.paths.root, writableRoots: callWritable,
-      excluded: [...hidden.directories, ...hidden.files, ...sensitiveFiles],
+      excluded: [...hidden.directories, ...hidden.files, ...hidden.missingFiles, ...sensitiveFiles],
       readOnlyOverlayPaths: [...sensitiveFiles, ...hidden.directories.filter(directory => isInsideAny([options.paths.root], directory) && sensitiveFiles.some(path => isInsideAny([directory], path)))],
       readOnlyPaths: restrictions.readOnlyWorkspacePaths,
       // The invoker's history stage, which a script's call files under its parent request, as its other writes are

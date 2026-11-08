@@ -492,7 +492,7 @@ describe('the pack catalogue init and settings name', () => {
     const paths = createPathView({ root, mount: null, scratchRoots: [] })
     const sandbox = { mode: 'none', supportsMount: false, wrap: (input: never) => input } as never
     return createBuiltinPacks({
-      cwd: root, paths, runProcess, sandbox, writableRoots: [root], hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
+      cwd: root, paths, runProcess, sandbox, writableRoots: [root], hiddenPaths: [], settingsFiles: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
       forge: { apiUrl: 'https://api.github.com', author: { name: 'a', email: 'a@b.c' } }, stateDirectory: state, 
       agentBrowserCommand: 'agent-browser', browserStateDirectory: state, browserHeaded: false, enableShell: false,
       environmentValidator, sandboxUnavailableReason: null,

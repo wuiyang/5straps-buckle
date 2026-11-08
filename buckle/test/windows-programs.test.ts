@@ -293,6 +293,7 @@ function builtins(input: { table: (root: string) => Record<string, string> }) {
     cwd: root,
     paths: createPathView({ root, mount: null }),
     hiddenPaths: [state],
+    settingsFiles: [],
     mountReadOnlyPaths: [],
     approvedUrls: null,
     approvedLists: [],
@@ -396,7 +397,7 @@ describe('the browser pack on Windows, imitated, without an agent-browser it can
     try {
       const environment = { PATH: 'C:\\Windows;C:\\Windows\\System32', APPDATA: 'C:\\Users\\me\\AppData\\Roaming' }
       const packs = createBuiltinPacks({
-        cwd: root, paths: createPathView({ root, mount: null }), hiddenPaths: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
+        cwd: root, paths: createPathView({ root, mount: null }), hiddenPaths: [], settingsFiles: [], mountReadOnlyPaths: [], approvedUrls: null, approvedLists: [],
         runProcess: async () => ({ exitCode: 0, signal: null, stdout: '', stderr: '', truncated: false, timedOut: false }),
         sandbox: createNoneSandbox(), writableRoots: [root], stateDirectory: scratch(), agentBrowserCommand: 'agent-browser',
         forge: { apiUrl: 'https://api.github.com', author: { name: 'test', email: 'test@example.com' } }, browserStateDirectory: join(scratch(), 'browser'),

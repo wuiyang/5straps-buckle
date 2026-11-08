@@ -86,6 +86,7 @@ describe('the other sandboxes', () => {
       sandbox: createNoneSandbox(),
       writableRoots: ['/work/project'],
       hiddenPaths: [],
+      settingsFiles: [],
       mountReadOnlyPaths: [],
       approvedUrls: null,
       approvedLists: [],
