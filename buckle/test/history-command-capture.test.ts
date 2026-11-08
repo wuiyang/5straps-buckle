@@ -606,6 +606,16 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
   function shadowIndex(directory: string, workspace: string): string {
     return join(directory, 'commands', createHash('sha256').update(workspace).digest('hex').slice(0, 24), 'index')
   }
+  /**
+   * A command run while `workspace`'s first record is taken, as it ends: the git adds it started, beside the record's own,
+   * and whether the record still runs. None and true is a command that ran at once, which a clock on a loaded machine cannot
+   * tell: it paid no budget of its own and never waited for the record.
+   */
+  async function besideRecord(made: { directory: string; workspace: string }, command: () => Promise<unknown>) {
+    const adds = gitAdd.indexes.length
+    await command()
+    return { adds: gitAdd.indexes.slice(adds).filter(index => !index.endsWith('index.warm')), recording: existsSync(shadowIndex(made.directory, made.workspace).replace(/index$/, 'warming')) }
+  }
 
   it.skipIf(process.platform === 'win32')('is finished in the background, so a later command is restorable without paying the budget again', async () => {
     const { workspace, directory, settings, details } = fixture()
@@ -656,14 +666,13 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
   })
 
   it.skipIf(process.platform === 'win32')('runs a command that starts while it is taken at once, saying why it is not restorable', async () => {
-    const { workspace, settings, details } = fixture()
+    const { workspace, directory, settings, details } = fixture()
     const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
     try {
       gitAdd.cold = 5
       await history.run(details, async () => 'first')
-      const started = Date.now()
-      await expect(history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); return 'ran' })).resolves.toBe('ran')
-      expect(Date.now() - started).toBeLessThan(400)
+      const ran = await besideRecord({ directory, workspace }, () => expect(history.run({ ...details, stageId: 'next' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); return 'ran' })).resolves.toBe('ran'))
+      expect(ran).toEqual({ adds: [], recording: true })
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
     } finally { await history.close() }
   })
@@ -742,16 +751,14 @@ describe('a first record of a folder that a command\'s budget cut short', () => 
   })
 
   it.skipIf(process.platform === 'win32')('is taken in the background too once an after phase runs out of time', async () => {
-    const { workspace, settings, details } = fixture()
+    const { workspace, directory, settings, details } = fixture()
     const history = await openChangeHistory({ ...settings, captureBudgetMs: 500, baselineBudgetMs: 30_000 })
     try {
       await history.run(details, async () => 'first')
       // The after phase's git add, then the next one, take longer than a phase may.
       await history.run({ ...details, stageId: 'second' }, async () => { writeFileSync(join(workspace, 'src', 'a.txt'), 'a2'); gitAdd.slow = 20; gitAdd.started = () => { gitAdd.slow = 5 } })
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('git add timed out') })
-      const started = Date.now()
-      await history.run({ ...details, stageId: 'third' }, async () => 'ran')
-      expect(Date.now() - started).toBeLessThan(400)
+      expect(await besideRecord({ directory, workspace }, () => history.run({ ...details, stageId: 'third' }, async () => 'ran'))).toEqual({ adds: [], recording: true })
       expect((await history.list()).at(-1)).toMatchObject({ restorable: false, reason: expect.stringContaining('in the background') })
     } finally { await history.close() }
   })
