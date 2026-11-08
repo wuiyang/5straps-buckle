@@ -129,7 +129,7 @@ describe('a lasting decision', () => {
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The process stopped here'))
 
-    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, save: 'owed' })
     expect(onDisk(config, token)).toEqual({ pending: false, resolved: true, owes: true })
     expect(runtime.grants.list()).toEqual([])
 
@@ -143,11 +143,10 @@ describe('a lasting decision', () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, save: 'owed' })
 
     const repeated = await runtime.approvalService.answer(session(token))
-    expect(repeated).toMatchObject({ ok: true, repeated: true })
-    expect(repeated).not.toHaveProperty('grantOwed')
+    expect(repeated).toMatchObject({ ok: true, repeated: true, save: 'saved' })
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
     expect(onDisk(config, token).owes).toBe(false)
   })
@@ -166,7 +165,7 @@ describe('a lasting decision', () => {
     const { config, runtime } = await open()
     const owing = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    expect(await runtime.approvalService.answer(session(owing))).toMatchObject({ ok: true, grantOwed: true })
+    expect(await runtime.approvalService.answer(session(owing))).toMatchObject({ ok: true, save: 'owed' })
 
     const once = tokenOf(await write(runtime, 'two.md'))
     expect(await runtime.approvalService.answer({ decision: { token: once, approved: true, scope: 'once' }, source: SOURCES.cli })).toMatchObject({ ok: true })
@@ -241,7 +240,7 @@ describe('a lasting decision', () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, save: 'owed' })
 
     await runtime.grants.endSession('s')
     expect(onDisk(config, token).owes).toBe(false)
@@ -253,7 +252,7 @@ describe('a lasting decision', () => {
     const { config, runtime } = await open()
     const token = tokenOf(await write(runtime, 'one/a.md'))
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
-    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, grantOwed: true })
+    expect(await runtime.approvalService.answer(session(token))).toMatchObject({ ok: true, save: 'owed' })
     const kept = readFileSync(approvalsPath(config), 'utf8')
     writeFileSync(approvalsPath(config), '{')
 
@@ -347,7 +346,7 @@ describe('a revoke or a session end, against the decisions around it', () => {
     await new Promise(resolve => setTimeout(resolve, 20))
     first.open()
     expect(await holdingTheLock).toMatchObject({ ok: true })
-    expect(await queued).toMatchObject({ ok: true, grantOwed: true })
+    expect(await queued).toMatchObject({ ok: true, save: 'owed' })
     await ended
 
     expect(store.list()).toEqual([])
@@ -365,7 +364,7 @@ describe('a revoke or a session end, against the decisions around it', () => {
     const stepped = Date.now() - 60 * 60_000
     vi.spyOn(Date, 'now').mockReturnValue(stepped)
     const again = await askIn(registry, 'one')
-    expect(await registry.resolve(sessionGrant(again), SOURCES.cli)).not.toHaveProperty('grantOwed')
+    expect(await registry.resolve(sessionGrant(again), SOURCES.cli)).toMatchObject({ ok: true, save: 'saved' })
     expect(store.activeSubjects({ rule: 'write_scope', sessionId: 's' })).toEqual([`${subject}/one`])
   })
 })
@@ -477,7 +476,7 @@ describe('a lasting denial', () => {
     const ask = async (requestId: string) => (await registry.ask({ tool: 'shell_exec', sessionId: 's', actor: 'a', requestId, asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'sensitive_path', subject, reason: 'secret file', offeredScopes: ['once', 'session', 'always'] }], call: { arguments: {}, cwd: '/workspace', description: null, complete: true } })).requests[0]!.token
     const holder = { rule: 'sensitive_path' as const, sessionId: 's', actor: 'a' }
 
-    expect(await registry.resolve({ token: await ask('approved'), approved: true, scope }, SOURCES.cli)).toMatchObject({ ok: true, grantOwed: true })
+    expect(await registry.resolve({ token: await ask('approved'), approved: true, scope }, SOURCES.cli)).toMatchObject({ ok: true, save: 'owed' })
     expect(await registry.resolve({ token: await ask('denied'), approved: false, scope }, SOURCES.cli)).toEqual(expect.objectContaining({ ok: true }))
     expect(store.list()).toEqual([expect.objectContaining({ subject, scope, denied: true })])
     expect(store.activeSubjects(holder)).toEqual([])
@@ -501,7 +500,7 @@ describe('a lasting approval whose grant cannot be saved', () => {
     vi.spyOn(runtime.grants, 'grant').mockRejectedValueOnce(Object.assign(new Error(`EACCES: permission denied, open '${grantsPath(config)}'`), { code: 'EACCES' }))
 
     const receipt = await approve(runtime, token)
-    expect(receipt).toMatchObject({ status: 'applied', state: 'approved', grantOwed: true, saveError: 'permission denied' })
+    expect(receipt).toMatchObject({ status: 'applied', state: 'approved', save: 'owed', saveError: 'permission denied' })
     expect(JSON.stringify(receipt)).not.toContain(dirname(grantsPath(config)))
     expect(runtime.grants.list()).toEqual([])
     expect(runtime.approvals.unspent('s')).toEqual([expect.objectContaining({ subject: { rule: 'write_scope', subject: expect.any(String) }, tool: 'fs_write' })])
@@ -516,16 +515,15 @@ describe('a lasting approval whose grant cannot be saved', () => {
     const token = tokenOf(await write(runtime, 'one/a.md'))
     Object.assign(failing, { rename: grantsPath(config), count: 2 })
 
-    expect(await approve(runtime, token)).toMatchObject({ status: 'applied', grantOwed: true, saveError: 'a disk I/O error' })
+    expect(await approve(runtime, token)).toMatchObject({ status: 'applied', save: 'owed', saveError: 'a disk I/O error' })
     const owed = keptGrant(config, token)
     expect(owed).toEqual({ id: expect.any(String), save: 'owed' })
     expect(await resend(runtime, 'one/a.md', token)).toMatchObject({ outcome: 'ok' })
 
-    expect(await approve(runtime, token)).toMatchObject({ status: 'repeated', state: 'approved', grantOwed: true, saveError: 'a disk I/O error' })
+    expect(await approve(runtime, token)).toMatchObject({ status: 'repeated', state: 'approved', save: 'owed', saveError: 'a disk I/O error' })
     expect(runtime.approvals.unspent('s')).toEqual([])
     const retried = await approve(runtime, token)
-    expect(retried).toMatchObject({ status: 'repeated', state: 'approved' })
-    expect(retried).not.toHaveProperty('grantOwed')
+    expect(retried).toMatchObject({ status: 'repeated', state: 'approved', save: 'saved' })
     expect(retried).not.toHaveProperty('saveError')
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ id: owed!.id, rule: 'write_scope', scope: 'session', sessionId: 's' })])
     expect(keptGrant(config, token)).toEqual({ id: owed!.id, save: 'saved' })
@@ -537,8 +535,7 @@ describe('a lasting approval whose grant cannot be saved', () => {
     const token = tokenOf(await write(runtime, 'one/a.md'))
 
     const receipt = await approve(runtime, token)
-    expect(receipt).toMatchObject({ status: 'applied', state: 'approved' })
-    expect(receipt).not.toHaveProperty('grantOwed')
+    expect(receipt).toMatchObject({ status: 'applied', state: 'approved', save: 'saved' })
     const [grant] = runtime.grants.list()
     expect(keptGrant(config, token)).toEqual({ id: grant!.id, save: 'saved' })
     expect(runtime.approvals.unspent('s')).toEqual([])
@@ -557,7 +554,7 @@ describe('a decision whose grant stays owed', () => {
     expect(readdirSync(join(root, 'approval-calls'))).toHaveLength(1)
     woken.mockClear()
 
-    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true, grantOwed: true })
+    expect(await registry.resolve({ token: request!.token, approved: true, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true, save: 'owed' })
     expect(readdirSync(join(root, 'approval-calls'))).toEqual([])
     expect(woken).toHaveBeenCalledOnce()
   })

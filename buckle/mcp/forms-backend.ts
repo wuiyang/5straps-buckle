@@ -50,7 +50,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
         continue
       }
       tokens.push(token)
-      if (receipt.grantOwed) opened.log('warn', 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is', { token })
+      if (receipt.save === 'owed') opened.log('warn', 'An elicited approval was recorded, but the lasting grant it makes is not written yet, so its calls ask again until it is', { token })
     }
     return tokens
   }

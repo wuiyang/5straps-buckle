@@ -60,7 +60,7 @@ describe('the core approval API', () => {
   it('grants the ask\'s folder and its subfolders where a person at the node widens below', async () => {
     const { service, token, grants } = await asked(WIDE)
     const receipt = await service.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session', widen: 'below' } })
-    expect(receipt).toEqual({ status: 'applied', state: 'approved', assurance: 'local', decision: { token, approved: true, scope: 'session' }, asked: { rule: 'write_scope', subject: 'delete:/srv/data/reports' }, granted: 'delete-below:/srv/data/reports' })
+    expect(receipt).toEqual({ status: 'applied', state: 'approved', assurance: 'local', decision: { token, approved: true, scope: 'session' }, asked: { rule: 'write_scope', subject: 'delete:/srv/data/reports' }, granted: 'delete-below:/srv/data/reports', save: 'saved' })
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: 'delete-below:/srv/data/reports', scope: 'session', sessionId: 's-1' }])
   })
 
@@ -69,7 +69,7 @@ describe('the core approval API', () => {
     const decision = { token, outcome: 'approve' as const, scope: 'always' as const, widen: 'below' as const }
     expect(await service.decide({ source: 'cli', decision })).toMatchObject({ status: 'applied', granted: 'delete-below:/srv/data/reports' })
     expect(service.waitingAsk(token)).toBeUndefined()
-    expect(await service.decide({ source: 'cli', decision })).toEqual({ status: 'repeated', state: 'approved', decision: { token, approved: true, scope: 'always' }, asked: { rule: 'write_scope', subject: 'delete:/srv/data/reports' } })
+    expect(await service.decide({ source: 'cli', decision })).toEqual({ status: 'repeated', state: 'approved', decision: { token, approved: true, scope: 'always' }, asked: { rule: 'write_scope', subject: 'delete:/srv/data/reports' }, save: 'saved' })
     expect(await service.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'always' } })).toMatchObject({ status: 'refused', error: { code: 'conflicting_decision' } })
   })
 

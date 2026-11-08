@@ -4,12 +4,12 @@ import type { ApprovalChallenge, ShownApprovalCall } from '@5straps/protocol/sig
 import { rightsOf } from '../../domain/approval/assurance.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
 import { redactedSubject } from '../../domain/permission/rules/dangerously-allow.js'
-import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt } from '../../types/ports/approval-backend.js'
+import type { ApprovalError, ApprovalErrorCode, DecisionBody, DecisionReceipt, GrantSave, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES, type Assurance } from '../../types/ports/approval-source.js'
 import type { DecisionRefusal, OpenedDecision } from './approval-envelope.js'
 import { isDeviceProof, spendDeviceProof, type DeviceProof } from './device-proof.js'
 import type { ListedApproval } from './approval-listing.js'
-import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution } from './approval-registry.js'
+import type { GroupSelector, GroupWithdrawal, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
 import type { ApprovalAnswer } from './approval-service.js'
 
 /** What a core client sends. Core holds the source its tag names, and the decision guard checks it as any backend's. */
@@ -44,8 +44,8 @@ export type RefusalStep = 'proof' | 'statement' | 'decision'
  * or host pattern an approval granted in place of the ask's own.
  */
 export type CoreDecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; decision: ReadDecision; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; grantOwed?: true; saveError?: string }
-  | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; grantOwed?: true; saveError?: string }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; decision: ReadDecision; asked?: AnsweredAsk; granted?: string; widened?: { pattern: string; askedBy: string }; save?: GrantSave; saveError?: string }
+  | { status: 'repeated'; state: 'approved' | 'denied'; decision: ReadDecision; asked?: AnsweredAsk; save?: GrantSave; saveError?: string }
   | { status: 'refused'; step: 'decision'; decision: ReadDecision; error: ApprovalError }
   | { status: 'refused'; step: 'proof' | 'statement'; error: ApprovalError }
 
@@ -60,9 +60,14 @@ export interface CallWithdrawal extends GroupWithdrawal {
   selector: GroupSelector
 }
 
+/** A core client's skip of an approval's save, under the source its tag names, as `decide` takes one. */
+export interface CoreSkipInput { source: 'cli'; token: string }
+
 /** Core's approval API for the processes and routes that are not backends: the CLI approvers and the setup routes. */
 export interface CoreApprovalApi {
   decide(input: CoreDecisionInput): Promise<CoreDecisionReceipt>
+  /** Gives up the grant of a session or always approval the client's source recorded (ApprovalHost.skipSave). */
+  skipSave(input: CoreSkipInput): Promise<SkipReceipt>
   /** The requests still waiting in this workspace's queue. */
   pending(): ApprovalRequest[]
   /** The asks still waiting, each with the whole call it came from, for a client that shows them. */
@@ -172,7 +177,7 @@ export function receiptOf(input: { answer: ApprovalAnswer; result: Resolution })
   const state = decision.approved ? 'approved' : 'denied'
   const said = {
     ...(result.asked === undefined ? {} : { asked: result.asked }),
-    ...(result.grantOwed ? { grantOwed: true as const } : {}),
+    ...(result.save === undefined ? {} : { save: result.save }),
     ...(result.saveError === undefined ? {} : { saveError: result.saveError }),
   }
   if (result.repeated) return { status: 'repeated', state, decision, ...said }
@@ -192,13 +197,19 @@ export type DecisionRecord = ReadDecision & Partial<AnsweredAsk> & { grantOwed?:
 export function decisionRecord(receipt: CoreDecisionReceipt): DecisionRecord | undefined {
   if (receipt.status === 'refused') return receipt.step === 'decision' ? receipt.decision : undefined
   const { decision, asked } = receipt
-  return { ...decision, ...(asked === undefined ? {} : { rule: asked.rule, subject: redactedSubject(asked.rule, asked.subject) }), ...(receipt.grantOwed ? { grantOwed: true } : {}) }
+  return { ...decision, ...(asked === undefined ? {} : { rule: asked.rule, subject: redactedSubject(asked.rule, asked.subject) }), ...(receipt.save === 'owed' ? { grantOwed: true } : {}) }
 }
 
 /** The receipt a backend reads: whether its decision applied, and whether its grant saved, never the subject a core client prints. */
 export function backendReceipt(receipt: CoreDecisionReceipt): DecisionReceipt {
   if (receipt.status === 'refused') return { status: 'refused', error: receipt.error }
-  const save = { ...(receipt.grantOwed ? { grantOwed: true as const } : {}), ...(receipt.saveError === undefined ? {} : { saveError: receipt.saveError }) }
+  const save = { ...(receipt.save === undefined ? {} : { save: receipt.save }), ...(receipt.saveError === undefined ? {} : { saveError: receipt.saveError }) }
   if (receipt.status === 'repeated') return { status: 'repeated', state: receipt.state, ...save }
   return { status: 'applied', state: receipt.state, assurance: receipt.assurance, ...save }
+}
+
+/** What a skip came to, as a backend or a core client reads it. */
+export function skipReceiptOf(result: SkipResolution): SkipReceipt {
+  if (!result.ok) return { status: 'refused', error: { code: result.code, message: result.reason, retryable: false } }
+  return { status: result.repeated ? 'repeated' : 'skipped', ...(result.removed ? { removed: true } : {}) }
 }

@@ -10,7 +10,7 @@ import { createFileGrantStore } from '../common/adapters/grant-store/file-grant-
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
 import { createApprovalRegistry, MAX_PENDING_PER_SESSION } from '../common/services/approvals/approval-registry.js'
 import { createApprovalService, type ApprovalAskInput } from '../common/services/approvals/approval-service.js'
-import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../common/types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../common/types/ports/approval-backend.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
 import { UNHEARD_DECISIONS } from './support/decision-audit.js'
 
@@ -111,7 +111,7 @@ describe('the terminal backend port, core side', () => {
     const { service, grants } = setUp(backend)
     const result = await service.request(call({ asks: [ask('delete:/outside/reports', 'write_scope', { widerSubject: 'delete-below:/outside/reports' })] }))
     expect(result.settled).toBe(true)
-    expect(seen.receipts).toEqual([{ status: 'applied', state: 'approved', assurance: 'local' }])
+    expect(seen.receipts).toEqual([{ status: 'applied', state: 'approved', assurance: 'local', save: 'saved' }])
     expect(grants.list().map(grant => grant.subject)).toEqual(['delete-below:/outside/reports'])
     await service.close()
   })
@@ -124,8 +124,8 @@ describe('the terminal backend port, core side', () => {
     await service.request(call())
     await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
     expect(seen.receipts).toEqual([
-      { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true, saveError: 'an unexpected error' },
-      { status: 'repeated', state: 'approved' },
+      { status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'an unexpected error' },
+      { status: 'repeated', state: 'approved', save: 'saved' },
     ])
     expect(grants.list().map(grant => grant.subject)).toEqual(['/outside/a.md'])
     await service.close()
@@ -138,7 +138,31 @@ describe('the terminal backend port, core side', () => {
     vi.spyOn(grants, 'grant').mockRejectedValue(new Error('The grants file was busy'))
     await service.request(call())
     await vi.waitFor(() => expect(seen.receipts).toHaveLength(2))
-    expect(seen.receipts[1]).toEqual({ status: 'repeated', state: 'approved', grantOwed: true, saveError: 'an unexpected error' })
+    expect(seen.receipts[1]).toEqual({ status: 'repeated', state: 'approved', save: 'owed', saveError: 'an unexpected error' })
+    await service.close()
+  })
+
+  it('skips the save of an approval the terminal recorded, so its grant is never written, and of none another route recorded', async () => {
+    const approve = (token: string): DecisionInput => ({ kind: 'plain', decision: { token, outcome: 'approve', scope: 'session' } })
+    const skips: SkipReceipt[] = []
+    const { backend, seen } = recordingBackend(async (host, asks) => {
+      const receipt = await host.decide(approve(asks[0]!.token))
+      skips.push(await host.skipSave(asks[0]!.token))
+      return [receipt]
+    })
+    const { service, grants, registry, root } = setUp(backend)
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    await service.request(call())
+    await vi.waitFor(() => expect(skips).toHaveLength(1))
+    expect(seen.receipts).toEqual([{ status: 'applied', state: 'approved', assurance: 'local', save: 'owed', saveError: 'an unexpected error' }])
+    expect(skips).toEqual([{ status: 'skipped' }])
+    await otherProcess(root).recover()
+    expect(grants.list()).toEqual([])
+
+    const [other] = (await registry.ask({ tool: 'fs_write', sessionId: 'chat-1', requestId: 'request-2', asks: [ask('/outside/b.md')], call: CALL })).requests
+    expect(await registry.resolve({ token: other!.token, approved: true, scope: 'session' }, SOURCES.cli)).toMatchObject({ ok: true, save: 'saved' })
+    expect(await seen.host!.skipSave(other!.token)).toEqual({ status: 'refused', error: { code: 'approver_not_allowed', message: expect.any(String), retryable: false } })
+    expect(grants.list().map(grant => grant.subject)).toEqual(['/outside/b.md'])
     await service.close()
   })
 

@@ -106,13 +106,22 @@ export interface ApprovalError {
 
 export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expired' | 'withdrawn'
 
+/** Where a session or always approval's grant stands: `owed` until written, then `saved`, or `skipped` once given up. */
+export const GRANT_SAVES = ['owed', 'saved', 'skipped'] as const
+export type GrantSave = (typeof GRANT_SAVES)[number]
+
 /**
- * `grantOwed`: the approval is recorded, but its lasting grant is not written yet, so only the call that asked runs on it;
- * `saveError` says why, naming no path. The same decision sent again tries the write again.
+ * `save`: where the grant of a session or always approval stands. While it is `owed`, only the call that asked runs on
+ * it, and `saveError` says why, naming no path; the same decision sent again tries the write again.
  */
 export type DecisionReceipt =
-  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; grantOwed?: true; saveError?: string }
-  | { status: 'repeated'; state: AskState; grantOwed?: true; saveError?: string }
+  | { status: 'applied'; state: 'approved' | 'denied'; assurance: Assurance; save?: GrantSave; saveError?: string }
+  | { status: 'repeated'; state: AskState; save?: GrantSave; saveError?: string }
+  | { status: 'refused'; error: ApprovalError }
+
+/** What a skip came to: `repeated` where the save was skipped already, `removed` where its grant had saved and is gone. */
+export type SkipReceipt =
+  | { status: 'skipped' | 'repeated'; removed?: true }
   | { status: 'refused'; error: ApprovalError }
 
 export type EventType =
@@ -156,6 +165,11 @@ export interface ApprovalHost {
   readonly source: ApprovalSource
   /** The one way a decision enters; the decision guard checks it before anything applies. */
   decide(input: DecisionInput): Promise<DecisionReceipt>
+  /**
+   * Gives up the grant of a session or always approval this source recorded, on its person's say alone: it is never
+   * written, or is removed where it already was. A `once` the call that asked got for it stays.
+   */
+  skipSave(token: string): Promise<SkipReceipt>
   /** The asks still waiting that were routed to this source. */
   pending(): Ask[]
   /** The ask while it waits, if it was routed to this source; undefined otherwise. */

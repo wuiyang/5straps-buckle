@@ -53,6 +53,25 @@ describe('the logged decision audit', () => {
     expect(result).toMatchObject({ event: 'result', outcome: 'error', auditId: attempt!.auditId, detail: 'scope_not_offered', args: { ...attempt!.args as object, code: 'scope_not_offered' } })
   })
 
+  it('records a skip of an approval\'s save as received, then how it ended, under one auditId, as its route answered', async () => {
+    const { actions, audit } = workspaceLog()
+    audit.skipReceived({ token: 'token-4', source: SOURCES.forms }).applied({ repeated: false, removed: true })
+    audit.skipReceived({ token: 'token-5', source: SOURCES.cli }).refused({ code: 'approver_not_allowed' })
+    audit.skipReceived({ token: 'token-6', source: SOURCES.cli }).failed()
+
+    const entries = await auditEntries(actions, 10)
+    const skip = (token: string, source: { id: string; kind: string }) => ({ token, outcome: 'skip_save', source })
+    expect(entries.map(entry => [entry.tool, entry.event, entry.outcome, entry.actorId, entry.detail, entry.args])).toEqual([
+      [DECISION_TOOL, 'attempt', 'started', 'forms', undefined, skip('token-4', { id: 'forms', kind: 'forms' })],
+      [DECISION_TOOL, 'result', 'ok', 'forms', undefined, { ...skip('token-4', { id: 'forms', kind: 'forms' }), repeated: false, removed: true }],
+      [DECISION_TOOL, 'attempt', 'started', 'local-owner', undefined, skip('token-5', { id: 'cli', kind: 'cli' })],
+      [DECISION_TOOL, 'result', 'error', 'local-owner', 'approver_not_allowed', { ...skip('token-5', { id: 'cli', kind: 'cli' }), code: 'approver_not_allowed' }],
+      [DECISION_TOOL, 'attempt', 'started', 'local-owner', undefined, skip('token-6', { id: 'cli', kind: 'cli' })],
+      [DECISION_TOOL, 'result', 'error', 'local-owner', undefined, skip('token-6', { id: 'cli', kind: 'cli' })],
+    ])
+    expect(entries[1]!.auditId).toBe(entries[0]!.auditId)
+  })
+
   it('closes a decision that stopped on an error with an error result, so no later process reads it as interrupted', async () => {
     const { actions, audit } = workspaceLog()
     audit.received({ token: 'token-3', approved: true, scope: 'once', source: SOURCES.terminal, proof: 'none' }).failed()

@@ -65,6 +65,32 @@ describe('the decision audit seam', () => {
     await service.close()
   })
 
+  it('tells the audit of each skip as received, then applied or refused, and of one the ledger could not take as failed', async () => {
+    const { audit, entries } = recordingDecisionAudit()
+    const { registry, service, token } = await asked({ decisionAudit: audit })
+    expect(await service.answer({ decision: { token, approved: true, scope: 'session' }, source: SOURCES.cli })).toMatchObject({ ok: true, save: 'saved' })
+    entries.splice(0)
+
+    expect(await service.skip({ token, source: SOURCES.terminal })).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(await service.skip({ token, source: SOURCES.cli })).toEqual({ ok: true, removed: true })
+    expect(await service.skip({ token, source: SOURCES.cli })).toEqual({ ok: true, repeated: true })
+    vi.spyOn(registry, 'skipSave').mockRejectedValueOnce(new Error('The approvals file is busy'))
+    await expect(service.skip({ token, source: SOURCES.cli })).rejects.toThrow('busy')
+    const terminal = { token, source: SOURCES.terminal }
+    const skip = { token, source: SOURCES.cli }
+    expect(entries).toEqual([
+      { step: 'skip_received', fields: terminal },
+      { step: 'skip_refused', fields: { ...terminal, code: 'approver_not_allowed' } },
+      { step: 'skip_received', fields: skip },
+      { step: 'skip_applied', fields: { ...skip, repeated: false, removed: true } },
+      { step: 'skip_received', fields: skip },
+      { step: 'skip_applied', fields: { ...skip, repeated: true, removed: false } },
+      { step: 'skip_received', fields: skip },
+      { step: 'skip_failed', fields: skip },
+    ])
+    await service.close()
+  })
+
   it('audits a terminal decision the host refuses before the guard, as received and refused', async () => {
     const { audit, entries } = recordingDecisionAudit()
     const decided = Promise.withResolvers<void>()
@@ -125,6 +151,19 @@ describe('the decision audit seam', () => {
     expect(decisions).toEqual([
       expect.objectContaining({ event: 'attempt', outcome: 'started', workspaceId: runtime.workspaceId, args: decision }),
       expect.objectContaining({ event: 'result', outcome: 'ok', workspaceId: runtime.workspaceId, args: { ...decision, assurance: 'local', repeated: false, grantOwed: false } }),
+    ])
+  })
+
+  it('records each skip in the workspace\'s own log, beside the decision it gave up the save of', async () => {
+    const { runtime, token } = await askedInRuntime()
+    expect(await runtime.approvalApi.decide({ source: 'cli', decision: { token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'applied', save: 'saved' })
+    expect(await runtime.approvalApi.skipSave({ source: 'cli', token })).toEqual({ status: 'skipped', removed: true })
+
+    const skips = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'approval_decision' && (entry.args as { outcome?: string }).outcome === 'skip_save')
+    const skip = { token, outcome: 'skip_save', source: { id: 'cli', kind: 'cli' } }
+    expect(skips).toEqual([
+      expect.objectContaining({ event: 'attempt', outcome: 'started', actorId: 'local-owner', args: skip }),
+      expect.objectContaining({ event: 'result', outcome: 'ok', args: { ...skip, repeated: false, removed: true } }),
     ])
   })
 

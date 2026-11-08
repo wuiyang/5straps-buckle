@@ -7,7 +7,7 @@ import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
-import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent } from '../../types/ports/approval-backend.js'
+import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
 import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
 import type { DecisionAudit, DecisionEnding, DecisionProofKind } from '../../types/ports/decision-audit.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
@@ -16,10 +16,10 @@ import { logger, withoutCause } from '../../runtime/log.js'
 import { openApprovalDecision } from './approval-envelope.js'
 import { listedApprovals } from './approval-listing.js'
 import { createApprovalNotices, type ApprovalNotices } from './approval-notices.js'
-import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
+import { backendDecisionOf, backendReceipt, decisionOf, decisionRecord, INVALID_BACKEND_DECISION, readInput, receiptOf, skipReceiptOf, type ChallengeListing, type CoreApprovalApi } from './core-approval-api.js'
 import { fullAskOf, joinKey, ledgerAskOf, type AskSetting } from './full-ask.js'
 import type { AskedCall } from '../../domain/approval/asked-call.js'
-import type { ApprovalRegistry, Departure, PendingAsk, Resolution } from './approval-registry.js'
+import type { ApprovalRegistry, Departure, PendingAsk, Resolution, SkipResolution } from './approval-registry.js'
 import { maskHeld, maskHeldJson, masksHeld } from '../secrets/mask.js'
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -113,6 +113,8 @@ export interface ApprovalService extends CoreApprovalApi {
    * A core client decides through `decide` and a backend through its host, each under the source core holds for it.
    */
   answer(input: ApprovalAnswer): Promise<Resolution>
+  /** Core's one way a skip is recorded, under any source; only the source that recorded the decision may skip its save. */
+  skip(input: { token: string; source: ApprovalSource }): Promise<SkipResolution>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
   /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
@@ -128,6 +130,7 @@ export interface ApprovalService extends CoreApprovalApi {
 export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
   return {
     decide: input => service.decide(input),
+    skipSave: input => service.skipSave(input),
     pending: () => service.pending(),
     waiting: () => service.waiting(),
     waitingAsk: token => service.waitingAsk(token),
@@ -139,7 +142,7 @@ export function approvalFaceOf(service: ApprovalService): CoreApprovalApi {
 }
 
 /** The ledger reads and writes the service makes. */
-export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'departures' | 'sweep' | 'sweepIfDue'>
+export type ApprovalLedger = Pick<ApprovalRegistry, 'ask' | 'resolve' | 'skipSave' | 'cancel' | 'cancelGroup' | 'holdEnded' | 'pending' | 'waiting' | 'waitingAsk' | 'wasDenied' | 'departures' | 'sweep' | 'sweepIfDue'>
 
 export interface ApprovalServiceOptions {
   registry: ApprovalLedger
@@ -235,6 +238,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const host: ApprovalHost = {
     source: SOURCES.terminal,
     decide: input => readBackendDecision(input, decideRouted),
+    skipSave: token => skipAs(SOURCES.terminal, token),
     pending: () => {
       const state = readQueue([...routed.keys()])
       return state ? [...routed.values()].filter(asked => state.pending.has(asked.token)) : []
@@ -246,6 +250,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const formsHost: ApprovalHost = {
     source: SOURCES.forms,
     decide: input => readBackendDecision(input, body => decideAs(SOURCES.forms, body)),
+    skipSave: token => skipAs(SOURCES.forms, token),
     pending: () => options.registry.waiting().map(asked => ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })),
     ask: (token) => {
       const asked = options.registry.waitingAsk(token)
@@ -351,6 +356,23 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       if (!read.ok) return read.receipt
       return receiptOf({ answer: read.answer, result: await service.answer(read.answer) })
     },
+
+    async skip(input) {
+      const received = options.decisionAudit.skipReceived(input)
+      let result: SkipResolution
+      try {
+        result = await options.registry.skipSave(input)
+      } catch (error) {
+        received.failed()
+        throw error
+      }
+      if (result.ok) received.applied({ repeated: result.repeated === true, removed: result.removed === true })
+      else received.refused({ code: result.code })
+      if (result.ok && !result.repeated) logger.info('Skipped the save of an approval\'s grant', { source: input.source.id, ...(result.removed ? { removed: true } : {}) })
+      return result
+    },
+
+    skipSave: input => skipAs(SOURCES[input.source], input.token),
 
     challengeListing(listing) {
       const shown = createCallShapes()
@@ -551,6 +573,10 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     return backendReceipt(receiptOf({ answer: { decision, source }, result }))
   }
 
+  async function skipAs(source: ApprovalSource, token: string): Promise<SkipReceipt> {
+    return skipReceiptOf(await service.skip({ token, source }))
+  }
+
   /** A backend's plain decision, under the source core holds for it. */
   async function decideAs(source: ApprovalSource, body: DecisionBody): Promise<DecisionReceipt> {
     const answer: ApprovalAnswer = { decision: decisionOf(body), source, ...(body.widen === undefined ? {} : { widen: body.widen }) }
@@ -740,7 +766,7 @@ async function announce(notify: ApprovalServiceOptions['announce'], requests: Ap
 /** Tells a received decision's audit how the guard and the ledger ended it, rated as the guard rates its source. */
 function endDecision(input: { received: DecisionEnding; source: ApprovalSource; result: Resolution }): void {
   const { received, result } = input
-  if (result.ok) received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, grantOwed: result.grantOwed === true })
+  if (result.ok) received.applied({ assurance: rightsOf(input.source.kind).assurance, repeated: result.repeated === true, grantOwed: result.save === 'owed' })
   else received.refused({ code: result.code })
 }
 

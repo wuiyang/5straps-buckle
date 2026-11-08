@@ -8,7 +8,7 @@ import { FILE_FLOOR_MARKS, PLAIN_MARKS, type PermissionDecision } from '../commo
 import { createApprovalRegistry } from '../common/services/approvals/approval-registry.js'
 import type { ApprovalService } from '../common/services/approvals/approval-service.js'
 import type { ApprovalHost, DecisionReceipt } from '../common/types/ports/approval-backend.js'
-import type { ApprovalSource } from '../common/types/ports/approval-source.js'
+import { SOURCES, type ApprovalSource } from '../common/types/ports/approval-source.js'
 import type { DecisionAudit } from '../common/types/ports/decision-audit.js'
 import { createFormsBackend, type FormsBackend } from '../mcp/forms-backend.js'
 import { askFor, fakeHost } from './support/approval-backend-kit.js'
@@ -73,7 +73,7 @@ describe('the forms backend', () => {
 
   it('says in the node\'s log when an answer was recorded but the lasting grant it makes is not written yet', async () => {
     const backend = forms()
-    const host = fakeHost({ routed: [askFor('a'), askFor('b')], receipt: decision => (decision.decision.token === 'a' ? { status: 'applied', state: 'approved', assurance: 'local', grantOwed: true } : { status: 'repeated', state: 'approved', grantOwed: true }) })
+    const host = fakeHost({ routed: [askFor('a'), askFor('b')], receipt: decision => (decision.decision.token === 'a' ? { status: 'applied', state: 'approved', assurance: 'local', save: 'owed' } : { status: 'repeated', state: 'approved', save: 'owed' }) })
     await backend.open(host)
     expect(await backend.answer({ a: accepted({ approve: true, scope: 'session' }), b: accepted({ approve: true, scope: 'always' }) })).toEqual(['a', 'b'])
     expect(host.logged).toEqual([
@@ -150,10 +150,16 @@ async function opened() {
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000)
   const heard: ApprovalSource[] = []
   const refused: Array<{ token: string; code: string }> = []
-  const decisionAudit: DecisionAudit = { received: (decision) => {
-    heard.push(decision.source)
-    return { applied: () => undefined, failed: () => undefined, refused: (refusal) => { refused.push({ token: decision.token, code: refusal.code }) } }
-  } }
+  const decisionAudit: DecisionAudit = {
+    received: (decision) => {
+      heard.push(decision.source)
+      return { applied: () => undefined, failed: () => undefined, refused: (refusal) => { refused.push({ token: decision.token, code: refusal.code }) } }
+    },
+    skipReceived: (skip) => {
+      heard.push(skip.source)
+      return { applied: () => undefined, failed: () => undefined, refused: (refusal) => { refused.push({ token: skip.token, code: refusal.code }) } }
+    },
+  }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
   const backend = forms()
@@ -171,6 +177,20 @@ describe('the forms host core opens', () => {
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: '/outside', scope: 'session', sessionId: 's-1' }])
     expect(heard).toEqual([{ id: 'forms', kind: 'forms' }])
     expect(host().source).toEqual({ id: 'forms', kind: 'forms' })
+  })
+
+  it('skips the save of a form approval as the forms source, and refuses to skip one buckle approve recorded', async () => {
+    const { registry, grants, backend, service, heard, refused, host } = await opened()
+    const [formed, approved] = (await registry.ask({ tool: 'fs_write', sessionId: 's-1', requestId: 'r-1', asks: [WRITE, { ...WRITE, subject: '/other' }], call: CALL })).requests
+    vi.spyOn(grants, 'grant').mockRejectedValueOnce(new Error('The grants file was busy'))
+    expect(await backend.answer({ [formed!.token]: accepted({ approve: true, scope: 'session' }) })).toEqual([formed!.token])
+
+    expect(await host().skipSave(formed!.token)).toEqual({ status: 'skipped' })
+    expect(await service.decide({ source: 'cli', decision: { token: approved!.token, outcome: 'approve', scope: 'session' } })).toMatchObject({ status: 'applied', save: 'saved' })
+    expect(await host().skipSave(approved!.token)).toMatchObject({ status: 'refused', error: { code: 'approver_not_allowed' } })
+    expect(grants.list().map(grant => grant.subject)).toEqual(['/other'])
+    expect(heard).toEqual([SOURCES.forms, SOURCES.forms, SOURCES.cli, SOURCES.forms])
+    expect(refused).toEqual([{ token: approved!.token, code: 'approver_not_allowed' }])
   })
 
   it('takes no wider subject through the forms host, as buckle approve would grant it', async () => {

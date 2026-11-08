@@ -713,10 +713,10 @@ async function approve(input: CommandInput & { confirm: Confirm | null }): Promi
   const receipt = await runtime.approvalApi.decide({ source: 'cli', decision: { token, outcome: values.deny === true ? 'deny' : 'approve', scope: scope.data, ...(below === null ? {} : { widen: 'below' }) }, ...(values.host === undefined ? {} : { hostPattern: values.host }) })
   if (receipt.status === 'refused') return fail(`${receipt.error.message} in workspace ${runtime.workspaceName()}`)
   // Recorded either way; a grant the decision owes is said beside it, and in its audit entry.
-  const owed = receipt.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''
+  const owed = receipt.save === 'owed' ? `; ${GRANT_OWED_NOTE}` : ''
   const recorded = (line: string, detail?: string): CliResult => {
     process.stdout.write(`${line}${owed}\n`)
-    const noted = [detail, receipt.grantOwed ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
+    const noted = [detail, receipt.save === 'owed' ? GRANT_OWED_NOTE : undefined].filter(part => part !== undefined).join('; ')
     return { exitCode: 0, ...(noted === '' ? {} : { detail: noted }) }
   }
   const applied = receipt.status === 'applied' ? receipt : undefined

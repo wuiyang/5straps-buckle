@@ -4,8 +4,9 @@ import { describe, expect, expectTypeOf, it } from 'vitest'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { PACKAGE_ROOT, sourceFiles } from './support/sources.js'
 
-// The registry's `resolve` records a verdict; it is reached as `approvals` on the runtime or `registry` in the service.
-const RESOLVES_ON_REGISTRY = /\b(?:approvals|registry)\??\.resolve\(/
+// The registry's `resolve` records a verdict, and `skipSave` a skip; it is reached as `approvals` on the runtime or `registry`
+// in the service.
+const RESOLVES_ON_REGISTRY = /\b(?:approvals|registry)\??\.(?:resolve|skipSave)\(/
 const SERVICE = 'common/services/approvals/approval-service.ts'
 // The registry's `evaluate` spends a `once` and claims the execution; the approval gate reaches it as `ledger`.
 const EVALUATES_ON_REGISTRY = /\b(?:approvals|registry|ledger)\??\.evaluate\(/
@@ -14,7 +15,7 @@ const INVOKER = 'common/services/invocation/invoker.ts'
 // The invoker sees the approval gate and the grant lookup it hands out, never the ledger or a grant adapter.
 const LEDGER_OR_GRANT_ADAPTER = /from '[^']*(?:approvals\/approval-registry|approvals\/once-store|adapters\/grant-store\/[^']*)\.js'/
 // The decision guard's checks run in the registry, which holds the ledger, and nowhere else.
-const GUARDS = /\b(?:guardDecision|screenDecision)\(/
+const GUARDS = /\b(?:guardDecision|guardSkip|screenDecision)\(/
 // The whole approval service, whose `answer` takes any source: a face holds `approvalApi`, typed as the core approval API.
 const NAMES_THE_SERVICE = /\bapprovalService\b/
 const FACES = ['main.ts', 'cli', 'mcp', 'server', 'layers'] as const
@@ -77,7 +78,7 @@ const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...
 
 // Ruling 4 of 2026-09-28: the approval service is the single answerer (review L8).
 describe('the approval boundary', () => {
-  it('lets only the approval service record a verdict on the registry', () => {
+  it('lets only the approval service record a verdict or a skip on the registry', () => {
     const callers = sourceFiles('main.ts', 'common', 'cli', 'mcp', 'server', 'layers')
       .filter(file => RESOLVES_ON_REGISTRY.test(readFileSync(file, 'utf8')))
       .map(file => relative(PACKAGE_ROOT, file))

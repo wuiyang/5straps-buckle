@@ -1,6 +1,6 @@
 import type { ApprovalDecision, ApprovalRequest } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import { guardDecision, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
+import { guardDecision, guardSkip, screenDecision, type DecisionClaim, type GuardRefusalCode, type LedgerView } from '../common/domain/approval/decision-guard.js'
 import { RECORDED_BEFORE_NOTE } from '../common/domain/approval/recorded-before-note.js'
 import { TODAYS_ROUTES } from '../common/domain/approval/routes.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
@@ -100,5 +100,25 @@ describe('the checks against the ask', () => {
   it('applies a host pattern that covers the host that asked, over http or https', () => {
     expect(guard({ claim: claim(approve('always'), { widenTo: '*.example.com' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com' } })
     expect(guard({ claim: claim(approve('session'), { widenTo: '*.example.com:443' }), ledger: waiting({ rule: 'network_egress', subject: 'api.example.com' }) })).toEqual({ ok: true, apply: { widenedTo: '*.example.com:443' } })
+  })
+})
+
+describe('the checks on a skip of an approval\'s save', () => {
+  const recorded = (scope: ApprovalDecision['scope'], approved = true) => ({ approved, scope, source: SOURCES.cli })
+
+  it('lets the source that recorded a session or always approval skip its save, and a lasting approval whose grant was dropped', () => {
+    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('session') })).toEqual({ ok: true })
+    expect(guardSkip({ source: SOURCES.cli, recorded: recorded('always') })).toEqual({ ok: true })
+    expect(guardSkip({ source: SOURCES.forms, recorded: { approved: true, scope: 'session' } })).toEqual({ ok: true })
+  })
+
+  it.each<[string, Parameters<typeof guardSkip>[0], GuardRefusalCode, string]>([
+    ['no decision recorded', { source: SOURCES.cli, recorded: undefined }, 'unknown_ask', 'No decision is recorded for this token, so it has no save to skip'],
+    ['a once approval', { source: SOURCES.cli, recorded: recorded('once') }, 'conflicting_decision', 'This decision made no session or always grant, so it has no save to skip'],
+    ['a lasting denial', { source: SOURCES.cli, recorded: recorded('session', false) }, 'conflicting_decision', 'This decision made no session or always grant, so it has no save to skip'],
+    ['another route', { source: SOURCES.terminal, recorded: recorded('session') }, 'approver_not_allowed', 'cli recorded this decision, so only it may skip its save'],
+    ['a backend named after the route', { source: { id: 'cli', kind: 'backend' }, recorded: recorded('session') }, 'approver_not_allowed', 'cli recorded this decision, so only it may skip its save'],
+  ])('refuses a skip of %s', (_name, input, code, reason) => {
+    expect(guardSkip(input)).toEqual({ ok: false, code, reason })
   })
 })

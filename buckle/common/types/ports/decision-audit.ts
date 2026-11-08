@@ -15,18 +15,30 @@ export interface AuditedDecision {
   decidedBy?: string
 }
 
-/** How a received decision ended, told once. */
-export interface DecisionEnding {
-  applied(outcome: { assurance: Assurance; repeated: boolean; grantOwed: boolean }): void
+/** A skip of an approval's save, as its audit entries name it. */
+export interface AuditedSkip {
+  token: string
+  source: ApprovalSource
+}
+
+/** How a received answer ended, told once. */
+export interface AuditEnding<Applied> {
+  applied(outcome: Applied): void
   refused(refusal: { code: ApprovalErrorCode }): void
-  /** The decision stopped on an error before the ledger said how it ended. */
+  /** The answer stopped on an error before the ledger said how it ended. */
   failed(): void
 }
 
+export type DecisionEnding = AuditEnding<{ assurance: Assurance; repeated: boolean; grantOwed: boolean }>
+/** `repeated`: the save was skipped already; `removed`: its grant had saved and is gone. */
+export type SkipEnding = AuditEnding<{ repeated: boolean; removed: boolean }>
+
 /**
- * Each decision's audit: received before the guard runs, then how it ended, never inside the approvals lock. Every call
- * returns at once and never throws, so a record that cannot be written never holds up or refuses an answer.
+ * Each decision's audit, and each skip's: received before the ledger reads it, then how it ended, never inside the
+ * approvals lock. Every call returns at once and never throws, so a record that cannot be written never holds up or
+ * refuses an answer.
  */
 export interface DecisionAudit {
   received(decision: AuditedDecision): DecisionEnding
+  skipReceived(skip: AuditedSkip): SkipEnding
 }

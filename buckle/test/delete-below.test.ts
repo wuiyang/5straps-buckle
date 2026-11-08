@@ -154,7 +154,7 @@ describe('the approval queue', () => {
     expect(request).toMatchObject({ subject: `delete:${MOUNT}/reports`, widerSubject: `delete-below:${MOUNT}/reports` })
     expect(registry.pending()[0]).toMatchObject({ widerSubject: `delete-below:${MOUNT}/reports` })
     const decision = { token: request!.token, approved: true, scope: 'session' as const, subject: `delete-below:${MOUNT}/reports` }
-    expect(await registry.resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports` })
+    expect(await registry.resolve(decision, SOURCES.cli)).toEqual({ ok: true, asked: { rule: 'write_scope', subject: `delete:${MOUNT}/reports` }, granted: `delete-below:${MOUNT}/reports`, save: 'saved' })
     expect(grants.list()).toMatchObject([{ rule: 'write_scope', subject: `delete-below:${MOUNT}/reports`, scope: 'session', sessionId: 's1' }])
     expect(await registry.resolve(decision, SOURCES.cli)).toMatchObject({ ok: true, repeated: true })
     expect(await registry.resolve({ ...decision, subject: undefined }, SOURCES.cli)).toEqual({ ok: false, code: 'conflicting_decision', reason: 'Approval already has a different decision' })

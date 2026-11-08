@@ -22,7 +22,7 @@ export default defineSetupHandler({
     // approval and denial is logged with key identity and scope).
     const record = runtime.approvalApi.decisionRecord(receipt)
     if (record) audit({ ...record })
-    if (receipt.status !== 'refused') return { resolved: true, ...(receipt.grantOwed ? { grantOwed: true } : {}) }
+    if (receipt.status !== 'refused') return { resolved: true, ...(receipt.save === 'owed' ? { grantOwed: true } : {}) }
     if (receipt.step === 'proof') {
       const refusal = PROOF_REFUSALS[proof === undefined ? 'envelope' : 'device']
       recordRefusal(runtime.actions, { tool: refusal.tool, workspaceId: runtime.workspaceId, sessionId: 'workspace-admin', status: 401, detail: receipt.error.message })

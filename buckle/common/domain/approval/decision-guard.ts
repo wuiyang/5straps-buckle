@@ -87,6 +87,22 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   return { ok: true, apply: { ...(widenedTo === undefined ? {} : { widenedTo }), ...(wider === null ? {} : { wider: wider.subject }) } }
 }
 
+/** What a skip meets in the ledger: the decision recorded, and the source kept with the grant it made, while it keeps one. */
+export interface RecordedForSkip { approved: boolean; scope: ApprovalDecision['scope']; source?: ApprovalSource }
+
+/** A skip gives up a session or always approval's grant, and only the source that recorded the decision sends one. */
+export function guardSkip(input: { source: ApprovalSource; recorded: RecordedForSkip | undefined }): GuardRefusal | { ok: true } {
+  const { recorded } = input
+  if (recorded === undefined) return refuse('unknown_ask', 'No decision is recorded for this token, so it has no save to skip')
+  if (!recorded.approved || recorded.scope === 'once') return refuse('conflicting_decision', 'This decision made no session or always grant, so it has no save to skip')
+  if (recorded.source !== undefined && !sameSource(recorded.source, input.source)) return refuse('approver_not_allowed', `${recorded.source.id} recorded this decision, so only it may skip its save`)
+  return { ok: true }
+}
+
+function sameSource(left: ApprovalSource, right: ApprovalSource): boolean {
+  return left.id === right.id && left.kind === right.kind
+}
+
 function refuse(code: GuardRefusalCode, reason: string): GuardRefusal {
   return { ok: false, code, reason }
 }

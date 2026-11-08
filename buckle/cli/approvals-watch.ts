@@ -239,7 +239,7 @@ async function record(context: AskContext, decision: DecisionBody): Promise<void
     return
   }
   const granted = receipt.status === 'applied' ? receipt.granted : undefined
-  context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${receipt.grantOwed ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
+  context.output.write(`  ${decision.outcome === 'approve' ? `Approved (${decision.scope})` : 'Denied'} ${decision.token}${granted === undefined ? '' : ` for ${printable(granted)}`} in workspace ${workspaceLabel(context.workspaceId, context.workspaceName)} (scope: ${decision.scope})${receipt.save === 'owed' ? `; ${GRANT_OWED_NOTE}` : ''}.\n`)
 }
 
 /** The workspace a source's commands name: its name where the source carries one, else its id. */
