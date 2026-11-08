@@ -178,7 +178,7 @@ describe('the save form', () => {
     const { backend } = await savingBackend([OWED])
     const answered = await backend.answer({ a: accepted({ approve: true, scope: 'session' }) }, SENDER)
     expect(answered.tokens).toEqual(['a'])
-    expect(answered.unsaved).toEqual([{ decision: { token: 'a', outcome: 'approve', scope: 'session' }, unsaved: { kind: 'approval', warning: 'Approved for this call; saving it for the session failed: permission denied' }, ask: askFor('a') }])
+    expect(answered.unsaved).toEqual([{ decision: { token: 'a', outcome: 'approve', scope: 'session' }, unsaved: { kind: 'approval', warning: 'Approved for this call; saving it for the session failed: permission denied' }, ask: { ...askFor('a'), deadline: expect.anything() } }])
     const drawn = backend.saveForms(answered.unsaved, SENDER)
     expect(Object.keys((drawn as { inputRequests: Record<string, unknown> }).inputRequests)).toEqual(['save:a'])
     const form = formOf(drawn, 'save:a')
