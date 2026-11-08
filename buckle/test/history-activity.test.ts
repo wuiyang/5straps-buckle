@@ -83,7 +83,7 @@ it('does not treat a workbench id as an actual stage', async () => {
   const node = await fixture({ allowHostGit: false })
   const id = randomUUID(); const directory = join(node.root, 'workbenches')
   const manager = createWorkbenchManager({ sourceRoot: node.workspace, directory, workspaceId: 'workspace', maxBytes: 1_000_000, protectedRoots: [node.directory], ripgrep: () => null, history: node.history,
-    actions: { async record() {}, async recoverInterrupted() { return 0 }, read() { return [] }, page() { return { entries: [], nextCursor: null } } },
+    actions: { async record() {}, async recordMany() {}, async recoverInterrupted() { return 0 }, read() { return [] }, page() { return { entries: [], nextCursor: null } } },
     authorizePath: () => true, policyHash: () => 'policy', authorizeTool: () => true,
     async prepareTerminal() { throw new Error('unused') }, async spawnPty() { throw new Error('unused') },
   })

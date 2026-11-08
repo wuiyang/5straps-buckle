@@ -8,6 +8,7 @@ import { setupCli } from './cli/setup.js'
 import { clientCommand } from './cli/client.js'
 import { copyCommand } from './cli/copy.js'
 import type { TerminalOptions } from './cli/terminal-consumer.js'
+import { closeActionLogWriter } from './common/adapters/action-log/action-log-writer.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
@@ -199,6 +200,8 @@ async function runService(input: { kind: ServiceKind; options: string[]; service
   // every other command does, before the approval terminal starts; `buckle mcp` cannot, as stdin carries the protocol.
   const terminal = input.service === null ? terminalFor(input.kind, input.console) : null
   const common = initializeCommon({ config: input.config, role: input.kind === 'serve' ? 'server' : 'mcp', logger: logging.logger, ...(terminal ? { askName: question => askAtTerminal(question) } : {}) })
+  // Before the process exits, which would stop the action log writer's worker in the middle of a write.
+  common.owner.onClose('sinks', 'action log writes', async () => { await closeActionLogWriter({ deadlineMs: LOG_CLOSE_DEADLINE_MS }) })
   // Bounded: a sink that fails waits out its retries, which must not run past the close step's own limit.
   common.owner.onClose('sinks', 'logger', () => logging.flush({ deadlineMs: LOG_CLOSE_DEADLINE_MS }))
   // Main owns the process's one requester (nitro/coordination.md); its questions settle with the other waiters.

@@ -90,6 +90,8 @@ export interface ActionLogEntry {
 export interface ActionLog {
   /** Resolves once the entry is durable; a rejection means execution must not continue. */
   record(entry: ActionLogEntry): Promise<void>
+  /** The entries as one batch, one append and one sync, in their order; resolves once all are durable, or rejects for all. */
+  recordMany(entries: readonly ActionLogEntry[]): Promise<void>
   recoverInterrupted(): Promise<number>
   /** Most recent entries last, so the tail of the file reads in the order things happened. */
   read(limit: number): ActionLogEntry[]

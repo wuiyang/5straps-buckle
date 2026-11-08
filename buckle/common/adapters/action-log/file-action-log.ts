@@ -1,16 +1,13 @@
-import { randomUUID } from 'node:crypto'
-import { setDescriptorMode } from '../file-modes.js'
-import { StateBusyError } from '../json-file-store.js'
-import { createPendingAudit } from './pending-audit.js'
-import { closeSync, fsyncSync, fstatSync, mkdirSync, openSync, readSync, rmSync, writeSync } from 'node:fs'
-import { dirname } from 'pathe'
+import { closeSync, fstatSync, openSync, readSync } from 'node:fs'
 import { z } from 'zod'
 import { logger } from '../../runtime/log.js'
 import { maskHeldJson, masksHeld } from '../../services/secrets/mask.js'
 import type { ActionLog, ActionLogEntry, AuditHealth } from '../../types/ports/action-log.js'
 import type { ServiceFailure } from '../../types/service-failure.js'
+import { StateBusyError } from '../json-file-store.js'
+import { actionLogWriter, type ActionLogWriter } from './action-log-writer.js'
+import { nameEntry, type LogFile, type WorkspaceNaming } from './writer-protocol.js'
 
-const PROCESS_INSTANCE_ID = randomUUID()
 const MAX_PAGE_BYTES = 1_048_576
 const entrySchema = z.object({
   at: z.string(), requestId: z.string(), sessionId: z.string(), tool: z.string(),
@@ -36,23 +33,23 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
 /**
  * `workspaceName`: the name of the log's own workspace, read at each write so a rename shows: every entry of that
  * workspace carries it beside its UUID (D85, Q15). An entry of another workspace, or one naming its own, is left as it is.
+ * `writer`: the process's writer worker unless a test hands in its own.
  */
-export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean } = {}): ActionLog {
-  const pending = createPendingAudit({ filePath, processInstanceId: PROCESS_INSTANCE_ID, record: entry => log.record(entry), lockDeadlineMs: options.lockDeadlineMs })
-  const named = (entry: ActionLogEntry): ActionLogEntry => (options.workspaceName && entry.workspaceId === options.workspaceId && entry.workspaceName === undefined ? { ...entry, workspaceName: options.workspaceName() } : entry)
+export function createFileActionLog(filePath: string, options: { lockDeadlineMs?: number; health?: AuditHealth; workspaceId?: string; workspaceName?: () => string; serving?: () => boolean; writer?: ActionLogWriter } = {}): ActionLog {
+  const file: LogFile = { path: filePath, ...(options.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: options.lockDeadlineMs }) }
+  const writer = () => options.writer ?? actionLogWriter()
+  const naming = (): WorkspaceNaming | undefined => (options.workspaceName ? { workspaceId: options.workspaceId, workspaceName: options.workspaceName() } : undefined)
   const log: ActionLog = {
-    recoverInterrupted: () => pending.recover(),
-    async record(written) {
-      // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md): a value never reaches the file.
-      const entry = named(masksHeld() ? maskHeldJson(written) : written)
+    recoverInterrupted: () => writer().recover({ file, naming: naming() }),
+    record: entry => log.recordMany([entry]),
+    async recordMany(written) {
+      if (written.length === 0) return
+      // Masked by every secret value a call holds now, as a log line is (docs/user/how-to/secrets.md), before the entry
+      // leaves this thread: a value never reaches the file.
+      const named = naming()
+      const entries = written.map(entry => nameEntry(masksHeld() ? maskHeldJson(entry) : entry, named))
       try {
-        const offset = appendSynced(filePath, (size, tail) => {
-          const prefix = size > 0 && tail !== 10 ? '\n' : ''
-          const data = Buffer.from(`${prefix}${JSON.stringify(entry)}\n`)
-          if (data.length > 65_536) throw new Error('Audit entry exceeds the size limit')
-          return data
-        })
-        await pending.track(entry, offset)
+        await writer().append({ file, entries })
         options.health?.succeeded(filePath)
       } catch (error) {
         logger.error('Could not durably write the action log', { filePath, error })
@@ -61,7 +58,7 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
         if (error instanceof StateBusyError) throw error
         // A disabled or retired workspace serves no call, so its log does not hold the node's readiness,
         // even when the owner reads it (review L12 of B23-B25).
-        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => probe(filePath, pending), workspaceId: options.workspaceId ?? 'node' })
+        if (options.serving?.() !== false) options.health?.failed(filePath, { probe: () => writer().probe(file), workspaceId: options.workspaceId ?? 'node' })
         throw new AuditUnavailableError({ cause: error })
       }
     },
@@ -104,48 +101,4 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     },
   }
   return log
-}
-
-/**
- * The one way the log is opened and written: created owner-only, read for its last byte, appended to
- * with what `data` makes of its size and last byte (nothing for a probe), then synced with its
- * directory. Returns the size before the append.
- */
-function appendSynced(filePath: string, data: (size: number, tail: number | undefined) => Buffer): number {
-  mkdirSync(dirname(filePath), { recursive: true, mode: 0o700 })
-  const descriptor = openSync(filePath, 'a+', 0o600)
-  try {
-    setDescriptorMode(descriptor, 0o600)
-    const size = fstatSync(descriptor).size
-    const tail = Buffer.alloc(1)
-    if (size > 0) readSync(descriptor, tail, 0, 1, size - 1)
-    const bytes = data(size, size > 0 ? tail[0] : undefined)
-    if (bytes.length > 0 && writeSync(descriptor, bytes) !== bytes.length) throw new Error('Incomplete audit write')
-    fsyncSync(descriptor)
-    if (process.platform !== 'win32') {
-      const directory = openSync(dirname(filePath), 'r')
-      try { fsyncSync(directory) } finally { closeSync(directory) }
-    }
-    return size
-  } finally { closeSync(descriptor) }
-}
-
-/**
- * Whether the log takes writes again, without writing an entry, testing what `record` needs (review
- * M4 of B20-B22): the file opens and syncs through record's own path (read access and the directory
- * sync included, review L13 of B23-B25), one byte beside it is written and synced (a full disk fails
- * here), and the pending store that tracks each attempt reads and writes under its lock.
- */
-async function probe(filePath: string, pending: { probe(): Promise<void> }): Promise<void> {
-  appendSynced(filePath, () => Buffer.alloc(0))
-  const sidecar = `${filePath}.probe`
-  const byte = openSync(sidecar, 'w', 0o600)
-  try {
-    if (writeSync(byte, Buffer.from('\n')) !== 1) throw new Error('Incomplete audit probe write')
-    fsyncSync(byte)
-  } finally {
-    closeSync(byte)
-    rmSync(sidecar, { force: true })
-  }
-  await pending.probe()
 }

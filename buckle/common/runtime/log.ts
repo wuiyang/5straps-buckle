@@ -37,9 +37,10 @@ const LOG_FORMATS: readonly LogFormat[] = ['json', 'human']
  * --background`), the one rotating file under its state directory alone, which no agent tool reads (Phase 3, item 6).
  * Plain `stderr` takes its format by the TTY rule and the shell's BUCKLE_LOG_FORMAT, as every line logged before main
  * reads buckle.env does; main names the format once it has read the file, and a serve at a terminal hands in the
- * console writer its workspace list and approval questions share (C3).
+ * console writer its workspace list and approval questions share (C3). A worker thread hands in the sink that carries its
+ * lines to the main thread's logger.
  */
-export type LogOutput = { file: string } | 'stderr' | { format: LogFormat; console?: ConsoleWriter }
+export type LogOutput = { file: string } | 'stderr' | { format: LogFormat; console?: ConsoleWriter } | { sink: LogSink }
 
 /** Main calls this once, before anything else logs; a default root made earlier is flushed and replaced. */
 export function configureRootLogger(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerRoot {
@@ -105,6 +106,7 @@ function createRoot(config: LoggerConfig, output: LogOutput = 'stderr'): LoggerR
 }
 
 function sinkFor(output: LogOutput, level: LogLevel): LogSink {
+  if (typeof output === 'object' && 'sink' in output) return output.sink
   if (typeof output === 'object' && 'file' in output) return createRotatingFileSink({ path: output.file, maxBytes: LOG_FILE_MAX_BYTES, maxFiles: LOG_FILE_MAX_FILES })
   const chosen = output === 'stderr' ? { format: stderrFormat(shellFormat()) } : output
   if (chosen.format === 'json') return createStderrJsonSink()

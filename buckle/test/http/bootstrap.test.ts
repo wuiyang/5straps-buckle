@@ -179,6 +179,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
       { stage: 'locks', name: 'workbench ownership' },
       { stage: 'services', name: 'service registry' },
       { stage: 'databases', name: 'workspace history' },
+      { stage: 'sinks', name: 'action log writes' },
       { stage: 'sinks', name: 'action reports' },
       { stage: 'sinks', name: 'logger' },
     ]))

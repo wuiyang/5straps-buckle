@@ -26,27 +26,30 @@ const pendingSchema = z.object({
 export function createPendingAudit(input: {
   filePath: string
   processInstanceId: string
-  record: (entry: ActionLogEntry) => Promise<void>
   isAlive?: (pid: number) => boolean
   /** How long a write waits for another process holding the pending state (the node's state lock wait). */
   lockDeadlineMs?: number
 }) {
   const store = createJsonFileStore({ filePath: `${input.filePath}.pending.json`, schema: pendingSchema, fallback: { version: 1 as const, pending: {} }, lockDeadlineMs: input.lockDeadlineMs })
   return {
-    async track(entry: ActionLogEntry, offset: number): Promise<void> {
-      if (!entry.auditId || !entry.event) return
-      const auditId = entry.auditId
+    /** One update for a batch appended at `offset`: each attempt is held until its result, in the batch's order. */
+    async trackMany(entries: readonly ActionLogEntry[], offset: number): Promise<void> {
+      const tracked = entries.flatMap(entry => (entry.auditId && entry.event ? [{ auditId: entry.auditId, entry }] : []))
+      if (tracked.length === 0) return
       await store.update(state => {
-        if (entry.event === 'attempt') {
-          state.pending[auditId] = { offset, processId: process.pid, processInstanceId: input.processInstanceId, entry: { ...entry, auditId } }
-        } else { delete state.pending[auditId] }
+        for (const { auditId, entry } of tracked) {
+          if (entry.event === 'attempt') {
+            state.pending[auditId] = { offset, processId: process.pid, processInstanceId: input.processInstanceId, entry: { ...entry, auditId } }
+          } else { delete state.pending[auditId] }
+        }
       })
     },
     /** What a write needs of the pending store: it reads, and is written back, under its lock. */
     async probe(): Promise<void> {
       await store.update(() => undefined)
     },
-    async recover(): Promise<number> {
+    /** Writes, through `record`, an interrupted result for each attempt whose process stopped before its own. */
+    async recover(record: (entry: ActionLogEntry) => Promise<void>): Promise<number> {
       const pending = store.read().pending
       if (!Object.keys(pending).length) return 0
       const lock = await tryRecoveryLock(`${input.filePath}.recovery.sqlite`)
@@ -62,7 +65,7 @@ export function createPendingAudit(input: {
             await store.update(state => { delete state.pending[auditId] })
             continue
           }
-          await input.record({ ...item.entry, event: 'result', outcome: 'interrupted',
+          await record({ ...item.entry, event: 'result', outcome: 'interrupted',
             at: new Date().toISOString(), detail: 'Owner process stopped before recording an outcome; effects are unknown',
           })
           recovered += 1
