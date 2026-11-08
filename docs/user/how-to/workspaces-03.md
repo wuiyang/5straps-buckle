@@ -12,7 +12,10 @@ so the node's applies again. A workspace's variables (`env.<NAME>`) are its own;
 variables of its own, the workspace's are set over them, name by name.
 
 The node reads these defaults from `buckle.env` alone, never from a shell's or an MCP config's
-`env`: an MCP config an agent could write cannot change them. Nor can it point `buckle mcp` at
+`env`: an MCP config an agent could write cannot change them. Nor can a tool: the file tools
+refuse `buckle.env`, and the file `BUCKLE_ENV_FILE` names wherever it lies, as Buckle's own state,
+and the sandbox hides it from shell commands. With `BUCKLE_SANDBOX=none`, a shell command you
+allowed reaches any file your user can, this one included. Nor can it point `buckle mcp` at
 another file: `buckle mcp` takes `BUCKLE_ENV_FILE` only where it names a file in the state
 directory, and refuses to start otherwise, naming the variable. A command started with one of the
 defaults set to another value says at start that it is not read. The move from 0.1 refuses

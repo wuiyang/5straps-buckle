@@ -37,6 +37,18 @@ a skip, and a token the ledger does not hold.
 A refused answer settles nothing. Grants forms made while the setting was on stay, and an owed one
 is written by the next settling pass, at another decision or at `recover()`.
 
+## The files that hold it
+
+`workspace.json` lies in the state directory, and `NodeConfig.environmentFile` names the node's
+environment file, there or wherever `BUCKLE_ENV_FILE` puts it (`common/runtime/config.ts`).
+`protectedStateRoots` returns both, typed and real, and each route reads that one set: the
+`sensitive_path` rule over every effect a tool, a script's call, a browser command, a secret
+reference, or a restore makes; the shell's hidden paths, sorted in
+`common/services/shell/shell-filesystem.ts` so a file is masked by binding `/dev/null` over it and
+a folder by a tmpfs; the workbench terminal; the change history's exclusions; and the mount
+checks. With `BUCKLE_SANDBOX=none` a shell command reaches them; the user pages say so beside each
+setting.
+
 ## Claude Code over HTTP
 
 A probe on 2026-11-08 logged the first request Claude Code 2.1.303 and 2.1.300 sent an HTTP MCP

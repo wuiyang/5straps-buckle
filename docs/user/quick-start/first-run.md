@@ -16,7 +16,8 @@ The first run sets this machine's node up, then serves the current directory as 
 state directory: `~/.5straps/buckle`, or the absolute path in `BUCKLE_STATE_DIR`. On Linux and
 macOS it creates the directory with mode 700 and the file with 600. It never writes into
 the project. `--out <file>`, or `BUCKLE_ENV_FILE`, puts the file elsewhere; every start then
-names it with `BUCKLE_ENV_FILE`, and `buckle mcp` needs it in the state directory. A node set up
+names it with `BUCKLE_ENV_FILE`, `buckle mcp` needs it in the state directory, and no tool
+reaches it there either. A node set up
 already keeps its file unless you pass `--force`, and `buckle init` in another project adds it
 as another workspace.
 

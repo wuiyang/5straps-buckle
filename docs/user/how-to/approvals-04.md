@@ -39,7 +39,9 @@ and then run by name is therefore not stopped. Keep the switch `off` where that 
 ## Setting and audit
 
 Only the local CLI sets it, per workspace: `buckle policy import` refuses a file naming it, and
-`buckle policy clear` keeps it. It applies at the next call. Each use is logged as
+`buckle policy clear` keeps it. Its file lies in the workspace's state directory, which no tool
+reaches and the sandbox hides from shell commands; with `BUCKLE_SANDBOX=none`, a shell command you
+allowed can change it. It applies at the next call. Each use is logged as
 `policy_dangerously_allowed` with its mode, and each change as `policy_dangerously_allow_changed`
 ([the audit log](audit-log.md)). `buckle policy show` prints the mode and what it covers.
 

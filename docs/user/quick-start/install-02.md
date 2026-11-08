@@ -12,8 +12,9 @@ directory, unless you pass `--skip-owner-only-check`. On Windows, Buckle leaves 
 alone: Windows protects the default one under your profile, and one moved elsewhere is yours to
 protect. It refuses a workspace folder that holds the state directory, where an agent writes
 anywhere. Buckle's file tools refuse to read or write anything under `~/.5straps` or the state
-directory. Only a process sandbox hides both from shell commands: with `BUCKLE_SANDBOX=none`, a shell command can read and write them, and Buckle does
-not ask about them.
+directory, or the file `BUCKLE_ENV_FILE` names wherever it lies, and the change history keeps no
+copy of them. Only a process sandbox hides them from shell commands: with `BUCKLE_SANDBOX=none`, a
+shell command can read and write them, and Buckle does not ask about them.
 
 Each workspace keeps the files from `dangerously-allow.json` down in its own `workspaces/<id>/`,
 the workspace Buckle makes of a 0.1 node's own folder included.

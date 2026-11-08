@@ -61,9 +61,9 @@ for the agent: `buckle skills` lists them and `buckle skills buckle-shell` print
 `shell.isolation` off and no workspace mount before shell tools appear. Every shell result
 carries a `sandbox` field naming the mode it ran under.
 
-Under bubblewrap and Seatbelt, Buckle hides its state directory and `~/.5straps` from commands,
-and masks credential files inside the workspace unless a call asks for one by name. With
-`none`, nothing is hidden.
+Under bubblewrap and Seatbelt, Buckle hides its state directory, `~/.5straps`, and the file
+`BUCKLE_ENV_FILE` names from commands, and masks credential files inside the workspace unless a
+call asks for one by name. With `none`, nothing is hidden.
 
 ## Shell isolation
 

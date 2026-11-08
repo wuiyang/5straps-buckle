@@ -43,6 +43,15 @@ restart of `buckle mcp`:
   or its session ends, and one not yet saved is written by the next decision or when the
   workspace opens again ([when a grant cannot be saved](approvals-05.md)).
 
+## Who can change it
+
+The setting lives in the workspace's `workspace.json`, in the state directory, and in
+`buckle.env`, or the file `BUCKLE_ENV_FILE` names wherever it lies. No tool reaches either: the
+file tools, code mode, the browser, a secret reference, and a history restore refuse them as
+Buckle's own state, and the sandbox hides them from shell commands, so an agent cannot turn forms
+on by running `buckle settings set` itself. With `BUCKLE_SANDBOX=none`, a shell command you allowed
+reaches any file your user can, these included.
+
 ## What a form proves
 
 A form proves the channel, not a person: the app the agent runs in draws it and sends its answer
