@@ -61,6 +61,10 @@ const CALLS_DIRECTORY = 'approval-calls'
 const REVOCATIONS_FILE = 'approval-revocations.json'
 /** The saves a settling pass still has work for: a grant to write, or a skipped grant to confirm removed. */
 const UNSETTLED_SAVES: ReadonlySet<GrantSave> = new Set(['owed', 'skipping'])
+/** The saves a revoke or a session end undoes: a grant still to be written, and one the store holds. */
+const STANDING_SAVES: ReadonlySet<GrantSave> = new Set(['owed', 'saved'])
+const OWED_SAVES: ReadonlySet<GrantSave> = new Set(['owed'])
+const SAVED_SAVES: ReadonlySet<GrantSave> = new Set(['saved'])
 const CALL_FILE = /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.json$/
 
 type Ask = Extract<PermissionDecision, { kind: 'ask' }>
@@ -91,8 +95,8 @@ const pendingSchema = z.object({ request: ApprovalRequestSchema, sessionId: z.st
 // `save` is `owed` until the grant store holds it, then `saved`; a skip turns it `skipping` until a grant that may have
 // saved is confirmed gone, then `skipped`, which nothing writes again. The entry commits first, so a grant never stands
 // without its decision; one left owed is written, and one left skipping removed, when the workspace opens again
-// (recover) or by the next decision recorded or sent again, and a revoke or a session end that undoes an owed one drops
-// it. `source`: the route that recorded the decision, which alone may skip it. A lasting denial is never owed: it is
+// (recover) or by the next decision recorded or sent again. A revoke, a session end, or a lasting denial in its place
+// turns an owed or saved one `dropped`. `source`: the route that recorded the decision, which alone may skip it. A lasting denial is never owed: it is
 // written before its decision commits.
 const sourceSchema = z.object({ id: z.string(), kind: z.enum([...BUILT_IN_SOURCES, 'backend']) })
 const lastingGrantSchema = z.object({
@@ -693,41 +697,46 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   /** Whether a settling pass has work: a grant owed, or a skip whose grant is not confirmed gone. */
   const unsettled = (state: State): boolean => state.resolved.some(entry => entry.workspace === workspace && entry.grant !== undefined && UNSETTLED_SAVES.has(entry.grant.save))
 
-  /** Drops this workspace's owed grants that `undone` names, so none is written, and says how many it dropped. */
-  function dropOwed(state: State, undone: (grant: LastingGrant) => boolean): number {
-    const dropped = state.resolved.filter((entry) => {
-      const owed = owedHere(entry)
-      return owed !== undefined && undone(owed)
-    })
-    for (const entry of dropped) delete entry.grant
-    return dropped.length
+  /**
+   * Marks `dropped` this workspace's grants whose save is among `saves` and that `undone` names, so none is written and a
+   * retry says it did not save, and says how many it marked.
+   */
+  function dropGrants(state: State, input: { saves: ReadonlySet<GrantSave>; undone: (grant: LastingGrant) => boolean }): number {
+    let dropped = 0
+    for (const entry of state.resolved) {
+      const { grant } = entry
+      if (entry.workspace !== workspace || grant === undefined || !input.saves.has(grant.save) || !input.undone(grant)) continue
+      entry.grant = { ...grant, save: 'dropped' }
+      dropped += 1
+    }
+    return dropped
   }
 
   /**
-   * Drops the owed grants the revokes and session ends recorded while approvals.json could not be read would write again,
-   * then forgets them. Every update that may write an owed grant runs it first, under the approvals lock that recording
+   * Drops the grants the revokes and session ends recorded while approvals.json could not be read removed, or would write
+   * again, then forgets them. Every update that may write an owed grant runs it first, under the approvals lock that recording
    * one takes too, so each reaches the grants decided before it and none after. A damaged revocations file refuses the
    * update, as a damaged approvals.json does.
    */
   async function applyRevocations(state: State, commit: () => Promise<void>): Promise<void> {
     if (!existsSync(revocationsPath)) return
     const { revoked } = revocations.read()
-    if (dropOwed(state, grant => revoked.some(revocation => undoes(revocation, grant))) > 0) await commit()
+    if (dropGrants(state, { saves: STANDING_SAVES, undone: grant => revoked.some(revocation => undoes(revocation, grant)) }) > 0) await commit()
     rmSync(revocationsPath, { force: true })
   }
 
   /**
-   * Drops, under the approvals lock, every owed grant that would write again what the revocation removes, then removes it.
+   * Drops, under the approvals lock, every grant the revocation removes or that would write it again, then removes it.
    * While approvals.json cannot be read, the revocation is recorded in its own file first, still under that lock, and
    * the next decision or opening applies it before any owed grant is written; a revocations file that cannot be written
    * then fails the removal.
    */
-  async function withOwedDropped<R>(input: { revocation: Revocation; remove: () => Promise<R> }): Promise<R> {
+  async function withGrantsDropped<R>(input: { revocation: Revocation; remove: () => Promise<R> }): Promise<R> {
     let read = false
     try {
       return await update(async (state, commit) => {
         read = true
-        if (dropOwed(state, grant => undoes(input.revocation, grant)) > 0) await commit()
+        if (dropGrants(state, { saves: STANDING_SAVES, undone: grant => undoes(input.revocation, grant) }) > 0) await commit()
         return input.remove()
       })
     } catch (error) {
@@ -743,11 +752,11 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
   async function revoke(id: string): Promise<boolean> {
     const record = grantStore.list().find(grant => grant.id === id)
     if (record === undefined) return false
-    return withOwedDropped({ revocation: { grant: record }, remove: () => grantStore.revoke(id) })
+    return withGrantsDropped({ revocation: { grant: record }, remove: () => grantStore.revoke(id) })
   }
 
   // Read through at each call, so the registry's own writes and every caller's meet the same store. A revoke or a session end
-  // also drops the owed grants that would write again what it removed.
+  // also drops the decisions' grants it removed, or that would write it again.
   const grants: GrantStore = {
     workspace,
     activeSubjects: input => grantStore.activeSubjects(input),
@@ -755,7 +764,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     grant: input => grantStore.grant(input),
     list: () => grantStore.list(),
     revoke,
-    endSession: sessionId => withOwedDropped({ revocation: { sessionId }, remove: () => grantStore.endSession(sessionId) }),
+    endSession: sessionId => withGrantsDropped({ revocation: { sessionId }, remove: () => grantStore.endSession(sessionId) }),
   }
 
   /**
@@ -833,15 +842,18 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
 
   /**
    * A lasting denial stands before its decision commits: the owed approvals it takes the place of in the grant store are
-   * dropped and committed first, since one settled after it would replace it there, then it is written. One that cannot be
-   * written is refused as `grant_unsaved`, with nothing recorded, so its ask waits.
+   * dropped and committed first, since one settled after it would replace it there, then it is written, and the saved ones
+   * it replaced are dropped with its decision. One that cannot be written is refused as `grant_unsaved`, with nothing
+   * recorded, so its ask waits.
    */
   async function writeDenial(input: { state: State; commit: () => Promise<void>; progress: DecisionProgress; holder: GrantHolder; rule: PermissionRuleId; subject: string; scope: 'session' | 'always'; decider: { decidedBy?: string } }): Promise<Extract<Resolution, { ok: false }> | undefined> {
     const { holder, rule, subject, scope } = input
     const slot: GrantSlot = { rule, subject, scope, sessionId: holder.sessionId, actor: holder.actor ?? null }
-    if (dropOwed(input.state, grant => writesAgain(grant, slot)) > 0) await input.commit()
+    const replaced = (grant: LastingGrant) => writesAgain(grant, slot)
+    if (dropGrants(input.state, { saves: OWED_SAVES, undone: replaced }) > 0) await input.commit()
     try {
       input.progress.denial = await grants.grant({ ...holder, rule, subject, scope, denied: true, ...input.decider })
+      dropGrants(input.state, { saves: SAVED_SAVES, undone: replaced })
       return undefined
     } catch (error) {
       logger.warn('A lasting denial was not written, so nothing was recorded and its ask still waits', { error: withoutCause(error) })
@@ -878,8 +890,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     const recorded = entry === undefined ? undefined : { approved: entry.decision.approved, scope: entry.decision.scope, ...(entry.grant ? { source: entry.grant.source } : {}) }
     const verdict = guardSkip({ source: input.source, recorded })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
-    // A revoke or a session end already dropped the grant, so none stands and none is written.
-    if (entry?.grant === undefined || entry.grant.save === 'skipped') return { ok: true, repeated: true }
+    // Skipped already, or a revoke, a session end, or a denial in its place dropped it, so none stands and none is written.
+    if (entry?.grant === undefined || entry.grant.save === 'skipped' || entry.grant.save === 'dropped') return { ok: true, repeated: true }
     const { grant } = entry
     const repeated = grant.save === 'skipping' ? { repeated: true as const } : {}
     if (grant.save !== 'skipping') {

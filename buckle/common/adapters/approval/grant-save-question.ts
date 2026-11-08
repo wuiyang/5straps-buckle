@@ -38,6 +38,7 @@ export type SaveAnswer = 'retry' | 'skip'
 export type SaveEnding =
   | { ending: 'saved' }
   | { ending: 'skipped'; removed: boolean }
+  | { ending: 'dropped' }
   | { ending: 'denied_once' }
   | { ending: 'left'; kind: UnsavedKind }
   | { ending: 'refused'; error: ApprovalError }
@@ -118,6 +119,7 @@ export function saveEndingLine(ending: SaveEnding): string {
   switch (ending.ending) {
     case 'saved': return 'Saved.'
     case 'skipped': return ending.removed ? 'Skipped: later calls ask again. It had already saved; removed.' : 'Skipped: later calls ask again.'
+    case 'dropped': return 'Not saved: its grant was revoked, its session ended, or a lasting denial took its place; later calls ask again.'
     case 'denied_once': return 'Denied this call once; nothing was saved.'
     case 'left': return `${SAVE_QUESTIONS[ending.kind].left}.`
     case 'refused': return `Not recorded: ${ending.error.message}.`
@@ -129,7 +131,10 @@ async function retried(input: { decision: DecisionBody; route: SaveRoute }): Pro
   const again = unsavedOf({ decision: input.decision, receipt })
   if (again !== undefined) return again
   if (receipt.status === 'refused') return { ending: 'refused', error: receipt.error }
-  return receipt.save === 'skipped' ? { ending: 'skipped', removed: false } : { ending: 'saved' }
+  // A lasting denial is written before its decision is recorded, so one that applied saved; an approval saved only where it says so.
+  if (input.decision.outcome === 'deny' || receipt.save === 'saved') return { ending: 'saved' }
+  if (receipt.save === 'skipped') return { ending: 'skipped', removed: false }
+  return { ending: 'dropped' }
 }
 
 // A skip whose grant is not confirmed removed asks again, about that removal.

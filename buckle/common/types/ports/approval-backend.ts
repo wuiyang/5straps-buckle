@@ -111,9 +111,10 @@ export type AskState = 'pending' | 'abandoned' | 'approved' | 'denied' | 'expire
 /**
  * Where a session or always approval's grant stands: `owed` until written, then `saved`; `skipped` once its person gave it
  * up, and `skipping` while a grant given up that may have saved is not yet confirmed removed, which the next decision or
- * the workspace opening again removes.
+ * the workspace opening again removes; `dropped` once a revoke, its session's end, or a lasting denial in its place
+ * removed it or kept it from being written.
  */
-export const GRANT_SAVES = ['owed', 'saved', 'skipping', 'skipped'] as const
+export const GRANT_SAVES = ['owed', 'saved', 'skipping', 'skipped', 'dropped'] as const
 export type GrantSave = (typeof GRANT_SAVES)[number]
 
 /**

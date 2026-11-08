@@ -339,10 +339,20 @@ describe('who may skip, and what', () => {
     expect(store.list()).toEqual([expect.objectContaining({ rule: 'sensitive_path', denied: true })])
   })
 
-  it('has nothing left to skip once a session end dropped the owed grant', async () => {
-    const { registry, store, token } = await owedApproval()
+  it('has nothing left to skip once a session end dropped the owed grant, and answers a retry dropped', async () => {
+    const { approvals, registry, store, token } = await owedApproval()
     await registry.grants.endSession('s')
+    expect(keptGrant(approvals, token)?.save).toBe('dropped')
+    expect(await registry.resolve(sessionApproval(token), cli)).toMatchObject({ ok: true, repeated: true, save: 'dropped' })
     expect(await registry.skipSave({ token, source: cli })).toEqual({ ok: true, repeated: true })
+    expect(store.list()).toEqual([])
+  })
+
+  it('answers a retry dropped once a revoke removed the grant that had saved', async () => {
+    const { approvals, registry, store, token, kept } = await owedApproval()
+    await createApprovalRegistry(store, approvals).recover()
+    expect(await registry.grants.revoke(kept.id)).toBe(true)
+    expect(await registry.resolve(sessionApproval(token), cli)).toMatchObject({ ok: true, repeated: true, save: 'dropped' })
     expect(store.list()).toEqual([])
   })
 })

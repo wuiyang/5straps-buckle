@@ -111,6 +111,14 @@ describe('settling a decision that did not save', () => {
     expect(unsavedOf({ decision: SESSION, receipt: { status: 'repeated', save: 'skipping', saveError: 'permission denied' } })).toEqual({ kind: 'removal', warning: 'Skipped, but its grant, if it saved, could not be confirmed removed: permission denied' })
   })
 
+  it('says saved only for a retry whose grant saved, never one a revoke or a session end dropped', async () => {
+    const dropped = scripted({ answers: ['retry'], retries: [{ status: 'repeated', save: 'dropped' }] })
+    const ending = await settleUnsaved({ decision: SESSION, unsaved: approval, route: dropped.route })
+    expect(ending).toEqual({ ending: 'dropped' })
+    expect(saveEndingLine(ending)).not.toContain('Saved')
+    expect(await settleUnsaved({ decision: SESSION, unsaved: approval, route: scripted({ answers: ['retry'], retries: [{ status: 'repeated' }] }).route })).toEqual({ ending: 'dropped' })
+  })
+
   it('ends with a refusal of the retry or the skip, and a skip answered after its save had been skipped elsewhere', async () => {
     const closed = { status: 'refused' as const, error: { code: 'ask_closed' as const, message: 'This ask is closed', retryable: false } }
     expect(await settleUnsaved({ decision: DENY_SESSION, unsaved: denial, route: scripted({ answers: ['retry'], retries: [closed] }).route })).toEqual({ ending: 'refused', error: closed.error })

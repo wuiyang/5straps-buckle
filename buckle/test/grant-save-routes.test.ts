@@ -154,6 +154,22 @@ describe('buckle approve, when the grant it decides cannot be saved', () => {
     expect(runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
   })
 
+  it('at a terminal, does not say saved, and exits 5, when the session ended while its save question was open', async () => {
+    const { config, runtime } = await open()
+    const token = await asked(runtime)
+    failing.rename = grantsPath(config)
+    const chooseSave: ChooseSave = async () => { await runtime.grants.endSession('s'); return 'retry' }
+    const output = captured()
+    const result = await runCli({ argv: ['approve', token, '--scope', 'session'], config, confirm: async () => true, chooseSave })
+    vi.restoreAllMocks()
+
+    expect(result.exitCode).toBe(5)
+    expect(output.stdout).not.toContain('Saved.')
+    expect(output.stdout).toContain('Not saved: its grant was revoked, its session ended, or a lasting denial took its place; later calls ask again.')
+    expect(saveOf(config, token)).toBe('dropped')
+    expect(runtime.grants.list()).toEqual([])
+  })
+
   it('at a terminal, skips on s, records the skip, and the next call asks again', async () => {
     const { config, runtime } = await open()
     const token = await asked(runtime)

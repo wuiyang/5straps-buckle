@@ -748,7 +748,7 @@ function recordedLine(input: { receipt: Exclude<CoreDecisionReceipt, { status: '
 }
 
 /** The exit a save question's ending gives `buckle approve`. */
-const SAVE_ENDING_EXITS: Readonly<Record<SaveEnding['ending'], number>> = { saved: 0, skipped: 0, denied_once: 0, left: SAVE_FAILED_EXIT, refused: 1 }
+const SAVE_ENDING_EXITS: Readonly<Record<SaveEnding['ending'], number>> = { saved: 0, skipped: 0, dropped: SAVE_FAILED_EXIT, denied_once: 0, left: SAVE_FAILED_EXIT, refused: 1 }
 
 /**
  * A decision `buckle approve` sent whose grant did not save (the owner's ruling: a warning, and a retry or a skip): at a

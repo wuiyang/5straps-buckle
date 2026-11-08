@@ -16,7 +16,7 @@ const ACCEPTED: SubmitResult = { kind: 'accepted', refs: [] }
 const NOT_OPEN: SubmitResult = { kind: 'declined', reason: 'not open' }
 const CLOSED: SubmitResult = { kind: 'declined', reason: 'closed' }
 /** How a save question's ending is logged: on the serve terminal, where the question was. */
-const SAVE_ENDING_LEVELS: Readonly<Record<SaveEnding['ending'], 'info' | 'warn'>> = { saved: 'info', skipped: 'info', denied_once: 'info', left: 'warn', refused: 'warn' }
+const SAVE_ENDING_LEVELS: Readonly<Record<SaveEnding['ending'], 'info' | 'warn'>> = { saved: 'info', skipped: 'info', dropped: 'warn', denied_once: 'info', left: 'warn', refused: 'warn' }
 
 /**
  * The serve terminal and the one-shot prompt: one question per ask, in order, each answer decided through the host.
