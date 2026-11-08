@@ -22,7 +22,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | Path | Holds |
 |---|---|
 | `buckle.env` | the node's settings, every workspace's defaults among them, and its admin credential |
-| `environment-files.json` | each settings file outside the state directory that `buckle init --out`, `buckle service install`, or a serve named, so every Buckle process keeps it from tools; while it will not read, each command refuses to start, naming it |
+| `environment-files.json` | each settings file outside the state directory that `buckle init --out`, `buckle service install`, or a serve named, so every Buckle process keeps it from tools, one already running from its next call; Buckle never drops one ([known limits](../caveats/known-limits-11.md)); while it will not read, each command refuses to start, naming it, and a running process refuses each call |
 | `workspaces.json` | each workspace's id, name, folder, whether it is online, and its agent tokens' SHA-256 digests |
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
 | `workspaces/<id>/removed.json` | what `buckle workspace remove` leaves beside a removed workspace's kept records: its folder, name, and removal time, read by `buckle workspace prune` and cleared when the folder is added again |

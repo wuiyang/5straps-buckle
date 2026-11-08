@@ -1,8 +1,8 @@
 # Known limits, part five
 
 Limits of running Buckle as a service ([part one](../how-to/service.md) and
-[part two](../how-to/service-02.md)) or at a terminal, and of its settings file. The
-[first part](known-limits.md) lists the other limits.
+[part two](../how-to/service-02.md)) or at a terminal. [Part eleven](known-limits-11.md) covers
+the settings files, and the [first part](known-limits.md) lists the other limits.
 
 ## Tested without the service managers
 
@@ -47,18 +47,6 @@ Limits of running Buckle as a service ([part one](../how-to/service.md) and
   the service's log file; a crash before even that goes to the systemd journal on Linux, to
   `logs/launchd.log` on macOS, which nothing rotates and `buckle service logs` does not show, and
   nowhere on Windows or for `buckle serve --background`.
-
-## The node's settings file
-
-- `buckle.env`, or the file `BUCKLE_ENV_FILE` names, is refused to every tool wherever it lies,
-  in every Buckle process once `buckle init`, a service install, or a serve has named it, and a
-  sandboxed shell command sees an empty, read-only file where a folder the sandbox binds holds
-  it. With `BUCKLE_SANDBOX=none`, a shell command you allowed reaches it.
-- A shell command running an owner command such as `buckle settings` is refused by its words, so
-  a quoted subcommand (`buckle 'settings'`) passes once you allow a shell wrapper such as `sh -c`.
-  The sandbox, which hides the files that hold the settings, is then what stops it.
-- While `BUCKLE_ENV_FILE` names no file yet, bubblewrap refuses a shell command that writes the
-  folder holding that path, as its mask would make one there. Run `buckle init --out <file>` first.
 
 ## A serve at a terminal
 

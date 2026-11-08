@@ -55,5 +55,5 @@ shows what Buckle does today and what is still open.
   [two](caveats/known-limits-02.md), [three](caveats/known-limits-03.md),
   [four](caveats/known-limits-04.md), [five](caveats/known-limits-05.md),
   [six](caveats/known-limits-06.md), [seven](caveats/known-limits-07.md),
-  [eight](caveats/known-limits-08.md), [nine](caveats/known-limits-09.md), and
-  [ten](caveats/known-limits-10.md) go deeper.
+  [eight](caveats/known-limits-08.md), [nine](caveats/known-limits-09.md),
+  [ten](caveats/known-limits-10.md), and [eleven](caveats/known-limits-11.md) go deeper.

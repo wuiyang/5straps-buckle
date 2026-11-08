@@ -5,10 +5,10 @@
 [part three](known-limits-03.md) code mode, the command line, and workspaces,
 [part four](known-limits-04.md) mounts, the sandbox layout, the URL list, the browser, and the
 forge pack,
-[part five](known-limits-05.md) services, the terminal, and the settings file,
+[part five](known-limits-05.md) services and the terminal,
 [parts six](known-limits-06.md) and [seven](known-limits-07.md) the decision AI,
-[part eight](known-limits-08.md) the file tools, and [part nine](known-limits-09.md) read-only
-pushes, MCP asks, deletes, and history.
+[part eight](known-limits-08.md) the file tools, [part nine](known-limits-09.md) read-only
+pushes, MCP asks, deletes, and history, and [part eleven](known-limits-11.md) the settings files.
 
 ## Reading commands
 
