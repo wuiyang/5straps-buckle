@@ -23,7 +23,8 @@ show` names where the value in force comes from.
 With forms on, `buckle mcp` over stdio answers a call that needs a person with one form per ask,
 for a client that declares form elicitation, as Claude Code does. The form shows the whole action,
 as the serve terminal does. Your answer travels back with the same call sent again, and decides
-the ask as an answer at the node would: `once`, `session`, or `always`, floor asks included.
+the ask: `once`, `session`, or `always`, floor asks included. A form grants the ask's own subject
+alone: a folder and its subfolders, or a host pattern, are granted at the node.
 
 With forms off, the call is answered with the text that names the commands to approve it
 ([approvals over MCP](approvals-03.md)), and any answers a call carries are not read.
@@ -32,13 +33,18 @@ With forms off, the call is answered with the text that names the commands to ap
 
 ## Changing it
 
-Buckle reads the setting at each call, and again as it decides each answer, so a change needs no
-restart of `buckle mcp`:
+Buckle reads the workspace's value at each call, and again as it decides each answer, so a change
+with `buckle workspace set` needs no restart of `buckle mcp`. The node's default is read as
+`buckle mcp` starts: a change with `buckle settings set` reaches a running one only when its MCP
+client starts it again, so stop forms at once with `buckle workspace set approval.forms off`.
+For the workspace's value:
 
 - **Turned on:** the next call draws a form, for an ask already waiting too.
 - **Turned off:** a form already on screen decides nothing, and neither does an earlier form
-  answer sent again, a retry of a save it left, or a skip of one. Each is refused as
-  `approver_not_allowed` and recorded in the [audit log](audit-log.md).
+  answer sent again, a retry of a save it left, or a skip of one. `buckle mcp` does not read the
+  answers a call carries while forms are off; one that reaches the node's approvals all the same,
+  sent as the setting changed, is refused as `approver_not_allowed` and recorded in the
+  [audit log](audit-log.md).
 - **What forms approved before stays:** a grant until you revoke it with `buckle grants revoke`
   or its session ends, and one not yet saved is written by the next decision or when the
   workspace opens again ([when a grant cannot be saved](approvals-05.md)).

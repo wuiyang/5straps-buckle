@@ -16,7 +16,9 @@ no setting.
 
 - **The runtime:** `approvalForms()` resolves the setting from `workspace.json` as it stands, not
   as the last call took it up, so a change applies to an answer at once. A file that will not read
-  counts as off, said once per version in the owner's log.
+  counts as off, said once per version in the owner's log. The node's default is
+  `config.workspaceDefaults`, read as the process starts, so `buckle settings set approval-forms`
+  says a running `buckle mcp` takes it only when its client starts it again.
 - **The face:** `mcp/server.ts` reads it at each call. Off, the call gets the relay text and its
   `inputResponses` are not read. The forms backend stays open either way, so turning it on needs
   no restart.
@@ -100,3 +102,8 @@ So Claude Code reaches `/mcp` at `2026-07-28`, the revision a tool's `input_requ
 needs, and `/mcp` offers no other in `supportedVersions`. `test/fixtures/claude-code-http-mcp.json`
 keeps the requests. `test/http/mcp-http.test.ts` replays the `2026-07-28` ones against `/mcp`, and
 `test/approval-forms-setting.test.ts` draws forms for the capabilities they declare.
+
+**Not seen:** Claude Code answering a tool's `input_required` over HTTP and sending the call again
+with `inputResponses`. The probe called no tool, as that takes a model. The binary carries client
+code for `input_required`, and the declared `elicitation.form` is what the forms backend checks,
+but that step stays unverified until a real `tools/call` from Claude Code draws a form at `/mcp`.
