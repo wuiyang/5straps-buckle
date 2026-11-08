@@ -2,7 +2,7 @@ import { acceptedContent, inputRequired, inputResponse } from '@modelcontextprot
 import { GrantScopeSchema, type ApprovalRequest, type GrantScope } from '@5straps/protocol'
 import { z } from 'zod'
 import { saveEndingLine, settleUnsaved, unsavedOf, type SaveAnswer, type SaveEnding, type SaveRoute, type Unsaved, type UnsavedKind } from '../common/adapters/approval/grant-save-question.js'
-import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, type ShownCall } from '../common/domain/approval-instruction.js'
+import { approveCommand, describeAsk, describeAskOfShownCall, describeCallAsks, printable, type ShownCall } from '../common/domain/approval-instruction.js'
 import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SkipReceipt, SourceReach, SubmitResult } from '../common/types/ports/approval-backend.js'
 
 // An approval form's answer names its approval or its action; one that names neither, a save answer among them, is none.
@@ -23,8 +23,8 @@ export interface FormsBackendOptions {
   approves: () => boolean
 }
 
-/** A decision whose lasting part did not save, which a save form asks about before the call runs. */
-export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved }
+/** A decision whose lasting part did not save, and the ask it answered, which a save form names before the call runs. */
+export interface UnsavedDecision { decision: DecisionBody; unsaved: Unsaved; ask: FullAsk }
 
 /**
  * What a call's answers came to: the tokens the call sent again spends, and the decisions whose lasting part did not save.
@@ -65,7 +65,7 @@ const SETTLED: ReadonlySet<SaveEnding['ending']> = new Set(['saved', 'skipped', 
 
 /** Per kind of save: the answers its form takes, and what each answer, a decline, and a cancel do. */
 const SAVE_FORMS: Readonly<Record<UnsavedKind, { answers: SaveAnswer[]; choices: string }>> = {
-  approval: { answers: ['retry', 'skip'], choices: 'Retry the save; skip gives it up, so later calls ask again. Declining skips it, and cancelling leaves it to be saved later. Either way the call runs once.' },
+  approval: { answers: ['retry', 'skip'], choices: 'Retry the save; skip gives it up, so later calls ask again. Declining skips it, and cancelling leaves it to be saved later.' },
   denial: { answers: ['retry', 'skip'], choices: 'Retry the save; skip denies this call once instead. Declining skips it, and cancelling leaves the call waiting.' },
   removal: { answers: ['retry'], choices: 'Retry the removal; declining or cancelling leaves it to the next decision or the workspace opening again, which remove it.' },
 }
@@ -104,7 +104,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       const decision = decisionOf(key, answer)
       const receipt = await opened.decide({ kind: 'plain', decision }, sender)
       const unsaved = unsavedOf({ decision, receipt })
-      if (unsaved) answered.unsaved.push({ decision, unsaved })
+      if (unsaved) answered.unsaved.push({ decision, unsaved, ask })
       if (receipt.status === 'refused') {
         opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
         continue
@@ -184,7 +184,7 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
     saveForms(unsaved, sender) {
       if (unsaved.length === 0 || !live()) return undefined
       for (const question of unsaved) saveQuestions.set(question.decision.token, { ...question, caller: sender?.caller })
-      return inputRequired({ inputRequests: Object.fromEntries(unsaved.map(question => [`${SAVE_KEY}${question.decision.token}`, saveForm(question.unsaved)])) })
+      return inputRequired({ inputRequests: Object.fromEntries(unsaved.map(question => [`${SAVE_KEY}${question.decision.token}`, saveForm(question)])) })
     },
   }
 }
@@ -236,10 +236,12 @@ function saveAnswerIn(responses: Record<string, unknown>, key: string): SaveAnsw
   return acceptedContent(responses, key, SaveAnswerSchema)?.save
 }
 
-function saveForm(unsaved: Unsaved) {
+// One round may draw several save forms, so each names the ask its decision answered first.
+function saveForm(question: UnsavedDecision) {
+  const { ask, unsaved } = question
   const { answers, choices } = SAVE_FORMS[unsaved.kind]
   return inputRequired.elicit({
-    message: `${unsaved.warning}.\n${choices}`,
+    message: [`${printable(ask.tool)} asked ${printable(ask.policy.rule)}: ${printable(ask.policy.subject)} (${printable(ask.token)})`, `${unsaved.warning}.`, choices].join('\n'),
     requestedSchema: {
       type: 'object',
       properties: { save: { type: 'string', enum: answers, description: answers.join(' or ') } },
