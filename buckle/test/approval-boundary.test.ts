@@ -31,7 +31,8 @@ const RUNTIME = 'common/services/workspaces/workspace-runtime.ts'
 const NAMES_THE_CORE_RUNTIME = /\bCoreRuntime\b/
 const REGISTRY = 'common/services/approvals/approval-registry.ts'
 const GUARD = 'common/domain/approval/decision-guard.ts'
-const IMPORT = /from '([^']+)'/g
+// A specifier in either quote: after `from` (an import or an export), a side-effect `import`, or a dynamic `import()`.
+const IMPORT = /(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(['"])([^'"\n]+)\1/g
 // The approval core: the ledger, the gate, the service, the guard, and their ports.
 const CORE = ['common/services/approvals', 'common/domain/approval', 'common/types/ports/approval-source.ts', 'common/types/ports/nonce-claims.ts', 'common/types/ports/approval-backend.ts', 'common/types/ports/decision-audit.ts']
 // What puts an ask into words for a person: commands, judge lines, expiry phrases, and the terminal's rendering.
@@ -53,7 +54,8 @@ const NODE_RUNTIME = /^common\/runtime\/(?:log|config)\.ts$/
 const MINTS_A_DEVICE_PROOF = /(?<!function )\bmintDeviceProof\(/
 const REQUEST_VERIFIER = 'common/services/access/signed-requests.ts'
 
-const importsOf = (file: string): string[] => [...readFileSync(file, 'utf8').matchAll(IMPORT)].map(match => match[1]!)
+const specifiersIn = (text: string): string[] => [...text.matchAll(IMPORT)].map(match => match[2]!)
+const importsOf = (file: string): string[] => specifiersIn(readFileSync(file, 'utf8'))
 
 /**
  * Every module a file imports, package-relative, following the imports of the modules beside it in its own folder, or of
@@ -80,6 +82,14 @@ const importing = (paths: string[], target: RegExp): string[] => sourceFiles(...
 const importersOf = (paths: string[], target: string): string[] => sourceFiles(...paths)
   .filter(file => importsOf(file).some(specifier => specifier.startsWith('.') && relative(PACKAGE_ROOT, resolve(dirname(file), specifier)).replace(/\.js$/, '.ts') === target))
   .map(file => relative(PACKAGE_ROOT, file))
+
+// The modules under `paths`, besides `target` itself, whose text names `target`'s file, by its name without the extension.
+const naming = (paths: string[], target: string): string[] => {
+  const name = target.replace(/^.*\//, '').replace(/\.ts$/, '')
+  return sourceFiles(...paths)
+    .map(file => relative(PACKAGE_ROOT, file))
+    .filter(file => file !== target && readFileSync(join(PACKAGE_ROOT, file), 'utf8').includes(name))
+}
 
 // Ruling 4 of 2026-09-28: the approval service is the single answerer (review L8).
 describe('the approval boundary', () => {
@@ -136,6 +146,14 @@ describe('the approval boundary', () => {
     const everywhere = ['main.ts', 'common', 'cli', 'mcp', 'server', 'layers']
     expect(importersOf(everywhere, FORMS_OPENER).sort()).toEqual([RUNTIME, OPEN_FORMS].sort())
     expect(importersOf(everywhere, OPEN_FORMS).sort()).toEqual(['mcp/http.ts', 'mcp/stdio.ts'])
+    // A specifier built at run time resolves to nothing above, so each module's file name is looked for anywhere.
+    expect(naming(everywhere, FORMS_OPENER).sort()).toEqual([RUNTIME, OPEN_FORMS].sort())
+    expect(naming(everywhere, OPEN_FORMS).sort()).toEqual(['mcp/http.ts', 'mcp/stdio.ts'])
+  })
+
+  it('reads every kind of import: static and type-only, re-exports, side effects, and dynamic, in either quote', () => {
+    const text = [`import type { A } from './a.js'`, `export { b } from "./b.js"`, `import './c.js'`, `const d = await import("./d.js")`, `import * as e from '../e.js'`].join('\n')
+    expect(specifiersIn(text)).toEqual(['./a.js', './b.js', './c.js', './d.js', '../e.js'])
   })
 
   it('lets only the node\'s request verifier mint a device\'s proof', () => {
