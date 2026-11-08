@@ -2,11 +2,14 @@ import { randomUUID } from 'node:crypto'
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setTimeout as delay } from 'node:timers/promises'
 import { pathToFileURL } from 'node:url'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { loadConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
+import { initializeCommon } from '../common/runtime/initialize.js'
 import { openWorkspaceManager, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
+import { SETTINGS_WATCH_DEBOUNCE_MS } from '../common/services/workspaces/workspace-runtime.js'
 import { settingsPath, type WorkspaceSettings } from '../common/services/workspaces/workspace-settings.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { workspaceStateKey } from '../common/domain/workspace-key.js'
@@ -54,6 +57,19 @@ describe('the settings watcher takes a change up with no call', () => {
     await owner.updateSettings(site, settings => ({ ...settings, approvalWaitMs: 4_321 }))
     // No call is made: the folder watcher takes the change up on its own, within its debounce.
     await vi.waitFor(() => expect(config.approvalTimeoutMs).toBe(4_321), { timeout: 5_000, interval: 50 })
+  })
+})
+
+describe('the settings watcher of a node that closed', () => {
+  it('stops with the node, so a change after it wakes no runtime', async () => {
+    const common = initializeCommon({ config: loadConfig({ BUCKLE_STATE_DIR: join(base, 'state'), BUCKLE_ADMIN_TOKEN: 'live-settings-admin-fixture', BUCKLE_SANDBOX: 'none' }), role: 'cli' })
+    await common.start()
+    const { config } = await (await common.services.getWorkspaces()).resolve(site)
+    await common.owner.close()
+
+    await owner.updateSettings(site, settings => ({ ...settings, approvalWaitMs: 4_321 }))
+    await delay(SETTINGS_WATCH_DEBOUNCE_MS * 4)
+    expect(config.approvalTimeoutMs).toBe(15_000)
   })
 })
 

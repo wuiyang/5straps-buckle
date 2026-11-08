@@ -167,6 +167,7 @@ describe('buckle serve bootstrap (built dist and .output)', () => {
     const steps = closeSteps(buckle.lines())
     expect(steps).toEqual(expect.arrayContaining([
       { stage: 'accept', name: 'http server' },
+      { stage: 'timers', name: 'settings watchers' },
       { stage: 'waiters', name: 'terminal questions' },
       { stage: 'waiters', name: 'approval waits' },
       // B19: running tool calls, PTY terminals, language servers, browser sessions and action reports.

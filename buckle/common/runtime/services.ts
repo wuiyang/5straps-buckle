@@ -51,8 +51,8 @@ export interface BuckleServiceDefinitions {
 type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
 
 /**
- * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle; B19): open
- * approval waits settle at 'waiters', keeping their asks; tool calls still running (a shell among
+ * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle; B19): the settings
+ * watcher stops at 'timers', so a removed folder wakes no runtime that closed; open approval waits settle at 'waiters', keeping their asks; tool calls still running (a shell among
  * them) are cancelled at 'jobs' and answer before connections close; PTY terminals, language servers
  * and browser sessions end at 'streams'; the ownership lock goes at 'locks' and the history database
  * at 'databases', after the services that use them; queued action reports flush at 'sinks', before
@@ -66,6 +66,7 @@ function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<Buckl
     const failures = results.flatMap(result => (result.status === 'rejected' ? [result.reason] : []))
     if (failures.length > 0) throw new AggregateError(failures, 'Some workspaces could not close their sessions')
   }
+  input.onClose('timers', 'settings watchers', each(async runtime => runtime.closeWatchers()))
   input.onClose('waiters', 'approval waits', each(runtime => runtime.closeApprovals()))
   input.onClose('jobs', 'tool calls', each(runtime => runtime.cancelInvocations()))
   input.onClose('streams', 'workbench terminals', each(runtime => runtime.workbenches.stopTerminals()))
