@@ -1,6 +1,9 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { createOperationScope, runInScope } from '@5straps/runtime'
+import { Client } from '@modelcontextprotocol/client'
+import { InMemoryTransport } from '@modelcontextprotocol/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { approvalsPath, grantsPath } from '../common/runtime/config.js'
 import { NO_INTERACTION, type Interaction } from '../common/runtime/interaction.js'
@@ -47,13 +50,14 @@ afterEach(async () => {
 /** No terminal, a hold only while this process asks: a gated call answers at once. */
 const NOBODY: Interaction = { requestCli: NO_INTERACTION.requestCli, hold: 'prompt' }
 const STDIO = 'mcp-stdio'
+const owner = Symbol('mcp-save-form')
 
 /** A stdio face with forms on, whose next `failures` grant writes fail as a locked grants file fails them. */
 async function stdioNode(failures: number) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'buckle-save-form-')))
   roots.push(root)
   const workspace = join(root, 'workspace')
-  mkdirSync(join(workspace, 'one'), { recursive: true })
+  for (const folder of ['one', 'two']) mkdirSync(join(workspace, folder), { recursive: true })
   mkdirSync(join(root, 'state'), { mode: 0o700 })
   const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_ALLOW_SHELL: 'false', BUCKLE_PACKS: 'fs', BUCKLE_APPROVAL_TIMEOUT_MS: '60000' })
   const settings = openSettingsFile({ filePath: settingsPath(config.nodeStateDirectory ?? config.stateDirectory, config.workspaceId), fallback: () => WorkspaceSettingsSchema.parse({ version: 1 }) })
@@ -62,10 +66,11 @@ async function stdioNode(failures: number) {
   const runtime = await createRuntime({ config, interaction: fixedInteraction(NOBODY) })
   runtimes.push(runtime)
   Object.assign(failing, { rename: grantsPath(config), count: failures })
-  const server = createMcpServer({ runtime, serverName: 'save-form-mcp', version: '0', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }) })
+  // Every call runs as the stdio face's transport names its caller, as stdioCallScope does.
+  const server = createMcpServer({ runtime, serverName: 'save-form-mcp', version: '0', followToolChanges: false, forms: openForms(runtime, { face: 'stdio' }), callScope: run => runInScope(createOperationScope({ owner, context: { actor: STDIO } }), run) })
   const ledger = () => JSON.parse(readFileSync(approvalsPath(config), 'utf8')) as { once: unknown[]; resolved: Array<{ request?: { token: string }; grant?: { save: string } }> }
   const results = async (tool = 'fs_write') => (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === tool && entry.event === 'result')
-  return { workspace, config, runtime, setForms, ledger, results, write: hostTool(server, 'fs_write'), read: hostTool(server, 'fs_read'), waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
+  return { workspace, config, runtime, server, setForms, ledger, results, write: hostTool(server, 'fs_write'), read: hostTool(server, 'fs_read'), batch: hostTool(server, 'fs_write_batch'), waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
 }
 
 const ARGS = { path: 'one/a.md', content: 'a' }
@@ -155,5 +160,51 @@ describe('the MCP save form, over stdio', () => {
     expect(answers).not.toHaveBeenCalled()
     expect(readFileSync(join(node.workspace, 'one', 'a.md'), 'utf8')).toBe('a')
     expect(node.ledger().resolved.find(entry => entry.request?.token === token)?.grant?.save).toBe('owed')
+  })
+
+  it('keeps the call whole across the save round: of two asks, one approved once and one whose grant did not save, the call sent again with the save answer alone runs once on both', async () => {
+    const node = await stdioNode(1)
+    const args = { files: [{ path: 'one/a.md', content: 'a' }, { path: 'two/b.md', content: 'b' }] }
+    expect(await node.batch({ args, actor: STDIO })).toMatchObject({ resultType: 'input_required' })
+    const [once, lasting] = node.waitingTokens()
+    const saving = await node.batch({ args, responses: { ...accept(once!, { approve: true, scope: 'once' }), ...accept(lasting!, { approve: true, scope: 'session' }) }, actor: STDIO })
+    expect(formsOf(saving)).toEqual([`save:${lasting}`])
+    expect(node.ledger().once).toHaveLength(2)
+
+    const ran = await node.batch({ args, responses: accept(`save:${lasting}`, { save: 'skip' }), actor: STDIO })
+    expect(ran.isError).toBeUndefined()
+    expect(['one/a.md', 'two/b.md'].map(path => readFileSync(join(node.workspace, path), 'utf8'))).toEqual(['a', 'b'])
+    expect(node.ledger().once).toEqual([])
+    const results = await node.results('fs_write_batch')
+    expect(results.map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
+    expect(results[1]!.requestId).toBe(results[0]!.requestId)
+  })
+})
+
+describe('the MCP save form, driven by the SDK\'s own client', () => {
+  it('takes a 2025-era client through the approval form, the save form, and the call, in one tools/call the server\'s legacy shim drives', async () => {
+    const node = await stdioNode(1)
+    const shown: string[] = []
+    const answers: Array<Record<string, string | boolean>> = [{ approve: true, scope: 'session' }, { save: 'retry' }]
+    const client = new Client({ name: 'save-form-test', version: '0' }, { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: 'legacy' } })
+    client.setRequestHandler('elicitation/create', async (request) => {
+      shown.push((request.params as { message: string }).message)
+      return { action: 'accept', content: answers[shown.length - 1]! }
+    })
+    const [clientSide, serverSide] = InMemoryTransport.createLinkedPair()
+    await node.server.connect(serverSide)
+    await client.connect(clientSide)
+    const result = await client.callTool({ name: 'fs_write', arguments: ARGS })
+    await client.close()
+
+    expect(result.isError).toBeFalsy()
+    expect(shown).toHaveLength(2)
+    expect(shown[0]).toContain('Write 1 byte to "one/a.md"')
+    expect(shown[1]).toContain('saving it for the session failed: permission denied')
+    expect(readFileSync(join(node.workspace, 'one', 'a.md'), 'utf8')).toBe('a')
+    expect(node.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
+    const results = await node.results()
+    expect(results.map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
+    expect(results[1]!.requestId).toBe(results[0]!.requestId)
   })
 })

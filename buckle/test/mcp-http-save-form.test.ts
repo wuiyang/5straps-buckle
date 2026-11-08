@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SourceKind } from '../common/types/ports/approval-source.js'
 import { grantsPath } from '../common/runtime/config.js'
@@ -10,7 +11,7 @@ import { openSettingsFile, settingsPath, WorkspaceSettingsSchema } from '../comm
 import { createMcpHttpHandlers } from '../mcp/http.js'
 import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
-import { claudeCodeCall, formOf, sendAs } from './support/mcp-http-call.js'
+import { asCaller, claudeCodeCall, formOf, sendAs } from './support/mcp-http-call.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
 // The save form over HTTP. Under today's rights an HTTP form approves once alone, which writes no grant, so it never draws
@@ -64,7 +65,7 @@ async function httpNode() {
   runtimes.push(runtime)
   Object.assign(failing, { rename: grantsPath(config), count: 1 })
   const send = (request: Request, actor = A) => sendAs({ handlers, workspace: { config, runtime }, request, actor })
-  return { root, runtime, send, waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
+  return { root, managed: { config, runtime }, runtime, send, waitingTokens: () => runtime.approvalService.pending().map(asked => asked.token) }
 }
 
 const accept = (key: string, content: Record<string, unknown>) => ({ [key]: { action: 'accept', content } })
@@ -90,5 +91,29 @@ describe('the save form over HTTP, with HTTP forms given stdio\'s rights', () =>
     expect(ran.isError).toBeUndefined()
     expect(readFileSync(args.path, 'utf8')).toBe('saved')
     expect(node.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
+  })
+
+  it('lets a 2026-07-28 client run all three rounds itself, each a request of its own, and the call that asked runs once under its first requestId', async () => {
+    const node = await httpNode()
+    const args = { path: join(node.root, 'outside', 'client.md'), content: 'saved' }
+    const shown: string[] = []
+    const answers: Array<Record<string, string | boolean>> = [{ approve: true, scope: 'session' }, { save: 'retry' }]
+    const client = new Client({ name: 'http-save-form-test', version: '0' }, { capabilities: { elicitation: { form: {} } }, versionNegotiation: { mode: { pin: '2026-07-28' } } })
+    client.setRequestHandler('elicitation/create', async (request) => {
+      shown.push((request.params as { message: string }).message)
+      return { action: 'accept', content: answers[shown.length - 1]! }
+    })
+    await client.connect(new StreamableHTTPClientTransport(new URL('http://127.0.0.1/mcp'), { fetch: (url, init) => asCaller(A, () => handlers.fetch(node.managed, new Request(url, init))) }))
+    const result = await client.callTool({ name: 'fs_write', arguments: args })
+    await client.close()
+
+    expect(result.isError).toBeFalsy()
+    expect(shown).toHaveLength(2)
+    expect(shown[1]).toContain('saving it for the session failed: permission denied')
+    expect(readFileSync(args.path, 'utf8')).toBe('saved')
+    expect(node.runtime.grants.list()).toEqual([expect.objectContaining({ rule: 'write_scope', scope: 'session' })])
+    const results = (await auditEntries(node.runtime.actions, 200)).filter(entry => entry.tool === 'fs_write' && entry.event === 'result')
+    expect(results.map(entry => entry.outcome)).toEqual(['approval_required', 'ok'])
+    expect(results[1]!.requestId).toBe(results[0]!.requestId)
   })
 })
