@@ -2,14 +2,14 @@ import { spawn } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { InvokeResponse } from '@5straps/protocol'
 import type { ToolContext } from '../common/domain/tool.js'
 import { logger } from '../common/runtime/log.js'
 import { ACTIVE_WORK_FRESH_MS, ACTIVE_WORK_REFRESH_MS, activeElsewhere, activeWorkDirectory, createExecutingMark, executingMarks } from '../common/services/workspaces/active-work.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { auditEntries, settleAuditLogs } from './support/action-log-writer.js'
+import { auditEntries, settleAuditLogs, startActionLogWriter } from './support/action-log-writer.js'
 import { fixedInteraction } from './support/interaction.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 
@@ -18,6 +18,8 @@ import { configFromEnvironment } from './support/workspace-config.js'
 // holds none.
 
 const roots: string[] = []
+// The writer's thread starts on its first write, which the first run's wait for its mark would otherwise include.
+beforeAll(startActionLogWriter)
 afterEach(async () => {
   vi.useRealTimers()
   await settleAuditLogs()

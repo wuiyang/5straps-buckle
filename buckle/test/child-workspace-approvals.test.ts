@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { emptyWorkspacePolicy } from '@5straps/protocol'
 import type { BuckleConfig } from '../common/runtime/config.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -10,9 +10,12 @@ import type { CoreRuntime } from '../common/services/workspaces/workspace-runtim
 import { fixedInteraction } from './support/interaction.js'
 import { byName, idOf, registerWorkspace, workspacesOf } from './support/workspaces.js'
 import { PLAIN_MARKS } from '../common/domain/permission/decision.js'
+import { startActionLogWriter } from './support/action-log-writer.js'
 
 const NODE_REPORT_TOKEN = 'node-report-token-fixture-only'
 const roots: string[] = []
+// The writer's thread starts on its first write, which the first child call's wait for its ask would otherwise include.
+beforeAll(startActionLogWriter)
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 /** A node with the owner's callbacks configured, plus one registered child workspace. */

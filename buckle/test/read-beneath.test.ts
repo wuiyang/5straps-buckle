@@ -2,7 +2,7 @@ import { chmodSync, constants, linkSync, mkdirSync, mkdtempSync, rmSync, symlink
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JsonValue } from '@5straps/protocol'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { LinkAppearedError, openDirectoryBeneath, openRealDirectory, withFileBeneath } from '../common/adapters/beneath.js'
 import { createPathView } from '../common/domain/path-view.js'
 import { configFromEnvironment } from './support/workspace-config.js'
@@ -11,13 +11,15 @@ import { resolveTarget } from '../common/services/invocation/real-path.js'
 import { createRuntime } from '../common/services/workspaces/workspace-runtime.js'
 import { fixedInteraction, headlessGrace } from './support/interaction.js'
 import { SOURCES } from '../common/types/ports/approval-source.js'
-import { settleAuditLogs } from './support/action-log-writer.js'
+import { settleAuditLogs, startActionLogWriter } from './support/action-log-writer.js'
 
 // Review item 4 of the proof-of-possession fixes: a read was judged at its real path and then opened by
 // name, so a link swapped in between (into Buckle's state, say) was followed. A read now opens the judged
 // target beneath a parent reached without following a link, and a listing walks from descriptors.
 
 const roots: string[] = []
+// The writer's thread starts on its first write, which the first ask's wait would otherwise include.
+beforeAll(startActionLogWriter)
 afterEach(async () => { await settleAuditLogs(); for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }) })
 
 function fixture() {
