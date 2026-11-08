@@ -229,12 +229,12 @@ describe('the activity store', () => {
 const WORKSPACE = 'w-1'
 
 /** One workspace's ledger and service, as a node composes them, with a terminal that keeps asking until core stops it. */
-function setUp(options: { grants?: (store: GrantStore) => GrantStore } = {}) {
+function setUp(options: { grants?: (store: GrantStore) => GrantStore; lockDeadlineMs?: number } = {}) {
   const root = scratch()
   const store = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: WORKSPACE })
   const grants = options.grants ? options.grants(store) : store
   const approvals = join(root, 'approvals.json')
-  const registry = createApprovalRegistry(grants, approvals, 15_000)
+  const registry = createApprovalRegistry(grants, approvals, 15_000, options.lockDeadlineMs === undefined ? {} : { lockDeadlineMs: options.lockDeadlineMs })
   const events: LifecycleEvent[] = []
   const terminal: ApprovalBackend = {
     open: async () => ({ contractVersion: 1, decides: true, scopes: ['once'], cancels: true, revokes: false }),
@@ -439,6 +439,22 @@ describe('an idle end', () => {
     expect(warned).not.toHaveBeenCalled()
     await service.close()
   })
+
+  it('ends nothing and suspends nothing where another process held the approvals lock past its wait, and ends the sessions at the next check', async () => {
+    const { store, registry, service, marks, approvals } = setUp({ lockDeadlineMs: 100 })
+    await decided(service, await asked(registry, { sessionId: 'chat-1' }, '/outside/a'), 'session')
+    const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    const { check } = idleCheck({ service, marks, lastAt: sixteenMinutesAgo })
+    const holder = await holdLockInProcess(`${approvals}.lock.sqlite`)
+    try { await check.check() } finally { await killHolder(holder) }
+    expect(store.list()).toHaveLength(1)
+    expect(check.sessionApprovalsSuspended()).toBe(false)
+    expect(warned).not.toHaveBeenCalled()
+
+    await check.check()
+    expect(store.list()).toEqual([])
+    await service.close()
+  }, 30_000)
 
   it('lets activity this process sees after a gap wait for a check, which reads the gap and ends the sessions', async () => {
     const { store, registry, service, marks } = setUp()

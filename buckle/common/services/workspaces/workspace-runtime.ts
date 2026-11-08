@@ -386,7 +386,8 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
   const sessionIdle = createSessionIdleCheck({
     workspaceId,
     idleMs: () => config.approvalSessionIdleMs,
-    lastActivity: () => history.lastActivity() ?? newestSessionGrant(grantFile.list()),
+    lastActivity: () => history.lastActivity(),
+    sessionGrantMade: () => newestSessionGrant(grantFile.list()),
     executing: () => executingInstances({ directory: marks }),
     runningHere: () => executing.running(),
     sessions: { endSessions: end => approvalService.endSessions(end) },

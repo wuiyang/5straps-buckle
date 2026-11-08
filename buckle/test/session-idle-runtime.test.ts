@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { InvokeResponse } from '@5straps/protocol'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import type { BuckleConfig } from '../common/runtime/config.js'
+import { grantsPath, type BuckleConfig } from '../common/runtime/config.js'
 import { logger } from '../common/runtime/log.js'
 import { SESSION_SWEEP_MS } from '../common/services/approvals/session-idle-check.js'
 import { createRuntime, type CoreRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -189,6 +189,19 @@ describe('a workspace runtime', () => {
     await lost.grants.grant({ ...grant, subject: join(lost.paths().root, 'one') })
     past()
     expect(await write(lost, 'chat-1', 'one/a.md')).toMatchObject({ outcome: 'approval_required' })
+  }, 30_000)
+
+  it('names grants.json, not the activity store, where the store holds nothing and the grants it falls back to cannot be read', async () => {
+    const config = configOf()
+    const runtime = await open(config)
+    vi.spyOn(runtime.history, 'lastActivity').mockReturnValue(undefined)
+    writeFileSync(grantsPath(config), 'not json')
+    const warned = vi.spyOn(logger, 'warn').mockImplementation(() => {})
+    vi.spyOn(logger, 'error').mockImplementation(() => {})
+
+    await runtime.sessionIdle.check()
+    expect(runtime.sessionIdle.sessionApprovalsSuspended()).toBe(true)
+    expect(warned).toHaveBeenCalledWith(expect.stringContaining('as grants.json cannot be read'), expect.objectContaining({ store: 'grants.json' }))
   }, 30_000)
 
   it('ends no session where the window is 0, set for the node or for the workspace', async () => {
