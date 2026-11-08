@@ -5,7 +5,10 @@ import type { ApprovalSource, Assurance } from './approval-source.js'
 /** What carried a decision: nothing beyond its route, a device's signed request, or the envelope the paired key sealed. */
 export type DecisionProofKind = 'none' | 'device' | 'envelope'
 
-/** A decision as its audit entries name it; `decidedBy` names the key that signed a device's decision, or the judge that passed it. */
+/**
+ * A decision as its audit entries name it; `decidedBy` names the key that signed a device's decision, or the judge that
+ * passed it, and `caller` the actor a form answer's transport authenticated.
+ */
 export interface AuditedDecision {
   token: string
   approved: boolean
@@ -13,12 +16,14 @@ export interface AuditedDecision {
   source: ApprovalSource
   proof: DecisionProofKind
   decidedBy?: string
+  caller?: string
 }
 
 /** A skip of an approval's save, as its audit entries name it. */
 export interface AuditedSkip {
   token: string
   source: ApprovalSource
+  caller?: string
 }
 
 /** How a received answer ended, told once. */

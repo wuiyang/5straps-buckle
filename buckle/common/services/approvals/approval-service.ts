@@ -339,7 +339,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       const recording = Promise.withResolvers<void>()
       for (const ask of asks) ask.deciding = recording.promise
       try {
-        const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }) })
+        const received = options.decisionAudit.received({ token: input.decision.token, approved: input.decision.approved, scope: input.decision.scope, source: input.source, proof: input.proof ?? 'none', ...(input.decidedBy === undefined ? {} : { decidedBy: input.decidedBy }), ...(input.caller === undefined ? {} : { caller: input.caller }) })
         let result: Resolution
         try {
           result = await options.registry.resolve(input.decision, input.source, {

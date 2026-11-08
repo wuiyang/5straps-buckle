@@ -9,16 +9,23 @@ import type { AuditedDecision, AuditedSkip, AuditEnding, DecisionAudit } from '.
 /** Decisions belong to no agent's session; their entries share this one. */
 const DECISION_SESSION = 'approvals'
 
-/** Who answered, by the route it came by, where no key or judge that decided is named. */
-const ACTOR_OF: Readonly<Record<SourceKind, (source: ApprovalSource) => string>> = {
+/** An answer as the actor table reads it: its route, and the caller its transport authenticated, where it names one. */
+interface Answered { source: ApprovalSource; caller?: string }
+
+/**
+ * Who answered, by the route it came by, where no key or judge that decided is named. An HTTP form answer names its
+ * caller, the agent token that sent it, so a token answering its own ask is traced in this log; a stdio caller is the
+ * same for every answer and names no one.
+ */
+const ACTOR_OF: Readonly<Record<SourceKind, (answer: Answered) => string>> = {
   terminal: () => 'local-owner',
   cli: () => 'local-owner',
   forms: () => 'forms',
-  'http-forms': () => 'http-forms',
+  'http-forms': answer => answer.caller ?? 'http-forms',
   devices: () => 'devices',
   judge: () => 'judge',
   sealed: () => 'sealed',
-  backend: source => `backend:${source.id}`,
+  backend: answer => `backend:${answer.source.id}`,
 }
 
 /**
@@ -44,8 +51,8 @@ export function createLoggedDecisionAudit(input: { actions: Pick<ActionLog, 'app
   }
 }
 
-function actorOf(answer: { source: ApprovalSource; decidedBy?: string }): string {
-  return (answer.decidedBy ?? ACTOR_OF[answer.source.kind](answer.source)).slice(0, MAX_LOGGED_ID)
+function actorOf(answer: Answered & { decidedBy?: string }): string {
+  return (answer.decidedBy ?? ACTOR_OF[answer.source.kind](answer)).slice(0, MAX_LOGGED_ID)
 }
 
 function decisionArgs(decision: AuditedDecision): JsonObject {

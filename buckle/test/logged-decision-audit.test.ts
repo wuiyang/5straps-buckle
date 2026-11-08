@@ -112,6 +112,21 @@ describe('the logged decision audit', () => {
     ])
   })
 
+  it('names an HTTP form answer, and its skip, by the caller its transport authenticated, and one with none by its route', async () => {
+    const { actions, audit } = workspaceLog()
+    const http = SOURCES['http-forms']
+    audit.received({ token: 't-own', approved: true, scope: 'once', source: http, proof: 'none', caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
+    audit.skipReceived({ token: 't-own', source: http, caller: 'agent:tok-a' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-none', approved: true, scope: 'once', source: http, proof: 'none' }).refused({ code: 'unknown_ask' })
+    audit.received({ token: 't-stdio', approved: true, scope: 'once', source: SOURCES.forms, proof: 'none', caller: 'mcp-stdio' }).refused({ code: 'unknown_ask' })
+
+    const attempts = (await auditEntries(actions, 20)).filter(entry => entry.event === 'attempt')
+    expect(attempts.map(entry => [entry.actorId, (entry.args as { source: unknown }).source])).toEqual([
+      ['agent:tok-a', { id: 'http-forms', kind: 'http-forms' }], ['agent:tok-a', { id: 'http-forms', kind: 'http-forms' }],
+      ['http-forms', { id: 'http-forms', kind: 'http-forms' }], ['forms', { id: 'forms', kind: 'forms' }],
+    ])
+  })
+
   it('returns at once and never throws while the log will not take a write', () => {
     const { filePath, audit } = workspaceLog()
     mkdirSync(filePath)

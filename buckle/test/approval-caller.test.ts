@@ -187,11 +187,12 @@ function opened(face: FormsFace) {
   const grants = createFileGrantStore({ filePath: join(root, 'grants.json'), workspace: 'w-1' })
   const registry = createApprovalRegistry(grants, join(root, 'approvals.json'), 15_000, { live: () => ON })
   const heard: ApprovalSource[] = []
+  const callers: Array<string | undefined> = []
   const refused: Array<{ token: string; code: string }> = []
   const ending = (token: string) => ({ applied: () => undefined, failed: () => undefined, refused: (refusal: { code: string }) => { refused.push({ token, code: refusal.code }) } })
   const decisionAudit: DecisionAudit = {
-    received: (answer) => { heard.push(answer.source); return ending(answer.token) },
-    skipReceived: (skip) => { heard.push(skip.source); return ending(skip.token) },
+    received: (answer) => { heard.push(answer.source); callers.push(answer.caller); return ending(answer.token) },
+    skipReceived: (skip) => { heard.push(skip.source); callers.push(skip.caller); return ending(skip.token) },
   }
   const service = approvalServiceWithTerminal({ registry, workspaceId: 'w-1', serverId: 'node-1', graceMs: 200, interaction: fixedInteraction(), decisionAudit })
   services.push(service)
@@ -199,12 +200,12 @@ function opened(face: FormsFace) {
   let host: ApprovalHost | undefined
   service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } }, face)
   const askBy = async (actor: string) => (await registry.ask({ tool: 'fs_write', sessionId: 's', requestId: `r-${actor}`, actor, asks: [WRITE], call: CALL })).requests[0]!.token
-  return { registry, grants, backend, heard, refused, askBy, host: () => host! }
+  return { registry, grants, backend, heard, callers, refused, askBy, host: () => host! }
 }
 
 describe('the caller carried through the forms host core opens', () => {
   it('opens an HTTP face\'s forms under http-forms, refuses and records another caller\'s answer and skip, and decides its own caller\'s', async () => {
-    const { registry, backend, heard, refused, askBy, host } = opened('http')
+    const { registry, backend, heard, callers, refused, askBy, host } = opened('http')
     const token = await askBy('agent:a')
     expect(host().source).toEqual({ id: 'http-forms', kind: 'http-forms' })
 
@@ -216,6 +217,7 @@ describe('the caller carried through the forms host core opens', () => {
     expect(await host().skipSave(token, { caller: 'agent:b' })).toEqual({ status: 'refused', error: { code: 'approver_not_allowed', message: ANOTHER_CALLER.reason, retryable: false } })
     expect(refused).toEqual([{ token, code: 'approver_not_allowed' }, { token, code: 'approver_not_allowed' }])
     expect(heard).toEqual([HTTP, HTTP, HTTP])
+    expect(callers).toEqual(['agent:b', 'agent:a', 'agent:b'])
   })
 
   it('carries a stdio host\'s caller too, which no check compares: its answer decides another caller\'s ask for the session', async () => {
