@@ -43,7 +43,8 @@ A queued entry may land after a later one that waited, so read entries by `at`.
 The queue shares the 30 entries each Buckle process holds with its log lines
 ([lines that cannot be written](approvals-02.md#lines-that-cannot-be-written)). When another
 arrives, the oldest waiting entry is dropped, whichever log it is for; a refusal, which anyone can
-make Buckle write, gives way first and never pushes out another entry. A write that fails is tried
+make Buckle write, gives way first and never pushes out another entry, as does an answer from an
+MCP form over HTTP, which anything holding the agent's token can send, unless it was applied. A write that fails is tried
 again after 250 ms, 1 s, and 4 s, and then its entries are dropped. A failing log logs
 `Could not durably write the action log` once, until it takes writes again. The first drop prints
 one `Audit log entries dropped` warning on stderr, as JSON. Once the log takes writes again, a
