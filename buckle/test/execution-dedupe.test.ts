@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createOperationScope, runInScope } from '@5straps/runtime'
 import { emptyWorkspacePolicy, type InvokeRequest, type InvokeResponse } from '@5straps/protocol'
-import { describe, expect, it, vi } from 'vitest'
+import { beforeAll, describe, expect, it, vi } from 'vitest'
+import { startActionLogWriter } from './support/action-log-writer.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createExecutionBudget, createExecutions, EVICTED_STUB_LIMIT, EXECUTION_LIMIT, EXECUTION_TTL_MS, REQUEST_ALREADY_EXECUTED, REQUEST_ID_REUSED, requestFingerprint, requestIdKey, SCRIPT_STUB_LIMIT } from '../common/services/invocation/executions.js'
 import { createRuntime, type BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
@@ -16,6 +17,8 @@ import { SOURCES } from '../common/types/ports/approval-source.js'
 
 // Review M2 of B13-B14 (plan corrections): a re-send never runs a call twice, beyond the approval wait
 // (nitro/coordination.md, Completion and queue: "Reconnection must not execute a request twice").
+
+beforeAll(startActionLogWriter)
 
 async function node() {
   const root = mkdtempSync(join(tmpdir(), 'buckle-dedupe-'))

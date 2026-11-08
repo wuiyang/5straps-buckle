@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { serveStdio, type ServeStdioOptions } from '@modelcontextprotocol/server/stdio'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { startActionLogWriter } from './support/action-log-writer.js'
 import { configFromEnvironment } from './support/workspace-config.js'
 import { createStdioWire } from '../mcp/stdio-wire.js'
 import { createAuditedStdioTransport } from '../mcp/audited-stdio-transport.js'
@@ -15,6 +16,7 @@ import { createRuntime } from '../common/services/workspaces/workspace-runtime.j
 type Transport = NonNullable<ServeStdioOptions['transport']>
 type Message = Parameters<Transport['send']>[0]
 const cleanup: Array<() => unknown | Promise<unknown>> = []
+beforeAll(startActionLogWriter)
 afterEach(async () => { for (const action of cleanup.splice(0).reverse()) await action(); vi.restoreAllMocks() })
 
 async function sdkFixture() {

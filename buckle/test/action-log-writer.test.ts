@@ -1,12 +1,14 @@
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { setTimeout as delay } from 'node:timers/promises'
 import { promisify } from 'node:util'
+import { Worker } from 'node:worker_threads'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { PROBE_DEADLINE_MS } from '../common/adapters/action-log/action-log-writer.js'
+import { MAX_WAITING_WRITES, PROBE_DEADLINE_MS } from '../common/adapters/action-log/action-log-writer.js'
 import { AuditUnavailableError, createFileActionLog } from '../common/adapters/action-log/file-action-log.js'
+import type { WriterRequest } from '../common/adapters/action-log/writer-protocol.js'
 import { StateBusyError } from '../common/adapters/json-file-store.js'
 import { logger } from '../common/runtime/log.js'
 import { createAuditHealth } from '../common/services/audit/audit-health.js'
@@ -29,6 +31,13 @@ function entry(overrides: Partial<ActionLogEntry> = {}): ActionLogEntry {
 
 function settled(promise: Promise<unknown>, withinMs: number): Promise<'resolved' | 'rejected' | 'pending'> {
   return Promise.race([promise.then(() => 'resolved' as const, () => 'rejected' as const), delay(withinMs).then(() => 'pending' as const)])
+}
+
+/** A log path under a plain file, so every write and probe of it fails. */
+function brokenLogPath(): string {
+  const blocker = logPath()
+  writeFileSync(blocker, 'not a directory')
+  return join(blocker, 'actions.jsonl')
 }
 
 function orphan(path: string): void {
@@ -88,6 +97,78 @@ describe('the action log writer worker', () => {
     faults.release()
     await attempt
     expect(log.read(10).map(item => item.auditId)).toEqual(['held'])
+  })
+
+  it('probes every failing log at once, and sends a log no second probe while its first is still out', async () => {
+    const faults = faultyWriter()
+    let now = 0
+    const health = createAuditHealth({ now: () => now, probeIntervalMs: 1 })
+    const broken = [brokenLogPath(), brokenLogPath(), brokenLogPath()]
+    for (const path of broken) await expect(createFileActionLog(path, { health, writer: faults.writer }).record(entry())).rejects.toBeInstanceOf(AuditUnavailableError)
+    faults.stall()
+    const held = createFileActionLog(logPath(), { writer: faults.writer }).record(entry({ requestId: 'held' }))
+    await vi.waitFor(() => expect(faults.syncs()).toBe(1))
+    const posted = vi.spyOn(Worker.prototype, 'postMessage')
+
+    for (const round of [1, 2, 3]) {
+      now += 10
+      const asked = performance.now()
+      await health.recheck()
+      expect({ round, withinMs: performance.now() - asked < PROBE_DEADLINE_MS + 500 }).toEqual({ round, withinMs: true })
+    }
+    const probes = posted.mock.calls.flatMap(([message]) => ((message as WriterRequest).op === 'probe' ? [(message as Extract<WriterRequest, { op: 'probe' }>).file.path] : []))
+    expect(probes.sort()).toEqual([...broken].sort())
+    expect(broken.every(path => health.failing(path))).toBe(true)
+
+    faults.release()
+    await held
+  })
+
+  it('opens a log with no attempt another process left without starting a worker', async () => {
+    const path = logPath()
+    const first = faultyWriter()
+    await createFileActionLog(path, { writer: first.writer }).record(entry({ auditId: 'mine', event: 'attempt', outcome: 'started' }))
+    const second = faultyWriter()
+
+    expect(await createFileActionLog(path, { writer: second.writer }).recoverInterrupted()).toBe(0)
+    expect(await createFileActionLog(logPath(), { writer: second.writer }).recoverInterrupted()).toBe(0)
+    expect(second.starts()).toBe(0)
+  })
+
+  it('refuses a write as busy, before it reaches the worker, while the most writes it keeps wait on a stalled disk', async () => {
+    const faults = faultyWriter()
+    vi.spyOn(logger, 'error').mockImplementation(() => undefined)
+    const log = createFileActionLog(logPath(), { writer: faults.writer })
+    faults.stall()
+    const waiting = Array.from({ length: MAX_WAITING_WRITES }, (_, index) => log.record(entry({ requestId: `w${index}` })).catch(() => undefined))
+    const refused = log.record(entry({ requestId: 'one too many' })).then(() => 'written', (failure: unknown) => failure)
+
+    expect(await Promise.race([refused, delay(500).then(() => 'still waiting')])).toBeInstanceOf(StateBusyError)
+    await faults.writer.close({ deadlineMs: 0 })
+    await Promise.all(waiting)
+  })
+
+  it('stops at its deadline, and counts what it left, while the worker is held in a disk call', async () => {
+    // A named pipe stands in for the disk; Windows has none to open this way.
+    if (process.platform === 'win32') return
+    const fifo = join(mkdtempSync(join(tmpdir(), 'buckle-writer-fifo-')), 'disk')
+    execFileSync('mkfifo', [fifo])
+    const faults = faultyWriter({ fifo })
+    const error = vi.spyOn(logger, 'error')
+    const log = createFileActionLog(logPath(), { writer: faults.writer })
+    faults.blockAtSync(1)
+    const attempt = log.record(entry({ requestId: 'held' })).then(() => null, (failure: unknown) => failure)
+    try {
+      await vi.waitFor(() => expect(faults.syncs()).toBe(1))
+      const closing = faults.writer.close({ deadlineMs: 50 })
+      expect(await settled(closing, 1_500)).toBe('resolved')
+      expect(await closing).toEqual({ left: 1 })
+      expect(error).toHaveBeenCalledWith('Action log writes left unwritten at close', { left: 1 })
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('held in a disk call'))
+    } finally {
+      faults.unblock()
+    }
+    expect(await attempt).toBeInstanceOf(AuditUnavailableError)
   })
 
   it('waits at close for the writes in flight, up to its deadline', async () => {

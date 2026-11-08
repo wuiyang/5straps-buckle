@@ -20,16 +20,19 @@ export function createAuditHealth(options: { now?: () => number; probeIntervalMs
   // One probe round at a time: concurrent polls share it.
   let probing: Promise<void> | undefined
 
+  // At once, so a round takes as long as its slowest probe, however many logs fail.
   async function probeAll(): Promise<void> {
-    for (const [log, entry] of [...failing]) {
-      try {
-        await entry.probe()
-        if (failing.get(log) === entry) failing.delete(log)
-        logger.info('The audit log takes writes again', { log })
-      } catch {
-        // Still failing; the write that marked it logged the cause.
-        lastFailure.set(log, now())
-      }
+    await Promise.all([...failing].map(([log, entry]) => probeOne(log, entry)))
+  }
+
+  async function probeOne(log: string, entry: Failing): Promise<void> {
+    try {
+      await entry.probe()
+      if (failing.get(log) === entry) failing.delete(log)
+      logger.info('The audit log takes writes again', { log })
+    } catch {
+      // Still failing; the write that marked it logged the cause.
+      lastFailure.set(log, now())
     }
   }
 

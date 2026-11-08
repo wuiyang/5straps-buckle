@@ -21,6 +21,7 @@ const pendingSchema = z.object({
     }),
   })),
 })
+type PendingAttempt = z.infer<typeof pendingSchema>['pending'][string]
 
 export function createPendingAudit(input: {
   filePath: string
@@ -46,6 +47,10 @@ export function createPendingAudit(input: {
         }
       })
     },
+    /** Whether an attempt another process left is pending, read without the lock, as recovery's first look is. */
+    leftBehind(): boolean {
+      return Object.values(store.read().pending).some(item => isLeftBehind(item, input))
+    },
     /** What a write needs of the pending store: it reads, and is written back, under its lock. */
     async probe(): Promise<void> {
       await store.update(() => undefined)
@@ -60,9 +65,7 @@ export function createPendingAudit(input: {
       try {
         let recovered = 0
         for (const [auditId, item] of Object.entries(store.read().pending)) {
-          const sameProcess = item.processId === process.pid && item.processInstanceId === input.processInstanceId
-          const alive = (input.isAlive ?? processIsAlive)(item.processId)
-          if (sameProcess || alive && item.processId !== process.pid) continue
+          if (!isLeftBehind(item, input)) continue
           if (await hasTerminalRecord(input.filePath, auditId, item.offset)) {
             await store.update(state => { delete state.pending[auditId] })
             continue
@@ -78,6 +81,12 @@ export function createPendingAudit(input: {
       }
     },
   }
+}
+
+// Another process's attempt whose process is gone, or whose pid is now this process's.
+function isLeftBehind(item: PendingAttempt, input: { processInstanceId: string; isAlive?: (pid: number) => boolean }): boolean {
+  if (item.processId === process.pid) return item.processInstanceId !== input.processInstanceId
+  return !(input.isAlive ?? processIsAlive)(item.processId)
 }
 
 async function tryRecoveryLock(path: string): Promise<FileLock | null> {

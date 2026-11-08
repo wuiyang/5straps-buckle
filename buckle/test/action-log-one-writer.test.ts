@@ -194,6 +194,21 @@ describe('a write tried again', () => {
     expect(readFileSync(path, 'utf8').split('\n').filter(Boolean)).toHaveLength(3)
   })
 
+  it('reads back from each file\'s own failed attempt when one batch failed on two files', async () => {
+    // Windows syncs no directory, so its second sync is another batch's.
+    if (process.platform === 'win32') return
+    const writer = faultyWriter()
+    const files = [logPath(), logPath()].map(path => ({ path, log: createFileActionLog(path, { writer: writer.writer }) }))
+    const batch = [queued({ requestId: 'r1' }), queued({ requestId: 'r2' })]
+    for (const file of files) {
+      writer.failAtSync(1)
+      await expect(file.log.recordMany(batch)).rejects.toBeInstanceOf(AuditUnavailableError)
+    }
+
+    for (const file of files) await file.log.recordMany(batch)
+    for (const file of files) expect(written(file.path).map(line => line.requestId)).toEqual(['r1', 'r2'])
+  })
+
   it('takes the retry of the log queue, as the log service will, without writing an entry twice', async () => {
     const path = logPath()
     const writer = faultyWriter()
