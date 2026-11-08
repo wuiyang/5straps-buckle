@@ -38,7 +38,7 @@ export type TransportAttempt = 'required' | 'owner' | 'queued'
 
 const ATTEMPT_WRITES: Readonly<Record<TransportAttempt, (actions: ActionLog, entry: ActionLogEntry) => Promise<void>>> = {
   required: (actions, entry) => actions.record(entry),
-  owner: (actions, entry) => actions.ownerAttempt(entry),
+  owner: (actions, entry) => actions.ownerAttempt(entry, { ignoreWarning: false }),
   queued: async (actions, entry) => actions.append(entry),
 }
 

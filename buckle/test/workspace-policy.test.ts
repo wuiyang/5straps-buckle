@@ -75,7 +75,7 @@ describe('a registered workspace\'s policy over the node\'s lists', () => {
     expect(refused.result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED', message: expect.stringContaining('Refused by the workspace command policy: curl') } })
     expect((await effect(runtime, command('pnpm'))).execute).toHaveBeenCalledOnce()
     await runtime.policy.clear()
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect((await effect(runtime, command('curl'))).execute).not.toHaveBeenCalled()
     expect(runtime.policy.effective().commands.deny).toEqual(['curl'])
     expect(runtime.policy.stored().commands.deny).toEqual([])
@@ -93,7 +93,7 @@ describe('a registered workspace\'s policy over the node\'s lists', () => {
   it('answers a command the node\'s destructive list names once the dangerously-allow switch is on, and still refuses one its deny list names', async () => {
     const runtime = await workspace(policy({ allow: ['make *', 'curl *'] }), { BUCKLE_COMMAND_DESTRUCTIVE: 'make deploy*', BUCKLE_COMMAND_DENY: 'curl' })
     expect((await effect(runtime, command('make', ['deploy']))).result.outcome).toBe('approval_required')
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
 
     const answered = await effect(runtime, command('make', ['deploy']))
     expect(answered.result.outcome).toBe('ok')

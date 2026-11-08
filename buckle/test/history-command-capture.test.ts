@@ -255,7 +255,7 @@ describe('an exec call through the invoker', () => {
     const config = configFromEnvironment({ BUCKLE_WORKSPACE_ROOT: workspace, BUCKLE_STATE_DIR: join(root, 'state'), BUCKLE_SANDBOX: 'none', BUCKLE_ALLOW_SHELL: 'true', BUCKLE_SHELL_ISOLATION: 'false', BUCKLE_ALLOW_HOST_GIT: String(hostGit), BUCKLE_PACKS: 'fs,shell,history', BUCKLE_APPROVAL_TIMEOUT_MS: '1' })
     const runtime = await createRuntime({ config, interaction: fixedInteraction() })
     try {
-      await runtime.policy.setDangerouslyAllow('on')
+      await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
       const result = await runtime.invoke({ sessionId: 'agent', approvalWait: { mode: 'none' }, request: { requestId: 'exec-1', tool: 'shell_exec', args: { command: 'cp', args: ['-R', 'seed/.', '.'] }, approvalTokens: [] } })
       expect(result, JSON.stringify(result)).toMatchObject({ outcome: 'ok' })
       const checkpoint = (await runtime.history.list()).at(-1)!

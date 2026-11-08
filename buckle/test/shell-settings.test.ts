@@ -66,7 +66,7 @@ describe('a workspace\'s shell, from its settings', () => {
     const manager = await node()
     const { runtime } = await byName(manager, 'shared')
     // Every ask answered, so the call reaches the shell's own check.
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const call = () => runtime.invoke({ request: { requestId: `net-${Math.random()}`, tool: 'shell_exec', args: { command: 'true', allowNetwork: true }, approvalTokens: [] }, sessionId: 'shared' })
     expect(await call()).toMatchObject({ outcome: 'error', error: { message: expect.stringContaining('Shell networking is disabled') } })
     await manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, shell: { ...settings.shell, network: true } }))
@@ -79,7 +79,7 @@ describe('a workspace\'s shell, from its settings', () => {
   async function networkedShell(environment: Record<string, string>) {
     const manager = await node(environment)
     const { runtime } = await byName(manager, 'shared')
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     await manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, shell: { ...settings.shell, network: true } }))
     const call = () => runtime.invoke({ request: { requestId: `net-${Math.random()}`, tool: 'shell_exec', args: { command: 'true', allowNetwork: true }, approvalTokens: [] }, sessionId: 'shared' })
     return { manager, call, list: (allow: string[]) => manager.updateSettings(idOf(manager, 'shared'), settings => ({ ...settings, policy: { ...settings.policy, network: { allow } } })) }

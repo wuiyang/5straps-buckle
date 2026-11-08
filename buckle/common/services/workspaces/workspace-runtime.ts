@@ -71,7 +71,7 @@ import { allowedDomainsKey, browserAllowedDomains } from '../packs/browser/allow
 import { FRESH_BROWSER, modeFingerprint, type BrowserMode } from '../packs/browser/mode.js'
 import { journalDirectory, scriptOfAsk } from '../packs/code/journal.js'
 import { loadRootSkill } from '../packs/pack-skill.js'
-import type { ActionLog, AuditHealth } from '../../types/ports/action-log.js'
+import type { ActionLog, AuditHealth, OwnerRecordChoice } from '../../types/ports/action-log.js'
 import type { LedgerGrants } from '../../types/ports/grant-store.js'
 import { nullReporter, type Reporter } from '../../types/ports/reporter.js'
 import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/approval-registry.js'
@@ -187,9 +187,10 @@ export interface PolicyHandle {
   dangerouslyAllow(): DangerouslyAllowState
   /**
    * The one switch, for the owner's local CLI only (ruling H1e), audited `policy_dangerously_allow_changed` with the
-   * mode it sets. Writes nothing the policy is read from.
+   * mode it sets, its attempt waiting as the owner's records do unless `choice` ignores the warning. Writes nothing the
+   * policy is read from.
    */
-  setDangerouslyAllow(mode: DangerouslyAllowMode): Promise<void>
+  setDangerouslyAllow(mode: DangerouslyAllowMode, choice: OwnerRecordChoice): Promise<void>
 }
 
 export interface DangerouslyAllowState { mode: DangerouslyAllowMode; boundTo: string; setByEarlierBuild: boolean }
@@ -601,10 +602,10 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; r
         return compiled.policy
       },
       dangerouslyAllow,
-      async setDangerouslyAllow(mode) {
+      async setDangerouslyAllow(mode, choice) {
         // No active-work check and no reload: turning it off must apply at once, and the rules read it per call.
         await auditOperation({
-          actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', describe: () => mode,
+          actions, workspaceId, tool: 'policy_dangerously_allow_changed', sessionId: 'local-owner', ignoreWarning: choice.ignoreWarning, describe: () => mode,
           operation: () => switchStore.set(mode),
         })
         logger.warn(mode === 'off' ? 'Dangerously allow is off' : `Dangerously allow is ${mode}: the asks it covers in this workspace are allowed without a person, and each use is audited`, { workspaceId })

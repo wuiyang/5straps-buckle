@@ -142,7 +142,7 @@ describe('the dangerously-allow switch over every ask kind (coverage table)', ()
     }
 
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    await policyCommand(runtime, ['dangerously-allow', 'on'])
+    await policyCommand(runtime, ['dangerously-allow', 'on'], { ignoreWarning: false })
     for (const row of covered(setup)) {
       const on = await call(runtime, row.tool, row.effects)
       expect({ kind: row.kind, outcome: on.result.outcome }).toEqual({ kind: row.kind, outcome: 'ok' })
@@ -166,7 +166,7 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
   it('without a mount: allows and audits a sensitive file and a write inside the root, and still asks for ~/.ssh and ~/.bashrc outside it', async () => {
     const setup = await node()
     const { runtime, workspace, outside } = setup
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
 
     const secret = await run(runtime, 'fs_read', { path: '.env' })
     expect(secret.result).toMatchObject({ outcome: 'ok' })
@@ -197,7 +197,7 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
     const setup = await node()
     const { runtime, outside } = setup
     await runtime.policy.setMount('/workspace')
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect(runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'on', boundTo: '/workspace' })
 
     const secret = await run(runtime, 'fs_read', { path: '/workspace/.env' })
@@ -218,7 +218,7 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
   it('runs a real shell command, destructive and in the workspace, and audits both uses once each', async () => {
     const setup = await node()
     const { runtime } = setup
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const shell = await run(runtime, 'shell_exec', { command: 'rm', args: ['-rf', 'build'] })
     expect(shell.result).toMatchObject({ outcome: 'ok' })
     expect((await uses(runtime, shell.requestId)).map(entry => entry.detail).sort()).toEqual(['destructive_command', 'write_scope'])
@@ -235,7 +235,7 @@ describe('the switch through the real tools (review L9 of B20-B22, owner decisio
 
     const off = await run(runtime, 'web_fetch', { url })
     expect(off.result.outcome).toBe('approval_required')
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const on = await run(runtime, 'web_fetch', { url })
     expect(on.result).toMatchObject({ outcome: 'ok', output: { status: 200, body: 'loopback fixture' } })
     expect(hits).toBe(1)
@@ -268,7 +268,7 @@ describe('what the switch never turns (policy.md: a matched deny stays denied)',
     await setup.runtime.policy.apply(stored)
     // Where the folder shows is the mount table's, set by the owner's CLI alone.
     if (stored.mount) await setup.runtime.policy.setMount(stored.mount)
-    await setup.runtime.policy.setDangerouslyAllow('on')
+    await setup.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const { result, execute } = await call(setup.runtime, tool, effects(setup))
     expect(result).toMatchObject({ outcome: 'error', error: { code: 'PERMISSION_DENIED' } })
     expect(execute).not.toHaveBeenCalled()
@@ -279,7 +279,7 @@ describe('what the switch never turns (policy.md: a matched deny stays denied)',
 describe('a workspace\'s switch, with no node switch beside it', () => {
   it('takes effect on its own', async () => {
     const setup = await node()
-    await setup.runtime.policy.setDangerouslyAllow('on')
+    await setup.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect(setup.runtime.policy.dangerouslyAllow()).toEqual({ mode: 'on', boundTo: setup.workspace, setByEarlierBuild: false })
     const { result } = await call(setup.runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])
     expect(result.outcome).toBe('ok')
@@ -329,7 +329,7 @@ describe('a registered workspace keeps its policy through the switch (review H1 
     const settings = settingsPath(started.config.nodeStateDirectory!, idOf(started.manager, 'child'))
     const before = readFileSync(settings, 'utf8')
 
-    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'on'])
+    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'on'], { ignoreWarning: false })
     const childState = (await byName(started.manager, 'child')).config
     // The switch writes its own file, keyed by the workspace's id, and never the settings the child's policy is read from.
     expect(readFileSync(settings, 'utf8')).toBe(before)
@@ -340,7 +340,7 @@ describe('a registered workspace keeps its policy through the switch (review H1 
     expect((await byName(started.manager, 'child')).runtime.policy.dangerouslyAllow()).toMatchObject({ mode: 'on' })
     await childRefuses(started)
 
-    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'off'])
+    await policyCommand((await byName(started.manager, 'child')).runtime, ['dangerously-allow', 'off'], { ignoreWarning: false })
     await stop(started)
     started = await start(root)
     expect((await byName(started.manager, 'child')).runtime.policy.dangerouslyAllow().mode).toBe('off')
@@ -394,7 +394,7 @@ describe('the audit of every use and every change', () => {
   it('records each use with its rule and redacted subject, reports it to Rings, and warns in the owner\'s log', async () => {
     const setup = await node()
     const { runtime, reports } = setup
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const { requestId } = await call(runtime, 'shell_exec', [{ kind: 'exec', command: 'rm', args: ['-rf', 'build', '--token=zq81-synthetic-secret'] }, { kind: 'write_path', path: setup.workspace }])
 
     const entries = await uses(runtime, requestId)
@@ -412,7 +412,7 @@ describe('the audit of every use and every change', () => {
     const { runtime, workspace } = setup
     await runtime.policy.apply(policy(value => { value.filesystem = { rules: [{ path: 'private', read: 'ask' }] } }))
     for (const index of [1, 2, 3]) writeFileSync(join(workspace, 'private', `more-${index}.md`), 'x\n')
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const walked = await run(runtime, 'fs_read_batch', { paths: ['private/notes.md', 'private/notes.md', 'private/more-1.md'] })
     expect(walked.result.outcome).toBe('ok')
     const subjects = (await uses(runtime, walked.requestId)).map(entry => (entry.args as { subject: string }).subject)
@@ -424,9 +424,9 @@ describe('the audit of every use and every change', () => {
     const setup = await node()
     const { runtime } = setup
     vi.spyOn(process.stdout, 'write').mockImplementation(() => true)
-    await policyCommand(runtime, ['dangerously-allow', 'on'])
+    await policyCommand(runtime, ['dangerously-allow', 'on'], { ignoreWarning: false })
     expect((await call(runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])).result.outcome).toBe('ok')
-    await policyCommand(runtime, ['dangerously-allow', 'off'])
+    await policyCommand(runtime, ['dangerously-allow', 'off'], { ignoreWarning: false })
     expect((await call(runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])).result.outcome).toBe('approval_required')
     const changes = (await auditEntries(runtime.actions, 200)).filter(entry => entry.tool === 'policy_dangerously_allow_changed' && entry.event === 'result')
     expect(changes.map(entry => entry.detail)).toEqual(['on', 'off'])
@@ -436,19 +436,19 @@ describe('the audit of every use and every change', () => {
     const setup = await node()
     let printed = ''
     vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
-    await policyCommand(setup.runtime, ['dangerously-allow', 'on'])
+    await policyCommand(setup.runtime, ['dangerously-allow', 'on'], { ignoreWarning: false })
     expect(printed).toContain('WARNING: dangerously allow is now on')
     expect(printed).toContain(`bound to the workspace root, or its mount when one is set (${setup.workspace})`)
     expect(printed).toContain(coversOf('on'))
     expect(printed).not.toContain('mount boundary still refuse')
     printed = ''
-    await policyCommand(setup.runtime, ['show'])
+    await policyCommand(setup.runtime, ['show'], { ignoreWarning: false })
     // The same sentence in show (review L15 of B23-B25).
     expect(printed).toContain('Dangerously allow  ON, bound to the workspace root, or its mount when one is set')
     expect(printed).toContain(coversOf('on'))
     expect(printed).not.toContain('every ask there')
     printed = ''
-    await policyCommand(setup.runtime, ['show', '--json'])
+    await policyCommand(setup.runtime, ['show', '--json'], { ignoreWarning: false })
     const shown = JSON.parse(printed) as { dangerouslyAllow: unknown; effective: Record<string, unknown> }
     expect(shown.dangerouslyAllow).toEqual({ mode: 'on', boundTo: setup.workspace, setByEarlierBuild: false })
     expect(Object.keys(shown.effective)).not.toContain('dangerouslyAllow')
@@ -459,7 +459,7 @@ describe('only the switch changes the switch (ruling H1e)', () => {
   it('keeps the switch through other policy writes and a clear, which never touch it', async () => {
     const setup = await node()
     const { runtime } = setup
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     await runtime.policy.apply(policy(value => { value.network.allow = ['example.com'] }))
     expect(runtime.policy.dangerouslyAllow().mode).toBe('on')
     expect(Object.keys(runtime.policy.stored())).not.toContain('dangerouslyAllow')
@@ -476,26 +476,26 @@ describe('only the switch changes the switch (ruling H1e)', () => {
     const file = join(setup.root, 'policy.json')
     for (const flags of [{ commands: true, fileReads: true }, { commands: false, fileReads: false }]) {
       writeFileSync(file, JSON.stringify({ ...emptyWorkspacePolicy(), network: { allow: ['example.com'] }, dangerouslyAllow: flags }))
-      expect((await policyCommand(setup.runtime, ['import', file])).exitCode).toBe(2)
+      expect((await policyCommand(setup.runtime, ['import', file], { ignoreWarning: false })).exitCode).toBe(2)
     }
     expect(written).toContain('The dangerously-allow switch is not part of a workspace policy')
     expect(setup.runtime.policy.stored().network.allow).toEqual([])
     expect(setup.runtime.policy.dangerouslyAllow().mode).toBe('off')
     writeFileSync(file, JSON.stringify({ ...emptyWorkspacePolicy(), network: { allow: ['example.com'] } }))
-    expect((await policyCommand(setup.runtime, ['import', file])).exitCode).toBe(0)
+    expect((await policyCommand(setup.runtime, ['import', file], { ignoreWarning: false })).exitCode).toBe(0)
   })
 
   it('refuses usage other than on, safe, or off', async () => {
     const setup = await node()
     vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
-    expect((await policyCommand(setup.runtime, ['dangerously-allow'])).exitCode).toBe(1)
-    expect((await policyCommand(setup.runtime, ['dangerously-allow', 'yes'])).exitCode).toBe(1)
+    expect((await policyCommand(setup.runtime, ['dangerously-allow'], { ignoreWarning: false })).exitCode).toBe(1)
+    expect((await policyCommand(setup.runtime, ['dangerously-allow', 'yes'], { ignoreWarning: false })).exitCode).toBe(1)
     expect(setup.runtime.policy.dangerouslyAllow().mode).toBe('off')
   })
 
   it('reads an unreadable switch file as off', async () => {
     const setup = await node()
-    await setup.runtime.policy.setDangerouslyAllow('on')
+    await setup.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     writeFileSync(dangerouslyAllowPath(setup.config), '{ not json')
     expect(setup.runtime.policy.dangerouslyAllow().mode).toBe('off')
     chmodSync(dangerouslyAllowPath(setup.config), 0o600)
@@ -543,7 +543,7 @@ describe('the switch\'s modes', () => {
     const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed.out += String(chunk); return true })
     const err = vi.spyOn(process.stderr, 'write').mockImplementation((chunk) => { printed.err += String(chunk); return true })
     try {
-      const { exitCode } = await policyCommand(runtime, ['dangerously-allow', ...argv])
+      const { exitCode } = await policyCommand(runtime, ['dangerously-allow', ...argv], { ignoreWarning: false })
       return { exitCode, ...printed }
     } finally {
       out.mockRestore()
@@ -556,7 +556,7 @@ describe('the switch\'s modes', () => {
     let printed = ''
     const out = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => { printed += String(chunk); return true })
     try {
-      await policyCommand(runtime, argv)
+      await policyCommand(runtime, argv, { ignoreWarning: false })
       return printed
     } finally {
       out.mockRestore()
@@ -622,7 +622,7 @@ describe('the switch\'s modes', () => {
   it('under safe, asks the floor ask of a call alone, and runs it once a person approves it, the plain ask lifted and audited', async () => {
     const setup = await moded()
     const { runtime } = setup
-    await runtime.policy.setDangerouslyAllow('safe')
+    await runtime.policy.setDangerouslyAllow('safe', { ignoreWarning: false })
     const execute = vi.fn(async () => 'executed')
     const prepare = vi.spyOn(runtime.registry().get('shell_exec'), 'prepare').mockReturnValue({ effects: [{ kind: 'exec', command: 'sudo', args: ['ls'] }, { kind: 'write_path', path: setup.workspace }], execute })
     const request = { requestId: `dangerously-mixed-${randomUUID()}`, tool: 'shell_exec', args: {} }
@@ -639,7 +639,7 @@ describe('the switch\'s modes', () => {
 
   it.each([[['true'], 'on'], [['false'], 'off'], [['on'], 'on'], [['safe'], 'safe'], [['off'], 'off']])('reads %j as %s', async (argv, mode) => {
     const setup = await node()
-    if (mode === 'off') await setup.runtime.policy.setDangerouslyAllow('on')
+    if (mode === 'off') await setup.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect((await switchTo(setup.runtime, argv)).exitCode).toBe(0)
     expect(setup.runtime.policy.dangerouslyAllow().mode).toBe(mode)
     expect((await changesOf(setup.runtime)).at(-1)).toBe(mode)
@@ -647,7 +647,7 @@ describe('the switch\'s modes', () => {
 
   it.each([[['on', 'command']], [['on', 'all']], [['command']], [['all']]])('refuses the earlier level %j in one line naming the new words, and nothing changes', async (argv) => {
     const setup = await node()
-    await setup.runtime.policy.setDangerouslyAllow('safe')
+    await setup.runtime.policy.setDangerouslyAllow('safe', { ignoreWarning: false })
     const before = readFileSync(dangerouslyAllowPath(setup.config), 'utf8')
     const refused = await switchTo(setup.runtime, argv)
     expect(refused).toEqual({ exitCode: 1, out: '', err: `buckle policy dangerously-allow takes on, safe, or off (true and false read as on and off), not ${JSON.stringify(argv.join(' '))}: the levels command and all are gone, and the switch is unchanged\n` })
@@ -723,7 +723,7 @@ describe('the switch\'s modes', () => {
 
   it('reads a version 2 file that names a mode it does not know as off', async () => {
     const setup = await node()
-    await setup.runtime.policy.setDangerouslyAllow('on')
+    await setup.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const stored = storedFile(setup)
     stored.workspaces[setup.runtime.workspaceId] = { mode: 'everything', changedAt: '2026-11-08T00:00:00.000Z' }
     writeFileSync(dangerouslyAllowPath(setup.config), JSON.stringify(stored))
@@ -735,12 +735,12 @@ describe('the switch\'s modes', () => {
     const setup = await moded()
     const { runtime, reports } = setup
     for (const mode of ['on', 'safe'] as const) {
-      await runtime.policy.setDangerouslyAllow(mode)
+      await runtime.policy.setDangerouslyAllow(mode, { ignoreWarning: false })
       const { requestId } = await call(runtime, 'fs_write', [{ kind: 'write_path', path: join(setup.workspace, 'note.md') }])
       expect((await uses(runtime, requestId)).map(entry => entry.args)).toEqual([{ tool: 'fs_write', rule: 'write_scope', subject: setup.workspace, mode }])
       expect(reports.filter(report => report.tool === 'policy_dangerously_allowed' && report.requestId === requestId).map(report => report.args)).toEqual([{ tool: 'fs_write', rule: 'write_scope', subject: setup.workspace, mode }])
     }
-    await runtime.policy.setDangerouslyAllow('off')
+    await runtime.policy.setDangerouslyAllow('off', { ignoreWarning: false })
     expect(await changesOf(runtime)).toEqual(['on', 'safe', 'off'])
   })
 
@@ -761,11 +761,11 @@ describe('the switch\'s modes', () => {
   it('shows each mode in policy show, in words and as JSON', async () => {
     const setup = await node()
     const { runtime, workspace } = setup
-    await runtime.policy.setDangerouslyAllow('safe')
+    await runtime.policy.setDangerouslyAllow('safe', { ignoreWarning: false })
     const safe = await policyOut(runtime, ['show'])
     expect(safe).toContain('Dangerously allow  SAFE, bound to the workspace root, or its mount when one is set')
     expect(safe).toContain(coversOf('safe'))
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     const on = await policyOut(runtime, ['show'])
     expect(on).toContain('Dangerously allow  ON, bound to the workspace root, or its mount when one is set')
     expect(on).toContain(coversOf('on'))

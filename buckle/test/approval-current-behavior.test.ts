@@ -409,11 +409,11 @@ describe('the dangerously-allow switch', () => {
     const floor = runtime.approvalService.waiting().filter(ask => ask.floor && ask.destructive).map(ask => ask.request.rule)
     expect(new Set(floor)).toEqual(new Set(['write_scope', 'destructive_command']))
 
-    await runtime.policy.setDangerouslyAllow('safe')
+    await runtime.policy.setDangerouslyAllow('safe', { ignoreWarning: false })
     for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'approval_required' })
     expect([existsSync(join(workspace, 'one', 'a.txt')), existsSync(join(workspace, 'build'))]).toEqual([true, true])
 
-    await runtime.policy.setDangerouslyAllow('on')
+    await runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     for (const [tool, args] of calls) expect(await call(tool, args)).toMatchObject({ outcome: 'ok' })
     expect([existsSync(join(workspace, 'one', 'a.txt')), existsSync(join(workspace, 'build'))]).toEqual([false, false])
   })

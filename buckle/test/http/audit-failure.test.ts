@@ -8,7 +8,8 @@ import { auditEntries } from '../support/action-log-writer.js'
 import { PLAIN_MARKS } from '../../common/domain/permission/decision.js'
 
 // B19: an audit log that will not take writes refuses the agent's calls it would have to record, with a 503 an
-// agent may read, makes readiness 503, and still lets the owner inspect and change the node and refusals answer.
+// agent may read, makes readiness 503, and still lets the owner inspect the node and refusals answer. The owner's change
+// stops too (APPROVAL-16), unless its request sends ignoreWarning=true in its query.
 
 const AGENT = 'audit-failure-agent-token'
 const ADMIN = 'audit-failure-admin-token'
@@ -131,7 +132,7 @@ describe('an audit log that will not take writes', () => {
     expect(await response.json()).toMatchObject({ error: { code: 'AUDIT_UNAVAILABLE' } })
   })
 
-  it('lets the owner inspect the node, applies the owner\'s changes, and still answers refusals', async () => {
+  it('lets the owner inspect the node, applies the owner\'s change sent with ignoreWarning=true alone, and still answers refusals', async () => {
     const { buckle } = await brokenAudit()
     await buckle.request('/v1/invoke', { method: 'POST', headers: headers(AGENT), body: read('marks-it') })
 
@@ -139,20 +140,40 @@ describe('an audit log that will not take writes', () => {
     expect(status.status).toBe(200)
     expect(await status.json()).toMatchObject({ audit: 'unavailable' })
     expect((await buckle.request('/setup/workspaces', { headers: headers(ADMIN) })).status).toBe(200)
-    // The owner's change is recorded through the log service, which never makes it wait.
-    const change = await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers(ADMIN) })
+    // The owner's change waits for its record, so it stops, naming the query that makes it anyway.
+    const stopped = await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers(ADMIN) })
+    expect(stopped.status).toBe(503)
+    expect((await stopped.json() as { error: string }).error).toContain('ignoreWarning=true')
+    const change = await buckle.request(`${buckle.setup('policy')}?ignoreWarning=true`, { method: 'DELETE', headers: headers(ADMIN) })
     expect(change.status).toBe(200)
     expect((await buckle.request('/v1/manifest', { headers: headers('not-the-agent-token') })).status).toBe(401)
     expect((await buckle.request(buckle.setup('status'), { headers: headers('not-the-admin-token') })).status).toBe(401)
   })
 
-  it('still decides on the setup approvals POST, whose decision record goes through the log service', async () => {
+  it('registers a workspace on a broken node log only with ignoreWarning=true, which the transport\'s attempt follows too', async () => {
+    const { state, root, environment } = nodeEnvironment('buckle-audit-registry-', { BUCKLE_AUTH_TOKEN: AGENT, BUCKLE_EXPERIMENTAL_ADMIN_HTTP: 'true', BUCKLE_ADMIN_TOKEN: ADMIN, BUCKLE_PACKS: 'fs' })
+    const buckle = await createBuckleHttp({ environment })
+    nodes.push(buckle)
+    mkdirSync(join(root, 'child'))
+    const nodeLog = join(state, 'actions.jsonl')
+    rmSync(nodeLog, { force: true })
+    mkdirSync(nodeLog)
+    const register = (query: string) => buckle.request(`/setup/workspaces${query}`, { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ id: 'child', name: 'child', dir: join(root, 'child') }) })
+    expect((await register('')).status).toBe(503)
+    expect((await buckle.request('/setup/workspaces', { headers: headers(ADMIN) })).status).toBe(200)
+    expect((await register('?ignoreWarning=true')).status).toBe(201)
+  })
+
+  it('decides on the setup approvals POST sent with ignoreWarning=true alone, its decision record going through the log service', async () => {
     const { buckle } = await brokenAudit()
     const [request] = (await buckle.runtime.approvals.ask({
       tool: 'fs_write', sessionId: 's1', call: { arguments: { path: '/outside/fixture.txt', content: 'fixture' }, cwd: buckle.config.cwd, description: 'Write fixture.txt', effects: ['write /outside/fixture.txt'], complete: true },
       asks: [{ kind: 'ask', ...PLAIN_MARKS, rule: 'write_scope', subject: '/outside', reason: 'outside', offeredScopes: ['once'] }],
     })).requests
-    const denied = await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: headers(ADMIN), body: JSON.stringify({ token: request!.token, approved: false, scope: 'once' }) })
+    const body = JSON.stringify({ token: request!.token, approved: false, scope: 'once' })
+    expect((await buckle.request(buckle.setup('approvals'), { method: 'POST', headers: headers(ADMIN), body })).status).toBe(503)
+    expect(buckle.runtime.approvalService.pending()).toHaveLength(1)
+    const denied = await buckle.request(`${buckle.setup('approvals')}?ignoreWarning=true`, { method: 'POST', headers: headers(ADMIN), body })
     expect(denied.status).toBe(200)
     expect(buckle.runtime.approvalService.pending()).toEqual([])
   })

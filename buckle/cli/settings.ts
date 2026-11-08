@@ -59,7 +59,7 @@ function restartLine(restart: RestartRoute): string {
  * write needs it. Each run
  * is audited in the node's action log, a write with the key and value it set.
  */
-export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string }): Promise<CliResult> {
+export async function settingsCommand(input: { argv: string[]; environment: NodeJS.ProcessEnv; environmentFile: string; cwd: string; home?: string; ignoreWarning?: boolean }): Promise<CliResult> {
   const file = resolve(input.cwd, input.environmentFile)
   const fileText = existsSync(file) ? readFileSync(file, 'utf8') : null
   const merged = { ...buckleVariables(fileText), ...input.environment }
@@ -71,7 +71,7 @@ export async function settingsCommand(input: { argv: string[]; environment: Node
   }
   return auditOperation({
     actions: createFileActionLog(actionsPath({ stateDirectory: stateDirectoryOf(merged) })),
-    workspaceId: NODE_SCOPE, tool: 'cli_settings', sessionId: 'local-owner',
+    workspaceId: NODE_SCOPE, tool: 'cli_settings', sessionId: 'local-owner', ignoreWarning: input.ignoreWarning === true,
     isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
     operation: () => dispatch({ ...input, file, fileText, merged, restart }),
   })

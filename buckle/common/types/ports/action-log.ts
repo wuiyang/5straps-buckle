@@ -97,19 +97,23 @@ export interface ActionLogEntry {
   detail?: string
 }
 
+/** The owner's choice for a change whose record cannot be written: stop it (false), or run it with the record queued. */
+export interface OwnerRecordChoice { ignoreWarning: boolean }
+
 export interface ActionLog {
   /** Resolves once the entry is durable; a rejection means execution must not continue. */
   record(entry: ActionLogEntry): Promise<void>
   /**
    * Hands the entry to the process's log service, masked and named now, and returns at once; never throws. For a record
-   * nothing waits on: a refusal, the result of work already done, and the owner's own change.
+   * nothing waits on: a refusal, the result of work already done, and an owner's change the owner runs anyway.
    */
   append(entry: ActionLogEntry, options?: AppendOptions): void
   /**
    * The attempt of the owner's own change: recorded before the change runs while OWNER_RECORDS_WAIT (log-budget.ts) holds,
-   * so a broken log stops it, and appended otherwise. Rejects only where it is recorded.
+   * so a broken log stops it, and appended where it does not or the owner ignores the warning. Rejects only where it is
+   * recorded, with an OwnerRecordError.
    */
-  ownerAttempt(entry: ActionLogEntry): Promise<void>
+  ownerAttempt(entry: ActionLogEntry, choice: OwnerRecordChoice): Promise<void>
   /** The entries as one batch, one append and one sync, in their order; resolves once all are durable, or rejects for all. */
   recordMany(entries: readonly ActionLogEntry[]): Promise<void>
   recoverInterrupted(): Promise<number>

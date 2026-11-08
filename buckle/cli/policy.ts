@@ -9,6 +9,7 @@ import { auditOperation } from '../common/services/audit/audit-operation.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
 import type { BuckleRuntime, DangerouslyAllowState } from '../common/services/workspaces/workspace-runtime.js'
 import type { DangerouslyAllowMode } from '../common/types/ports/dangerously-allow-store.js'
+import type { OwnerRecordChoice } from '../common/types/ports/action-log.js'
 import { ownMount, withPolicy, WorkspaceSettingsInvalidError, type FloorEntries, type SettingSource } from '../common/services/workspaces/workspace-settings.js'
 import { coversOf, EARLIER_BUILD, helpLines, MODES_HELP } from './dangerously-allow-words.js'
 import type { CommandTarget } from './target.js'
@@ -54,7 +55,7 @@ An allow glob must cover the whole line; a deny glob covers every line starting 
  * Edits the policy of the workspace the command targets (D83 addendum (7)), in its workspace.json. Each change is
  * compiled whole before it is written, so a bad pattern never lands.
  */
-export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Promise<CliResult> {
+export async function policyCommand(runtime: BuckleRuntime, argv: string[], choice: OwnerRecordChoice): Promise<CliResult> {
   const [action, ...rest] = argv
   const current = (): WorkspacePolicy => runtime.policy.stored()
 
@@ -119,7 +120,7 @@ export async function policyCommand(runtime: BuckleRuntime, argv: string[]): Pro
         return { exitCode: 0 }
       }
       case 'dangerously-allow':
-        return await dangerouslyAllow({ runtime, argv: rest })
+        return await dangerouslyAllow({ runtime, argv: rest, choice })
       case 'help':
       case '--help':
       case '-h':
@@ -155,10 +156,10 @@ function exitCodeOf(error: PolicyError | UsageError): number {
  * reads it at every call. It takes a mode, `true` and `false` as the owner wrote them; anything else,
  * an earlier build's level among it, is refused in one line before anything changes.
  */
-async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[] }): Promise<CliResult> {
+async function dangerouslyAllow(input: { runtime: BuckleRuntime; argv: string[]; choice: OwnerRecordChoice }): Promise<CliResult> {
   const mode = modeNamed(input.argv)
   const target = input.runtime
-  await target.policy.setDangerouslyAllow(mode)
+  await target.policy.setDangerouslyAllow(mode, input.choice)
   const now = target.policy.dangerouslyAllow()
   if (now.mode === 'off') process.stdout.write(`Dangerously allow is off for workspace ${target.workspaceName()}: asks wait for a person again.\n`)
   else process.stdout.write(`WARNING: dangerously allow is now ${now.mode} for workspace ${target.workspaceName()}, ${DANGEROUSLY_ALLOW_SCOPE} (${now.boundTo}). ${coversOf(now.mode)} Each use is audited as policy_dangerously_allowed; deny rules still refuse.\n`)
@@ -182,14 +183,14 @@ function modeNamed(argv: readonly string[]): DangerouslyAllowMode {
  * For a workspace whose stored policy will not load: `show`, `export`, `remove` and `clear` work on its workspace.json
  * alone, so the owner can repair it with `buckle policy`. Every other action refuses. Audited in the node's log.
  */
-export function repairStoredPolicy(input: { workspaces: WorkspaceManager; target: CommandTarget; cwd: string; argv: string[]; failure: StoredPolicyError }): Promise<CliResult> {
+export function repairStoredPolicy(input: { workspaces: WorkspaceManager; target: CommandTarget; cwd: string; argv: string[]; failure: StoredPolicyError; ignoreWarning: boolean }): Promise<CliResult> {
   let id: string
   try { id = input.workspaces.target({ ...input.target, cwd: input.cwd }) } catch (error) {
     if (error instanceof WorkspaceError) return Promise.resolve(failed(error.message))
     throw error
   }
   return auditOperation({
-    actions: input.workspaces.nodeActions, workspaceId: id, tool: 'cli_policy', sessionId: 'local-owner',
+    actions: input.workspaces.nodeActions, workspaceId: id, tool: 'cli_policy', sessionId: 'local-owner', ignoreWarning: input.ignoreWarning,
     isSuccessful: result => result.exitCode === 0, operation: () => repairStoredPolicyAction({ ...input, id }),
   })
 }

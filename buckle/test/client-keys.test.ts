@@ -285,3 +285,20 @@ describe('the node\'s own key and the admin-only state (review L11 of B23-B25)',
     expect(() => loadNodeKey(file)).toThrow(`${file} does not hold this node's Ed25519 signing key`)
   })
 })
+
+describe('buckle client --ignore-warning (APPROVAL-16)', () => {
+  it('asks the node, in the signed query, to make a change its log cannot record', async () => {
+    const environment = { BUCKLE_CLIENT_DIR: join(scratch(), 'device') }
+    capture()
+    expect((await clientCommand(['keygen'], environment)).exitCode).toBe(0)
+    expect((await clientCommand(['trust', 'http://127.0.0.1:4320', 'node-1', generateSigningKey().publicKey], environment)).exitCode).toBe(0)
+    const sent: URL[] = []
+    vi.stubGlobal('fetch', vi.fn(async (url: URL) => { sent.push(new URL(url)); return new Response(JSON.stringify({ session: { id: 's-1' } }), { status: 200 }) }))
+    try {
+      expect((await clientCommand(['request', 'POST', 'http://127.0.0.1:4320/setup/policy'], environment, { ignoreWarning: true })).exitCode).toBe(0)
+      expect((await clientCommand(['session', 'open', 'http://127.0.0.1:4320'], environment, { ignoreWarning: true })).exitCode).toBe(0)
+      expect((await clientCommand(['session', 'open', 'http://127.0.0.1:4320'], environment)).exitCode).toBe(0)
+    } finally { vi.unstubAllGlobals() }
+    expect(sent.map(url => url.searchParams.get('ignoreWarning'))).toEqual(['true', 'true', null])
+  })
+})

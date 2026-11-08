@@ -11,6 +11,8 @@ import type { TerminalOptions } from './cli/terminal-consumer.js'
 import { closeActionLogWriter } from './common/adapters/action-log/action-log-writer.js'
 import { closeLogService } from './common/adapters/action-log/log-service.js'
 import { configureOwnerOnlyCheck, SKIP_OWNER_ONLY_FLAG } from './common/adapters/file-modes.js'
+import { IGNORE_WARNING_FLAG } from './common/domain/global-flags.js'
+import { ignoreWarningRefused } from './cli/ignore-warning.js'
 import { loadConfig, stateDirectoryOf, unreadWorkspaceDefaults, type NodeConfig } from './common/runtime/config.js'
 import { loadEnvironmentFile, nodeLocation, refuseForeignEnvironmentFile } from './common/runtime/environment.js'
 import { recordEnvironmentFile } from './common/runtime/environment-files.js'
@@ -43,15 +45,19 @@ interface Shutdown {
  * Flags any command takes, before or after its command word, up to a `--`: each is taken out here, so no
  * command's own parser sees it (`buckle policy` refuses a flag it does not know).
  */
-export function takeGlobalFlags(argv: readonly string[]): { argv: string[]; skipOwnerOnlyCheck: boolean } {
+export function takeGlobalFlags(argv: readonly string[]): { argv: string[] } & GlobalFlags {
   const terminator = argv.indexOf('--')
   const end = terminator === -1 ? argv.length : terminator
   const flags = argv.slice(0, end)
   return {
-    argv: [...flags.filter(argument => argument !== SKIP_OWNER_ONLY_FLAG), ...argv.slice(end)],
+    argv: [...flags.filter(argument => argument !== SKIP_OWNER_ONLY_FLAG && argument !== IGNORE_WARNING_FLAG), ...argv.slice(end)],
     skipOwnerOnlyCheck: flags.includes(SKIP_OWNER_ONLY_FLAG),
+    ignoreWarning: flags.includes(IGNORE_WARNING_FLAG),
   }
 }
+
+/** `ignoreWarning`: the owner's command runs where its record cannot be written (APPROVAL-16). */
+interface GlobalFlags { skipOwnerOnlyCheck: boolean; ignoreWarning: boolean }
 
 export function selectMode(argv: readonly string[]): Mode {
   const [command, ...rest] = argv
@@ -65,6 +71,7 @@ export async function main(argv: readonly string[]): Promise<number | undefined>
   const global = takeGlobalFlags(argv)
   configureOwnerOnlyCheck({ skip: global.skipOwnerOnlyCheck })
   const mode = selectMode(global.argv)
+  if (global.ignoreWarning && (!('argv' in mode) || mode.kind === 'cp')) return refuseCommand(new Error(ignoreWarningRefused(mode.kind)))
   if (!('argv' in mode)) {
     if (mode.kind === 'serve') return serve(mode.options, global.skipOwnerOnlyCheck)
     // Help needs no configuration, and starts nothing (finding 24 of the workspace-model Phase 1 review).
@@ -135,22 +142,23 @@ function serviceOutput(parsed: ServeOptions): LogOutput {
   return output
 }
 
-async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: { skipOwnerOnlyCheck: boolean }): Promise<number> {
+async function runCommand(mode: Extract<Mode, { argv: string[] }>, global: GlobalFlags): Promise<number> {
+  const { ignoreWarning } = global
   // Before the file is loaded, so `settings show` can tell the file's values from the shell's.
-  if (mode.kind === 'init') return (await runInitCommand(mode.argv)).exitCode
-  if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv)).exitCode
+  if (mode.kind === 'init') return (await runInitCommand(mode.argv, { ignoreWarning })).exitCode
+  if (mode.kind === 'settings') return (await runSettingsCommand(mode.argv, { ignoreWarning })).exitCode
   // A person's device, which needs no node: its own key and the node it signs for.
-  if (mode.kind === 'client') return (await clientCommand(mode.argv)).exitCode
+  if (mode.kind === 'client') return (await clientCommand(mode.argv, process.env, { ignoreWarning })).exitCode
   // A copy to or from a node's workspace needs no node here either, and reads no buckle.env: its token is the shell's or
   // a file's, never the local node's settings.
   if (mode.kind === 'cp') return (await copyCommand(mode.argv)).exitCode
   // Before the file is loaded, so no credential is in this process's environment when it runs systemctl, launchctl, or
   // schtasks.exe.
-  if (mode.kind === 'service') return (await runServiceCommand(mode.argv, { skipOwnerOnlyCheck: global.skipOwnerOnlyCheck })).exitCode
+  if (mode.kind === 'service') return (await runServiceCommand(mode.argv, { skipOwnerOnlyCheck: global.skipOwnerOnlyCheck, ignoreWarning })).exitCode
   // Nothing the environment holds may refuse these: `buckle --version` is the first check anyone runs.
   const answered = answerWithoutConfiguration(mode.argv)
   if (answered) return answered.exitCode
-  return (await runCli({ argv: mode.argv, config: configureProcess('cli').config })).exitCode
+  return (await runCli({ argv: mode.argv, config: configureProcess('cli').config, ignoreWarning })).exitCode
 }
 
 function configureProcess(kind: ServiceKind | 'cli', output: LogOutput = 'stderr'): { config: NodeConfig; logging: LoggerRoot; console?: ConsoleWriter } {

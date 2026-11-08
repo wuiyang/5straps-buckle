@@ -9,7 +9,8 @@ import { mapFailures, notFound } from '../../../common/server/utils/errors.js'
 import { defineOperationHandler } from '../../../common/server/utils/operation.js'
 import { useServices } from '../../../common/server/utils/services.js'
 import { NODE_LEVEL, namedWorkspace, targetId } from '../../../common/server/utils/target.js'
-import { withRegistryAudit, withSetupAudit } from './audit.js'
+import { isMutation } from '../../../common/server/utils/guards.js'
+import { ignoresWarning, withRegistryAudit, withSetupAudit } from './audit.js'
 import { REGISTRY_REFUSED, registryTransportTool, requireAdmin, requireAdminHttp, requireNodeAdminCredential, SETUP_REFUSED, type AdminAccess } from './guards.js'
 
 interface SetupCall {
@@ -109,12 +110,14 @@ export function defineRegistryHandler(definition: { access: AdminAccess; handler
       const services = useServices(event)
       const actions = await services.getNodeActions()
       const actorId = scope.context.actor ?? ''
+      const ignoreWarning = ignoresWarning(event)
       const call: RegistryCall = {
         event, workspaces: await services.getWorkspaces(), views: services.getSetupViews(),
-        audited: (input, run) => withRegistryAudit(actions, { ...input, actorId }, run),
+        audited: (input, run) => withRegistryAudit(actions, { ...input, actorId, ignoreWarning }, run),
         body: () => readJson(event, SETUP_BODY_LIMIT), query: () => Object.fromEntries(event.url.searchParams),
       }
-      return mapFailures(() => withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, attempt: 'owner', actorId }, async () => definition.handler(call)))
+      // A read waits for no record, as a setup read writes no attempt; ignoring the warning queues a change's attempt too.
+      return mapFailures(() => withTransportAudit(actions, { tool: registryTransportTool(event), workspaceId: NODE_LEVEL, attempt: isMutation(event) && !ignoreWarning ? 'owner' : 'queued', actorId }, async () => definition.handler(call)))
     },
   })
 }

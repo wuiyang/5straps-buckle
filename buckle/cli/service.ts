@@ -55,6 +55,8 @@ export interface ServiceCommandInput {
   signal?: AbortSignal
   /** Whether the command line carried --skip-owner-only-check, which `install` writes into the definition. */
   skipOwnerOnlyCheck?: boolean
+  /** Whether the command line carried --ignore-warning, which runs the command where its record cannot be written. */
+  ignoreWarning?: boolean
   /** Whether `out` is a terminal, where `logs` renders the stored lines for a person (the CLI display slice, C6). */
   stdoutIsTerminal?: boolean
 }
@@ -99,7 +101,7 @@ export async function serviceCommand(input: ServiceCommandInput): Promise<CliRes
   const context: ServiceContext = { location, manager: input.manager(location), input, out, err }
   const run = () => dispatch(context, action, rest)
   if (!AUDITED.has(action) || !existsSync(location.stateDirectory)) return run()
-  return auditOperation({ actions: createFileActionLog(actionsPath(location)), workspaceId: NODE_SCOPE, tool: 'cli_service', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, describe: result => result.detail, operation: run })
+  return auditOperation({ actions: createFileActionLog(actionsPath(location)), workspaceId: NODE_SCOPE, tool: 'cli_service', sessionId: 'local-owner', ignoreWarning: input.ignoreWarning === true, isSuccessful: result => result.exitCode === 0, describe: result => result.detail, operation: run })
 }
 
 /** Each subcommand's options, read before anything runs, so a word it does not take is refused first. */

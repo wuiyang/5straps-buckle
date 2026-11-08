@@ -10,6 +10,7 @@ import { homeDirectory, isDriveRoot, typedPath, WHOLE_DRIVE } from '../common/do
 import { realPathOf } from '../common/runtime/real-path.js'
 import { saveEndingLine, unsavedApproval, unsavedDenial } from '../common/adapters/approval/grant-save-question.js'
 import { SAVE_FAILED_EXIT } from './exit-codes.js'
+import { IGNORE_WARNING_QUERY } from '../common/domain/global-flags.js'
 
 export interface CliResult {
   exitCode: number
@@ -40,6 +41,9 @@ const USAGE = `Usage:
   buckle client approve <node-url> <token> [--deny] [--scope once|session|always] --workspace <name>
                                       Show the whole action an ask is, as the pinned node signed it, and decide on exactly that
 
+--ignore-warning asks the node to make a change its audit log cannot record (ignoreWarning=true in the signed query);
+without it the node refuses the change, 503.
+
 The key and the pinned nodes live in BUCKLE_CLIENT_DIR (an absolute path), ~/.5straps/client by default, owner-only.
 A request is signed only for the node pinned for the URL typed, never for what the URL says it is.`
 
@@ -49,16 +53,17 @@ A request is signed only for the node pinned for the URL typed, never for what t
  * never needs the node's settings, and no private key leaves it: a node, or Rings relaying for one,
  * only ever sees the public key and signatures.
  */
-export async function clientCommand(argv: string[], environment: NodeJS.ProcessEnv = process.env, options: { confirm?: Confirm | null } = {}): Promise<CliResult> {
+export async function clientCommand(argv: string[], environment: NodeJS.ProcessEnv = process.env, options: { confirm?: Confirm | null; ignoreWarning?: boolean } = {}): Promise<CliResult> {
   const [verb, ...rest] = argv
+  const ignoreWarning = options.ignoreWarning === true
   try {
     if (verb === 'keygen') return keygen(rest, environment)
     if (verb === 'key') return showKey(environment)
-    if (verb === 'request') return await request(rest, environment)
-    if (verb === 'session') return await session(rest, environment)
+    if (verb === 'request') return await request(rest, environment, ignoreWarning)
+    if (verb === 'session') return await session(rest, environment, ignoreWarning)
     if (verb === 'trust') return trust(rest, environment)
     if (verb === 'approvals') return await approvals(rest, environment)
-    if (verb === 'approve') return await approve(rest, environment, options.confirm === undefined ? terminalConfirm({ input: process.stdin, output: process.stdout }) : options.confirm)
+    if (verb === 'approve') return await approve(rest, environment, options.confirm === undefined ? terminalConfirm({ input: process.stdin, output: process.stdout }) : options.confirm, ignoreWarning)
   } catch (error) {
     if (error instanceof ClientError || error instanceof OwnerOnlyError) return fail(error.message)
     throw error
@@ -116,22 +121,24 @@ function describe(key: { publicKey: string; keyId: string }): string {
   return `Public key:  ${key.publicKey}\nFingerprint: ${key.keyId}\nOn the node: buckle keys enroll ${key.publicKey} --purpose setup|approval --workspace <name>|node --label <this device>\n`
 }
 
-async function request(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
+async function request(argv: string[], environment: NodeJS.ProcessEnv, ignoreWarning: boolean): Promise<CliResult> {
   const { values, positionals } = parseArgs({ args: argv, options: { body: { type: 'string' }, purpose: { type: 'string' }, node: { type: 'string' }, session: { type: 'string' } }, allowPositionals: true })
   const [method, target] = positionals
   if (!method || !target || positionals.length !== 2) throw new ClientError(USAGE)
   const url = new URL(target)
-  const response = await send({ environment, method, url, body: values.body ?? '', purpose: purposeOf(values.purpose, url.pathname), ...(values.node ? { node: values.node } : {}), ...(values.session ? { session: values.session } : {}) })
+  const response = await send({ environment, method, url, body: values.body ?? '', purpose: purposeOf(values.purpose, url.pathname), ignoreWarning, ...(values.node ? { node: values.node } : {}), ...(values.session ? { session: values.session } : {}) })
   return report(response, await response.text())
 }
 
 /**
  * Sends one request, signed with this device's key for the node pinned for the URL (its serverId and
  * its key's fingerprint), the workspace, method, path and exact body. An unpinned URL, or a --node
- * that is not the pinned one, signs nothing.
+ * that is not the pinned one, signs nothing. `ignoreWarning` asks, in the signed query, for a change the node's log
+ * cannot record to be made anyway (APPROVAL-16).
  */
-async function send(input: { environment: NodeJS.ProcessEnv; method: string; url: URL; body: string; purpose: SignedRequestPurpose; node?: string; session?: string }): Promise<Response> {
+async function send(input: { environment: NodeJS.ProcessEnv; method: string; url: URL; body: string; purpose: SignedRequestPurpose; node?: string; session?: string; ignoreWarning?: boolean }): Promise<Response> {
   const method = input.method.toUpperCase()
+  if (input.ignoreWarning) input.url.searchParams.set(IGNORE_WARNING_QUERY, 'true')
   // A path that names no workspace is the node level, which a node-scoped key signs for (D85, Q15).
   const workspace = decodeURIComponent(/^\/workspaces\/([^/]+)\//.exec(input.url.pathname)?.[1] ?? 'node')
   if (workspace.length > SIGNED_WORKSPACE_MAX) throw new ClientError(`The workspace name is longer than the ${SIGNED_WORKSPACE_MAX} characters a signed request names; name the workspace by its id, as buckle workspace list prints it. Nothing was signed.`)
@@ -163,18 +170,18 @@ function setupUrl(node: string, workspace: string | undefined, path: string): UR
   return new URL(`${prefix}/setup/${path}`, new URL(node).origin)
 }
 
-async function session(argv: string[], environment: NodeJS.ProcessEnv): Promise<CliResult> {
+async function session(argv: string[], environment: NodeJS.ProcessEnv, ignoreWarning: boolean): Promise<CliResult> {
   const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' } }, allowPositionals: true })
   const [action, node, id] = positionals
   if (action === 'open' && node && positionals.length === 2) {
-    const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'sessions'), body: '', purpose: 'buckle-setup' })
+    const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'sessions'), body: '', purpose: 'buckle-setup', ignoreWarning })
     const text = await response.text()
     if (response.ok) process.stdout.write(`${(JSON.parse(text) as { session: { id: string } }).session.id}\n`)
     else process.stderr.write(`HTTP ${response.status} ${text}\n`)
     return { exitCode: response.ok ? 0 : 1 }
   }
   if (action === 'close' && node && id && positionals.length === 3) {
-    const response = await send({ environment, method: 'DELETE', url: setupUrl(node, values.workspace, `sessions/${encodeURIComponent(id)}`), body: '', purpose: 'buckle-setup', session: id })
+    const response = await send({ environment, method: 'DELETE', url: setupUrl(node, values.workspace, `sessions/${encodeURIComponent(id)}`), body: '', purpose: 'buckle-setup', session: id, ignoreWarning })
     return report(response, await response.text())
   }
   throw new ClientError(USAGE)
@@ -354,7 +361,7 @@ async function approvals(argv: string[], environment: NodeJS.ProcessEnv): Promis
   return { exitCode: 0 }
 }
 
-async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: Confirm | null): Promise<CliResult> {
+async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: Confirm | null, ignoreWarning: boolean): Promise<CliResult> {
   const { values, positionals } = parseArgs({ args: argv, options: { workspace: { type: 'string' }, deny: { type: 'boolean' }, scope: { type: 'string' } }, allowPositionals: true })
   const [node, token] = positionals
   if (!node || !token || positionals.length !== 2) throw new ClientError(USAGE)
@@ -378,7 +385,7 @@ async function approve(argv: string[], environment: NodeJS.ProcessEnv, confirm: 
     }
   }
   const body = JSON.stringify({ token, approved: !values.deny, scope, challenge: found.digest })
-  const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId })
+  const response = await send({ environment, method: 'POST', url: setupUrl(node, values.workspace, 'approvals'), body, purpose: 'buckle-approval', node: pin.serverId, ignoreWarning })
   const text = await response.text()
   const reported = report(response, text)
   const warning = unsavedWarning({ text, scope })

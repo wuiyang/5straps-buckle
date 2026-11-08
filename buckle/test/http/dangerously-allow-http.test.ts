@@ -32,13 +32,13 @@ describe('the dangerously-allow switch on the admin face', () => {
     const boundTo = buckle.config.cwd
     expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'off', boundTo, setByEarlierBuild: false })
     // The owner's local CLI switched it on.
-    await buckle.runtime.policy.setDangerouslyAllow('on')
+    await buckle.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'on', boundTo, setByEarlierBuild: false })
     expect(await (await buckle.request(buckle.setup('policy'), { headers: headers() })).json()).toMatchObject({ dangerouslyAllow: { mode: 'on' } })
     // At safe, as `buckle policy dangerously-allow safe` sets it.
-    await buckle.runtime.policy.setDangerouslyAllow('safe')
+    await buckle.runtime.policy.setDangerouslyAllow('safe', { ignoreWarning: false })
     expect((await status(buckle)).dangerouslyAllow).toEqual({ mode: 'safe', boundTo, setByEarlierBuild: false })
-    await buckle.runtime.policy.setDangerouslyAllow('on')
+    await buckle.runtime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
 
     const refused = await put(buckle, { ...policy, dangerouslyAllow: { commands: false, fileReads: false } })
     expect(refused.status).toBe(409)
@@ -53,7 +53,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     expect((await buckle.request(buckle.setup('policy'), { method: 'DELETE', headers: headers() })).status).toBe(200)
     expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('on')
 
-    await buckle.runtime.policy.setDangerouslyAllow('off')
+    await buckle.runtime.policy.setDangerouslyAllow('off', { ignoreWarning: false })
     expect((await put(buckle, { ...policy, dangerouslyAllow: { commands: true, fileReads: true } })).status).toBe(409)
     expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('off')
   })
@@ -69,7 +69,7 @@ describe('the dangerously-allow switch on the admin face', () => {
     const smuggled = await buckle.request('/setup/workspaces', { method: 'POST', headers: headers(), body: JSON.stringify({ ...child, id: 'other', dir: join(buckle.root, 'other'), policy: { ...policy, dangerouslyAllow: { commands: true, fileReads: true } } }) })
     expect(smuggled.status).toBe(409)
     const childRuntime = (await (await buckle.services.getWorkspaces()).resolve(await buckle.idOf('child'))).runtime
-    await childRuntime.policy.setDangerouslyAllow('on')
+    await childRuntime.policy.setDangerouslyAllow('on', { ignoreWarning: false })
     expect((await status(buckle, '/workspaces/child/setup/status')).dangerouslyAllow).toEqual({ mode: 'on', boundTo: '/workspace', setByEarlierBuild: false })
     expect(buckle.runtime.policy.dangerouslyAllow().mode).toBe('off')
   })

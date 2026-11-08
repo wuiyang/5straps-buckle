@@ -103,13 +103,18 @@ describe('selectMode', () => {
 
 describe('takeGlobalFlags', () => {
   it.each([
-    [['--skip-owner-only-check', 'policy', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
-    [['policy', 'show', '--skip-owner-only-check'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
-    [['policy', '--skip-owner-only-check', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true }],
-    [['serve', '--skip-owner-only-check'], { argv: ['serve'], skipOwnerOnlyCheck: true }],
-    [['fs', 'read', 'notes.txt'], { argv: ['fs', 'read', 'notes.txt'], skipOwnerOnlyCheck: false }],
+    [['--skip-owner-only-check', 'policy', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true, ignoreWarning: false }],
+    [['policy', 'show', '--skip-owner-only-check'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true, ignoreWarning: false }],
+    [['policy', '--skip-owner-only-check', 'show'], { argv: ['policy', 'show'], skipOwnerOnlyCheck: true, ignoreWarning: false }],
+    [['serve', '--skip-owner-only-check'], { argv: ['serve'], skipOwnerOnlyCheck: true, ignoreWarning: false }],
+    [['fs', 'read', 'notes.txt'], { argv: ['fs', 'read', 'notes.txt'], skipOwnerOnlyCheck: false, ignoreWarning: false }],
     // After a `--` every argument is the command's own, the flag's spelling included.
-    [['fs', 'write', '--', '--skip-owner-only-check'], { argv: ['fs', 'write', '--', '--skip-owner-only-check'], skipOwnerOnlyCheck: false }],
+    [['fs', 'write', '--', '--skip-owner-only-check'], { argv: ['fs', 'write', '--', '--skip-owner-only-check'], skipOwnerOnlyCheck: false, ignoreWarning: false }],
+    // APPROVAL-16: the owner's command runs where its record cannot be written.
+    [['--ignore-warning', 'grants', 'revoke', 'g-1'], { argv: ['grants', 'revoke', 'g-1'], skipOwnerOnlyCheck: false, ignoreWarning: true }],
+    [['grants', 'revoke', 'g-1', '--ignore-warning'], { argv: ['grants', 'revoke', 'g-1'], skipOwnerOnlyCheck: false, ignoreWarning: true }],
+    [['--ignore-warning', 'settings', 'set', 'a', 'b', '--skip-owner-only-check'], { argv: ['settings', 'set', 'a', 'b'], skipOwnerOnlyCheck: true, ignoreWarning: true }],
+    [['fs', 'write', '--', '--ignore-warning'], { argv: ['fs', 'write', '--', '--ignore-warning'], skipOwnerOnlyCheck: false, ignoreWarning: false }],
   ])('reads %j as %j', (argv, taken) => {
     expect(takeGlobalFlags(argv)).toEqual(taken)
   })
@@ -119,15 +124,15 @@ describe('main', () => {
   it('takes --skip-owner-only-check before or after the command word, so buckle policy never sees it', async () => {
     for (const argv of [['--skip-owner-only-check', 'policy', 'show'], ['policy', 'show', '--skip-owner-only-check']]) {
       expect(await main(argv)).toBe(5)
-      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config })
+      expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['policy', 'show'], config, ignoreWarning: false })
       expect(entry.configureOwnerOnlyCheck).toHaveBeenLastCalledWith({ skip: true })
     }
     expect(await main(['--skip-owner-only-check', 'init', '--yes'])).toBe(3)
-    expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])
+    expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'], { ignoreWarning: false })
     // Fix brief 6, item 11: buckle service install writes it into the definition, so it reaches the command, wherever it stands.
     for (const argv of [['--skip-owner-only-check', 'service', 'install'], ['service', 'install', '--skip-owner-only-check']]) {
       expect(await main(argv)).toBe(6)
-      expect(entry.runServiceCommand).toHaveBeenLastCalledWith(['install'], { skipOwnerOnlyCheck: true })
+      expect(entry.runServiceCommand).toHaveBeenLastCalledWith(['install'], { skipOwnerOnlyCheck: true, ignoreWarning: false })
     }
     expect(await main(['--skip-owner-only-check', 'serve'])).toBeUndefined()
     expect(entry.initializeCommon).toHaveBeenCalledWith(expect.objectContaining({ role: 'server' }))
@@ -176,14 +181,31 @@ describe('main', () => {
     }
   })
 
+  it('hands --ignore-warning to the owner\'s commands, and refuses it where no owner\'s record is written', async () => {
+    expect(await main(['grants', 'revoke', 'g-1', '--ignore-warning'])).toBe(5)
+    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: ['grants', 'revoke', 'g-1'], config, ignoreWarning: true })
+    expect(await main(['--ignore-warning', 'init', '--yes'])).toBe(3)
+    expect(entry.runInitCommand).toHaveBeenLastCalledWith(['--yes'], { ignoreWarning: true })
+    expect(await main(['settings', 'set', 'a', 'b', '--ignore-warning'])).toBe(4)
+    expect(entry.runSettingsCommand).toHaveBeenLastCalledWith(['set', 'a', 'b'], { ignoreWarning: true })
+    expect(await main(['service', 'install', '--ignore-warning'])).toBe(6)
+    expect(entry.runServiceCommand).toHaveBeenLastCalledWith(['install'], { skipOwnerOnlyCheck: false, ignoreWarning: true })
+    const stderr = vi.spyOn(process.stderr, 'write').mockReturnValue(true)
+    for (const argv of [['serve', '--ignore-warning'], ['mcp', '--ignore-warning'], ['cp', 'a', 'w:b', '--ignore-warning']]) {
+      expect(await main(argv)).toBe(1)
+      expect(String(stderr.mock.calls.at(-1)?.[0])).toContain('--ignore-warning')
+    }
+    expect(entry.initializeCommon).not.toHaveBeenCalled()
+  })
+
   it('runs init, settings, and service before, and without, the environment file and the node config', async () => {
     expect(await main(['init', '--yes'])).toBe(3)
-    expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'])
+    expect(entry.runInitCommand).toHaveBeenCalledWith(['--yes'], { ignoreWarning: false })
     expect(await main(['settings', 'show'])).toBe(4)
-    expect(entry.runSettingsCommand).toHaveBeenCalledWith(['show'])
+    expect(entry.runSettingsCommand).toHaveBeenCalledWith(['show'], { ignoreWarning: false })
     // Phase 3: no credential is in the environment when buckle service starts systemctl or schtasks.exe.
     expect(await main(['service', 'install', '--now'])).toBe(6)
-    expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'], { skipOwnerOnlyCheck: false })
+    expect(entry.runServiceCommand).toHaveBeenCalledWith(['install', '--now'], { skipOwnerOnlyCheck: false, ignoreWarning: false })
     expect(entry.loadEnvironmentFile).not.toHaveBeenCalled()
     expect(entry.loadConfig).not.toHaveBeenCalled()
   })
@@ -492,9 +514,9 @@ describe('main', () => {
 
   it('hands every other argument list to the CLI with the loaded config', async () => {
     expect(await main(['fs', 'read', 'notes.txt'])).toBe(5)
-    expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config })
+    expect(entry.runCli).toHaveBeenCalledWith({ argv: ['fs', 'read', 'notes.txt'], config, ignoreWarning: false })
     expect(await main([])).toBe(5)
-    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: [], config })
+    expect(entry.runCli).toHaveBeenLastCalledWith({ argv: [], config, ignoreWarning: false })
     expect(entry.loadEnvironmentFile).toHaveBeenCalledTimes(2)
     // The CLI builds its own command-scoped runtime; main starts no service runtime for it.
     expect(entry.initializeCommon).not.toHaveBeenCalled()

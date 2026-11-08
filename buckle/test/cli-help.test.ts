@@ -69,7 +69,7 @@ describe('buckle policy --help', () => {
 
   it.each(['--help', '-h', 'help'])('prints the usage to stdout and exits 0 for %s', async (flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, [flag])
+    const result = await policyCommand(runtime, [flag], { ignoreWarning: false })
     expect(result.exitCode).toBe(0)
     expect(io.out()).toContain('buckle policy dangerously-allow on|safe|off')
     expect(io.out().replace(/\s+/g, ' ')).toContain(MODES_HELP)
@@ -78,7 +78,7 @@ describe('buckle policy --help', () => {
 
   it('still exits 1 and prints the usage to stderr for an unknown subcommand', async () => {
     const io = captured()
-    const result = await policyCommand(runtime, ['not-a-subcommand'])
+    const result = await policyCommand(runtime, ['not-a-subcommand'], { ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('buckle policy show')
     expect(io.out()).toBe('')
@@ -101,7 +101,7 @@ describe('buckle policy refuses a flag it does not know', () => {
     [['export', '--json'], '--json'],
   ])('refuses %j with the usage and exit 1, naming %s', async (argv, flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv)
+    const result = await policyCommand(runtime, argv, { ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}\n`)
     expect(io.err()).toContain('buckle policy show')
@@ -114,7 +114,7 @@ describe('buckle policy refuses a flag it does not know', () => {
     [['dangerously-allow', '--bogus'], '--bogus'],
   ])('refuses %j, an action with flags of its own, with the usage and exit 1, naming %s', async (argv, flag) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv)
+    const result = await policyCommand(runtime, argv, { ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain(`buckle policy ${argv[0]} does not know the flag ${flag}\n`)
     expect(io.err()).toContain('buckle policy show')
@@ -125,7 +125,7 @@ describe('buckle policy refuses a flag it does not know', () => {
     const { config, stored, workspaces, file, before } = await storedNode('buckle-flag')
     const failure = new StoredPolicyError({ file, reason: 'a test failure', stored })
     const io = captured()
-    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['clear', '--force'], failure })
+    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['clear', '--force'], failure, ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('buckle policy clear does not know the flag --force')
     expect(readFileSync(file, 'utf8')).toBe(before)
@@ -153,7 +153,7 @@ describe('buckle policy refuses words past its one argument', () => {
     [['allow-command', 'echo', 'it\'s'], `'echo it'\\''s'`],
   ])('refuses %j with the usage and exit 1, quoting it as %s', async (argv, quoted) => {
     const io = captured()
-    const result = await policyCommand(runtime, argv)
+    const result = await policyCommand(runtime, argv, { ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain(`buckle policy ${argv[0]} takes one argument, not ${argv.length - 1}; to pass a glob or path of several words, quote it as one: buckle policy ${argv[0]} ${quoted}\n`)
     expect(io.err()).toContain('buckle policy show')
@@ -173,7 +173,7 @@ describe('buckle policy refuses words past its one argument', () => {
     const { config, stored, workspaces, file, before } = await storedNode('buckle-words')
     const failure = new StoredPolicyError({ file, reason: 'a test failure', stored })
     const io = captured()
-    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['remove', 'curl', '*'], failure })
+    const result = await repairStoredPolicy({ workspaces, target: {}, cwd: config.cwd, argv: ['remove', 'curl', '*'], failure, ignoreWarning: false })
     expect(result.exitCode).toBe(1)
     expect(io.err()).toContain('quote it as one: buckle policy remove \'curl *\'')
     expect(readFileSync(file, 'utf8')).toBe(before)

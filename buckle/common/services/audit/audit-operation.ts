@@ -1,13 +1,18 @@
 import { randomUUID } from 'node:crypto'
 import type { ActionLog, ActionLogEntry } from '../../types/ports/action-log.js'
 
-/** An owner's operation between its attempt and its result entry; the attempt waits only as OWNER_RECORDS_WAIT says. */
+/**
+ * An owner's operation between its attempt and its result entry; the attempt waits as OWNER_RECORDS_WAIT says, unless
+ * `ignoreWarning` hands it to the log service.
+ */
 export async function auditOperation<T>(input: {
   actions: ActionLog
   workspaceId: string
   tool: string
   sessionId: string
   operation: () => T | Promise<T>
+  /** The owner's choice where the attempt cannot be recorded (APPROVAL-16): run the operation anyway. */
+  ignoreWarning: boolean
   isSuccessful?: (result: T) => boolean
   /** A line for the result entry, from what the operation returned: what a widened approval covers. */
   describe?: (result: T) => string | undefined
@@ -19,7 +24,7 @@ export async function auditOperation<T>(input: {
   const entry = { auditId, workspaceId: input.workspaceId, tool: input.tool, sessionId: input.sessionId,
     requestId: auditId, at: new Date().toISOString(), effects: [], args: {}, durationMs: 0,
   }
-  await input.actions.ownerAttempt({ ...entry, event: 'attempt', outcome: 'started' })
+  await input.actions.ownerAttempt({ ...entry, event: 'attempt', outcome: 'started' }, { ignoreWarning: input.ignoreWarning })
   let value: T
   try { value = await input.operation() }
   catch (error) {

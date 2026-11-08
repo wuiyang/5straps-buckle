@@ -36,6 +36,18 @@ export class AuditUnavailableError extends Error implements ServiceFailure {
   }
 }
 
+/** The code an owner's change carries where its record could not be written, so each face can say how to run it anyway. */
+export const OWNER_RECORD_UNAVAILABLE = 'OWNER_RECORD_UNAVAILABLE'
+
+/** The owner's own change did not run: its attempt could not be recorded (APPROVAL-16). `cause` is the write's own error. */
+export class OwnerRecordError extends Error implements ServiceFailure {
+  readonly code = OWNER_RECORD_UNAVAILABLE
+  readonly status = 503
+  constructor(options?: ErrorOptions) {
+    super('Buckle could not write the record of this change to its audit log, so the change did not run', options)
+  }
+}
+
 /**
  * `workspaceName`: the name of the log's own workspace, read as each entry is handed in, so a rename shows: every entry
  * of that workspace carries it beside its UUID. An entry of another workspace, or one naming its own, is left as it is.
@@ -84,9 +96,12 @@ export function createFileActionLog(filePath: string, options: { lockDeadlineMs?
     record: entry => log.recordMany([entry]),
     // Its id now, kept across every attempt the service makes at writing it, so a retry never writes it twice.
     append: (entry, appendOptions) => service().append(destination, withinSizeLimit(withEntryId(prepared(entry))), appendOptions),
-    async ownerAttempt(entry) {
-      if (OWNER_RECORDS_WAIT) return log.record(entry)
-      log.append(entry)
+    async ownerAttempt(entry, choice) {
+      if (!OWNER_RECORDS_WAIT || choice.ignoreWarning) return log.append(entry)
+      try { await log.record(entry) } catch (error) {
+        if (error instanceof AuditUnavailableError) throw new OwnerRecordError({ cause: error.cause })
+        throw error
+      }
     },
     async recordMany(entries) {
       if (entries.length === 0) return

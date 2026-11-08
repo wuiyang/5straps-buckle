@@ -20,10 +20,11 @@ export const LOG_BATCH_LIMIT = 10
 
 /**
  * Whether the owner's own changes (cli_* commands, the dangerously-allow switch, setup and registry changes) wait for their
- * attempt's record. False: a broken log never stops one. True: each attempt is recorded before its change runs, so a broken
- * log stops the change, as it stops an agent's call.
+ * attempt's record. True: each attempt is recorded before its change runs, so a broken log stops the change and names the
+ * error, unless the owner ignores the warning (--ignore-warning, or ignoreWarning=true in a setup request's query), which
+ * runs it and hands the record to the log service. False: every one runs, its record handed to the log service.
  */
-export const OWNER_RECORDS_WAIT: boolean = false
+export const OWNER_RECORDS_WAIT: boolean = true
 
 /** How long a closing process waits for its logs to drain; what is left is counted on stderr. */
 export const LOG_CLOSE_DEADLINE_MS = 2_000

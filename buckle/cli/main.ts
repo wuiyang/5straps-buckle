@@ -20,6 +20,8 @@ import { saveEndingLine, settleUnsaved, unsavedOf, type SaveEnding, type Unsaved
 import type { CoreDecisionInput, CoreDecisionReceipt } from '../common/services/approvals/core-approval-api.js'
 import type { DecisionBody } from '../common/types/ports/approval-backend.js'
 import { APPROVAL_REQUIRED_EXIT, SAVE_FAILED_EXIT } from './exit-codes.js'
+import { ignoreWarningRefused, stoppedForRecord } from './ignore-warning.js'
+import { OwnerRecordError } from '../common/adapters/action-log/file-action-log.js'
 import { floorSubjectPath } from '../common/domain/permission/rules/destructive-path-rule.js'
 import { SCRIPT_CALL_NOTE } from '../common/domain/describe-call.js'
 import { WorkspaceError, type WorkspaceManager } from '../common/services/workspaces/workspace-manager.js'
@@ -66,24 +68,35 @@ export interface CliResult {
  * as the process entry checks it, a node setting a shell sets refusing before anything is written, and none of the
  * workspace defaults, which the node reads from its file alone, read from the shell (a bad one there is no refusal).
  */
-export function runInitCommand(argv: string[]): Promise<CliResult> {
+export function runInitCommand(argv: string[], options: OwnerChoice = {}): Promise<CliResult> {
   // Asking for the usage sets nothing up, so it reads no configuration and leaves no entry in the log.
   if (asksForHelp(argv)) return runInit(argv)
-  return auditOperation({ actions: createFileActionLog(actionsPath(loadConfig(process.env, process.platform, { file: null, caller: process.env, defaultsFromFileAlone: true }))), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) })
+  return stopsForRecord(auditOperation({ actions: createFileActionLog(actionsPath(loadConfig(process.env, process.platform, { file: null, caller: process.env, defaultsFromFileAlone: true }))), workspaceId: NODE_SCOPE, tool: 'cli_init', sessionId: 'local-owner', ignoreWarning: options.ignoreWarning === true, isSuccessful: result => result.exitCode === 0, operation: () => runInit(argv) }))
 }
 
-export function runSettingsCommand(argv: string[]): Promise<CliResult> {
-  return settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd() })
+export function runSettingsCommand(argv: string[], options: OwnerChoice = {}): Promise<CliResult> {
+  return stopsForRecord(settingsCommand({ argv, environment: process.env, environmentFile: environmentFilePath(), cwd: process.cwd(), ignoreWarning: options.ignoreWarning === true }))
+}
+
+/** `ignoreWarning`: the owner's --ignore-warning, which runs a command whose record cannot be written (APPROVAL-16). */
+interface OwnerChoice { ignoreWarning?: boolean }
+
+/** A command that stopped because its record could not be written answers as such, with the error and how to run it anyway. */
+async function stopsForRecord(command: Promise<CliResult>): Promise<CliResult> {
+  try { return await command } catch (error) {
+    if (error instanceof OwnerRecordError) return stoppedForRecord(error)
+    throw error
+  }
 }
 
 /**
  * `buckle service` (Phase 3 of the workspace-model slice): before buckle.env is read, so the programs it starts, the
  * service manager's own, find no credential in its environment.
  */
-export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?: boolean } = {}): Promise<CliResult> {
+export function runServiceCommand(argv: string[], options: { skipOwnerOnlyCheck?: boolean } & OwnerChoice = {}): Promise<CliResult> {
   const environment = process.env
-  return serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}), stdoutIsTerminal: process.stdout.isTTY === true,
-    manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) })
+  return stopsForRecord(serviceCommand({ argv, environment, platform: process.platform, cwd: process.cwd(), run: runProcess, mainScript: builtMainPath(), ...(options.skipOwnerOnlyCheck ? { skipOwnerOnlyCheck: true } : {}), ignoreWarning: options.ignoreWarning === true, stdoutIsTerminal: process.stdout.isTTY === true,
+    manager: location => serviceManagerFor({ platform: process.platform, environment, run: runProcess, location }) }))
 }
 
 /** Help and the version, which need no configuration; null for every other command. */
@@ -105,10 +118,12 @@ export type { ChooseSave, Confirm } from './terminal-consumer.js'
 interface OwnerPrompts { confirm: Confirm | null; chooseSave: ChooseSave | null }
 
 /** `cwd`: the directory the command means where it names no workspace (D83 (4)); the process's own by default. */
-export async function runCli(input: { argv: string[]; config: NodeConfig; confirm?: Confirm | null; chooseSave?: ChooseSave | null; cwd?: string }): Promise<CliResult> {
+export async function runCli(input: { argv: string[]; config: NodeConfig; confirm?: Confirm | null; chooseSave?: ChooseSave | null; cwd?: string } & OwnerChoice): Promise<CliResult> {
   const answered = answerWithoutConfiguration(input.argv)
   if (answered) return answered
   const [command = '', ...rest] = input.argv
+  const ignoreWarning = input.ignoreWarning === true
+  if (ignoreWarning && runsTool(command, rest)) return fail(ignoreWarningRefused(command))
   const terminal = { input: process.stdin, output: process.stdout }
   const prompts: OwnerPrompts = {
     confirm: input.confirm !== undefined ? input.confirm : terminalConfirm(terminal),
@@ -125,9 +140,10 @@ export async function runCli(input: { argv: string[]; config: NodeConfig; confir
   common.bindRequester(cli.requestCli)
   common.owner.onClose('waiters', 'terminal questions', () => cli.close())
   try {
-    return await runCliCommand({ common, config: input.config, command, rest, prompts, cwd: input.cwd ?? process.cwd() })
+    return await runCliCommand({ common, config: input.config, command, rest, prompts, cwd: input.cwd ?? process.cwd(), ignoreWarning })
   } catch (error) {
     if (isStateBusy(error)) return fail(error.message)
+    if (error instanceof OwnerRecordError) return stoppedForRecord(error)
     throw error
   } finally {
     await common.owner.close().catch((error: unknown) => {
@@ -136,7 +152,7 @@ export async function runCli(input: { argv: string[]; config: NodeConfig; confir
   }
 }
 
-async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; cwd: string }): Promise<CliResult> {
+async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; cwd: string; ignoreWarning: boolean }): Promise<CliResult> {
   const { common, command } = input
   try {
     await common.start()
@@ -153,19 +169,19 @@ async function runCliCommand(input: { common: BuckleCommon; config: NodeConfig; 
     let taken: ReturnType<typeof takeTarget>
     try { taken = takeTarget(input.rest) } catch (error) {
       // An owner's command the log keeps is refused before any workspace's log is known: the node's records it.
-      if (error instanceof TargetError) return AUDITED_COMMANDS.includes(command) ? nodeAudited({ workspaces, command }, () => refused(command, error.message)) : fail(error.message)
+      if (error instanceof TargetError) return AUDITED_COMMANDS.includes(command) ? nodeAudited({ ...input, workspaces }, () => refused(command, error.message)) : fail(error.message)
       throw error
     }
     // Q9 (Phase 1b item 4): an approver's command defaults to the workspace holding the current directory; --all widens to every online one.
     const named = taken.target.workspace !== undefined || taken.target.dir !== undefined
     // --all widens an approver's command over every online workspace, so it cannot also name one (fix brief 4, finding 33).
     if (APPROVER_COMMANDS.includes(command) && named && taken.argv.includes('--all')) {
-      return nodeAudited({ workspaces, command }, () => fail('Name one workspace with --workspace or --dir, or pass --all, not both'))
+      return nodeAudited({ ...input, workspaces }, () => fail('Name one workspace with --workspace or --dir, or pass --all, not both'))
     }
     if (APPROVER_COMMANDS.includes(command) && !named) {
       if (taken.argv.includes('--all')) return runApproverCommand({ ...input, workspaces, rest: taken.argv.filter(word => word !== '--all') })
       if (!holdsCurrentDirectory(workspaces, input.cwd)) {
-        return nodeAudited({ workspaces, command }, () => fail('No workspace holds the current directory. Name one with --workspace <name>, or pass --all to answer every online workspace.'))
+        return nodeAudited({ ...input, workspaces }, () => fail('No workspace holds the current directory. Name one with --workspace <name>, or pass --all to answer every online workspace.'))
       }
     }
     return runWorkspaceCommand({ ...input, workspaces, target: taken.target, rest: taken.argv })
@@ -191,10 +207,15 @@ const AUDITED_COMMANDS: readonly string[] = Object.freeze(['approve', 'approvals
 /** The commands that run no tool. Any other command resolves to one: `call`, and every `<group> <verb>`. */
 const OWNER_COMMANDS: readonly string[] = Object.freeze(['tools', 'manifest', 'skills', 'log', ...AUDITED_COMMANDS])
 
+/** Whether the command runs a tool, whose call never runs without its own record. */
+function runsTool(command: string, rest: readonly string[]): boolean {
+  return !OWNER_COMMANDS.includes(command) && !NODE_COMMANDS.includes(command) && !isBrowserClose(command, [...rest])
+}
+
 /** A command on the node, audited in the node's own log. */
-async function runNodeCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; cwd: string }): Promise<CliResult> {
+async function runNodeCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; cwd: string; ignoreWarning: boolean }): Promise<CliResult> {
   const { workspaces, command, rest } = input
-  return auditOperation({ actions: workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
+  return auditOperation({ actions: workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${command}`, sessionId: 'local-owner', ignoreWarning: input.ignoreWarning, isSuccessful: result => result.exitCode === 0, describe: result => result.detail,
     operation: () => (command === 'keys' ? keysCommand({ config: input.config, workspaces, argv: rest }) : workspaceRegistryCommand({ config: input.config, workspaces, argv: rest, cwd: input.cwd })),
   })
 }
@@ -203,7 +224,7 @@ async function runNodeCommand(input: { workspaces: WorkspaceManager; config: Nod
  * A command on the workspace it targets (D83 (4)): `--workspace <name>`, else `--dir <path>`, else the directory it runs
  * in. `buckle policy` opens an offline workspace too, so its owner can set it up before it serves.
  */
-async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; prompts: OwnerPrompts; cwd: string }): Promise<CliResult> {
+async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; target: CommandTarget; prompts: OwnerPrompts; cwd: string; ignoreWarning: boolean }): Promise<CliResult> {
   const { workspaces, command } = input
   let runtime: BuckleRuntime
   try {
@@ -213,7 +234,7 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
   } catch (error) {
     // A node whose state cannot be read reports no verdict; a workspace that was not named, or is not served, is a refusal like any other (fix brief 4, finding 31).
     if (command === 'check-url' && !(error instanceof WorkspaceError)) return checkUrlUnreadable(error)
-    if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ workspaces, target: input.target, cwd: input.cwd, argv: input.rest, failure: error })
+    if (command === 'policy' && error instanceof StoredPolicyError) return repairStoredPolicy({ workspaces, target: input.target, cwd: input.cwd, argv: input.rest, failure: error, ignoreWarning: input.ignoreWarning })
     // An owner's command the log keeps is refused before any workspace's log is known: the node's records it (finding 31).
     if (error instanceof WorkspaceError) return AUDITED_COMMANDS.includes(command) ? nodeAudited(input, () => refused(command, error.message)) : fail(error.message)
     throw error
@@ -226,7 +247,7 @@ async function runWorkspaceCommand(input: { workspaces: WorkspaceManager; config
  * answered in the workspace whose queue holds it, and audited in its log; a node with one online workspace reads as a
  * single one; the list and the watch over several are audited in the node's log.
  */
-async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }): Promise<CliResult> {
+async function runApproverCommand(input: { workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; ignoreWarning: boolean }): Promise<CliResult> {
   const runtimes = await onlineRuntimes(input.workspaces)
   if (runtimes.length === 0) return nodeAudited(input, () => fail('No workspace is online, so none has asks waiting. Name one with --workspace <name>, or serve one again with buckle workspace enable <name>.'))
   // A watch follows the online workspaces as they change, however many there are at its start (finding 10).
@@ -247,8 +268,8 @@ async function runApproverCommand(input: { workspaces: WorkspaceManager; config:
 }
 
 /** An owner's command that no one workspace answers, audited in the node's log: an attempt, and its result. */
-function nodeAudited(input: { workspaces: WorkspaceManager; command: string }, operation: () => CliResult | Promise<CliResult>): Promise<CliResult> {
-  return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${input.command}`, sessionId: 'local-owner', isSuccessful: result => result.exitCode === 0, operation })
+function nodeAudited(input: { workspaces: WorkspaceManager; command: string; ignoreWarning: boolean }, operation: () => CliResult | Promise<CliResult>): Promise<CliResult> {
+  return auditOperation({ actions: input.workspaces.nodeActions, workspaceId: NODE_SCOPE, tool: `cli_${input.command}`, sessionId: 'local-owner', ignoreWarning: input.ignoreWarning, isSuccessful: result => result.exitCode === 0, operation })
 }
 
 /**
@@ -276,15 +297,15 @@ function holderOfAsk(runtimes: BuckleRuntime[], token: string): BuckleRuntime | 
 }
 
 /** A command on one workspace's runtime, audited in its log where the command is one the owner's log keeps. */
-async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }): Promise<CliResult> {
+async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; ignoreWarning: boolean }): Promise<CliResult> {
   const { runtime, workspaces, command } = input
-  const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, prompts: input.prompts }
+  const context: CommandContext = { runtime, workspaces, config: input.config, command, rest: input.rest, prompts: input.prompts, ignoreWarning: input.ignoreWarning }
   try {
     const browserClose = isBrowserClose(command, input.rest)
     if (!AUDITED_COMMANDS.includes(command) && !browserClose) return await dispatchRuntimeCommand(context)
     // A check that answers denied or asks has still succeeded; only bad input failed.
     const isSuccessful = command === 'check-url' ? (result: CliResult) => result.exitCode !== CHECK_URL_BAD_INPUT : (result: CliResult) => result.exitCode === 0 || result.applied === true
-    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: browserClose ? 'cli_browser_close' : `cli_${command}`, sessionId: 'local-owner', isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
+    return await auditOperation({ actions: runtime.actions, workspaceId: runtime.workspaceId, tool: browserClose ? 'cli_browser_close' : `cli_${command}`, sessionId: 'local-owner', ignoreWarning: input.ignoreWarning, isSuccessful, describe: result => result.detail, annotate: result => (result.judge ? { judge: result.judge } : undefined),
       operation: () => dispatchRuntimeCommand(context),
     })
   } finally {
@@ -294,7 +315,7 @@ async function runOnWorkspace(input: { runtime: BuckleRuntime; workspaces: Works
   }
 }
 
-interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts }
+interface CommandContext { runtime: BuckleRuntime; workspaces: WorkspaceManager; config: NodeConfig; command: string; rest: string[]; prompts: OwnerPrompts; ignoreWarning: boolean }
 
 function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliResult> {
   const { runtime, command, rest } = input
@@ -311,7 +332,7 @@ function dispatchRuntimeCommand(input: CommandContext): CliResult | Promise<CliR
   if (command === 'history') return historyCommand(runtime, rest)
   if (command === 'log') return printLog(runtime, rest)
   if (command === 'plugin') return plugin(runtime, rest)
-  if (command === 'policy') return policyCommand(runtime, rest)
+  if (command === 'policy') return policyCommand(runtime, rest, { ignoreWarning: input.ignoreWarning })
   throw new Error(`No handler for the owner command ${command}`)
 }
 
@@ -385,6 +406,8 @@ ${helpLines({ text: `DANGEROUS: allow asks in the workspace without a person; ${
 
   buckle --version                   Print the version
   buckle <command> --skip-owner-only-check   Warn about, rather than refuse, a state directory or key file other users can reach
+  buckle <command> --ignore-warning   Run an owner's command whose record the audit log cannot take, which otherwise
+                                     stops naming the error (exit 6); its record is still tried. Never a tool call
 `)
   return { exitCode: 0 }
 }
