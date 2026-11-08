@@ -28,7 +28,7 @@ Every file goes through `common/adapters/json-file-store.ts`: a write is an atom
 and an update holds a cross-process lock in `<file>.lock.sqlite`, waiting up to 5 seconds before
 answering `STATE_BUSY`. The action log's writer worker takes the same lock (`withFileTurn`) around
 each batch's tail check, append, sync, and pending update; a batch tried again first reads back,
-by `entryId`, from where its failed attempt began. `approval-service.ts` is the single answerer
+by `entryId`, from where its failed attempt on that file began, as best effort. `approval-service.ts` is the single answerer
 every route calls. It polls the queue every 400 ms, so an answer `buckle approve` writes from
 another process wakes the waiting call. One session may keep 50 asks waiting and one workspace 500.
 

@@ -47,7 +47,8 @@ It refuses a call to an offline workspace, takes up a change to the workspace's 
 (a stat per call), and hands the call to the invoker (`common/services/invocation/invoker.ts`):
 
 1. The attempt is written to `actions.jsonl` by the process's one writer worker
-   (`common/adapters/action-log/`), and the call waits for it. If that write fails, nothing runs.
+   (`common/adapters/action-log/`), and the call waits for it. If that write fails, or 256 writes
+   already wait, nothing runs.
 2. A re-send of a call already running or finished is answered with that call's outcome.
 3. A tool the policy switched off is refused.
 4. The tool's Zod schema parses the arguments, and the tool declares its effects: paths to read

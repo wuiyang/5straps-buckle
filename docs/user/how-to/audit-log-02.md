@@ -6,18 +6,23 @@
 
 One worker thread in each Buckle process writes its logs and syncs each entry to disk; a call waits
 for its entry before it goes on. A slow or stalled disk holds the calls waiting on their entries,
-and the node still answers everything else, `GET /health/ready` included. Readiness gives a failing
-log one second to prove it takes writes again; a log that does not answer in time still counts as
-failing. A node that stops waits 2 seconds for the entries in flight, then logs
+and the node still answers everything else, `GET /health/ready` included. While 256 writes wait, a
+new call does not run, and is refused with `STATE_BUSY`, to retry. Readiness probes every failing
+log at once and gives each one second to prove it takes writes again; a log that does not answer
+in time, or has not answered its last probe yet, still counts as failing.
+
+A node that stops waits 2 seconds for the entries in flight, then logs
 `Action log writes left unwritten at close` with their count. An attempt left unwritten stopped its
 call, and a call whose result was left unwritten is marked `interrupted` the next time a Buckle
-process opens the log.
+process opens the log. A disk that stopped answering can hold the writer in the kernel: Buckle then
+logs that the writer is held in a disk call, and the process exits once the disk answers, or when
+the service manager ends it.
 
 Each write takes the log's lock, `actions.jsonl.lock.sqlite` beside it, so two Buckle processes
 never write into each other's lines. A call that waits more than 5 seconds for another process's
 lock does not run, and is refused with `STATE_BUSY`, to retry. A line that a process left half
-written when it died is ended and kept, and `buckle log` skips it. A write that failed partway and
-is tried again reads back what it already wrote, by each line's `entryId`, and leaves those lines out.
+written when it died is ended and kept, and `buckle log` skips it. Each line carries its own
+`entryId`. A write that fails is not tried again: an attempt that fails stops its call.
 
 ## Sending it elsewhere
 
