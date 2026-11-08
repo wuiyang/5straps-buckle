@@ -79,7 +79,7 @@ const PINNED: PinnedLine[] = [
   { page: 'judge-05.md', what: 'the B30 item in the list of what no stage is shown', text: 'or by a scope or name that is not URL-safe (`npx @scope/x#y`);' },
   { page: 'judge-05.md', what: 'the B30 clause of the runner reason', text: 'a version part naming a folder (`npx eslint@.`) and a scope or name that is not URL-safe;' },
   { page: 'workspaces-02.md', what: 'the approval.forms row', text: `| ${code('approval.forms')} | ${either(['on', 'off'])}: an MCP host's [form answers](approvals-06.md) decide its asks | ${defaults.forms ? 'on' : 'off'} |` },
-  { page: 'workspaces-02.md', what: 'the approval.sessionIdleMs row', text: `| ${code('approval.sessionIdleMs')} | milliseconds without activity before its [sessions end](approvals-07.md), or ${code('0')} for never at idle | ${code(String(defaults.sessionIdleMs))} |` },
+  { page: 'workspaces-02.md', what: 'the approval.sessionIdleMs row', text: `| ${code('approval.sessionIdleMs')} | milliseconds a [session](approvals-07.md) lasts without activity of its own, or ${code('0')} for never at idle | ${code(String(defaults.sessionIdleMs))} |` },
   { page: 'workspaces-02.md', what: 'the approval.judge row', text: `| ${code('approval.judge')} | the [decision AI](judge.md), an optional model check: ${either(JUDGE_MODES)} | ${code(defaults.judge)} |` },
   { page: 'workspaces-02.md', what: 'the approval.judgeProvider row', text: `| ${code('approval.judgeProvider')} | the thorough model's provider: ${either(JUDGE_PROVIDERS)} | ${code(defaults.judgeProvider)} |` },
   { page: 'workspaces-02.md', what: 'the approval.judgeModel row', text: `| ${code('approval.judgeModel')} | the thorough model's name, as your AI gateway serves it | ${code(defaults.judgeModel)} |` },

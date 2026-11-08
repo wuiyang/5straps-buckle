@@ -9,7 +9,7 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
 
 - **`ApprovalBackend`:** core calls `open(host)`, which answers with the backend's
   capabilities, then `submit(asks, context)` for one call's asks, `notify(events)` when an ask
-  leaves the queue (`session_ended` where [its session ended](approval-backend-06.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
+  leaves the queue (`session_ended` where [its session ended](approval-backend-07.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
   backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, whose asks

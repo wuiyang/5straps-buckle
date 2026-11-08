@@ -29,14 +29,14 @@ whatever the [policy](policy.md) denies.
 
 - `once` covers this call alone: the same caller, session, tool, and arguments. Retrying that
   call spends it; unspent, it lapses ten minutes after the decision.
-- `session` lasts for the caller's session, until revoked or [the session
-  ends](approvals-07.md): at 15 minutes with no activity, or as its MCP server closes. Every CLI
-  call shares `cli`; each `buckle mcp` process has its own; HTTP MCP shares `mcp`; the HTTP API
-  uses `context.sessionId`, or `rpc`.
+- `session` lasts for the caller's session, until revoked or [it
+  ends](approvals-07.md): after 15 minutes without activity of its own, or as its MCP server
+  closes. Every CLI call shares `cli`; each `buckle mcp` process has its own; each HTTP MCP token
+  its own, under `mcp`; the HTTP API uses `context.sessionId`, or `rpc`.
 - `always` lasts until revoked, for every caller in the workspace.
 
 Only the owner's authority records a `session` or `always` grant: every local route below,
-`buckle mcp` elicitation included, and over HTTP only the admin face.
+MCP forms included, and otherwise over HTTP only the admin face.
 
 A path grant covers its directory and all below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern
@@ -106,7 +106,7 @@ returns `approval_required`, and the agent sends the same call again once decide
 session](approvals-07.md): the call then answers `APPROVAL_UNANSWERED`. An HTTP caller's
 `context.approvalWait` overrides it:
 `{"mode":"none"}` returns at once, `{"mode":"finite","ms":60000}` holds a minute.
-`buckle workspace set approvalWaitMs 60000` changes it from the next call.
+`buckle workspace set approvalWaitMs 60000` sets it.
 
 ## Dangerously allow
 

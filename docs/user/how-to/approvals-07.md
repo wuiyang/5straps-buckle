@@ -1,42 +1,46 @@
 # Approvals: session end
 
 Buckle, the local permission node that runs an AI agent's tool calls, ends a session's approvals
-once the workspace goes quiet, or once the MCP server they were given through closes. This page
+once the session goes quiet, or once the MCP server they were given through closes. This page
 covers when that happens, what ends, and how to change the window. [Approvals](approvals.md)
 covers the scopes.
 
 ## When a session ends
 
-A `session` grant lasts until you revoke it with `buckle grants revoke <id>`, or until its
-session ends:
+A session is its id under the caller that asked in it: an HTTP call's token, `mcp-stdio`, or the
+CLI's owner. A `session` grant lasts until you revoke it with `buckle grants revoke <id>`, or
+until its session ends:
 
 - **`buckle mcp`:** each process has a session of its own, `stdio:<id>`, which ends as the process
   exits, whether its client closed it or the node stopped it. Other `buckle mcp` processes on the
   workspace keep theirs, and a restarted MCP server starts a fresh one.
-- **HTTP MCP:** `/mcp` keeps no session per client, so its clients share `mcp`. It ends as `buckle
-  serve` stops, and again as serve opens the workspace: at its start, so a serve killed before it
-  could stop leaves nothing that clears a call, and when you bring the workspace back online.
-- **Idle:** once the workspace has had no activity for longer than its idle window, 15 minutes
-  unless you set one, every session of the workspace ends, on every face: the CLI's `cli`, each
-  `buckle mcp` session, `mcp`, and the HTTP `context.sessionId` or `rpc`.
+- **HTTP MCP:** `/mcp` keeps no session per client, so every call is named `mcp`, and each token
+  has its own session under it. They all end as `buckle serve` stops, and as serve first opens
+  the workspace after it starts, so a serve killed before it could stop leaves nothing that
+  clears a call. Bringing the workspace back online while serve runs ends none.
+- **Idle:** once a session has had no activity of its own for longer than its idle window, 15
+  minutes unless you set one, it ends, on every face: the CLI's `cli`, each `buckle mcp` session,
+  each HTTP MCP token's, and each HTTP API `context.sessionId` or `rpc`. The workspace's other
+  sessions keep theirs, so one agent going quiet ends no other agent's approvals.
 
 The CLI's `cli` and the HTTP API's sessions end at idle alone. An `always` grant never ends with a
 session.
 
-Activity is:
+A session's activity is:
 
-- a tool running, in any Buckle process on the workspace, however long it runs;
-- a call starting or ending;
-- an ask being recorded, and a decision being applied.
+- one of its tools running, in any Buckle process on the workspace, however long it runs;
+- one of its calls starting or ending;
+- an ask of its calls being recorded, and a decision on one being applied.
 
 A call waiting for you is not activity, so an ask left unanswered past the window ends with its
 session. Neither is a setup read (`buckle workspace show`, `buckle grants list`, the setup routes),
 a call refused before it reaches the workspace's rules, such as one with a bad token or to an
 offline workspace, nor an audit log record.
 
-Buckle checks before each call, so a call after the window finds its session ended and asks
-again, and once a minute while `buckle serve` or `buckle mcp` has the workspace open. A process
-that saw activity itself within the window reads nothing.
+Buckle checks a call's own session before the call, so a call after the window finds its
+session ended and asks again; every session before each decision; and every session once a minute
+while `buckle serve` or `buckle mcp` has the workspace open. A process that saw a session's
+activity itself within the window reads nothing of it.
 
 ## What ends
 
@@ -70,25 +74,26 @@ restart each of them.
 
 ## When Buckle cannot tell
 
-Buckle reads activity from `activity.sqlite` in the workspace's `history/` folder and from the
-marks in its `active-work/` folder. Where either cannot be read, as on a disk error, no session
-ends and nothing is deleted. Until it can be read again, no session approval clears a call: each
-asks you again, and one you give meanwhile does too, so answer `once` to let the call run. A
-remembered denial still binds. The node log warns once, naming what it could not read. A store
+Buckle reads a session's activity from `activity.sqlite` in the workspace's `history/` folder and
+from the marks in its `active-work/` folder, which name the sessions whose tools run. Where either
+cannot be read, as on a disk error, the session does not end and nothing is deleted. Until it can
+be read again, none of the session's approvals clears a call: each asks you again, and one you
+give meanwhile does too, so answer `once` to let the call run. A remembered denial still binds.
+The node log warns once, naming what it could not read. A store
 another Buckle process holds busy past its wait only skips that check: `activity.sqlite` for more
 than a second, or the approvals files as the check ends the sessions.
 
-Where `activity.sqlite` holds nothing at all, as after it was lost, the newest session grant's
-making in `grants.json` counts as the last activity, so an old grant still ends. Where
-`grants.json` cannot be read then, Buckle cannot tell, as above.
+Where `activity.sqlite` holds nothing of a session, as after it was lost, the making of that
+session's newest session grant in `grants.json` counts as its last activity, so an old grant still
+ends. Where `grants.json` cannot be read then, Buckle cannot tell, as above.
 
 ## Limits
 
 - A process killed while its tool runs records no end: its tool stops counting as activity 10
   seconds later, so its session can end soon after.
 - A `buckle mcp` process killed outright ends no session: its approvals clear no other process's
-  calls, and end when the workspace idles. A serve killed outright leaves `mcp` until it opens
-  the workspace again.
+  calls, and end when its session idles. A serve killed outright leaves the HTTP MCP sessions
+  until a serve first opens the workspace again, or each idles.
 - With no call coming, an idle session can outlast its window by up to the minute between checks.
 - A session end in one process can meet a call another process is clearing at that moment: the
   call may run on the grant it read just before, or ask again.

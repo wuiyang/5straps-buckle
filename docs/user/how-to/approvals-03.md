@@ -76,10 +76,10 @@ anything is asked or run.
 - At `approvalWaitMs` `0` an ask from an MCP call or a copy states no deadline, and lapses ten
   minutes after its hold ended. The same call sent again joins it and starts the ten minutes
   over. An ask on `/v1/invoke` waits until it is answered or its session ends.
-- When a session ends ([session end](approvals-07.md)), at idle, as its `buckle mcp` process
-  exits, or as `buckle serve` stops or opens the workspace, each ask of it still waiting is
-  withdrawn: a call held on it answers `APPROVAL_UNANSWERED`, and the same call sent again asks
-  anew.
+- When a session ends ([session end](approvals-07.md)), at its own idle, as its `buckle mcp`
+  process exits, or as `buckle serve` stops or first opens the workspace after it starts, each
+  ask of it still waiting is withdrawn: a call held on it answers `APPROVAL_UNANSWERED`, and the
+  same call sent again asks anew.
 - When a session's 50 waiting asks, or the workspace's 500, are full, the oldest abandoned asks
   are withdrawn first to make room, and told cancelled. A cap full of asks someone still holds,
   or re-sent, refuses as before.

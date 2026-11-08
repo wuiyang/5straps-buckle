@@ -43,7 +43,7 @@ person has decided, send the same call again, unchanged: it joins the ask and ru
 approved.
 
 Scopes are `once`, `session`, and `always`. Some gates deliberately do not offer `always`. A
-`session` approval ends once the workspace sits idle, 15 minutes by default, or as the MCP server
+`session` approval ends once your session sits idle, 15 minutes by default, or as the MCP server
 it came through closes. A call still held on an ask then answers `APPROVAL_UNANSWERED`: send it
 again, unchanged, to ask anew.
 

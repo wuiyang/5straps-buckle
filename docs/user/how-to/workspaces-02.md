@@ -33,7 +33,7 @@ node's applies again:
 | `browser.idleTimeoutMs` | milliseconds an idle browser lives, `60000` to `86400000` | `300000` |
 | `browser.profile`, `browser.cdp`, `browser.args`, `browser.headed` | the browser's profile folder, attached Chrome, arguments, and window ([Using your own browser](browser-login.md)) | a fresh, headless browser |
 | `approval.forms` | `on` or `off`: an MCP host's [form answers](approvals-06.md) decide its asks | off |
-| `approval.sessionIdleMs` | milliseconds without activity before its [sessions end](approvals-07.md), or `0` for never at idle | `900000` |
+| `approval.sessionIdleMs` | milliseconds a [session](approvals-07.md) lasts without activity of its own, or `0` for never at idle | `900000` |
 | `approval.judge` | the [decision AI](judge.md), an optional model check: `off`, `on-request`, or `automated` | `off` |
 | `approval.judgeProvider` | the thorough model's provider: `openai-compatible` | `openai-compatible` |
 | `approval.judgeModel` | the thorough model's name, as your AI gateway serves it | `gpt-6-luna` |

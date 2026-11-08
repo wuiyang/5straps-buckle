@@ -27,7 +27,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `workspaces/<id>/` | the workspace's `workspace.json`, its settings and policy, and its records |
 | `workspaces/<id>/removed.json` | what `buckle workspace remove` leaves beside a removed workspace's kept records: its folder, name, and removal time, read by `buckle workspace prune` and cleared when the folder is added again |
 | `workspaces/<id>/sandbox-etc/` | where bubblewrap runs shell commands: the `passwd` and `group` files the sandbox shows as its `/etc/passwd` and `/etc/group` (the user and group `agent`), and the `hosts` file naming the host `buckle` |
-| `workspaces/<id>/active-work/` | one empty file for each process with calls running, so `disable`, `remove`, and `prune` in another process can see them, and an `executing-<id>` file for each process while one of its tools runs, never while a call only waits for a person |
+| `workspaces/<id>/active-work/` | one empty file for each process with calls running, so `disable`, `remove`, and `prune` in another process can see them, and an `executing-<id>` file for each process while one of its tools runs, naming the sessions whose tools run, never while a call only waits for a person |
 | `workspaces.v1.json`, `policy.json` | on a node moved from 0.1 only: the 0.1 registry, and a stub an older Buckle cannot read, where `policy.v1.json` keeps the 0.1 policy |
 | `grants.v1.json`, `dangerously-allow.v1.json` | on a moved node only: the 0.1 grants and switch, kept where 0.1 read each, in the state directory and in the old `workspaces/<0.1 id>/` of each workspace registered then |
 | `client-keys.json`, `client-keys.v1.json` | the device keys enrolled with `buckle keys enroll`, each with the workspace it signs for; on a node moved from 0.1 where a key named a workspace, the copy keeps the keys as 0.1 named them |
@@ -37,7 +37,7 @@ the workspace Buckle makes of a 0.1 node's own folder included.
 | `approvals.json`, `approval-calls/`, `approval-revocations.json` | asks waiting for a person, recent decisions, unspent once approvals, the whole call behind each ask, and revokes and session ends not yet finished (made while `approvals.json` could not be read, or whose grants could not yet be removed from `grants.json`), kept until the next decision, ask, or spent once finishes them; the approvals they name clear no call meanwhile. While that last file is damaged, those are refused and no session approval clears a call, and removing it forgets what it held, so check `buckle grants` and `buckle approvals`, and revoke or deny again |
 | `actions.jsonl` | the [audit log](../how-to/audit-log.md): in the state directory the node's own commands and refusals, and in each workspace's folder its calls |
 | `plugins.json` | plugins added with `buckle plugin add` |
-| `history/` | checkpoints of file changes, read by `buckle history`, and `activity.sqlite`, each session's and the workspace's last activity, which the [idle end of sessions](../how-to/approvals-07.md) reads |
+| `history/` | checkpoints of file changes, read by `buckle history`, and `activity.sqlite`, each session's last activity, which the [idle end of sessions](../how-to/approvals-07.md) reads |
 | `code-journal/` | stopped scripts' text and calls' results, kept ten minutes |
 | `isolated-shell/` | the private workspace copies shell commands run in |
 | `browser-sessions/`, `workbenches/`, `receive-git-hooks/` | browser session state, workbench files, and the guard hook local pushes run |
