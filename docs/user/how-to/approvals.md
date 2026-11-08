@@ -35,8 +35,8 @@ whatever the [policy](policy.md) denies.
   its own, under `mcp`; the HTTP API uses `context.sessionId`, or `rpc`.
 - `always` lasts until revoked, for every caller in the workspace.
 
-Only the owner's authority records a `session` or `always` grant: every local route below,
-MCP forms included, and otherwise over HTTP only the admin face.
+A `session` or `always` grant comes from every local route below, from MCP forms while on,
+and otherwise over HTTP only from the admin face.
 
 A path grant covers its directory and all below it. A network grant covers one host and
 port; `buckle approve <token> --scope session --host '*.localhost:3000'` widens one to a pattern

@@ -76,6 +76,9 @@ back. Over stdio, an answer may decide any ask waiting in the workspace, whichev
 raised it. Over HTTP, it decides only the asks its own agent token raised, an answer to any
 other ask is not read, and the [audit log](audit-log.md) names that token; every client under one
 token counts as one. Anything holding that token can send an answer, so an agent that reads its
-own MCP config could approve its own asks, floor asks and `session` or `always` included. Turn
-forms on for a workspace whose agent app you trust to show you each form unchanged. Answers at
-the node, with `buckle approvals`, stay open to you whichever way the setting is.
+own MCP config could approve its own asks, `session` or `always` included. A floor ask (`sudo`,
+the destructive list, the file floor) still reaches you: over HTTP its form only denies it and
+names where you approve it at the node, and dismissing that form holds the call for your answer,
+while a stdio form approves it as any other ask. Turn forms on for a workspace whose agent app
+you trust to show you each form unchanged. Answers at the node, with `buckle approvals`, stay
+open to you whichever way the setting is.

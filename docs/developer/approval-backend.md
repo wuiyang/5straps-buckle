@@ -12,8 +12,8 @@ asks out and decisions in, and enforces nothing. Paths are in `buckle/`.
   leaves the queue (`session_ended` where [its session ended](approval-backend-07.md)), and `close()`. A submit is `accepted` or `declined`, never a decision.
 - **`ApprovalHost`:** handed over at open. `decide` is the one way a decision enters,
   `skipSave` gives up an approval's grant; `pending` and `ask` give the asks routed to the
-  backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, whose asks
-  that source may answer; a backend names neither.
+  backend; `log` writes the node's log. Core binds `host.source` and `host.reach`, what that
+  source may decide; a backend names neither.
 - **`FullAsk`:** the whole ask, never cut, as an approver sees the full raw action: token,
   group, an HMAC idempotency key, the requester, the rule's subject, offered scopes, the
   decision AI's notes, the deadline, and the call. Without a kept call it has no `action`.
@@ -51,10 +51,10 @@ schema, a service, or the node's logger.
    above, and a host pattern comes from `cli` alone.
 4. Under the lock, in order: that screen again, [the caller](approval-backend-04.md#the-caller),
    a repeat, the ask waiting, the source routed, a device's challenge matching, the call kept
-   whole, a floor approval from a person at `local` or above, the scope offered, no `always` on
-   a destructive command or where the floor policy forbids it, a wider subject from the terminal
-   or `cli` alone, sensitive files, lasting denials for sensitive files alone, a signed `once`
-   inside its deadline, and the host pattern covering the host that asked.
+   whole, a floor approval its source's rights allow (`approvesFloor`), the scope offered, no
+   `always` on a destructive command or where the floor policy forbids it, a wider subject from
+   the terminal or `cli` alone, sensitive files, lasting denials for sensitive files alone, a
+   signed `once` inside its deadline, and the host pattern covering the host that asked.
 5. An approval commits, then its grant; a lasting denial is written first, and withdrawn if its
    decision cannot commit. [Grant saves](approval-backend-02.md) covers a write that fails.
 6. The audit hears it applied, refused, or failed, outside the lock. `logged-decision-audit.ts`
@@ -67,7 +67,7 @@ schema, a service, or the node's logger.
 |---|---|---|
 | `terminal`, `cli` | `local` | Any ask, and the wider subject; `cli` alone takes a host pattern |
 | `forms` | `local` | Any ask, lasting and floor included, while forms are on |
-| `http-forms` | `local` | As `forms`, for the asks its own caller raised |
+| `http-forms` | `local` | As `forms` but no floor ask, for its own caller's asks |
 | `devices` | `key` | Any ask it signed the challenge of |
 | `judge` | `relayed` | A non-floor `once`, bound to the code it rated |
 | `sealed` | `relayed` | Nothing; it denies, a sensitive file's lasting denial included |
