@@ -1,12 +1,17 @@
 import { runDetached, sinkStorage } from '../internal/async-slots.js'
+import { readTimerList, settleWithin } from '../internal/timeouts.js'
 import { useScopeSafe } from '../scope/als.js'
+import { createLogBudget, createLogQueue, DEFAULT_LOG_LIMIT, type LogBudget, type LogDropNotice, type LogDrops, type LogQueue } from './log-queue.js'
 import { DEFAULT_MAX_STRING_BYTES, normalizeError, sanitizeFields, sanitizeString, truncateText, type SanitizeOptions } from './sanitize.js'
 import { levelRank, LOG_LEVELS, type LogEvent, type LogFields, type Logger, type LogLevel, type LogSink, type NormalizedError } from './types.js'
 
 // The serializable part of LoggerOptions, so a runtime config (environment or JSON) can carry it; checked at createLogger.
 export interface LoggerConfig {
   level?: LogLevel
+  /** Events held per logger when no budget is given; each sink's copy counts. */
   queueLimit?: number
+  /** Waits before each further attempt at a failed sink write; none by default, so a failed event drops at once. */
+  retryDelaysMs?: readonly number[]
   maxStringBytes?: number
   maxObjectKeys?: number
   // Serialized size of a whole event; an oversized event loses error detail first, then large fields.
@@ -20,6 +25,8 @@ export interface LoggerConfig {
 export interface LoggerOptions extends LoggerConfig {
   component: string
   sinks: readonly LogSink[]
+  /** Shared with other logs, so one process holds one bound across them; takes the place of queueLimit. */
+  budget?: LogBudget
   fallback?: (line: string) => void
 }
 
@@ -31,11 +38,12 @@ export interface LoggerStats {
 export interface LoggerRoot {
   logger: Logger
   stats(): LoggerStats
-  flush(): Promise<void>
-  close(): Promise<void>
+  /** At the deadline it stops waiting; what is held stays queued. */
+  flush(options?: { deadlineMs?: number }): Promise<void>
+  /** At the deadline what is left is dropped and counted on the fallback. */
+  close(options?: { deadlineMs?: number }): Promise<void>
 }
 
-const DEFAULT_QUEUE_LIMIT = 1_000
 const DEFAULT_MAX_OBJECT_KEYS = 100
 const DEFAULT_MAX_EVENT_BYTES = 65_536
 
@@ -51,7 +59,8 @@ const SMALL_FIELD_BYTES = 256
 export function createLogger(options: LoggerOptions): LoggerRoot {
   const config = readLoggerConfig(options)
   const threshold = levelRank(config.level)
-  const { queueLimit, maxEventBytes } = config
+  const warns = levelRank('warn') >= threshold
+  const { maxEventBytes } = config
   const sanitize: SanitizeOptions = {
     maxStringBytes: config.maxStringBytes,
     maxDepth: 6,
@@ -64,24 +73,35 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
   // Marks this root's sinks while they run: a sink that logs through this root goes to the fallback,
   // while another root used inside a sink (an error reporter's HTTP client) still reaches its own sinks.
   const rootId = Symbol(options.component)
-  const queue: LogEvent[] = []
+  const budget = options.budget ?? createLogBudget({ limit: config.queueLimit })
+  const queues = options.sinks.map(sink => createSinkQueue(sink))
   const reportedErrors = new WeakSet<object>()
-  const stats: LoggerStats = { dropped: 0, sinkFailures: 0 }
-  let pumping: Promise<void> | undefined
-  let dropping = false
-  let droppedInEpisode = 0
+  const stats = { droppedAfterClose: 0, sinkFailures: 0 }
   let closed = false
 
   function emit(level: LogLevel, component: string, bindings: LogFields, message: string, fields: LogFields | undefined): void {
     if (levelRank(level) < threshold) return
     if (closed) {
-      stats.dropped += 1
+      stats.droppedAfterClose += 1
       return
     }
     const event = buildEventSafely({ level, component, bindings, message, fields })
     if (sinkStorage.getStore() === rootId) return fallback(JSON.stringify(event))
-    if (queue.length >= queueLimit) return drop(component)
-    enqueue(event)
+    for (const queue of queues) queue.push(event)
+  }
+
+  // One queue per sink, so a sink that fails retries its own events alone. One event per write, as a sink takes them.
+  function createSinkQueue(sink: LogSink): LogQueue<LogEvent> {
+    const written = new WeakSet<LogEvent>()
+    return createLogQueue<LogEvent>({
+      destination: sink.name,
+      budget,
+      retryDelaysMs: config.retryDelaysMs,
+      maxBatch: 1,
+      write: batch => writeToSink({ sink, written, batch }),
+      summarize: drops => (warns ? dropSummary(sink.name, drops) : undefined),
+      onDropping: notice => warnDropping(notice),
+    })
   }
 
   // Diagnostics may degrade but never fail the caller (data.md): a field that cannot be read becomes a marker.
@@ -93,25 +113,14 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     }
   }
 
-  function enqueue(event: LogEvent): void {
-    queue.push(event)
-    pumping ??= pump().finally(() => { pumping = undefined })
+  // On the fallback, at once: the sink itself may be what cannot keep up.
+  function warnDropping(notice: LogDropNotice): void {
+    if (warns) fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', component: 'logger', message: 'Log events dropped', fields: notice }))
   }
 
-  // One warning per episode, allowed past the limit, so a full queue is visible in the sinks themselves.
   // Built detached: the drop belongs to no request.
-  function drop(component: string): void {
-    stats.dropped += 1
-    droppedInEpisode += 1
-    if (dropping) return
-    dropping = true
-    if (levelRank('warn') >= threshold) enqueue(runDetached(() => buildEvent({ level: 'warn', component, bindings: {}, message: 'log events dropped: queue full', fields: { queueLimit } })))
-  }
-
-  function dropSummary(): LogEvent {
-    const dropped = droppedInEpisode
-    droppedInEpisode = 0
-    return runDetached(() => buildEvent({ level: 'warn', component: options.component, bindings: {}, message: 'log events dropped: queue drained', fields: { queueLimit, dropped } }))
+  function dropSummary(destination: string, drops: LogDrops): LogEvent {
+    return runDetached(() => buildEvent({ level: 'warn', component: options.component, bindings: {}, message: 'log events dropped', fields: { destination, dropped: drops.count, firstAt: drops.firstAt, lastAt: drops.lastAt } }))
   }
 
   function buildEvent(input: { level: LogLevel; component: string; bindings: LogFields; message: string; fields: LogFields | undefined }): LogEvent {
@@ -157,30 +166,46 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
     return normalized
   }
 
-  async function pump(): Promise<void> {
-    await Promise.resolve()
-    while (queue.length > 0) {
-      const event = queue.shift()!
-      await Promise.all(options.sinks.map(sink => writeToSink(sink, event)))
-      // The episode ends once the queue has drained: report how many events were lost.
-      if (queue.length === 0 && droppedInEpisode > 0 && levelRank('warn') >= threshold) queue.push(dropSummary())
-    }
-    droppedInEpisode = 0
-    dropping = false
-  }
-
-  async function writeToSink(sink: LogSink, event: LogEvent): Promise<void> {
-    try {
-      await sinkStorage.run(rootId, () => sink.write(event))
-    } catch (error) {
-      stats.sinkFailures += 1
-      fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', component: 'logger', message: `Log sink ${sink.name} failed`, error: normalizeError(error, sanitize), dropped: { level: event.level, message: event.message } }))
+  // A retried batch skips the events this sink already took, so none is written twice.
+  async function writeToSink(input: { sink: LogSink; written: WeakSet<LogEvent>; batch: readonly LogEvent[] }): Promise<void> {
+    for (const event of input.batch) {
+      if (input.written.has(event)) continue
+      try {
+        await sinkStorage.run(rootId, () => input.sink.write(event))
+      } catch (error) {
+        stats.sinkFailures += 1
+        fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'error', component: 'logger', message: `Log sink ${input.sink.name} failed`, error: normalizeError(error, sanitize), event: { level: event.level, message: event.message } }))
+        throw error
+      }
+      input.written.add(event)
     }
   }
 
-  async function flush(): Promise<void> {
-    while (pumping) await pumping
+  async function drainAndFlushSinks(): Promise<void> {
+    await Promise.all(queues.map(queue => queue.flush()))
     await Promise.all(options.sinks.map(sink => callSink(sink, 'flush')))
+  }
+
+  async function flush(flushOptions: { deadlineMs?: number } = {}): Promise<void> {
+    if (flushOptions.deadlineMs === undefined) return drainAndFlushSinks()
+    await settleWithin([drainAndFlushSinks()], flushOptions.deadlineMs)
+  }
+
+  // Closed first: anything logged while the sinks flush and close is dropped and counted, never written.
+  async function close(closeOptions: { deadlineMs?: number } = {}): Promise<void> {
+    closed = true
+    const started = performance.now()
+    const results = await Promise.all(queues.map(queue => queue.close(closeOptions)))
+    const left = results.reduce((sum, result) => sum + result.left, 0)
+    if (left > 0) fallback(JSON.stringify({ timestamp: new Date().toISOString(), level: 'warn', component: 'logger', message: 'Log events left unwritten at close', fields: { left } }))
+    const sinksClosed = closeSinks()
+    if (closeOptions.deadlineMs === undefined) return sinksClosed
+    await settleWithin([sinksClosed], closeOptions.deadlineMs - (performance.now() - started))
+  }
+
+  async function closeSinks(): Promise<void> {
+    await Promise.all(options.sinks.map(sink => callSink(sink, 'flush')))
+    await Promise.all(options.sinks.map(sink => callSink(sink, 'close')))
   }
 
   async function callSink(sink: LogSink, method: 'flush' | 'close'): Promise<void> {
@@ -202,20 +227,16 @@ export function createLogger(options: LoggerOptions): LoggerRoot {
 
   return {
     logger: createChild(options.component, {}),
-    stats: () => ({ ...stats }),
+    stats: () => ({ dropped: stats.droppedAfterClose + queues.reduce((sum, queue) => sum + queue.stats().dropped, 0), sinkFailures: stats.sinkFailures }),
     flush,
-    // Closed first: anything logged while the sinks flush and close is dropped and counted, never written.
-    async close() {
-      closed = true
-      await flush()
-      await Promise.all(options.sinks.map(sink => callSink(sink, 'close')))
-    },
+    close,
   }
 }
 
 interface ResolvedLoggerConfig {
   level: LogLevel
   queueLimit: number
+  retryDelaysMs: readonly number[]
   maxStringBytes: number
   maxObjectKeys: number
   maxEventBytes: number
@@ -225,12 +246,14 @@ interface ResolvedLoggerConfig {
 
 // Config values may come from the environment or JSON, where a type annotation proves nothing:
 // a string omitKeys would silently omit single letters instead of the named keys.
-function readLoggerConfig(config: LoggerConfig): ResolvedLoggerConfig {
+function readLoggerConfig(config: LoggerConfig & { budget?: LogBudget }): ResolvedLoggerConfig {
   const level = config.level ?? 'info'
   if (!LOG_LEVELS.includes(level)) throw new TypeError(`Logger level must be one of ${LOG_LEVELS.join(', ')}; got ${String(level)}`)
+  if (config.budget && config.queueLimit !== undefined) throw new TypeError('Logger takes a queueLimit or a budget, not both')
   return {
     level,
-    queueLimit: readLimit('queueLimit', config.queueLimit, DEFAULT_QUEUE_LIMIT),
+    queueLimit: readLimit('queueLimit', config.queueLimit, DEFAULT_LOG_LIMIT),
+    retryDelaysMs: readTimerList('Logger retryDelaysMs', config.retryDelaysMs),
     maxStringBytes: readLimit('maxStringBytes', config.maxStringBytes, DEFAULT_MAX_STRING_BYTES),
     maxObjectKeys: readLimit('maxObjectKeys', config.maxObjectKeys, DEFAULT_MAX_OBJECT_KEYS),
     maxEventBytes: readLimit('maxEventBytes', config.maxEventBytes, DEFAULT_MAX_EVENT_BYTES),

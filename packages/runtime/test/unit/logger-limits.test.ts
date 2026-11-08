@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { setTimeout as delay } from 'node:timers/promises'
-import { describe, expect, it } from 'vitest'
-import { createLogger, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrl, runInScope, type CredentialContext, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
+import { describe, expect, it, vi } from 'vitest'
+import { createLogBudget, createLogger, createLogQueue, createOperationScope, isCredentialKey, isCredentialParameter, redactCredentials, redactText, redactUrl, runInScope, type CredentialContext, type LogEvent, type LoggerConfig, type LogSink } from '../../src/index.js'
 import { isCredentialQueryName, isNamedCredentialKey } from '../../src/logger/credential-names.js'
 
 function memorySink(): LogSink & { events: LogEvent[] } {
@@ -502,13 +502,82 @@ describe('close and drops (review L3)', () => {
     expect(root.stats().dropped).toBe(2)
   })
 
-  it('emits one warning event when drops start and one with the count once the queue drains', async () => {
+  it('warns once on the fallback when drops start, and writes the count first once the sink takes events again', async () => {
     const sink = memorySink()
-    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 5 })
+    const fallback: string[] = []
+    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 5, fallback: line => fallback.push(line) })
     for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`)
     await root.flush()
-    expect(sink.events.filter(event => event.level === 'warn')).toEqual([expect.objectContaining({ message: 'log events dropped: queue full' }), expect.objectContaining({ message: 'log events dropped: queue drained', fields: { queueLimit: 5, dropped: 3 } })])
+    expect(fallback.map(line => JSON.parse(line) as unknown)).toEqual([expect.objectContaining({ level: 'warn', component: 'logger', message: 'Log events dropped', fields: { destination: 'memory', reason: 'full', limit: 5 } })])
+    expect(sink.events.map(event => event.message)).toEqual(['log events dropped', 'event 0', 'event 1', 'event 2', 'event 3', 'event 4'])
+    expect(sink.events[0]).toMatchObject({ level: 'warn', component: 'svc', fields: { destination: 'memory', dropped: 3, firstAt: expect.any(String), lastAt: expect.any(String) } })
     expect(root.stats().dropped).toBe(3)
+  })
+
+  it('stops at the close deadline against a stuck sink and counts what it left on the fallback', async () => {
+    const fallback: string[] = []
+    const stuck: LogSink = { name: 'stuck', write: () => new Promise<void>(() => {}), close: () => new Promise<void>(() => {}) }
+    const root = createLogger({ component: 'svc', sinks: [stuck], fallback: line => fallback.push(line) })
+    for (let index = 0; index < 3; index += 1) root.logger.info(`event ${index}`)
+    const started = performance.now()
+    await root.close({ deadlineMs: 50 })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    expect(fallback.map(line => JSON.parse(line) as unknown)).toEqual([expect.objectContaining({ level: 'warn', component: 'logger', message: 'Log events left unwritten at close', fields: { left: 3 } })])
+    expect(root.stats().dropped).toBe(3)
+  })
+
+  it('stops waiting at a flush deadline and keeps what it holds', async () => {
+    const stuck: LogSink = { name: 'stuck', write: () => new Promise<void>(() => {}) }
+    const budget = createLogBudget({ limit: 30 })
+    const root = createLogger({ component: 'svc', sinks: [stuck], budget })
+    root.logger.info('held')
+    const started = performance.now()
+    await root.flush({ deadlineMs: 50 })
+    expect(performance.now() - started).toBeLessThan(1_000)
+    expect([budget.held(), root.stats().dropped]).toEqual([1, 0])
+  })
+})
+
+describe('one budget and retries', () => {
+  it('holds at most one budget across the logger and another log, dropping the oldest of either', async () => {
+    const budget = createLogBudget({ limit: 30, overflow: 'drop-oldest' })
+    const audit = createLogQueue<string>({ destination: 'actions', budget, write: () => new Promise<void>(() => {}) })
+    const sink = memorySink()
+    const root = createLogger({ component: 'svc', sinks: [sink], budget })
+    for (let index = 0; index < 20; index += 1) audit.push(`entry ${index}`)
+    for (let index = 0; index < 20; index += 1) root.logger.info(`event ${index}`)
+    expect(budget.held()).toBe(30)
+    expect([audit.stats().dropped, root.stats().dropped]).toEqual([10, 0])
+    await root.flush()
+    expect(sink.events.map(event => event.message)).toEqual(Array.from({ length: 20 }, (_, index) => `event ${index}`))
+    await audit.close({ deadlineMs: 1 })
+  })
+
+  it('tries a failed sink write again after each delay and writes no event twice', async () => {
+    vi.useFakeTimers()
+    try {
+      const sink = memorySink()
+      const fallback: string[] = []
+      let failures = 2
+      const flaky: LogSink = { name: 'flaky', write: (event) => {
+        if (event.message === 'second' && failures-- > 0) throw new Error('disk full')
+        sink.events.push(event)
+      } }
+      const root = createLogger({ component: 'svc', sinks: [flaky], retryDelaysMs: [250, 1_000, 4_000], fallback: line => fallback.push(line) })
+      for (const message of ['first', 'second', 'third']) root.logger.info(message)
+      await vi.advanceTimersByTimeAsync(0)
+      expect(sink.events.map(event => event.message)).toEqual(['first'])
+      await vi.advanceTimersByTimeAsync(1_250)
+      expect(sink.events.map(event => event.message)).toEqual(['first', 'second', 'third'])
+      expect(root.stats()).toEqual({ dropped: 0, sinkFailures: 2 })
+      expect(fallback.map(line => JSON.parse(line) as unknown)).toEqual([0, 1].map(() => expect.objectContaining({ level: 'error', component: 'logger', message: 'Log sink flaky failed', event: { level: 'info', message: 'second' } })))
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('refuses a queue limit beside a budget', () => {
+    expect(() => createLogger({ component: 'svc', sinks: [], queueLimit: 5, budget: createLogBudget({ limit: 5 }) })).toThrow(TypeError)
   })
 })
 
@@ -572,20 +641,21 @@ describe('logger lows (logger-fixes-3, -6, -7, -8, -9, -11, -12, -13)', () => {
 
   it('logger-fixes-12 reports drops without a request correlation id, with the count, and respects the level', async () => {
     const sink = memorySink()
-    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 3 })
+    const root = createLogger({ component: 'svc', sinks: [sink], queueLimit: 3, fallback: () => {} })
     const scope = createOperationScope({ owner: Symbol('t'), context: { correlationId: 'unrelated-request' } })
     runInScope(scope, () => { for (let index = 0; index < 8; index += 1) root.logger.info(`event ${index}`) })
     await root.flush()
     const warnings = sink.events.filter(event => event.level === 'warn')
     expect(warnings.map(event => [event.message, event.correlationId, event.fields])).toEqual([
-      ['log events dropped: queue full', undefined, { queueLimit: 3 }],
-      ['log events dropped: queue drained', undefined, { queueLimit: 3, dropped: 5 }],
+      ['log events dropped', undefined, { destination: 'memory', dropped: 5, firstAt: expect.any(String), lastAt: expect.any(String) }],
     ])
     const quiet = memorySink()
-    const errorsOnly = createLogger({ component: 'svc', sinks: [quiet], queueLimit: 1, level: 'error' })
+    const fallback: string[] = []
+    const errorsOnly = createLogger({ component: 'svc', sinks: [quiet], queueLimit: 1, level: 'error', fallback: line => fallback.push(line) })
     for (let index = 0; index < 4; index += 1) errorsOnly.logger.error(`failure ${index}`)
     await errorsOnly.flush()
     expect(quiet.events.filter(event => event.level === 'warn')).toEqual([])
+    expect(fallback).toEqual([])
   })
 
   it('logger-fixes-13 drops a multibyte character cut by truncation', async () => {
@@ -627,7 +697,7 @@ describe('content keys and logger config (ruling 8)', () => {
     root.logger.debug('patched', { diff: '+ secret line', statusText: 'Not Found' })
     await root.flush()
     expect(sink.events[0]!.fields).toEqual({ diff: '[omitted 13 bytes]', statusText: 'Not Found' })
-    const malformed: unknown[] = [{ omitKeys: 'diff' }, { omitKeys: ['diff', 1] }, { allowKeys: 'body' }, { level: 'verbose' }, { queueLimit: 0 }, { maxStringBytes: Number.NaN }, { maxEventBytes: -1 }, { maxObjectKeys: 1.5 }]
+    const malformed: unknown[] = [{ omitKeys: 'diff' }, { omitKeys: ['diff', 1] }, { allowKeys: 'body' }, { level: 'verbose' }, { queueLimit: 0 }, { retryDelaysMs: [0] }, { retryDelaysMs: 'fast' }, { maxStringBytes: Number.NaN }, { maxEventBytes: -1 }, { maxObjectKeys: 1.5 }]
     for (const value of malformed) expect(() => createLogger({ component: 'test', sinks: [], ...(value as LoggerConfig) })).toThrow(TypeError)
   })
 })
