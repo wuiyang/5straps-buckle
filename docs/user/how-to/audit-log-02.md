@@ -2,6 +2,17 @@
 
 [Part one](audit-log.md) covers the log's file, its entries, and how they are trimmed.
 
+## How it is written
+
+One worker thread in each Buckle process writes its logs and syncs each entry to disk; a call waits
+for its entry before it goes on. A slow or stalled disk holds the calls waiting on their entries,
+and the node still answers everything else, `GET /health/ready` included. Readiness gives a failing
+log one second to prove it takes writes again; a log that does not answer in time still counts as
+failing. A node that stops waits 2 seconds for the entries in flight, then logs
+`Action log writes left unwritten at close` with their count. An attempt left unwritten stopped its
+call, and a call whose result was left unwritten is marked `interrupted` the next time a Buckle
+process opens the log.
+
 ## Sending it elsewhere
 
 With `BUCKLE_REPORT_URL` and `BUCKLE_REPORT_TOKEN` set (Buckle refuses to start with only one),

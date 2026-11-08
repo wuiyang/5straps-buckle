@@ -84,7 +84,8 @@ where. Approvers see the whole call when they decide; the log does not keep it.
 ## Limits
 
 - Each entry is one JSON line of at most 64 KiB.
-- On Linux and macOS the file is created owner-only (mode 600). It is synced to disk on every write.
+- On Linux and macOS the file is created owner-only (mode 600). It is synced to disk on every write,
+  off the node's main thread ([part two](audit-log-02.md#how-it-is-written)).
 - Buckle never rotates or truncates it.
 - When the log will not take a write, Buckle refuses the calls it would have to record:
   `AUDIT_UNAVAILABLE`, HTTP 503 over HTTP. `GET /health/ready` answers 503 until a write works
