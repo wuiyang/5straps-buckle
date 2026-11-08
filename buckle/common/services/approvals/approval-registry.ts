@@ -317,6 +317,8 @@ export interface ResolveOptions {
   code?: CodeBinding
   /** Grant the ask's wider subject, read under the lock from the ask, waiting or resolved, so a repeat names the same one. */
   widen?: 'below'
+  /** The transport's actor for a form answer (DecisionClaim.caller), held to the ask's where its rights say. */
+  caller?: string
 }
 
 /**
@@ -380,7 +382,7 @@ export interface ApprovalRegistry {
    * Gives up the grant of a session or always approval `source` recorded, under the approvals lock the settling pass takes,
    * so one of them goes first. One whose grant may have saved and is not confirmed removed answers `unfinished`.
    */
-  skipSave(input: { token: string; source: ApprovalSource }): Promise<SkipResolution>
+  skipSave(input: { token: string; source: ApprovalSource; caller?: string }): Promise<SkipResolution>
   /**
    * The last check clears the call or not. A cleared call's `once` approvals are spent under the
    * queue's lock, and `admit` runs under it first: false (another run of the call holds it) leaves them
@@ -891,10 +893,10 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
    * `skipped`. That covers a pass that went first, and a grant a stopped process wrote while its entry still read `owed`;
    * one left `skipping` is finished by the next settling pass.
    */
-  async function skipIn(input: { state: State; commit: () => Promise<void>; token: string; source: ApprovalSource }): Promise<SkipResolution> {
+  async function skipIn(input: { state: State; commit: () => Promise<void>; token: string; source: ApprovalSource; caller: string | undefined }): Promise<SkipResolution> {
     const entry = input.state.resolved.find(candidate => candidate.workspace === workspace && candidate.decision.token === input.token)
-    const recorded = entry === undefined ? undefined : { approved: entry.decision.approved, scope: entry.decision.scope, ...(entry.grant ? { source: entry.grant.source } : {}) }
-    const verdict = guardSkip({ source: input.source, recorded, live: live() })
+    const recorded = entry === undefined ? undefined : { approved: entry.decision.approved, scope: entry.decision.scope, ...(entry.grant ? { source: entry.grant.source } : {}), ...(entry.actor === undefined ? {} : { actor: entry.actor }) }
+    const verdict = guardSkip({ source: input.source, ...(input.caller === undefined ? {} : { caller: input.caller }), recorded, live: live() })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     // Skipped already, or a revoke, a session end, or a denial in its place dropped it, so none stands and none is written.
     if (entry?.grant === undefined || entry.grant.save === 'skipped' || entry.grant.save === 'dropped') return { ok: true, repeated: true }
@@ -973,6 +975,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       const claim: DecisionClaim = {
         decision, source, ...(options.widenTo === undefined ? {} : { widenTo: options.widenTo }),
         ...(options.challenge === undefined ? {} : { challenge: options.challenge.digest }), ...(options.consumeNotAfter === undefined ? {} : { consumeNotAfter: options.consumeNotAfter }),
+        ...(options.caller === undefined ? {} : { caller: options.caller }),
       }
       // Refused before the lock, so these come back even when the approvals file cannot be read.
       const screened = screenDecision(claim, live())
@@ -1003,11 +1006,11 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
       }
     },
 
-    async skipSave({ token, source }) {
+    async skipSave({ token, source, caller }) {
       let skipped: SkipResolution | undefined
       try {
         return await update(async (state, commit) => {
-          skipped = await skipIn({ state, commit, token, source })
+          skipped = await skipIn({ state, commit, token, source, caller })
           return skipped
         })
       } catch (error) {
@@ -1305,12 +1308,15 @@ function writesAgain(owed: LastingGrant, record: GrantSlot): boolean {
   return owed.rule === record.rule && owed.subject === record.subject && owed.scope === record.scope && holder && Boolean(owed.pattern) === Boolean(record.pattern)
 }
 
-/** A waiting ask as the decision guard reads it: whether its whole call was kept, and the challenges it was shown under. */
+/**
+ * A waiting ask as the decision guard reads it: whether its whole call was kept, the challenges it was shown under, and
+ * the actor of the call that raised it.
+ */
 // No build records an ask's routes yet, so each reads as sent down today's set.
 function waitingView(asked: PendingAsk, challenge: ResolveOptions['challenge']): NonNullable<LedgerView['waiting']> {
   return {
     request: asked.request, complete: asked.call?.complete === true, challenges: challenge === undefined ? [] : challenge.shown(asked),
-    marks: { floor: asked.floor, destructive: asked.destructive }, routes: TODAYS_ROUTES,
+    marks: { floor: asked.floor, destructive: asked.destructive }, routes: TODAYS_ROUTES, ...(asked.actor === undefined ? {} : { actor: asked.actor }),
   }
 }
 

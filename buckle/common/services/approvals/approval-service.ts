@@ -7,8 +7,8 @@ import type { ApprovalKey } from '@5straps/protocol/envelope'
 import type { NonceClaims } from '../../types/ports/nonce-claims.js'
 import { MAX_TIMER_MS, remainingMs } from '../../domain/approval/expiry.js'
 import { rightsOf } from '../../domain/approval/assurance.js'
-import type { ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
-import { SOURCES, type ApprovalSource } from '../../types/ports/approval-source.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHold, ApprovalHost, DecisionBody, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt } from '../../types/ports/approval-backend.js'
+import { FORMS_SOURCES, SOURCES, type ApprovalSource, type FormsFace } from '../../types/ports/approval-source.js'
 import type { DecisionAudit, DecisionEnding, DecisionProofKind } from '../../types/ports/decision-audit.js'
 import type { PermissionDecision } from '../../domain/permission/decision.js'
 import type { CodeBinding } from '../../domain/permission/judged.js'
@@ -103,6 +103,8 @@ export interface ApprovalAnswer {
   widen?: 'below'
   /** What carried it beyond its route, whose nonce reading it already claimed; none when absent. */
   proof?: Exclude<DecisionProofKind, 'none'>
+  /** The sender's caller, which core takes from a forms host alone. */
+  caller?: string
 }
 
 export interface ApprovalService extends CoreApprovalApi {
@@ -114,11 +116,11 @@ export interface ApprovalService extends CoreApprovalApi {
    */
   answer(input: ApprovalAnswer): Promise<Resolution>
   /** Core's one way a skip is recorded, under any source; only the source that recorded the decision may skip its save. */
-  skip(input: { token: string; source: ApprovalSource }): Promise<SkipResolution>
+  skip(input: { token: string; source: ApprovalSource; caller?: string }): Promise<SkipResolution>
   /** Withdraws the asks among `tokens` still waiting, telling the webhook they were cancelled. */
   withdraw(tokens: string[]): Promise<void>
-  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; closed with the service. */
-  openFormsBackend(backend: ApprovalBackend): void
+  /** Opens an MCP host's forms under its face's forms source, which core holds and rates; closed with the service. */
+  openFormsBackend(backend: ApprovalBackend, face: FormsFace): void
   /**
    * Settles every open wait as still pending and ends its questions, then waits for the lifecycle
    * notices still in flight; the asks stay in the durable queue.
@@ -242,7 +244,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   const host: ApprovalHost = {
     source: SOURCES.terminal,
     decide: input => readBackendDecision(input, decideRouted),
-    skipSave: token => skipAs(SOURCES.terminal, token),
+    skipSave: token => skipAs({ source: SOURCES.terminal, token }),
     pending: () => {
       const state = readQueue([...routed.keys()])
       return state ? [...routed.values()].filter(asked => state.pending.has(asked.token)) : []
@@ -250,18 +252,18 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
     ask: token => (readQueue([token])?.pending.has(token) ? routed.get(token) : undefined),
     log,
   }
-  // Today's routes hand a stdio host's forms every waiting ask.
-  const formsHost: ApprovalHost = {
-    source: SOURCES.forms,
-    decide: input => readBackendDecision(input, body => decideAs(SOURCES.forms, body)),
-    skipSave: token => skipAs(SOURCES.forms, token),
+  // Today's routes hand an MCP host's forms every waiting ask; each answer carries its sender's caller into core.
+  const formsHostOf = (source: ApprovalSource): ApprovalHost => ({
+    source,
+    decide: (input, sender) => readBackendDecision(input, body => decideAs({ source, body, sender })),
+    skipSave: (token, sender) => skipAs({ source, token, sender }),
     pending: () => options.registry.waiting().map(asked => ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })),
     ask: (token) => {
       const asked = options.registry.waitingAsk(token)
       return asked === undefined ? undefined : ledgerAskOf(asked, { workspace, idempotencyKey: callKeyOf })
     },
     log,
-  }
+  })
   const formsBackends = new Set<ApprovalBackend>()
   // What expired, or a call file left over, while no process of this node ran is dropped now (review L1 of the slice 5 re-review).
   track(options.registry.sweepIfDue().catch((error: unknown) => { logger.warn('Could not sweep expired approvals', { error: withoutCause(error) }) }))
@@ -347,6 +349,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
             ...(input.consumeNotAfter === undefined ? {} : { consumeNotAfter: input.consumeNotAfter }),
             ...(input.code === undefined ? {} : { code: input.code }),
             ...(input.widen === undefined ? {} : { widen: input.widen }),
+            ...(input.caller === undefined ? {} : { caller: input.caller }),
           })
         } catch (error) {
           received.failed()
@@ -384,7 +387,7 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
       return result
     },
 
-    skipSave: input => skipAs(SOURCES[input.source], input.token),
+    skipSave: input => skipAs({ source: SOURCES[input.source], token: input.token }),
 
     challengeListing(listing) {
       const shown = createCallShapes()
@@ -399,9 +402,9 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
 
     withdraw: tokens => withdraw(tokens),
 
-    openFormsBackend(backend) {
+    openFormsBackend(backend, face) {
       formsBackends.add(backend)
-      track(backend.open(formsHost).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
+      track(backend.open(formsHostOf(FORMS_SOURCES[face])).catch((error: unknown) => { logger.warn('Could not open the MCP host\'s approval forms', { error: withoutCause(error) }) }))
     },
 
     async withdrawCall(selector) {
@@ -578,20 +581,22 @@ export function createApprovalService(options: ApprovalServiceOptions): Approval
   /** A terminal decision on an ask routed to it, as the decision guard then rates it; one never routed to it is audited as refused. */
   async function decideRouted(body: DecisionBody): Promise<DecisionReceipt> {
     const { source } = host
-    if (routed.has(body.token)) return decideAs(source, body)
+    if (routed.has(body.token)) return decideAs({ source, body })
     const decision = decisionOf(body)
     const result: Resolution = { ok: false, code: 'approver_not_allowed', reason: 'This ask was not routed to the terminal' }
     endDecision({ received: options.decisionAudit.received({ token: body.token, approved: decision.approved, scope: body.scope, source, proof: 'none' }), source, result })
     return backendReceipt(receiptOf({ answer: { decision, source }, result }))
   }
 
-  async function skipAs(source: ApprovalSource, token: string): Promise<SkipReceipt> {
-    return skipReceiptOf(await service.skip({ token, source }))
+  async function skipAs(input: { source: ApprovalSource; token: string; sender?: AnswerSender }): Promise<SkipReceipt> {
+    const { source, token, sender } = input
+    return skipReceiptOf(await service.skip({ token, source, ...(sender === undefined ? {} : { caller: sender.caller }) }))
   }
 
-  /** A backend's plain decision, under the source core holds for it. */
-  async function decideAs(source: ApprovalSource, body: DecisionBody): Promise<DecisionReceipt> {
-    const answer: ApprovalAnswer = { decision: decisionOf(body), source, ...(body.widen === undefined ? {} : { widen: body.widen }) }
+  /** A backend's plain decision, under the source core holds for it, with the caller a forms host's sender names. */
+  async function decideAs(input: { source: ApprovalSource; body: DecisionBody; sender?: AnswerSender }): Promise<DecisionReceipt> {
+    const { source, body, sender } = input
+    const answer: ApprovalAnswer = { decision: decisionOf(body), source, ...(body.widen === undefined ? {} : { widen: body.widen }), ...(sender === undefined ? {} : { caller: sender.caller }) }
     return backendReceipt(receiptOf({ answer, result: await service.answer(answer) }))
   }
 

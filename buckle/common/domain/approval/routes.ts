@@ -7,12 +7,13 @@ export interface RecordedRoute {
 }
 
 /**
- * Today's set, which every ask this build records reads as: the terminal, a stdio host's forms, and an enrolled device
- * decide, and the setup route's sealed envelope, the webhook's way back, only denies.
+ * Today's set, which every ask this build records reads as: the terminal, an MCP host's forms over stdio and over HTTP,
+ * and an enrolled device decide, and the setup route's sealed envelope, the webhook's way back, only denies.
  */
 export const TODAYS_ROUTES: readonly RecordedRoute[] = Object.freeze([
   { id: 'terminal', role: 'decide' },
   { id: 'forms', role: 'decide' },
+  { id: 'http-forms', role: 'decide' },
   { id: 'devices', role: 'decide' },
   { id: 'sealed', role: 'notify' },
 ])

@@ -24,6 +24,7 @@ describe('the assurance each source kind carries', () => {
     ['terminal', 'local'],
     ['cli', 'local'],
     ['forms', 'local'],
+    ['http-forms', 'relayed'],
     ['devices', 'key'],
     ['sealed', 'relayed'],
     ['judge', 'relayed'],

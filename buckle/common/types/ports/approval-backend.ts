@@ -88,6 +88,12 @@ export interface DecisionBody {
 export type DecisionInput = { kind: 'plain'; decision: DecisionBody }
 
 /**
+ * Who sent an answer: the actor the transport that carried it authenticated, never one the body or a header names. Core
+ * reads it from the forms sources alone, and holds an HTTP form answer to the asks its own caller raised.
+ */
+export interface AnswerSender { caller: string }
+
+/**
  * `grant_unsaved`: a lasting denial whose grant could not be written, so nothing was recorded and its ask still waits.
  * It is retryable, by its person: the same denial sent again tries the write again.
  */
@@ -181,12 +187,12 @@ export type SubmitResult =
 export interface ApprovalHost {
   readonly source: ApprovalSource
   /** The one way a decision enters; the decision guard checks it before anything applies. */
-  decide(input: DecisionInput): Promise<DecisionReceipt>
+  decide(input: DecisionInput, sender?: AnswerSender): Promise<DecisionReceipt>
   /**
    * Gives up the grant of a session or always approval this source recorded, on its person's say alone: it is never
    * written, or is removed where it already was. A `once` the call that asked got for it stays.
    */
-  skipSave(token: string): Promise<SkipReceipt>
+  skipSave(token: string, sender?: AnswerSender): Promise<SkipReceipt>
   /** The asks still waiting that were routed to this source. */
   pending(): Ask[]
   /** The ask while it waits, if it was routed to this source; undefined otherwise. */

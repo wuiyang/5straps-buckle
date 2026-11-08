@@ -227,7 +227,7 @@ describe('what an elicitation shows before a decision (owner decision D17, revie
     await answered({ action: 'allow_once' })
     expect(decide.mock.calls.map(([input]) => input.decision)).toEqual([{ token: 'token-1', outcome: 'approve', scope: 'session' }, { token: 'token-1', outcome: 'approve', scope: 'once' }])
     await answered({ action: 'deny' })
-    expect(decide).toHaveBeenLastCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'deny', scope: 'once' } })
+    expect(decide).toHaveBeenLastCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'deny', scope: 'once' } }, undefined)
   })
 })
 
@@ -249,7 +249,7 @@ describe('a secret file ask under the credential-file rule', () => {
     await gatedCall(gatedServer(decide, [asked(secret)]), { ...elicitingContext(),
       mcpReq: { id: 4, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { action } } } },
     } as unknown as ServerContext)
-    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope } })
+    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope } }, undefined)
   })
 })
 
@@ -260,7 +260,8 @@ describe('elicited answers', () => {
     await gatedCall(server, { ...stubContext({ envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } } }),
       mcpReq: { id: 2, method: 'tools/call', requestState: () => undefined, envelope: { [CLIENT_CAPABILITIES_META_KEY]: { elicitation: {} } }, inputResponses: { 'token-1': { action: 'accept', content: { approve: true, scope: 'session' } } } },
     } as unknown as ServerContext)
-    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope: 'session' } })
+    // Called outside an operation, so the face has no transport's actor to send.
+    expect(decide).toHaveBeenCalledWith({ kind: 'plain', decision: { token: 'token-1', outcome: 'approve', scope: 'session' } }, undefined)
   })
 })
 

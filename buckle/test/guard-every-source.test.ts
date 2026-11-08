@@ -32,8 +32,8 @@ const guard = (input: { claim: DecisionClaim; ledger?: LedgerView; policy?: Floo
 const PERSONS = ['terminal', 'cli', 'forms', 'devices'] as const
 
 describe('routing by the ask\'s recorded routes', () => {
-  it('reads an ask recorded without routes as today\'s set: the terminal, forms, and devices decide, and the sealed envelope only denies', () => {
-    expect(TODAYS_ROUTES).toEqual([{ id: 'terminal', role: 'decide' }, { id: 'forms', role: 'decide' }, { id: 'devices', role: 'decide' }, { id: 'sealed', role: 'notify' }])
+  it('reads an ask recorded without routes as today\'s set: the terminal, forms over stdio and HTTP, and devices decide, and the sealed envelope only denies', () => {
+    expect(TODAYS_ROUTES).toEqual([{ id: 'terminal', role: 'decide' }, { id: 'forms', role: 'decide' }, { id: 'http-forms', role: 'decide' }, { id: 'devices', role: 'decide' }, { id: 'sealed', role: 'notify' }])
     for (const source of PERSONS) expect(guard({ claim: claim(SOURCES[source], approve()) })).toEqual({ ok: true, apply: {} })
     expect(guard({ claim: claim(SOURCES.sealed, deny()) })).toEqual({ ok: true, apply: {} })
   })

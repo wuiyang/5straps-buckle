@@ -3,7 +3,7 @@ export const ASSURANCE_ORDER = ['relayed', 'local', 'key', 'idp'] as const
 export type Assurance = (typeof ASSURANCE_ORDER)[number]
 
 /** The routes core holds; each is its own kind, and no configured backend may take its id. */
-export const BUILT_IN_SOURCES = ['terminal', 'cli', 'forms', 'devices', 'judge', 'sealed'] as const
+export const BUILT_IN_SOURCES = ['terminal', 'cli', 'forms', 'http-forms', 'devices', 'judge', 'sealed'] as const
 export type BuiltInSource = (typeof BUILT_IN_SOURCES)[number]
 /** A configured backend's kind is always `backend`. */
 export type SourceKind = BuiltInSource | 'backend'
@@ -24,6 +24,8 @@ export const SOURCES = {
   cli: { id: 'cli', kind: 'cli' },
   /** A stdio MCP host's form answers. */
   forms: { id: 'forms', kind: 'forms' },
+  /** Form answers over HTTP MCP, which anything holding the agent's token can send. */
+  'http-forms': { id: 'http-forms', kind: 'http-forms' },
   /** A decision a person's enrolled key signed, on the setup route. */
   devices: { id: 'devices', kind: 'devices' },
   /** `--approve-if-safe`: the decision AI's thorough stage, for one call. */
@@ -31,3 +33,7 @@ export const SOURCES = {
   /** The decision in the envelope the setup route opens: it only denies. */
   sealed: { id: 'sealed', kind: 'sealed' },
 } as const satisfies Record<string, ApprovalSource>
+
+/** The source each MCP face's form answers come in under. */
+export const FORMS_SOURCES = { stdio: SOURCES.forms, http: SOURCES['http-forms'] } as const satisfies Record<string, ApprovalSource>
+export type FormsFace = keyof typeof FORMS_SOURCES

@@ -24,16 +24,19 @@ export interface DecisionClaim {
   challenge?: string
   /** A signed `once`'s proof deadline, in ms: the authenticated request's, never the body's. */
   consumeNotAfter?: number
+  /** The actor the transport authenticated for the request that carried a form answer, never one the body names. */
+  caller?: string
 }
 
+/** `actor`, on either: the identity the transport authenticated for the call that raised the ask. */
 export interface LedgerView {
   /** `owedBy`: the source that recorded a decision whose lasting grant is still owed. */
-  resolved?: { decision: ApprovalDecision; widenedTo?: string; request?: ApprovalRequest; owedBy?: ApprovalSource }
+  resolved?: { decision: ApprovalDecision; widenedTo?: string; request?: ApprovalRequest; owedBy?: ApprovalSource; actor?: string }
   /**
    * `challenges`: the digests the ask was shown under, with the workspace's name and without it. `marks`: the rule's floor
    * and destructive marks. `routes`: the routes the ask was sent down.
    */
-  waiting?: { request: ApprovalRequest; complete: boolean; challenges: readonly string[]; marks: AskMarks; routes: readonly RecordedRoute[] }
+  waiting?: { request: ApprovalRequest; complete: boolean; challenges: readonly string[]; marks: AskMarks; routes: readonly RecordedRoute[]; actor?: string }
 }
 
 /** The workspace's settings a decision meets, as core reads them when it decides, never from the route that sent it. */
@@ -63,8 +66,9 @@ export function screenDecision(claim: DecisionClaim, live: LiveSettings): GuardR
 }
 
 /**
- * The live settings come first, so a repeat, a save retry, and an ask already gone meet them too. `policy`: whether the
- * file floor takes scope always; today's floor policy unless a caller turns it the safer way.
+ * The live settings come first, then the caller where the source's rights bind it, so a repeat, a save retry, and an
+ * ask already gone meet them too. `policy`: whether the file floor takes scope always; today's floor policy unless a
+ * caller turns it the safer way.
  */
 export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView; now: number; live: LiveSettings; policy?: FloorPolicy }): GuardVerdict {
   const { claim: { decision }, claim, ledger } = input
@@ -72,10 +76,13 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   const screened = screenDecision(claim, input.live)
   if (!screened.ok) return screened
   const { widenedTo } = screened
+  const rights = rightsOf(claim.source.kind)
+  const raised = ledger.resolved ?? ledger.waiting
+  const stranger = raised === undefined ? null : callerRefusal({ rights, source: claim.source, caller: claim.caller, actor: raised.actor })
+  if (stranger) return stranger
   if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved, source: claim.source })
   const asked = ledger.waiting
   if (!asked) return refuse('unknown_ask', 'Approval token is unknown or expired')
-  const rights = rightsOf(claim.source.kind)
   const unrouted = routingRefusal({ source: claim.source, rights, routes: asked.routes, approved: decision.approved })
   if (unrouted) return unrouted
   if (claim.challenge !== undefined && !asked.challenges.includes(claim.challenge)) return refuse('action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows')
@@ -99,15 +106,21 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   return { ok: true, apply: { ...(widenedTo === undefined ? {} : { widenedTo }), ...(wider === null ? {} : { wider: wider.subject }) } }
 }
 
-/** What a skip meets in the ledger: the decision recorded, and the source kept with the grant it made, while it keeps one. */
-export interface RecordedForSkip { approved: boolean; scope: ApprovalDecision['scope']; source?: ApprovalSource }
+/**
+ * What a skip meets in the ledger: the decision recorded, the source kept with the grant it made, while it keeps one,
+ * and the actor of the call that raised its ask.
+ */
+export interface RecordedForSkip { approved: boolean; scope: ApprovalDecision['scope']; source?: ApprovalSource; actor?: string }
 
 /** A skip gives up a session or always approval's grant, and only the source that recorded the decision sends one. */
-export function guardSkip(input: { source: ApprovalSource; recorded: RecordedForSkip | undefined; live: LiveSettings }): GuardRefusal | { ok: true } {
+export function guardSkip(input: { source: ApprovalSource; caller?: string; recorded: RecordedForSkip | undefined; live: LiveSettings }): GuardRefusal | { ok: true } {
   const { recorded } = input
-  const unset = settingRefusal({ rights: rightsOf(input.source.kind), live: input.live })
+  const rights = rightsOf(input.source.kind)
+  const unset = settingRefusal({ rights, live: input.live })
   if (unset) return unset
   if (recorded === undefined) return refuse('unknown_ask', 'No decision is recorded for this token, so it has no save to skip')
+  const stranger = callerRefusal({ rights, source: input.source, caller: input.caller, actor: recorded.actor })
+  if (stranger) return stranger
   if (!recorded.approved || recorded.scope === 'once') return refuse('conflicting_decision', 'This decision made no session or always grant, so it has no save to skip')
   if (recorded.source !== undefined && !sameSource(recorded.source, input.source)) return refuse('approver_not_allowed', `${recorded.source.id} recorded this decision, so only it may skip its save`)
   return { ok: true }
@@ -120,6 +133,12 @@ function sameSource(left: ApprovalSource, right: ApprovalSource): boolean {
 function settingRefusal(input: { rights: SourceRights; live: LiveSettings }): GuardRefusal | null {
   if (input.rights.whileFormsOn && !input.live.forms) return refuse('approver_not_allowed', 'MCP form approvals are off in this workspace (approval.forms), so a form answer decides nothing: answer at the node')
   return null
+}
+
+// No caller, or an ask that recorded no actor, is never the same caller.
+function callerRefusal(input: { rights: SourceRights; source: ApprovalSource; caller: string | undefined; actor: string | undefined }): GuardRefusal | null {
+  if (!input.rights.sameCaller || (input.caller !== undefined && input.caller === input.actor)) return null
+  return refuse('approver_not_allowed', `Only the caller that raised this ask answers it through ${input.source.id}: answer it at the node`)
 }
 
 function refuse(code: GuardRefusalCode, reason: string): GuardRefusal {

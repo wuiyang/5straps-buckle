@@ -8,6 +8,7 @@ import { agentFailureMessage } from '../common/services/agent-failure.js'
 import { shorterWait } from '../common/services/approvals/approval-service.js'
 import { REQUEST_SUPERSEDED } from '../common/services/invocation/invoker.js'
 import type { BuckleRuntime } from '../common/services/workspaces/workspace-runtime.js'
+import type { AnswerSender } from '../common/types/ports/approval-backend.js'
 import { createFormsBackend, type FormsBackend } from './forms-backend.js'
 import { MCP_HOLD_MS } from './holds.js'
 import { createResendJoin, sameCallKey, type ResendJoin } from './resend-join.js'
@@ -77,7 +78,7 @@ export function createMcpServer(input: McpServerOptions): McpServer {
  */
 export function openForms(runtime: BuckleRuntime, node?: string): FormsBackend {
   const forms = createFormsBackend({ workspace: () => ({ id: runtime.workspaceId, name: runtime.workspaceName() }), ...(node === undefined ? {} : { node }), approves: () => runtime.judgeApproves() })
-  runtime.openApprovalForms(forms)
+  runtime.openApprovalForms(forms, 'stdio')
   return forms
 }
 
@@ -104,7 +105,7 @@ function registerTools(server: McpServer, options: McpServerOptions): Array<Retu
           if ('refused' in hints) return refusedHint(hints.refused)
           // Off, the call gets the relay text and the answers it carries are not read.
           const opened = forms !== undefined && runtime.approvalForms() ? forms : undefined
-          const approvalTokens = opened ? await opened.answer(context.mcpReq?.inputResponses) : []
+          const approvalTokens = opened ? await opened.answer(context.mcpReq?.inputResponses, transportSender()) : []
           // The host asks its user itself, so the call reports back at once instead of waiting.
           const elicits = opened !== undefined && supportsElicitation(readers, context) ? opened : undefined
           const wait = elicits ? { mode: 'none' as const } : shorterWait(options.approvalWait?.(), hints.approvalWait)
@@ -345,6 +346,12 @@ function toCallToolResult(response: Extract<InvokeResponse, { outcome: 'ok' | 'e
     content: [{ type: 'text' as const, text: replay ? `${replayNotice(replay)}\n\n${text}` : text }, ...(history ? [{ type: 'text' as const, text: `History warning: checkpoint ${history.checkpoint} may not be fully restorable${history.reason ? `: ${history.reason}` : '.'}` }] : [])],
     ...(replay || history ? { _meta: { ...(replay ? { [REPLAYED_META]: true } : {}), ...(history ? { '5straps/history': history } : {}) } } : {}),
   }
+}
+
+// The actor the transport authenticated for this request: the agent token's over HTTP, the host's over stdio.
+function transportSender(): AnswerSender | undefined {
+  const caller = useScopeSafe()?.context.actor
+  return caller === undefined ? undefined : { caller }
 }
 
 function mcpSessionId(context: { sessionId?: string }): string {

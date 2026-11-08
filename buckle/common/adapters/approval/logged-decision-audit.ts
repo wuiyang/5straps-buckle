@@ -14,6 +14,7 @@ const ACTOR_OF: Readonly<Record<SourceKind, (source: ApprovalSource) => string>>
   terminal: () => 'local-owner',
   cli: () => 'local-owner',
   forms: () => 'forms',
+  'http-forms': () => 'http-forms',
   devices: () => 'devices',
   judge: () => 'judge',
   sealed: () => 'sealed',

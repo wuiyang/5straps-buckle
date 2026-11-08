@@ -166,7 +166,7 @@ async function opened() {
   const backend = forms()
   // The host core opens the forms on, caught as the forms backend receives it.
   let host: ApprovalHost | undefined
-  service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } })
+  service.openFormsBackend({ ...backend, open: async (opener) => { host = opener; return backend.open(opener) } }, 'stdio')
   return { registry, grants, service, backend, heard, refused, host: () => host! }
 }
 

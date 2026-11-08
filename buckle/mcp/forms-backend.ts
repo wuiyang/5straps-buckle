@@ -1,7 +1,7 @@
 import { acceptedContent, inputRequired } from '@modelcontextprotocol/server'
 import type { ApprovalRequest, GrantScope } from '@5straps/protocol'
 import { describeAsk, describeAskOfShownCall, describeCallAsks, type ShownCall } from '../common/domain/approval-instruction.js'
-import type { ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SubmitResult } from '../common/types/ports/approval-backend.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, BackendCapabilities, DecisionBody, FullAsk, SubmitResult } from '../common/types/ports/approval-backend.js'
 
 interface FormAnswer extends Record<string, unknown> {
   approve?: boolean
@@ -22,8 +22,11 @@ export interface FormsBackendOptions {
 export interface FormsBackend extends ApprovalBackend {
   /** One form per ask of the call. */
   forms(approvals: ApprovalRequest[]): ReturnType<typeof inputRequired>
-  /** Decides each accepted answer through the host, and gives the tokens it recorded, which the retried call spends. */
-  answer(responses: Record<string, unknown> | undefined): Promise<string[]>
+  /**
+   * Decides each accepted answer through the host, with the sender the face's transport authenticated, and gives the
+   * tokens it recorded, which the retried call spends.
+   */
+  answer(responses: Record<string, unknown> | undefined, sender?: AnswerSender): Promise<string[]>
 }
 
 const CAPABILITIES: BackendCapabilities = { contractVersion: 1, decides: true, scopes: ['once', 'session', 'always'], cancels: false, revokes: false }
@@ -37,14 +40,14 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
   const answering = new Set<Promise<string[]>>()
   const live = () => (closed ? undefined : host)
 
-  async function decideAnswers(responses: Record<string, unknown>): Promise<string[]> {
+  async function decideAnswers(responses: Record<string, unknown>, sender: AnswerSender | undefined): Promise<string[]> {
     const tokens: string[] = []
     for (const token of Object.keys(responses)) {
       const answer = acceptedContent<FormAnswer>(responses, token)
       if (!answer) continue
       const opened = live()
       if (!opened) break
-      const receipt = await opened.decide({ kind: 'plain', decision: decisionOf(token, answer) })
+      const receipt = await opened.decide({ kind: 'plain', decision: decisionOf(token, answer) }, sender)
       if (receipt.status === 'refused') {
         opened.log('warn', 'Elicited approval was rejected', { reason: receipt.error.message })
         continue
@@ -74,9 +77,9 @@ export function createFormsBackend(options: FormsBackendOptions): FormsBackend {
       return formsFor({ approvals, waiting: live()?.pending() ?? [], options })
     },
 
-    answer(responses) {
+    answer(responses, sender) {
       if (!live() || !responses) return Promise.resolve([])
-      const run = decideAnswers(responses)
+      const run = decideAnswers(responses, sender)
       answering.add(run)
       const forget = () => { answering.delete(run) }
       run.then(forget, forget)

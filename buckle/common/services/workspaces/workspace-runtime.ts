@@ -77,6 +77,7 @@ import { createApprovalRegistry, type ApprovalRegistry } from '../approvals/appr
 import { approvalFaceOf, createApprovalService, type ApprovalService } from '../approvals/approval-service.js'
 import type { CoreApprovalApi } from '../approvals/core-approval-api.js'
 import type { ApprovalBackend } from '../../types/ports/approval-backend.js'
+import type { FormsFace } from '../../types/ports/approval-source.js'
 import { createApprovalGate, type ApprovalGate } from '../approvals/approval-gate.js'
 import type { InteractionSource } from '../../runtime/interaction.js'
 import { createApprovalNoticeSender, createWebhookNotifier } from '../../adapters/approval/webhook-notifier.js'
@@ -222,8 +223,8 @@ export interface BuckleRuntime {
   approvalApi: CoreApprovalApi
   /** Settles every open wait as still pending and ends its questions; the asks stay in the durable queue. */
   closeApprovals(): Promise<void>
-  /** Opens a stdio MCP host's forms under the forms source, which core holds and rates; the stdio face's alone. */
-  openApprovalForms(backend: ApprovalBackend): void
+  /** Opens an MCP host's forms under its face's forms source, which core holds and rates; the stdio face's alone. */
+  openApprovalForms(backend: ApprovalBackend, face: FormsFace): void
   /** How a call meets approvals: its last check, the grants it holds, and its asks. */
   approvalGate: ApprovalGate
   history: ChangeHistory
@@ -525,7 +526,7 @@ async function assembleRuntime(input: RuntimeInput & { history: ChangeHistory; o
     approvalService,
     approvalApi: approvalFaceOf(approvalService),
     closeApprovals: () => approvalService.close(),
-    openApprovalForms: backend => approvalService.openFormsBackend(backend),
+    openApprovalForms: (backend, face) => approvalService.openFormsBackend(backend, face),
     approvalGate,
     actions,
     history,

@@ -14,6 +14,8 @@ export interface SourceRights {
   everyAsk: boolean
   /** Its answers decide only while the workspace's forms setting is on, read as each is decided. */
   whileFormsOn?: true
+  /** Its answers decide only the asks their own caller raised: the transport's actor, compared with the ask's. */
+  sameCaller?: true
 }
 
 const AT_THE_NODE: SourceRights = { assurance: 'local', approves: true, person: true, widens: true, everyAsk: false }
@@ -24,6 +26,9 @@ const RIGHTS: Record<SourceKind, SourceRights> = {
   // Ruling 3 of 2026-09-25, which the owner keeps: a stdio host's form answers count as the person's, while the owner's
   // forms setting is on. `relayed` would hold them to a non-floor once.
   forms: { assurance: 'local', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true },
+  // Anything holding the agent's token sends these, so they approve a non-floor once; `local` would give them the stdio
+  // forms' rights.
+  'http-forms': { assurance: 'relayed', approves: true, person: true, widens: false, everyAsk: false, whileFormsOn: true, sameCaller: true },
   devices: { assurance: 'key', approves: true, person: true, widens: false, everyAsk: false },
   judge: { assurance: 'relayed', approves: true, person: false, widens: false, everyAsk: true },
   // The setup route's envelope keeps today's lasting denials of a sensitive file.

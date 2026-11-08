@@ -1,6 +1,6 @@
 import type { GrantScope } from '@5straps/protocol'
 import { describe, expect, it } from 'vitest'
-import type { ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt, SubmitContext } from '../../common/types/ports/approval-backend.js'
+import type { AnswerSender, ApprovalBackend, ApprovalHost, DecisionInput, DecisionReceipt, FullAsk, LifecycleEvent, SkipReceipt, SubmitContext } from '../../common/types/ports/approval-backend.js'
 import { SOURCES } from '../../common/types/ports/approval-source.js'
 
 // The contract kit: the duties every approval backend owes core, run against a fake host that records every call. The
@@ -19,7 +19,8 @@ export interface KitSubject {
 }
 
 export interface FakeHost extends ApprovalHost {
-  decided: Array<DecisionInput & { at: number }>
+  /** Each decision as sent, with the sender a backend named for it, where it named one. */
+  decided: Array<DecisionInput & { at: number; sender?: AnswerSender }>
   /** The tokens whose saves the backend skipped, in order. */
   skipped: string[]
   logged: Array<{ level: string; message: string }>
@@ -57,8 +58,8 @@ export function fakeHost(input: { routed: FullAsk[]; receipt?: (decision: Decisi
     skipped: [],
     logged: [],
     closedTokens: new Set(),
-    async decide(decision) {
-      host.decided.push({ ...decision, at: performance.now() })
+    async decide(decision, sender) {
+      host.decided.push({ ...decision, at: performance.now(), ...(sender === undefined ? {} : { sender }) })
       return input.receipt?.(decision, host.decided.filter(sent => sent.decision.token === decision.decision.token).length) ?? APPLIED
     },
     async skipSave(token) {
