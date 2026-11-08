@@ -360,6 +360,8 @@ const EXPIRED: Departure = { type: 'expired' }
  */
 export interface AskResult {
   requests: ApprovalRequest[]
+  /** The tokens of `requests` the ledger marks at the floor (sudo, the destructive list, the file floor). */
+  floor: string[]
   joined: boolean
   answered: string[]
   /** The abandoned asks withdrawn to make room for this one under a cap (the MCP asks brief, item 5). */
@@ -960,7 +962,7 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
           // The group's whole call is kept once, in its own file, however many asks the call made (review M5).
           if (call === undefined) assertBytesFor({ waiting: state.pending.filter(entry => entry.workspace === workspace), group: entries, callBytes: 0 })
           state.pending.push(...(call === undefined ? entries : recordCall({ state, group: entries, call })))
-          return { requests, joined: false, answered: [], ...(lapsesAt === undefined ? {} : { lapsesAt: Date.parse(lapsesAt) }) }
+          return { requests, floor: entries.filter(entry => entry.floor).map(entry => entry.request.token), joined: false, answered: [], ...(lapsesAt === undefined ? {} : { lapsesAt: Date.parse(lapsesAt) }) }
         }
         const admitted = withRoom({ state, workspace, sessionId, actor, admit, evicted })
         for (const entry of evicted) if (notifies(entry)) enqueueOutcome(state, entry.workspace, { token: entry.request.token, event: 'cancelled', at: new Date(now).toISOString() })
@@ -1277,7 +1279,7 @@ function joinWaiting(input: { state: State; workspace: string; key: JoinKey; cal
   }
   // The re-send holds the asks now: they are no longer abandoned, and their clock restarts (the MCP asks brief, item 5).
   input.state.pending = input.state.pending.map(entry => inGroup(entry) ? input.renew(entry) : entry)
-  return { requests: waiting, joined: true, answered: answered.map(request => request.token) }
+  return { requests: waiting, floor: pending.filter(entry => entry.floor).map(entry => entry.request.token), joined: true, answered: answered.map(request => request.token) }
 }
 
 /** Every waiting ask is asked again with the same tool, rule, subject, scopes and severity. */
