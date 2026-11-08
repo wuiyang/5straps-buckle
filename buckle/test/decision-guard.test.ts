@@ -58,6 +58,13 @@ describe('the checks against the ask', () => {
     expect(guard({ claim: claim(approve('session'), { widenTo: ' *.example.com' }), ledger: { resolved: { decision: approve('session'), widenedTo: '*.example.com' } } })).toEqual({ ok: true, repeated: true })
   })
 
+  it('takes a retry of a decision whose grant is owed only from the source that recorded it', () => {
+    const owed: LedgerView = { resolved: { decision: approve('session'), owedBy: SOURCES.terminal } }
+    expect(guard({ claim: claim(approve('session')), ledger: owed })).toEqual({ ok: false, code: 'approver_not_allowed', reason: 'terminal recorded this decision, so only it may retry its save' })
+    expect(guard({ claim: claim(approve('session'), { source: SOURCES.terminal }), ledger: owed })).toEqual({ ok: true, repeated: true })
+    expect(guard({ claim: claim(approve('always'), { source: SOURCES.terminal }), ledger: owed })).toMatchObject({ ok: false, code: 'conflicting_decision' })
+  })
+
   it.each<[string, DecisionClaim, LedgerView, GuardRefusalCode, string]>([
     ['a token nothing waits for', claim(approve()), {}, 'unknown_ask', 'Approval token is unknown or expired'],
     ['a challenge other than the ask\'s', claim(approve(), { challenge: 'f'.repeat(64) }), waiting(), 'action_mismatch', 'The decision names another challenge than this ask\'s: fetch the challenge again and decide on what it shows'],

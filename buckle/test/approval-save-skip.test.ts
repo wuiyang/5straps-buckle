@@ -323,6 +323,16 @@ describe('who may skip, and what', () => {
     expect(keptGrant(approvals, token)?.save).toBe('owed')
   })
 
+  it('refuses a retry from a source that did not record the decision while its grant is owed, and repeats it once saved', async () => {
+    const { approvals, store, registry, token } = await owedApproval()
+    expect(await registry.resolve(sessionApproval(token), SOURCES.terminal)).toMatchObject({ ok: false, code: 'approver_not_allowed' })
+    expect(keptGrant(approvals, token)?.save).toBe('owed')
+    expect(store.list()).toEqual([])
+
+    expect(await registry.resolve(sessionApproval(token), cli)).toMatchObject({ ok: true, repeated: true, save: 'saved' })
+    expect(await registry.resolve(sessionApproval(token), SOURCES.terminal)).toMatchObject({ ok: true, repeated: true, save: 'saved' })
+  })
+
   it('refuses a skip of a decision that made no lasting grant, of an ask still waiting, and of a token it does not know', async () => {
     const { store, approvals } = files()
     const registry = createApprovalRegistry(store, approvals)

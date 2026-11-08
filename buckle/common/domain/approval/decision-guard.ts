@@ -27,7 +27,8 @@ export interface DecisionClaim {
 }
 
 export interface LedgerView {
-  resolved?: { decision: ApprovalDecision; widenedTo?: string; request?: ApprovalRequest }
+  /** `owedBy`: the source that recorded a decision whose lasting grant is still owed. */
+  resolved?: { decision: ApprovalDecision; widenedTo?: string; request?: ApprovalRequest; owedBy?: ApprovalSource }
   /**
    * `challenges`: the digests the ask was shown under, with the workspace's name and without it. `marks`: the rule's floor
    * and destructive marks. `routes`: the routes the ask was sent down.
@@ -60,7 +61,7 @@ export function guardDecision(input: { claim: DecisionClaim; ledger: LedgerView;
   const screened = screenDecision(claim)
   if (!screened.ok) return screened
   const { widenedTo } = screened
-  if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved })
+  if (ledger.resolved) return repeatOf({ decision, widenedTo, resolved: ledger.resolved, source: claim.source })
   const asked = ledger.waiting
   if (!asked) return refuse('unknown_ask', 'Approval token is unknown or expired')
   const rights = rightsOf(claim.source.kind)
@@ -107,11 +108,13 @@ function refuse(code: GuardRefusalCode, reason: string): GuardRefusal {
   return { ok: false, code, reason }
 }
 
-function repeatOf(input: { decision: ApprovalDecision; widenedTo: string | undefined; resolved: NonNullable<LedgerView['resolved']> }): GuardVerdict {
+function repeatOf(input: { decision: ApprovalDecision; widenedTo: string | undefined; resolved: NonNullable<LedgerView['resolved']>; source: ApprovalSource }): GuardVerdict {
   const { decision, resolved } = input
   const previous = resolved.decision
   const same = previous.approved === decision.approved && previous.scope === decision.scope && resolved.widenedTo === input.widenedTo && previous.subject === decision.subject
   if (!same) return refuse('conflicting_decision', 'Approval already has a different decision')
+  // Only the source that recorded a decision retries its owed grant's save, as only it skips one.
+  if (resolved.owedBy !== undefined && !sameSource(resolved.owedBy, input.source)) return refuse('approver_not_allowed', `${resolved.owedBy.id} recorded this decision, so only it may retry its save`)
   return { ok: true, repeated: true, ...(resolved.request ? { asked: { rule: resolved.request.rule, subject: resolved.request.subject } } : {}) }
 }
 

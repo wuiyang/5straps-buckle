@@ -781,7 +781,8 @@ export function createApprovalRegistry(grantStore: GrantStore, filePath: string,
     if (decision === null) return { ok: false, code: 'scope_not_offered', reason: 'This ask has no wider subject to grant' }
     const claim: DecisionClaim = { ...input.claim, decision }
     const waiting = approval === undefined ? undefined : waitingView(withCall(approval), options.challenge)
-    const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: previous }), ...(waiting === undefined ? {} : { waiting }) }
+    const owedBy = previous?.grant?.save === 'owed' ? { owedBy: previous.grant.source } : {}
+    const ledger: LedgerView = { ...(previous === undefined ? {} : { resolved: { ...previous, ...owedBy } }), ...(waiting === undefined ? {} : { waiting }) }
     const verdict = guardDecision({ claim, ledger, now })
     if (!verdict.ok) return { ok: false, code: verdict.code, reason: verdict.reason }
     if ('repeated' in verdict) {
