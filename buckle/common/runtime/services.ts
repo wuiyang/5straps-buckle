@@ -51,12 +51,11 @@ export interface BuckleServiceDefinitions {
 type OnClose = (stage: CloseStage, name: string, closer: Closer) => void
 
 /**
- * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle; B19): the settings
- * watcher stops at 'timers', so a removed folder wakes no runtime that closed; open approval waits settle at 'waiters', keeping their asks; tool calls still running (a shell among
- * them) are cancelled at 'jobs' and answer before connections close; PTY terminals, language servers
- * and browser sessions end at 'streams'; the ownership lock goes at 'locks' and the history database
- * at 'databases', after the services that use them; queued action reports flush at 'sinks', before
- * the logger.
+ * What each workspace runtime closes at shutdown, stage by stage (runtime.md, Lifecycle): the settings watcher at
+ * 'timers', so a removed folder wakes no closed runtime; approval waits at 'waiters', keeping their asks; running tool
+ * calls at 'jobs', answering before connections close; terminals, language servers, and browser sessions at 'streams';
+ * the ownership lock at 'locks' and the history database at 'databases', after the services that use them; queued
+ * action reports at 'sinks', before the logger.
  */
 function closeWithOwner(input: { onClose: OnClose; runtimes: () => Promise<BuckleRuntime[]> }): void {
   const each = (step: (runtime: BuckleRuntime) => Promise<unknown>) => async () => { for (const runtime of await input.runtimes()) await step(runtime) }
