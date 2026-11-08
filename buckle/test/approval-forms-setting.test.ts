@@ -130,6 +130,22 @@ describe('buckle settings set approval-forms', () => {
     const written = loadConfig({ BUCKLE_APPROVAL_FORMS: 'true' }).workspaceDefaults
     expect(resolveSettings(WorkspaceSettingsSchema.parse({ version: 1 }), written).approval.forms).toBe(true)
   })
+
+  it('says a running buckle mcp keeps the default it started with, and how to stop forms at once', async () => {
+    const root = scratch()
+    const file = join(root, 'buckle.env')
+    writeFileSync(file, `BUCKLE_STATE_DIR=${join(root, 'state')}\n`, { mode: 0o600 })
+    for (const argv of [['set', 'approval-forms', 'off'], ['unset', 'approval-forms']]) {
+      const output = captured()
+      expect((await settingsCommand({ argv, environment: {}, environmentFile: file, cwd: root, home: root })).exitCode).toBe(0)
+      vi.restoreAllMocks()
+      expect(output.out()).toContain('A buckle mcp an MCP client started takes the new default only when the client starts it again; buckle workspace set approval.forms off stops forms in a workspace at once.\n')
+    }
+    const output = captured()
+    await settingsCommand({ argv: ['set', 'approval-wait', '20000'], environment: {}, environmentFile: file, cwd: root, home: root })
+    vi.restoreAllMocks()
+    expect(output.out()).not.toContain('buckle mcp')
+  })
 })
 
 const request: ApprovalRequest = { token: 'token-1', rule: 'write_scope', subject: '/outside/one', reason: 'outside', tool: 'fs_write', offeredScopes: ['once', 'session', 'always'], expiresAt: new Date(Date.now() + 600_000).toISOString() }

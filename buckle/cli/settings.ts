@@ -175,8 +175,16 @@ async function write(context: SettingsContext, name: string, raw: string | null)
     : `It is the default of every workspace whose own settings leave ${workspace.key} unset.\n`)
   if (setting.key === 'BUCKLE_SCRATCH_ROOTS' && next !== null) for (const note of scratchOverFolders(stateDirectoryOf(context.merged), next.split(','))) process.stdout.write(`${note}\n`)
   process.stdout.write(`${restartLine(context.restart)}\n`)
+  const note = AFTER_CHANGE.get(setting.key)
+  if (note !== undefined) process.stdout.write(`${note}\n`)
   return { exitCode: 0, detail: next === null ? `${setting.key} unset` : setting.logsValue === false ? `${setting.key} set` : `${setting.key}=${next}` }
 }
+
+// Said beside the restart where it matters: a buckle mcp reads the node's defaults once, as its MCP client starts it,
+// and no node restart restarts it.
+const AFTER_CHANGE: ReadonlyMap<string, string> = new Map([
+  ['BUCKLE_APPROVAL_FORMS', 'A buckle mcp an MCP client started takes the new default only when the client starts it again; buckle workspace set approval.forms off stops forms in a workspace at once.'],
+])
 
 /**
  * Fix brief 6, item 3: a scratch root that holds a registered workspace's folder, where that workspace takes the node's
